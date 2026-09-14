@@ -1389,7 +1389,7 @@ fn demo_gateway() -> provider_gateway.Gateway {
   |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
     name: "acme",
     base_url: "https://acme.invalid",
-    api_key_secret: "ACME_KEY",
+    auth: provider_gateway.ApiKey("ACME_KEY"),
   ))
   |> provider_gateway.route(model.Main, [identity])
 }

@@ -484,7 +484,7 @@ fn held_provider_config(name, started, cancelled, lane) {
     |> gateway.add_provider(gateway.AnthropicProvider(
       name: "acme",
       base_url: "https://acme.invalid",
-      api_key_secret: "ACME_KEY",
+      auth: gateway.ApiKey("ACME_KEY"),
     ))
     |> gateway.route(model.Main, [
       model.ResolvedModel(

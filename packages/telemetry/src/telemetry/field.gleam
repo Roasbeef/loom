@@ -167,14 +167,14 @@ pub fn scrub(field: Field) -> Field {
 }
 
 /// Whether a field key names a credential. Substring matching, because
-/// real keys compound (`api_key_secret`, `clearance_token_bytes`) and a
+/// real keys compound (`api_key_env`, `clearance_token_bytes`) and a
 /// false positive costs one unreadable field while a false negative
 /// costs a leaked secret.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert field.secret_key("api_key_secret")
+/// assert field.secret_key("api_key_env")
 /// assert !field.secret_key("session")
 /// ```
 ///

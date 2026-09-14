@@ -50,7 +50,7 @@ fn routed_gateway() -> gateway.Gateway {
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "acme",
     base_url: "https://acme.test",
-    api_key_secret: "ACME_KEY",
+    auth: gateway.ApiKey("ACME_KEY"),
   ))
   |> gateway.route(model.Main, [routed_model()])
 }

@@ -111,6 +111,23 @@ input = 0.75
 output = 3.75
 cache_read = 0.075
 
+# A paid endpoint, commented out because running it needs a wallet.
+# `auth = "l402"` says the harness holds no key for this entry: the
+# base_url points at an aperture proxy that holds the model's real API
+# key and prices each request by answering 402 Payment Required with an
+# L402 challenge, which an installed payment extension settles before
+# the request is retried. Such an entry names no `api_key_env`, because
+# there is no key for it to name. It is deliberately left out of
+# [roles] below, so this example keeps working for a reader who has no
+# wallet; route it once the payment extension is installed.
+# [models.aperture-paid]
+# dialect = "openai"
+# base_url = "http://localhost:8404/v1"
+# auth = "l402"
+# model_id = "kimi-k3"
+# context_window = 256000
+# max_output_tokens = 32000
+
 # Role routing: which model serves which purpose, best entry first.
 # The five routable roles are main, subagent, plan, summarize, and
 # vision; only main is required. A later entry is the fallback — used

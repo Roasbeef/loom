@@ -192,12 +192,12 @@ fn routed_gateway(transport: http.Transport) -> Gateway {
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "texty",
     base_url: text_host,
-    api_key_secret: "TEXT_KEY",
+    auth: gateway.ApiKey("TEXT_KEY"),
   ))
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "eyes",
     base_url: vision_host,
-    api_key_secret: "VISION_KEY",
+    auth: gateway.ApiKey("VISION_KEY"),
   ))
   |> gateway.route(model.Main, [text_target()])
   |> gateway.route(model.Vision, [vision_target()])
@@ -214,7 +214,7 @@ fn unrouted_gateway(transport: http.Transport) -> Gateway {
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "texty",
     base_url: text_host,
-    api_key_secret: "TEXT_KEY",
+    auth: gateway.ApiKey("TEXT_KEY"),
   ))
   |> gateway.route(model.Main, [text_target()])
   |> gateway.with_attempt_timeout(5000)

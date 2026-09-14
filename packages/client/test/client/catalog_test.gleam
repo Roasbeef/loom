@@ -48,7 +48,7 @@ pub fn example_gemini_entry_takes_the_dialect_default_url_test() {
   let assert Ok(entry) = catalog.find(example(), "gemini-flash")
   assert entry.dialect == catalog.Gemini
   assert entry.base_url == "https://generativelanguage.googleapis.com/v1beta"
-  assert entry.api_key_env == "GEMINI_API_KEY"
+  assert entry.auth == provider_gateway.ApiKey("GEMINI_API_KEY")
   assert entry.model_id == "gemini-3.8-flash"
   assert entry.thinking == model.ThinkingLow
   assert catalog.dialect_to_string(entry.dialect) == "gemini"
@@ -68,7 +68,7 @@ pub fn example_baseten_entry_is_openai_dialect_test() {
   let assert Ok(entry) = catalog.find(example(), "baseten-oss")
   assert entry.dialect == catalog.OpenAiCompatible
   assert entry.base_url == "https://inference.baseten.example/v1"
-  assert entry.api_key_env == "BASETEN_API_KEY"
+  assert entry.auth == provider_gateway.ApiKey("BASETEN_API_KEY")
   // "unsupported" collapses to off: no reasoning field is ever sent.
   assert entry.thinking == model.ThinkingOff
 }
@@ -968,4 +968,51 @@ pub fn the_baseten_example_routes_an_advisor_test() {
   assert list.key_find(parsed.roles, catalog.advisor_role)
     == Ok(["baseten-glm-5-3"])
   assert catalog.parse_advisor(text) == Ok(catalog.default_advisor())
+}
+
+// --- auth ------------------------------------------------------------------
+
+// One entry whose only variable is the `auth`/`api_key_env` block under
+// test, so nothing else in the document can explain a refusal.
+fn auth_entry(keys: String) -> String {
+  "
+[models.one]
+dialect = \"openai\"
+" <> keys <> "model_id = \"m-1\"
+context_window = 1000
+max_output_tokens = 100
+
+[roles]
+main = [\"one\"]
+"
+}
+
+pub fn l402_auth_parses_with_no_key_name_test() {
+  let assert Ok(parsed) = catalog.parse(auth_entry("auth = \"l402\"\n"))
+  let assert Ok(entry) = catalog.find(parsed, "one")
+    as "the parsed catalogue must carry the entry"
+  assert entry.auth == provider_gateway.L402
+}
+
+pub fn l402_auth_refuses_a_key_name_test() {
+  let text = auth_entry("auth = \"l402\"\napi_key_env = \"KEY\"\n")
+  let assert Error("models.one: auth = \"l402\" sends no bearer key" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn api_key_auth_without_a_key_name_refused_test() {
+  let assert Error("models.one.api_key_env is required" <> _rest) =
+    catalog.parse(auth_entry("auth = \"api_key\"\n"))
+}
+
+pub fn unknown_auth_word_refused_test() {
+  let text = auth_entry("auth = \"lsat\"\napi_key_env = \"KEY\"\n")
+  let assert Error("models.one.auth must be" <> _rest) = catalog.parse(text)
+}
+
+pub fn absent_auth_is_an_api_key_test() {
+  let assert Ok(parsed) = catalog.parse(auth_entry("api_key_env = \"KEY\"\n"))
+  let assert Ok(entry) = catalog.find(parsed, "one")
+    as "the parsed catalogue must carry the entry"
+  assert entry.auth == provider_gateway.ApiKey("KEY")
 }

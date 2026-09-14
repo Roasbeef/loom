@@ -79,6 +79,7 @@ import host/bootstrap
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
+import provider/gateway as provider_gateway
 import provider/http
 import provider/model
 import provider/secret
@@ -982,7 +983,7 @@ fn scripted_catalog() -> catalog.Catalog {
         name: "acme",
         dialect: catalog.Anthropic,
         base_url: "https://acme.test",
-        api_key_env: "ACME_KEY",
+        auth: provider_gateway.ApiKey("ACME_KEY"),
         model_id: "loom-1",
         context_window: 100_000,
         max_output_tokens: 4096,

@@ -647,7 +647,7 @@ fn entry(
     name:,
     dialect: catalog.Anthropic,
     base_url:,
-    api_key_env:,
+    auth: provider_gateway.ApiKey(api_key_env),
     model_id:,
     context_window: 100_000,
     max_output_tokens: 4096,

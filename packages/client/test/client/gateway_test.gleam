@@ -32,6 +32,7 @@ import gleam/result
 import gleam/string
 import machine/operation
 import machine/strand as machine_strand
+import provider/gateway as provider_gateway
 import provider/model
 import provider/stream
 import runtime/api
@@ -101,7 +102,7 @@ fn test_catalog() -> catalog.Catalog {
         name: "acme",
         dialect: catalog.Anthropic,
         base_url: "https://acme.test",
-        api_key_env: "ACME_KEY",
+        auth: provider_gateway.ApiKey("ACME_KEY"),
         model_id: "loom-1",
         context_window: 100_000,
         max_output_tokens: 4096,
@@ -113,7 +114,7 @@ fn test_catalog() -> catalog.Catalog {
         name: "fallback",
         dialect: catalog.OpenAiCompatible,
         base_url: "https://fallback.test/v1",
-        api_key_env: "FALLBACK_KEY",
+        auth: provider_gateway.ApiKey("FALLBACK_KEY"),
         model_id: "fb-9",
         context_window: 64_000,
         max_output_tokens: 2048,

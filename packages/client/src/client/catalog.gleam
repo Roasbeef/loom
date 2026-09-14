@@ -23,6 +23,7 @@
 //// [models.<name>]
 //// dialect = "anthropic" | "openai" | "gemini"   # which wire adapter speaks it
 //// base_url = "https://..."           # optional; dialect default used
+//// auth = "api_key"                    # optional; api_key (default) | l402
 //// api_key_env = "SOME_API_KEY"       # env var *name*, never a value
 //// model_id = "provider-model-id"
 //// context_window = 200000
@@ -71,6 +72,11 @@
 //// API keys never live in the file: `api_key_env` names an environment
 //// variable, which the provider secret store reads at dispatch — the
 //// same missing-key-fails-in-band story as the env-only configuration.
+//// An entry may instead declare `auth = "l402"`, which says the endpoint
+//// is a paying proxy: the harness holds no key for it, the proxy prices
+//// each request with a `402 Payment Required`, and an installed payment
+//// extension settles the challenge. Such an entry must not set
+//// `api_key_env`, because there is no key for it to name.
 //// An MCP server's `api_key_env` is the same discipline at spawn time:
 //// the *name* is read from the host environment when the server process
 //// starts and injected into its child environment under that name.
@@ -129,9 +135,9 @@ pub type Dialect {
 /// Constructor invariants: `name` is unique within the catalogue and is
 /// the provider name durable identities store; `base_url` has no
 /// trailing slash (Anthropic: the host root; OpenAI-compatible: the API
-/// root ending in `/v1`); `api_key_env` is an environment variable
-/// *name*, never a key value; `context_window` and `max_output_tokens`
-/// are positive token counts.
+/// root ending in `/v1`); an `ApiKey` auth carries an environment
+/// variable *name*, never a key value; `context_window` and
+/// `max_output_tokens` are positive token counts.
 pub type CatalogModel {
   CatalogModel(
     /// The catalogue name — the handle `set_config` switches by.
@@ -140,8 +146,10 @@ pub type CatalogModel {
     dialect: Dialect,
     /// The endpoint root, no trailing slash.
     base_url: String,
-    /// The environment variable holding the API key.
-    api_key_env: String,
+    /// How a request to this endpoint authenticates: `ApiKey` names the
+    /// environment variable holding the bearer key, `L402` says the
+    /// endpoint is a paying proxy that prices each request instead.
+    auth: provider_gateway.Auth,
     /// The provider's own model identifier.
     model_id: String,
     /// Tokens of context the model accepts (drives overflow detection).
@@ -420,15 +428,15 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     True ->
       Error(
         place
-        <> ": per-model headers are not supported yet; the bearer key from"
-        <> " api_key_env is the only credential the adapters send",
+        <> ": per-model headers are not supported yet; the credential the"
+        <> " entry's auth names is the only one the adapters send",
       )
     False -> Ok(Nil)
   })
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     [
-      "dialect", "base_url", "api_key_env", "model_id", "context_window",
+      "dialect", "base_url", "auth", "api_key_env", "model_id", "context_window",
       "max_output_tokens", "thinking", "pricing", "vision",
     ],
     place,
@@ -451,7 +459,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     Ok(Error(Nil)) -> Ok(default_base_url(dialect))
     Error(message) -> Error(message)
   })
-  use api_key_env <- result.try(required_string(fields, place, "api_key_env"))
+  use auth <- result.try(parse_auth(fields, place))
   use model_id <- result.try(required_string(fields, place, "model_id"))
   use context_window <- result.try(positive_int(fields, place, "context_window"))
   use max_output_tokens <- result.try(positive_int(
@@ -484,7 +492,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     name:,
     dialect:,
     base_url:,
-    api_key_env:,
+    auth:,
     model_id:,
     context_window:,
     max_output_tokens:,
@@ -492,6 +500,52 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     pricing:,
     vision:,
   ))
+}
+
+// The `auth` word and its consequence for `api_key_env`, parsed
+// together because each choice makes the other key required or refused.
+// An `api_key` entry without a key name would dispatch with no
+// credential and fail at the first request; an `l402` entry carrying one
+// would name a key no adapter will ever send, which reads as a
+// configured credential and is not one. An absent `auth` is `api_key`,
+// so every catalogue written before the key existed parses unchanged.
+fn parse_auth(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(provider_gateway.Auth, String) {
+  use word <- result.try(case optional_string(fields, place, "auth") {
+    Ok(Ok(word)) -> Ok(word)
+    Ok(Error(Nil)) -> Ok("api_key")
+    Error(message) -> Error(message)
+  })
+  case word {
+    "api_key" -> {
+      use name <- result.try(required_string(fields, place, "api_key_env"))
+      Ok(provider_gateway.ApiKey(name))
+    }
+
+    // The proxy holds the model's real key and prices each request, so
+    // the harness has no name to read and refuses one that is written.
+    "l402" ->
+      case dict.has_key(fields, "api_key_env") {
+        True ->
+          Error(
+            place
+            <> ": auth = \"l402\" sends no bearer key, so "
+            <> place
+            <> ".api_key_env must not be set",
+          )
+        False -> Ok(provider_gateway.L402)
+      }
+
+    other ->
+      Error(
+        place
+        <> ".auth must be \"api_key\" or \"l402\", got \""
+        <> other
+        <> "\"",
+      )
+  }
 }
 
 // The optional `[models.<name>.pricing]` table. Absent means unpriced, and
@@ -1655,7 +1709,7 @@ pub fn resolved(entry: CatalogModel) -> model.ResolvedModel {
 
 /// Builds the provider gateway from the catalogue: one registered
 /// provider per entry (named by the entry, carrying its dialect,
-/// base URL, and key name) and one route per role table row. Keys stay
+/// base URL, and auth) and one route per role table row. Keys stay
 /// in the secret store, read at dispatch — building a gateway from a
 /// keyless environment succeeds and fails in-band per request.
 ///
@@ -1715,19 +1769,19 @@ fn provider_config(entry: CatalogModel) -> provider_gateway.ProviderConfig {
       provider_gateway.AnthropicProvider(
         name: entry.name,
         base_url: entry.base_url,
-        api_key_secret: entry.api_key_env,
+        auth: entry.auth,
       )
     OpenAiCompatible ->
       provider_gateway.OpenAiCompatibleProvider(
         name: entry.name,
         base_url: entry.base_url,
-        api_key_secret: entry.api_key_env,
+        auth: entry.auth,
       )
     Gemini ->
       provider_gateway.GeminiProvider(
         name: entry.name,
         base_url: entry.base_url,
-        api_key_secret: entry.api_key_env,
+        auth: entry.auth,
       )
   }
 }

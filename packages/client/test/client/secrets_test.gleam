@@ -266,7 +266,7 @@ pub fn a_resolved_value_reaches_the_provider_wire_test() {
     |> gateway.add_provider(gateway.AnthropicProvider(
       name: "acme",
       base_url: "https://acme.test",
-      api_key_secret: "GH_TOKEN",
+      auth: gateway.ApiKey("GH_TOKEN"),
     ))
     |> gateway.route(model.Main, [
       model.ResolvedModel(

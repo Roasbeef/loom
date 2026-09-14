@@ -125,7 +125,7 @@ pub fn owned_distillation_cancellation_retains_provider_owner_test() {
     |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
       name: "acme",
       base_url: "https://acme.invalid",
-      api_key_secret: "ACME_KEY",
+      auth: provider_gateway.ApiKey("ACME_KEY"),
     ))
     |> provider_gateway.route(model.Main, [
       model.ResolvedModel(
@@ -1820,7 +1820,7 @@ fn gateway_routing(roles: List(model.Role)) -> provider_gateway.Gateway {
       |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
         name: "acme",
         base_url: "https://acme.invalid",
-        api_key_secret: "ACME_KEY",
+        auth: provider_gateway.ApiKey("ACME_KEY"),
       )),
     fn(gateway, role) { provider_gateway.route(gateway, role, [identity]) },
   )
@@ -1859,7 +1859,7 @@ pub fn gateway_distiller_cancels_a_timed_out_request_test() {
     |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
       name: "acme",
       base_url: "https://acme.invalid",
-      api_key_secret: "ACME_KEY",
+      auth: provider_gateway.ApiKey("ACME_KEY"),
     ))
     |> provider_gateway.route(model.Main, [
       model.ResolvedModel(
@@ -1928,7 +1928,7 @@ pub fn gateway_distiller_retains_fast_cancel_exit_reason_test() {
     |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
       name: "acme",
       base_url: "https://acme.invalid",
-      api_key_secret: "ACME_KEY",
+      auth: provider_gateway.ApiKey("ACME_KEY"),
     ))
     |> provider_gateway.route(model.Main, [
       model.ResolvedModel(

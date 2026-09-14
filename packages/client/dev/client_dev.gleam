@@ -154,7 +154,7 @@ fn provider_request(rig: Rig) -> model.ProviderRequest {
 fn encode_openai(rig: Rig) -> http.HttpRequest {
   openai.build_request(
     base_url: "https://bench.invalid/v1",
-    api_key: "k",
+    credential: model.ApiKeyCredential("k"),
     resolved: resolved(),
     request: provider_request(rig),
   )
@@ -163,7 +163,7 @@ fn encode_openai(rig: Rig) -> http.HttpRequest {
 fn encode_anthropic(rig: Rig) -> http.HttpRequest {
   anthropic.build_request(
     base_url: "https://bench.invalid",
-    api_key: "k",
+    credential: model.ApiKeyCredential("k"),
     resolved: resolved(),
     request: provider_request(rig),
   )

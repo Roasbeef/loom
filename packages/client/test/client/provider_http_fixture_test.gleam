@@ -27,7 +27,7 @@ fn result_body(id: String, text: String) -> String {
     model.ResolvedModel("fixture", "fixture", model.ThinkingOff, 1000, 100)
   anthropic.build_request(
     base_url: "http://127.0.0.1",
-    api_key: peer.dummy_key,
+    credential: model.ApiKeyCredential(peer.dummy_key),
     resolved:,
     request: model.ProviderRequest(
       model.ForResolved(resolved),

@@ -21,6 +21,7 @@ import gleam/option.{None, Some}
 import machine/operation
 import machine/strand
 import provider/adapter/anthropic
+import provider/gateway as provider_gateway
 import provider/model
 import provider/secret
 import runtime/api
@@ -47,7 +48,7 @@ pub fn settings() -> serve.Settings {
           name: "test",
           dialect: catalog.Anthropic,
           base_url: "https://unused.test",
-          api_key_env: "UNUSED",
+          auth: provider_gateway.ApiKey("UNUSED"),
           model_id: "test",
           context_window: 100_000,
           max_output_tokens: 4096,

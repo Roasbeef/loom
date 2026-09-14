@@ -1604,7 +1604,7 @@ fn env_catalog() -> catalog.Catalog {
         name: "anthropic",
         dialect: catalog.Anthropic,
         base_url: env_text_or("LOOM_BASE_URL", "https://api.anthropic.com"),
-        api_key_env: "ANTHROPIC_API_KEY",
+        auth: provider_gateway.ApiKey("ANTHROPIC_API_KEY"),
         model_id: env_text_or("LOOM_MODEL", default_model),
         context_window: env_int_or("LOOM_CONTEXT_WINDOW", 1_000_000),
         max_output_tokens: env_int_or("LOOM_MAX_OUTPUT_TOKENS", 32_000),

@@ -250,12 +250,12 @@ fn routed_gateway(transport: http.Transport) -> gateway.Gateway {
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "primary",
     base_url: "https://primary.test",
-    api_key_secret: "PRIMARY_KEY",
+    auth: gateway.ApiKey("PRIMARY_KEY"),
   ))
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "backup",
     base_url: "https://backup.test",
-    api_key_secret: "BACKUP_KEY",
+    auth: gateway.ApiKey("BACKUP_KEY"),
   ))
   |> gateway.route(model.Main, [head_target(), tail_target()])
   |> gateway.with_attempt_timeout(5000)

@@ -356,7 +356,11 @@ catalogue without opening runtimes. Explicit admission invokes
   format (via the `tom` TOML package; `docs/examples/loom.toml` is the
   worked example) and the builder that turns a catalogue into the
   provider gateway's registry — one provider per entry, named by the
-  entry (so durable identities store `{catalogue-name, model_id}`),
+  entry (so durable identities store `{catalogue-name, model_id}`,
+  carrying the entry's `auth` — `auth = "api_key"`, the default, whose
+  `api_key_env` names the variable holding the bearer key, or
+  `auth = "l402"`, a paying proxy that prices each request and must name
+  no `api_key_env` at all),
   one route per `[roles]` row, and one rate card per entry that carries
   an optional `[models.<name>.pricing]` table (US dollars per million
   tokens; `input` and `output` required, the two cache rates defaulting
