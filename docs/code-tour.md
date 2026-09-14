@@ -1504,7 +1504,7 @@ does.
 
 The credential is the part worth carrying away. An extension's manifest
 names an *environment variable* and the header it belongs in for one
-host; `request` (`broker/egress.gleam:374`) reads the value through an
+host; `request` (`broker/egress.gleam:362`) reads the value through an
 injected resolver at request time and puts it on the request the harness
 makes. The extension's source never sees it, no file holds it, and the
 `Refusal` type has no field one could occupy — so the renderer has
