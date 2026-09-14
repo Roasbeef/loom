@@ -75,6 +75,7 @@ fn resident(epoch: String) -> Resident {
             owner,
           )
         },
+        drain: fn(_) { Nil },
         fatal: serve.instance_children,
       ),
       epoch:,

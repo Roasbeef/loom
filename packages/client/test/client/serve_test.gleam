@@ -311,6 +311,7 @@ fn with_daemon_instance(run) {
             owner,
           )
         },
+        drain: fn(_) { Nil },
         fatal: serve.instance_children,
       ),
     )

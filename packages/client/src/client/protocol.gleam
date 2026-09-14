@@ -463,6 +463,27 @@ pub type Event {
   /// The host queue changed; fetch its authoritative pending-input metadata.
   InputQueueChanged
 
+  /// The hub is returning a held prompt to its submitter, unsent.
+  ///
+  /// This is a custody return rather than a rejection: the daemon is
+  /// draining, so the hub can no longer promise the message will ever be
+  /// admitted, and the client keeps it as a local draft to resubmit against
+  /// the restarted daemon. `kind` is the held item's own order (`"queue"`
+  /// for a turn admitted after the running one, `"steer"` for one that
+  /// precedes it), and `attachment_count` counts image blocks the body
+  /// cannot carry as text.
+  ///
+  /// An absent `reply_to` answers no command: the return is pushed, like
+  /// every other notice, because the submission it undoes was acknowledged
+  /// long before the drain.
+  HeldInputReturned(
+    strand: String,
+    id: String,
+    kind: String,
+    text: String,
+    attachment_count: Int,
+  )
+
   /// A snapshot reply.
   SnapshotEvent(snapshot: Snapshot)
 
@@ -1088,6 +1109,16 @@ fn event_body(event: Event) -> #(String, JsonValue) {
       json.Object([#("peers", json.Array(peers))]),
     )
     InputQueueChanged -> #("input_queue_changed", json.Object([]))
+    HeldInputReturned(strand:, id:, kind:, text:, attachment_count:) -> #(
+      "held_input_returned",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("id", json.String(id)),
+        #("kind", json.String(kind)),
+        #("text", json.String(text)),
+        #("attachment_count", json.Int(attachment_count)),
+      ]),
+    )
     SnapshotEvent(snapshot:) -> #("snapshot", encode_snapshot(snapshot))
     EntryEvent(record:) -> #("entry", encode_entry_record(record))
     OpTransitionEvent(op:, strand:, phase:) -> #(
@@ -1451,6 +1482,23 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
     "input_queue_changed" -> {
       use _ <- result.try(body_fields(body))
       Ok(InputQueueChanged)
+    }
+
+    // The return is pushed, so a client that has not learned it decodes an
+    // unknown name to `UnknownEvent` and ignores it rather than closing. A
+    // client that has learned it restores a draft from the same fields the
+    // hub sent.
+    "held_input_returned" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use id <- result.try(required_string(fields, "id"))
+      use kind <- result.try(required_string(fields, "kind"))
+      use text <- result.try(required_string(fields, "text"))
+      use attachment_count <- result.try(required_int(
+        fields,
+        "attachment_count",
+      ))
+      Ok(HeldInputReturned(strand:, id:, kind:, text:, attachment_count:))
     }
     "snapshot" -> decode_snapshot(body)
     "entry" -> {

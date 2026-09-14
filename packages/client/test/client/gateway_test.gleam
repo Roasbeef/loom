@@ -4398,3 +4398,76 @@ pub fn queued_input_edit_repeated_request_ids_are_distinct_test() {
     == json.String("second")
   release_gate(gate)
 }
+
+// --- graceful drain (issue #392) -----------------------------------------
+
+/// A daemon drain returns every held prompt to its submitter, unsent.
+///
+/// The hub is about to be torn down, so it can no longer promise a held
+/// prompt will ever be admitted. Each one is handed back to the exact
+/// connection that submitted it as a `held_input_returned` push — the
+/// client keeps it as a draft — and the queue is emptied, which is what the
+/// `DrainHeld` acknowledgement reports. Nothing is admitted: the prompt was
+/// waiting behind a busy strand and is returned rather than started.
+pub fn a_drain_returns_held_prompts_unsent_and_empties_the_queue_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let inbox = process.new_subject()
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(901, "main", "open"))
+    as "the first prompt opens the parked run"
+
+  // A follow-up arrives while the run is parked, so it is held rather than
+  // admitted — this is the custody a drain must give back.
+  let assert Ok(held_frame) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(
+        id: 902,
+        command: protocol.FollowUp(strand: "main", text: "held for the update"),
+      )),
+    )
+    as "the follow-up is queued"
+  assert outcome_status(held_frame) == "queued"
+
+  // Drain. The call is synchronous: on return the returns have been written
+  // to the sinks and the queue is empty.
+  gateway.drain_held(harness.hub)
+
+  // The submitter's own socket receives the custody return, naming the
+  // strand, the held item, its order and its complete text.
+  let returned =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      let assert Ok(frame) = process.receive(inbox, within: 200)
+      let assert Ok(envelope) = protocol.decode_event(frame)
+      case envelope.event {
+        protocol.HeldInputReturned(..) -> poll.Done(envelope.event)
+        _ -> poll.Retry
+      }
+    })
+  let assert poll.Answered(event) = returned
+  let assert protocol.HeldInputReturned(strand:, kind:, text:, ..) = event
+  assert strand == "main"
+  assert kind == "queue"
+  assert text == "held for the update"
+
+  // And the queue is empty: a queue read reports no held input, which is
+  // the durable half of the acknowledgement.
+  let reader =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  assert queued_rows(reader, 910) == [] as "a drained queue holds nothing"
+
+  release_gate(gate)
+}

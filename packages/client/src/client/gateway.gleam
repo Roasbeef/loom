@@ -505,6 +505,17 @@ pub opaque type Message {
   BusHint(published: bus.Published)
   ProviderDelta(operation: OpId, generation: String, delta: stream.Delta)
   ProviderEnded(operation: OpId, generation: String)
+
+  /// Return every held prompt to its submitter and empty the queues, with
+  /// the ack that says the walk is done.
+  ///
+  /// A drain is the one exit that can promise nothing about a held item:
+  /// the hub is about to be torn down, so custody of every message it
+  /// still holds goes back to whoever submitted it. The ack is what makes
+  /// the walk observable — a caller that has received it knows every
+  /// return has been emitted on the hub's own process, before the sinks it
+  /// wrote to are closed.
+  DrainHeld(reply: Subject(Nil))
 }
 
 // Whether a connection has completed the `subscribe` handshake. It gates three
@@ -1042,6 +1053,41 @@ pub fn handle_text(gateway: Gateway, connection: Int, text: String) -> Nil {
   send_if_alive(gateway.name, FromClient(connection, text))
 }
 
+/// Returns every prompt the hub still holds to its submitter, unsent, and
+/// waits for the walk to finish.
+///
+/// This is the graceful-drain seam: a session about to lose its daemon can
+/// no longer promise a held message will ever be admitted, so the hub gives
+/// custody back instead of dropping it. Each held item reaches exactly the
+/// connection that submitted it as a `held_input_returned` notice — the
+/// client keeps its own draft — and the queues are cleared in the same hub
+/// turn, so nothing is left to drain into a successor after the daemon is
+/// gone.
+///
+/// The call is synchronous on purpose. Its caller is stopping an instance
+/// and needs the returns to have been *written to the sinks* before the
+/// gateways behind those sinks are torn down; a cast would return before the
+/// hub had looked at its queues. A hub that is already gone, or that does
+/// not answer in the bounded wait, returns `Nil` like `detach` does: the
+/// caller is already tearing this session down, and a missing hub means
+/// there was nothing left to return.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.drain_held(instance.gateway)
+/// ```
+///
+pub fn drain_held(gateway: Gateway) -> Nil {
+  case address.lookup(gateway.name) {
+    Ok(subject) -> {
+      let _ack = call.try_call(subject, waiting: 5000, sending: DrainHeld)
+      Nil
+    }
+    Error(Nil) -> Nil
+  }
+}
+
 /// Starts a forwarder that turns the runtime writer's post-commit
 /// publication into hub pull hints, registered under `as_name`.
 ///
@@ -1510,6 +1556,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     ProviderEnded(operation:, generation:) -> {
       broadcast_delta(state, operation, generation, None)
+      continue(state)
+    }
+
+    // The ack follows the walk rather than preceding it, so a caller whose
+    // `process.call` returned has observed every return already handed to its
+    // sink. Nothing else depends on the order: a caller that stopped waiting
+    // leaves the queues empty all the same, and the returns the hub did emit
+    // are correct custody returns whether or not anyone counted them.
+    DrainHeld(reply:) -> {
+      let state = drain_held_queues(state)
+      process.send(reply, Nil)
       continue(state)
     }
   }
@@ -2451,6 +2508,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.AttachmentEvent(..)
     | protocol.PresenceEvent(..)
     | protocol.InputQueueChanged
+    | protocol.HeldInputReturned(..)
     | protocol.StreamDeltaEvent(..)
     | protocol.ToolOutputEvent(..)
     | protocol.CommittedEvent(..)
@@ -4392,6 +4450,74 @@ fn held_items(state: State, strand: String) -> List(Held) {
   |> result.unwrap([])
 }
 
+// Return every held prompt to its submitter and empty the queues.
+//
+// The walk is over the dictionary rather than over the strands, because the
+// dictionary *is* the set of strands holding something — an emptied strand
+// leaves it, so no holder is visited twice and none is missed. Each item
+// goes to `item.submitter`, which is a connection id and not an identity:
+// a submitter that detached during the drain is an unknown connection and
+// `send_to` drops the frame, exactly as the rejection path already accepts
+// (see `Held.submitter`).
+//
+// The queue is emptied wholesale rather than retired item by item. A later
+// `drain_idle_strands` must find nothing, and the batch intent of a halted
+// queue must not outlive the daemon it belonged to.
+fn drain_held_queues(state: State) -> State {
+  dict.each(state.held, fn(strand, queue) {
+    list.each(queue.items, fn(item) {
+      send_to(
+        state,
+        item.submitter,
+        EventEnvelope(
+          reply_to: None,
+          seq: None,
+          event: held_return(strand, item),
+        ),
+      )
+    })
+  })
+  broadcast_queue_changed(State(..state, held: dict.new()))
+}
+
+// The one event that says the host queue changed, sent to every attached
+// connection. Both mutations of the queue — a submission entering it and a
+// drain emptying it — end with it, so a client that renders a queue learns
+// from a push that its next read should be a read, never that a read it
+// already has is still authoritative.
+fn broadcast_queue_changed(state: State) -> State {
+  dict.each(state.connections, fn(id, _link) {
+    send_to(state, id, EventEnvelope(None, None, protocol.InputQueueChanged))
+  })
+  state
+}
+
+// One held item as the custody return a client restores a draft from. The
+// kind is the item's own order, and the text is the *complete* submitted
+// text, unlike the queue-board preview: a draft restored from a clipped
+// prefix would silently lose what the operator typed. Image blocks cannot
+// travel as text, so the count says how many the client must keep beside the
+// draft it now owns again.
+fn held_return(strand: String, item: Held) -> WireEvent {
+  let #(text, images) = editable_content(item.prompt)
+  protocol.HeldInputReturned(
+    strand:,
+    id: held_id(item),
+    kind: order_text(item.order),
+    text:,
+    attachment_count: list.length(images),
+  )
+}
+
+// The two priority names the wire uses for a held item, spelled once so the
+// return and the queue board cannot disagree about them.
+fn order_text(order: InputOrder) -> String {
+  case order {
+    AfterTurn -> "queue"
+    SteerNext -> "steer"
+  }
+}
+
 fn put_held(state: State, strand: String, queue: List(Held)) -> State {
   // A replacement queue inherits the strand's existing drain intent, which is
   // what lets input submitted after an abort join the batch that abort marked.
@@ -4412,10 +4538,7 @@ fn put_held(state: State, strand: String, queue: List(Held)) -> State {
         held: dict.insert(state.held, strand, HeldQueue(queue, drain)),
       )
   }
-  dict.each(state.connections, fn(id, _link) {
-    send_to(state, id, EventEnvelope(None, None, protocol.InputQueueChanged))
-  })
-  state
+  broadcast_queue_changed(state)
 }
 
 // These rows are queue identities, not guessed transcript matches. Two peers
@@ -4435,13 +4558,7 @@ fn pending_inputs(state: State, connection: Int) -> List(JsonValue) {
           "editable",
           json.Bool(input_author(state, connection) == Ok(item.author)),
         ),
-        #(
-          "kind",
-          json.String(case item.order {
-            AfterTurn -> "queue"
-            SteerNext -> "steer"
-          }),
-        ),
+        #("kind", json.String(order_text(item.order))),
         #(
           "text",
           json.String(preview_prefix(
@@ -4520,13 +4637,7 @@ fn queued_board(
       #("id", json.String(held_id(item))),
       #("strand", json.String(strand)),
       #("revision", json.Int(item.revision)),
-      #(
-        "kind",
-        json.String(case item.order {
-          AfterTurn -> "queue"
-          SteerNext -> "steer"
-        }),
-      ),
+      #("kind", json.String(order_text(item.order))),
       #("text", json.String(text)),
       #("attachment_count", json.Int(list.length(images))),
     ])

@@ -41,6 +41,7 @@ fn inert() {
   manager.Assembly(
     domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
     build: fn(record, _domain, _services, _) { Ok(record.id) },
+    drain: fn(_) { Nil },
     fatal: fn(_) { [] },
   )
 }
@@ -132,6 +133,7 @@ pub fn daemon_listener_restores_metadata_only_and_reuses_owner_token_test() {
         process.send(builds, record.id)
         Ok(record.id)
       },
+      drain: fn(_) { Nil },
       fatal: fn(_) { [] },
     )
   let first = start(config, assembly)
@@ -209,6 +211,7 @@ pub fn daemon_listener_control_remains_available_during_session_drain_test() {
             as "cleanup is published before residency"
           Ok(record.id)
         },
+        drain: fn(_) { Nil },
         fatal: fn(_) { [] },
       ),
     )

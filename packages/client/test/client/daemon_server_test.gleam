@@ -49,6 +49,7 @@ pub fn fixture(
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
+        drain: fn(_) { Nil },
         fatal: fn(_) { [] },
       ),
     )

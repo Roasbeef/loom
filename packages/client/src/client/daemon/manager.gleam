@@ -177,6 +177,19 @@ pub type Assembly(instance) {
     ) -> Result(instance, String),
     /// Root deaths which make the instance unusable.
     fatal: fn(instance) -> List(#(String, Pid)),
+    /// Hands one resident instance back whatever it still holds, at the
+    /// moment it is reachable and its peers are still live.
+    ///
+    /// This is the graceful-drain hook. A daemon shutdown has to return the
+    /// hub's held prompts to their submitters *before* the session sockets
+    /// those returns travel over are killed, and the instance is opaque to
+    /// the root that orders that teardown. So the assembly — which already
+    /// knows how to build an instance — also knows how to drain one, and the
+    /// registry calls it on every resident slot while the peers are alive.
+    /// It is `Nil`-returning and must be safe to run on an already-drained
+    /// instance, because a session may be drained once by the root and once
+    /// by its own close.
+    drain: fn(instance) -> Nil,
   )
 }
 
@@ -414,6 +427,13 @@ type Message(instance) {
   ResolveIncarnation(String, String, Subject(Result(instance, Error)))
   Operation(String, String, Subject(Result(View, Error)))
   Shutdown
+  /// Hands every resident instance back what it still holds, then acks.
+  ///
+  /// Separate from `Shutdown` because it must complete *before* admission
+  /// is fenced and the session sockets are killed: the hub's held prompts
+  /// travel back over those sockets, so draining after them would write
+  /// into the void. The ack is what lets the root order the two.
+  DrainHeld(Subject(Nil))
   Opened(String, String, Result(instance, String))
   Faulted(String, String)
   Failed(String, String, String)
@@ -1127,6 +1147,27 @@ pub fn shutdown(manager: Manager(instance)) -> Nil {
   process.send(manager.commands, Shutdown)
 }
 
+/// Hands every resident instance back what it still holds, and waits.
+///
+/// The caller is the root, ordering a graceful daemon shutdown. It must run
+/// this *before* it kills the session sockets, because the hub's held prompts
+/// travel back over those sockets; the synchronous form is what lets the root
+/// know the returns have been written before it severs them. A registry that
+/// has already stopped, or does not answer within the bound, returns `Nil`:
+/// the caller is already tearing the daemon down, and a dead registry had
+/// nothing left to drain.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.drain_held(registry)
+/// ```
+@internal
+pub fn drain_held(manager: Manager(instance)) -> Nil {
+  call.try_call(manager.commands, waiting: 5000, sending: DrainHeld)
+  |> result.unwrap(Nil)
+}
+
 fn handle(
   phase: Phase,
   book: Book(instance),
@@ -1390,6 +1431,22 @@ fn handle(
       step(phase, failed(book, id, operation, reason))
     Retired(id, operation, reason) ->
       step(phase, retired(book, id, operation, reason))
+    // Runs the assembly's drain on every resident slot and only then acks.
+    // Ordering is the whole point: the root calls this before it kills the
+    // session sockets, and the hub's held returns travel back over them.
+    // A slot still building has no instance and nothing to drain; a slot
+    // whose instance is gone has nothing left either, so only `Running`
+    // slots are visited.
+    DrainHeld(reply) -> {
+      dict.each(book.slots, fn(_id, slot) {
+        case slot.phase {
+          Running(instance) -> book.assembly.drain(instance)
+          WaitingForDomain | Building | Closing | Blocked(_) -> Nil
+        }
+      })
+      process.send(reply, Nil)
+      step(phase, book)
+    }
     Shutdown -> {
       let closing = list.fold(dict.keys(book.slots), book, stop_slot)
       step(ShuttingDown, closing)
