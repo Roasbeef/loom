@@ -427,6 +427,7 @@ type Message(instance) {
   ResolveIncarnation(String, String, Subject(Result(instance, Error)))
   Operation(String, String, Subject(Result(View, Error)))
   Shutdown
+
   /// Hands every resident instance back what it still holds, then acks.
   ///
   /// Separate from `Shutdown` because it must complete *before* admission
@@ -1431,6 +1432,7 @@ fn handle(
       step(phase, failed(book, id, operation, reason))
     Retired(id, operation, reason) ->
       step(phase, retired(book, id, operation, reason))
+
     // Runs the assembly's drain on every resident slot and only then acks.
     // Ordering is the whole point: the root calls this before it kills the
     // session sockets, and the hub's held returns travel back over them.
