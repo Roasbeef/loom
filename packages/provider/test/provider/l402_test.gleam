@@ -43,6 +43,31 @@ pub fn json_body_price_falls_back_to_the_invoice_test() {
   assert challenge.challenge_id == ""
 }
 
+/// A zero is a field the proxy did not fill, not a price it set: it is
+/// minting an invoice for the request in the same breath, so it has not
+/// said the request is free. Honouring the zero would report a payable
+/// request as costing nothing, which is the figure a spending ceiling
+/// would be checked against.
+pub fn a_stated_price_of_zero_falls_back_to_the_invoice_test() {
+  let headers = [#("content-type", "application/json")]
+  let body =
+    "{\"invoice\":\"lnbc2500u1pvjluez\",\"macaroon\":\"AGIA\","
+    <> "\"amount_sat\":0}"
+  let assert Ok(challenge) = l402.parse(headers, body)
+
+  assert challenge.amount_sat == Some(250_000)
+}
+
+pub fn a_negative_stated_price_falls_back_to_the_invoice_test() {
+  let headers = [#("content-type", "application/json")]
+  let body =
+    "{\"invoice\":\"lnbc2500u1pvjluez\",\"macaroon\":\"AGIA\","
+    <> "\"amount_sat\":-5}"
+  let assert Ok(challenge) = l402.parse(headers, body)
+
+  assert challenge.amount_sat == Some(250_000)
+}
+
 pub fn a_body_that_is_not_json_is_an_error_test() {
   let headers = [#("content-type", "application/json")]
   let assert Error(reason) = l402.parse(headers, "<html>nope</html>")
@@ -88,6 +113,17 @@ pub fn stated_header_price_wins_over_the_invoice_test() {
   let assert Ok(challenge) = l402.parse(headers, "")
 
   assert challenge.amount_sat == Some(300_000)
+}
+
+/// The header dialect's half of the same rule.
+pub fn a_stated_header_price_of_zero_falls_back_to_the_invoice_test() {
+  let headers = [
+    #("www-authenticate", header_challenge),
+    #("x-aperture-price-sat", "0"),
+  ]
+  let assert Ok(challenge) = l402.parse(headers, "")
+
+  assert challenge.amount_sat == Some(250_000)
 }
 
 pub fn a_challenge_in_another_scheme_is_an_error_test() {

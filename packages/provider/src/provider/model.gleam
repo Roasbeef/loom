@@ -14,7 +14,9 @@
 
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import gleam/list
 import gleam/option.{type Option}
+import gleam/string
 
 /// The purpose a model is being asked to serve. Roles map to ordered
 /// fallback chains in the gateway registry (spec §1.5).
@@ -210,5 +212,46 @@ pub fn credential_secret(credential: Credential) -> String {
     NoCredential -> ""
     ApiKeyCredential(key:) -> key
     L402Credential(token:) -> token
+  }
+}
+
+/// Every secret string a credential carries, innermost secret last.
+///
+/// An L402 token is two secrets in one field. The whole header value is
+/// the credential, but the preimage after the final `:` is a payment
+/// proof in its own right: an endpoint that echoes a *fragment* of what
+/// it was sent — a truncated header in a diagnostic, or the preimage
+/// pulled out and named on its own — reflects a value the whole-token
+/// comparison does not find. Both are redacted, so neither spelling
+/// survives into an error.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.credential_secrets(model.ApiKeyCredential("sk-1")) == ["sk-1"]
+/// ```
+///
+/// ```gleam
+/// assert model.credential_secrets(model.NoCredential) == []
+/// ```
+///
+pub fn credential_secrets(credential: Credential) -> List(String) {
+  case credential {
+    NoCredential -> []
+    ApiKeyCredential(key:) -> [key]
+
+    // The macaroon half needs no entry of its own: it is the proxy's
+    // minting rather than a secret, and the token already covers the
+    // one place it appears as sent.
+    L402Credential(token:) ->
+      case string.split(token, ":") {
+        [_no_separator] -> [token]
+        parts ->
+          case list.last(parts) {
+            Ok("") -> [token]
+            Ok(preimage) -> [token, preimage]
+            Error(Nil) -> [token]
+          }
+      }
   }
 }

@@ -153,8 +153,12 @@ pub opaque type Gateway {
   /// provider absent from it is unpriced, which costs zero; `paywall`
   /// settles the challenges L402 entries earn and declines everything
   /// until `with_paywall` replaces the default;
-  /// `attempt_timeout_ms` is positive and bounds one attempt from transport
-  /// start through settlement. Response activity does not renew the deadline.
+  /// `attempt_timeout_ms` is positive and bounds one *run* of one target
+  /// from transport start through settlement, not the whole of a
+  /// paywalled exchange: such an exchange is a run, then a settlement
+  /// spending against the paywall's own budget, then a second run, and
+  /// each run carries the deadline afresh. Response activity does not
+  /// renew the deadline.
   Gateway(
     providers: List(ProviderConfig),
     routes: List(#(Role, List(ResolvedModel))),
@@ -1840,6 +1844,12 @@ fn paywalled_attempt(attempt: AttemptContext) -> AttemptOutcome {
 // delivered the cancellation terminal to a live consumer by the time it
 // answers `True`, so this returns `ConsumerGone` — the one outcome the
 // walk delivers nothing for — rather than authoring a second terminal.
+//
+// A `Cancel` that arrives *during* the settlement is not lost by being
+// checked too early: the retry's first select reads it, so the retry
+// begins and is cancelled immediately, and the token the settlement
+// bought stays in the paywall's cache for the next request rather than
+// being paid for twice.
 fn settle_and_retry(
   attempt: AttemptContext,
   challenge: l402.Challenge,
@@ -1960,7 +1970,7 @@ fn run_attempt(
   // priced record without a second costing pass anywhere above the seam.
   priced(gateway, outcome, target)
   |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
-  |> scrub_attempt(model.credential_secret(credential))
+  |> scrub_attempt(model.credential_secrets(credential))
 }
 
 // The ordinal names this route walk, independently of the machine's retries.
@@ -2068,10 +2078,20 @@ fn repriced(
 // the credential into another lifetime or a later diagnostic. An empty secret
 // — which is what `NoCredential` yields — redacts nothing, so the unpaid first
 // attempt of a paywalled entry needs no special case.
-fn scrub_attempt(outcome: AttemptOutcome, secret: String) -> AttemptOutcome {
+// Each secret is scrubbed in turn, because one credential can carry more
+// than one: an L402 token is a header value whose tail is a payment proof
+// an endpoint may echo on its own, and a fold over the list finds that
+// spelling as well as the whole. An empty list is the no-credential case
+// and leaves the error untouched.
+fn scrub_attempt(
+  outcome: AttemptOutcome,
+  secrets: List(String),
+) -> AttemptOutcome {
   case outcome {
     AttemptTerminal(Failed(error:)) ->
-      AttemptTerminal(Failed(error: diagnostic.scrub_error(error, secret)))
+      AttemptTerminal(
+        Failed(error: list.fold(secrets, error, diagnostic.scrub_error)),
+      )
     AttemptTerminal(terminal:) -> AttemptTerminal(terminal:)
     AttemptCancelled(context) -> AttemptCancelled(context)
     AttemptCancellationUnconfirmed(context) ->

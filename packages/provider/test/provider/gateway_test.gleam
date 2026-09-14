@@ -1347,6 +1347,40 @@ pub fn a_second_challenge_after_settling_is_delivered_test() {
   assert process.receive(settled, within: 50) == Error(Nil)
 }
 
+/// The preimage on its own, with none of the header around it. A proxy
+/// that parses the credential and names the half that failed reflects a
+/// string the whole-token comparison never finds, and the preimage is a
+/// payment proof in its own right — so it is scrubbed as a secret of its
+/// own rather than only as a substring of the token.
+pub fn a_reflected_preimage_alone_is_scrubbed_test() {
+  let settled = process.new_subject()
+  let token = l402.authorization(macaroon, preimage)
+  let wall = stub_paywall(held: None, settled:, outcome: Ok(token))
+  let transport =
+    fixture.routing_transport(fn(request) {
+      case list.key_find(request.headers, "authorization") {
+        Error(Nil) -> challenge_response()
+        Ok(_paid) ->
+          fixture.error_response(
+            400,
+            [],
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+              <> "\"message\":\"preimage "
+              <> preimage
+              <> " does not hash to the payment hash\"}}",
+          )
+      }
+    })
+  let handle =
+    gateway.request(paywalled_gateway(transport, wall), main_request())
+
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  let rendered = stream.describe_error(error)
+  assert !string.contains(rendered, preimage)
+  assert string.contains(rendered, "[REDACTED]")
+}
+
 pub fn a_reflected_l402_token_is_scrubbed_test() {
   let settled = process.new_subject()
   let token = l402.authorization(macaroon, preimage)

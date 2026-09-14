@@ -228,6 +228,20 @@ fn split_multiplier(amount: String) -> #(String, Int) {
   }
 }
 
+// A stated price only counts when it is positive. Aperture's own client
+// treats `stated <= 0` as unstated, and it is the right reading in both
+// directions: a proxy has no way to spell "free" in a 402 it is minting
+// an invoice for, so a zero is a field it did not fill rather than a
+// price it set, and honouring it would report a payable request as
+// costing nothing. Falling through to the invoice's own amount reports
+// what the buyer will actually be asked for.
+fn positive_price(amount: Int) -> Option(Int) {
+  case amount > 0 {
+    True -> Some(amount)
+    False -> None
+  }
+}
+
 // --- the two challenge dialects -------------------------------------------
 
 // Whether the proxy declared a JSON body. A `content-type` carries
@@ -251,9 +265,10 @@ fn parse_body(body: String) -> Result(Challenge, String) {
 
   // The stated price wins over the invoice's own, because a proxy may
   // price a route above the invoice it mints for it and the buyer is
-  // being asked for the former.
+  // being asked for the former. A price of zero or below is not one of
+  // those cases; see `positive_price`.
   let stated = case int_field(document, "amount_sat") {
-    Ok(amount) -> Some(amount)
+    Ok(amount) -> positive_price(amount)
     Error(Nil) -> None
   }
 
@@ -286,11 +301,13 @@ fn parse_headers(
   )
 
   // The price header is advisory: a proxy that omits it has still priced
-  // the request inside the invoice it minted.
+  // the request inside the invoice it minted, and one that sends a
+  // non-positive figure has said nothing (see `positive_price`).
   let stated =
     list.key_find(headers, "x-aperture-price-sat")
     |> result.try(int.parse)
     |> option.from_result
+    |> option.then(positive_price)
 
   Ok(Challenge(
     macaroon:,

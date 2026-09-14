@@ -245,11 +245,14 @@ processful shell around that sans-io core. WP-F.
   not in a locally constructed error or persisted structure. `ProviderError`
   carries secret *names* only (spec §3.3 invariant 4). Because a remote endpoint
   can reflect the credential it received, the gateway scrubs that exact
-  value from terminal errors before retry classification or delivery — an
-  L402 token exactly as an API key, through the one
-  `model.credential_secret` the attempt was run with. `NoCredential` yields
-  `""`, which redacts nothing, so the unpaid first attempt of a paywalled
-  entry needs no special case. An `l402.Challenge` is the one string pair
+  value from terminal errors before retry classification or delivery,
+  through `model.credential_secrets` for the credential the attempt was
+  run with. That is a *list* because an L402 token is two secrets in one
+  field: the whole `authorization` value, and the preimage after its
+  final `:`, which an endpoint can echo on its own where the whole-token
+  comparison would not find it. `NoCredential` yields the empty list,
+  which redacts nothing, so the unpaid first attempt of a paywalled entry
+  needs no special case. An `l402.Challenge` is the one string pair
   deliberately left alone: the macaroon is echoed back byte-identically and
   the invoice is paid verbatim, so bounding either would break the payment
   rather than protect it. Successful streamed
