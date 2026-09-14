@@ -4,8 +4,8 @@
 -module(broker_test_ffi).
 
 -export([find_executable/1, os_cmd/1,
-         egress_start/0, egress_start_tls12/0, egress_stop/1,
-         egress_foreign_root/0]).
+         egress_start/0, egress_start_tls12/0, egress_start_plain/0,
+         egress_stop/1, egress_foreign_root/0]).
 
 %% Both certificate chains are generated when this module loads rather
 %% than on first use. A lazy `persistent_term:get/put` pair is a
@@ -238,6 +238,80 @@ egress_route(Socket, _Method, <<"/sleep">>, _Headers, _Port) ->
     egress_respond(Socket, 200, [], <<"late">>);
 egress_route(Socket, _Method, _Path, _Headers, _Port) ->
     egress_respond(Socket, 404, [], <<"no such route">>).
+
+%% ---------------------------------------------------------------------
+%% A plaintext origin, for the loopback exception.
+%%
+%% No chain and no ssl: the point of the exception is that there is no
+%% network between the harness and this listener, so the test's server
+%% is the plainest HTTP/1.1 responder that will answer one request. It
+%% shares nothing with the TLS origin above deliberately — a helper that
+%% took a transport module would let a mistake there make the plaintext
+%% test pass over TLS.
+%% ---------------------------------------------------------------------
+egress_start_plain() ->
+    Parent = self(),
+    Ref = make_ref(),
+    Pid = spawn(fun() -> egress_plain_listen(Parent, Ref) end),
+    receive
+        {Ref, Port} -> {Pid, Port}
+    after 10000 ->
+        exit(egress_plain_start_timeout)
+    end.
+
+egress_plain_listen(Parent, Ref) ->
+    {ok, Listen} = gen_tcp:listen(0, [{reuseaddr, true}, {active, false},
+                                      binary, {ip, {127, 0, 0, 1}}]),
+    {ok, Port} = inet:port(Listen),
+    Parent ! {Ref, Port},
+    egress_plain_accept(Listen).
+
+egress_plain_accept(Listen) ->
+    case gen_tcp:accept(Listen, 60000) of
+        {ok, Socket} ->
+            Handler = spawn(fun() ->
+                receive
+                    go -> egress_plain_serve(Socket)
+                end
+            end),
+            gen_tcp:controlling_process(Socket, Handler),
+            Handler ! go,
+            egress_plain_accept(Listen);
+        {error, timeout} ->
+            egress_plain_accept(Listen);
+        {error, _Closed} ->
+            ok
+    end.
+
+%% One canned answer to whatever arrives. The request head is read only
+%% so that the client's write completes before the socket closes.
+egress_plain_serve(Socket) ->
+    case egress_plain_read_head(Socket, <<>>) of
+        ok ->
+            Body = <<"plaintext ok">>,
+            Head = [<<"HTTP/1.1 200 OK\r\n">>,
+                    <<"content-type: text/plain\r\n">>,
+                    <<"content-length: ">>, integer_to_binary(byte_size(Body)),
+                    <<"\r\n">>,
+                    <<"connection: close\r\n\r\n">>],
+            gen_tcp:send(Socket, [Head, Body]),
+            gen_tcp:close(Socket);
+        {error, _Reason} ->
+            gen_tcp:close(Socket)
+    end.
+
+egress_plain_read_head(Socket, Acc) ->
+    case binary:match(Acc, <<"\r\n\r\n">>) of
+        {_Position, _Length} ->
+            ok;
+        nomatch ->
+            case gen_tcp:recv(Socket, 0, 5000) of
+                {ok, Data} ->
+                    egress_plain_read_head(Socket, <<Acc/binary, Data/binary>>);
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
 
 egress_url(Port, Path) ->
     iolist_to_binary([<<"https://localhost:">>, integer_to_binary(Port), Path]).
