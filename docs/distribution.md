@@ -360,26 +360,38 @@ them out under `PREFIX`, `~/.local` by default:
 
 | path | what |
 |---|---|
-| `$PREFIX/lib/loom/server` | the release tree, copied whole: `bin/loomd`, `bin/loom-exec`, `bin/gleam`, `share/codemode-seed`, the bundled ERTS |
-| `$PREFIX/lib/loom/client` | the client release, whole, with its own ERTS (`INSTALL_CLIENT=bundled`, the default) |
-| `$PREFIX/lib/loom/tui` | the client shipment: compiled BEAM files, no runtime (`INSTALL_CLIENT=slim`) |
+| `$PREFIX/lib/loom/server-<version>` | the release tree, copied whole: `bin/loomd`, `bin/loom-exec`, `bin/gleam`, `share/codemode-seed`, the bundled ERTS |
+| `$PREFIX/lib/loom/server` | a symlink to `server-<version>` |
+| `$PREFIX/lib/loom/client-<version>` | the client release, whole, with its own ERTS (`INSTALL_CLIENT=bundled`, the default) |
+| `$PREFIX/lib/loom/client` | a symlink to `client-<version>` |
+| `$PREFIX/lib/loom/tui-<version>` | the client shipment: compiled BEAM files, no runtime (`INSTALL_CLIENT=slim`) |
+| `$PREFIX/lib/loom/tui` | a symlink to `tui-<version>` |
 | `$PREFIX/bin/loom` | the client launcher, generated to name whichever client was installed |
-| `$PREFIX/bin/loomd` | a wrapper that execs the release's own `bin/loomd` |
+| `$PREFIX/bin/loomd` | a wrapper that execs the release's own `bin/loomd` through the `server` symlink |
 
 Two shapes are deliberate. The release tree is copied whole because the
 server finds its helper, compiler and seed through `code:root_dir()`, the
 release root, and a tree with pieces moved out of it would find nothing.
 And `loomd` on `PATH` is a wrapper rather than a symlink because the
-release's own launcher resolves the root from its own location, so a
-symlink would resolve it to `$PREFIX`. The two launchers share a
-directory because the client looks for the server beside itself before
-it asks `PATH`.
+release's own launcher resolves the root from its own location with
+`pwd -P`, so a symlink to the wrapper would resolve it to `$PREFIX`. The
+two launchers share a directory because the client looks for the server
+beside itself before it asks `PATH`.
 
-By default both halves are self-contained. `INSTALL_CLIENT=slim` installs
-the shipment instead, so the client runs on the host's own Erlang; that
-is the shape for a package that declares Erlang as a dependency. With
-`~/.loom/loom.toml` present the client passes it to the server as the
-catalogue, so an installed Loom needs no flags at all.
+**A release lands in a versioned directory and a symlink is switched to
+it, never into a tree a running daemon may be reading.** The release
+launcher resolves its root with `pwd -P`, which follows the `server`
+symlink to the physical `server-<version>` directory, so a daemon
+started before an update stays pinned to the tree it started from and
+the next tool call or code-mode build after the update still finds the
+helper, compiler and seed that daemon was built with. The symlink is
+switched by an atomic rename, and an old version directory is pruned
+only when it is neither the current nor the immediately-previous target
+and no live daemon is recorded — a stale directory costs disk, and
+deleting a live tree is the failure the layout exists to prevent. Each
+launcher also exports `LOOM_BUILD_VERSION` and `LOOM_BUILD_COMMIT`, so
+the running binary can report which build it is; see
+[updating.md](updating.md).
 
 ## Cross-compilation: there is none
 
