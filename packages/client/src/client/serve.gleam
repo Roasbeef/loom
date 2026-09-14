@@ -32,6 +32,7 @@ import broker/token
 import client/advisor
 import client/agency
 import client/catalog
+import client/challenger as client_challenger
 import client/checkpoint
 import client/codemode as codemode_wiring
 import client/context_view
@@ -63,7 +64,6 @@ import client/jobtools
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
-import client/paywall as client_paywall
 import client/rules
 import client/rulescan
 import client/schedule
@@ -2122,7 +2122,7 @@ fn with_extension_hooks(
   session: session.Session,
   clock: Clock,
   logger: Logger,
-  paying: Option(client_paywall.Slot),
+  answering: Option(client_challenger.Slot),
 ) -> effects.Effects {
   case list.filter_map(registrations, subscription_of) {
     [] -> built
@@ -2140,14 +2140,14 @@ fn with_extension_hooks(
         }
 
         Ok(bus) -> {
-          // The paywall's slot is filled before any event fires. The
+          // The challenger's slot is filled before any event fires. The
           // gateway's configuration was fixed before this bus existed,
           // so the seam it holds reaches the bus through this slot; and
           // filling it ahead of `session_start` means there is no window
           // in which an extension has been told the session started and
-          // a priced request would still be answered "no payment
-          // extension is installed".
-          attach_paywall(paying, bus)
+          // a challenged request would still be answered "no extension
+          // is installed".
+          attach_challenger(answering, bus)
 
           // The first event, sent once the bus exists and before the
           // runtime opens: `session_start` means "the session server
@@ -2159,47 +2159,42 @@ fn with_extension_hooks(
   }
 }
 
-// The session's payment seam: its slot, and the gateway that will ask
+// The session's challenge seam: its slot, and the gateway that will ask
 // through it.
 //
-// The cache is started here rather than once per daemon, and the reason
-// is that there is no daemon-wide place to keep it: `resolve` and
-// `resolve_managed` both run per session, so `Settings.gateway` — the
-// value a cache would have had to travel beside — is already per
-// session. A cache started here therefore serves exactly what a cache
-// threaded through the settings would have served, which is every turn
-// of one session, and costs one actor rather than a field on a record
-// twenty-eight call sites construct.
+// The slot is the whole of the session's state here, because the harness
+// holds no credential: both halves of the seam ask an extension and
+// forget what it said, so there is nothing to keep between them. It is
+// started per session rather than once per daemon for the reason it
+// would have had to be anyway — `resolve` and `resolve_managed` both run
+// per session, so `Settings.gateway`, the value the seam is installed
+// into, is already per session.
 //
-// Both actors are tiny and neither is supervised: a failure to start is
+// The actor is tiny and is not supervised: a failure to start is
 // reported and the session goes on with the gateway it had, because an
 // extension is an addition to a session and never a precondition for
 // one.
-fn paywall_seam(
+fn challenger_seam(
   settings: Settings,
   clock: Clock,
   logger: Logger,
-) -> #(Option(client_paywall.Slot), provider_gateway.Gateway) {
-  let started = {
-    use cache <- result.try(client_paywall.start_cache())
-    use slot <- result.map(client_paywall.slot())
-    #(cache, slot)
-  }
-  case started {
-    Ok(#(cache, slot)) -> #(
+) -> #(Option(client_challenger.Slot), provider_gateway.Gateway) {
+  case client_challenger.slot() {
+    Ok(slot) -> #(
       Some(slot),
-      provider_gateway.with_paywall(
+      provider_gateway.with_challenger(
         settings.gateway,
-        client_paywall.seam(cache, slot, clock),
+        client_challenger.seam(slot, clock),
       ),
     )
 
     Error(_reason) -> {
-      log.warn(logger, "extension.paywall.unavailable", [
+      log.warn(logger, "extension.challenger.unavailable", [
         field.text(
           key: "reason",
-          value: "the payment seam would not start; a priced provider entry "
-            <> "declines in band for this session",
+          value: "the challenge seam would not start; a provider entry "
+            <> "authenticated by an extension declines in band for this "
+            <> "session",
         ),
       ])
       #(None, settings.gateway)
@@ -2207,17 +2202,17 @@ fn paywall_seam(
   }
 }
 
-// A session whose paywall slot would not start has no `Slot` to fill,
+// A session whose challenge slot would not start has no `Slot` to fill,
 // and that is the whole of the failure: the gateway it was given is the
-// unpaywalled one, so an `auth = "l402"` entry declines in band exactly
-// as it did before this wiring existed.
-fn attach_paywall(
-  paying: Option(client_paywall.Slot),
+// one with no challenger, so an `auth = "extension"` entry declines in
+// band exactly as it did before this wiring existed.
+fn attach_challenger(
+  answering: Option(client_challenger.Slot),
   bus: extension_hooks.Bus,
 ) -> Nil {
-  case paying {
+  case answering {
     None -> Nil
-    Some(slot) -> client_paywall.attach(slot, bus)
+    Some(slot) -> client_challenger.attach(slot, bus)
   }
 }
 
@@ -3056,16 +3051,18 @@ fn assemble_in(
   // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
 
-  // The paywall seam, built before the effects it rides in and filled
-  // after the hook bus that answers it. `paying` is the session's door
-  // onto that bus and `paid_gateway` is the catalogue's gateway with the
-  // seam installed; a session whose two tiny actors will not start keeps
-  // the gateway it had, under which a paywalled entry declines in band.
-  let #(paying, paid_gateway) = paywall_seam(settings, clock, logger)
+  // The challenge seam, built before the effects it rides in and filled
+  // after the hook bus that answers it. `answering` is the session's door
+  // onto that bus and `challenged_gateway` is the catalogue's gateway
+  // with the seam installed; a session whose slot will not start keeps
+  // the gateway it had, under which an entry authenticated by an
+  // extension declines in band.
+  let #(answering, challenged_gateway) =
+    challenger_seam(settings, clock, logger)
   let built =
     wiring.build_effects(wiring.Config(
       observe_output: hub.tool_output_observer(event_bus, opened),
-      gateway: paid_gateway,
+      gateway: challenged_gateway,
       role: model.Main,
       facts: catalogue_facts(settings.catalog),
       system: Some(assembled.text),
@@ -3160,7 +3157,7 @@ fn assemble_in(
       opened,
       clock,
       logger,
-      paying,
+      answering,
     )
 
   // The imported-hook compatibility layer goes on last of all, over

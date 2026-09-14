@@ -182,7 +182,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:194`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:202`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** That is not fussiness, it is how the `[client]`
 table the design note reserves for a later ruling gets refused without a
@@ -195,7 +195,7 @@ codepoint (`manifest.is_legal_name` at
 lookalike in a tool name is not a normalization variant of anything.
 
 Three rules need the tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:260`): a tool's `parameters`
+`Surroundings` (`extension/manifest.gleam:268`): a tool's `parameters`
 must be a path under `schema/` that exists and *parses as JSON*; its
 `entry` must name a module `src/` actually ships; and a secret's `host`
 must be one of `[net].hosts`. The last is a contradiction check rather
@@ -870,7 +870,7 @@ tallied per invocation rather than per node. Egress has two production
 callers, the install fetch and a dispatched extension, and the web-search
 extension both installs and is called on `main`.
 
-**Also built** (the L402 stack, 2026-09-13): one exception to the
+**Also built** (2026-09-13): one exception to the
 `https`-only rule, and it is narrower than it sounds. A manifest may name
 `[net] plaintext_loopback = ["localhost:10031"]`, and the broker then
 admits an `http://` URL to that origin — only that origin, and only when
@@ -972,117 +972,162 @@ is no admission ceiling either, on the reading
 `codemode/workspace.ceilings` states and the precedent `schedule.create`
 set.
 
-## Paying for a request: `payment_required`
+## Credentials from an extension: `provider_request` and `provider_challenge`
 
-**Built** (the L402 stack, 2026-09-13; `protocol-change/033` on the
-provider side). The hook that spends money, and the only one whose answer
-the harness stops fanning out on.
+**Built** (2026-09-13; `protocol-change/033` on the provider side). The
+two hooks that supply a credential the operator does not hold, and the
+only ones whose answers the harness stops fanning out on.
 
-The provider gateway can now dispatch to an entry with `auth = "l402"`:
-an aperture-style proxy that holds the model's real key and prices each
-request with a `402`, a macaroon and a BOLT11 invoice
-(`docs/architecture/models.md`, "Paying for inference: L402"). The
-harness parses that challenge itself, holds the macaroon itself, and asks
-an extension for one thing only: the preimage that proves the invoice
-was paid. That split is the design. An extension pays an invoice — a
-wallet's job — and never sees the credential the harness composes from
-the answer, so a hook that lied about paying would earn nothing but a
-second `402`.
+They are middleware around the harness's own provider request, in the
+position pi's paying fetch occupies around a fetch: `provider_request`
+runs before every attempt and says what to send, `provider_challenge`
+runs after a challenge and says what to retry with. The one deliberate
+difference from pi is that the request body crosses neither — reading a
+conversation is the separately approved `context` capability, and paying
+for a request is not a reason to be granted it.
+
+The provider gateway can now dispatch to an entry with
+`auth = "extension"`: an endpoint that answers an unauthenticated request
+with an HTTP authentication challenge — 401, 402 or 407
+(`docs/architecture/models.md`, "Credentials from an extension"). The
+harness parses nothing in that challenge. It hands the status, the
+headers and the body to an extension and asks for one thing: the headers
+to retry with. That split is the design. The scheme's grammar belongs to
+whoever can satisfy it, and the harness can satisfy none of them, so a
+parser here would decode a shape for a party that was going to read the
+raw bytes anyway.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant G as provider/gateway (pump)
-  participant P as client/paywall (session seam)
+  participant P as client/challenger (session seam)
   participant B as hook bus
   participant S as satellite (loom-402)
   participant W as waved (loopback, plaintext)
-  G->>G: attempt with no credential → 402, challenge parsed
-  G->>P: settle(provider, challenge)
-  P->>B: pay(bus, provider, challenge, now)
-  B->>S: hook_call payment_required {invoice, amount_sat, ids, now_unix_ms}
+  G->>P: headers(provider, model_id)
+  P->>B: request_headers(bus, provider, model_id, now)
+  B->>S: hook_call provider_request {provider, model_id, now_unix_ms}
+  S->>S: recall the ext/memory cell for this provider
+  S-->>B: {"headers":[]} — nothing held yet
+  B-->>P: first non-empty answer in load order, else []
+  P-->>G: None
+  G->>G: attempt with no credential → 402, carried verbatim
+  G->>P: answer(provider, challenge)
+  P->>B: answer_challenge(bus, provider, challenge, now)
+  B->>S: hook_call provider_challenge {status, headers, body, now_unix_ms}
+  S->>S: parse the L402 challenge: macaroon, invoice, price
   S->>W: prepare-send, send, inspect/activity (poll, cap/clock.sleep_ms)
-  S-->>B: {"payment":"paid","preimage":…}
-  B-->>P: first Paid in load order
-  P->>P: token = l402.authorization(macaroon, preimage); cache it
-  P-->>G: Ok(token)
-  G->>G: the attempt again, once, with Authorization: L402 …
+  S-->>B: {"answer":"retry","headers":[["authorization","L402 …"]]}
+  S->>S: store the headers in the ext/memory cell
+  B-->>P: first Retry in load order
+  P-->>G: Ok(headers)
+  G->>G: the attempt again, once, with those headers appended
 ```
 
-**The hook.** `ext/hook.OnPaymentRequired`
-(`packages/ext/src/ext/hook.gleam:317`) is told a `PaymentChallenge`:
-the provider name, the invoice, the price in satoshis when the proxy
-stated one or the invoice's human-readable part carried one, the proxy's
-challenge and route identifiers, and `now_unix_ms` from the harness's
-clock. The timestamp rides on the payload because the extension seam has
-no clock of its own and a spend ledger needs a day boundary. An absent
-price obliges a decline: nothing on the extension side can bound what
-it would pay. The answer is `Paid(preimage_hex)` or `Declined(reason)`,
-and the reason is the text an operator reads in `PaymentDeclined`.
+Every later attempt begins at the top again, and this time the
+`provider_request` answer is the stored header list rather than `[]`.
 
-**The bus.** `payment_required` is an answering event
-(`manifest.payment_required_event` at `extension/manifest.gleam:102`).
-`hooks.pay` (`extension/hooks.gleam:750`) fans it out and takes the
-**first `Paid` in load order** — the same rule `first_block` applies to
-a verdict, with the opposite outcome: a request is paid once, and a
-second extension's payment would be a second bill. All `Declined` answers
-yield the first reason; no answer at all yields "no extension answered
-the payment challenge", so an operator can tell an extension that chose
-not to pay from a session with none installed. A `Paid` whose preimage
-is not sixty-four lowercase hex characters is a broken extension and
-drops the handler.
+**The pre-request hook.** `ext/hook.OnProviderRequest` is told a
+`Request`: the provider name, the `model_id` about to be asked, and
+`now_unix_ms`. It answers a header list, or `[]` to send none. That is
+the whole payload — no messages, no body — and an extension holding
+nothing for that provider answers `[]` and lets the endpoint state its
+terms. The `model_id` is there because a proxy that prices per model
+hands out a credential per model.
 
-**A hook's deadline is its own.** A swap-backed payment takes tens of
-seconds, and the bus's `deadline_ms` is five. So `[[hook]]` gained an
-optional `timeout_ms` (`manifest.default_hook_timeout_ms` at
-`extension/manifest.gleam:128` is the default), the bus keeps a
-`Subscription(event, deadline_ms)` per declared hook
-(`extension/hooks.gleam:361`), `ask` hands the invoker that deadline, and
-`fan_out_for` (`extension/hooks.gleam:1749`) sizes the fan-out to the sum
-of the subscribed deadlines rather than the chain length. The install
-record carries the timeout beside the event and entry, which is why the
-record format is version 3 (`extension/record.gleam:97`): a version-2
-record is refused by name, at the cost of one reinstall, because an
-approval that never saw the deadline is not an approval of it.
+**The harness holds no credential cache.** This hook runs before *every*
+attempt and whatever it answers is what is sent; nothing is remembered on
+the harness side, and nothing that `provider_challenge` returned is
+retained either. The extension owns the store, durably, in its own
+`ext/memory` cell — exactly as pi-402 keeps its token store — so a bought
+credential survives a daemon restart. The reason the cache sits there
+rather than here is that the answerer is the only party that knows what
+it bought, for which entry and model, and when it stops being worth
+anything; a copy in the harness could only guess at all three, and would
+go on presenting a dead credential after the answerer had replaced it.
+A cell is per extension and is shared by every session in the daemon,
+which is the other half of the same ruling.
 
-**The paywall.** `client/paywall` is the session's door from the gateway
-to the bus, and it exists because the two are built in the wrong order
-for a direct call: a session's gateway is composed before its hook bus
-starts. `slot()` (`client/paywall.gleam:144`) is an actor holding
-`Option(Bus)`; `attach` (`:166`) fills it the moment the bus exists, before
-`session_start` fires; `seam` (`:190`) renders a `provider/paywall.Paywall`
-whose `settle` borrows the bus through the slot, calls `hooks.pay`,
-composes `l402.authorization(macaroon, preimage)` and stores the token in
-a per-session `Cache` (`:127`) under the provider name, so every later
-request on that entry carries the credential proactively until the proxy
-prices it again. A session with no extensions never attaches, and
-`settle` answers "no payment extension is installed". `serve.paywall_seam`
-(`client/serve.gleam:2178`) starts both actors per session; if either
-will not start, the session keeps the unpaywalled gateway and an
-`auth = "l402"` entry declines in band exactly as it did before the wiring
-existed.
+**The challenge hook.** `ext/hook.OnProviderChallenge` is told a `Challenge`: the
+provider name, the status, the response headers with lowercase names, the
+body, and `now_unix_ms` from the harness's clock. The timestamp rides on
+the payload because the extension seam has no clock of its own and a
+spend ledger needs a day boundary. The answer is `Retry(headers)` or
+`Declined(reason)`, and the reason is the text an operator reads in
+`ChallengeUnanswered`. Everything an extension needs in order to decide —
+which scheme, what it costs, whether to pay — it reads out of the
+challenge itself.
 
-**Waiting inside the jail.** The extension polls the wallet for the
-settled entry's preimage, because egress returns whole bodies and the
-wallet's own streaming endpoint is not reachable through it. Polling
+**The bus.** Both are answering events
+(`manifest.provider_request_event`, `manifest.provider_challenge_event`).
+`hooks.request_headers` fans `provider_request` out and takes the **first
+non-empty answer in load order**; no subscriber, or every subscriber
+holding nothing, yields `[]` and the request goes out unauthenticated.
+Header names are lowercased on the way in, and an answer that is not a
+list of two-string pairs drops the handler.
+
+`hooks.answer_challenge` fans `provider_challenge`
+out and takes the **first `Retry` in load order** — the same rule
+`first_block` applies to a verdict, with the opposite outcome: a request
+is answered once, and a second extension's answer would be a second cost
+incurred. All `Declined` answers yield the first reason; no answer at all
+yields "no extension answered the provider challenge", so an operator can
+tell an extension that chose to decline from a session with none
+installed. An answer whose headers are not a list of two-string pairs is
+a broken extension and drops the handler; header names are lowercased on
+the way in.
+
+**A hook's deadline is its own.** Answering a challenge can mean a
+payment that takes tens of seconds, and the bus's `deadline_ms` is five.
+So `[[hook]]` gained an optional `timeout_ms`
+(`manifest.default_hook_timeout_ms` is the default), the bus keeps a
+`Subscription(event, deadline_ms)` per declared hook, `ask` hands the
+invoker that deadline, and `fan_out_for` sizes the fan-out to the sum of
+the subscribed deadlines rather than the chain length. The install record
+carries the timeout beside the event and entry, which is why the record
+format is version 3: a version-2 record is refused by name, at the cost
+of one reinstall, because an approval that never saw the deadline is not
+an approval of it.
+
+**The challenger bridge.** `client/challenger` is the session's door from
+the gateway to the bus, and it exists because the two are built in the
+wrong order for a direct call: a session's gateway is composed before its
+hook bus starts. `slot()` is an actor holding `Option(Bus)`; `attach`
+fills it the moment the bus exists, before `session_start` fires; `seam`
+renders a `provider/challenger.Challenger` whose two functions each
+borrow the bus through the slot and ask it — `headers` calls
+`request_headers`, `answer` calls `answer_challenge` and returns the
+headers without storing them. A session with no extensions never
+attaches, so `headers` answers `None` and `answer` reports that no
+extension is installed under the log key
+`extension.challenger.unavailable`. `serve.challenger_seam` starts the
+slot per session; if it will not start, the session keeps the
+unchallenged gateway and an `auth = "extension"` entry declines in band
+exactly as it did before the wiring existed.
+
+**Waiting inside the jail.** An extension that answers by paying polls
+the wallet for the settled entry, because egress returns whole bodies and
+the wallet's own streaming endpoint is not reachable through it. Polling
 needs a pause, and the extension seam had none: `gleam_erlang` is not on
 it, and a spin loop would only burn the satellite's scheduler.
-`cap/clock.sleep_ms` (`packages/cap/src/cap/clock.gleam:51`) is the one
-prelude module with no capability call — sleeping spends the invocation's
-own deadline and nothing else, so there is nothing for a policy to
-grant. It is on the workspace seam (which the extension seam inherits)
-and not the orchestration seam, and `make gen-prelude` re-rendered the
-`code_mode` description to carry it.
+`cap/clock.sleep_ms` is the one prelude module with no capability call —
+sleeping spends the invocation's own deadline and nothing else, so there
+is nothing for a policy to grant. It is on the workspace seam (which the
+extension seam inherits) and not the orchestration seam, and
+`make gen-prelude` re-rendered the `code_mode` description to carry it.
 
 **What this does not decide.** Budget policy is the extension's: the
-harness asserts no ceiling on an invoice, because the amount is chosen
-by the proxy and the wallet is the extension's to protect (`loom-402`
-holds a per-request and a daily cap and refuses over either). Fallback
-from a declined payment to a keyed entry is not built; `PaymentDeclined`
-is terminal. The `Payment` HTTP-auth scheme (MPP) is not spoken; L402 is.
-The credential cache is per session, not per daemon, because the gateway
-it serves is already per session; sharing a token bundle across sessions
-is a later ruling.
+harness asserts no ceiling on what an answer costs, because it does not
+read the challenge and so knows no price (`loom-402` holds a per-request
+and a daily cap and refuses over either). Fallback from an unanswered
+challenge to a keyed entry is not built; `ChallengeUnanswered` is
+terminal. Which schemes exist is not the harness's question either: L402
+is what the first extension speaks, and MPP or a token vending machine is
+another extension answering the same hooks with different headers, with no
+change here. Where a credential is kept is not the harness's question
+either: it keeps none, and an extension's `ext/memory` cell is per
+extension and shared by every session in the daemon.
 
 ## The invariants
 
@@ -1346,6 +1391,8 @@ Where each event lands in the harness:
 | `agent_settled` | nowhere yet. The event and its fan-out exist, and a manifest may declare it; nothing in the harness produces it, and `serve` logs the declaration rather than pretending otherwise. See the design note's table for why it is not faked |
 | `before_compact` | `effects.Hooks.compaction_note`, asked in `runtime/strand_runtime` at the moment the structural decision supplies the checkpoint — after the compaction is decided, before it is published. Every returned note is fenced `<extension name=…>` and attributed by the harness, bounded in total by the same `context_growth_tokens` a `context` transform gets, and appended to the checkpoint *after* the harness's own text and the strand's notes, so it opens the next window with them. (The machine's generate path, which no host selects, would ask at the summary request's dispatch instead.) A branch summary is not a compaction and never fires it |
 | `usage` | `effects.Hooks.usage`, called from the driver's own `commit_then` once `writer.commit` has returned, for every `InsertUsage` in the transaction, paired with the seq storage assigned it. Notify-only: nothing reads the answer |
+| `provider_request` | `client/challenger`'s `headers`, reached from the provider gateway before *every* attempt on an `auth = "extension"` entry. The first non-empty header list in load order is sent; `[]` sends none. The harness stores nothing |
+| `provider_challenge` | `client/challenger`'s `answer`, reached from the provider gateway after a 401, 402 or 407 on such an entry. The first `Retry` in load order is retried with, once; `Declined` becomes `ChallengeUnanswered` |
 
 Every payload crosses as a msgpack string holding JSON, the shape a tool
 invocation's arguments already use and the only one the extension seam
@@ -1464,7 +1511,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:194`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:202`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:209`), the staging discipline, the generated satellite entry that serves this manifest's tools and hooks. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:143`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |

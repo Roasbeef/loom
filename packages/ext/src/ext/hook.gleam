@@ -36,17 +36,28 @@
 ////
 //// ## The events, and which of them are chained
 ////
-//// Eight events are notifications or one-shot questions the harness fans
+//// Nine events are notifications or one-shot questions the harness fans
 //// out to every extension. Two — `context` and `tool_result` — are
 //// *chained transforms*: the harness folds them over the installed
 //// extensions in load order, and each one is handed its predecessor's
 //// output rather than the original. An author writing one should assume
 //// somebody else has already been here.
 ////
-//// `payment_required` is the one question with a race for the answer:
-//// the harness fans it out in load order and takes the first extension
-//// that says it paid, because an invoice paid twice is money spent
-//// twice. Everything else about it is an ordinary fan-out.
+//// `provider_request` and `provider_challenge` are the two questions
+//// with a race for the answer: the harness fans each out in load order
+//// and takes the first extension that answers with something — a
+//// non-empty header list, or a `Retry` — because what the answer
+//// authorises happens once and a second set of headers would have
+//// nowhere to go. Everything else about them is an ordinary fan-out.
+////
+//// The two are halves of one arrangement, and neither is useful alone.
+//// `provider_request` runs before every attempt on an
+//// `auth = "extension"` entry and asks what to send; `provider_challenge`
+//// runs after the provider refuses and asks what to send instead. The
+//// credential that connects them lives in the extension's own durable
+//// store: the harness caches nothing between the two, so an extension
+//// that paid for a token on a challenge is the thing that remembers it
+//// and hands it back on the next request.
 
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
@@ -197,52 +208,73 @@ pub type Context {
   )
 }
 
-/// What a `payment_required` hook is told: one priced request the
-/// harness could not make.
+/// What a `provider_request` hook is told: which catalogue entry is
+/// about to be asked, which model on it, and when.
 ///
-/// The invoice is what to pay. The macaroon deliberately does not cross
-/// this seam: an extension's job is to settle a Lightning invoice and
-/// hand back the preimage, and the harness composes the L402 credential
-/// from its own copy of the challenge, so nothing an extension holds is
-/// on its own a credential.
+/// Deliberately no body and no messages. This event is the pre-request
+/// half of the credential seam, not a view of the conversation: an
+/// extension that needs what the harness is about to say has the
+/// separately installed `context` capability, and widening this event
+/// would hand every credential holder the transcript as a side effect.
 ///
-/// `amount_sat` is the proxy's stated price when it stated one, else the
-/// amount decoded from the invoice, else `None`. `None` is the case an
-/// author has to write for: there is no ceiling to check against, so a
-/// hook that pays anyway pays an unbounded amount, and declining is the
-/// only safe answer.
-pub type PaymentChallenge {
-  PaymentChallenge(
-    /// The catalogue entry — the provider name — whose request was
-    /// priced.
+/// The model is here because a credential is not always per-provider. A
+/// proxy that prices each model separately hands out a token per model,
+/// and an extension told only the entry name would have to guess which
+/// of its tokens to send.
+pub type Request {
+  Request(
+    /// The catalogue entry — the provider name — about to be asked.
     provider: String,
-    /// The BOLT11 invoice to pay, verbatim as the proxy sent it.
-    invoice: String,
-    /// The price in satoshis, when it is known at all.
-    amount_sat: Option(Int),
-    /// The proxy's challenge identifier, or `""` when it sent none.
-    challenge_id: String,
-    /// The proxy's route identifier, or `""` when it sent none.
-    route_id: String,
+    /// The model on that entry the request targets.
+    model_id: String,
     /// Wall-clock milliseconds since the Unix epoch, read from the
     /// harness's clock. It rides on the payload because the extension
-    /// seam has no clock of its own, and a hook enforcing a daily spend
+    /// seam has no clock of its own, and a hook deciding whether the
+    /// credential it holds has expired needs to know the time.
+    now_unix_ms: Int,
+  )
+}
+
+/// What a `provider_challenge` hook is told: one provider response that
+/// asked the caller to authenticate, handed over raw.
+///
+/// The harness parses nothing here. It knows only that HTTP has
+/// statuses meaning "authenticate and try again", and that the grammar
+/// of the challenge — whatever scheme the provider speaks — belongs to
+/// whichever extension was installed to answer it. So the status, the
+/// response headers (names lowercased) and the body cross verbatim, and
+/// an extension reads whichever of them its scheme lives in.
+pub type Challenge {
+  Challenge(
+    /// The catalogue entry — the provider name — whose request was
+    /// challenged.
+    provider: String,
+    /// The HTTP status the provider answered with.
+    status: Int,
+    /// The response headers, lowercase names, in the order the provider
+    /// sent them.
+    headers: List(#(String, String)),
+    /// The response body, verbatim.
+    body: String,
+    /// Wall-clock milliseconds since the Unix epoch, read from the
+    /// harness's clock. It rides on the payload because the extension
+    /// seam has no clock of its own, and a hook enforcing a daily
     /// ceiling needs to know where the day boundary is.
     now_unix_ms: Int,
   )
 }
 
-/// What a `payment_required` hook answers.
-pub type Payment {
-  /// The invoice was paid. The preimage is the payment's proof, 64
-  /// lowercase hex characters; the harness checks the shape and treats a
-  /// preimage of any other shape as a broken extension.
-  Paid(preimage_hex: String)
+/// What a `provider_challenge` hook answers.
+pub type Answer {
+  /// Retry the request with these headers appended to the adapter's
+  /// own. Their values are secrets: the harness scrubs every one of
+  /// them out of logs and errors, and never renders them back.
+  Retry(headers: List(#(String, String)))
 
-  /// Nothing was paid, with a reason the harness surfaces to the caller
-  /// as the provider error's text. Declining is the right answer when
-  /// the price is unknown, over a ceiling, or for a provider this
-  /// extension does not fund.
+  /// Nothing to answer with, and a reason the harness surfaces to the
+  /// caller as the provider error's text. Declining is the right answer
+  /// for a challenge in a scheme this extension does not speak, or one
+  /// whose price is unknown or over a ceiling.
   Declined(reason: String)
 }
 
@@ -253,12 +285,11 @@ pub type Payment {
 /// wire. The generated entry module pairs each of these with the event
 /// name its manifest declared.
 ///
-/// All but one of them are notifications or questions about the
-/// harness's own timeline. `OnPaymentRequired` is the exception worth
-/// naming: answering it spends money, and it is the only hook whose
-/// answer the harness stops fanning out on, because the first `Paid`
-/// settles the invoice and a second payment of the same invoice buys
-/// nothing.
+/// All but two of them are notifications or questions about the
+/// harness's own timeline. `OnProviderRequest` and
+/// `OnProviderChallenge` are the exceptions worth naming: they are the
+/// hooks whose answers change what the harness then puts on the wire,
+/// because the headers they return are sent to the provider.
 pub type Hook {
   /// `session_start`: the session server booted this extension. Nothing
   /// to answer; the moment is the point.
@@ -306,18 +337,35 @@ pub type Hook {
   /// nothing to answer, and the row is already durable when this runs.
   OnUsage(run: fn(Usage) -> Nil)
 
-  /// `payment_required`: the provider gateway holds a request a paywall
-  /// priced and it cannot be made until somebody pays. Pay the invoice
-  /// and answer `Paid` with the preimage, or `Declined` with a reason
-  /// the harness surfaces.
+  /// `provider_request`: an `auth = "extension"` entry is about to be
+  /// asked. Answer the headers to send, appended to the adapter's own,
+  /// or `[]` to send none.
   ///
-  /// Every subscriber is asked, and the first `Paid` in load order wins.
-  /// An extension that answers `Paid` after another already has will
-  /// have spent money the harness does not use, so a hook that pays
-  /// should be the only one installed for the providers it covers. The
-  /// macaroon never crosses this hook; the harness composes the
-  /// credential from the preimage.
-  OnPaymentRequired(run: fn(PaymentChallenge) -> Payment)
+  /// The extension owns the credential cache; the harness owns none.
+  /// This runs before *every* attempt, and whatever it answers is what
+  /// is sent, so an extension holding a token durably (`ext/memory`)
+  /// recalls it here and an extension holding nothing yet answers `[]`
+  /// and lets the provider state its terms. Every subscriber is asked
+  /// and the first non-empty answer in load order wins; the values are
+  /// treated as secrets and scrubbed out of logs and errors.
+  OnProviderRequest(run: fn(Request) -> List(#(String, String)))
+
+  /// `provider_challenge`: a provider answered a request with an HTTP
+  /// authentication challenge the harness cannot satisfy on its own.
+  /// Answer `Retry` with the headers to send, or `Declined` with a
+  /// reason the harness surfaces.
+  ///
+  /// The seam is protocol-agnostic by ruling: the harness hands over the
+  /// raw challenge and retries the request exactly once with whatever
+  /// headers come back, so a scheme it has never heard of is an
+  /// extension rather than a change here.
+  ///
+  /// Every subscriber is asked, and the first `Retry` in load order
+  /// wins. An extension whose answer arrives after another's has done
+  /// work the harness discards, so a hook that spends something to
+  /// answer should be the only one installed for the providers it
+  /// covers.
+  OnProviderChallenge(run: fn(Challenge) -> Answer)
 }
 
 /// The manifest event name a hook answers. The pairing the generated
@@ -342,7 +390,8 @@ pub fn event(hook: Hook) -> String {
     OnAgentSettled(..) -> "agent_settled"
     OnBeforeCompact(..) -> "before_compact"
     OnUsage(..) -> "usage"
-    OnPaymentRequired(..) -> "payment_required"
+    OnProviderRequest(..) -> "provider_request"
+    OnProviderChallenge(..) -> "provider_challenge"
   }
 }
 
@@ -418,9 +467,14 @@ pub fn answer(hook: Hook, args: String) -> Result(String, String) {
       Ok(nothing())
     }
 
-    OnPaymentRequired(run:) -> {
-      use challenge <- result.try(payment_challenge_of(document))
-      Ok(json.to_string(payment(run(challenge))))
+    OnProviderRequest(run:) -> {
+      use request <- result.try(request_of(document))
+      Ok(json.to_string(supplied(run(request))))
+    }
+
+    OnProviderChallenge(run:) -> {
+      use challenge <- result.try(challenge_of(document))
+      Ok(json.to_string(answered(run(challenge))))
     }
   }
 }
@@ -520,47 +574,64 @@ fn usage_of(document: Dynamic) -> Result(Usage, String) {
   ))
 }
 
-// The answer to a payment challenge. Two documents rather than one with
-// a nullable preimage, because the two outcomes are not the same fact:
-// the harness composes a credential from the first and raises a provider
-// error carrying the second, and a reader of either document should not
-// have to work out which happened from a null.
-fn payment(payment: Payment) -> Json {
-  case payment {
-    Paid(preimage_hex:) ->
+// The headers a `provider_request` hook supplies. One shape for both
+// outcomes, because holding no credential is not an error and has
+// nothing to explain: an empty array says "send none", which is what
+// the harness does with it.
+fn supplied(headers: List(#(String, String))) -> Json {
+  json.object([#("headers", json.array(headers, pair))])
+}
+
+// The entry about to be asked, read field by field. Nothing here is
+// optional: the harness knows all three before it dials, so an absent
+// one means the two sides disagree about the shape.
+fn request_of(document: Dynamic) -> Result(Request, String) {
+  use provider <- result.try(field_string(document, "provider"))
+  use model_id <- result.try(field_string(document, "model_id"))
+  use now_unix_ms <- result.try(field_int(document, "now_unix_ms"))
+  Ok(Request(provider:, model_id:, now_unix_ms:))
+}
+
+// The answer to a provider challenge. Two documents rather than one
+// with nullable headers, because the two outcomes are not the same
+// fact: the harness retries the request from the first and raises a
+// provider error carrying the second, and a reader of either document
+// should not have to work out which happened from a null.
+fn answered(answer: Answer) -> Json {
+  case answer {
+    Retry(headers:) ->
       json.object([
-        #("payment", json.string("paid")),
-        #("preimage", json.string(preimage_hex)),
+        #("answer", json.string("retry")),
+        #("headers", json.array(headers, pair)),
       ])
     Declined(reason:) ->
       json.object([
-        #("payment", json.string("declined")),
+        #("answer", json.string("declined")),
         #("reason", json.string(reason)),
       ])
   }
 }
 
-// The priced request, read field by field. `amount_sat` is the one
-// optional field: the proxy may state no price and the invoice may
-// encode none, and "the price is unknown" is a case the hook has to
-// answer for rather than a disagreement about the wire. The two
-// identifiers are required because the harness writes `""` for a
-// challenge that carried neither, so an absent field means the two sides
-// disagree about the shape.
-fn payment_challenge_of(document: Dynamic) -> Result(PaymentChallenge, String) {
+// A header as a two-element array rather than an object field, in both
+// directions. JSON objects have no duplicate keys and no order, and a
+// challenge that sends `www-authenticate` twice is an ordinary HTTP
+// response the extension must see both halves of.
+fn pair(header: #(String, String)) -> Json {
+  json.preprocessed_array([json.string(header.0), json.string(header.1)])
+}
+
+// The challenged response, read field by field. Nothing here is
+// optional: the harness writes every field on every challenge — an empty
+// body is `""` and a response with no headers is `[]` — so an absent one
+// means the two sides disagree about the shape rather than a provider
+// that sent less.
+fn challenge_of(document: Dynamic) -> Result(Challenge, String) {
   use provider <- result.try(field_string(document, "provider"))
-  use invoice <- result.try(field_string(document, "invoice"))
-  use challenge_id <- result.try(field_string(document, "challenge_id"))
-  use route_id <- result.try(field_string(document, "route_id"))
+  use status <- result.try(field_int(document, "status"))
+  use headers <- result.try(field_pairs(document, "headers"))
+  use body <- result.try(field_string(document, "body"))
   use now_unix_ms <- result.try(field_int(document, "now_unix_ms"))
-  Ok(PaymentChallenge(
-    provider:,
-    invoice:,
-    amount_sat: optional_int(document, "amount_sat"),
-    challenge_id:,
-    route_id:,
-    now_unix_ms:,
-  ))
+  Ok(Challenge(provider:, status:, headers:, body:, now_unix_ms:))
 }
 
 fn call_of(document: Dynamic) -> Result(Call, String) {
@@ -685,4 +756,24 @@ fn field_list(
 ) -> Result(List(Dynamic), String) {
   decode.run(document, decode.at([name], decode.list(decode.dynamic)))
   |> result.replace_error("the hook arguments have no array " <> name)
+}
+
+// The header list, as the pairs the wire carries. A member that is not
+// exactly two strings is a disagreement about the wire, not a header to
+// skip: the harness builds this array from a header list it already
+// holds, so a malformed member means one of the two sides is wrong about
+// the shape and guessing past it would hand a hook half a challenge.
+fn field_pairs(
+  document: Dynamic,
+  name: String,
+) -> Result(List(#(String, String)), String) {
+  let member = {
+    use first <- decode.field(0, decode.string)
+    use second <- decode.field(1, decode.string)
+    decode.success(#(first, second))
+  }
+  decode.run(document, decode.at([name], decode.list(member)))
+  |> result.map_error(fn(_malformed) {
+    "the hook arguments have no name/value pairs " <> name
+  })
 }

@@ -96,10 +96,18 @@ pub const before_compact_event = "before_compact"
 /// `usage`: one cost-ledger row was committed. Notify-only.
 pub const usage_event = "usage"
 
-/// `payment_required`: the provider gateway holds a priced request it
-/// could not make. The one *answering* event whose answer is money: a
-/// hook pays the invoice and returns the preimage, or declines.
-pub const payment_required_event = "payment_required"
+/// `provider_request`: an `auth = "extension"` entry is about to be
+/// asked, and the hook answers the headers to send. The pre-request half
+/// of the credential seam: the harness keeps no credential of its own,
+/// so this runs before every attempt and whatever it answers is what
+/// goes out.
+pub const provider_request_event = "provider_request"
+
+/// `provider_challenge`: the provider answered an HTTP authentication
+/// challenge the harness cannot satisfy on its own. The one *answering*
+/// event whose answer is a credential: a hook reads the raw status,
+/// headers and body and returns the headers to retry with, or declines.
+pub const provider_challenge_event = "provider_challenge"
 
 /// The hook events the ruling fixes, in the table's order. The whole
 /// vocabulary: an event outside this list refuses the manifest naming
@@ -107,7 +115,7 @@ pub const payment_required_event = "payment_required"
 pub const hook_events = [
   session_start_event, before_agent_start_event, context_event, tool_call_event,
   tool_result_event, agent_end_event, agent_settled_event, before_compact_event,
-  usage_event, payment_required_event,
+  usage_event, provider_request_event, provider_challenge_event,
 ]
 
 /// How long a hook invocation may take when its `[[hook]]` table names no
@@ -122,9 +130,9 @@ pub const hook_events = [
 /// Five seconds is the bound a hook is written against, and it is the
 /// same order as a tool's default: long enough for a satellite round trip
 /// and a decode, short enough that a stalled extension does not read to
-/// an operator as a hung session. A `payment_required` hook that pays an
-/// invoice is the first one likely to want more, which is why the key
-/// exists at all.
+/// an operator as a hung session. A `provider_challenge` hook, which may
+/// have to reach a third party before it can answer, is the first one
+/// likely to want more, which is why the key exists at all.
 pub const default_hook_timeout_ms = 5000
 
 /// The hosts a `[net].plaintext_loopback` origin may name.

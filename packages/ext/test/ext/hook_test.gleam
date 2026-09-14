@@ -17,7 +17,6 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/string
 import gleeunit
 
 pub fn main() -> Nil {
@@ -38,9 +37,10 @@ pub fn every_hook_names_its_event_test() {
     #(hook.OnAgentSettled(fn(_op) { Nil }), "agent_settled"),
     #(hook.OnBeforeCompact(fn(_compaction) { None }), "before_compact"),
     #(hook.OnUsage(fn(_usage) { Nil }), "usage"),
+    #(hook.OnProviderRequest(fn(_request) { [] }), "provider_request"),
     #(
-      hook.OnPaymentRequired(fn(_challenge) { hook.Declined("no") }),
-      "payment_required",
+      hook.OnProviderChallenge(fn(_challenge) { hook.Declined("no") }),
+      "provider_challenge",
     ),
   ]
   assert list.map(named, fn(pair) { hook.event(pair.0) })
@@ -249,70 +249,117 @@ pub fn args_that_do_not_hold_the_event_are_an_error_test() {
   assert malformed == "the hook arguments were not JSON"
 }
 
-pub fn a_payment_hook_reads_the_challenge_it_was_given_test() {
+pub fn a_request_hook_reads_the_entry_it_was_given_test() {
   let sent = process.new_subject()
-  let payer =
-    hook.OnPaymentRequired(fn(challenge) {
-      process.send(sent, challenge)
-      hook.Paid(preimage_hex: string.repeat("ab", 32))
+  let supplier =
+    hook.OnProviderRequest(fn(request) {
+      process.send(sent, request)
+      [#("authorization", "Scheme token")]
     })
-  assert hook.answer(payer, priced("2500"))
+  assert hook.answer(supplier, requested())
+    == Ok("{\"headers\":[[\"authorization\",\"Scheme token\"]]}")
+
+  let assert Ok(request) = process.receive(sent, within: 0)
+    as "the hook body ran"
+  assert request
+    == hook.Request(
+      provider: "priced-glm",
+      model_id: "glm-5.2",
+      now_unix_ms: 1_757_000_000_000,
+    )
+}
+
+// An extension holding no credential for this entry is the ordinary
+// case on a cold start, and it is not a failure: `[]` is an answer, and
+// the harness sends the request with the adapter's headers alone so the
+// provider can state its terms.
+pub fn a_request_hook_holding_nothing_answers_an_empty_array_test() {
+  let supplier = hook.OnProviderRequest(fn(_request) { [] })
+  assert hook.answer(supplier, requested()) == Ok("{\"headers\":[]}")
+}
+
+pub fn a_request_hook_needs_the_model_it_is_asked_about_test() {
+  let supplier = hook.OnProviderRequest(fn(_request) { [] })
+  let args = "{\"provider\":\"priced-glm\",\"now_unix_ms\":1}"
+  let assert Error(reason) = hook.answer(supplier, args)
+    as "a credential can be per-model, so the model is required"
+  assert reason == "the hook arguments have no string model_id"
+}
+
+pub fn a_challenge_hook_reads_the_response_it_was_given_test() {
+  let sent = process.new_subject()
+  let answerer =
+    hook.OnProviderChallenge(fn(challenge) {
+      process.send(sent, challenge)
+      hook.Retry(headers: [#("authorization", "Scheme token")])
+    })
+  assert hook.answer(answerer, challenged())
     == Ok(
-      "{\"payment\":\"paid\",\"preimage\":\""
-      <> string.repeat("ab", 32)
-      <> "\"}",
+      "{\"answer\":\"retry\",\"headers\":"
+      <> "[[\"authorization\",\"Scheme token\"]]}",
     )
 
   let assert Ok(challenge) = process.receive(sent, within: 0)
     as "the hook body ran"
   assert challenge
-    == hook.PaymentChallenge(
-      provider: "paid-glm",
-      invoice: "lnbc2500u1pexample",
-      amount_sat: Some(2500),
-      challenge_id: "c-1",
-      route_id: "r-1",
+    == hook.Challenge(
+      provider: "priced-glm",
+      status: 402,
+      headers: [
+        #("www-authenticate", "Scheme realm=\"x\""),
+        #("content-type", "text/plain"),
+      ],
+      body: "pay up",
       now_unix_ms: 1_757_000_000_000,
     )
 }
 
-// A proxy that stated no price and an invoice that encodes none leave
-// the hook with no ceiling to check against. That is the case an author
-// has to write for, so the decoder has to produce it rather than
-// refusing the document.
-pub fn a_priced_request_with_no_price_decodes_test() {
+// A challenge that carries its whole grammar in the headers leaves the
+// body empty, and an empty body is a body: the decoder has to produce
+// the case rather than read absence into it.
+pub fn a_challenge_with_an_empty_body_decodes_test() {
   let sent = process.new_subject()
-  let payer =
-    hook.OnPaymentRequired(fn(challenge) {
-      process.send(sent, challenge.amount_sat)
-      hook.Declined(reason: "the price is unknown")
+  let answerer =
+    hook.OnProviderChallenge(fn(challenge) {
+      process.send(sent, challenge.body)
+      hook.Declined(reason: "an unknown scheme")
     })
-  assert hook.answer(payer, priced("null"))
-    == Ok("{\"payment\":\"declined\",\"reason\":\"the price is unknown\"}")
-  assert process.receive(sent, within: 0) == Ok(None)
-}
-
-// The invoice is the whole point of the event: there is nothing to pay
-// without it, so a document that omits it is a disagreement about the
-// wire rather than a challenge a hook could decline on its merits.
-pub fn a_challenge_with_no_invoice_is_an_error_test() {
-  let payer = hook.OnPaymentRequired(fn(_challenge) { hook.Declined("no") })
   let args =
-    "{\"provider\":\"paid-glm\",\"amount_sat\":10,\"challenge_id\":\"c-1\","
-    <> "\"route_id\":\"r-1\",\"now_unix_ms\":1}"
-  let assert Error(reason) = hook.answer(payer, args)
-    as "a payment hook needs an invoice"
-  assert reason == "the hook arguments have no string invoice"
+    "{\"provider\":\"priced-glm\",\"status\":401,\"headers\":[],"
+    <> "\"body\":\"\",\"now_unix_ms\":1}"
+  assert hook.answer(answerer, args)
+    == Ok("{\"answer\":\"declined\",\"reason\":\"an unknown scheme\"}")
+  assert process.receive(sent, within: 0) == Ok("")
 }
 
-// The `payment_required` args document as the harness writes it, with
-// the price the only part that varies between these tests.
-fn priced(amount_sat: String) -> String {
-  "{\"provider\":\"paid-glm\",\"invoice\":\"lnbc2500u1pexample\","
-  <> "\"amount_sat\":"
-  <> amount_sat
-  <> ",\"challenge_id\":\"c-1\",\"route_id\":\"r-1\","
+// The harness builds the header array from a list it already holds, so
+// a member that is not two strings means the two sides disagree about
+// the wire — an error, rather than a header to quietly drop and hand a
+// hook half a challenge.
+pub fn a_challenge_with_a_malformed_header_pair_is_an_error_test() {
+  let answerer =
+    hook.OnProviderChallenge(fn(_challenge) { hook.Declined("no") })
+  let args =
+    "{\"provider\":\"priced-glm\",\"status\":402,"
+    <> "\"headers\":[[\"www-authenticate\"]],\"body\":\"\","
+    <> "\"now_unix_ms\":1}"
+  let assert Error(reason) = hook.answer(answerer, args)
+    as "a header that is not a name and a value is a broken wire"
+  assert reason == "the hook arguments have no name/value pairs headers"
+}
+
+// The `provider_request` args document as the harness writes it.
+fn requested() -> String {
+  "{\"provider\":\"priced-glm\",\"model_id\":\"glm-5.2\","
   <> "\"now_unix_ms\":1757000000000}"
+}
+
+// The `provider_challenge` args document as the harness writes it.
+fn challenged() -> String {
+  "{\"provider\":\"priced-glm\",\"status\":402,\"headers\":"
+  <> "[[\"www-authenticate\",\"Scheme realm=\\\"x\\\"\"],"
+  <> "[\"content-type\",\"text/plain\"]],"
+  <> "\"body\":\"pay up\",\"now_unix_ms\":1757000000000}"
 }
 
 // A message kept exactly as it arrived, which is what a hook does with

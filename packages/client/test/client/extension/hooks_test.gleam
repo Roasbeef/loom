@@ -22,7 +22,7 @@ import gleam/string
 import gleeunit
 import machine/operation
 import machine/strand
-import provider/l402
+import provider/challenger
 import runtime/effects
 import session/session
 import telemetry/log
@@ -522,102 +522,218 @@ pub fn a_wedged_notification_cannot_neutralise_a_block_test() {
     == hooks.Block(extension: "guard", reason: "the workspace is frozen")
 }
 
-// --- payment_required -----------------------------------------------------
+// --- provider_request -----------------------------------------------------
 
-pub fn the_first_paid_answer_in_load_order_wins_test() {
+pub fn the_first_non_empty_header_answer_in_load_order_wins_test() {
   let bus =
-    started([
-      paying("first", "aa"),
-      paying("second", "bb"),
-    ])
+    started([supplying("first", "first-token"), supplying("second", "second")])
 
-  // A request is paid once. A second extension answering `Paid` has
-  // bought a second credential for one request, so load order decides
-  // and the later answer is discarded rather than composed.
-  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("aa", 32))
+  // One request carries one credential, so a second extension's headers
+  // would have nowhere to go: load order decides and the later answer is
+  // discarded rather than merged.
+  assert hooks.request_headers(bus, "proxy", "model-a", 7)
+    == [#("authorization", "first-token")]
 }
 
-pub fn a_decline_does_not_stop_a_later_payment_test() {
+pub fn an_extension_holding_nothing_does_not_take_the_slot_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "empty-handed",
+        hooks: [on("provider_request")],
+        invoke: answering("{\"headers\":[]}"),
+      ),
+      supplying("wallet", "wallet-token"),
+    ])
+
+  // An extension that has not bought anything yet answers `[]`, which is
+  // an ordinary answer rather than a claim on the request, and the one
+  // that does hold a credential is still asked.
+  assert hooks.request_headers(bus, "proxy", "model-a", 7)
+    == [#("authorization", "wallet-token")]
+  assert hooks.subscribers(bus, on: hooks.Answering) == 2
+}
+
+pub fn an_unsubscribed_bus_supplies_no_headers_test() {
+  let bus = started([one("indifferent", allow())])
+
+  // No reason accompanies this, and none could: sending no extra header
+  // is what an unauthenticated request is, and a provider that wanted
+  // something says so in the challenge that follows.
+  assert hooks.request_headers(bus, "proxy", "model-a", 7) == []
+}
+
+pub fn malformed_supplied_headers_drop_the_handler_test() {
+  let bus =
+    started([
+      // A bare string where a pair belongs. What a `provider_request`
+      // hook answers goes onto the wire as the request's headers, so
+      // there is nothing here to send.
+      hooks.Extension(
+        name: "typo",
+        hooks: [on("provider_request")],
+        invoke: answering("{\"headers\":[\"authorization\"]}"),
+      ),
+      supplying("wallet", "wallet-token"),
+    ])
+  assert hooks.request_headers(bus, "proxy", "model-a", 7)
+    == [#("authorization", "wallet-token")]
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
+pub fn the_request_hook_is_told_the_entry_and_nothing_else_test() {
+  let captured = process.new_subject()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "wallet",
+        hooks: [on("provider_request")],
+        invoke: capturing(captured, answering("{\"headers\":[]}")),
+      ),
+    ])
+  assert hooks.request_headers(bus, "proxy", "model-a", 7) == []
+
+  let assert Ok(json.Object(fields:)) = process.receive(captured, within: 100)
+    as "the extension was asked"
+  let sent = list.map(fields, fn(pair) { pair.0 })
+
+  // The census is the ruling: three fields, and neither the request body
+  // nor the message list among them. An extension installed to hold a
+  // credential must not acquire the transcript as a side effect of being
+  // asked for one.
+  assert list.sort(sent, string.compare)
+    == ["model_id", "now_unix_ms", "provider"]
+  assert field_of(json.Object(fields:), "provider") == Ok(json.String("proxy"))
+  assert field_of(json.Object(fields:), "model_id")
+    == Ok(json.String("model-a"))
+  assert field_of(json.Object(fields:), "now_unix_ms") == Ok(json.Int(7))
+}
+
+// --- provider_challenge ---------------------------------------------------
+
+pub fn the_first_retry_answer_in_load_order_wins_test() {
+  let bus =
+    started([
+      answering_with("first", "first-token"),
+      answering_with("second", "second-token"),
+    ])
+
+  // A challenged request is retried once. A second extension answering
+  // `Retry` has answered a challenge that is already answered, so load
+  // order decides and the later answer is discarded rather than merged.
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Ok([#("authorization", "first-token")])
+}
+
+pub fn a_decline_does_not_stop_a_later_retry_test() {
   let bus =
     started([
       declining("thrifty", "the daily ceiling is spent"),
-      paying("wallet", "cc"),
+      answering_with("wallet", "wallet-token"),
     ])
-  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("cc", 32))
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Ok([#("authorization", "wallet-token")])
 }
 
 pub fn every_decline_answers_with_the_first_reason_test() {
   let bus =
     started([
       declining("thrifty", "the daily ceiling is spent"),
-      declining("cautious", "the amount is unstated"),
+      declining("cautious", "the challenge is unreadable"),
     ])
 
   // One reason reaches the model, and it is the first: naming both would
   // tell whoever reads the failed request nothing they can act on.
-  assert hooks.pay(bus, "proxy", challenge(), 7)
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
     == Error("the daily ceiling is spent")
 }
 
 pub fn an_unsubscribed_bus_says_nobody_answered_test() {
   let bus = started([one("indifferent", allow())])
 
-  // Distinct from a decline on purpose: nothing decided not to pay, and
-  // an operator reading this needs to know the difference between an
+  // Distinct from a decline on purpose: nothing decided not to answer,
+  // and an operator reading this needs to know the difference between an
   // extension that refused and none being installed.
-  assert hooks.pay(bus, "proxy", challenge(), 7)
-    == Error("no extension answered the payment challenge")
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Error("no extension answered the challenge")
 }
 
-pub fn a_malformed_preimage_drops_the_handler_test() {
+pub fn malformed_headers_drop_the_handler_test() {
   let bus =
     started([
-      // Sixty-three characters. A credential composed from this could
-      // never settle anything, and caching it would send it on every
-      // later request.
-      paying_with("typo", string.repeat("a", 63)),
-      paying("wallet", "dd"),
+      // A bare string where a pair belongs. There is nothing to put on
+      // the wire, and sending whatever this decoded to would cache it
+      // for every later request.
+      hooks.Extension(
+        name: "typo",
+        hooks: [on("provider_challenge")],
+        invoke: answering(
+          "{\"answer\":\"retry\",\"headers\":[\"authorization\"]}",
+        ),
+      ),
+      answering_with("wallet", "wallet-token"),
     ])
-  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("dd", 32))
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Ok([#("authorization", "wallet-token")])
   assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
-/// Hex case carries no information, so an extension whose Lightning
-/// backend renders upper case has answered correctly and is normalized
-/// rather than dropped. The `Paid` that comes back is the lowercase
-/// form, which is what the credential is composed from.
-pub fn an_uppercase_preimage_is_accepted_test() {
-  let bus = started([paying_with("wallet", string.repeat("DD", 32))])
+/// HTTP header names are case-insensitive, so an extension that renders
+/// `Authorization` has answered correctly and is normalized rather than
+/// dropped. What comes back is the lowercase form, which is what a
+/// consumer compares against the headers the adapter owns.
+pub fn a_header_name_is_lowercased_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "wallet",
+        hooks: [on("provider_challenge")],
+        invoke: answering(
+          "{\"answer\":\"retry\",\"headers\":[[\"Authorization\",\"Tok\"]]}",
+        ),
+      ),
+    ])
 
-  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("dd", 32))
+  // The value is untouched: only the name is case-insensitive.
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Ok([#("authorization", "Tok")])
   assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
-pub fn the_macaroon_never_crosses_the_hook_test() {
+pub fn the_challenge_crosses_the_hook_raw_test() {
   let captured = process.new_subject()
   let bus =
     started([
       hooks.Extension(
         name: "wallet",
-        hooks: [on("payment_required")],
+        hooks: [on("provider_challenge")],
         invoke: capturing(captured, declining_invoker("not now")),
       ),
     ])
-  let assert Error(_reason) = hooks.pay(bus, "proxy", challenge(), 7)
+  let assert Error(_reason) =
+    hooks.answer_challenge(bus, "proxy", challenge(), 7)
     as "the extension declined"
 
   let assert Ok(json.Object(fields:)) = process.receive(captured, within: 100)
     as "the extension was asked"
   let sent = list.map(fields, fn(pair) { pair.0 })
 
-  // The census is the ruling: a hook pays an invoice, and the credential
-  // is composed by the harness from a macaroon the extension never saw.
+  // The census is the ruling: the extension is handed the status, the
+  // headers and the body exactly as the provider sent them, and nothing
+  // the harness derived from them, because the harness parses nothing.
   assert list.sort(sent, string.compare)
-    == [
-      "amount_sat", "challenge_id", "invoice", "now_unix_ms", "provider",
-      "route_id",
-    ]
+    == ["body", "headers", "now_unix_ms", "provider", "status"]
   assert field_of(json.Object(fields:), "now_unix_ms") == Ok(json.Int(7))
+  assert field_of(json.Object(fields:), "status") == Ok(json.Int(402))
+  assert field_of(json.Object(fields:), "headers")
+    == Ok(
+      json.Array([
+        json.Array([
+          json.String("www-authenticate"),
+          json.String("Scheme realm=\"x\""),
+        ]),
+      ]),
+    )
 }
 
 pub fn an_invoker_is_given_its_own_subscriptions_deadline_test() {
@@ -627,7 +743,7 @@ pub fn an_invoker_is_given_its_own_subscriptions_deadline_test() {
       hooks.Extension(
         name: "wallet",
         hooks: [
-          hooks.Subscription(event: "payment_required", deadline_ms: 20_000),
+          hooks.Subscription(event: "provider_challenge", deadline_ms: 20_000),
         ],
         invoke: fn(_extension, _event, _args, deadline) {
           process.send(deadlines, deadline)
@@ -635,12 +751,14 @@ pub fn an_invoker_is_given_its_own_subscriptions_deadline_test() {
         },
       ),
     ])
-  let assert Error(_reason) = hooks.pay(bus, "proxy", challenge(), 7)
+  let assert Error(_reason) =
+    hooks.answer_challenge(bus, "proxy", challenge(), 7)
     as "the extension declined"
 
-  // The manifest's number, not the constant. A hook that pays an invoice
-  // is the first one with a reason to want more than five seconds, and
-  // the whole of `timeout_ms` is that this is the number it gets.
+  // The manifest's number, not the constant. A hook that has to reach a
+  // third party before it can answer is the first one with a reason to
+  // want more than five seconds, and the whole of `timeout_ms` is that
+  // this is the number it gets.
   assert process.receive(deadlines, within: 100) == Ok(20_000)
 }
 
@@ -650,7 +768,7 @@ pub fn the_fan_out_budget_sums_the_subscribed_deadlines_test() {
       hooks.Extension(
         name: "wallet",
         hooks: [
-          hooks.Subscription(event: "payment_required", deadline_ms: 20_000),
+          hooks.Subscription(event: "provider_challenge", deadline_ms: 20_000),
         ],
         invoke: allow(),
       ),
@@ -665,7 +783,7 @@ pub fn the_fan_out_budget_sums_the_subscribed_deadlines_test() {
   // `deadline_ms` of margin for the decoding between them. An extension
   // subscribed to something else contributes nothing, which is what
   // makes this narrower than `fan_out_ms` on a long chain.
-  assert hooks.fan_out_for(bus, "payment_required")
+  assert hooks.fan_out_for(bus, "provider_challenge")
     == 20_000 + hooks.deadline_ms
   assert hooks.fan_out_for(bus, "usage") == 1000 + hooks.deadline_ms
 }
@@ -866,41 +984,49 @@ fn field_of(
   }
 }
 
-// A `payment_required` extension answering with `unit` repeated to the
-// 64 characters a preimage is.
-fn paying(name: String, unit: String) -> hooks.Extension {
-  paying_with(name, repeat(unit, 32))
-}
-
-fn paying_with(name: String, hex: String) -> hooks.Extension {
+// A `provider_request` extension supplying one `authorization` header
+// carrying `token`.
+fn supplying(name: String, token: String) -> hooks.Extension {
   hooks.Extension(
     name:,
-    hooks: [on("payment_required")],
-    invoke: answering("{\"payment\":\"paid\",\"preimage\":\"" <> hex <> "\"}"),
+    hooks: [on("provider_request")],
+    invoke: answering("{\"headers\":[[\"authorization\",\"" <> token <> "\"]]}"),
+  )
+}
+
+// A `provider_challenge` extension answering with one `authorization`
+// header carrying `token`.
+fn answering_with(name: String, token: String) -> hooks.Extension {
+  hooks.Extension(
+    name:,
+    hooks: [on("provider_challenge")],
+    invoke: answering(
+      "{\"answer\":\"retry\",\"headers\":[[\"authorization\",\""
+      <> token
+      <> "\"]]}",
+    ),
   )
 }
 
 fn declining(name: String, reason: String) -> hooks.Extension {
   hooks.Extension(
     name:,
-    hooks: [on("payment_required")],
+    hooks: [on("provider_challenge")],
     invoke: declining_invoker(reason),
   )
 }
 
 fn declining_invoker(reason: String) -> hooks.Invoker {
-  answering("{\"payment\":\"declined\",\"reason\":\"" <> reason <> "\"}")
+  answering("{\"answer\":\"declined\",\"reason\":\"" <> reason <> "\"}")
 }
 
-// A challenge whose macaroon is distinctive, so the census test is
-// asserting on its absence rather than on an empty string.
-fn challenge() -> l402.Challenge {
-  l402.Challenge(
-    macaroon: "AGIA",
-    invoice: "lnbc2500u1xyz",
-    amount_sat: Some(250_000),
-    challenge_id: "chal-1",
-    route_id: "route-1",
+// A challenge whose header is distinctive, so the census test is
+// asserting on what crossed rather than on an empty list.
+fn challenge() -> challenger.Challenge {
+  challenger.Challenge(
+    status: 402,
+    headers: [#("www-authenticate", "Scheme realm=\"x\"")],
+    body: "",
   )
 }
 

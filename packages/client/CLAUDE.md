@@ -359,7 +359,8 @@ catalogue without opening runtimes. Explicit admission invokes
   entry (so durable identities store `{catalogue-name, model_id}`,
   carrying the entry's `auth` — `auth = "api_key"`, the default, whose
   `api_key_env` names the variable holding the bearer key, or
-  `auth = "l402"`, a paying proxy that prices each request and must name
+  `auth = "extension"`, whose credential is answered by an installed
+  extension from the provider's own HTTP challenge and which must name
   no `api_key_env` at all),
   one route per `[roles]` row, and one rate card per entry that carries
   an optional `[models.<name>.pricing]` table (US dollars per million
@@ -864,29 +865,39 @@ catalogue without opening runtimes. Explicit admission invokes
   hands out, and it *refuses* rather than silently succeeding: a `set`
   answering `Ok` into nothing reads to a program as an eviction and it
   loops.
-- `client/paywall.{Cache, Slot, start_cache, slot, attach, seam,
-  ask_timeout_ms, no_extension_reason, unavailable_reason}` — the harness
-  half of `provider/paywall`, and the untying of a knot: the provider
+- `client/challenger.{Slot, slot, attach, seam, ask_timeout_ms,
+  no_extension_reason, unavailable_reason}` — the harness
+  half of `provider/challenger`, and the untying of a knot: the provider
   gateway's configuration is fixed before a session's hook bus exists, so
   the seam closes over a `Slot` — one tiny `weft/actor` created before
   the wiring config is built and filled by `attach` the instant the bus
   starts, the indirection `client/agency.seam` and `client/scratch.seam`
-  use. `credential(provider)` reads the `Cache`, one settled token per
-  catalogue entry, so a session that has paid does not provoke a fresh
-  402 on every turn; nothing here decides when a token expired, because
-  the proxy's next 402 is the exact signal. `settle` borrows the bus,
-  calls `hooks.pay`, and composes `l402.authorization(challenge.macaroon,
-  preimage)`. Both questions are monitored send-and-selects rather than
+  use. **The harness holds no credential**, and the absence of a cache
+  here is the ruling rather than an omission: the extension that
+  satisfied a challenge is the only party that knows what it bought, for
+  which entry and model, and when it stops being worth anything, so the
+  durable copy lives in its own `ext/memory` as pi's paying fetch keeps
+  one. `seam(slot, clock)` is therefore two questions and no state.
+  `headers(provider, model_id)` borrows the bus, asks
+  `hooks.request_headers` before every attempt, and answers `None` when
+  no bus is attached or the answer is `[]` — the two are one fact to the
+  gateway, there being nothing to add to the adapter's own headers.
+  `answer` borrows the bus, calls `hooks.answer_challenge` and returns
+  the headers without storing anything. The borrow is a monitored
+  send-and-select rather than
   `process.call`: the caller is the gateway's own pump, and a dead or
-  wedged actor must cost a cache miss or an in-band decline, never a
-  request. There is no budget and no ceiling — the extension holds the
-  wallet and is the only party that can bound the spend.
-  `serve.paywall_seam` builds one cache and one slot per session
+  wedged actor must cost an unauthenticated attempt or an in-band
+  decline, never a
+  request. There is no budget and no ceiling, and no reading of a
+  challenge either — the extension answers it and is the only party that
+  can bound what answering costs.
+  `serve.challenger_seam` builds one slot per session
   assembly, because `resolve` and `resolve_managed` both run per session
-  and a cache threaded through `Settings` would have been per session
-  too; a session whose two actors will not start keeps the unpaywalled
-  gateway and logs `extension.paywall.unavailable`, under which an
-  `auth = "l402"` entry declines in band exactly as it did before.
+  and a seam threaded through `Settings` would have been per session
+  too; a session whose slot will not start keeps the gateway with
+  no challenger and logs `extension.challenger.unavailable`, under which
+  an `auth = "extension"` entry declines in band exactly as it did
+  before.
 - `client/rules.{Rule, parse, fires_on, scannable_text, injection,
   fired_key, cursor_key, fired_value, cursor_value, cursor_seq,
   max_rules, max_triggers, max_name_length, max_trigger_length,
@@ -1839,7 +1850,8 @@ The rest of the path is phase 1's own, and each module is one question:
   `manifest.default_hook_timeout_ms`, which is where the number 5000
   lives — `hooks.deadline_ms` is an alias, because `hooks` imports this
   module for the event names and the cycle can only run one way), and
-  `payment_required` is the tenth name in `hook_events`. `[net]` gains an
+  `provider_request` and `provider_challenge` are the tenth and eleventh
+  names in `hook_events`. `[net]` gains an
   optional `plaintext_loopback`: origins, each also in `hosts` and each
   on a `loopback_hosts` host, that may be reached over `http://` —
   `host_of` is the one reading of an origin's host part, and a
@@ -1965,24 +1977,45 @@ tools reach:
   and a compaction note are rendered in — the harness writes them, never
   the extension, for the reason `system_prompt.render_file` gives about
   instruction files. The module documentation is the normative table of
-  all nine wire shapes; the extension's side of the same wire is
+  all eleven wire shapes; the extension's side of the same wire is
   `ext/hook`.
-- `client/extension/hooks.{Payment, pay, Subscription, fan_out_for}` —
-  the answering event whose answer is money. `pay(bus, provider,
-  challenge, now_unix_ms)` fans `payment_required` out under
-  `fan_out_for`'s budget and answers with the first `Paid` preimage in
+- `client/extension/hooks.{request_headers}` — the pre-request half of
+  the credential seam, and the reason the harness needs no cache.
+  `request_headers(bus, provider, model_id, now_unix_ms)` fans
+  `provider_request` out under `fan_out_for`'s budget and answers with
+  the first non-empty header list in load order, `[]` when nobody
+  subscribes, nobody holds a credential, or the fan-out was reaped —
+  one outcome for all four, because they mean the same thing to the
+  gateway and the challenge that follows is where a reason a human can
+  act on exists. The args document is `{provider, model_id,
+  now_unix_ms}` and carries **no body and no messages**: an extension
+  installed to hold a credential must not acquire the transcript as a
+  side effect, and `context` is the separately installed capability for
+  that. The model rides beside the entry because a proxy that prices per
+  model hands out a token per model. A `headers` value that is not a
+  list of two-string pairs drops the handler, the judgement
+  `forward_verdict` makes, and for the sharper reason that what a hook
+  answers here goes onto the wire; names are lowercased on the way in.
+- `client/extension/hooks.{Answer, answer_challenge, Subscription,
+  fan_out_for}` —
+  the answering event whose answer is a credential.
+  `answer_challenge(bus, provider, challenge, now_unix_ms)` fans
+  `provider_challenge` out under
+  `fan_out_for`'s budget and answers with the first `Retry`'s headers in
   load order, else the first `Declined` reason, else "no extension
-  answered the payment challenge" — three distinct facts, because an
+  answered the challenge" — three distinct facts, because an
   operator reading a failed request needs to tell an extension that
   refused from none being installed. The args document is `{provider,
-  invoice, amount_sat, challenge_id, route_id, now_unix_ms}` and **the
-  macaroon is not in it**: a hook pays an invoice, and `client/paywall`
-  composes the credential from the preimage and the macaroon the harness
-  kept, so an extension cannot spend that credential anywhere else. A
-  `paid` whose preimage is not 64 lowercase hex characters drops the
+  status, headers: [[name, value], …], body, now_unix_ms}` and **nothing
+  in it is derived**: the harness parses no challenge, because the
+  grammar belongs to whichever scheme the provider speaks, and a header
+  crosses as a two-element array because a name may legitimately repeat.
+  A `retry` whose headers are not a list of two-string pairs drops the
   handler, the judgement `forward_verdict` makes about an unreadable
-  verdict: a credential composed from it could never settle anything and
-  would be cached for every later request.
+  verdict: what it decoded to could not be put on the wire at all.
+  Names are lowercased on the way in, so
+  a consumer comparing one against a header the adapter owns is
+  comparing like with like.
 - `client/extension/hooks.{compaction_notes, usage}` — phase 4c's two
   events. `compaction_notes(bus, op, cue)` fans `before_compact` out and
   gathers every note in load order, rendered through `note_block` and

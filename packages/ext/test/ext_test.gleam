@@ -179,31 +179,62 @@ pub fn a_tool_call_hook_answers_a_verdict_test() {
     ))
 }
 
-/// A `payment_required` hook's answer crosses as the JSON text the
-/// harness's paywall reads, marshalled in `ext/hook` and carried here
-/// untouched — the same road a verdict takes, so the money-moving event
-/// costs the satellite no second mechanism.
-pub fn a_payment_required_hook_answers_a_payment_test() {
-  let preimage = string.repeat("cd", 32)
+/// The pre-request half of the credential seam takes the same road: the
+/// headers an extension recalled from its own store cross as the JSON
+/// text the harness's challenger reads, with nothing cached on this
+/// side either — the satellite re-answers the question on every request.
+pub fn a_provider_request_hook_answers_with_headers_test() {
   let produced =
     runtime.answer(
       [],
       [
         #(
-          "payment_required",
-          hook.OnPaymentRequired(fn(_challenge) { hook.Paid(preimage) }),
+          "provider_request",
+          hook.OnProviderRequest(fn(request) {
+            [#("authorization", "Scheme " <> request.model_id)]
+          }),
         ),
       ],
       event(
-        "payment_required",
-        "{\"provider\":\"paid-glm\",\"invoice\":\"lnbc2500u1pexample\","
-          <> "\"amount_sat\":2500,\"challenge_id\":\"c-1\","
-          <> "\"route_id\":\"r-1\",\"now_unix_ms\":1757000000000}",
+        "provider_request",
+        "{\"provider\":\"priced-glm\",\"model_id\":\"glm-5.2\","
+          <> "\"now_unix_ms\":1757000000000}",
       ),
     )
   assert produced
     == cap_runtime.Answered(report.string(
-      "{\"payment\":\"paid\",\"preimage\":\"" <> preimage <> "\"}",
+      "{\"headers\":[[\"authorization\",\"Scheme glm-5.2\"]]}",
+    ))
+}
+
+/// A `provider_challenge` hook's answer crosses as the JSON text the
+/// harness's challenger reads, marshalled in `ext/hook` and carried
+/// here untouched — the same road a verdict takes, so the one event
+/// that changes what the harness does next on the wire costs the
+/// satellite no second mechanism.
+pub fn a_provider_challenge_hook_answers_with_headers_test() {
+  let produced =
+    runtime.answer(
+      [],
+      [
+        #(
+          "provider_challenge",
+          hook.OnProviderChallenge(fn(_challenge) {
+            hook.Retry([#("authorization", "Scheme token")])
+          }),
+        ),
+      ],
+      event(
+        "provider_challenge",
+        "{\"provider\":\"priced-glm\",\"status\":402,"
+          <> "\"headers\":[[\"www-authenticate\",\"Scheme\"]],"
+          <> "\"body\":\"pay up\",\"now_unix_ms\":1757000000000}",
+      ),
+    )
+  assert produced
+    == cap_runtime.Answered(report.string(
+      "{\"answer\":\"retry\",\"headers\":"
+      <> "[[\"authorization\",\"Scheme token\"]]}",
     ))
 }
 

@@ -48,8 +48,9 @@
 ////
 //// So there are two managers over the same ordered extension list.
 //// `session_start`, `agent_end`, `agent_settled` and `usage` are cast
-//// onto the notice manager; `before_agent_start`, `tool_call` and
-//// `before_compact` are `sync_notify`ed on the answering one. An
+//// onto the notice manager; `before_agent_start`, `tool_call`,
+//// `before_compact`, `provider_request` and `provider_challenge` are
+//// `sync_notify`ed on the answering one. An
 //// answering event now queues only behind other answering events, which
 //// is exactly the wait `fan_out_ms` was sized for.
 ////
@@ -67,15 +68,18 @@
 //// answer, so that extension keeps its notices for the session, which
 //// is the right outcome for a body that is healthy everywhere else.
 ////
-//// ## Seven events fan out; two transforms do not
+//// ## Nine events fan out; two transforms do not
 ////
 //// `session_start`, `before_agent_start`, `tool_call`, `agent_end`,
-//// `agent_settled`, `before_compact` and `usage` are bus events. The
+//// `agent_settled`, `before_compact`, `usage`, `provider_request` and
+//// `provider_challenge` are bus events. The
 //// four notifications go through `notify`, on the notice manager. The
-//// three that need an answer —
+//// five that need an answer —
 //// `before_agent_start`, whose answer is an injection, `tool_call`,
-//// whose answer is a verdict, and `before_compact`, whose answer is a
-//// note — go through `sync_notify` carrying a reply subject, and the
+//// whose answer is a verdict, `before_compact`, whose answer is a
+//// note, `provider_request`, whose answer is the headers to send, and
+//// `provider_challenge`, whose answer is the headers to retry with —
+//// go through `sync_notify` carrying a reply subject, and the
 //// caller drains the subject after the fan-out has returned.
 //// `sync_notify` replies only once every handler has finished, so a
 //// drain with a zero timeout is exact rather than a race.
@@ -156,6 +160,15 @@
 ////                            "summarized_messages": int,
 ////                            "retained_messages": int}
 ////                      value {"note": str | null}
+//// provider_request     args {"provider": str, "model_id": str,
+////                            "now_unix_ms": int}
+////                      value {"headers": [[name, value], …]}
+//// provider_challenge   args {"provider": str, "status": int,
+////                            "headers": [[name, value], …],
+////                            "body": str, "now_unix_ms": int}
+////                      value {"answer": "retry",
+////                             "headers": [[name, value], …]}
+////                          | {"answer": "declined", "reason": str}
 //// usage                args {"op_id": str, "usage_id": str, "seq": int,
 ////                            "entry_id": str | null,
 ////                            "adjustment": bool,
@@ -230,7 +243,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import provider/l402
+import provider/challenger
 import runtime/effects.{type CompactionCue, type Effects}
 import runtime/hooks as runtime_hooks
 import session/session.{type Session}
@@ -355,9 +368,9 @@ pub fn unwired() -> Invoker {
 ///
 /// The deadline is per subscription rather than per extension because
 /// the manifest states it per hook: an extension whose `usage` tracer
-/// answers instantly and whose `payment_required` hook has to pay an
-/// invoice needs two different numbers, and one of them would otherwise
-/// have to be wrong.
+/// answers instantly and whose `provider_challenge` hook has to reach a
+/// third party before it can answer needs two different numbers, and one
+/// of them would otherwise have to be wrong.
 pub type Subscription {
   Subscription(
     /// One of `manifest.hook_events`.
@@ -416,7 +429,7 @@ pub type Note {
 
 /// What the two managers fan out.
 ///
-/// The three events carrying a `reply` subject are delivered with
+/// The five events carrying a `reply` subject are delivered with
 /// `sync_notify` on the answering manager; the caller drains the subject
 /// once it returns, when every handler that was going to answer has
 /// answered. The other four are cast onto the notice manager.
@@ -457,31 +470,51 @@ pub type Event {
   /// One cost-ledger row was committed. Notify-only.
   Usage(op_id: OpId, row: UsageRow)
 
-  /// The provider gateway holds a priced request it could not make.
+  /// An `auth = "extension"` entry is about to be asked, and whichever
+  /// extension holds a credential for it should say what to send.
   ///
-  /// The one answering event whose answer is money. The challenge is
-  /// carried whole so this module can build the args document from it,
-  /// and the macaroon is deliberately not part of that document: a hook
-  /// pays an invoice, and the harness composes the credential.
-  PaymentRequired(
+  /// The entry and the model it targets, and nothing else. This event is
+  /// the pre-request half of the credential seam rather than a view of
+  /// the request: the body never crosses it, because an extension that
+  /// wants the conversation has `context`, which an operator installs
+  /// separately and knowingly.
+  ProviderRequest(
     provider: String,
-    challenge: l402.Challenge,
+    model_id: String,
     now_unix_ms: Int,
-    reply: Subject(Payment),
+    reply: Subject(List(#(String, String))),
+  )
+
+  /// The provider answered an HTTP authentication challenge the harness
+  /// cannot satisfy on its own.
+  ///
+  /// The challenge is carried whole, and carried *raw*: the status, the
+  /// response headers and the body, exactly as the provider sent them.
+  /// Nothing in the harness parses a challenge, because the grammar
+  /// belongs to whichever scheme the provider speaks and the extension
+  /// is the party that knows which one that is.
+  ProviderChallenge(
+    provider: String,
+    challenge: challenger.Challenge,
+    now_unix_ms: Int,
+    reply: Subject(Answer),
   )
 }
 
-/// What a `payment_required` hook answered.
+/// What a `provider_challenge` hook answered.
 ///
 /// The bus's own type rather than `ext/hook`'s, for the reason `Verdict`
 /// is: what crosses the wire is a JSON document, and this is what this
-/// side decoded it to. A `Paid` that reaches here has already been held
-/// to the preimage's shape, so a consumer needs no second check.
-pub type Payment {
-  /// The invoice was paid; 64 lowercase hex characters.
-  Paid(preimage_hex: String)
+/// side decoded it to. A `Retry` that reaches here has already been held
+/// to the shape of a header list, so a consumer needs no second check.
+pub type Answer {
+  /// The headers to send the request again with. Names are lowercased on
+  /// the way in, so a consumer comparing one against a header the
+  /// adapter owns is comparing like with like.
+  Retry(headers: List(#(String, String)))
 
-  /// Not paid, with a reason the harness surfaces in `PaymentDeclined`.
+  /// The challenge was not answered, with a reason the harness surfaces
+  /// in `stream.ChallengeUnanswered`.
   Declined(reason: String)
 }
 
@@ -492,9 +525,9 @@ pub type Payment {
 /// which set it means: an extension dropped for a bad verdict has lost
 /// its place among the answers and still holds one among the notices.
 pub type Delivery {
-  /// The manager the three answering events fan out on, and the one a
+  /// The manager the five answering events fan out on, and the one a
   /// caller waits for: `before_agent_start`, `tool_call`,
-  /// `before_compact`.
+  /// `before_compact`, `provider_request`, `provider_challenge`.
   Answering
 
   /// The manager the four notify-only events are cast onto:
@@ -505,7 +538,7 @@ pub type Delivery {
 /// A running hook bus.
 ///
 /// Holds three views of the same ordered extension list: the answering
-/// manager, for the three events a caller waits on; the notice manager,
+/// manager, for the five events a caller waits on; the notice manager,
 /// for the four it does not, kept apart so a cast cannot queue in front
 /// of an answer; and the list itself, for the two chained transforms
 /// that are folds rather than a fan-out.
@@ -725,72 +758,119 @@ pub fn usage(bus: Bus, operation: OpId, row: UsageRow) -> Nil {
   event_manager.notify(bus.notices, Usage(op_id: operation, row:))
 }
 
-/// Asks every subscribed extension to pay one priced request, and
-/// answers with the first preimage in load order.
+/// Asks every subscribed extension what to send with one provider
+/// request, and answers with the first non-empty header list in load
+/// order.
 ///
-/// First `Paid` wins, which is the same rule `first_block` applies to a
-/// verdict and the opposite outcome: a request is paid once, so a second
-/// extension's payment would be a second bill for one request. The
-/// harness composes the credential from the preimage and the macaroon it
-/// still holds, so a hook that answers `Paid` has spent money and an
-/// extension that wants a ceiling asserts it on its own side.
+/// The empty list is the answer to three different facts, and they are
+/// deliberately one outcome here: no extension subscribes, none holds a
+/// credential for this entry, or the bus did not answer inside its
+/// deadline. All three mean the same thing to the caller — the request
+/// goes out with the adapter's own headers and nothing more — and a
+/// provider that wanted something will say so in a challenge, which is
+/// the other half of this seam and the only place a reason a human can
+/// act on actually exists.
 ///
-/// A fan-out that answers nothing at all — no subscribed extension, or
-/// none that answered — is an `Error`, never an empty success: the
-/// caller is the provider gateway, which turns it into
-/// `stream.PaymentDeclined` and settles the request in band.
+/// First non-empty wins for the reason `answer_challenge`'s first
+/// `Retry` does: one request carries one credential, and a second
+/// extension's headers would have nowhere to go. An extension holding
+/// nothing answers `[]` and does not take the slot away from one that
+/// does.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // hooks.pay(bus, "proxy", challenge, 1_700_000_000_000)
-/// // -> Error("no extension answered the payment challenge")
+/// // hooks.request_headers(bus, "proxy", "model-a", 1_700_000_000_000)
+/// // -> []
 /// ```
 ///
-pub fn pay(
+pub fn request_headers(
   bus: Bus,
   provider: String,
-  challenge: l402.Challenge,
+  model_id: String,
   now_unix_ms: Int,
-) -> Result(String, String) {
-  fan_out(
-    bus,
-    manifest.payment_required_event,
-    fan_out_for(bus, manifest.payment_required_event),
-    fn(reply) { PaymentRequired(provider:, challenge:, now_unix_ms:, reply:) },
-  )
-  |> first_payment
+) -> List(#(String, String)) {
+  let answers =
+    fan_out(
+      bus,
+      manifest.provider_request_event,
+      fan_out_for(bus, manifest.provider_request_event),
+      fn(reply) { ProviderRequest(provider:, model_id:, now_unix_ms:, reply:) },
+    )
+  case list.find(answers, fn(headers) { headers != [] }) {
+    Ok(headers) -> headers
+    Error(Nil) -> []
+  }
 }
 
-// The first `Paid`, else the first `Declined`'s reason, else the fact
+/// Asks every subscribed extension to answer one provider challenge, and
+/// answers with the first set of headers in load order.
+///
+/// First `Retry` wins, which is the same rule `first_block` applies to a
+/// verdict and the opposite outcome: a request is retried once, so a
+/// second extension's headers would be a second answer to one challenge.
+/// Whatever answering a challenge costs, the extension is the party that
+/// paid it, and an extension that wants a ceiling asserts it on its own
+/// side.
+///
+/// A fan-out that answers nothing at all — no subscribed extension, or
+/// none that answered — is an `Error`, never an empty success: the
+/// caller is the provider gateway, which turns it into
+/// `stream.ChallengeUnanswered` and settles the request in band.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.answer_challenge(bus, "proxy", challenge, 1_700_000_000_000)
+/// // -> Error("no extension answered the challenge")
+/// ```
+///
+pub fn answer_challenge(
+  bus: Bus,
+  provider: String,
+  challenge: challenger.Challenge,
+  now_unix_ms: Int,
+) -> Result(List(#(String, String)), String) {
+  fan_out(
+    bus,
+    manifest.provider_challenge_event,
+    fan_out_for(bus, manifest.provider_challenge_event),
+    fn(reply) { ProviderChallenge(provider:, challenge:, now_unix_ms:, reply:) },
+  )
+  |> first_retry
+}
+
+// The first `Retry`, else the first `Declined`'s reason, else the fact
 // that nobody answered. The three are distinct on purpose: an operator
-// reading `PaymentDeclined` needs to know whether an extension decided
-// not to pay or whether none was installed to decide.
-fn first_payment(answers: List(Payment)) -> Result(String, String) {
-  case list.find_map(answers, preimage_of) {
-    Ok(preimage) -> Ok(preimage)
+// reading `ChallengeUnanswered` needs to know whether an extension
+// decided not to answer or whether none was installed to decide.
+fn first_retry(
+  answers: List(Answer),
+) -> Result(List(#(String, String)), String) {
+  case list.find_map(answers, headers_of) {
+    Ok(headers) -> Ok(headers)
     Error(Nil) -> Error(first_reason(answers))
   }
 }
 
-fn preimage_of(answer: Payment) -> Result(String, Nil) {
+fn headers_of(answer: Answer) -> Result(List(#(String, String)), Nil) {
   case answer {
-    Paid(preimage_hex:) -> Ok(preimage_hex)
+    Retry(headers:) -> Ok(headers)
     Declined(..) -> Error(Nil)
   }
 }
 
-fn first_reason(answers: List(Payment)) -> String {
+fn first_reason(answers: List(Answer)) -> String {
   case list.find_map(answers, reason_of) {
     Ok(reason) -> reason
-    Error(Nil) -> "no extension answered the payment challenge"
+    Error(Nil) -> "no extension answered the challenge"
   }
 }
 
-fn reason_of(answer: Payment) -> Result(String, Nil) {
+fn reason_of(answer: Answer) -> Result(String, Nil) {
   case answer {
     Declined(reason:) -> Ok(reason)
-    Paid(..) -> Error(Nil)
+    Retry(..) -> Error(Nil)
   }
 }
 
@@ -1066,13 +1146,22 @@ fn handle(
     Usage(op_id:, row:) ->
       settle(state, manifest.usage_event, usage_args(op_id, row), logger)
 
-    PaymentRequired(provider:, challenge:, now_unix_ms:, reply:) ->
+    ProviderRequest(provider:, model_id:, now_unix_ms:, reply:) ->
       answer(
         state,
-        manifest.payment_required_event,
-        payment_args(provider, challenge, now_unix_ms),
+        manifest.provider_request_event,
+        request_args(provider, model_id, now_unix_ms),
         logger,
-        fn(value) { forward_payment(value, reply) },
+        fn(value) { forward_headers(value, reply) },
+      )
+
+    ProviderChallenge(provider:, challenge:, now_unix_ms:, reply:) ->
+      answer(
+        state,
+        manifest.provider_challenge_event,
+        challenge_args(provider, challenge, now_unix_ms),
+        logger,
+        fn(value) { forward_answer(value, reply) },
       )
   }
 }
@@ -1224,22 +1313,42 @@ fn forward_verdict(
   }
 }
 
+// The same judgement one event earlier, and for the same reason: what
+// a `provider_request` hook answers goes onto the wire as the request's
+// headers, so a value that is not a list of name-and-value pairs is not
+// a header list and there is nothing to send. Nothing is put on the
+// reply subject, so the gather sees an extension that did not answer —
+// which, having answered something unreadable, it did not.
+fn forward_headers(
+  value: JsonValue,
+  reply: Subject(List(#(String, String))),
+) -> Result(Nil, String) {
+  case supplied_of(value) {
+    Ok(headers) -> {
+      process.send(reply, headers)
+      Ok(Nil)
+    }
+
+    Error(reason) -> Error(reason)
+  }
+}
+
 // An answer this module cannot read costs the handler its place, the
 // judgement `forward_verdict` makes and for a sharper reason: a
-// `payment_required` answer is the harness's only evidence that money
-// changed hands. A `paid` whose preimage is not 64 hex characters is not
-// a preimage, so composing a credential from it would send the proxy a
-// string that cannot settle anything and would cache it for every later
-// request. Nothing is sent on the reply subject in that case, so the
-// gather sees this extension as one that did not answer — which is what
-// it was.
-fn forward_payment(
+// `provider_challenge` answer becomes the headers of a *retried*
+// provider request. A `retry` whose headers are not a list of
+// name-and-value pairs is not a header list, so sending it on would put
+// whatever the extension did answer with onto the wire and cache it for
+// every later request. Nothing is sent on the reply subject in that
+// case, so the gather sees this extension as one that did not answer —
+// which is what it was.
+fn forward_answer(
   value: JsonValue,
-  reply: Subject(Payment),
+  reply: Subject(Answer),
 ) -> Result(Nil, String) {
-  case payment_of(value) {
-    Ok(payment) -> {
-      process.send(reply, payment)
+  case answer_of(value) {
+    Ok(answered) -> {
+      process.send(reply, answered)
       Ok(Nil)
     }
 
@@ -1390,27 +1499,57 @@ fn optional_count(value: Option(Int)) -> JsonValue {
   }
 }
 
-// One priced request, as a paying extension reads it. The macaroon is
-// absent by construction rather than by omission: a hook is asked to pay
-// an invoice, and the credential the proxy accepts is composed by the
-// harness from the challenge it still holds. An extension that never
-// sees the macaroon cannot spend the credential anywhere else.
+// The entry about to be asked, as the credential-holding extension
+// reads it. Three fields and no fourth: the request's body is not here
+// by ruling, so an extension installed to hold a credential does not
+// acquire the transcript as a side effect of being asked for one.
 //
-// `now_unix_ms` rides on the payload because the extension seam has no
-// wall clock of its own and a spend ledger needs a day boundary.
-fn payment_args(
+// The model rides beside the provider because a credential is not
+// always per-entry — a proxy that prices each model separately hands
+// out a token per model — and `now_unix_ms` rides along for the reason
+// it does on a challenge: the extension seam has no wall clock, and a
+// hook deciding whether what it holds has expired needs one.
+fn request_args(
   provider: String,
-  challenge: l402.Challenge,
+  model_id: String,
   now_unix_ms: Int,
 ) -> JsonValue {
   json.Object([
     #("provider", json.String(provider)),
-    #("invoice", json.String(challenge.invoice)),
-    #("amount_sat", optional_count(challenge.amount_sat)),
-    #("challenge_id", json.String(challenge.challenge_id)),
-    #("route_id", json.String(challenge.route_id)),
+    #("model_id", json.String(model_id)),
     #("now_unix_ms", json.Int(now_unix_ms)),
   ])
+}
+
+// One challenge, as the answering extension reads it: the status, the
+// headers and the body the provider sent, and nothing the harness
+// derived from them. The challenge grammar belongs to the scheme the
+// provider speaks, so a field this module invented would be this
+// module's reading of a document it has deliberately not parsed.
+//
+// A header crosses as a two-element array rather than as an object
+// field, because a header name may repeat — `WWW-Authenticate` twice is
+// two challenges — and an object would silently keep one of them.
+//
+// `now_unix_ms` rides on the payload because the extension seam has no
+// wall clock of its own and a ledger of what it has answered needs a day
+// boundary.
+fn challenge_args(
+  provider: String,
+  challenge: challenger.Challenge,
+  now_unix_ms: Int,
+) -> JsonValue {
+  json.Object([
+    #("provider", json.String(provider)),
+    #("status", json.Int(challenge.status)),
+    #("headers", json.Array(list.map(challenge.headers, header_pair))),
+    #("body", json.String(challenge.body)),
+    #("now_unix_ms", json.Int(now_unix_ms)),
+  ])
+}
+
+fn header_pair(header: #(String, String)) -> JsonValue {
+  json.Array([json.String(header.0), json.String(header.1)])
 }
 
 fn context_args(operation: OpId, messages: List(AgentMessage)) -> JsonValue {
@@ -1463,64 +1602,74 @@ fn blocked(name: String, value: JsonValue) -> Result(Verdict, String) {
   }
 }
 
-fn payment_of(value: JsonValue) -> Result(Payment, String) {
-  case field(value, "payment") {
-    Ok(json.String(value: "paid")) -> paid(value)
+// The headers a `provider_request` hook supplied. One document for both
+// outcomes, because holding no credential is not a failure and has
+// nothing to explain: `[]` says "send none", which is what a hook that
+// has not bought anything yet answers and what the harness then does.
+//
+// An absent or non-array `headers` is not that answer, though. The
+// extension seam writes the field on every answer, so a document
+// without it is a disagreement about the wire rather than an extension
+// with nothing to send, and the handler loses its place for it.
+fn supplied_of(value: JsonValue) -> Result(List(#(String, String)), String) {
+  case field(value, "headers") {
+    Ok(json.Array(items:)) -> list.try_map(items, header_of)
 
-    Ok(json.String(value: "declined")) -> Ok(declined(value))
-
-    Ok(_other) | Error(_absent) -> Error("payment is neither paid nor declined")
+    Ok(_other) | Error(_absent) ->
+      Error("a provider_request answer carries no header list")
   }
 }
 
-// A claim to have paid is checked against the one thing this side can
-// check: a preimage is a 32-byte hash preimage, so it is 64 hexadecimal
-// characters and nothing else.
-//
-// Case is normalized rather than judged, because hex case carries no
-// information and an extension whose Lightning backend renders upper
-// case is not making a mistake. Judging it would drop the handler over
-// a spelling, and the `Paid` this builds is the lowercase form the rest
-// of the harness compares.
-fn paid(value: JsonValue) -> Result(Payment, String) {
-  case field(value, "preimage") {
-    Ok(json.String(value: preimage)) -> {
-      let preimage = string.lowercase(preimage)
+fn answer_of(value: JsonValue) -> Result(Answer, String) {
+  case field(value, "answer") {
+    Ok(json.String(value: "retry")) -> retry(value)
 
-      case is_preimage(preimage) {
-        True -> Ok(Paid(preimage_hex: preimage))
-        False -> Error("preimage is not 64 hexadecimal characters")
-      }
-    }
-    Ok(_other) | Error(_absent) -> Error("a paid answer carries no preimage")
+    Ok(json.String(value: "declined")) -> Ok(declined(value))
+
+    Ok(_other) | Error(_absent) -> Error("answer is neither retry nor declined")
+  }
+}
+
+// A claim to have answered is checked against the one thing this side
+// can check: the shape. The harness does not know what a valid header
+// value is for whatever scheme the provider speaks, and asking would be
+// parsing the challenge it has deliberately not parsed — but a `retry`
+// that does not carry a list of two-string arrays is not a header list
+// at all, and there is nothing to send.
+//
+// Names are lowercased rather than judged, because HTTP header names are
+// case-insensitive and an extension that renders `Authorization` is not
+// making a mistake. Lowercasing here is what lets a consumer compare one
+// against a header the adapter owns without a second normalization.
+fn retry(value: JsonValue) -> Result(Answer, String) {
+  case field(value, "headers") {
+    Ok(json.Array(items:)) ->
+      list.try_map(items, header_of)
+      |> result.map(fn(headers) { Retry(headers:) })
+
+    Ok(_other) | Error(_absent) ->
+      Error("a retry answer carries no header list")
+  }
+}
+
+fn header_of(item: JsonValue) -> Result(#(String, String), String) {
+  case item {
+    json.Array(items: [json.String(value: name), json.String(value: value)]) ->
+      Ok(#(string.lowercase(name), value))
+
+    _other -> Error("a header is not a pair of strings")
   }
 }
 
 // A decline with no readable reason is still a decline, the judgement
 // `blocked` makes about a block: the harness has to report *something*
-// to the caller whose request is unpaid, and "it gave no reason" at
+// to the caller whose request was challenged, and "it gave no reason" at
 // least names the shape of the answer.
-fn declined(value: JsonValue) -> Payment {
+fn declined(value: JsonValue) -> Answer {
   case field(value, "reason") {
     Ok(json.String(value: reason)) if reason != "" -> Declined(reason:)
     Ok(_other) | Error(_absent) -> Declined(reason: "it gave no reason")
   }
-}
-
-// The length is tested at the bound rather than counted: dropping 64
-// graphemes and finding nothing left says the string is exactly 64 long
-// and stops there, where `string.length` would walk whatever a broken
-// extension sent (lint R5). The digits are lowercase because `paid` has
-// already lowercased the text; this is not the place that decides case.
-fn is_preimage(text: String) -> Bool {
-  string.drop_start(text, 64) == ""
-  && string.drop_start(text, 63) != ""
-  && string.to_utf_codepoints(text) |> list.all(hex_digit)
-}
-
-fn hex_digit(point: UtfCodepoint) -> Bool {
-  let value = string.utf_codepoint_to_int(point)
-  { value >= 0x30 && value <= 0x39 } || { value >= 0x61 && value <= 0x66 }
 }
 
 fn decode_messages(value: JsonValue) -> Result(List(AgentMessage), String) {
@@ -1739,14 +1888,14 @@ fn fan_out_ms(bus: Bus) -> Int {
 /// `fan_out_ms` is the same arithmetic under the assumption every
 /// extension takes the default, and it stays the budget for the three
 /// events whose deadlines nobody has had a reason to set. This one is
-/// what `payment_required` needs: a hook that pays an invoice may
-/// legitimately declare twenty seconds, and a budget computed from the
-/// default would reap it at five.
+/// what `provider_challenge` needs: a hook that has to reach a third
+/// party before it can answer may legitimately declare twenty seconds,
+/// and a budget computed from the default would reap it at five.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // hooks.fan_out_for(bus, "payment_required")
+/// // hooks.fan_out_for(bus, "provider_challenge")
 /// ```
 ///
 pub fn fan_out_for(bus: Bus, event: String) -> Int {

@@ -236,11 +236,11 @@ pub fn a_hooks_timeout_defaults_and_can_be_set_test() {
   let declared =
     with(extensions.hello(), "extension.toml", fn(text) {
       text
-      <> "\n[[hook]]\nevent = \"payment_required\"\n"
+      <> "\n[[hook]]\nevent = \"provider_challenge\"\n"
       <> "entry = \"hello/tool\"\ntimeout_ms = 20000\n"
     })
-  let assert Ok(paying) = decode(declared) as "an author may state one"
-  assert list.map(paying.hooks, fn(hook) { hook.timeout_ms }) == [20_000]
+  let assert Ok(declared_hook) = decode(declared) as "an author may state one"
+  assert list.map(declared_hook.hooks, fn(hook) { hook.timeout_ms }) == [20_000]
 }
 
 /// The default is filled and the bound is not relaxed: an optional key
@@ -259,18 +259,33 @@ pub fn a_non_positive_hook_timeout_is_refused_test() {
   assert string.contains(reason, "timeout_ms")
 }
 
-/// `payment_required` is in the vocabulary, and the same near-miss rule
-/// holds for it as for every other event.
-pub fn the_payment_required_event_decodes_test() {
+/// `provider_request` is in the vocabulary beside `provider_challenge`:
+/// the two halves of the credential seam are declared separately,
+/// because a hook module answers exactly one event.
+pub fn the_provider_request_event_decodes_test() {
   let declared =
     with(extensions.hello(), "extension.toml", fn(text) {
       text
-      <> "\n[[hook]]\nevent = \"payment_required\"\nentry = \"hello/tool\"\n"
+      <> "\n[[hook]]\nevent = \"provider_request\"\nentry = \"hello/tool\"\n"
     })
   let assert Ok(decoded) = decode(declared)
-    as "payment_required is in the vocabulary"
+    as "provider_request is in the vocabulary"
   assert list.map(decoded.hooks, fn(hook) { hook.event })
-    == [manifest.payment_required_event]
+    == [manifest.provider_request_event]
+}
+
+/// `provider_challenge` is in the vocabulary, and the same near-miss
+/// rule holds for it as for every other event.
+pub fn the_provider_challenge_event_decodes_test() {
+  let declared =
+    with(extensions.hello(), "extension.toml", fn(text) {
+      text
+      <> "\n[[hook]]\nevent = \"provider_challenge\"\nentry = \"hello/tool\"\n"
+    })
+  let assert Ok(decoded) = decode(declared)
+    as "provider_challenge is in the vocabulary"
+  assert list.map(decoded.hooks, fn(hook) { hook.event })
+    == [manifest.provider_challenge_event]
 }
 
 // --- [net].plaintext_loopback ---------------------------------------------
@@ -361,7 +376,7 @@ pub fn a_version_three_record_round_trips_its_new_terms_test() {
       ..sample_record(),
       hooks: [
         record.HookTerms(
-          event: manifest.payment_required_event,
+          event: manifest.provider_challenge_event,
           entry: "hello/tool",
           timeout_ms: 20_000,
         ),
