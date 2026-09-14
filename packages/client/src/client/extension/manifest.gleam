@@ -96,14 +96,45 @@ pub const before_compact_event = "before_compact"
 /// `usage`: one cost-ledger row was committed. Notify-only.
 pub const usage_event = "usage"
 
+/// `payment_required`: the provider gateway holds a priced request it
+/// could not make. The one *answering* event whose answer is money: a
+/// hook pays the invoice and returns the preimage, or declines.
+pub const payment_required_event = "payment_required"
+
 /// The hook events the ruling fixes, in the table's order. The whole
 /// vocabulary: an event outside this list refuses the manifest naming
 /// what it takes, and the harness has one slot per name here.
 pub const hook_events = [
   session_start_event, before_agent_start_event, context_event, tool_call_event,
   tool_result_event, agent_end_event, agent_settled_event, before_compact_event,
-  usage_event,
+  usage_event, payment_required_event,
 ]
+
+/// How long a hook invocation may take when its `[[hook]]` table names no
+/// `timeout_ms`.
+///
+/// The number lives here rather than beside the bus that enforces it,
+/// and the direction is forced: `client/extension/hooks` imports this
+/// module to read the event names, so a constant defined there and read
+/// by the decoder would be an import cycle. `hooks.deadline_ms` is an
+/// alias for this value, so there is still one number.
+///
+/// Five seconds is the bound a hook is written against, and it is the
+/// same order as a tool's default: long enough for a satellite round trip
+/// and a decode, short enough that a stalled extension does not read to
+/// an operator as a hung session. A `payment_required` hook that pays an
+/// invoice is the first one likely to want more, which is why the key
+/// exists at all.
+pub const default_hook_timeout_ms = 5000
+
+/// The hosts a `[net].plaintext_loopback` origin may name.
+///
+/// The `https`-only rule exists because the network between the harness
+/// and an origin is untrusted. On a loopback address there is no network,
+/// and the process on the other end is one the operator started — which
+/// is the whole of the exemption, and why it cannot be widened to a name
+/// that merely resolves to a loopback address today.
+pub const loopback_hosts = ["localhost", "127.0.0.1", "::1"]
 
 /// Where an extension's body runs.
 ///
@@ -146,7 +177,20 @@ pub type Tool {
 
 /// One hook the extension registers. Phase 3.
 pub type Hook {
-  Hook(event: String, entry: String)
+  Hook(
+    /// One of `hook_events`.
+    event: String,
+    /// The Gleam module in `src/` exposing `pub fn on_event`.
+    entry: String,
+    /// How long this hook's invocation may take, in milliseconds.
+    ///
+    /// Optional in the table and filled with `default_hook_timeout_ms`
+    /// at decode, so every reader downstream — the record, the bus's
+    /// subscription, the fan-out budget — sees a number rather than an
+    /// absence it would have to default again and could default
+    /// differently.
+    timeout_ms: Int,
+  )
 }
 
 /// One secret binding: the *name* of an environment variable, the host it
@@ -177,6 +221,16 @@ pub type Net {
     requests_per_call: Int,
     /// The secret bindings, each for a host in `hosts`.
     secrets: List(Secret),
+    /// The origins, a subset of `hosts`, this extension may reach over
+    /// `http://` rather than `https://`.
+    ///
+    /// Each entry must also be in `hosts` and its host part must be one
+    /// of `loopback_hosts`, so the exemption cannot be claimed for a
+    /// remote origin by writing it here. A `[[net.secret]]` bound to a
+    /// plaintext origin is refused outright: a credential must never
+    /// ride an unencrypted hop, and the two keys are the one place the
+    /// manifest can state that.
+    plaintext_loopback: List(String),
   )
 }
 
@@ -223,6 +277,7 @@ pub fn no_net() -> Net {
     max_response_bytes: 0,
     requests_per_call: 0,
     secrets: [],
+    plaintext_loopback: [],
   )
 }
 
@@ -441,7 +496,7 @@ fn hook_of(
 ) -> Result(Hook, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["event", "entry"],
+    ["event", "entry", "timeout_ms"],
     "[[hook]]",
   ))
   use event <- result.try(required(fields, "[[hook]]", "event"))
@@ -457,7 +512,17 @@ fn hook_of(
   })
   use entry <- result.try(required(fields, "[[hook]] " <> event, "entry"))
   use Nil <- result.try(module_exists(entry, "[[hook]] " <> event, surroundings))
-  Ok(Hook(event:, entry:))
+
+  // The key is optional and the default is filled here, so the absence
+  // stops at the decoder: nothing downstream carries an `Option` it
+  // would have to default a second time.
+  use timeout_ms <- result.try(optional_positive_int(
+    fields,
+    "[[hook]] " <> event,
+    "timeout_ms",
+    default_hook_timeout_ms,
+  ))
+  Ok(Hook(event:, entry:, timeout_ms:))
 }
 
 // --- [net] -----------------------------------------------------------------
@@ -473,7 +538,10 @@ fn net_of(document: Dict(String, tom.Toml)) -> Result(Net, String) {
 fn net_fields(fields: Dict(String, tom.Toml)) -> Result(Net, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["hosts", "methods", "max_response_bytes", "requests_per_call", "secret"],
+    [
+      "hosts", "methods", "max_response_bytes", "requests_per_call", "secret",
+      "plaintext_loopback",
+    ],
     "[net]",
   ))
   use hosts <- result.try(string_list(fields, "[net]", "hosts"))
@@ -490,8 +558,107 @@ fn net_fields(fields: Dict(String, tom.Toml)) -> Result(Net, String) {
     "[net]",
     "requests_per_call",
   ))
-  use secrets <- result.try(secrets_of(fields, hosts))
-  Ok(Net(hosts:, methods:, max_response_bytes:, requests_per_call:, secrets:))
+
+  // The plaintext list is read and checked before the secrets, because a
+  // secret's refusal is stated in terms of it: a binding whose host is a
+  // plaintext origin is a credential on an unencrypted hop, and naming
+  // that requires knowing which origins are plaintext.
+  use plaintext_loopback <- result.try(optional_string_list(
+    fields,
+    "[net]",
+    "plaintext_loopback",
+  ))
+  use Nil <- result.try(loopback_only(plaintext_loopback, hosts))
+  use secrets <- result.try(secrets_of(fields, hosts, plaintext_loopback))
+  Ok(Net(
+    hosts:,
+    methods:,
+    max_response_bytes:,
+    requests_per_call:,
+    secrets:,
+    plaintext_loopback:,
+  ))
+}
+
+// Every plaintext origin must be one the allowlist already reaches and
+// must live on a loopback host. Both halves are refusals rather than
+// filters: an entry that widened nothing would read to its author as an
+// exemption they had been granted, and one on a remote host is the
+// mistake the whole key exists to make impossible.
+fn loopback_only(
+  plaintext: List(String),
+  hosts: List(String),
+) -> Result(Nil, String) {
+  use Nil <- result.try(unique(plaintext, "[net].plaintext_loopback entry"))
+  use origin <- list.try_each(plaintext)
+  use Nil <- result.try(case list.contains(hosts, origin) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "[net].plaintext_loopback names "
+        <> origin
+        <> ", which is not in [net].hosts",
+      )
+  })
+  case list.contains(loopback_hosts, host_of(origin)) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "[net].plaintext_loopback names "
+        <> origin
+        <> ", whose host is not one of "
+        <> string.join(loopback_hosts, ", ")
+        <> "; plaintext is permitted on loopback only",
+      )
+  }
+}
+
+/// The host part of an origin: the name before a `:port`, the text
+/// inside the brackets of a `[v6]:port`, or the whole string when it
+/// carries neither.
+///
+/// Written here rather than reached for from a URL library because the
+/// grammar `[net].hosts` uses is an origin and not a URL: there is no
+/// scheme to strip and no path to ignore, and a bare IPv6 address
+/// carries colons that are not a port separator.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert manifest.host_of("localhost:10031") == "localhost"
+/// ```
+///
+/// ```gleam
+/// assert manifest.host_of("[::1]:10031") == "::1"
+/// ```
+///
+pub fn host_of(origin: String) -> String {
+  case string.starts_with(origin, "[") {
+    True ->
+      case string.split_once(origin, "]") {
+        Ok(#(bracketed, _rest)) -> string.drop_start(bracketed, 1)
+        Error(Nil) -> origin
+      }
+
+    // A trailing group of digits after a colon is a port; anything else
+    // — the second colon of `::1`, say — is part of the host.
+    False ->
+      case string.split_once(origin, ":") {
+        Ok(#(head, tail)) ->
+          case is_port(tail) {
+            True -> head
+            False -> origin
+          }
+        Error(Nil) -> origin
+      }
+  }
+}
+
+fn is_port(text: String) -> Bool {
+  case string.to_utf_codepoints(text) {
+    [] -> False
+    points -> list.all(points, digit)
+  }
 }
 
 // A method `broker/egress` cannot name is refused here rather than
@@ -514,14 +681,16 @@ fn known_methods(methods: List(String)) -> Result(Nil, String) {
 fn secrets_of(
   fields: Dict(String, tom.Toml),
   hosts: List(String),
+  plaintext: List(String),
 ) -> Result(List(Secret), String) {
   use entries <- result.try(array_of_tables(fields, "secret"))
-  list.try_map(entries, fn(entry) { secret_of(entry, hosts) })
+  list.try_map(entries, fn(entry) { secret_of(entry, hosts, plaintext) })
 }
 
 fn secret_of(
   fields: Dict(String, tom.Toml),
   hosts: List(String),
+  plaintext: List(String),
 ) -> Result(Secret, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
@@ -552,6 +721,23 @@ fn secret_of(
         <> " binds the host "
         <> host
         <> ", which is not in [net].hosts",
+      )
+  })
+
+  // A credential must never ride an unencrypted hop. The loopback
+  // exemption is about a hop with no network under it, not about a hop
+  // that may carry a bearer token, so the two keys naming one origin is
+  // a contradiction refused here rather than a risk taken at dispatch.
+  use Nil <- result.try(case list.contains(plaintext, host) {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        "[[net.secret]] "
+        <> env
+        <> " binds the host "
+        <> host
+        <> ", which [net].plaintext_loopback reaches over http; a "
+        <> "credential is never sent on a plaintext hop",
       )
   })
   use header <- result.try(required(fields, "[[net.secret]] " <> env, "header"))
@@ -624,6 +810,35 @@ fn positive_int(
       )
     Ok(_other) -> Error(place <> "." <> key <> " must be a whole number")
     Error(Nil) -> Error(place <> " needs a " <> key)
+  }
+}
+
+// A positive whole number the author may leave out. An absent key takes
+// `default`; a present one is held to exactly what `positive_int` holds
+// a required key to, so "optional" is about presence and never about
+// leniency.
+fn optional_positive_int(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+  default: Int,
+) -> Result(Int, String) {
+  case dict.has_key(fields, key) {
+    False -> Ok(default)
+    True -> positive_int(fields, place, key)
+  }
+}
+
+// The same arrangement for a list of strings: absent is the empty list,
+// present is held to `string_list`'s rules.
+fn optional_string_list(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+) -> Result(List(String), String) {
+  case dict.has_key(fields, key) {
+    False -> Ok([])
+    True -> string_list(fields, place, key)
   }
 }
 

@@ -84,7 +84,17 @@ pub const staging_directory = ".staging"
 /// cannot say whether the operator approved any — the honest answer is
 /// to ask them again. The cost is one `loom ext install` per installed
 /// extension, and extensions have shipped in exactly one phase.
-pub const format_version = 2
+///
+/// Version 3 added a hook's `timeout_ms` and the net policy's
+/// `plaintext_loopback`, and the same argument applies to both. A hook's
+/// deadline is how long the harness's own timeline may be held by
+/// somebody else's code, and a plaintext origin is an exemption from the
+/// `https`-only rule; neither is something a record written before they
+/// existed can be read as having consented to, and defaulting them would
+/// be the harness answering a question the operator was never asked. A
+/// version-2 record is therefore refused by name, at the same price: one
+/// `loom ext install`.
+pub const format_version = 3
 
 /// The revision a local path records: it has none, and saying so is a
 /// fact about the install rather than a missing value.
@@ -114,7 +124,19 @@ pub type NetTerms {
     max_response_bytes: Int,
     requests_per_call: Int,
     secret_env: List(String),
+    /// The origins the operator approved reaching over `http://`. Named
+    /// exactly as the manifest's key is, because `client/extension/policy`
+    /// maps one onto the other and a rename would be a silent widening
+    /// or narrowing of what the broker will permit.
+    plaintext_loopback: List(String),
   )
+}
+
+/// One hook a record remembers: the event, the entry module, and the
+/// deadline the operator approved the extension holding the harness's
+/// own timeline for.
+pub type HookTerms {
+  HookTerms(event: String, entry: String, timeout_ms: Int)
 }
 
 /// One installed extension, as recorded at install.
@@ -141,12 +163,12 @@ pub type Record {
     net: NetTerms,
     /// The tools the manifest registers.
     tools: List(String),
-    /// The hooks the manifest registers, as `#(event, entry)` in the
-    /// manifest's own order. Stored for the reason the allowlist is: a
-    /// hook is authority over the harness's own timeline, so the events
-    /// an operator approved are part of the approval rather than
-    /// something re-read from a file that may have changed.
-    hooks: List(#(String, String)),
+    /// The hooks the manifest registers, in the manifest's own order.
+    /// Stored for the reason the allowlist is: a hook is authority over
+    /// the harness's own timeline, so the events an operator approved —
+    /// and for how long each may hold it — are part of the approval
+    /// rather than something re-read from a file that may have changed.
+    hooks: List(HookTerms),
     /// When the approval happened, RFC3339 UTC.
     approved_at: String,
     /// Who approved it: the `USER` environment, or `unknown`.
@@ -272,6 +294,7 @@ pub fn terms(net: manifest.Net) -> NetTerms {
     max_response_bytes: net.max_response_bytes,
     requests_per_call: net.requests_per_call,
     secret_env: list.map(net.secrets, fn(secret) { secret.env }),
+    plaintext_loopback: net.plaintext_loopback,
   )
 }
 
@@ -306,7 +329,13 @@ pub fn for_install(
     allowlist:,
     net: terms(decoded.net),
     tools: list.map(decoded.tools, fn(tool) { tool.name }),
-    hooks: list.map(decoded.hooks, fn(hook) { #(hook.event, hook.entry) }),
+    hooks: list.map(decoded.hooks, fn(hook) {
+      HookTerms(
+        event: hook.event,
+        entry: hook.entry,
+        timeout_ms: hook.timeout_ms,
+      )
+    }),
     approved_at: instant(approved_at),
     approved_by:,
     artifact:,
@@ -341,10 +370,11 @@ pub fn encode(written: Record) -> Json {
   ])
 }
 
-fn encode_hook(hook: #(String, String)) -> Json {
+fn encode_hook(hook: HookTerms) -> Json {
   json.object([
-    #("event", json.string(hook.0)),
-    #("entry", json.string(hook.1)),
+    #("event", json.string(hook.event)),
+    #("entry", json.string(hook.entry)),
+    #("timeout_ms", json.int(hook.timeout_ms)),
   ])
 }
 
@@ -355,6 +385,7 @@ fn encode_terms(net: NetTerms) -> Json {
     #("max_response_bytes", json.int(net.max_response_bytes)),
     #("requests_per_call", json.int(net.requests_per_call)),
     #("secret_env", json.array(net.secret_env, json.string)),
+    #("plaintext_loopback", json.array(net.plaintext_loopback, json.string)),
   ])
 }
 
@@ -409,10 +440,11 @@ fn decoder() -> Decoder(Record) {
   ))
 }
 
-fn hook_decoder() -> Decoder(#(String, String)) {
+fn hook_decoder() -> Decoder(HookTerms) {
   use event <- decode.field("event", decode.string)
   use entry <- decode.field("entry", decode.string)
-  decode.success(#(event, entry))
+  use timeout_ms <- decode.field("timeout_ms", decode.int)
+  decode.success(HookTerms(event:, entry:, timeout_ms:))
 }
 
 fn terms_decoder() -> Decoder(NetTerms) {
@@ -421,12 +453,17 @@ fn terms_decoder() -> Decoder(NetTerms) {
   use max_response_bytes <- decode.field("max_response_bytes", decode.int)
   use requests_per_call <- decode.field("requests_per_call", decode.int)
   use secret_env <- decode.field("secret_env", decode.list(decode.string))
+  use plaintext_loopback <- decode.field(
+    "plaintext_loopback",
+    decode.list(decode.string),
+  )
   decode.success(NetTerms(
     hosts:,
     methods:,
     max_response_bytes:,
     requests_per_call:,
     secret_env:,
+    plaintext_loopback:,
   ))
 }
 
@@ -446,7 +483,7 @@ fn terms_decoder() -> Decoder(NetTerms) {
 ///
 /// ```gleam
 /// assert record.readable("{\"format\": 1}")
-///   == Error("the install record is format 1; this server reads 2")
+///   == Error("the install record is format 1; this server reads 3")
 /// ```
 ///
 pub fn readable(text: String) -> Result(Record, String) {
@@ -490,7 +527,7 @@ fn skewed(format: Int) -> String {
 ///
 /// ```gleam
 /// assert record.current(Record(..written, format: 99))
-///   == Error("the install record is format 99; this server reads 2")
+///   == Error("the install record is format 99; this server reads 3")
 /// ```
 ///
 pub fn current(written: Record) -> Result(Record, String) {

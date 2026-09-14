@@ -864,6 +864,29 @@ catalogue without opening runtimes. Explicit admission invokes
   hands out, and it *refuses* rather than silently succeeding: a `set`
   answering `Ok` into nothing reads to a program as an eviction and it
   loops.
+- `client/paywall.{Cache, Slot, start_cache, slot, attach, seam,
+  ask_timeout_ms, no_extension_reason, unavailable_reason}` — the harness
+  half of `provider/paywall`, and the untying of a knot: the provider
+  gateway's configuration is fixed before a session's hook bus exists, so
+  the seam closes over a `Slot` — one tiny `weft/actor` created before
+  the wiring config is built and filled by `attach` the instant the bus
+  starts, the indirection `client/agency.seam` and `client/scratch.seam`
+  use. `credential(provider)` reads the `Cache`, one settled token per
+  catalogue entry, so a session that has paid does not provoke a fresh
+  402 on every turn; nothing here decides when a token expired, because
+  the proxy's next 402 is the exact signal. `settle` borrows the bus,
+  calls `hooks.pay`, and composes `l402.authorization(challenge.macaroon,
+  preimage)`. Both questions are monitored send-and-selects rather than
+  `process.call`: the caller is the gateway's own pump, and a dead or
+  wedged actor must cost a cache miss or an in-band decline, never a
+  request. There is no budget and no ceiling — the extension holds the
+  wallet and is the only party that can bound the spend.
+  `serve.paywall_seam` builds one cache and one slot per session
+  assembly, because `resolve` and `resolve_managed` both run per session
+  and a cache threaded through `Settings` would have been per session
+  too; a session whose two actors will not start keeps the unpaywalled
+  gateway and logs `extension.paywall.unavailable`, under which an
+  `auth = "l402"` entry declines in band exactly as it did before.
 - `client/rules.{Rule, parse, fires_on, scannable_text, injection,
   fired_key, cursor_key, fired_value, cursor_value, cursor_seq,
   max_rules, max_triggers, max_name_length, max_trigger_length,
@@ -1812,6 +1835,16 @@ The rest of the path is phase 1's own, and each module is one question:
   `Manifest` carries `[extension]`, the `[[tool]]` list (name,
   description, `prompt_snippet`, `parameters`, `entry`, `timeout_ms`),
   the `[[hook]]` list, and `[net]` with its `[[net.secret]]` bindings.
+  A `[[hook]]` carries an optional `timeout_ms` (positive, defaulting to
+  `manifest.default_hook_timeout_ms`, which is where the number 5000
+  lives — `hooks.deadline_ms` is an alias, because `hooks` imports this
+  module for the event names and the cycle can only run one way), and
+  `payment_required` is the tenth name in `hook_events`. `[net]` gains an
+  optional `plaintext_loopback`: origins, each also in `hosts` and each
+  on a `loopback_hosts` host, that may be reached over `http://` —
+  `host_of` is the one reading of an origin's host part, and a
+  `[[net.secret]]` bound to a plaintext origin is refused by name,
+  because a credential never rides an unencrypted hop.
   Unknown keys are errors in *every* table, which is what refuses the
   `[client]` table the design note reserves for a later ruling without a
   special case for it. `tier` decodes only `"jailed"`. Three rules need
@@ -1827,11 +1860,16 @@ The rest of the path is phase 1's own, and each module is one question:
   resolved from `Settings.home` (or `--home`) rather than an environment
   read inside the pipeline. The record stores the *terms* of the
   approval — the tree digest, the manifest hash, the allowlist, the net
-  policy with secret names only, and (format 2) the `#(event, entry)`
-  hooks — because recomputing them at load would mean an operator's yes
-  silently followed the harness's current idea of the seam. A format-1
-  record is refused rather than read with an empty hook list: it cannot
-  say whether hooks were approved, and the honest answer is to ask.
+  policy with secret names only, and the `record.HookTerms` each
+  `[[hook]]` amounts to — because recomputing them at load would mean an
+  operator's yes silently followed the harness's current idea of the
+  seam. `format_version` is **3**: version 2 added the hooks, version 3
+  each hook's `timeout_ms` and the net terms' `plaintext_loopback`. An
+  older record is refused rather than read with the new fields defaulted
+  — neither a deadline over the harness's own timeline nor an exemption
+  from the `https`-only rule is something a record written before it
+  existed can be read as having consented to — and the cost is one
+  `loom ext install`.
   `readable(text)` is the door discovery uses, and it decodes the
   version *first* — the full decoder would otherwise reach a format-1
   file before the version check and report a missing `hooks` field when
@@ -1895,6 +1933,13 @@ tools reach:
   Answering | Notifying)` is per manager for the same reason a drop is:
   `event_manager` removes a handler from the inside and offers no handle
   onto its twin.
+  An `Extension` carries `hooks: List(Subscription)` rather than a list
+  of event names: `Subscription(event, deadline_ms)` is one `[[hook]]`
+  table as the bus reads it, so `ask` hands the invoker the deadline
+  *that* hook declared and `fan_out_for(bus, event)` sizes a fan-out from
+  the subscribed deadlines plus one `deadline_ms` of margin. `fan_out_ms`
+  stays the budget for the three events whose deadlines nobody has had a
+  reason to set.
   `Invoker = fn(String, String, MsgPackValue, Int) -> Result(MsgPackValue,
   HookFailure)` is the seam onto the persistent satellite host, injected
   so the bus is drivable with functions and so the host lands in one
@@ -1922,6 +1967,22 @@ tools reach:
   instruction files. The module documentation is the normative table of
   all nine wire shapes; the extension's side of the same wire is
   `ext/hook`.
+- `client/extension/hooks.{Payment, pay, Subscription, fan_out_for}` —
+  the answering event whose answer is money. `pay(bus, provider,
+  challenge, now_unix_ms)` fans `payment_required` out under
+  `fan_out_for`'s budget and answers with the first `Paid` preimage in
+  load order, else the first `Declined` reason, else "no extension
+  answered the payment challenge" — three distinct facts, because an
+  operator reading a failed request needs to tell an extension that
+  refused from none being installed. The args document is `{provider,
+  invoice, amount_sat, challenge_id, route_id, now_unix_ms}` and **the
+  macaroon is not in it**: a hook pays an invoice, and `client/paywall`
+  composes the credential from the preimage and the macaroon the harness
+  kept, so an extension cannot spend that credential anywhere else. A
+  `paid` whose preimage is not 64 lowercase hex characters drops the
+  handler, the judgement `forward_verdict` makes about an unreadable
+  verdict: a credential composed from it could never settle anything and
+  would be cached for every later request.
 - `client/extension/hooks.{compaction_notes, usage}` — phase 4c's two
   events. `compaction_notes(bus, op, cue)` fans `before_compact` out and
   gathers every note in load order, rendered through `note_block` and
