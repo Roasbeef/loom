@@ -52,7 +52,11 @@ The scroll implementation passed 911 Erlang tests, 862 JavaScript tests,
 format checks, and the xterm oracle. Loom's integration passed
 `make check-tui` (475 tests), `make check-client` (1,783 tests), and
 `make doc-check`. Hosted checks and Linux signoff must be read on the final
-PR commits before making merge-readiness claims.
+PR commits before making merge-readiness claims. At the final etui pin, the
+first client run passed 1,782 tests and failed the approval-inspector frame
+assertion in `tui_approval_effect_test`; a complete rerun passed all 1,783.
+That virtual-backend test does not exercise ANSI diffing. Its intermittent
+failure remains part of the validation record.
 
 The fork consolidation exposed a Linux/OTP 28 PTY fixture failure: an unset
 `TERM` made OTP decline raw-mode setup. The probe now declares its terminal
