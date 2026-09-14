@@ -90,8 +90,9 @@ pub fn parent_and_two_subagents_collaborate_across_reboot_test() {
     api.Options(
       ..base,
       retry_policy: operation.NormalizedRetryPolicy(
-        max_attempts: 3,
+        attempts: operation.Bounded(max_attempts: 3),
         base_delay_ms: 30,
+        max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),

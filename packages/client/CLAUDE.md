@@ -1288,6 +1288,21 @@ catalogue without opening runtimes. Explicit admission invokes
   that fell behind how much it missed rather than handing it a
   plausible-looking window, and binary output goes out rather than being
   held back forever waiting for a character boundary.
+- `client/retryconf.{default_policy, unbounded_attempts, parse_policy}` —
+  the optional `[retry]` table from the same `loom.toml`, parsed by the
+  same strict, total discipline as `[schedules]` and `[jobs]`: unknown
+  keys refused, `attempts = 0` refused, a negative delay refused, each
+  refusal naming the key. It produces a `machine/operation.
+  NormalizedRetryPolicy`, which `serve.Settings.retry_policy` carries to
+  `api.Options.retry_policy`, so an operator's ladder is the one every
+  run on the session uses. `attempts` is a positive integer or the
+  string `"unbounded"`; `base_delay_ms` and `max_delay_ms` are
+  non-negative milliseconds. A missing table, and every key a present
+  table omits, comes from `runtime/api.default_retry_policy` — the one
+  place those three numbers live, so the parser cannot drift from the
+  runtime default. That default never gives up, so the table is mostly
+  for the operator who wants a bounded ladder that fails the run instead
+  of long-polling a provider that is refusing.
 - `client/jobs.{JobsPolicy, Request, Started, Cursors, Polled,
   Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,

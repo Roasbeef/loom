@@ -10,7 +10,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec
 import machine/operation.{
-  type OperationState, Assistant, AwaitingDeferred, BranchSummary,
+  type OperationState, Assistant, AwaitingDeferred, Bounded, BranchSummary,
   BranchSummaryPreparation, CallCompleted, CallEffectPending, CallOutcomeReady,
   CallPlanned, CancelRequested, Checkpoint, CheckpointPhase, Compacting,
   CompactionIntent, CompactionLastResult, CompactionPreparation,
@@ -27,7 +27,8 @@ import machine/operation.{
   StructuralCompleted, StructuralDeclined, StructuralFailed,
   StructuralProvenance, SummarizedNavigation, SummaryContext,
   SummaryEffectPending, SummaryReady, SummaryRequest, SummaryRetryWait,
-  ThresholdReason, ThresholdSummary, ToolBatch, Tools, UnsummarizedNavigation,
+  ThresholdReason, ThresholdSummary, ToolBatch, Tools, Unbounded,
+  UnsummarizedNavigation,
 }
 import machine/strand.{
   ModelIdentity, StrandConfiguration, StrandState, ThinkingHigh, ThinkingLow,
@@ -80,7 +81,11 @@ fn generation_context() -> operation.GenerationContext {
     trigger: entry_id(1),
     configuration: configuration(),
     stream_options: json.Object([#("deferred", json.Bool(False))]),
-    retry: NormalizedRetryPolicy(max_attempts: 3, base_delay_ms: 250),
+    retry: NormalizedRetryPolicy(
+      attempts: Bounded(max_attempts: 3),
+      base_delay_ms: 250,
+      max_delay_ms: 1_073_741_824,
+    ),
     overflow_recovery_used: True,
   )
 }
@@ -92,7 +97,11 @@ fn summary_context() -> operation.SummaryContext {
     kind: CompactionSummary,
     configuration: configuration(),
     stream_options: json.Object([]),
-    retry: NormalizedRetryPolicy(max_attempts: 2, base_delay_ms: 100),
+    retry: NormalizedRetryPolicy(
+      attempts: Bounded(max_attempts: 2),
+      base_delay_ms: 100,
+      max_delay_ms: 1_073_741_824,
+    ),
     reason: OverflowSummary,
   )
 }
@@ -346,7 +355,11 @@ fn all_states() -> List(OperationState) {
               kind: BranchSummary,
               configuration: configuration(),
               stream_options: json.Null,
-              retry: NormalizedRetryPolicy(max_attempts: 1, base_delay_ms: 0),
+              retry: NormalizedRetryPolicy(
+                attempts: Bounded(max_attempts: 1),
+                base_delay_ms: 0,
+                max_delay_ms: 1_073_741_824,
+              ),
               reason: ManualSummary,
             ),
             next_attempt: 1,
@@ -365,7 +378,11 @@ fn all_states() -> List(OperationState) {
             kind: CompactionSummary,
             configuration: configuration(),
             stream_options: json.Null,
-            retry: NormalizedRetryPolicy(max_attempts: 2, base_delay_ms: 10),
+            retry: NormalizedRetryPolicy(
+              attempts: Bounded(max_attempts: 2),
+              base_delay_ms: 10,
+              max_delay_ms: 1_073_741_824,
+            ),
             reason: ThresholdSummary,
           ),
           next_attempt: 1,
@@ -380,6 +397,58 @@ pub fn state_constructor_coverage_roundtrip_test() {
   list.each(all_states(), fn(state) {
     assert codec.decode_state(codec.encode_state(state)) == Ok(state)
   })
+}
+
+pub fn unbounded_retry_policy_roundtrip_test() {
+  let context =
+    GenerationContext(
+      ..generation_context(),
+      retry: NormalizedRetryPolicy(
+        attempts: Unbounded,
+        base_delay_ms: 1000,
+        max_delay_ms: 60_000,
+      ),
+    )
+  let state =
+    run(Assistant(generation: GenerationReady(context:, next_attempt: 4)))
+  assert codec.decode_state(codec.encode_state(state)) == Ok(state)
+}
+
+pub fn retry_policy_recorded_before_the_cap_decodes_uncapped_test() {
+  // A recording written before `maxDelayMs` existed carries a bounded
+  // integer budget and no cap. Stripping the cap from a fresh encoding
+  // reproduces that shape; it must decode to the same uncapped policy the
+  // fixture uses, not fail as corruption.
+  let state =
+    run(
+      Assistant(generation: GenerationReady(
+        context: generation_context(),
+        next_attempt: 1,
+      )),
+    )
+  let legacy =
+    codec.encode_state(state)
+    |> json.to_string
+    |> string.replace(",\"maxDelayMs\":1073741824", "")
+  assert !string.contains(legacy, "maxDelayMs")
+  let assert Ok(parsed) = json.parse(legacy)
+  assert codec.decode_state(parsed) == Ok(state)
+}
+
+pub fn retry_budget_rejects_an_unknown_word_test() {
+  let state =
+    run(
+      Assistant(generation: GenerationReady(
+        context: generation_context(),
+        next_attempt: 1,
+      )),
+    )
+  let bad =
+    codec.encode_state(state)
+    |> json.to_string
+    |> string.replace("\"maxAttempts\":3", "\"maxAttempts\":\"forever\"")
+  let assert Ok(parsed) = json.parse(bad)
+  let assert Error(_) = codec.decode_state(parsed)
 }
 
 pub fn configuration_roundtrip_all_thinking_levels_test() {

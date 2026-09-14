@@ -874,8 +874,9 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       // attempt, and a schedule must not be able to exhaust the ladder
       // and turn a completed run into a failed one by arithmetic.
       retry_policy: operation.NormalizedRetryPolicy(
-        max_attempts: 6,
+        attempts: operation.Bounded(max_attempts: 6),
         base_delay_ms: 40,
+        max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),

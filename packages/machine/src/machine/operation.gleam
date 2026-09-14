@@ -157,12 +157,65 @@ pub type RunSettings {
   )
 }
 
-/// The provider retry policy in normalized form (pi §0.7): `max_attempts`
-/// is at least 1 (disabled retry normalizes to one attempt);
-/// `base_delay_ms` is non-negative. Exponential delay saturates rather
-/// than overflowing.
+/// How many provider attempts a policy allows before the operation gives
+/// up on a retryable failure.
+///
+/// A rate limit is a scheduling fact rather than a failure: the provider
+/// will serve the request once the window clears, and the only question
+/// is when. `Unbounded` says the answer is "keep asking", which turns the
+/// retry ladder into a long poll under the capped, jittered delay in
+/// `NormalizedRetryPolicy`. Cancellation is the way out of an unbounded
+/// ladder, and it works at every wait because the wait is durable state
+/// the driver re-plans from, not a timer it is stuck inside.
+pub type RetryBudget {
+  /// At most this many attempts in total, at least 1 (disabled retry
+  /// normalizes to one attempt).
+  Bounded(max_attempts: Int)
+
+  /// Retry a retryable failure until it settles or the run is cancelled.
+  Unbounded
+}
+
+/// The provider retry policy in normalized form (pi §0.7).
+///
+/// The delay before attempt `n + 1` grows as `base_delay_ms * 2^(n-1)`
+/// until it reaches `max_delay_ms`, then holds there; a provider
+/// `retry-after` hint is a floor on top of that. Both are non-negative,
+/// and `max_delay_ms` at or above the base is the sensible shape, though
+/// a cap below the base simply clamps every wait to the cap. Exponential
+/// growth saturates rather than overflowing.
 pub type NormalizedRetryPolicy {
-  NormalizedRetryPolicy(max_attempts: Int, base_delay_ms: Int)
+  NormalizedRetryPolicy(
+    attempts: RetryBudget,
+    base_delay_ms: Int,
+    max_delay_ms: Int,
+  )
+}
+
+/// Whether a policy allows another attempt after `finished_attempt`
+/// (1-based) has failed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let policy =
+///   NormalizedRetryPolicy(
+///     attempts: Bounded(max_attempts: 3),
+///     base_delay_ms: 100,
+///     max_delay_ms: 1000,
+///   )
+/// assert operation.attempts_remain(policy, after: 2)
+/// assert !operation.attempts_remain(policy, after: 3)
+/// ```
+///
+pub fn attempts_remain(
+  policy: NormalizedRetryPolicy,
+  after finished_attempt: Int,
+) -> Bool {
+  case policy.attempts {
+    Bounded(max_attempts:) -> finished_attempt < max_attempts
+    Unbounded -> True
+  }
 }
 
 // --- the operation state -------------------------------------------------

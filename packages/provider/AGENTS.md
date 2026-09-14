@@ -76,7 +76,14 @@ processful shell around that sans-io core. WP-F.
   operator exported are indistinguishable here — by design, since this
   package must not learn where a value came from.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
-  `is_overflow_message`, `overflow_message`.
+  `is_overflow_message`, `overflow_message`. Two rules keep a rate limit
+  out of the terminal set, since the overflow matcher reads free text and
+  a throttled provider often mentions tokens: an HTTP 429 is never
+  overflow (the status is checked ahead of the overflow patterns, and
+  every other status stays behind them), and a mid-stream `StreamError`
+  whose message says throttling is retryable whatever its error type,
+  which is how an OpenAI-compatible proxy's untyped error chunk reaches
+  the retry ladder.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
   remote failures after transport delivery: a 64 KiB retained body budget,
   byte-bounded diagnostic fields, and exact scrubbing of the request key before

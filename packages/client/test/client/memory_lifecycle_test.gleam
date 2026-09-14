@@ -27,6 +27,7 @@ import client/codemode
 import client/distillpass
 import client/jobs
 import client/memory
+import client/retryconf
 import client/schedule
 import client/serve
 import core/clock
@@ -468,6 +469,7 @@ fn settings(
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     jobs_policy: jobs.default_policy,
+    retry_policy: retryconf.default_policy,
     deactivated_tools: [],
     memory: distillpass.default_options(),
     // Offline, three names: the jail every session had before the

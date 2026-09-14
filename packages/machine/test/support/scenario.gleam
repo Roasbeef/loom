@@ -23,9 +23,10 @@ import gleam/result
 import machine/acceptance.{type AcceptRequest, AcceptCtx}
 import machine/codec
 import machine/operation.{
-  type Operation, type OperationState, type PendingEntry, AwaitingDeferred,
-  CompactionSettings, ConsumeAll, DeferredEffectPending, DeferredSuspended,
-  NormalizedRetryPolicy, Parallel, RunSettings, RunState, Tools,
+  type NormalizedRetryPolicy, type Operation, type OperationState,
+  type PendingEntry, AwaitingDeferred, Bounded, CompactionSettings, ConsumeAll,
+  DeferredEffectPending, DeferredSuspended, NormalizedRetryPolicy, Parallel,
+  RunSettings, RunState, Tools,
 }
 import machine/planner.{
   type Action, type Observation, type PlannerInputs, type ThresholdStatus,
@@ -40,7 +41,13 @@ import support/store.{type Store}
 /// The deterministic world a scenario threads: the durable store plus the
 /// driver's clock/seed counters and the operation's immutable metadata.
 pub type World {
-  World(store: Store, op: Operation, now: Int, seed: Int)
+  World(
+    store: Store,
+    op: Operation,
+    now: Int,
+    seed: Int,
+    retry_policy: NormalizedRetryPolicy,
+  )
 }
 
 /// Per-step knobs beyond the observation.
@@ -119,6 +126,17 @@ pub fn fresh() -> World {
     ),
     now: 1_000_000,
     seed: 1,
+    retry_policy: bounded_policy(),
+  )
+}
+
+/// The policy a fresh world captures: three attempts from a 100 ms base,
+/// effectively uncapped, so backoff tests can name exact intervals.
+pub fn bounded_policy() -> NormalizedRetryPolicy {
+  NormalizedRetryPolicy(
+    attempts: Bounded(max_attempts: 3),
+    base_delay_ms: 100,
+    max_delay_ms: 1_073_741_824,
   )
 }
 
@@ -156,6 +174,7 @@ pub fn accept(
         Ok(store) ->
           Ok(#(
             World(
+              ..world,
               store:,
               op: operation,
               now: world.now + 1000,
@@ -221,7 +240,7 @@ pub fn build_inputs(
     configuration: read_configuration(world.store),
     configuration_seq:,
     stream_options: json.Object([]),
-    retry_policy: NormalizedRetryPolicy(max_attempts: 3, base_delay_ms: 100),
+    retry_policy: world.retry_policy,
     pending: pending_payloads(world.store),
     projected_custom_types: ["projected"],
     batch_source: batch_source(world.store, state),

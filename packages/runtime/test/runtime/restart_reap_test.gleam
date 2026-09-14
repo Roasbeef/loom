@@ -30,7 +30,7 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation.{
-  NormalizedRetryPolicy, ReplaySafe, RunFailed, RunLastResult,
+  Bounded, NormalizedRetryPolicy, ReplaySafe, RunFailed, RunLastResult,
 }
 import provider/stream
 import runtime/api
@@ -153,8 +153,11 @@ pub fn predecessor_retry_timer_cannot_wake_replacement_test() {
   let eff =
     effects.Effects(
       ..base_effects,
+      // The retry ladder jitters into the upper half of its 10 s base,
+      // so the retry arm is the only timer in that window; anything
+      // shorter is a checkpoint poll or lease tick and is not recorded.
       timers: effects.Timers(after: fn(delay_ms, wake) {
-        case delay_ms == 10_000 {
+        case delay_ms >= 5000 && delay_ms <= 10_000 {
           True -> record_callback(callbacks, wake)
           False -> Nil
         }
@@ -164,8 +167,9 @@ pub fn predecessor_retry_timer_cannot_wake_replacement_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       retry_policy: NormalizedRetryPolicy(
-        max_attempts: 3,
+        attempts: Bounded(max_attempts: 3),
         base_delay_ms: 10_000,
+        max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 600_000,
       tolerance: supervisor.Tolerance(intensity: 100, period: 10),
@@ -1076,7 +1080,11 @@ pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
       strand: "main",
       effects:,
       stream_options: json.Object([]),
-      retry_policy: NormalizedRetryPolicy(max_attempts: 1, base_delay_ms: 10),
+      retry_policy: NormalizedRetryPolicy(
+        attempts: Bounded(max_attempts: 1),
+        base_delay_ms: 10,
+        max_delay_ms: 1_073_741_824,
+      ),
       poll_interval_ms: 1000,
       claim_reaper: fn(_strand, reaper) {
         // A slow ledger: the driver dies before this returns, and the pid

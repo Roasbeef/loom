@@ -51,7 +51,19 @@ pub type RetryPolicy {
 /// unknown provider, missing secret). An error whose message matches the
 /// overflow patterns is always terminal, so a context-limit failure
 /// dressed as a retryable status still reaches the machine's overflow
-/// classification.
+/// classification. Status 429 is the one exception, and it is checked
+/// *before* the overflow patterns: the overflow matcher is a message
+/// heuristic, and a throttling body such as "token limit exceeded for
+/// this minute" matches it by accident. An oversized request must
+/// compact rather than retry unchanged, so every other status stays
+/// behind the overflow check; only a 429 says unambiguously that the
+/// request was rejected for its rate rather than for its size.
+///
+/// A `StreamError` — the mid-stream failure chunk an OpenAI-compatible
+/// proxy emits after it has already answered 200 — is retryable when
+/// its message says throttling, whatever its error type. Proxies differ
+/// in what they put in the error object's `type` field and some omit it,
+/// so the type alone cannot decide a 429 reported this way.
 ///
 /// ## Examples
 ///
@@ -72,10 +84,11 @@ pub fn classify(error: ProviderError) -> RetryClass {
     DrainProofLost -> Terminal
     TransportFailed(reason: _) -> Retryable(backoff_hint_ms: None)
     StreamDisconnected(context: _) -> Retryable(backoff_hint_ms: None)
+    HttpError(status: 429, api_error_type: _, message: _, retry_after_ms:) ->
+      Retryable(backoff_hint_ms: retry_after_ms)
     HttpError(status:, api_error_type:, message:, retry_after_ms:) -> {
       let transient_status =
         status == 408
-        || status == 429
         || status >= 500
         || is_transient_error_type(api_error_type)
       case is_overflow_message(message) || !transient_status {
@@ -85,7 +98,12 @@ pub fn classify(error: ProviderError) -> RetryClass {
     }
     StreamError(api_error_type:, message:) ->
       case
-        !is_overflow_message(message) && is_transient_error_type(api_error_type)
+        is_throttle_message(message)
+        || is_throttle_message(api_error_type)
+        || {
+          !is_overflow_message(message)
+          && is_transient_error_type(api_error_type)
+        }
       {
         True -> Retryable(backoff_hint_ms: None)
         False -> Terminal
@@ -96,6 +114,22 @@ pub fn classify(error: ProviderError) -> RetryClass {
     UnknownProvider(provider: _) -> Terminal
     NoSecret(provider: _, secret_name: _) -> Terminal
   }
+}
+
+// The vocabulary a throttled response uses when the status code is not
+// available to say so. It shares the first three substrings with the
+// `excluded` set in `is_overflow_message`, which is what keeps a
+// throttling message out of the compaction path, and adds the error
+// code form a proxy puts in an error object rather than in prose. The
+// bare digits "429" are deliberately not matched: under an unbounded
+// retry budget a false positive retries forever, and a request id or a
+// byte count can contain those digits.
+fn is_throttle_message(message: String) -> Bool {
+  let lowered = string.lowercase(message)
+  string.contains(lowered, "rate limit")
+  || string.contains(lowered, "rate_limit")
+  || string.contains(lowered, "too many requests")
+  || string.contains(lowered, "throttling")
 }
 
 fn is_transient_error_type(error_type: String) -> Bool {
