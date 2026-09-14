@@ -314,6 +314,34 @@ pub fn a_credential_may_not_ride_a_plaintext_hop_test() {
   assert string.contains(reason, "WAVED_TOKEN")
 }
 
+/// IPv6 loopback installs nowhere, because it could match nothing. The
+/// egress allowlist splits an entry on `:`, so neither the bracketed
+/// spelling a URL uses nor the bare one survives that grammar — an entry
+/// accepted here would be refused on every request with nothing saying
+/// why. Both spellings are refused, and the bracketed one gets the
+/// sentence that names the limitation.
+pub fn a_bracketed_ipv6_plaintext_origin_is_refused_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      "[net]\nhosts = [\"[::1]:10031\"]\nmethods = [\"POST\"]\n"
+      <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+      <> "plaintext_loopback = [\"[::1]:10031\"]\n",
+    ))
+    as "the egress allowlist has no grammar for an IPv6 origin"
+  assert string.contains(reason, "IPv6 loopback is not supported")
+}
+
+pub fn a_bare_ipv6_plaintext_origin_is_refused_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      "[net]\nhosts = [\"::1\"]\nmethods = [\"POST\"]\n"
+      <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+      <> "plaintext_loopback = [\"::1\"]\n",
+    ))
+    as "an unbracketed IPv6 address is not a loopback host either"
+  assert string.contains(reason, "plaintext is permitted on loopback only")
+}
+
 pub fn the_host_part_of_an_origin_is_read_without_its_port_test() {
   assert manifest.host_of("localhost:10031") == "localhost"
   assert manifest.host_of("127.0.0.1") == "127.0.0.1"

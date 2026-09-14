@@ -134,7 +134,13 @@ pub const default_hook_timeout_ms = 5000
 /// and the process on the other end is one the operator started — which
 /// is the whole of the exemption, and why it cannot be widened to a name
 /// that merely resolves to a loopback address today.
-pub const loopback_hosts = ["localhost", "127.0.0.1", "::1"]
+///
+/// IPv6 loopback is not on the list, and its absence is a refusal rather
+/// than an oversight. `broker/egress` compares an allowlist entry by
+/// splitting it on `:`, which `::1` never survives, so an entry naming
+/// the IPv6 loopback would install here and then be refused on every
+/// request. `loopback_only` says that at install instead.
+pub const loopback_hosts = ["localhost", "127.0.0.1"]
 
 /// Where an extension's body runs.
 ///
@@ -600,6 +606,23 @@ fn loopback_only(
         <> ", which is not in [net].hosts",
       )
   })
+
+  // A bracketed host is an IPv6 address, and the egress allowlist has no
+  // grammar that can match one. Refusing it here names the limitation to
+  // the author, where accepting it would install an entry whose every
+  // request is refused for a reason nothing states.
+  use Nil <- result.try(case string.starts_with(origin, "[") {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        "[net].plaintext_loopback names "
+        <> origin
+        <> "; IPv6 loopback is not supported, so name "
+        <> string.join(loopback_hosts, " or ")
+        <> " instead",
+      )
+  })
+
   case list.contains(loopback_hosts, host_of(origin)) {
     True -> Ok(Nil)
     False ->

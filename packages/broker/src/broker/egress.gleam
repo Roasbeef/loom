@@ -62,12 +62,18 @@
 ////   network, and the process answering is one the operator started on
 ////   this host. So `Policy.plaintext` may name origins reachable over
 ////   `http://`, and `check_scheme` admits one only when the policy lists
-////   it *and* its host is a loopback name — the manifest has already
-////   checked the same thing, and checking it again here means a `Policy`
-////   assembled by hand cannot widen the exception to the open internet.
-////   Nothing else about the judgement moves: the allowlist is still
-////   exact, the method list still applies, and a redirect to `http://`
-////   is judged by this same rule on its own hop.
+////   it *and* its host is a loopback name *and* no bound `Secret` would
+////   fire for it — the manifest has already checked the first two, and
+////   checking them again here means a `Policy` assembled by hand cannot
+////   widen the exception to the open internet. The third is checked
+////   only here, and it is checked the way `injected` decides who gets
+////   the header, by normalized origin rather than by entry string: two
+////   spellings of one origin compare as different strings upstream and
+////   as the same origin in the injector, so a plaintext entry and a
+////   binding written differently would otherwise put a credential on an
+////   unencrypted hop. Nothing else about the judgement moves: the
+////   allowlist is still exact, the method list still applies, and a
+////   redirect to `http://` is judged by this same rule on its own hop.
 //// - **`Host`, `Content-Length`, `Transfer-Encoding` and `Connection`
 ////   are reserved to this module**, alongside every bound secret's
 ////   header. A caller-supplied `Host` would let the allowlist check and
@@ -257,8 +263,10 @@ pub type Response {
 /// `describe` has nothing to redact.
 pub type Refusal {
   /// The URL's scheme is not `https`, and it is not an `http://` URL
-  /// naming a loopback origin this policy lists in `plaintext`.
-  /// Plaintext is refused rather than upgraded.
+  /// naming a credential-free loopback origin this policy lists in
+  /// `plaintext`. An origin a `Secret` is bound to is refused here even
+  /// when `plaintext` names it, because the credential would ride the
+  /// hop in the clear. Plaintext is refused rather than upgraded.
   SchemeNotHttps(url: String)
 
   /// The URL's origin is not on the allowlist. `allowed` is the policy's
@@ -340,11 +348,14 @@ const max_header_point = 255
 ///
 /// The whole argument for the exception is that there is no network
 /// between this VM and the peer, which is a property of the address
-/// rather than of the operator's intent. `::1` is named for
-/// completeness: the allowlist grammar splits an entry on `:`, so an
-/// IPv6 entry cannot parse and is dropped from the comparison set, which
-/// is the fail-closed direction.
-const loopback_hosts = ["localhost", "127.0.0.1", "::1"]
+/// rather than of the operator's intent. IPv6 loopback is absent because
+/// it could never have matched: the allowlist grammar splits an entry on
+/// `:`, so `::1` never parses into an origin, and a URL spells the host
+/// bracketed as `[::1]`, which is not the text this list holds. Naming
+/// it here said the address was supported when the comparison could
+/// only ever refuse it, and the manifest now refuses such an entry at
+/// install with a sentence saying so.
+const loopback_hosts = ["localhost", "127.0.0.1"]
 
 /// The scheme's default port, normalized away so that
 /// `https://example.com` and `https://example.com:443` compare equal.
@@ -475,7 +486,7 @@ pub fn describe(refusal: Refusal) -> String {
   case refusal {
     SchemeNotHttps(url:) ->
       "only https:// is permitted, or http:// to a loopback origin this"
-      <> " policy names as plaintext, and "
+      <> " policy names as plaintext and binds no secret to, and "
       <> url
       <> " is neither"
 
@@ -772,10 +783,31 @@ fn check_plaintext(
     |> list.filter_map(origin_from_entry)
     |> list.contains(origin)
 
-  case named, list.contains(loopback_hosts, origin.host) {
-    True, True -> Ok(Nil)
+  // "No credential rides a plaintext hop" is decided here rather than
+  // upstream, because upstream decides it by comparing entry strings and
+  // `injected` decides who gets the header by comparing *normalized*
+  // origins. Two spellings of one origin — a case difference, `:443`
+  // written out — pass a string comparison as distinct and then meet
+  // again inside `origin_from_entry`, which is the gap that would put a
+  // key on the wire in the clear. Asking the injector's own question is
+  // what closes it: if any binding would fire for this origin, the hop
+  // is refused whatever the policy's plaintext list says.
+  let bound =
+    list.any(policy.secrets, fn(secret) {
+      origin_from_entry(secret.host) == Ok(origin)
+    })
 
-    False, True | True, False | False, False -> Error(SchemeNotHttps(url))
+  case named, list.contains(loopback_hosts, origin.host), bound {
+    True, True, False -> Ok(Nil)
+
+    True, True, True
+    | True, False, True
+    | True, False, False
+    | False, True, True
+    | False, True, False
+    | False, False, True
+    | False, False, False
+    -> Error(SchemeNotHttps(url))
   }
 }
 

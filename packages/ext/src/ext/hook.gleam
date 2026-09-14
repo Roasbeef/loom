@@ -311,9 +311,12 @@ pub type Hook {
   /// and answer `Paid` with the preimage, or `Declined` with a reason
   /// the harness surfaces.
   ///
-  /// The first `Paid` in load order wins and the rest of the chain is
-  /// not asked. The macaroon never crosses this hook; the harness
-  /// composes the credential from the preimage.
+  /// Every subscriber is asked, and the first `Paid` in load order wins.
+  /// An extension that answers `Paid` after another already has will
+  /// have spent money the harness does not use, so a hook that pays
+  /// should be the only one installed for the providers it covers. The
+  /// macaroon never crosses this hook; the harness composes the
+  /// credential from the preimage.
   OnPaymentRequired(run: fn(PaymentChallenge) -> Payment)
 }
 

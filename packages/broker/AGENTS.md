@@ -93,7 +93,8 @@ protocol (spec Part 1.4). WP-G.
   request, secrets:)` performs one HTTPS request on the host under caps
   the caller cannot widen — or one plaintext request, when
   `Policy.plaintext` names the origin and its host is a loopback name
-  (ADR-007's 2026-09-13 addendum); `one_host` is the install-fetch policy
+  and no bound `Secret` fires for it (ADR-007's 2026-09-13 addendum);
+  `one_host` is the install-fetch policy
   (ADR-007); `describe` renders a refusal. `Secret` binds an environment
   variable *name* to one header and one origin, and the value is read
   through the injected `secrets` function at request time.
@@ -259,11 +260,20 @@ protocol (spec Part 1.4). WP-G.
   jail and the operator's key never leaves the host. Its own rules, each
   gated by a test in `test/broker/egress_test.gleam`: `https` only,
   except an `http://` URL whose origin is named in `Policy.plaintext`
-  *and* whose host is `localhost`, `127.0.0.1` or `::1` — the manifest
-  refuses a non-loopback entry at install and `check_scheme` refuses it
-  again, so a `Policy` built by hand cannot widen the exception past this
-  machine, and `client/extension/policy.egress_for` drops an origin a
-  `Secret` is bound to so no credential can ride a plaintext hop. The
+  *and* whose host is `localhost` or `127.0.0.1` *and* which no
+  `Policy.secrets` binding would fire for — the manifest refuses a
+  non-loopback entry at install and `check_scheme` refuses it again, so a
+  `Policy` built by hand cannot widen the exception past this machine.
+  IPv6 loopback is refused rather than listed: the allowlist grammar
+  splits an entry on `:`, so `::1` never parses into an origin and could
+  never have matched, and `client/extension/manifest` now says so at
+  install. The credential half is decided **here** rather than trusted to
+  `client/extension/policy.egress_for`, which drops a plaintext origin a
+  `Secret` names by comparing entry strings while `injected` decides who
+  gets the header by comparing normalized origins — two spellings of one
+  origin slip between those two comparisons, and `check_plaintext` asks
+  the injector's own question so no credential can ride a plaintext hop
+  however the policy was spelled. The
   FFI needed no change for it: `egress_http_options` passes `ssl`
   options unconditionally and `httpc` ignores them for an `http://` URL,
   which a live plaintext loopback listener in the suite proves. Beyond

@@ -56,6 +56,7 @@
 import client/extension/hooks
 import core/clock.{type Clock}
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import provider/l402
@@ -273,23 +274,27 @@ fn ask(
 
 // The cache's state is an association list rather than a dict because it
 // holds one entry per paywalled catalogue entry — a handful at most —
-// and a list keeps the "latest write wins" rule to one prepend.
+// so the stdlib's own key operations are both the clearest reading and
+// fast enough.
 fn handle_cache(
   state: List(#(String, String)),
   message: CacheMessage,
 ) -> actor.Next(List(#(String, String)), CacheMessage) {
   case message {
     Read(provider:, reply_with:) -> {
-      process.send(reply_with, option.from_result(key_find(state, provider)))
+      process.send(
+        reply_with,
+        option.from_result(list.key_find(state, provider)),
+      )
       actor.continue(state)
     }
 
-    // The new token is prepended and the old one is dropped, so a
-    // re-settle after the proxy expired a macaroon replaces rather than
-    // shadows: nothing here walks past the first match, but a list that
-    // grew on every settle would be an unbounded one.
+    // `key_set` replaces the entry in place, so a re-settle after the
+    // proxy expired a macaroon substitutes rather than shadows and the
+    // list cannot grow on every settle — which an unbounded cache of
+    // dead tokens would.
     Store(provider:, token:) ->
-      actor.continue([#(provider, token), ..dropping(state, provider)])
+      actor.continue(list.key_set(state, provider, token))
   }
 }
 
@@ -307,27 +312,5 @@ fn handle_slot(
       process.send(reply_with, state)
       actor.continue(state)
     }
-  }
-}
-
-fn key_find(
-  entries: List(#(String, String)),
-  key: String,
-) -> Result(String, Nil) {
-  case entries {
-    [] -> Error(Nil)
-    [#(found, value), ..] if found == key -> Ok(value)
-    [_other, ..rest] -> key_find(rest, key)
-  }
-}
-
-fn dropping(
-  entries: List(#(String, String)),
-  key: String,
-) -> List(#(String, String)) {
-  case entries {
-    [] -> []
-    [#(found, _value), ..rest] if found == key -> dropping(rest, key)
-    [kept, ..rest] -> [kept, ..dropping(rest, key)]
   }
 }

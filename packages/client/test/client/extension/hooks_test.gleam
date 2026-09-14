@@ -582,6 +582,17 @@ pub fn a_malformed_preimage_drops_the_handler_test() {
   assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
+/// Hex case carries no information, so an extension whose Lightning
+/// backend renders upper case has answered correctly and is normalized
+/// rather than dropped. The `Paid` that comes back is the lowercase
+/// form, which is what the credential is composed from.
+pub fn an_uppercase_preimage_is_accepted_test() {
+  let bus = started([paying_with("wallet", string.repeat("DD", 32))])
+
+  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("dd", 32))
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
 pub fn the_macaroon_never_crosses_the_hook_test() {
   let captured = process.new_subject()
   let bus =
