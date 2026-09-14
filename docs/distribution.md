@@ -381,6 +381,79 @@ is the shape for a package that declares Erlang as a dependency. With
 `~/.loom/loom.toml` present the client passes it to the server as the
 catalogue, so an installed Loom needs no flags at all.
 
+## Installing for live profiling
+
+`make install-debug` installs the same client and server with BEAM debug
+information retained, stripping of bundled ERTS/toolchain binaries disabled,
+and OTP's profiling modules included. The Go sandbox helper keeps its normal
+stripped build. `PREFIX` and `INSTALL_CLIENT` work as they do for `make install`.
+For example, `make install-debug PREFIX="$HOME/.local/loom-debug"` keeps the
+normal installation beside a diagnostic installation. Installation does not
+stop or replace a running daemon; its next start uses the installed files.
+
+Debug information and live attachment are separate. A diagnostic build boots
+without distribution unless `LOOM_DEBUG_ARGS_FILE` names an operator-owned
+Erlang arguments file. With that variable set, the launcher names the node
+`loom_debug@127.0.0.1` and binds its distribution listener to loopback. Only
+one daemon with that node name can run on the host. The variable is consumed
+before boot, so code-mode emulators do not inherit it. Do not use `ERL_FLAGS`
+for the node name: every child emulator would inherit the same name.
+
+Prepare a fresh credential before starting the diagnostic daemon. The example
+uses the default `~/.loom` state root. For another `--state-dir`, put the file
+under that root's `tokens` directory instead. That directory is masked from
+session tools and the code-mode build plane; Unix mode 0600 alone would not
+protect a credential from a tool running as the same user.
+
+```sh
+DIAG_ARGS=$(python3 - <<'PYTHON'
+import os
+from pathlib import Path
+import secrets
+import tempfile
+
+root = Path.home() / ".loom" / "tokens"
+root.mkdir(parents=True, exist_ok=True, mode=0o700)
+fd, path = tempfile.mkstemp(prefix="diagnostic-", suffix=".args", dir=root)
+with os.fdopen(fd, "w") as out:
+    out.write("-setcookie " + secrets.token_hex(32) + "\n")
+    out.write("+Muatags true\n")
+print(path)
+PYTHON
+)
+printf '%s\n' "$DIAG_ARGS"
+LOOM_DEBUG_ARGS_FILE="$DIAG_ARGS" "$HOME/.local/loom-debug/bin/loomd"
+```
+
+Start this after the existing daemon has shut down cleanly, or supply a
+separate state directory and its matching credential location. A terminal
+client connecting to an existing daemon cannot change that daemon's startup
+flags. Erlang distribution grants full VM access to the cookie holder; keep
+the arguments file out of transcripts, repositories, and shared artifacts.
+
+From a second terminal, set `DIAG_ARGS` to the path printed by the preparation
+step (the path, not its contents), then take an observational memory census:
+
+```sh
+REL="$HOME/.local/loom-debug/lib/loom/server"
+"$REL"/erts-*/bin/erl -boot "$REL/bin/no_dot_erlang" \
+  -pa "$REL"/lib/*/ebin "$REL/share/diagnostics/ebin" \
+  -name loom_probe@127.0.0.1 -args_file "$DIAG_ARGS" \
+  -kernel inet_dist_use_interface '{127,0,0,1}' -hidden -noshell \
+  -run mem_report main loom_debug@127.0.0.1 live observe
+```
+
+The census reports process heaps, binary memory, ETS and allocator carriers.
+It does not force garbage collection. The same connection can use `tprof`
+and `msacc` for bounded CPU or allocation profiling. OTP 29 puts `instrument`
+and `msacc` in `runtime_tools`; `tprof` comes from OTP `tools`. Loom also has
+an application named `tools`, so the debug release carries OTP's tool modules
+in a separate code directory without replacing Loom's application metadata.
+
+`make install` restores the normal stripped artifacts and launcher on disk.
+Distribution closes when the diagnostic daemon exits. Remove its temporary
+arguments file after stopping it.
+
 ## Cross-compilation: there is none
 
 A release targets one platform, and `make dist` does not produce
