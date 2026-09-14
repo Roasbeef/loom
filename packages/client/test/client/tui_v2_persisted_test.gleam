@@ -123,7 +123,7 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
           )
         },
         serve.instance_children,
-        fn(_) { Nil },
+        fn(_, _) { Nil },
       ),
     )
     as "one root owns all native and storage lifetimes"

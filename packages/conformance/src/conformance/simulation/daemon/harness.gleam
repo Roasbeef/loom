@@ -599,7 +599,7 @@ fn assembly(
       park(arrest, AfterDomainBind, record.request_key)
       initialize(record, owner, lease_clock, arrest)
     },
-    drain: fn(_) { Nil },
+    drain: fn(_, _) { Nil },
     fatal: fn(_) { [] },
   )
 }

@@ -189,7 +189,16 @@ pub type Assembly(instance) {
     /// It is `Nil`-returning and must be safe to run on an already-drained
     /// instance, because a session may be drained once by the root and once
     /// by its own close.
-    drain: fn(instance) -> Nil,
+    ///
+    /// The second argument is the caller's remaining budget in
+    /// milliseconds. The registry spends one shared deadline across every
+    /// resident instance rather than handing each its own, because the
+    /// caller is a bounded shutdown: N instances at a per-instance budget
+    /// would make the worst case N times that budget, and the root that
+    /// ordered the drain would have killed the sockets before the last
+    /// instance finished. An implementation returns when its own work is
+    /// done or the budget is spent, whichever comes first.
+    drain: fn(instance, Int) -> Nil,
   )
 }
 
@@ -1165,9 +1174,23 @@ pub fn shutdown(manager: Manager(instance)) -> Nil {
 /// ```
 @internal
 pub fn drain_held(manager: Manager(instance)) -> Nil {
-  call.try_call(manager.commands, waiting: 5000, sending: DrainHeld)
+  call.try_call(
+    manager.commands,
+    waiting: drain_budget_ms + 2000,
+    sending: DrainHeld,
+  )
   |> result.unwrap(Nil)
 }
+
+// How long one whole registry drain may take, shared across every resident
+// instance rather than allowed to each of them. It is the budget the handler
+// hands each instance the remainder of, and the caller waits a couple of
+// seconds past it so an acknowledgement from a handler that spent the whole
+// budget still arrives before the caller gives up. It sits well inside the
+// daemon's own shutdown window (the SIGTERM path allows thirty seconds),
+// because a drain that outlived the shutdown is worse than one that reports
+// partial confirmation.
+const drain_budget_ms = 5000
 
 fn handle(
   phase: Phase,
@@ -1440,9 +1463,14 @@ fn handle(
     // whose instance is gone has nothing left either, so only `Running`
     // slots are visited.
     DrainHeld(reply) -> {
+      let deadline = bootstrap.monotonic_time_ms() + drain_budget_ms
       dict.each(book.slots, fn(_id, slot) {
         case slot.phase {
-          Running(instance) -> book.assembly.drain(instance)
+          Running(instance) ->
+            book.assembly.drain(
+              instance,
+              int.max(deadline - bootstrap.monotonic_time_ms(), 0),
+            )
           WaitingForDomain | Building | Closing | Blocked(_) -> Nil
         }
       })

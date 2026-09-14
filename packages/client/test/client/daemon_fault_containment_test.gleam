@@ -150,7 +150,7 @@ fn assembly(
         services,
       )
     },
-    drain: fn(_) { Nil },
+    drain: fn(_, _) { Nil },
     fatal: serve.instance_children,
   )
 }

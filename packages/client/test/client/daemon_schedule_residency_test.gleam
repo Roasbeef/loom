@@ -118,7 +118,7 @@ fn start(settings: serve.Settings) {
           )
         },
         serve.instance_children,
-        fn(_) { Nil },
+        fn(_, _) { Nil },
       ),
     )
     as "the original root owns actual session and domain resources"

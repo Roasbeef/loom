@@ -1781,7 +1781,7 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
 /// // serve.drain_instance(instance)
 /// ```
 @internal
-pub fn drain_instance(instance: Instance) -> Nil {
+pub fn drain_instance(instance: Instance, within_ms: Int) -> Nil {
   // Abort every strand that is running something, first, and WAIT for the
   // terminals. A daemon drain must not simply drop an in-flight turn: the
   // operator would be left with a conversation that stops mid-answer and
@@ -1797,10 +1797,12 @@ pub fn drain_instance(instance: Instance) -> Nil {
   // no-op rather than a request against a successor, and it spends one
   // shared budget rather than one per strand.
   //
-  // The budget is the service grace the teardown below already allows, so
-  // the abort has the same window as the rest of the shutdown rather than
-  // a second one stacked on top of it.
-  api.drain(instance.runtime, within_ms: service_grace_ms)
+  // The budget is the caller's remaining share of the registry's one drain
+  // deadline, not a budget of this instance's own: the registry spends a
+  // single window across every resident session, so the last instance does
+  // not outlive the caller's wait. A negative or zero budget means the
+  // window is already spent, so the abort is requested but not waited for.
+  api.drain(instance.runtime, within_ms: int.max(within_ms, 0))
 
   // Then hand back whatever the hub still holds. Ordering matters: a
   // held prompt is returned over the submitter's session socket, which
