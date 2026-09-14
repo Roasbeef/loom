@@ -219,7 +219,7 @@ pub type Options {
 /// `initialize`'s `clientInfo`. It tracks the package version; nothing
 /// negotiates on it, and a server that branches on it is branching on
 /// something Loom does not promise.
-pub const client_version = "0.1.0"
+pub const client_version = "0.2.0"
 
 /// The shipped options: the real environment, the real hash, and the
 /// default timeouts.
