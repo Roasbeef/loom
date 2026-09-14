@@ -1,6 +1,9 @@
 # Investigation handoff: daemon memory per session
 
-Status: **owner found and repaired**; see "2026-09-07, second pass" at the end
+Status: **additional closure captures repaired locally**; see the September 14
+addendum for the new measurements. The September 7 repair covered earlier sites.
+
+Historical status: **owner found and repaired**; see "2026-09-07, second pass"
 of this note. The first pass, recorded below unchanged, established the size
 and the shape of the step from OS numbers alone. The second pass took the BEAM
 cuts it asked for and named the term.
@@ -245,3 +248,62 @@ idiomatic way to wrap one slot of a record of closures, and it is a memory
 trap whenever the record crosses a process boundary. Capture the slot, not the
 record. `make lint` does not check this today; the four sites are commented so
 the next reader of any of them meets the reason.
+
+
+## 2026-09-14: imported-hook composition multiplies the effects again
+
+The earlier repair did not cover `client/hookserve.wire`. Its three hook
+wrappers captured the entire `Hooks` record and its two tool wrappers captured
+`ToolSurface`. When the effects cross into supervisor and worker processes,
+those captures copy unrelated closures along with the one function being used.
+An isolated diagnostic release found 25.666 MiB of flattened hooks in a
+44.660 MiB effects value after three ordinary model turns. One imported-hook
+wrapper accounted for 6.438 MiB, of which 6.425 MiB was its captured record.
+The supervisor state had a flattened copy size of 446.685 MiB.
+
+Bind each wrapped function before creating its closure. This preserves the
+hook ordering, refusals, accounting, and replay behavior while removing the
+unrelated slots from each capture. The same inspection found two smaller
+instances: the compaction projection captured `wiring.Config` to read only its
+session, and the output observer captured `ToolRun` to read four identity
+fields. Both now bind those inputs before constructing the callback.
+
+### Measurement and limits
+
+The baseline diagnostic release was built from `77b39805`. For the first
+comparison, the same release had only `client@hookserve.beam` replaced by the
+module compiled on `fix/hook-memory-retention`, based on `7cacb150`. Each
+isolated daemon admitted two offline sessions, stopped one, then stopped the
+remaining resident before admitting a model-backed session. Three prompts
+asked the same configured model to inspect a toy Python project and run its
+tests, add empty-input handling and tests, then review and run the tests again.
+The resulting edits passed independent Python test runs. Model responses and
+tool sequences differed, so this measures two comparable workloads rather
+than an identical replay or a general latency improvement.
+
+All figures below are MiB reported by `erlang:memory/0`, not OS RSS.
+
+| Cut | Baseline total | Hook-wrapper fix total | Baseline processes | Hook-wrapper fix processes |
+|---|---:|---:|---:|---:|
+| Two offline admissions, one stopped | 422.728 | 225.771 | 371.607 | 175.471 |
+| After three model-backed turns | 1511.755 | 695.782 | 1446.404 | 638.783 |
+| Subsequent idle observation | 1510.979 | 683.070 | 1446.270 | 626.951 |
+| After explicit diagnostic collection | 1097.795 | 495.390 | 1042.732 | 441.312 |
+
+The explicit collection was a separate experiment on the isolated daemons,
+after the normal observations; it is not an automatic production behavior.
+The roughly 54% lower total after the three turns belongs to the hook-wrapper
+change alone. The final three-module patch has not had the model-backed
+comparison repeated. The existing user's daemon was neither collected nor
+restarted, so its exact retained owners remain unmeasured. Substantial process
+memory remains in the isolated workload and needs a fresh census after this
+repair; the measurements do not establish that every excessive capture is gone.
+
+Regression tests enlarge unrelated hook slots, configuration fields, and tool
+arguments and assert that the affected callbacks' flattened copy sizes stay
+constant. The size probe is test-only `erts_debug:flat_size/1`; no production
+FFI or public interface was added. Restoring the old imported-hook capture,
+compaction projection capture, and output-observer capture independently made
+the corresponding assertions fail, and restoring the fixes made them pass.
+The final client gate passed all 1,800 tests. Independent review checked the
+capture boundaries and the negative/positive test results.
