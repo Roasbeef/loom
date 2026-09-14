@@ -514,7 +514,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       tui.Model(..refused, local_options: Some(options)),
     )
   let switched = wait_for_attachment(creating.candidate, 20_000)
-  let assert attachment.Adopted(channel, cut, _, _, _, _) = switched
+  let assert attachment.Adopted(channel, cut, _, _, _, selected_name, _) =
+    switched
     as "the terminal validates the bounded capture before actual adoption"
   let adopted =
     tui.candidate_outcome(creating, attachment.idle(), Some(switched))
@@ -523,6 +524,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let assert Ok(target) = selection.open(host, cut.attachment.expected.session)
     as "the created session is already resident"
   assert cut.attachment.expected == target.expected
+  assert selected_name == target.session_name
+  assert adopted.session_label
+    == Some(#(target.expected.session, target.session_name))
   session_channel.close(channel)
 
   // A cancelled attempt must take its unadopted socket down. Two paths
@@ -609,10 +613,18 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       ),
       20_000,
     )
-  let assert attachment.Adopted(reopened_channel, reopened_cut, _, _, _, _) =
-    reopened
+  let assert attachment.Adopted(
+    reopened_channel,
+    reopened_cut,
+    _,
+    _,
+    _,
+    reopened_name,
+    _,
+  ) = reopened
     as "only an explicit reopen obtains a new incarnation and credited cut"
   assert reopened_cut.attachment.expected.session == saved.session_id
+  assert reopened_name == saved.name
   assert reopened_cut.attachment.expected.epoch != target.expected.epoch
   session_channel.close(reopened_channel)
 
