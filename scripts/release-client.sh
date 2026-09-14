@@ -22,7 +22,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
+DEBUG="${DIST_DEBUG:-0}"
+case "$DEBUG" in
+  0) DEBUG_INFO=strip ;;
+  1) DEBUG_INFO=keep ;;
+  *) echo "release-client.sh: DIST_DEBUG must be 0 or 1" >&2; exit 1 ;;
+esac
 STRIP_ERTS="${DIST_STRIP_ERTS:-1}"
+[ "$DEBUG" = 1 ] && STRIP_ERTS=0
 REL_ROOT="$ROOT/build/release"
 REL="$REL_ROOT/loom-client"
 WORK="$REL_ROOT/work-client"
@@ -97,7 +104,7 @@ cat > "$WORK/rebar.config" <<EOF
   {include_erts, true},
   {include_src, false},
   {dev_mode, false},
-  {debug_info, strip}
+  {debug_info, $DEBUG_INFO}
 ]}.
 EOF
 

@@ -190,6 +190,13 @@ CLIENT_ARTIFACT := $(if $(filter slim,$(INSTALL_CLIENT)),tui-shipment,release-cl
 install: codemode-seed release $(CLIENT_ARTIFACT) ## Install loom and loomd under PREFIX (INSTALL_CLIENT=bundled|slim)
 	@PREFIX="$(PREFIX)" LOOM_CLIENT="$(INSTALL_CLIENT)" scripts/install.sh
 
+# Keep diagnostics opt-in and serialize the seed before release assembly.
+.PHONY: install-debug
+install-debug: ## Install with BEAM debug info, unstripped ERTS, and OTP profiling tools
+	@$(MAKE) codemode-seed
+	@$(MAKE) release $(CLIENT_ARTIFACT) DIST_DEBUG=1 DIST_STRIP_ERTS=0
+	@PREFIX="$(PREFIX)" LOOM_CLIENT="$(INSTALL_CLIENT)" scripts/install.sh
+
 # ------------------------------------------------------------------- running
 
 WORKSPACE ?= .
