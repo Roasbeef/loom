@@ -664,7 +664,7 @@ pub fn tui_daemon_observation_uses_one_deadline_test() {
       daemon_bootstrap.Connected(
         control,
         paths,
-        endpoint.Ready(fence, "127.0.0.1", port, "controlled"),
+        endpoint.Ready(fence, "127.0.0.1", port, "controlled", None),
       )
     let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), 1))
     let id = ids.session_id_to_string(id)

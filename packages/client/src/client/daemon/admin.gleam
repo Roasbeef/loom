@@ -196,7 +196,7 @@ fn execute(request: Request) {
 fn ready_record(record) {
   case record {
     None | Some(endpoint.Starting(_)) -> Error("no ready local daemon")
-    Some(endpoint.Ready(fence, _, _, epoch) as record) -> {
+    Some(endpoint.Ready(fence, _, _, epoch, _) as record) -> {
       use present <- result.try(endpoint.is_present(fence))
       case present {
         True -> Ok(#(record, epoch))

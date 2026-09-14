@@ -22,6 +22,22 @@ pub type Epoch {
   )
 }
 
+/// The running daemon's build, as it introduced itself in the hello.
+///
+/// Two opaque comparison strings and nothing more: this module does not
+/// order versions, so it needs no version grammar. `None` in a `Hello`
+/// means the daemon predates build identity (issue #392) and is reported
+/// as an unknown build rather than refused — a client that could not read
+/// an old daemon's hello could not tell the operator the daemon is old.
+pub type Build {
+  Build(
+    /// The daemon's release version, or `dev` for a tree built ad hoc.
+    version: String,
+    /// The commit the daemon's tree was built from, or `unknown`.
+    commit: String,
+  )
+}
+
 /// Server-owned identity and negotiated input limits.
 pub type Hello {
   Hello(
@@ -31,6 +47,8 @@ pub type Hello {
     principal: String,
     /// Maximum bytes accepted in one complete control request.
     control_bytes: Int,
+    /// The daemon's build, when it named one.
+    build: Option(Build),
   )
 }
 
@@ -481,7 +499,8 @@ pub fn decode(text: String) -> Result(Event, String) {
         True -> Ok(Nil)
         False -> Error("unsupported control limit")
       })
-      Ok(Greeting(Hello(Epoch(epoch), principal, limit)))
+      use build <- result.try(build_at(body))
+      Ok(Greeting(Hello(Epoch(epoch), principal, limit, build)))
     }
     "error" -> {
       use id <- result.try(optional_id(value))
@@ -613,6 +632,22 @@ fn field(value: json.JsonValue, key: String) {
       list.key_find(fields, key)
       |> result.replace_error("missing control field")
     _ -> Error("expected control object")
+  }
+}
+
+// The hello's build identity, or `None` when the daemon did not send one.
+//
+// Absence is not an error: an older daemon's hello predates these two
+// fields, and a new client must still attach to it and report that it is
+// old rather than refusing the frame for a missing field. Both fields
+// must be present and non-empty together, or the answer is `None` — a
+// half identity is no more an identity than an absent one, and reading
+// it as `Some(Build("0.1.0", ""))` would put a blank commit in a
+// diagnostic the operator is meant to compare.
+fn build_at(body: json.JsonValue) {
+  case text_at(body, "build_version", 128), text_at(body, "build_commit", 128) {
+    Ok(version), Ok(commit) -> Ok(Some(Build(version, commit)))
+    _, _ -> Ok(None)
   }
 }
 
