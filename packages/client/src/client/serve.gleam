@@ -1783,23 +1783,25 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
 /// ```
 @internal
 pub fn drain_instance(instance: Instance) -> Nil {
-  // Abort every strand that is running something, first. A daemon drain
-  // must not simply drop an in-flight turn: the operator would be left
-  // with a conversation that stops mid-answer and no record that it did.
-  // Requesting cancellation routes each strand through the durable
-  // `CancelRequested` marker and the existing synthetic-response path, so
-  // the turn settles as an ordinary `Aborted` terminal with its partial
-  // content retained — the same terminal an explicit Escape produces,
-  // for the same reason. `api.abort` reads the strand's current operation
-  // itself, so a strand that went idle between the enumeration and the
-  // request is a no-op rather than a request against a successor.
-  case api.strands(instance.runtime) {
-    Ok(strands) ->
-      list.each(strands, fn(strand) {
-        api.abort(api.on_strand(instance.runtime, strand))
-      })
-    Error(_) -> Nil
-  }
+  // Abort every strand that is running something, first, and WAIT for the
+  // terminals. A daemon drain must not simply drop an in-flight turn: the
+  // operator would be left with a conversation that stops mid-answer and
+  // no record that it did. Requesting cancellation routes each strand
+  // through the durable `CancelRequested` marker and the existing
+  // synthetic-response path, so the turn settles as an ordinary `Aborted`
+  // terminal with its partial content retained — the same terminal an
+  // explicit Escape produces. `api.drain` both requests and waits: the
+  // request is fire-and-forget, so a caller that only sent it could have
+  // the trees stopped under it before the terminal committed, which is the
+  // exact loss this drain exists to prevent. It captures each strand's
+  // current operation before sending, so a strand that went idle is a
+  // no-op rather than a request against a successor, and it spends one
+  // shared budget rather than one per strand.
+  //
+  // The budget is the service grace the teardown below already allows, so
+  // the abort has the same window as the rest of the shutdown rather than
+  // a second one stacked on top of it.
+  api.drain(instance.runtime, within_ms: service_grace_ms)
 
   // Then hand back whatever the hub still holds. Ordering matters: a
   // held prompt is returned over the submitter's session socket, which
