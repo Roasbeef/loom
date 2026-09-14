@@ -6634,10 +6634,14 @@ fn entry_lines(
       |> option.lazy_unwrap(fn() {
         message_lines(value, details_expanded, local_owner)
       })
-    entry.CompactionEntry(summary:, tokens_before:, ..) -> [
+    entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
         System,
-        "compacted " <> tokens(tokens_before) <> " tokens · " <> summary,
+        "Context compacted · ~"
+          <> tokens(tokens_before)
+          <> " tokens before · "
+          <> int.to_string(list.length(retained_tail))
+          <> " messages kept",
       ),
     ]
     entry.BranchSummaryEntry(summary:, ..) -> [
