@@ -14,6 +14,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/build_identity
 
 /// Fixed paths beneath the caller's canonical private state directory.
 pub type Paths {
@@ -60,6 +61,15 @@ pub type Endpoint {
     port: Int,
     /// Authenticated control hello must name this daemon epoch.
     epoch: String,
+    /// The build that wrote this record, when it knew one.
+    ///
+    /// Read so the launcher can report a client/daemon build mismatch
+    /// (issue #392) before the authenticated hello would. `None` means the
+    /// record predates build identity — a daemon started by an older
+    /// install — and is reported as an unknown build rather than refused,
+    /// because the alternative is a launcher that cannot find a running
+    /// daemon merely because the daemon is old.
+    identity: Option(build_identity.Identity),
   )
 }
 
@@ -229,11 +239,12 @@ pub fn publish_ready(
   host: String,
   port: Int,
   epoch: String,
+  identity: Option(build_identity.Identity),
 ) -> Result(Nil, String) {
   use current <- result.try(load(paths))
   case current {
     Some(Starting(found)) if found == fence ->
-      write(paths, Ready(fence, host, port, epoch))
+      write(paths, Ready(fence, host, port, epoch, identity))
     _ -> Error("daemon endpoint reservation changed before readiness")
   }
 }
@@ -248,7 +259,7 @@ pub fn publish_ready(
 pub fn address(record: Endpoint) -> Result(String, String) {
   case record {
     Starting(_) -> Error("daemon is still starting")
-    Ready(_, host, port, _) -> {
+    Ready(_, host, port, _, _) -> {
       let host = case host {
         "::1" -> "[::1]"
         _ -> host
@@ -258,7 +269,13 @@ pub fn address(record: Endpoint) -> Result(String, String) {
   }
 }
 
-/// Encodes the fixed version-one endpoint schema for gateway protocol two.
+/// Encodes the endpoint record for gateway protocol two.
+///
+/// A record that carries a build identity is schema version two; one that
+/// does not is version one. The version is chosen from the value rather than
+/// from a caller flag, so the two can never disagree: a v2 record always has
+/// its identity keys and a v1 record never does, which is what lets `decode`
+/// count each shape's keys without tolerating the other's.
 ///
 /// ## Examples
 ///
@@ -267,8 +284,13 @@ pub fn address(record: Endpoint) -> Result(String, String) {
 /// ```
 pub fn encode(record: Endpoint) -> String {
   let fence = record.fence
+  let version = case record {
+    Starting(_) -> 1
+    Ready(_, _, _, _, None) -> 1
+    Ready(_, _, _, _, Some(_)) -> 2
+  }
   let common = [
-    #("version", json.Int(1)),
+    #("version", json.Int(version)),
     #("protocol", json.Int(2)),
     #("pid", json.Int(fence.pid)),
     #("birth", json.String(fence.birth)),
@@ -276,15 +298,32 @@ pub fn encode(record: Endpoint) -> String {
   ]
   let fields = case record {
     Starting(_) -> [#("status", json.String("starting")), ..common]
-    Ready(_, host, port, epoch) -> [
-      #("status", json.String("ready")),
-      #("host", json.String(host)),
-      #("port", json.Int(port)),
-      #("epoch", json.String(epoch)),
-      ..common
-    ]
+    Ready(_, host, port, epoch, identity) -> {
+      let head = [
+        #("status", json.String("ready")),
+        #("host", json.String(host)),
+        #("port", json.Int(port)),
+        #("epoch", json.String(epoch)),
+      ]
+      list.append(list.append(head, identity_fields(identity)), common)
+    }
   }
   json.to_string(json.Object(fields))
+}
+
+// The identity keys sit between the epoch and the schema tail, so a v2
+// record reads as the v1 record with two fields inserted rather than as a
+// shape of its own. `None` contributes nothing: a record written without an
+// identity is exactly a version-one record, not a version-two one carrying
+// an empty identity.
+fn identity_fields(identity: Option(build_identity.Identity)) {
+  case identity {
+    None -> []
+    Some(found) -> [
+      #("build_version", json.String(found.version)),
+      #("build_commit", json.String(found.commit)),
+    ]
+  }
 }
 
 /// Totally decodes a bounded, duplicate-key-free private endpoint record.
@@ -325,7 +364,7 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
   // This is an identity fence, not a loosely interpreted connection hint.
   use <- bool.guard(
     !{
-      version == 1
+      { version == 1 || version == 2 }
       && protocol == 2
       && pid > 1
       && started > 0
@@ -337,13 +376,15 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
   let fence = Fence(pid, birth, started)
   case status {
     "starting" -> {
-      // Six required keys were each found above, so an object with nothing
-      // past its sixth field cannot also carry a duplicate: a repeat of any
-      // key would make a seventh. That is what refuses a record whose second
-      // `pid` a different parser might have preferred. `list.drop` rather
-      // than `list.length` because the question stops at the bound.
+      // A starting record is reservation only and never carries an
+      // identity, so it is version one by definition. Six required keys
+      // were each found above, so an object with nothing past its sixth
+      // field cannot also carry a duplicate: a repeat of any key would make
+      // a seventh. That is what refuses a record whose second `pid` a
+      // different parser might have preferred. `list.drop` rather than
+      // `list.length` because the question stops at the bound.
       use <- bool.guard(
-        list.drop(fields, 6) != [],
+        version != 1 || list.drop(fields, 6) != [],
         Error("invalid daemon endpoint"),
       )
       Ok(Starting(fence))
@@ -353,12 +394,46 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
       use port <- result.try(number(fields, "port"))
       use epoch <- result.try(text_field(fields, "epoch"))
 
-      // Nine required keys, so nothing past the ninth field, for the same
-      // reason the starting record allows nothing past its sixth.
+      // The record's schema version selects which identity keys are present
+      // *and* how many keys the object may hold, so the count check is
+      // per-version rather than one number that would have to tolerate the
+      // other shape. A version-one record (nine keys) predates build
+      // identity and reads as an unknown build; a version-two record
+      // (eleven keys) always carries both identity fields, so their absence
+      // is a malformed record rather than an old one. Duplicate keys were
+      // already refused by the parser, so "at most N fields" plus the N
+      // distinct keys read above is exactly N.
+      use identity <- result.try(case version {
+        1 -> {
+          use <- bool.guard(
+            list.drop(fields, 9) != [],
+            Error("invalid daemon endpoint"),
+          )
+          Ok(None)
+        }
+        2 -> {
+          use <- bool.guard(
+            list.drop(fields, 11) != [],
+            Error("invalid daemon endpoint"),
+          )
+          use build_version <- result.try(text_field(fields, "build_version"))
+          use build_commit <- result.try(text_field(fields, "build_commit"))
+          use <- bool.guard(
+            !{
+              build_version != ""
+              && string.byte_size(build_version) <= 128
+              && build_commit != ""
+              && string.byte_size(build_commit) <= 128
+            },
+            Error("invalid daemon endpoint"),
+          )
+          Ok(Some(build_identity.Identity(build_version, build_commit)))
+        }
+        _ -> Error("invalid daemon endpoint")
+      })
       use <- bool.guard(
         !{
-          list.drop(fields, 9) == []
-          && { host == "127.0.0.1" || host == "::1" }
+          { host == "127.0.0.1" || host == "::1" }
           && port > 0
           && port <= 65_535
           && epoch != ""
@@ -366,7 +441,7 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
         },
         Error("invalid daemon endpoint"),
       )
-      Ok(Ready(fence, host, port, epoch))
+      Ok(Ready(fence, host, port, epoch, identity))
     }
     _ -> Error("invalid daemon endpoint")
   }
