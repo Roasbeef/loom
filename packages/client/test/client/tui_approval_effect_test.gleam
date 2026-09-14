@@ -209,7 +209,7 @@ fn start() {
           )
         },
         serve.instance_children,
-        fn(_) { Nil },
+        fn(_, _) { Nil },
       ),
     )
     as "the original root owns all effect cleanup"

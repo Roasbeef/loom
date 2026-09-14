@@ -86,7 +86,7 @@ pub fn two_sessions_share_original_domain_until_last_cleanup_test() {
           Ok(domain_service.inert())
         },
         build: fn(record, _, _, _) { Ok(record.id) },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "domain-test",
@@ -145,7 +145,7 @@ pub fn closing_domain_counts_capacity_after_session_slot_retires_test() {
           Ok(domain_service.inert())
         },
         build: fn(record, _, _, _) { Ok(record.id) },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "bounded-domains",
@@ -218,7 +218,7 @@ fn held_domain_registry() {
           Ok(domain_service.inert())
         },
         build: fn(record, _, _, _) { Ok(record.id) },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "closing-admission",
@@ -335,7 +335,7 @@ pub fn cancelled_failed_domain_retires_all_waiting_sessions_test() {
           process.send(builds, record.id)
           Ok(record.id)
         },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "cancelled-domain",
@@ -393,7 +393,7 @@ pub fn failed_domain_cleanup_retains_admission_and_original_witness_test() {
           Ok(domain_service.inert())
         },
         build: fn(record, _, _, _) { Ok(record.id) },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "blocked-domain",
@@ -685,7 +685,7 @@ fn cadenced_assembly(arrivals, lane) -> manager.Assembly(String) {
     build: fn(record: catalogue.Registration, _domain, _services, _owner) {
       Ok(record.id)
     },
-    drain: fn(_) { Nil },
+    drain: fn(_, _) { Nil },
     fatal: fn(_) { [] },
   )
 }
@@ -743,7 +743,7 @@ pub fn last_clean_close_waits_coalesced_real_cadence_before_domain_retirement_te
           Ok(services)
         },
         build: fn(record, _, _, _) { Ok(record.id) },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "joined-domain-close",

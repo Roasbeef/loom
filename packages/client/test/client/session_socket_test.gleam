@@ -64,7 +64,7 @@ pub fn fixture(run) {
             as "reserved IDs are canonical"
           Ok(gateway_test.reserved_fixture(id))
         },
-        drain: fn(_) { Nil },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
     )
