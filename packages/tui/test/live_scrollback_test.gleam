@@ -118,10 +118,13 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
     "Disconnected · /sessions to reconnect · draft retained",
   )
     as "a pending interrupt does not outrank the reconnect instruction"
-  assert !string.contains(border_text(interrupting), "interrupting · enter")
+  assert !string.contains(
+    border_text(interrupting),
+    "stopped · enter sends held input",
+  )
 
   // The same pending interrupt on a live terminal still names itself, so the
   // guard rather than the fixture produced the two assertions above.
   let live = tui.Model(..interrupting, peer: tui.Preview)
-  assert string.contains(border_text(live), "interrupting · enter")
+  assert string.contains(border_text(live), "stopped · enter sends held input")
 }
