@@ -100,6 +100,21 @@ the previous ten-row threshold. Lint and doc-check passed with zero errors.
 Hosted CI and Linux signoff passed at `21ed55c6`; the merge of main preserves
 both TUI changes and needs fresh checks at its new head.
 
+## Session names (September 14)
+
+`fix/session-names` carries the authorized catalogue name through attachment
+and renders it in the header. `/rename` applies the daemon's acknowledged
+name without opening the selector. In the picker, `r` edits the highlighted
+session's name; Enter saves, Escape cancels, and Ctrl+U clears the draft. Paste
+belongs to the name editor and does not modify the hidden conversation draft.
+Names remain paired with identities; routing continues to use the session ID.
+
+The 482-test TUI gate, lint, documentation validation, and the real isolated
+daemon lifecycle fixture passed before merging the prefetch baseline. Review
+findings are resolved. Hosted CI and required Linux signoff remain pending;
+archive behavior and startup profiling are separate outstanding work. The
+broader historical audit below was not revalidated for this change.
+
 ## Compaction notice (September 14)
 
 The TUI now renders compaction as one short notice with the approximate token
