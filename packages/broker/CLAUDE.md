@@ -91,7 +91,9 @@ protocol (spec Part 1.4). WP-G.
 - `broker/egress.{Policy, Request, Response, Refusal, Method, Redirects,
   Trust, Secret}` — the broker's outbound HTTP surface. `request(policy,
   request, secrets:)` performs one HTTPS request on the host under caps
-  the caller cannot widen; `one_host` is the install-fetch policy
+  the caller cannot widen — or one plaintext request, when
+  `Policy.plaintext` names the origin and its host is a loopback name
+  (ADR-007's 2026-09-13 addendum); `one_host` is the install-fetch policy
   (ADR-007); `describe` renders a refusal. `Secret` binds an environment
   variable *name* to one header and one origin, and the value is read
   through the injected `secrets` function at request time.
@@ -255,7 +257,17 @@ protocol (spec Part 1.4). WP-G.
   empty. Egress is the other shape ADR-007 chose: the harness makes the
   request and hands back the response, so no socket ever exists in the
   jail and the operator's key never leaves the host. Its own rules, each
-  gated by a test in `test/broker/egress_test.gleam`: `https` only;
+  gated by a test in `test/broker/egress_test.gleam`: `https` only,
+  except an `http://` URL whose origin is named in `Policy.plaintext`
+  *and* whose host is `localhost`, `127.0.0.1` or `::1` — the manifest
+  refuses a non-loopback entry at install and `check_scheme` refuses it
+  again, so a `Policy` built by hand cannot widen the exception past this
+  machine, and `client/extension/policy.egress_for` drops an origin a
+  `Secret` is bound to so no credential can ride a plaintext hop. The
+  FFI needed no change for it: `egress_http_options` passes `ssl`
+  options unconditionally and `httpc` ignores them for an `http://` URL,
+  which a live plaintext loopback listener in the suite proves. Beyond
+  the scheme nothing moves:
   origins matched exactly, case-insensitively, with `:443` and an absent
   port the same origin and any other explicit port needing an allowlist
   entry that names it; userinfo in the URL refused as malformed; the

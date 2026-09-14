@@ -34,6 +34,15 @@ pub fn start() -> #(Server, Int, BitArray)
 @external(erlang, "broker_test_ffi", "egress_start_tls12")
 pub fn start_tls12() -> #(Server, Int, BitArray)
 
+/// Starts a plaintext HTTP/1.1 origin on an ephemeral loopback port.
+///
+/// Answers with the server handle and the port it bound; there is no
+/// root to pin, which is the whole difference under test. It answers one
+/// canned `200 text/plain` to any request, because what the plaintext
+/// case has to prove is that the request was made at all.
+@external(erlang, "broker_test_ffi", "egress_start_plain")
+pub fn start_plain() -> #(Server, Int)
+
 /// Stops a server. Killing the owner closes the listen socket with it.
 @external(erlang, "broker_test_ffi", "egress_stop")
 pub fn stop(server: Server) -> Nil
