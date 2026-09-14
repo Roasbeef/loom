@@ -123,7 +123,8 @@ fn an_advisor() -> advisor.Settings {
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     thinking: machine_strand.ThinkingOff,
     tools: [],
-    block_cooldown_runs: 2,
+    feed_every_steps: 20,
+    block_cooldown_reviews: 2,
   )
 }
 

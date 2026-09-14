@@ -232,6 +232,134 @@ pub fn a_primary_run_end_feeds_the_advisor_test() {
   stop(rig)
 }
 
+// --- the step trigger ------------------------------------------------------
+
+// The threshold is a floor, so the steps below it buy nothing. This is
+// the half that keeps a step feed from costing one review per tool round
+// trip against a primary that has not decided anything yet.
+pub fn steps_below_the_threshold_do_not_feed_test() {
+  let assert Ok(rig) = a_rig_with(stepping(3)) as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  step(subject, 2)
+
+  assert advisor_texts(rig.opened) == []
+  assert cursor(rig.runtime) == None
+  stop(rig)
+}
+
+// And the step that reaches it does feed, without the primary's run
+// having ended — which is the whole point of the trigger. The slice says
+// the run is still open, because the advisor weighs a block against a
+// half-finished task differently from a finished one.
+pub fn the_step_threshold_feeds_a_mid_run_slice_test() {
+  let assert Ok(rig) = a_rig_with(stepping(3)) as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  step(subject, 3)
+
+  let assert [fed] = advisor_texts(rig.opened)
+    as "the third step must feed the advisor exactly once"
+  assert string.contains(fed, "write the migration")
+  assert string.contains(fed, "the primary's run is still open")
+  assert string.contains(fed, "3 steps since your last review")
+  assert cursor(rig.runtime) != None
+  stop(rig)
+}
+
+// The count restarts as the slice is offered, so a threshold of three is
+// a feed every three steps rather than a feed on every step past the
+// third.
+pub fn the_step_count_restarts_at_each_feed_test() {
+  let assert Ok(rig) = a_rig_with(stepping(3)) as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  step(subject, 3)
+  let assert [_first] = advisor_texts(rig.opened)
+    as "the third step must feed the advisor"
+
+  // Two more steps is one short of the next threshold, and the primary
+  // has appended nothing since, so neither the count nor the cursor has
+  // anything to offer.
+  step(subject, 2)
+  let assert [_still_one] = advisor_texts(rig.opened)
+    as "two further steps must not feed again"
+  stop(rig)
+}
+
+// Zero is the operator asking for the run-end-only cadence the advisor
+// shipped with. The steps are still counted — the arithmetic lives in one
+// place — and never reach a threshold.
+pub fn a_zero_step_interval_never_feeds_mid_run_test() {
+  let assert Ok(rig) = a_rig_with(stepping(0)) as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  step(subject, 40)
+
+  assert advisor_texts(rig.opened) == []
+
+  // The run end still feeds, so the posture costs the reviewer nothing it
+  // had before the trigger existed.
+  process.send(subject, advisor.PrimaryRunEnded(operation: an_op_id(2)))
+  let _drained = settle(subject)
+  let assert [_fed] = advisor_texts(rig.opened)
+    as "a run end must still feed an advisor with mid-run feeds off"
+  stop(rig)
+}
+
+// The usage ledger is not strand-scoped, so the advisor's own requests
+// reach the same slot. Counting those would let a long review trip the
+// threshold it is itself the reason for, feeding the reviewer on the
+// strength of its own token spend.
+pub fn only_the_primarys_steps_are_counted_test() {
+  let assert Ok(rig) = a_rig_with(stepping(2)) as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  let composed =
+    advisor.hooks(effects.default_hooks(), a_wiring_named(rig.opened, rig.name))
+  let mine = an_operation(rig.opened, advisor.strand, 71)
+  let theirs = an_operation(rig.opened, "sub:main/helper", 72)
+
+  // Four steps that are not the primary's, which is twice the threshold.
+  composed.usage(mine, usage_row())
+  composed.usage(mine, usage_row())
+  composed.usage(theirs, usage_row())
+  composed.usage(theirs, usage_row())
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let _drained = settle(subject)
+  assert advisor_texts(rig.opened) == []
+
+  // The primary's own two then reach the threshold through the same slot.
+  let ours = an_operation(rig.opened, advisor.primary, 73)
+  composed.usage(ours, usage_row())
+  composed.usage(ours, usage_row())
+  let _settled = settle(subject)
+
+  let assert [_fed] = advisor_texts(rig.opened)
+    as "the primary's own steps must reach the threshold"
+  stop(rig)
+}
+
 // Coalescing is the whole backpressure story: an advisor with a run open
 // is left alone, and the cursor stays where it was so the stretch it has
 // not seen is still owed to it at the next run end.
@@ -617,6 +745,13 @@ type Rig {
 }
 
 fn a_rig() -> Result(Rig, String) {
+  a_rig_with(some_settings([]))
+}
+
+// The rig with the advisor's settings chosen by the caller, which is how
+// the step-trigger tests vary `feed_every_steps` without every other test
+// having to name it.
+fn a_rig_with(settings: advisor.Settings) -> Result(Rig, String) {
   use opened <- result.try(
     session.open_memory(clock.fixed(at: 1_756_000_000_000))
     |> result.replace_error("the memory session did not open"),
@@ -637,7 +772,6 @@ fn a_rig() -> Result(Rig, String) {
     )
     |> result.map_error(string.inspect),
   )
-  let settings = some_settings([])
   use Nil <- result.try(advisor.ensure_strand(runtime, settings, [advise.name]))
 
   let name = addresses.new()
@@ -730,12 +864,58 @@ fn cursor(runtime: api.Runtime) -> Option(json.JsonValue) {
   api.fact(runtime, advisor.cursor_key) |> result.unwrap(None)
 }
 
+// The shipped settings with the step threshold moved, so a test reaches
+// it in three casts rather than in twenty.
+fn stepping(every: Int) -> advisor.Settings {
+  advisor.Settings(..some_settings([]), feed_every_steps: every)
+}
+
+// `count` steps on the primary, cast the way the `usage` slot casts them.
+// A call after the last one is the barrier: the mailbox is FIFO per
+// sender, so an answer to it means every cast before it was handled.
+fn step(subject: process.Subject(advisor.Message), count: Int) -> Nil {
+  list.each(list.repeat(Nil, count), fn(_each) {
+    process.send(subject, advisor.PrimaryStepped(operation: an_op_id(9)))
+  })
+  let _drained = settle(subject)
+  Nil
+}
+
+fn usage_row() -> entry.UsageRow {
+  let generator = ids.generator(clock.fixed(at: 0), seed: 11)
+  let #(id, _generator) = ids.mint_usage(generator)
+  entry.UsageRow(
+    id:,
+    seq: 77,
+    entry_id: None,
+    adjustment: False,
+    usage: message.Usage(
+      input: 11,
+      output: 22,
+      cache_read: 3,
+      cache_write: 4,
+      cache_write_1h: None,
+      reasoning: Some(5),
+      total_tokens: 40,
+      cost: message.UsageCost(
+        input: 0.1,
+        output: 0.2,
+        cache_read: 0.0,
+        cache_write: 0.0,
+        total: 0.3,
+      ),
+    ),
+    details: None,
+  )
+}
+
 fn some_settings(tools: List(String)) -> advisor.Settings {
   advisor.Settings(
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     thinking: machine_strand.ThinkingOff,
     tools:,
-    block_cooldown_runs: 2,
+    feed_every_steps: 20,
+    block_cooldown_reviews: 2,
   )
 }
 

@@ -57,7 +57,8 @@
 ////
 //// [advisor]                          # optional; see `parse_advisor`
 //// tools = ["fs_read", "grep"]        # what the advisor may read with
-//// block_cooldown_runs = 2            # runs a delivered block silences
+//// feed_every_steps = 20              # steps inside a run before a feed
+//// block_cooldown_reviews = 2         # reviews a delivered block silences
 ////
 //// [workspace]                        # optional; see `parse_workspace`
 //// mounts = [{ path = "/srv/data", access = "ro" }]
@@ -1408,10 +1409,12 @@ fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
 
 // --- the [advisor] table ---------------------------------------------------
 
-/// The `[advisor]` table: what the advisor strand may read with, and how
-/// long a delivered block quiets the next one.
+/// The `[advisor]` table: what the advisor strand may read with, how
+/// often the primary's work is offered to it, and how long a delivered
+/// block quiets the next one.
 ///
-/// Constructor invariants: `block_cooldown_runs` is not negative.
+/// Constructor invariants: `block_cooldown_reviews` is not negative, and
+/// `feed_every_steps` is not negative.
 ///
 /// `tools` names built-in tools, and naming `advise` among them changes
 /// nothing: the harness registers it for the advisor whatever this says,
@@ -1426,12 +1429,25 @@ pub type AdvisorConfig {
     /// it, and a second agent that can edit the workspace is a second
     /// writer racing the first.
     tools: List(String),
-    /// How many of the primary's runs a delivered block silences the
-    /// next one for. Inside that window a further block is downgraded to
-    /// a nudge, which is what stops an advisor that has decided the
-    /// primary is wrong from interrupting every run until it agrees.
-    /// Zero turns the window off and lets every block through.
-    block_cooldown_runs: Int,
+    /// How many of the primary's steps may pass inside one run before
+    /// what it has done so far is offered to the advisor. A run is many
+    /// steps long and nothing bounds how long it may get, so without this
+    /// a primary that keeps finding tool calls to make is reviewed only
+    /// once it finally stops. Zero turns mid-run feeds off and leaves the
+    /// run end as the only occasion, which is how the advisor shipped.
+    ///
+    /// It is a floor rather than a cadence. A feed that arrives while the
+    /// advisor is still reading the last one is coalesced away and owed,
+    /// and the advisor's own run end pays the debt — so once the reviewer
+    /// is busy continuously the real interval is one review, and this
+    /// number only decides how soon the first one starts.
+    feed_every_steps: Int,
+    /// How many reviews a delivered block silences the next one for.
+    /// Inside that window a further block is downgraded to a nudge, which
+    /// is what stops an advisor that has decided the primary is wrong
+    /// from interrupting at every review until it agrees. Zero turns the
+    /// window off and lets every block through.
+    block_cooldown_reviews: Int,
   )
 }
 
@@ -1441,11 +1457,19 @@ pub type AdvisorConfig {
 /// ## Examples
 ///
 /// ```gleam
-/// assert catalog.default_advisor().block_cooldown_runs == 2
+/// assert catalog.default_advisor().block_cooldown_reviews == 2
+/// ```
+///
+/// ```gleam
+/// assert catalog.default_advisor().feed_every_steps == 20
 /// ```
 ///
 pub fn default_advisor() -> AdvisorConfig {
-  AdvisorConfig(tools: ["fs_read", "grep"], block_cooldown_runs: 2)
+  AdvisorConfig(
+    tools: ["fs_read", "grep"],
+    feed_every_steps: 20,
+    block_cooldown_reviews: 2,
+  )
 }
 
 /// Parses the optional `[advisor]` table out of the same `loom.toml` the
@@ -1469,7 +1493,7 @@ pub fn default_advisor() -> AdvisorConfig {
 /// ```
 ///
 /// ```gleam
-/// // catalog.parse_advisor("[advisor]\nblock_cooldown_runs = 0\n")
+/// // catalog.parse_advisor("[advisor]\nblock_cooldown_reviews = 0\n")
 /// // -> Ok(catalog.AdvisorConfig(tools: ["fs_read", "grep"], ..))
 /// ```
 ///
@@ -1490,12 +1514,13 @@ fn advisor_table(
 ) -> Result(AdvisorConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["tools", "block_cooldown_runs"],
+    ["tools", "feed_every_steps", "block_cooldown_reviews"],
     "[advisor]",
   ))
   use tools <- result.try(advisor_tools(fields))
-  use block_cooldown_runs <- result.try(advisor_cooldown(fields))
-  Ok(AdvisorConfig(tools:, block_cooldown_runs:))
+  use feed_every_steps <- result.try(advisor_feed_steps(fields))
+  use block_cooldown_reviews <- result.try(advisor_cooldown(fields))
+  Ok(AdvisorConfig(tools:, feed_every_steps:, block_cooldown_reviews:))
 }
 
 // File order, because a tool list is read down rather than looked up,
@@ -1520,20 +1545,38 @@ fn advisor_tools(
   }
 }
 
+// Zero is legal and negative is not, the same split `advisor_cooldown`
+// makes and for the same reason. Zero is the operator asking for the
+// run-end-only cadence the advisor shipped with, which is a posture; a
+// negative interval is a number with no reading at all, and clamping it
+// would hide the typo that produced it.
+fn advisor_feed_steps(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
+  case dict.get(fields, "feed_every_steps") {
+    Ok(tom.Int(steps)) if steps >= 0 -> Ok(steps)
+    Ok(tom.Int(steps)) ->
+      Error(
+        "advisor.feed_every_steps must not be negative, got "
+        <> int.to_string(steps),
+      )
+    Ok(_other) -> Error("advisor.feed_every_steps must be an integer")
+    Error(Nil) -> Ok(default_advisor().feed_every_steps)
+  }
+}
+
 // Zero is legal and negative is not. Zero is the operator saying every
 // block should land, which is a posture a reviewer-shaped advisor might
 // want; a negative window is a number with no reading at all, and
 // clamping it would hide the typo that produced it.
 fn advisor_cooldown(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
-  case dict.get(fields, "block_cooldown_runs") {
-    Ok(tom.Int(runs)) if runs >= 0 -> Ok(runs)
-    Ok(tom.Int(runs)) ->
+  case dict.get(fields, "block_cooldown_reviews") {
+    Ok(tom.Int(reviews)) if reviews >= 0 -> Ok(reviews)
+    Ok(tom.Int(reviews)) ->
       Error(
-        "advisor.block_cooldown_runs must not be negative, got "
-        <> int.to_string(runs),
+        "advisor.block_cooldown_reviews must not be negative, got "
+        <> int.to_string(reviews),
       )
-    Ok(_other) -> Error("advisor.block_cooldown_runs must be an integer")
-    Error(Nil) -> Ok(default_advisor().block_cooldown_runs)
+    Ok(_other) -> Error("advisor.block_cooldown_reviews must be an integer")
+    Error(Nil) -> Ok(default_advisor().block_cooldown_reviews)
   }
 }
 

@@ -62,14 +62,19 @@ plan = ["baseten-glm-5-3"]
 summarize = ["baseten-glm-5-3-flash"]
 advisor = ["baseten-glm-5-3"]
 
-# What the advisor may look at, and how long one delivered block quiets
-# the next. Both keys are optional and these are the defaults, written
-# out so the shape is visible. The tool set is read-only on purpose: a
-# second agent that can edit the workspace is a second writer racing the
-# first.
+# What the advisor may look at, how often it is handed a slice of main's
+# work, and how long one delivered block quiets the next. All three keys
+# are optional and these are the defaults, written out so the shape is
+# visible. The tool set is read-only on purpose: a second agent that can
+# edit the workspace is a second writer racing the first.
+#
+# `feed_every_steps` is a floor rather than an interval — see
+# `loom-advisor.toml` for what that costs when the advisor is the slower
+# model, which here it is.
 [advisor]
 tools = ["fs_read", "grep"]
-block_cooldown_runs = 2
+feed_every_steps = 20
+block_cooldown_reviews = 2
 
 # How a run answers a retryable provider failure. All three keys are
 # optional and these are the defaults, written out so the shape is

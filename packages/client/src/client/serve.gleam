@@ -1183,7 +1183,8 @@ fn advisor_settings(
       ),
       thinking: wiring.strand_thinking_level(resolved.thinking),
       tools: config.tools,
-      block_cooldown_runs: config.block_cooldown_runs,
+      feed_every_steps: config.feed_every_steps,
+      block_cooldown_reviews: config.block_cooldown_reviews,
     )
   })
   |> option.from_result

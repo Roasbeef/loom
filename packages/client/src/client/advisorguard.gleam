@@ -1,23 +1,36 @@
 //// The advisor's emission policy as pure data: what one `advise` verdict
 //// becomes, and the small amount of history that decision needs.
 ////
-//// The advisor is a model, and a model asked to review every run of
-//// another model will repeat itself and will reach for the loudest
+//// The advisor is a model, and a model asked to review another model
+//// over and over will repeat itself and will reach for the loudest
 //// channel it has. Two failure modes follow, and both are about the
 //// primary rather than about the advisor. A `block` is delivered through
-//// `api.send_to_strand`, so an advisor that blocks on consecutive runs
+//// `api.send_to_strand`, so an advisor that blocks on consecutive reviews
 //// steers the primary at every checkpoint and the primary never finishes
 //// a thought of its own. And advice the primary was already given costs a
 //// second interruption for no new information, because the advisor cannot
-//// see that it said the same thing two runs ago: its feed carries the
+//// see that it said the same thing two reviews ago: its feed carries the
 //// primary's transcript, not its own answers.
 ////
 //// So the bound is enforced here rather than in the advisor's
 //// instructions. A prompt asking a model to restrain itself is a request;
-//// a cooldown counted in primary runs and a ring of delivered digests is
-//// a decision the harness makes and the model is told about afterwards,
+//// a cooldown counted in reviews and a ring of delivered digests is a
+//// decision the harness makes and the model is told about afterwards,
 //// in the tool result it gets back. That is the same split the broker
 //// draws between what a model may ask for and what it is granted.
+////
+//// ## Why the clock counts reviews and not the primary's runs
+////
+//// It counted runs when the feed fired only at the primary's run end, and
+//// the two were then the same number. They are not any more: a feed also
+//// fires part-way through a long run, so one run can hold many reviews.
+//// A clock still counting runs would leave every review inside a run at
+//// one value, deliver the first block and silently downgrade every later
+//// one until the run ended — the cooldown would read as "one block per two
+//// runs" however long a run went on. Counting reviews is what makes the
+//// window mean what its name says, and it is measured against reviews the
+//// advisor actually received: a feed coalesced away because the advisor
+//// was busy starts no review and moves nothing.
 ////
 //// ## Why this module holds no process and no cell
 ////
@@ -76,12 +89,13 @@ pub type Verdict {
 /// values rather than restating all four.
 pub type Policy {
   Policy(
-    /// Primary runs of silence owed after a delivered block. A `Block`
-    /// asked for inside that window is queued as a nudge instead.
-    block_cooldown_runs: Int,
+    /// Reviews of silence owed after a delivered block. A `Block` asked
+    /// for inside that window is queued as a nudge instead.
+    block_cooldown_reviews: Int,
     /// How many delivered digests are remembered. The ring is what keeps
     /// the duplicate check bounded, and ageing out is deliberate: advice
-    /// the primary ignored for this many runs is worth saying again.
+    /// the primary ignored for this many pieces of advice is worth saying
+    /// again.
     recent_ring: Int,
     /// The most nudges that may wait for the next run start.
     pending_cap: Int,
@@ -92,11 +106,11 @@ pub type Policy {
   )
 }
 
-/// The shipped bounds: two runs of silence after a block, a ring of
+/// The shipped bounds: two reviews of silence after a block, a ring of
 /// thirty-two digests, and at most eight nudges or four kilobytes waiting
 /// for the next run start.
 pub const default_policy = Policy(
-  block_cooldown_runs: 2,
+  block_cooldown_reviews: 2,
   recent_ring: 32,
   pending_cap: 8,
   pending_bytes: 4096,
@@ -106,15 +120,16 @@ pub const default_policy = Policy(
 /// front of it.
 ///
 /// Opaque because two of the four fields are invariants rather than data.
-/// `last_block_run` indexes the same run count `runs` carries, so a value
-/// past `runs` would make the elapsed arithmetic negative and the cooldown
-/// would never expire; `pending` is ordered oldest first and is drained
-/// whole. Every guard in existence therefore comes from `new`, from
-/// `decode` — which re-checks both — or from one of the transitions here.
+/// `last_block_review` indexes the same count `reviews` carries, so a
+/// value past `reviews` would make the elapsed arithmetic negative and the
+/// cooldown would never expire; `pending` is ordered oldest first and is
+/// drained whole. Every guard in existence therefore comes from `new`,
+/// from `decode` — which re-checks both — or from one of the transitions
+/// here.
 pub opaque type Guard {
   Guard(
-    runs: Int,
-    last_block_run: Option(Int),
+    reviews: Int,
+    last_block_review: Option(Int),
     recent: List(String),
     pending: List(String),
   )
@@ -167,14 +182,14 @@ type Kind {
   AsBlock
 }
 
-/// A guard that has seen nothing: no runs, no delivered block, an empty
-/// ring and an empty queue. What a session with no stored cell starts
-/// from.
+/// A guard that has seen nothing: no reviews, no delivered block, an
+/// empty ring and an empty queue. What a session with no stored cell
+/// starts from.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert advisorguard.runs(advisorguard.new()) == 0
+/// assert advisorguard.reviews(advisorguard.new()) == 0
 /// ```
 ///
 /// ```gleam
@@ -182,22 +197,22 @@ type Kind {
 /// ```
 ///
 pub fn new() -> Guard {
-  Guard(runs: 0, last_block_run: None, recent: [], pending: [])
+  Guard(reviews: 0, last_block_review: None, recent: [], pending: [])
 }
 
-/// How many primary runs this guard has seen. The clock the cooldown is
+/// How many reviews this guard has seen. The clock the cooldown is
 /// measured on, exposed because the actor writes it into its own
 /// diagnostics and the tests assert on it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert advisorguard.runs(advisorguard.primary_run_ended(advisorguard.new()))
+/// assert advisorguard.reviews(advisorguard.review_opened(advisorguard.new()))
 ///   == 1
 /// ```
 ///
-pub fn runs(guard: Guard) -> Int {
-  guard.runs
+pub fn reviews(guard: Guard) -> Int {
+  guard.reviews
 }
 
 /// The nudges waiting for the primary's next run start, oldest first.
@@ -213,10 +228,14 @@ pub fn pending(guard: Guard) -> List(String) {
   guard.pending
 }
 
-/// Advances the run clock by one.
+/// Advances the review clock by one.
 ///
-/// Called from the primary's run-end hook, which is the only event that
-/// moves the cooldown along. The advisor's own runs do not count: the
+/// Called by the actor when a feed has been committed onto the advisor's
+/// branch, which is the only event that moves the cooldown along. Two
+/// nearby events deliberately do not move it. A feed the actor coalesced
+/// away because the advisor was already busy starts no review, so counting
+/// it would let a fast primary age a cooldown out without the advisor
+/// reading a word. And the advisor's own verdicts do not count either: the
 /// window exists to give the primary room between interruptions, and
 /// measuring it in advisor turns would let a chatty advisor shorten its
 /// own cooldown.
@@ -224,12 +243,12 @@ pub fn pending(guard: Guard) -> List(String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert advisorguard.runs(advisorguard.primary_run_ended(advisorguard.new()))
+/// assert advisorguard.reviews(advisorguard.review_opened(advisorguard.new()))
 ///   == 1
 /// ```
 ///
-pub fn primary_run_ended(guard: Guard) -> Guard {
-  Guard(..guard, runs: guard.runs + 1)
+pub fn review_opened(guard: Guard) -> Guard {
+  Guard(..guard, reviews: guard.reviews + 1)
 }
 
 /// Decides what one verdict becomes and returns the guard that recorded
@@ -343,14 +362,14 @@ fn judge_block(
 ) -> #(Decision, Guard) {
   case cooldown_elapsed(guard, policy) {
     // Outside the window. The delivery is recorded against the current
-    // run before the actor sends, so a crash between here and the send
+    // review before the actor sends, so a crash between here and the send
     // costs a lost block rather than an unbounded one: the cell already
     // says a block landed.
     None -> #(
       Deliver(text:),
       Guard(
         ..guard,
-        last_block_run: Some(guard.runs),
+        last_block_review: Some(guard.reviews),
         recent: remember(guard.recent, fingerprint, policy),
       ),
     )
@@ -394,17 +413,17 @@ fn enqueue(
   }
 }
 
-// How many primary runs have passed since the last delivered block, when
-// that is still inside the window. `None` means the block channel is
-// open, either because nothing has been delivered or because the window
-// has expired.
+// How many reviews have passed since the last delivered block, when that
+// is still inside the window. `None` means the block channel is open,
+// either because nothing has been delivered or because the window has
+// expired.
 fn cooldown_elapsed(guard: Guard, policy: Policy) -> Option(Int) {
-  case guard.last_block_run {
+  case guard.last_block_review {
     None -> None
 
-    Some(run) -> {
-      let elapsed = guard.runs - run
-      case elapsed < policy.block_cooldown_runs {
+    Some(review) -> {
+      let elapsed = guard.reviews - review
+      case elapsed < policy.block_cooldown_reviews {
         True -> Some(elapsed)
         False -> None
       }
@@ -450,21 +469,21 @@ fn remember(
 fn downgrade_reason(elapsed: Int, policy: Policy) -> String {
   ago_phrase(elapsed)
   <> " and the cooldown is "
-  <> runs_phrase(policy.block_cooldown_runs)
+  <> reviews_phrase(policy.block_cooldown_reviews)
   <> "; this advice was queued as a nudge for the primary's next run start"
 }
 
 fn ago_phrase(elapsed: Int) -> String {
   case elapsed {
-    0 -> "a block was already delivered during this run"
-    _ -> "a block was delivered " <> runs_phrase(elapsed) <> " ago"
+    0 -> "a block was already delivered for this review"
+    _ -> "a block was delivered " <> reviews_phrase(elapsed) <> " ago"
   }
 }
 
-fn runs_phrase(count: Int) -> String {
+fn reviews_phrase(count: Int) -> String {
   case count {
-    1 -> "1 run"
-    _ -> int.to_string(count) <> " runs"
+    1 -> "1 review"
+    _ -> int.to_string(count) <> " reviews"
   }
 }
 
@@ -523,8 +542,8 @@ fn digest(normalized: String) -> String {
 ///
 pub fn encode(guard: Guard) -> JsonValue {
   json.Object([
-    #("runs", json.Int(guard.runs)),
-    #("lastBlockRun", encode_run(guard.last_block_run)),
+    #("reviews", json.Int(guard.reviews)),
+    #("lastBlockReview", encode_review(guard.last_block_review)),
     #("recent", json.Array(list.map(guard.recent, json.String))),
     #("pending", json.Array(list.map(guard.pending, json.String))),
   ])
@@ -534,8 +553,8 @@ pub fn encode(guard: Guard) -> JsonValue {
 // that is sometimes absent. Absence already means "an older writer left
 // this out" in this codec, so a guard that has genuinely delivered no
 // block must say so in a way that cannot be confused with that.
-fn encode_run(run: Option(Int)) -> JsonValue {
-  case run {
+fn encode_review(review: Option(Int)) -> JsonValue {
+  case review {
     None -> json.Null
     Some(value) -> json.Int(value)
   }
@@ -548,7 +567,13 @@ fn encode_run(run: Option(Int)) -> JsonValue {
 /// An absent cell — `Null` — and an empty object both decode to `new()`,
 /// as does any object whose fields are all absent, because an absent
 /// field takes the empty guard's value for it. See the module doc for why
-/// this decoder is lenient about absence and strict about type.
+/// this decoder is lenient about absence and strict about type. That
+/// leniency is also what carries a cell written while the clock still
+/// counted the primary's runs: its `runs` and `lastBlockRun` fields are
+/// absent under the names read here, so the clock starts again at zero
+/// while the ring and the queue — whose names did not move — survive. One
+/// forgotten cooldown, which is the same price this decoder already pays
+/// for any other field an older writer left out.
 ///
 /// ## Examples
 ///
@@ -562,13 +587,13 @@ fn encode_run(run: Option(Int)) -> JsonValue {
 ///
 pub fn decode(value: JsonValue) -> Result(Guard, String) {
   use fields <- result.try(object_fields(value))
-  use stored_runs <- result.try(optional_int(fields, "runs"))
-  use stored_block <- result.try(optional_run(fields, "lastBlockRun"))
+  use stored_reviews <- result.try(optional_int(fields, "reviews"))
+  use stored_block <- result.try(optional_review(fields, "lastBlockReview"))
   use recent <- result.try(optional_strings(fields, "recent"))
   use queued <- result.try(optional_strings(fields, "pending"))
-  use counted <- result.try(non_negative(stored_runs, "runs"))
-  use last_block_run <- result.try(check_last_block(stored_block, counted))
-  Ok(Guard(runs: counted, last_block_run:, recent:, pending: queued))
+  use counted <- result.try(non_negative(stored_reviews, "reviews"))
+  use last_block_review <- result.try(check_last_block(stored_block, counted))
+  Ok(Guard(reviews: counted, last_block_review:, recent:, pending: queued))
 }
 
 // `Null` is the shape a fact cell that was never written comes back as,
@@ -607,7 +632,7 @@ fn optional_int(
   }
 }
 
-fn optional_run(
+fn optional_review(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(Option(Int), String) {
@@ -658,30 +683,31 @@ fn non_negative(value: Int, key: String) -> Result(Int, String) {
 }
 
 // The one cross-field check, and the reason the type is opaque. A block
-// recorded against a run the guard has not reached makes `runs - value`
-// negative, and a negative elapsed is always below the cooldown, so the
-// block channel would stay shut for the rest of the session. Refusing the
-// cell costs one forgotten cooldown; accepting it costs the feature.
+// recorded against a review the guard has not reached makes
+// `reviews - value` negative, and a negative elapsed is always below the
+// cooldown, so the block channel would stay shut for the rest of the
+// session. Refusing the cell costs one forgotten cooldown; accepting it
+// costs the feature.
 fn check_last_block(
-  run: Option(Int),
+  review: Option(Int),
   counted: Int,
 ) -> Result(Option(Int), String) {
-  case run {
+  case review {
     None -> Ok(None)
 
     Some(value) if value < 0 ->
       Error(
         decode_where
-        <> ": lastBlockRun must not be negative, got "
+        <> ": lastBlockReview must not be negative, got "
         <> int.to_string(value),
       )
 
     Some(value) if value > counted ->
       Error(
         decode_where
-        <> ": lastBlockRun "
+        <> ": lastBlockReview "
         <> int.to_string(value)
-        <> " is past the run count "
+        <> " is past the review count "
         <> int.to_string(counted),
       )
 

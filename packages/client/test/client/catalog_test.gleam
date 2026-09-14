@@ -856,7 +856,7 @@ fn with_advisor(body: String) -> String {
 
 pub fn an_advisor_table_is_allowed_at_the_top_level_test() {
   let assert Ok(_parsed) =
-    catalog.parse(with_advisor("block_cooldown_runs = 1"))
+    catalog.parse(with_advisor("block_cooldown_reviews = 1"))
     as "an [advisor] table must not be refused by the top-level key check"
 }
 
@@ -865,7 +865,8 @@ pub fn an_absent_advisor_table_takes_the_read_only_default_test() {
   assert catalog.parse_advisor(minimal)
     == Ok(catalog.AdvisorConfig(
       tools: ["fs_read", "grep"],
-      block_cooldown_runs: 2,
+      feed_every_steps: 20,
+      block_cooldown_reviews: 2,
     ))
 }
 
@@ -873,30 +874,70 @@ pub fn a_full_advisor_table_parses_test() {
   let text =
     with_advisor(
       "tools = [\"fs_read\", \"grep\", \"history_search\"]
-block_cooldown_runs = 5",
+feed_every_steps = 8
+block_cooldown_reviews = 5",
     )
   assert catalog.parse_advisor(text)
     == Ok(catalog.AdvisorConfig(
       tools: ["fs_read", "grep", "history_search"],
-      block_cooldown_runs: 5,
+      feed_every_steps: 8,
+      block_cooldown_reviews: 5,
     ))
 }
 
 pub fn each_absent_advisor_key_falls_back_on_its_own_test() {
-  assert catalog.parse_advisor(with_advisor("block_cooldown_runs = 0"))
+  assert catalog.parse_advisor(with_advisor("block_cooldown_reviews = 0"))
     == Ok(catalog.AdvisorConfig(
       tools: ["fs_read", "grep"],
-      block_cooldown_runs: 0,
+      feed_every_steps: 20,
+      block_cooldown_reviews: 0,
     ))
   assert catalog.parse_advisor(with_advisor("tools = [\"grep\"]"))
-    == Ok(catalog.AdvisorConfig(tools: ["grep"], block_cooldown_runs: 2))
+    == Ok(catalog.AdvisorConfig(
+      tools: ["grep"],
+      feed_every_steps: 20,
+      block_cooldown_reviews: 2,
+    ))
+  assert catalog.parse_advisor(with_advisor("feed_every_steps = 3"))
+    == Ok(catalog.AdvisorConfig(
+      tools: ["fs_read", "grep"],
+      feed_every_steps: 3,
+      block_cooldown_reviews: 2,
+    ))
+}
+
+// Zero is the operator asking for the run-end-only cadence the advisor
+// shipped with, which is a posture rather than a threshold every step
+// trivially clears.
+pub fn a_zero_feed_interval_is_honoured_test() {
+  assert catalog.parse_advisor(with_advisor("feed_every_steps = 0"))
+    == Ok(catalog.AdvisorConfig(
+      tools: ["fs_read", "grep"],
+      feed_every_steps: 0,
+      block_cooldown_reviews: 2,
+    ))
+}
+
+pub fn a_negative_feed_interval_is_refused_test() {
+  let assert Error(reason) =
+    catalog.parse_advisor(with_advisor("feed_every_steps = -1"))
+    as "a negative interval has no reading, so it must not be clamped"
+  assert string.contains(reason, "advisor.feed_every_steps")
+  assert string.contains(reason, "must not be negative")
+
+  let assert Error("advisor.feed_every_steps must be an integer") =
+    catalog.parse_advisor(with_advisor("feed_every_steps = \"twenty\""))
 }
 
 pub fn an_empty_advisor_tool_list_is_honoured_test() {
   // An advisor that only reasons over the feed it was handed is a
   // posture, not a mistake, so the empty list is not read as absence.
   assert catalog.parse_advisor(with_advisor("tools = []"))
-    == Ok(catalog.AdvisorConfig(tools: [], block_cooldown_runs: 2))
+    == Ok(catalog.AdvisorConfig(
+      tools: [],
+      feed_every_steps: 20,
+      block_cooldown_reviews: 2,
+    ))
 }
 
 pub fn an_unknown_advisor_key_is_refused_test() {
@@ -906,15 +947,15 @@ pub fn an_unknown_advisor_key_is_refused_test() {
 
 pub fn a_negative_cooldown_is_refused_rather_than_clamped_test() {
   let assert Error(reason) =
-    catalog.parse_advisor(with_advisor("block_cooldown_runs = -1"))
+    catalog.parse_advisor(with_advisor("block_cooldown_reviews = -1"))
     as "a negative window has no reading, so it must not be clamped"
   assert string.contains(reason, "must not be negative")
   assert string.contains(reason, "-1")
 }
 
 pub fn a_mistyped_cooldown_is_refused_test() {
-  let assert Error("advisor.block_cooldown_runs must be an integer") =
-    catalog.parse_advisor(with_advisor("block_cooldown_runs = \"two\""))
+  let assert Error("advisor.block_cooldown_reviews must be an integer") =
+    catalog.parse_advisor(with_advisor("block_cooldown_reviews = \"two\""))
 }
 
 pub fn a_mistyped_advisor_tool_list_is_refused_test() {

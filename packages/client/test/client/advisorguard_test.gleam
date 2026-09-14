@@ -6,7 +6,7 @@
 //// the cooldown, the duplicate ring, the two queue caps — including the
 //// exact prose the advisor reads back, because that wording is how the
 //// model learns a rule it is never told in its instructions. The
-//// **invariant fold** drives a scripted run of verdicts and run ends past
+//// **invariant fold** drives a scripted run of verdicts and feeds past
 //// the guard and asserts after every step that the queue and the ring are
 //// still inside their bounds, which is the claim a single rule test
 //// cannot make. The **codec** round-trips guards built by those same
@@ -31,7 +31,7 @@ import gleam/string
 // module to learn what the other three are.
 fn tight() -> Policy {
   Policy(
-    block_cooldown_runs: 2,
+    block_cooldown_reviews: 2,
     recent_ring: 3,
     pending_cap: 2,
     pending_bytes: 40,
@@ -80,17 +80,17 @@ pub fn a_first_block_is_delivered_test() {
   assert advisorguard.pending(guard) == []
 }
 
-// A second block in the same run as the first. The elapsed count is zero
-// and the prose says so in words rather than as "0 runs ago".
-pub fn a_block_in_the_same_run_is_downgraded_test() {
+// A second block against the same review as the first. The elapsed count
+// is zero and the prose says so in words rather than as "0 reviews ago".
+pub fn a_block_in_the_same_review_is_downgraded_test() {
   let #(decision, guard) =
     advisorguard.decide(after_a_block(tight()), tight(), Block(text: "two"))
 
   assert decision
     == Downgraded(
       text: "two",
-      reason: "a block was already delivered during this run and the cooldown "
-        <> "is 2 runs; this advice was queued as a nudge for the primary's "
+      reason: "a block was already delivered for this review and the cooldown "
+        <> "is 2 reviews; this advice was queued as a nudge for the primary's "
         <> "next run start",
     )
 
@@ -99,43 +99,43 @@ pub fn a_block_in_the_same_run_is_downgraded_test() {
   assert advisorguard.pending(guard) == ["two"]
 }
 
-// One run of the two has passed, so the window is still shut.
-pub fn a_block_one_run_into_the_cooldown_is_downgraded_test() {
-  let guard = advisorguard.primary_run_ended(after_a_block(tight()))
+// One review of the two has passed, so the window is still shut.
+pub fn a_block_one_review_into_the_cooldown_is_downgraded_test() {
+  let guard = advisorguard.review_opened(after_a_block(tight()))
   let #(decision, guard) =
     advisorguard.decide(guard, tight(), Block(text: "two"))
 
   assert decision
     == Downgraded(
       text: "two",
-      reason: "a block was delivered 1 run ago and the cooldown is 2 runs; "
-        <> "this advice was queued as a nudge for the primary's next run "
-        <> "start",
+      reason: "a block was delivered 1 review ago and the cooldown is 2 "
+        <> "reviews; this advice was queued as a nudge for the primary's next "
+        <> "run start",
     )
   assert advisorguard.pending(guard) == ["two"]
 }
 
-// The window is measured in primary runs, so two run ends open it again.
+// The window is measured in reviews, so two feeds open it again.
 pub fn a_block_after_the_cooldown_is_delivered_test() {
   let guard =
     after_a_block(tight())
-    |> advisorguard.primary_run_ended
-    |> advisorguard.primary_run_ended
+    |> advisorguard.review_opened
+    |> advisorguard.review_opened
 
   let #(decision, guard) =
     advisorguard.decide(guard, tight(), Block(text: "two"))
 
   assert decision == Deliver(text: "two")
-  assert advisorguard.runs(guard) == 2
+  assert advisorguard.reviews(guard) == 2
 
-  // The second delivery re-arms the window against the run it landed in,
-  // or a session's third block would be free.
+  // The second delivery re-arms the window against the review it landed
+  // in, or a session's third block would be free.
   let #(third, _guard) = advisorguard.decide(guard, tight(), Block(text: "x"))
   assert third
     == Downgraded(
       text: "x",
-      reason: "a block was already delivered during this run and the cooldown "
-        <> "is 2 runs; this advice was queued as a nudge for the primary's "
+      reason: "a block was already delivered for this review and the cooldown "
+        <> "is 2 reviews; this advice was queued as a nudge for the primary's "
         <> "next run start",
     )
 }
@@ -339,7 +339,7 @@ pub fn a_zero_count_cap_admits_nothing_test() {
 
 // A cooldown of zero is no cooldown: consecutive blocks are delivered.
 pub fn a_zero_cooldown_delivers_every_block_test() {
-  let policy = Policy(..tight(), block_cooldown_runs: 0)
+  let policy = Policy(..tight(), block_cooldown_reviews: 0)
   let #(decision, _guard) =
     advisorguard.decide(after_a_block(policy), policy, Block(text: "two"))
 
@@ -361,10 +361,10 @@ pub fn a_zero_ring_remembers_nothing_test() {
 // --- the invariant fold ---------------------------------------------------
 
 // One step of a scripted session: either the advisor said something, or
-// the primary finished a run.
+// a fresh slice reached it and a new review began.
 type Step {
   Say(verdict: advisorguard.Verdict)
-  RunEnd
+  Fed
 }
 
 // A script long enough that the caps and the ring are all reached, with
@@ -376,18 +376,18 @@ fn script() -> List(Step) {
     Say(Nudge(text: "the test name says list, the body asserts a dict")),
     Say(Quiet),
     Say(Block(text: "the migration has no down step")),
-    RunEnd,
+    Fed,
     Say(Nudge(text: "  THE   migration has no down STEP ")),
     Say(Nudge(text: "this one is long enough to go past forty bytes on its own")),
     Say(Block(text: "")),
-    RunEnd,
+    Fed,
     Say(Nudge(text: "a fourth")),
     Say(Quiet),
     Say(Block(text: "a fifth, which should now clear the window")),
-    RunEnd,
+    Fed,
     Say(Nudge(text: "a sixth")),
     Say(Nudge(text: "a seventh")),
-    RunEnd,
+    Fed,
     Say(Block(text: "an eighth")),
     Say(Quiet),
   ]
@@ -408,14 +408,14 @@ pub fn a_scripted_session_stays_inside_every_bound_test() {
       assert bytes_of(queued) <= policy.pending_bytes
       assert list.length(recent_of(moved)) <= policy.recent_ring
 
-      // The run clock only ever moves forward, and only on a run end.
-      assert advisorguard.runs(moved) >= advisorguard.runs(guard)
+      // The review clock only ever moves forward, and only on a feed.
+      assert advisorguard.reviews(moved) >= advisorguard.reviews(guard)
 
       moved
     })
 
-  // Four run ends in the script, and the guard counted all four.
-  assert advisorguard.runs(guard) == 4
+  // Four feeds in the script, and the guard counted all four.
+  assert advisorguard.reviews(guard) == 4
 
   // The whole scripted state still round-trips, which is the property the
   // actor depends on after every one of these steps.
@@ -424,7 +424,7 @@ pub fn a_scripted_session_stays_inside_every_bound_test() {
 
 fn apply(guard: Guard, policy: Policy, step: Step) -> Guard {
   case step {
-    RunEnd -> advisorguard.primary_run_ended(guard)
+    Fed -> advisorguard.review_opened(guard)
 
     Say(verdict:) -> {
       let #(_decision, moved) = advisorguard.decide(guard, policy, verdict)
@@ -439,13 +439,13 @@ fn apply(guard: Guard, policy: Policy, step: Step) -> Guard {
 // block, carrying a ring, carrying a queue, and all of those at once.
 fn shapes() -> List(Guard) {
   let policy = Policy(..tight(), pending_cap: 8, pending_bytes: 4096)
-  let counted = advisorguard.primary_run_ended(advisorguard.new())
+  let counted = advisorguard.review_opened(advisorguard.new())
   let blocked = after_a_block(policy)
   let #(_queued, nudged) =
     advisorguard.decide(advisorguard.new(), policy, Nudge(text: "two"))
   let #(_both, both) =
     advisorguard.decide(
-      advisorguard.primary_run_ended(blocked),
+      advisorguard.review_opened(blocked),
       policy,
       Nudge(text: "three"),
     )
@@ -469,11 +469,34 @@ pub fn the_stored_form_is_the_documented_object_test() {
     as "the stored guard is an object"
 
   assert list.map(fields, fn(field) { field.0 })
-    == ["runs", "lastBlockRun", "recent", "pending"]
-  assert list.key_find(fields, "runs") == Ok(json.Int(0))
-  assert list.key_find(fields, "lastBlockRun") == Ok(json.Int(0))
+    == ["reviews", "lastBlockReview", "recent", "pending"]
+  assert list.key_find(fields, "reviews") == Ok(json.Int(0))
+  assert list.key_find(fields, "lastBlockReview") == Ok(json.Int(0))
   assert list.key_find(fields, "pending")
     == Ok(json.Array([json.String("two")]))
+}
+
+// The clock's field names moved when it stopped counting the primary's
+// runs, and a cell written before that reads as a guard whose clock is
+// fresh. It is the leniency the module documents rather than a special
+// case for it: the two old names are simply absent under the two new
+// ones, while the ring and the queue — whose names did not move — are
+// read exactly as they were stored. The cost is one forgotten cooldown.
+pub fn a_cell_from_the_run_counting_build_keeps_its_ring_test() {
+  let stored =
+    json.Object([
+      #("runs", json.Int(7)),
+      #("lastBlockRun", json.Int(6)),
+      #("recent", json.Array([json.String("deadbeef")])),
+      #("pending", json.Array([json.String("a queued nudge")])),
+    ])
+
+  let assert Ok(carried) = advisorguard.decode(stored)
+    as "a cell from the run-counting build still decodes"
+
+  assert advisorguard.reviews(carried) == 0
+  assert advisorguard.pending(carried) == ["a queued nudge"]
+  assert recent_of(carried) == ["deadbeef"]
 }
 
 // A guard that has delivered nothing says so with null, not by leaving
@@ -483,7 +506,7 @@ pub fn a_guard_with_no_delivered_block_stores_null_test() {
   let assert json.Object(fields) = advisorguard.encode(advisorguard.new())
     as "the stored guard is an object"
 
-  assert list.key_find(fields, "lastBlockRun") == Ok(json.Null)
+  assert list.key_find(fields, "lastBlockReview") == Ok(json.Null)
 }
 
 // The cell a session starts from. `Null` is what an unwritten fact reads
@@ -494,22 +517,20 @@ pub fn an_absent_or_empty_cell_decodes_to_a_fresh_guard_test() {
   assert advisorguard.decode(json.Object([])) == Ok(advisorguard.new())
 }
 
-// Absence is per field: a cell carrying only a run count is a guard that
-// has counted runs and remembered nothing else.
+// Absence is per field: a cell carrying only a review count is a guard
+// that has counted reviews and remembered nothing else.
 pub fn an_absent_field_takes_the_empty_guards_value_test() {
-  let partial = json.Object([#("runs", json.Int(2))])
+  let partial = json.Object([#("reviews", json.Int(2))])
   let expected =
-    advisorguard.primary_run_ended(
-      advisorguard.primary_run_ended(advisorguard.new()),
-    )
+    advisorguard.review_opened(advisorguard.review_opened(advisorguard.new()))
 
   assert advisorguard.decode(partial) == Ok(expected)
 }
 
 // Every way a cell can be wrong, each of which must be an error naming
 // the field rather than a crash or a half-read guard. The two arithmetic
-// ones are the reason the type is opaque: a negative run count and a
-// block recorded past the run count both make the cooldown arithmetic
+// ones are the reason the type is opaque: a negative review count and a
+// block recorded past the review count both make the cooldown arithmetic
 // meaningless, and neither can be produced by any transition here.
 fn malformed() -> List(#(String, json.JsonValue)) {
   [
@@ -517,14 +538,23 @@ fn malformed() -> List(#(String, json.JsonValue)) {
     #("a bare array", json.Array([])),
     #("a bare number", json.Int(3)),
     #("a bare boolean", json.Bool(True)),
-    #("a null run count", json.Object([#("runs", json.Null)])),
-    #("a textual run count", json.Object([#("runs", json.String("3"))])),
-    #("a negative run count", json.Object([#("runs", json.Int(-1))])),
-    #("a textual block run", json.Object([#("lastBlockRun", json.String("1"))])),
-    #("a negative block run", json.Object([#("lastBlockRun", json.Int(-1))])),
+    #("a null review count", json.Object([#("reviews", json.Null)])),
+    #("a textual review count", json.Object([#("reviews", json.String("3"))])),
+    #("a negative review count", json.Object([#("reviews", json.Int(-1))])),
     #(
-      "a block run past the run count",
-      json.Object([#("runs", json.Int(1)), #("lastBlockRun", json.Int(2))]),
+      "a textual block review",
+      json.Object([#("lastBlockReview", json.String("1"))]),
+    ),
+    #(
+      "a negative block review",
+      json.Object([#("lastBlockReview", json.Int(-1))]),
+    ),
+    #(
+      "a block review past the review count",
+      json.Object([
+        #("reviews", json.Int(1)),
+        #("lastBlockReview", json.Int(2)),
+      ]),
     ),
     #(
       "a ring that is not an array",
