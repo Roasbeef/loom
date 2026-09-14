@@ -498,11 +498,26 @@ pub fn a_feed_frames_the_slice_as_data_and_names_what_is_owed_test() {
     content: [message.UserText(text:, ..)],
     timestamp:,
     origin: None,
-  ) = advisorslice.feed_message(slice, 77)
+  ) = advisorslice.feed_message(slice, 77, advisorslice.RunEnded)
     as "a feed is one user text block"
   assert text
     == "[advisor feed: what the primary did since your last review]\nuser:\nhello\n[end feed. Review it and answer with exactly one advise call.]"
   assert timestamp == 77
+}
+
+// A mid-run slice says so inside the frame, and the frame's own two
+// tokens do not move: they are what `is_advice` and the terminal both
+// recognize a feed by, and the terminal cannot import them.
+pub fn a_mid_run_feed_says_the_run_is_still_open_test() {
+  let entries = [a_message(1, user("hello"))]
+  let slice = rendered(entries, advisorslice.default_bounds)
+
+  let assert message.UserMessage(content: [message.UserText(text:, ..)], ..) =
+    advisorslice.feed_message(slice, 77, advisorslice.RunOpen(steps: 20))
+    as "a feed is one user text block"
+
+  assert text
+    == "[advisor feed: what the primary did since your last review]\n[the primary's run is still open — this is work in progress, 20 steps since your last review]\nuser:\nhello\n[end feed. Review it and answer with exactly one advise call.]"
 }
 
 pub fn advice_is_framed_as_a_review_rather_than_an_order_test() {

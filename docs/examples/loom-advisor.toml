@@ -45,18 +45,31 @@ main = ["baseten-glm-5-3-flash"]
 advisor = ["baseten-glm-5-3"]
 summarize = ["baseten-glm-5-3-flash"]
 
-# What the advisor may look at besides the feed it is handed, and how
-# long one delivered block quiets the next.
+# What the advisor may look at besides the feed it is handed, how often
+# it is handed one, and how long a delivered block quiets the next.
 #
 # The tools are read-only: an advisor exists to look at what main did and
 # say something about it, and a second agent that can edit the workspace
 # is a second writer racing the first. `advise` itself is registered
 # whatever this list says.
 #
-# `block_cooldown_runs = 2` means a block that reached main downgrades
-# the next two runs' blocks to nudges. Without the window, an advisor
-# that has decided main is wrong interrupts every run until it agrees.
-# Zero turns the window off and lets every block through.
+# `feed_every_steps = 20` is what stops a long run being opaque to the
+# reviewer. A run is many provider requests and nothing bounds how many,
+# so with mid-run feeds off an agent that keeps finding tool calls to
+# make is reviewed only once it finally stops. Read it as a floor rather
+# than an interval: a feed that arrives while the advisor is still
+# reading the last one is held and delivered the moment that review ends,
+# so a continuously working main is reviewed about once per review for as
+# long as it works. That is the point when the advisor is the slower
+# model — it bounds how stale a verdict can be — and it is also what the
+# pairing costs. Lower it to catch wrong turns sooner and pay for more
+# reviews; set it to 0 for the run-end-only cadence.
+#
+# `block_cooldown_reviews = 2` means a block that reached main downgrades
+# the next two reviews' blocks to nudges. Without the window, an advisor
+# that has decided main is wrong interrupts at every review until it
+# agrees. Zero turns the window off and lets every block through.
 [advisor]
 tools = ["fs_read", "grep"]
-block_cooldown_runs = 2
+feed_every_steps = 20
+block_cooldown_reviews = 2

@@ -527,16 +527,61 @@ fn stop(
 
 // --- the message frames ----------------------------------------------------
 
+/// Where the primary stood when a slice was cut.
+///
+/// The advisor weighs a `block` differently against the two, so the
+/// distinction has to reach it. A finished run is a task the primary
+/// considers done and every gap in it is a real gap; an open one is work
+/// in progress, where the commonest gap is simply the part not written
+/// yet, and a reviewer that reads incompleteness as error will interrupt
+/// the primary to describe the step it was about to take.
+pub type Moment {
+  /// The primary has no run open. Every slice looked like this before the
+  /// feed had any occasion but the run-end hook.
+  RunEnded
+
+  /// The primary is still working, `steps` provider requests into the run
+  /// since the advisor was last offered a slice.
+  RunOpen(steps: Int)
+}
+
 /// Frames a slice as the user message the advisor reads.
+///
+/// A mid-run slice gains one leading line inside the frame saying so.
+/// That line is deliberately part of the *body* rather than a second
+/// header: the frame's two tokens are what `is_advice` and the terminal
+/// both recognize a feed by, and a second spelling of either would mean
+/// two literals to keep in step across a package boundary that cannot
+/// import them. The body already carries harness-written annotations —
+/// `[N earlier entries omitted]` is one — so this is the register it
+/// belongs in anyway.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // advisorslice.feed_message(slice, now: 1000)
+/// // advisorslice.feed_message(slice, now: 1000, moment: advisorslice.RunEnded)
 /// ```
 ///
-pub fn feed_message(slice: Slice, now: Int) -> AgentMessage {
-  user_message(feed_header <> "\n" <> slice.text <> "\n" <> feed_footer, now)
+pub fn feed_message(slice: Slice, now: Int, moment: Moment) -> AgentMessage {
+  user_message(
+    feed_header <> "\n" <> standing(moment) <> slice.text <> "\n" <> feed_footer,
+    now,
+  )
+}
+
+// The mid-run line, or nothing at all. A finished run gets no annotation
+// because that is what every slice used to be: saying so on the common
+// case would spend a line of every prompt restating the default.
+fn standing(moment: Moment) -> String {
+  case moment {
+    RunEnded -> ""
+
+    RunOpen(steps:) ->
+      "["
+      <> "the primary's run is still open — this is work in progress, "
+      <> int.to_string(steps)
+      <> " steps since your last review]\n"
+  }
 }
 
 /// Frames the advisor's verdict as the user message the primary reads.

@@ -751,7 +751,13 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
       ),
       thinking: machine_strand.ThinkingOff,
       tools: ["fs_read", "grep"],
-      block_cooldown_runs: 2,
+      // Run-end-only, so the fixture's three reviews stay the three the
+      // script draws verdicts for. The step trigger has its own coverage
+      // in `advisor_test`; turning it on here would add reviews whose
+      // count depends on how fast the host answers, which is exactly the
+      // scheduling this fixture is written not to depend on.
+      feed_every_steps: 0,
+      block_cooldown_reviews: 2,
     )),
   )
 }
