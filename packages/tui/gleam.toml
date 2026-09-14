@@ -8,7 +8,7 @@ host = { path = "../host" }
 argv = ">= 1.1.0 and < 2.0.0"
 core = { path = "../core" }
 machine = { path = "../machine" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "623ddb56a4b39e40b3569628c7031aab5e7af5d7" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "22554e85ecb54e92d3c3afe734f42e0ed2eca5ec" }
 filepath = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
