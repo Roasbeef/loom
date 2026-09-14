@@ -1153,6 +1153,17 @@ fn stop(
     }
     Stopping -> sm.keep(book) |> sm.postpone
     Serving -> {
+      // Fence admission before the drain, not after it. The hub has no
+      // drain-phase check of its own, so a prompt submitted while the
+      // drain below is running would be acknowledged `queued` and land
+      // in the held map *after* the drain emptied it — lost at teardown
+      // with neither a return nor a refusal, the exact silent loss this
+      // path exists to prevent. In `Stopping` every admission point is
+      // already closed: control mutations are refused, new session
+      // sockets are not transferred, and `stop` itself postpones, so
+      // the drain below walks queues nothing can still grow.
+      let stopped = sm.transition(Stopping, book)
+
       // Return every held prompt before the sockets they travel over are
       // killed. A hub's held item reaches its submitter as a push on that
       // submitter's session socket, so draining after `cancel_session_
@@ -1163,7 +1174,7 @@ fn stop(
       drain_held_sessions(book.stage)
       cancel_session_connections(book)
       cancel_lifetime(book.stage)
-      sm.transition(Stopping, book) |> sm.postpone
+      stopped |> sm.postpone
     }
     Dormant | Starting | Refused(_) -> close_unstarted(book) |> sm.postpone
   }
