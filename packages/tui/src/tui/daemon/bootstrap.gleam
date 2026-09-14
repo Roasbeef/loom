@@ -227,7 +227,7 @@ pub fn probe(
   )
   let protocol.Epoch(actual_epoch) = daemon.hello(control).epoch
   case record {
-    endpoint.Ready(_, _, _, epoch) if epoch == actual_epoch ->
+    endpoint.Ready(_, _, _, epoch, _) if epoch == actual_epoch ->
       Ok(Connected(control, paths, record))
     _ -> {
       daemon.close(control)

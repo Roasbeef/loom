@@ -23,6 +23,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/build_identity
 import mist
 import storage/access
 import storage/catalogue
@@ -234,6 +235,11 @@ fn control_upgrade(
   digest,
   principal: access.Principal,
 ) {
+  // The daemon's own build identity, read once per upgrade. It is a
+  // process-wide fact that cannot change while the listener serves, so
+  // there is nothing to re-read, and reading it here rather than per frame
+  // keeps the hello's shape built from one value.
+  let hello_identity = build_identity.current()
   case root.acquire(config.daemon, root.Control, within: 1000) {
     Error(_) -> plain(503, "connection capacity unavailable")
     Ok(permit) -> {
@@ -275,6 +281,12 @@ fn control_upgrade(
                         #("protocol", json.Int(2)),
                         #("epoch", json.String(state.epoch)),
                         #("principal", json.String(principal.id)),
+                        // The build this daemon is (issue #392). A client
+                        // compares it against its own and reports a
+                        // mismatch instead of attaching silently to a
+                        // daemon a newer client cannot speak to.
+                        #("build_version", json.String(hello_identity.version)),
+                        #("build_commit", json.String(hello_identity.commit)),
                         #(
                           "limits",
                           json.Object([

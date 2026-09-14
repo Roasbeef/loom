@@ -26,6 +26,7 @@ pub fn every_truncated_hello_is_rejected_test() {
         protocol.Epoch("epoch-one"),
         "owner",
         65_536,
+        None,
       )),
     )
   list.each(
@@ -35,6 +36,37 @@ pub fn every_truncated_hello_is_rejected_test() {
         as "every incomplete envelope must be refused"
     },
   )
+}
+
+// Issue #392. A daemon that names its build gives a client two comparison
+// strings; a daemon that predates the fields gives `None`, which is
+// reported as an unknown build rather than refused.
+pub fn a_hello_carries_the_daemons_build_when_it_names_one_test() {
+  assert protocol.decode(
+      "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"e\",\"principal\":\"owner\",\"build_version\":\"0.1.0\",\"build_commit\":\"4c266dde\",\"limits\":{\"control_bytes\":65536}}}",
+    )
+    == Ok(
+      protocol.Greeting(protocol.Hello(
+        protocol.Epoch("e"),
+        "owner",
+        65_536,
+        Some(protocol.Build("0.1.0", "4c266dde")),
+      )),
+    )
+
+  // A hello with only one of the two fields is an unknown build, not a
+  // half-read one: `build_at` yields `None` when either field is absent.
+  assert protocol.decode(
+      "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"e\",\"principal\":\"owner\",\"build_version\":\"0.1.0\",\"limits\":{\"control_bytes\":65536}}}",
+    )
+    == Ok(
+      protocol.Greeting(protocol.Hello(
+        protocol.Epoch("e"),
+        "owner",
+        65_536,
+        None,
+      )),
+    )
 }
 
 pub fn duplicate_keys_versions_and_complete_frame_bound_test() {
