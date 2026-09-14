@@ -734,15 +734,22 @@ pub fn all_violations_reported_at_once_test() {
 
 // --- Policy unit tests ------------------------------------------------------
 
-/// The default cap allowlist is exactly the canonical nine.
+/// The default cap allowlist admits every prelude module the workspace
+/// seam names, and nothing beyond them.
+///
+/// `cap/clock` is on the list and is not a capability: it calls nothing,
+/// so it is admitted for the shape of its name rather than for any
+/// authority, and the seam has to say so out loud.
 pub fn default_cap_modules_test() {
   let p = policy.default()
   let caps = [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv",
+    "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
+    "cap/clock",
   ]
   assert list.all(caps, fn(m) { policy.contains(p, m) })
-  // A cap module outside the nine is not recognised.
+
+  // A cap module outside the named set is not recognised.
   assert !policy.contains(p, "cap/db")
 }
 

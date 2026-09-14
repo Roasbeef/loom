@@ -517,7 +517,18 @@ pub fn extension_authority_modules() -> List(String) {
 /// The capability-prelude modules in the default allowlist. The union of the
 /// sets named in design §6.2 (`fs proc net git lsp task actor report`) and
 /// spec WP-J (`fs proc git lsp report task actor kv`), widened since by
-/// `cap/schedule`, `cap/job` and `cap/search`.
+/// `cap/schedule`, `cap/job`, `cap/search` and `cap/clock`.
+///
+/// `cap/clock` is the one entry here that is not a capability at all: it
+/// makes no call, so the broker never sees it and there is nothing to
+/// deny. It is on this list because the seams are named by module rather
+/// than by authority, and because the extension seam — which inherits
+/// this one — needs a way to pace a poll that is not a busy loop. It is
+/// deliberately absent from the orchestration seam, not because waiting
+/// would be dangerous there, but because that seam's allowlist is read as
+/// the confinement itself: its intersection with this list is asserted to
+/// be exactly `cap/report`, and a second shared name would cost that
+/// property for a convenience an orchestration program has not asked for.
 ///
 /// `cap/search` is here on the same argument that puts `cap/fs` here and
 /// on one more of its own: it is read-only navigation and search over the
@@ -548,6 +559,7 @@ pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
     "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
+    "cap/clock",
   ]
 }
 
