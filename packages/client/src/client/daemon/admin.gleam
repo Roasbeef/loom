@@ -30,7 +30,8 @@ pub opaque type Request {
   )
 }
 
-const usage = "usage: loomd access [--state-dir PATH] invite SESSION PRINCIPAL ROLE NAME | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
+/// The complete access-command usage, shared with the top-level dispatcher.
+pub const usage = "usage: loomd access [--state-dir PATH] invite SESSION PRINCIPAL ROLE NAME | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
 
 /// Runs one administration request and prints a bearer only on explicit success.
 ///

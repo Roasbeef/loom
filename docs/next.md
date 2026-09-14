@@ -4,6 +4,16 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
+Issue #383 is implemented on `fix/cli-help`. The shipped `loom` and `loomd`
+launchers answer top-level and subcommand help before terminal or daemon
+startup, including extension help without an installed server. The shipped
+help acceptance, 475 TUI tests, and 1,792 client tests passed locally, and
+the independent review findings are resolved. Hosted CI and Linux signoff
+remain outstanding. The broader shipped multiplayer fixture fails locally
+on both this branch and its unchanged base, `7635d029`: the provider rejects
+the latest-message shape, then the terminal wait expires. That baseline
+failure remains open; the help acceptance is independently green.
+
 The September 14 scrolling work is recorded in
 [Transcript scrolling](review/scroll-presentation-2026-09-14.md): PR #401
 removes repeated history-anchor projection, and the etui fork implements
@@ -61,14 +71,36 @@ The existing user daemon was neither replaced nor restarted. Its roughly
 named diagnostic instance before proposing a memory fix. These packaging
 checks are not a full `make check` or a Linux signoff.
 
+## Live profiling (September 14)
+
 `fix/profiling-flags`, based on `813daf2a`, makes that diagnostic path a normal
 opt-in launcher feature for both `loom` and `loomd`. `--profile` creates a
 unique loopback node and private cookie directory below the selected state
 root, then prints the packaged `loom-profile` census command. The cookie stays
 out of OS arguments and the application keeps its original `HOME`. The branch
-has a passing shell check, a generated slim-launcher smoke, and a temporary
-release-fixture census. Its full release rebuild was rate-limited by Hex and
-is still required before a release claim.
+passed generated-launcher tests, the normal bundled client and full server
+release, code-mode release smoke, and live census attachment. Hosted CI and
+Linux signoff passed at `77b39805`; this merge retains #408 before #409 lands
+and needs fresh checks at its new head.
+
+## History prefetch (September 14)
+
+Reading history starts the next fetch two transcript viewport heights before
+the oldest loaded row. Both wheel input and idle demand use that threshold;
+the existing single pending request, hundred-position page, and retained
+window bounds remain. All 476 TUI tests passed, and the new regression rejects
+the previous ten-row threshold. Lint and doc-check passed with zero errors.
+Hosted CI and Linux signoff passed at `21ed55c6`; the merge of main preserves
+both TUI changes and needs fresh checks at its new head.
+
+## Compaction notice (September 14)
+
+The TUI now renders compaction as one short notice with the approximate token
+count before compaction and the number of retained messages. The model-facing
+checkpoint remains in the durable entry and is omitted from the transcript,
+including expanded details. The entry carries no post-compaction token count,
+so the notice does not claim savings. PR #407 merged as `7cacb150` after
+hosted CI and exact-head Linux signoff passed.
 
 ## Where the tree is
 

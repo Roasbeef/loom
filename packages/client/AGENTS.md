@@ -88,6 +88,9 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
   binding, capacity, and lazy session defaults. The binary rejects the removed
   per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
+  `loomd --help`, `-h`, `help`, and the `access` and `ext` help forms are
+  dispatched in `client.gleam` before daemon startup. They print usage to
+  stdout and never create state or bind a listener.
   Production startup reserves its OS PID/birth through `host/endpoint` before
   opening the catalogue, then publishes the actual port and epoch only after
   listener readiness. Shutdown retains the endpoint until the VM departs.

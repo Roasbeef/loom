@@ -26,6 +26,11 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 server="$root/bin/loomd"
 test_sh="$root/scripts/test.sh"
 [ -x "$server" ] || { echo "e2e_client_bootstrap: no server at $server (run make server-shipment)" >&2; exit 2; }
+[ -x "$root/bin/loom" ] || { echo "e2e_client_bootstrap: no client at $root/bin/loom (run make binaries)" >&2; exit 2; }
+
+# The shipped launcher is the only place help can accidentally enter the
+# terminal or daemon path. Exercise it before this fixture starts either.
+"$root/scripts/cli_help_test.sh"
 
 LOOM_BOOTSTRAP_E2E_SERVER="$server" \
 	bash "$test_sh" tui --match bootstrap_real_server_lifecycle_test

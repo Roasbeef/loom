@@ -5,6 +5,7 @@
 //// replacement snapshot releases text from the previous conversation.
 
 import core/entry
+import core/message
 import etui/backend
 import gleam/dict
 import gleam/int
@@ -126,6 +127,52 @@ pub fn identical_text_keeps_each_speakers_own_style_test() {
     |> checked_layout(120)
   assert dict.size(both.record_line_cache) > dict.size(user.record_line_cache)
     as "plain user text and assistant markdown are distinct presentation keys"
+}
+
+pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
+  let private_note = "PRIVATE CHECKPOINT CONTENT"
+  let retained =
+    message.UserMessage(
+      content: [message.UserText(text: "recent turn", text_signature: None)],
+      timestamp: 0,
+      origin: None,
+    )
+  let wire =
+    gateway.compaction_entry(
+      "main",
+      "[loom] Context window 1 closed here: " <> private_note,
+      [retained, retained],
+      204_143,
+      1,
+    )
+  let loaded = model() |> received(wire) |> checked_layout(120)
+  let visible = dict.keys(loaded.record_line_cache)
+  assert list.any(visible, fn(line) {
+    line.text == "Context compacted · ~204k tokens before · 2 messages kept"
+  })
+  assert !list.any(visible, fn(line) {
+    string.contains(line.text, private_note)
+  })
+  let assert [
+    protocol.EntryRecord(
+      entry: entry.CompactionEntry(
+        summary: preserved,
+        retained_tail: kept,
+        tokens_before: before,
+        ..,
+      ),
+      ..,
+    ),
+  ] = loaded.records
+  assert string.contains(preserved, private_note)
+  assert list.length(kept) == 2
+  assert before == 204_143
+
+  let expanded =
+    checked_layout(tui.Model(..loaded, details_expanded: True), 120)
+  assert !list.any(dict.keys(expanded.record_line_cache), fn(line) {
+    string.contains(line.text, private_note)
+  })
 }
 
 // One complete credited capture, applied through the shipped channel reducer
