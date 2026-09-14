@@ -26,6 +26,7 @@ import client/distill
 import client/distillpass
 import client/jobs
 import client/memory
+import client/retryconf
 import client/schedule
 import client/serve
 import core/clock
@@ -251,6 +252,7 @@ fn settings(
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     jobs_policy: jobs.default_policy,
+    retry_policy: retryconf.default_policy,
     deactivated_tools: [],
     // No lifecycle distillation in this rig: the pass would open the
     // memory store this test asserts about and spend the scripted

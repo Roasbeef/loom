@@ -133,6 +133,22 @@ pub type Options {
   )
 }
 
+/// The retry ladder every session gets unless its host says otherwise.
+///
+/// A rate limit is a scheduling fact, not a failure: this ladder never
+/// gives up, doubling from one second to a one-minute cap and then
+/// long-polling there under jitter until the provider answers or the run
+/// is cancelled (issue #368).
+///
+/// It is a constant rather than three numbers inside `default_options`
+/// because the client's `[retry]` table fills its own missing keys from
+/// here, and two copies of the default would drift.
+pub const default_retry_policy = NormalizedRetryPolicy(
+  attempts: Unbounded,
+  base_delay_ms: 1000,
+  max_delay_ms: 60_000,
+)
+
 /// Sensible defaults: strand `"main"`, parallel tools, consume-all
 /// queues, compaction off, an unbounded retry ladder from a 1 s base to a
 /// 60 s cap, a 200 ms checkpoint poll, and a conservative restart tolerance.
@@ -168,15 +184,7 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
       follow_up_mode: ConsumeAll,
       tool_execution: Parallel,
     ),
-    // A rate limit is a scheduling fact, not a failure: the default
-    // ladder never gives up, doubling from one second to a one-minute
-    // cap and then long-polling there under jitter until the provider
-    // answers or the run is cancelled (issue #368).
-    retry_policy: NormalizedRetryPolicy(
-      attempts: Unbounded,
-      base_delay_ms: 1000,
-      max_delay_ms: 60_000,
-    ),
+    retry_policy: default_retry_policy,
     stream_options: json.Object([]),
     poll_interval_ms: 200,
     tolerance: Tolerance(intensity: 5, period: 5),

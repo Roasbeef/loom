@@ -19,6 +19,7 @@ import client/distillpass
 import client/host
 import client/internal/ffi_os
 import client/jobs
+import client/retryconf
 import client/rules
 import client/schedule
 import client/serve
@@ -191,6 +192,7 @@ fn settings_under(root: String) -> serve.Settings {
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     jobs_policy: jobs.default_policy,
+    retry_policy: retryconf.default_policy,
     deactivated_tools: [],
     // No lifecycle distillation in this rig: the pass would open the
     // memory store this test asserts about and spend the scripted

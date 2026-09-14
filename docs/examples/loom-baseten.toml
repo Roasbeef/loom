@@ -70,3 +70,17 @@ advisor = ["baseten-glm-5-3"]
 [advisor]
 tools = ["fs_read", "grep"]
 block_cooldown_runs = 2
+
+# How a run answers a retryable provider failure. All three keys are
+# optional and these are the defaults, written out so the shape is
+# visible. Under the default a rate limit is waited out rather than
+# failed: `attempts = "unbounded"` keeps asking until the provider
+# answers or the run is cancelled. `base_delay_ms` is the first wait
+# and `max_delay_ms` is the ceiling that wait doubles towards, so the
+# ladder here runs 1s, 2s, 4s and so on up to a minute, then holds
+# there. Set `attempts` to a whole number to fail the run instead once
+# that many tries are spent.
+# [retry]
+# attempts = "unbounded"
+# base_delay_ms = 1000
+# max_delay_ms = 60000

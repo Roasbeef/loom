@@ -63,6 +63,7 @@ import client/jobtools
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
+import client/retryconf
 import client/rules
 import client/rulescan
 import client/schedule
@@ -397,6 +398,12 @@ pub type Settings {
     /// starts either way, because a session that ran jobs before a
     /// restart still has records to sweep.
     jobs_policy: jobs.JobsPolicy,
+    /// The `[retry]` table: the provider retry ladder every run on this
+    /// session uses. Defaults to `runtime/api.default_retry_policy`,
+    /// which never gives up on a retryable failure, so an operator who
+    /// wants a run to fail rather than long-poll a refusing provider
+    /// sets a bounded `attempts` here.
+    retry_policy: operation.NormalizedRetryPolicy,
     /// Built-in tools the operator deactivated, from
     /// `LOOM_DISABLE_TOOLS`. Empty is the ordinary case and the whole
     /// registry stands.
@@ -841,6 +848,7 @@ pub fn build_domain(
       _schedules,
       _policy,
       _jobs,
+      _retry,
       options,
       _tools,
       entries,
@@ -1051,6 +1059,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       schedule_list,
       schedule_policy,
       jobs_policy,
+      retry_policy,
       memory,
       tools,
       secret_entries,
@@ -1140,6 +1149,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     schedules: schedule_list,
     schedule_policy:,
     jobs_policy:,
+    retry_policy:,
     deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
     memory:,
     tools: catalog.ToolsConfig(
@@ -1341,6 +1351,7 @@ fn load_config(
     List(schedule.Schedule),
     schedule.Policy,
     jobs.JobsPolicy,
+    operation.NormalizedRetryPolicy,
     distillpass.Options,
     catalog.ToolsConfig,
     List(secrets.Entry),
@@ -1357,6 +1368,7 @@ fn load_config(
         [],
         schedule.default_policy,
         jobs.default_policy,
+        retryconf.default_policy,
         distillpass.default_options(),
         catalog.default_tools(),
         [],
@@ -1387,6 +1399,9 @@ fn load_config(
       use jobs_policy <- result.try(
         jobs.parse_policy(text) |> result.map_error(named),
       )
+      use retry_policy <- result.try(
+        retryconf.parse_policy(text) |> result.map_error(named),
+      )
       use memory <- result.try(
         distillpass.parse(text) |> result.map_error(named),
       )
@@ -1408,6 +1423,7 @@ fn load_config(
         schedule_list,
         schedule_policy,
         jobs_policy,
+        retry_policy,
         memory,
         tools,
         secret_entries,
@@ -3096,6 +3112,9 @@ fn assemble_in(
       effects_record,
       api.Options(
         ..options,
+        // The operator's `[retry]` table, or the runtime default when
+        // the configuration has none.
+        retry_policy: settings.retry_policy,
         // The run-settings snapshot every accepted run captures. This is
         // what gates step 3 of a checkpoint; the hooks carry their own
         // copy for the arithmetic.

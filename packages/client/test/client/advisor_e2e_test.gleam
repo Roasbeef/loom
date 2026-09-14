@@ -63,6 +63,7 @@ import client/codemode
 import client/distillpass
 import client/internal/ffi_os
 import client/jobs
+import client/retryconf
 import client/schedule
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
@@ -736,6 +737,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     jobs_policy: jobs.default_policy,
+    retry_policy: retryconf.default_policy,
     deactivated_tools: [],
     memory: distillpass.no_pass(),
     tools: catalog.default_tools(),
