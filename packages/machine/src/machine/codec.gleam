@@ -31,13 +31,13 @@ import machine/operation.{
   type Generation, type GenerationContext, type Inbox, type LastResult,
   type Navigation, type NormalizedRetryPolicy, type Operation,
   type OperationError, type OperationIntent, type OperationState,
-  type PendingEntry, type QueueMode, type RunPhase, type RunSettings,
-  type StructuralDecision, type StructuralOutcome, type StructuralPreparation,
-  type SummaryContext, type SummaryGeneration, type ToolBatch,
-  type ToolCallState, Assistant, AwaitingDeferred, BranchSummary,
-  BranchSummaryPreparation, CallCompleted, CallEffectPending, CallOutcomeReady,
-  CallPlanned, CancelRequested, Checkpoint, CheckpointPhase, Compacting,
-  CompactionIntent, CompactionLastResult, CompactionPreparation,
+  type PendingEntry, type QueueMode, type RetryBudget, type RunPhase,
+  type RunSettings, type StructuralDecision, type StructuralOutcome,
+  type StructuralPreparation, type SummaryContext, type SummaryGeneration,
+  type ToolBatch, type ToolCallState, Assistant, AwaitingDeferred, Bounded,
+  BranchSummary, BranchSummaryPreparation, CallCompleted, CallEffectPending,
+  CallOutcomeReady, CallPlanned, CancelRequested, Checkpoint, CheckpointPhase,
+  Compacting, CompactionIntent, CompactionLastResult, CompactionPreparation,
   CompactionSettings, CompactionState, CompactionSummary, CompletedByAssistant,
   CompletedByTerminatedTools, ConfigurationProvenance, ConsumeAll, Deciding,
   DeferredEffectPending, DeferredSuspended, FailureDrain, FileOperations,
@@ -51,7 +51,8 @@ import machine/operation.{
   StructuralAborted, StructuralCompleted, StructuralDeclined, StructuralFailed,
   StructuralProvenance, SummarizedNavigation, SummaryContext,
   SummaryEffectPending, SummaryReady, SummaryRequest, SummaryRetryWait,
-  ThresholdReason, ThresholdSummary, ToolBatch, Tools, UnsummarizedNavigation,
+  ThresholdReason, ThresholdSummary, ToolBatch, Tools, Unbounded,
+  UnsummarizedNavigation,
 }
 import machine/strand.{
   type ModelIdentity, type StrandConfiguration, type StrandState,
@@ -547,21 +548,58 @@ fn parse_queue_mode(
   }
 }
 
+// `maxAttempts` is an integer for a bounded budget and the string
+// `"unbounded"` otherwise, so an old reader that expects an integer fails
+// loudly on a recording it cannot honour rather than silently capping it.
 fn encode_retry(retry: NormalizedRetryPolicy) -> JsonValue {
+  let attempts = case retry.attempts {
+    Bounded(max_attempts:) -> json.Int(max_attempts)
+    Unbounded -> json.String("unbounded")
+  }
   json.Object([
-    #("maxAttempts", json.Int(retry.max_attempts)),
+    #("maxAttempts", attempts),
     #("baseDelayMs", json.Int(retry.base_delay_ms)),
+    #("maxDelayMs", json.Int(retry.max_delay_ms)),
   ])
 }
 
+// Recordings written before the delay cap existed carry no `maxDelayMs`.
+// They are read as uncapped: the exponential ladder they were captured
+// under is the ladder they resume, which is what a durable policy means.
 fn decode_retry(
   value: JsonValue,
 ) -> Result(NormalizedRetryPolicy, CorruptionReport) {
   let where = "machine/codec.retry"
   use fields <- result.try(fields_of(value, where))
-  use max_attempts <- result.try(require_int(fields, "maxAttempts", where))
+  use attempts <- result.try(decode_retry_budget(fields, where))
   use base_delay_ms <- result.try(require_int(fields, "baseDelayMs", where))
-  Ok(NormalizedRetryPolicy(max_attempts:, base_delay_ms:))
+  use max_delay_ms <- result.try(case get(fields, "maxDelayMs") {
+    Ok(_) -> require_int(fields, "maxDelayMs", where)
+    Error(Nil) -> Ok(uncapped_delay_ms)
+  })
+  Ok(NormalizedRetryPolicy(attempts:, base_delay_ms:, max_delay_ms:))
+}
+
+/// The cap a pre-cap recording decodes to: 2^20 times a generous base,
+/// which is past the point where the ladder saturates anyway.
+const uncapped_delay_ms = 1_073_741_824
+
+fn decode_retry_budget(
+  fields: Fields,
+  where: String,
+) -> Result(RetryBudget, CorruptionReport) {
+  use value <- result.try(require(fields, "maxAttempts", where))
+  case value {
+    json.Int(max_attempts) -> Ok(Bounded(max_attempts:))
+    json.String("unbounded") -> Ok(Unbounded)
+    other ->
+      Error(corruption.report(
+        at: where,
+        on: "maxAttempts",
+        expected: "an integer or \"unbounded\"",
+        context: json.to_string(other),
+      ))
+  }
 }
 
 // --- operation state ------------------------------------------------------

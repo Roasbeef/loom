@@ -394,8 +394,9 @@ pub fn a_storm_across_the_whole_chain_engages_the_retry_ladder_test() {
         // Long enough that the durable retry-wait is observable rather
         // than inferred; three attempts still exhaust in about a second.
         retry_policy: operation.NormalizedRetryPolicy(
-          max_attempts: 3,
+          attempts: operation.Bounded(max_attempts: 3),
           base_delay_ms: 400,
+          max_delay_ms: 1_073_741_824,
         ),
       ),
     )
@@ -507,8 +508,9 @@ pub fn a_mid_wait_switch_leaves_the_steps_admission_alone_test() {
         // written in one register CAS — cannot lose the race against
         // the ladder's own wake.
         retry_policy: operation.NormalizedRetryPolicy(
-          max_attempts: 3,
+          attempts: operation.Bounded(max_attempts: 3),
           base_delay_ms: 1500,
+          max_delay_ms: 1_073_741_824,
         ),
       ),
     )

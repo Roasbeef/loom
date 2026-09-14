@@ -58,7 +58,7 @@ import machine/operation.{
   type LastResult, type NormalizedRetryPolicy, type Operation,
   type OperationState, type RunSettings, type StructuralPreparation,
   CompactionSettings, ConsumeAll, NormalizedRetryPolicy, Parallel,
-  PendingMessage, RunSettings,
+  PendingMessage, RunSettings, Unbounded,
 }
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
@@ -134,8 +134,8 @@ pub type Options {
 }
 
 /// Sensible defaults: strand `"main"`, parallel tools, consume-all
-/// queues, compaction off, three attempts with a 100 ms base backoff, a
-/// 200 ms checkpoint poll, and a conservative restart tolerance.
+/// queues, compaction off, an unbounded retry ladder from a 1 s base to a
+/// 60 s cap, a 200 ms checkpoint poll, and a conservative restart tolerance.
 ///
 /// `tool_execution: Parallel` is the default because a batch the model
 /// issued as one batch is a batch it expects to run as one: under
@@ -168,7 +168,15 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
       follow_up_mode: ConsumeAll,
       tool_execution: Parallel,
     ),
-    retry_policy: NormalizedRetryPolicy(max_attempts: 3, base_delay_ms: 100),
+    // A rate limit is a scheduling fact, not a failure: the default
+    // ladder never gives up, doubling from one second to a one-minute
+    // cap and then long-polling there under jitter until the provider
+    // answers or the run is cancelled (issue #368).
+    retry_policy: NormalizedRetryPolicy(
+      attempts: Unbounded,
+      base_delay_ms: 1000,
+      max_delay_ms: 60_000,
+    ),
     stream_options: json.Object([]),
     poll_interval_ms: 200,
     tolerance: Tolerance(intensity: 5, period: 5),

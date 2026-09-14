@@ -723,9 +723,108 @@ pub fn malformed_or_short_retry_hints_do_not_shorten_policy_test() {
         ..,
       )) = scenario.read_op_state(world.store, world.op.id)
         as "The retry deadline survives the store codec."
-      assert not_before == now + 100
+      // Equal jitter keeps the wait in the upper half of the configured
+      // interval, so the floor is half the base and the ceiling is the
+      // base itself.
+      assert not_before >= now + 50 && not_before <= now + 100
     },
   )
+}
+
+pub fn unbounded_policy_long_polls_at_the_capped_delay_test() {
+  // An unbounded policy with a cap well below where the ladder would
+  // otherwise reach: the run must keep retrying past the attempt count a
+  // bounded policy would have exhausted, and every wait must sit inside
+  // the jittered cap rather than growing without bound.
+  let policy =
+    operation.NormalizedRetryPolicy(
+      attempts: operation.Unbounded,
+      base_delay_ms: 100,
+      max_delay_ms: 250,
+    )
+  let world = World(..scenario.fresh(), retry_policy: policy)
+  let assert Ok(#(world, _)) =
+    scenario.accept(world, AcceptRun(prompts: [fixture.user("rate limited")]))
+  let assert Ok(#(world, _)) =
+    scenario.step_writes(world, ObservedRunStart(messages: []), opts())
+  let assert Ok(#(world, _)) = scenario.step(world, NoObservation, opts())
+  let error = fixture.assistant_error("rate limited", True)
+  let world =
+    list.fold(over: attempts(8), from: world, with: fn(world, attempt) {
+      let assert Ok(#(world, action)) = scenario.step(world, admitted(), opts())
+        as "The request for the attempt is admitted."
+      let assert Dispatch(intent: planner.ProviderRequest(attempt: n, ..), ..) =
+        action
+      assert n == attempt
+      let now = scenario.now(world)
+      let assert Ok(#(world, _)) =
+        scenario.step_writes(
+          world,
+          ObservedAssistantSettled(fixture.settled(error), None),
+          opts(),
+        )
+        as "The retryable failure commits and the run waits again."
+      let assert Ok(RunState(
+        phase: Assistant(generation: GenerationRetryWait(
+          next_attempt:,
+          not_before:,
+          ..,
+        )),
+        ..,
+      )) = scenario.read_op_state(world.store, world.op.id)
+      assert next_attempt == attempt + 1
+      // The cap is the ceiling from the first wait on; half the cap is
+      // the floor once the ladder has saturated, which under a 100 ms
+      // base and a 250 ms cap is the third wait.
+      assert not_before <= now + 250
+      assert attempt < 3 || not_before >= now + 125
+      let assert Ok(#(world, _)) =
+        scenario.step_writes(
+          World(..world, now: not_before),
+          NoObservation,
+          opts(),
+        )
+        as "The wait releases into the next ready attempt."
+      world
+    })
+  let assert Ok(#(
+    _,
+    Dispatch(intent: planner.ProviderRequest(attempt: 9, ..), ..),
+  )) = scenario.step(world, admitted(), opts())
+    as "A ninth attempt still dispatches under an unbounded policy."
+}
+
+pub fn jitter_spreads_two_strands_on_the_same_ladder_test() {
+  // Two worlds failing at the same instant under the same policy draw
+  // different waits, because the draw is seeded by the failed attempt's
+  // entry id and the ids differ. Twelve seeds give a collision-free
+  // witness without asserting anything about the distribution.
+  let waits =
+    list.map(attempts(12), fn(seed) {
+      let world = World(..scenario.fresh(), seed: seed * 101)
+      let assert Ok(#(world, _)) =
+        scenario.accept(world, AcceptRun(prompts: [fixture.user("flaky")]))
+      let assert Ok(#(world, _)) =
+        scenario.step_writes(world, ObservedRunStart(messages: []), opts())
+      let assert Ok(#(world, _)) = scenario.step(world, NoObservation, opts())
+      let assert Ok(#(world, _)) = scenario.step(world, admitted(), opts())
+      let now = scenario.now(world)
+      let assert Ok(#(world, _)) =
+        scenario.step_writes(
+          world,
+          ObservedAssistantSettled(
+            fixture.settled(fixture.assistant_error("overloaded", True)),
+            None,
+          ),
+          opts(),
+        )
+      let assert Ok(RunState(
+        phase: Assistant(generation: GenerationRetryWait(not_before:, ..)),
+        ..,
+      )) = scenario.read_op_state(world.store, world.op.id)
+      not_before - now
+    })
+  assert list.length(list.unique(waits)) > 1
 }
 
 pub fn summary_retry_hint_uses_the_same_minimum_wait_test() {
@@ -769,4 +868,9 @@ pub fn summary_retry_hint_uses_the_same_minimum_wait_test() {
   )) = scenario.read_op_state(world.store, world.op.id)
     as "Recovery reads the summary retry deadline."
   assert not_before == now + 5000
+}
+
+// The attempt numbers 1 through `count`, in order.
+fn attempts(count: Int) -> List(Int) {
+  list.index_map(list.repeat(Nil, count), fn(_, index) { index + 1 })
 }

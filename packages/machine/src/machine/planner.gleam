@@ -110,6 +110,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import machine/classification.{
   type SettledAssistantMessage, CancelledClassification, ClassifyCtx,
   CorruptClassification, DeferredInvalidClassification,
@@ -1385,7 +1386,7 @@ fn settle_provider_error(
 ) -> Action {
   let RunPass(in:, ..) = pass
   let AssistantAttempt(context:, number:, response_entry:, usage:, ..) = attempt
-  case retryable && number < context.retry.max_attempts {
+  case retryable && operation.attempts_remain(context.retry, after: number) {
     True -> {
       let next =
         run_state(
@@ -1393,7 +1394,8 @@ fn settle_provider_error(
           Assistant(generation: GenerationRetryWait(
             context:,
             next_attempt: number + 1,
-            not_before: in.now + settled_backoff(context.retry, number, message),
+            not_before: in.now
+              + settled_backoff(context.retry, number, response_entry, message),
             error_message:,
           )),
         )
@@ -1557,7 +1559,7 @@ fn settle_orphaned_assistant(
       interrupted_warning(),
       in.now,
     )
-  case control, number < context.retry.max_attempts {
+  case control, operation.attempts_remain(context.retry, after: number) {
     // Cancelled: the synthetic is the operation's last word, so it goes
     // straight to a may-finish checkpoint rather than being retried.
     CancelRequested(..), _ ->
@@ -1593,7 +1595,7 @@ fn retry_after_orphan(
       Assistant(generation: GenerationRetryWait(
         context:,
         next_attempt: number + 1,
-        not_before: in.now + backoff(context.retry, number),
+        not_before: in.now + backoff(context.retry, number, response_entry),
         error_message: interrupted_warning(),
       )),
     )
@@ -3192,7 +3194,7 @@ fn summary_failed(
   retryable: Bool,
 ) -> Action {
   let StructuralTask(in:, ..) = task
-  case retryable && attempt < context.retry.max_attempts {
+  case retryable && operation.attempts_remain(context.retry, after: attempt) {
     True ->
       transition_generation(
         task,
@@ -3200,7 +3202,12 @@ fn summary_failed(
           context:,
           next_attempt: attempt + 1,
           not_before: in.now
-            + hinted_backoff(context.retry, attempt, error.details),
+            + hinted_backoff(
+            context.retry,
+            attempt,
+            context.result_entry,
+            error.details,
+          ),
           error_message: error.message,
         ),
       )
@@ -3226,7 +3233,7 @@ fn advance_orphaned_summary(
   context: SummaryContext,
   attempt: Int,
 ) -> Action {
-  case attempt < context.retry.max_attempts {
+  case operation.attempts_remain(context.retry, after: attempt) {
     True ->
       transition_generation(
         task,
@@ -4263,13 +4270,14 @@ fn settled_retryable(message: AgentMessage) -> Bool {
 fn settled_backoff(
   retry: NormalizedRetryPolicy,
   finished_attempt: Int,
+  seed: EntryId,
   message: AgentMessage,
 ) -> Int {
   let diagnostics = case message {
     AssistantMessage(diagnostics:, ..) -> diagnostics
     _ -> None
   }
-  hinted_backoff(retry, finished_attempt, diagnostics)
+  hinted_backoff(retry, finished_attempt, seed, diagnostics)
 }
 
 // A provider hint can only lengthen the configured wait. Malformed or
@@ -4277,9 +4285,10 @@ fn settled_backoff(
 fn hinted_backoff(
   retry: NormalizedRetryPolicy,
   finished_attempt: Int,
+  seed: EntryId,
   diagnostics: Option(JsonValue),
 ) -> Int {
-  let configured = backoff(retry, finished_attempt)
+  let configured = backoff(retry, finished_attempt, seed)
   case diagnostics {
     Some(json.Object(fields)) -> {
       case list.key_find(fields, "retry_after_ms") {
@@ -4291,12 +4300,39 @@ fn hinted_backoff(
   }
 }
 
-/// Exponential retry backoff, saturating instead of overflowing: the
-/// delay for finished attempt `n` (1-based) is `base * 2^(n-1)`, capped
-/// at 2^20 times the base.
-fn backoff(retry: NormalizedRetryPolicy, finished_attempt: Int) -> Int {
+/// The wait after finished attempt `n` (1-based): `base * 2^(n-1)`,
+/// saturating at exponent twenty and clamped to the policy's cap, then
+/// spread by equal jitter — the upper half of the interval is replaced
+/// by a pseudo-random draw, so the wait lands anywhere in `[d/2, d]`.
+///
+/// The jitter exists because a rate limit hits every strand on a
+/// provider at once, and an unjittered ladder would have them all retry
+/// in lockstep and trip the limit again together. The draw is seeded
+/// from the failed attempt's entry id rather than from an injected
+/// random input: the machine is pure and replayable, the entry id
+/// already carries fresh entropy per attempt, and two strands never
+/// share one, so the spread costs no new planner input.
+fn backoff(
+  retry: NormalizedRetryPolicy,
+  finished_attempt: Int,
+  seed: EntryId,
+) -> Int {
   let exponent = int.min(int.max(finished_attempt - 1, 0), 20)
-  retry.base_delay_ms * power_of_two(exponent)
+  let uncapped = retry.base_delay_ms * power_of_two(exponent)
+  let capped = int.max(0, int.min(uncapped, retry.max_delay_ms))
+  let half = capped / 2
+  half + jitter_draw(seed, finished_attempt) % { capped - half + 1 }
+}
+
+// A small multiplicative hash over the entry id's text mixed with the
+// attempt number, so successive attempts on one entry draw different
+// offsets. It only has to be well spread, not unpredictable.
+fn jitter_draw(seed: EntryId, finished_attempt: Int) -> Int {
+  ids.entry_id_to_string(seed)
+  |> string.to_utf_codepoints
+  |> list.fold(from: finished_attempt * 2_654_435_761, with: fn(acc, point) {
+    { acc * 31 + string.utf_codepoint_to_int(point) } % 2_147_483_647
+  })
 }
 
 fn power_of_two(exponent: Int) -> Int {
