@@ -1128,15 +1128,22 @@ pub fn tool_output_observer(
     case session.id(opened) {
       Ok(Some(id)) -> {
         let key = bus.key(of: id)
+
+        // Output events need identity, not the arguments and grants carried
+        // by the run. The observer crosses into the tool's collector process.
+        let strand = run.strand
+        let operation = run.operation
+        let step_id = run.step_id
+        let source_index = run.source_index
         fn(observed: tool.OutputTail) {
           bus.publish(
             events_bus,
             session: key,
             event: bus.ToolOutput(
-              strand: run.strand,
-              op: run.operation,
-              step: run.step_id,
-              source_index: run.source_index,
+              strand:,
+              op: operation,
+              step: step_id,
+              source_index:,
               call_id:,
               stream: case observed.stream {
                 framing.Stdout -> bus.Stdout

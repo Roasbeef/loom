@@ -329,7 +329,10 @@ pub fn build_effects(config: Config) -> Effects {
 /// ```
 ///
 pub fn compaction_hooks(config: Config) -> effects.Hooks {
-  let projection = fn(strand) { hooks.project(config.session, strand) }
+  // Projection reads the session alone. Keeping the complete configuration
+  // here would copy its provider and tool closures into the overflow hook.
+  let opened = config.session
+  let projection = fn(strand) { hooks.project(opened, strand) }
 
   // The threshold's window is the *strand's*, not the session's. One
   // `Effects` record serves every strand, and a strand switched to a

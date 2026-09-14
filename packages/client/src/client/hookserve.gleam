@@ -663,6 +663,15 @@ pub fn wire(
   )
   let built = effects.hooks
   let tools = effects.tools
+
+  // Each wrapper owns only the function it calls. Capturing either record
+  // duplicates every other slot when the composed effects cross a process
+  // boundary, multiplying the session's supervisor and worker heap costs.
+  let run_start = built.run_start
+  let run_end = built.run_end
+  let compaction_note = built.compaction_note
+  let clear = tools.clear
+  let run = tools.run
   Ok(
     effects.Effects(
       ..effects,
@@ -670,7 +679,7 @@ pub fn wire(
         ..built,
         run_start: fn(operation) {
           list.append(
-            built.run_start(operation),
+            run_start(operation),
             started_context(serving, clock, counters),
           )
         },
@@ -686,7 +695,7 @@ pub fn wire(
           // asking the two questions side by side spawned every
           // matching `Stop` hook — side effects, cap counter and all —
           // on runs whose answer was thrown away before it was read.
-          case built.run_end(operation) {
+          case run_end(operation) {
             Some(_harness) as placed -> placed
 
             None -> {
@@ -708,7 +717,7 @@ pub fn wire(
         },
         compaction_note: fn(operation, cue) {
           list.append(
-            built.compaction_note(operation, cue),
+            compaction_note(operation, cue),
             case hookserve_compaction_note(serving, cue) {
               Some(note) -> [note]
               None -> []
@@ -718,8 +727,8 @@ pub fn wire(
       ),
       tools: effects.ToolSurface(
         ..tools,
-        clear: fn(query) { cleared(serving, tools.clear, query) },
-        run: fn(run) { ran(serving, tools.run(run), run) },
+        clear: fn(query) { cleared(serving, clear, query) },
+        run: fn(query) { ran(serving, run(query), query) },
       ),
     ),
   )
