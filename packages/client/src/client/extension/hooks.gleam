@@ -1474,15 +1474,24 @@ fn payment_of(value: JsonValue) -> Result(Payment, String) {
 }
 
 // A claim to have paid is checked against the one thing this side can
-// check: a preimage is a 32-byte hash preimage, so it is 64 lowercase
-// hex characters and nothing else.
+// check: a preimage is a 32-byte hash preimage, so it is 64 hexadecimal
+// characters and nothing else.
+//
+// Case is normalized rather than judged, because hex case carries no
+// information and an extension whose Lightning backend renders upper
+// case is not making a mistake. Judging it would drop the handler over
+// a spelling, and the `Paid` this builds is the lowercase form the rest
+// of the harness compares.
 fn paid(value: JsonValue) -> Result(Payment, String) {
   case field(value, "preimage") {
-    Ok(json.String(value: preimage)) ->
+    Ok(json.String(value: preimage)) -> {
+      let preimage = string.lowercase(preimage)
+
       case is_preimage(preimage) {
         True -> Ok(Paid(preimage_hex: preimage))
-        False -> Error("preimage is not 64 lowercase hexadecimal characters")
+        False -> Error("preimage is not 64 hexadecimal characters")
       }
+    }
     Ok(_other) | Error(_absent) -> Error("a paid answer carries no preimage")
   }
 }
@@ -1501,7 +1510,8 @@ fn declined(value: JsonValue) -> Payment {
 // The length is tested at the bound rather than counted: dropping 64
 // graphemes and finding nothing left says the string is exactly 64 long
 // and stops there, where `string.length` would walk whatever a broken
-// extension sent (lint R5).
+// extension sent (lint R5). The digits are lowercase because `paid` has
+// already lowercased the text; this is not the place that decides case.
 fn is_preimage(text: String) -> Bool {
   string.drop_start(text, 64) == ""
   && string.drop_start(text, 63) != ""

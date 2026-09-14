@@ -718,6 +718,34 @@ pub fn refuses_plaintext_the_policy_does_not_name_test() {
   assert outcome == Error(egress.SchemeNotHttps(plain_url(port)))
 }
 
+/// The third half of the rule, and the one the spelling of an entry used
+/// to decide: a `Secret` bound to `LOCALHOST:<port>` and a plaintext
+/// entry reading `localhost:<port>` are different strings, so a check
+/// that compared strings saw no binding on this origin — while
+/// `injected`, which compares normalized origins, would have put the
+/// credential on the wire in the clear. The port is one nothing is
+/// listening on, so a refusal is also proof that no connection was
+/// attempted: a client that got as far as a socket would answer
+/// `TransportFailed` instead.
+pub fn refuses_plaintext_on_an_origin_a_secret_is_bound_to_test() {
+  let port = 10_031
+  let lower = "localhost:" <> int.to_string(port)
+  let upper = "LOCALHOST:" <> int.to_string(port)
+  let policy =
+    egress.Policy(
+      ..offline_policy(),
+      hosts: [lower, upper],
+      plaintext: [lower],
+      secrets: [
+        egress.Secret(env: secret_env, header: secret_header, host: upper),
+      ],
+    )
+  let url = "http://" <> lower <> "/"
+
+  assert egress.request(policy, get(url), secrets: fn(_name) { Ok(canary) })
+    == Error(egress.SchemeNotHttps(url))
+}
+
 /// The half of the rule a hand-built `Policy` cannot state away: an
 /// origin off this host is refused over `http://` however the policy
 /// lists it, because the argument for the exception is the absence of a

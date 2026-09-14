@@ -112,9 +112,11 @@ harness minted for that invocation.
   does not cross this hook**: an extension settles an invoice and hands
   back a preimage, and the harness composes the L402 credential from its
   own copy of the challenge, so nothing the extension holds is on its
-  own a credential. The harness fans the event out in load order and
-  stops at the first `Paid`, because an invoice paid twice is money
-  spent twice.
+  own a credential. The harness fans the event out to **every**
+  subscriber and takes the first `Paid` in load order; it does not stop
+  the fan-out at the first one, so a second paying extension spends
+  money the harness discards. One paying hook per provider is the
+  arrangement that keeps an invoice from being paid twice.
 - `ext/memory.{remember, recall}` — the one module here that carries
   authority: durable, latest-wins cells under the reserved
   `ext/<name>/<key>` prefix this extension owns, over the `ext.remember`

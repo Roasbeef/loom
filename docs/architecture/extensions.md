@@ -182,7 +182,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:188`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:194`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** That is not fussiness, it is how the `[client]`
 table the design note reserves for a later ruling gets refused without a
@@ -195,7 +195,7 @@ codepoint (`manifest.is_legal_name` at
 lookalike in a tool name is not a normalization variant of anything.
 
 Three rules need the tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:254`): a tool's `parameters`
+`Surroundings` (`extension/manifest.gleam:260`): a tool's `parameters`
 must be a path under `schema/` that exists and *parses as JSON*; its
 `entry` must name a module `src/` actually ships; and a secret's `host`
 must be one of `[net].hosts`. The last is a contradiction check rather
@@ -279,7 +279,7 @@ userinfo is refused as malformed rather than stripped
 cannot install anything.
 
 **The fetch is a policed request, not a client of its own.**
-`cli.fetch` builds `egress.one_host` (`broker/egress.gleam:398`): host is
+`cli.fetch` builds `egress.one_host` (`broker/egress.gleam:409`): host is
 the URL's host and nothing else, method `GET`, at most two same-host
 redirects (GitHub's archive redirect is one), a 32 MiB response cap, one
 deadline for the whole transfer, and a secrets resolver that always
@@ -791,14 +791,14 @@ The caller is model-influenced code in a jail. The asset is the
 operator's API key. The whole design follows from refusing to let the
 first one name the second.
 
-A `Secret` (`broker/egress.gleam:171`) binds an **environment variable
+A `Secret` (`broker/egress.gleam:177`) binds an **environment variable
 name** to one header and one origin — exactly as `client/catalog`'s
 `api_key_env` binds a provider key, one layer down. The value is read at
 request time through the `secrets` function injected into
 `egress.request`. It is not stored on the policy, it is not returned,
 and — the load-bearing part — **no `Refusal` variant has a field it could
 occupy** (`broker/egress.gleam:239`). That is structural rather than a
-convention: `describe` (`broker/egress.gleam:470`) has nothing to redact
+convention: `describe` (`broker/egress.gleam:481`) has nothing to redact
 because there is nothing to redact, and
 `describe_names_the_binding_but_never_the_value_test`
 (`broker/test/broker/egress_test.gleam:301`) renders every variant and
@@ -1038,7 +1038,7 @@ optional `timeout_ms` (`manifest.default_hook_timeout_ms` at
 `extension/manifest.gleam:128` is the default), the bus keeps a
 `Subscription(event, deadline_ms)` per declared hook
 (`extension/hooks.gleam:361`), `ask` hands the invoker that deadline, and
-`fan_out_for` (`extension/hooks.gleam:1742`) sizes the fan-out to the sum
+`fan_out_for` (`extension/hooks.gleam:1749`) sizes the fan-out to the sum
 of the subscribed deadlines rather than the chain length. The install
 record carries the timeout beside the event and entry, which is why the
 record format is version 3 (`extension/record.gleam:97`): a version-2
@@ -1464,7 +1464,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:188`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:194`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:209`), the staging discipline, the generated satellite entry that serves this manifest's tools and hooks. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:143`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
@@ -1478,7 +1478,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:676`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:877`). |
 | `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1883`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:267`) and the collision that refuses a boot. |
-| `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:362`), `one_host`, `Secret` (`broker/egress.gleam:171`), and a `Refusal` type with nowhere to put a credential. |
+| `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:373`), `one_host`, `Secret` (`broker/egress.gleam:177`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:729`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
