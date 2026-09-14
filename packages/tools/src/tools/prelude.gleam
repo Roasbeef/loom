@@ -37,11 +37,11 @@
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
+////   a2d7bafec7c934c3b07f4a8eb52b406956be678f97682a4fb8fa8abea192490b  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): a47b0c88eba2979c9d4e0a875dee2d68f56dce2a4590b9bebe5d6a6c5e704c93
+//// Body digest (every line after the marker): 22ed190172010a86bcfb52b52eb13f66827e82821006ad2d942d0900dfa7dd87
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1432,6 +1432,14 @@ pub fn wait(List(Handle), within_ms: Int) -> Result(List(Waited), StrandError)
 /// `error_text` exists: a program that reduces a fan-out to a report
 /// should not have to spell the vocabulary out itself.
 pub fn waited_text(Waited) -> String
+/// Selects a configured model by catalogue name for the child's first
+/// run.
+///
+/// The host refuses unknown names before creating a child. Without this
+/// step, the assignment uses the host's subagent route or inherits the
+/// parent model. The chosen entry also supplies the child's initial
+/// thinking level.
+pub fn with_model(Assignment, String) -> Assignment
 /// Narrows the child's tool set. It may only ever narrow the calling
 /// strand's own set; naming a tool the caller does not hold is
 /// `UnknownTool`.
