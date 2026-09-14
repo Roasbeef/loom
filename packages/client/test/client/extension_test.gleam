@@ -222,7 +222,170 @@ pub fn the_working_fixture_vets_test() {
   assert vets(extensions.hello())
 }
 
+/// A hook's deadline: the default when the table is silent, and the
+/// author's number when it is not.
+pub fn a_hooks_timeout_defaults_and_can_be_set_test() {
+  let silent =
+    with(extensions.hello(), "extension.toml", fn(text) {
+      text <> "\n[[hook]]\nevent = \"tool_call\"\nentry = \"hello/tool\"\n"
+    })
+  let assert Ok(decoded) = decode(silent) as "timeout_ms is optional"
+  assert list.map(decoded.hooks, fn(hook) { hook.timeout_ms })
+    == [manifest.default_hook_timeout_ms]
+
+  let declared =
+    with(extensions.hello(), "extension.toml", fn(text) {
+      text
+      <> "\n[[hook]]\nevent = \"payment_required\"\n"
+      <> "entry = \"hello/tool\"\ntimeout_ms = 20000\n"
+    })
+  let assert Ok(paying) = decode(declared) as "an author may state one"
+  assert list.map(paying.hooks, fn(hook) { hook.timeout_ms }) == [20_000]
+}
+
+/// The default is filled and the bound is not relaxed: an optional key
+/// is optional about presence and never about what a present value may
+/// be.
+pub fn a_non_positive_hook_timeout_is_refused_test() {
+  let assert Error(reason) =
+    decode(
+      with(extensions.hello(), "extension.toml", fn(text) {
+        text
+        <> "\n[[hook]]\nevent = \"tool_call\"\n"
+        <> "entry = \"hello/tool\"\ntimeout_ms = 0\n"
+      }),
+    )
+    as "a deadline of zero is not a deadline"
+  assert string.contains(reason, "timeout_ms")
+}
+
+/// `payment_required` is in the vocabulary, and the same near-miss rule
+/// holds for it as for every other event.
+pub fn the_payment_required_event_decodes_test() {
+  let declared =
+    with(extensions.hello(), "extension.toml", fn(text) {
+      text
+      <> "\n[[hook]]\nevent = \"payment_required\"\nentry = \"hello/tool\"\n"
+    })
+  let assert Ok(decoded) = decode(declared)
+    as "payment_required is in the vocabulary"
+  assert list.map(decoded.hooks, fn(hook) { hook.event })
+    == [manifest.payment_required_event]
+}
+
+// --- [net].plaintext_loopback ---------------------------------------------
+
+pub fn a_loopback_origin_may_be_reached_over_plaintext_test() {
+  let assert Ok(decoded) = decode(with_net(waved_net()))
+    as "a loopback origin the allowlist already reaches is permitted"
+  assert decoded.net.plaintext_loopback == ["localhost:10031"]
+}
+
+pub fn a_plaintext_origin_outside_the_allowlist_is_refused_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      "[net]\nhosts = [\"localhost:10031\"]\nmethods = [\"POST\"]\n"
+      <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+      <> "plaintext_loopback = [\"127.0.0.1:10031\"]\n",
+    ))
+    as "plaintext names an origin the policy never reaches"
+  assert string.contains(reason, "127.0.0.1:10031")
+}
+
+pub fn a_non_loopback_plaintext_origin_is_refused_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      "[net]\nhosts = [\"api.example.com\"]\nmethods = [\"POST\"]\n"
+      <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+      <> "plaintext_loopback = [\"api.example.com\"]\n",
+    ))
+    as "the exemption is about loopback, not about the allowlist"
+  assert string.contains(reason, "api.example.com")
+}
+
+pub fn a_credential_may_not_ride_a_plaintext_hop_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      waved_net()
+      <> "\n[[net.secret]]\nenv = \"WAVED_TOKEN\"\n"
+      <> "host = \"localhost:10031\"\nheader = \"Authorization\"\n",
+    ))
+    as "a secret bound to a plaintext origin is a contradiction"
+  assert string.contains(reason, "WAVED_TOKEN")
+}
+
+/// IPv6 loopback installs nowhere, because it could match nothing. The
+/// egress allowlist splits an entry on `:`, so neither the bracketed
+/// spelling a URL uses nor the bare one survives that grammar — an entry
+/// accepted here would be refused on every request with nothing saying
+/// why. Both spellings are refused, and the bracketed one gets the
+/// sentence that names the limitation.
+pub fn a_bracketed_ipv6_plaintext_origin_is_refused_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      "[net]\nhosts = [\"[::1]:10031\"]\nmethods = [\"POST\"]\n"
+      <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+      <> "plaintext_loopback = [\"[::1]:10031\"]\n",
+    ))
+    as "the egress allowlist has no grammar for an IPv6 origin"
+  assert string.contains(reason, "IPv6 loopback is not supported")
+}
+
+pub fn a_bare_ipv6_plaintext_origin_is_refused_test() {
+  let assert Error(reason) =
+    decode(with_net(
+      "[net]\nhosts = [\"::1\"]\nmethods = [\"POST\"]\n"
+      <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+      <> "plaintext_loopback = [\"::1\"]\n",
+    ))
+    as "an unbracketed IPv6 address is not a loopback host either"
+  assert string.contains(reason, "plaintext is permitted on loopback only")
+}
+
+pub fn the_host_part_of_an_origin_is_read_without_its_port_test() {
+  assert manifest.host_of("localhost:10031") == "localhost"
+  assert manifest.host_of("127.0.0.1") == "127.0.0.1"
+  assert manifest.host_of("[::1]:10031") == "::1"
+
+  // A bare IPv6 address carries colons that are not a port separator,
+  // which is the case a naive split on the last colon gets wrong.
+  assert manifest.host_of("::1") == "::1"
+}
+
 // --- the record -----------------------------------------------------------
+
+/// Version 3 carries both of the fields it was bumped for, round trip.
+pub fn a_version_three_record_round_trips_its_new_terms_test() {
+  let written =
+    record.Record(
+      ..sample_record(),
+      hooks: [
+        record.HookTerms(
+          event: manifest.payment_required_event,
+          entry: "hello/tool",
+          timeout_ms: 20_000,
+        ),
+      ],
+      net: record.NetTerms(
+        ..record.terms(manifest.no_net()),
+        hosts: ["localhost:10031"],
+        plaintext_loopback: ["localhost:10031"],
+      ),
+    )
+  let assert Ok(read) = record.decode(encoded(written))
+    as "a record this server wrote must decode"
+  assert read == written
+}
+
+/// A version-2 record is refused by name rather than read with the new
+/// fields defaulted, because neither is something the operator was asked
+/// about when they approved it.
+pub fn a_version_two_record_is_refused_by_name_test() {
+  let assert Error(reason) = record.readable("{\"format\": 2}")
+    as "a record from the previous format must be named"
+  assert string.contains(reason, "format 2")
+  assert string.contains(reason, "reads 3")
+}
 
 pub fn a_record_round_trips_test() {
   let written = sample_record()
@@ -261,6 +424,7 @@ pub fn a_record_carries_no_secret_values_test() {
           header: "X-Token",
         ),
       ],
+      plaintext_loopback: [],
     )
   assert record.terms(net).secret_env == ["EXAMPLE_API_KEY"]
 }
@@ -465,7 +629,14 @@ pub fn a_hook_installs_and_is_recorded_test() {
   // in it rather than only in a manifest that may change underneath.
   let assert Ok(text) = simplifile.read(from: record.file(root, "hello"))
   let assert Ok(written) = record.decode(text)
-  assert written.hooks == [#("tool_call", "hello/tool")]
+  assert written.hooks
+    == [
+      record.HookTerms(
+        event: "tool_call",
+        entry: "hello/tool",
+        timeout_ms: manifest.default_hook_timeout_ms,
+      ),
+    ]
 
   // And discovery hands the same declaration back, which is what boot
   // builds the bus from.
@@ -811,7 +982,11 @@ pub fn the_generated_entry_aliases_positionally_test() {
 pub fn the_generated_entry_serves_hooks_beside_tools_test() {
   let source =
     install.entry_source([tool("first", "a/tool")], [
-      manifest.Hook(event: "session_start", entry: "a/tool"),
+      manifest.Hook(
+        event: "session_start",
+        entry: "a/tool",
+        timeout_ms: manifest.default_hook_timeout_ms,
+      ),
     ])
   assert string.contains(source, "import a/tool as ext_entry_0")
   assert !string.contains(source, "ext_entry_1")
@@ -986,6 +1161,20 @@ fn tool(name: String, entry: String) -> manifest.Tool {
     entry:,
     timeout_ms: 1000,
   )
+}
+
+// The hello fixture with its `[net]` table replaced, which is how every
+// net test above states exactly the policy it is about.
+fn with_net(table: String) -> List(#(String, String)) {
+  with(extensions.hello(), "extension.toml", fn(text) { text <> "\n" <> table })
+}
+
+// waved's own arrangement: an HTTP/JSON gateway on loopback, with no
+// credential, which is the case `plaintext_loopback` exists for.
+fn waved_net() -> String {
+  "[net]\nhosts = [\"localhost:10031\"]\nmethods = [\"POST\"]\n"
+  <> "max_response_bytes = 1024\nrequests_per_call = 4\n"
+  <> "plaintext_loopback = [\"localhost:10031\"]\n"
 }
 
 fn sample_record() -> record.Record {

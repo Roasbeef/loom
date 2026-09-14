@@ -38,6 +38,7 @@ const secret_env = "SEARCH_API_KEY"
 fn offline_policy() -> egress.Policy {
   egress.Policy(
     hosts: ["api.example.com"],
+    plaintext: [],
     methods: [egress.Get],
     max_response_bytes: 1024,
     redirects: egress.NoRedirects,
@@ -271,6 +272,7 @@ pub fn one_host_is_the_install_fetch_policy_test() {
   assert policy
     == egress.Policy(
       hosts: ["codeload.github.com"],
+      plaintext: [],
       methods: [egress.Get],
       max_response_bytes: 33_554_432,
       redirects: egress.SameHost(at_most: 2),
@@ -325,6 +327,7 @@ fn url(port: Int, path: String) -> String {
 fn live_policy(port: Int, root: BitArray) -> egress.Policy {
   egress.Policy(
     hosts: [authority(port)],
+    plaintext: [],
     methods: [egress.Get],
     max_response_bytes: 65_536,
     redirects: egress.NoRedirects,
@@ -648,4 +651,112 @@ pub fn a_live_refusal_after_injection_carries_no_credential_test() {
 
   let assert Error(refusal) = outcome as "the off-origin redirect is refused"
   assert !string.contains(egress.describe(refusal), canary)
+}
+
+// ---------------------------------------------------------------------
+// Plaintext: the loopback exception, live and refused.
+// ---------------------------------------------------------------------
+
+/// A policy naming one loopback origin over `http://`. The trust value
+/// is a pin that can never verify anything, which is exactly right here:
+/// a plaintext hop must reach the server without consulting it, and a
+/// request that quietly went over TLS instead would fail.
+fn plain_policy(port: Int, plaintext: List(String)) -> egress.Policy {
+  egress.Policy(
+    hosts: [address(port)],
+    plaintext:,
+    methods: [egress.Get],
+    max_response_bytes: 65_536,
+    redirects: egress.NoRedirects,
+    timeout_ms: 10_000,
+    secrets: [],
+    trust: egress.PinnedRoots(ders: []),
+  )
+}
+
+fn address(port: Int) -> String {
+  "127.0.0.1:" <> int.to_string(port)
+}
+
+fn plain_url(port: Int) -> String {
+  "http://" <> address(port) <> "/"
+}
+
+/// The FFI passes `ssl` options on every request and `httpc` ignores
+/// them for an `http://` URL, which is why the plaintext exception
+/// needed no FFI change. This is the test that says so: it runs against
+/// a listener that speaks no TLS at all.
+pub fn fetches_over_plaintext_from_a_named_loopback_origin_test() {
+  let #(server, port) = origin.start_plain()
+  let outcome =
+    egress.request(
+      plain_policy(port, [address(port)]),
+      get(plain_url(port)),
+      secrets: no_secrets,
+    )
+  origin.stop(server)
+
+  let assert Ok(response) = outcome as "a named loopback origin answers"
+  assert response.status == 200
+  assert body_text(response) == "plaintext ok"
+}
+
+/// The same URL against the same running server, with the origin absent
+/// from `plaintext`. The refusal has to come from the policy rather than
+/// from anything the server did, so the server is started and left
+/// unreached.
+pub fn refuses_plaintext_the_policy_does_not_name_test() {
+  let #(server, port) = origin.start_plain()
+  let outcome =
+    egress.request(
+      plain_policy(port, []),
+      get(plain_url(port)),
+      secrets: no_secrets,
+    )
+  origin.stop(server)
+
+  assert outcome == Error(egress.SchemeNotHttps(plain_url(port)))
+}
+
+/// The third half of the rule, and the one the spelling of an entry used
+/// to decide: a `Secret` bound to `LOCALHOST:<port>` and a plaintext
+/// entry reading `localhost:<port>` are different strings, so a check
+/// that compared strings saw no binding on this origin — while
+/// `injected`, which compares normalized origins, would have put the
+/// credential on the wire in the clear. The port is one nothing is
+/// listening on, so a refusal is also proof that no connection was
+/// attempted: a client that got as far as a socket would answer
+/// `TransportFailed` instead.
+pub fn refuses_plaintext_on_an_origin_a_secret_is_bound_to_test() {
+  let port = 10_031
+  let lower = "localhost:" <> int.to_string(port)
+  let upper = "LOCALHOST:" <> int.to_string(port)
+  let policy =
+    egress.Policy(
+      ..offline_policy(),
+      hosts: [lower, upper],
+      plaintext: [lower],
+      secrets: [
+        egress.Secret(env: secret_env, header: secret_header, host: upper),
+      ],
+    )
+  let url = "http://" <> lower <> "/"
+
+  assert egress.request(policy, get(url), secrets: fn(_name) { Ok(canary) })
+    == Error(egress.SchemeNotHttps(url))
+}
+
+/// The half of the rule a hand-built `Policy` cannot state away: an
+/// origin off this host is refused over `http://` however the policy
+/// lists it, because the argument for the exception is the absence of a
+/// network and not the author's intent.
+pub fn refuses_a_plaintext_entry_that_is_not_loopback_test() {
+  let policy =
+    egress.Policy(..offline_policy(), hosts: ["example.com"], plaintext: [
+      "example.com",
+    ])
+  let url = "http://example.com/search"
+
+  assert egress.request(policy, get(url), secrets: no_secrets)
+    == Error(egress.SchemeNotHttps(url))
 }

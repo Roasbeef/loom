@@ -64,7 +64,8 @@ harness minted for that invocation.
   UsageOrigin, event, answer, rendered}` — the typed hook vocabulary.
   `Hook` is one variant per event (`OnSessionStart`,
   `OnBeforeAgentStart`, `OnContext`, `OnToolCall`, `OnToolResult`,
-  `OnAgentEnd`, `OnAgentSettled`, `OnBeforeCompact`, `OnUsage`), so an
+  `OnAgentEnd`, `OnAgentSettled`, `OnBeforeCompact`, `OnUsage`,
+  `OnPaymentRequired`), so an
   entry that answers the wrong event is a compile error rather than a
   shape mismatch on the wire. `event` is the manifest name a hook answers; `answer` runs
   one against the harness's `args` document and renders the `hook_result`
@@ -97,6 +98,25 @@ harness minted for that invocation.
   `Bool` field would make every reader carry its polarity. The `seq` is
   the one storage assigned, because the harness fires this after the
   commit rather than before it.
+- `ext/hook.{OnPaymentRequired, PaymentChallenge, Payment}` — the L402
+  seam's extension half. The provider gateway met a `402` it could not
+  pay, and this is the one hook whose answer spends money:
+  `PaymentChallenge` carries the provider name, the BOLT11 invoice, the
+  price in satoshis when it is known, the proxy's challenge and route
+  identifiers, and `now_unix_ms`. The timestamp rides on the payload
+  because the extension seam has no clock, and a hook enforcing a daily
+  ceiling needs the day boundary. `Payment` is `Paid(preimage_hex)` —
+  64 lowercase hex characters — or `Declined(reason)`, and an
+  `amount_sat` of `None` is the case an author must decline for, since
+  there is no ceiling to check an unknown price against. **The macaroon
+  does not cross this hook**: an extension settles an invoice and hands
+  back a preimage, and the harness composes the L402 credential from its
+  own copy of the challenge, so nothing the extension holds is on its
+  own a credential. The harness fans the event out to **every**
+  subscriber and takes the first `Paid` in load order; it does not stop
+  the fan-out at the first one, so a second paying extension spends
+  money the harness discards. One paying hook per provider is the
+  arrangement that keeps an invoice from being paid twice.
 - `ext/memory.{remember, recall}` — the one module here that carries
   authority: durable, latest-wins cells under the reserved
   `ext/<name>/<key>` prefix this extension owns, over the `ext.remember`

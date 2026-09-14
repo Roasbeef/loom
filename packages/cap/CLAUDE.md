@@ -14,8 +14,9 @@ it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 The prelude serves **three seams**, and a submission is vetted against one
 of them (`codemode/vet/policy.Seam`). The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search}` — a program that orchestrates effects. The *orchestration* seam
-is `cap/strand` + `cap/report` and nothing else — a program that orchestrates agents. Those
+search, clock}` — a program that orchestrates effects. The *orchestration*
+seam is `cap/strand` + `cap/report` and nothing else — a program that
+orchestrates agents. Those
 two sets are disjoint but for `cap/report`, and that disjointness is the
 point: an orchestrator that could also write files is a materially worse
 thing to hand a model than one that cannot. The *extension* seam is the
@@ -224,6 +225,21 @@ cannot hide the capability error. This does not grant the program a new effect.
   `JobDenied` carrying any other host code verbatim, `JobUnavailable` for
   a channel that could not carry the call or a host with no jobs plane.
   Workspace seam only, like `cap/schedule`.
+- `cap/clock.sleep_ms` — the one prelude module that makes no capability
+  call. Waiting asks nothing of the harness: it spends the invocation's
+  own deadline and no budget, file, socket or durable cell, so there is
+  no authority for a policy to grant and no capability name to check. It
+  is on the workspace seam — and so, by inheritance, on the extension
+  seam — because an extension answering a hook has to be able to pace a
+  poll, and the alternatives left to it are a busy loop that burns the
+  satellite's scheduler or the process primitives the vetting allowlist
+  withholds. Deliberately not on the orchestration seam: that seam's
+  intersection with the workspace seam is pinned at exactly `cap/report`
+  and *is* the confinement property, which a second shared name would
+  cost for a convenience nobody has asked for. There is no clock
+  *reading* here either — the harness stamps the hook payload with the
+  instant it observed, and a satellite-local second reading could only
+  disagree with it.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services

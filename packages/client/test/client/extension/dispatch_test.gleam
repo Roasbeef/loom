@@ -680,6 +680,7 @@ fn brave_net() -> manifest.Net {
         header: "X-Subscription-Token",
       ),
     ],
+    plaintext_loopback: [],
   )
 }
 
@@ -865,6 +866,7 @@ fn a_manifest() -> manifest.Manifest {
       max_response_bytes: 0,
       requests_per_call: 0,
       secrets: [],
+      plaintext_loopback: [],
     ),
   )
 }
@@ -998,6 +1000,7 @@ fn a_record() -> record.Record {
       max_response_bytes: 0,
       requests_per_call: 0,
       secret_env: [],
+      plaintext_loopback: [],
     ),
     tools: ["hello"],
     hooks: [],

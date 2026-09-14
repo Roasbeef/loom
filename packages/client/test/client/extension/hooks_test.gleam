@@ -22,6 +22,7 @@ import gleam/string
 import gleeunit
 import machine/operation
 import machine/strand
+import provider/l402
 import runtime/effects
 import session/session
 import telemetry/log
@@ -38,7 +39,7 @@ pub fn an_undeclared_event_never_reaches_an_extension_test() {
     started([
       hooks.Extension(
         name: "quiet",
-        events: [],
+        hooks: [],
         invoke: recording(calls, allow()),
       ),
     ])
@@ -52,7 +53,7 @@ pub fn a_declared_event_is_asked_test() {
     started([
       hooks.Extension(
         name: "gate",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: recording(calls, allow()),
       ),
     ])
@@ -63,10 +64,10 @@ pub fn a_declared_event_is_asked_test() {
 pub fn a_block_wins_and_names_the_extension_test() {
   let bus =
     started([
-      hooks.Extension(name: "first", events: ["tool_call"], invoke: allow()),
+      hooks.Extension(name: "first", hooks: [on("tool_call")], invoke: allow()),
       hooks.Extension(
         name: "second",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: blocking("the workspace is frozen"),
       ),
     ])
@@ -78,10 +79,10 @@ pub fn a_gone_extension_is_dropped_and_the_rest_still_fire_test() {
   let calls = recorder()
   let bus =
     started([
-      hooks.Extension(name: "dead", events: ["tool_call"], invoke: gone()),
+      hooks.Extension(name: "dead", hooks: [on("tool_call")], invoke: gone()),
       hooks.Extension(
         name: "alive",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: recording(calls, allow()),
       ),
     ])
@@ -101,7 +102,7 @@ pub fn a_declining_extension_keeps_its_place_test() {
     started([
       hooks.Extension(
         name: "picky",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: refusing("not my business"),
       ),
     ])
@@ -114,12 +115,12 @@ pub fn a_run_start_injection_is_collected_and_rendered_test() {
     started([
       hooks.Extension(
         name: "quiet",
-        events: ["before_agent_start"],
+        hooks: [on("before_agent_start")],
         invoke: answering("{\"inject\":null}"),
       ),
       hooks.Extension(
         name: "web_search",
-        events: ["before_agent_start"],
+        hooks: [on("before_agent_start")],
         invoke: answering("{\"inject\":\"3 searches left\"}"),
       ),
     ])
@@ -134,7 +135,7 @@ pub fn a_block_with_no_reason_is_still_a_block_test() {
     started([
       hooks.Extension(
         name: "terse",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: answering("{\"verdict\":\"block\"}"),
       ),
     ])
@@ -159,7 +160,7 @@ pub fn a_tool_result_hook_cannot_write_the_usage_ledger_test() {
     started([
       hooks.Extension(
         name: "biller",
-        events: ["tool_result"],
+        hooks: [on("tool_result")],
         invoke: retexting(billed),
       ),
     ])
@@ -176,7 +177,7 @@ pub fn a_tool_result_hook_cannot_move_the_reply_to_another_call_test() {
     started([
       hooks.Extension(
         name: "mover",
-        events: ["tool_result"],
+        hooks: [on("tool_result")],
         invoke: retexting(elsewhere),
       ),
     ])
@@ -201,12 +202,12 @@ pub fn a_context_transform_is_chained_in_load_order_test() {
     started([
       hooks.Extension(
         name: "first",
-        events: ["context"],
+        hooks: [on("context")],
         invoke: appending("one"),
       ),
       hooks.Extension(
         name: "second",
-        events: ["context"],
+        hooks: [on("context")],
         invoke: appending("two"),
       ),
     ])
@@ -219,7 +220,7 @@ pub fn an_oversized_context_transform_is_discarded_test() {
     started([
       hooks.Extension(
         name: "greedy",
-        events: ["context"],
+        hooks: [on("context")],
         // Four characters to the token, so a message this long is far
         // past the allowance on its own.
         invoke: appending(repeat("x", hooks.context_growth_tokens * 8)),
@@ -234,7 +235,7 @@ pub fn a_tool_result_transform_is_applied_test() {
     started([
       hooks.Extension(
         name: "redactor",
-        events: ["tool_result"],
+        hooks: [on("tool_result")],
         invoke: retexting(reply_ok("redacted")),
       ),
     ])
@@ -247,7 +248,7 @@ pub fn is_error_cannot_be_cleared_by_a_hook_test() {
     started([
       hooks.Extension(
         name: "launderer",
-        events: ["tool_result"],
+        hooks: [on("tool_result")],
         invoke: retexting(reply_ok("all fine")),
       ),
     ])
@@ -261,10 +262,10 @@ pub fn is_error_cannot_be_cleared_by_a_hook_test() {
 pub fn a_transform_from_a_gone_extension_is_discarded_test() {
   let bus =
     started([
-      hooks.Extension(name: "dead", events: ["context"], invoke: gone()),
+      hooks.Extension(name: "dead", hooks: [on("context")], invoke: gone()),
       hooks.Extension(
         name: "alive",
-        events: ["context"],
+        hooks: [on("context")],
         invoke: appending("one"),
       ),
     ])
@@ -277,13 +278,13 @@ pub fn a_malformed_verdict_allows_the_call_and_drops_the_handler_test() {
     started([
       hooks.Extension(
         name: "typo",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         // One capital letter. The first shape of this module sent
         // `Allow` and carried on, which is a gate silently disabled for
         // the rest of the session with nothing anywhere saying so.
         invoke: answering("{\"verdict\":\"Block\"}"),
       ),
-      hooks.Extension(name: "sound", events: ["tool_call"], invoke: allow()),
+      hooks.Extension(name: "sound", hooks: [on("tool_call")], invoke: allow()),
     ])
 
   // The call in hand is allowed: dropping a handler is not a reason to
@@ -302,7 +303,7 @@ pub fn a_blocked_call_becomes_the_attributed_refusal_test() {
     started([
       hooks.Extension(
         name: "web_search",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: blocking("the workspace is frozen"),
       ),
     ])
@@ -319,7 +320,7 @@ pub fn a_refused_clearance_never_wakes_the_bus_test() {
     started([
       hooks.Extension(
         name: "gate",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: recording(calls, allow()),
       ),
     ])
@@ -345,17 +346,17 @@ pub fn compaction_notes_are_gathered_in_load_order_test() {
     started([
       hooks.Extension(
         name: "first",
-        events: ["before_compact"],
+        hooks: [on("before_compact")],
         invoke: answering("{\"note\":\"keep the migration plan\"}"),
       ),
       hooks.Extension(
         name: "quiet",
-        events: ["before_compact"],
+        hooks: [on("before_compact")],
         invoke: answering("{\"note\":null}"),
       ),
       hooks.Extension(
         name: "second",
-        events: ["before_compact"],
+        hooks: [on("before_compact")],
         invoke: answering("{\"note\":\"and the failing test\"}"),
       ),
     ])
@@ -379,7 +380,7 @@ pub fn the_cue_carries_the_reason_and_the_counts_test() {
     started([
       hooks.Extension(
         name: "tracer",
-        events: ["before_compact"],
+        hooks: [on("before_compact")],
         invoke: capturing(captured, answering("{\"note\":null}")),
       ),
     ])
@@ -397,12 +398,12 @@ pub fn a_note_past_the_allowance_is_dropped_test() {
     started([
       hooks.Extension(
         name: "modest",
-        events: ["before_compact"],
+        hooks: [on("before_compact")],
         invoke: answering("{\"note\":\"short\"}"),
       ),
       hooks.Extension(
         name: "greedy",
-        events: ["before_compact"],
+        hooks: [on("before_compact")],
         invoke: answering("{\"note\":\"" <> string.repeat("x", 40_000) <> "\"}"),
       ),
     ])
@@ -434,7 +435,7 @@ pub fn a_usage_row_is_delivered_notify_only_test() {
     started([
       hooks.Extension(
         name: "tracer",
-        events: ["usage"],
+        hooks: [on("usage")],
         invoke: capturing(captured, answering("{\"verdict\":\"block\"}")),
       ),
     ])
@@ -462,7 +463,7 @@ pub fn a_usage_hook_is_never_sent_request_or_response_content_test() {
     started([
       hooks.Extension(
         name: "tracer",
-        events: ["usage"],
+        hooks: [on("usage")],
         invoke: capturing(captured, answering("{}")),
       ),
     ])
@@ -488,7 +489,7 @@ pub fn an_oversleeping_usage_handler_is_dropped_test() {
     started([
       hooks.Extension(
         name: "slow",
-        events: ["usage"],
+        hooks: [on("usage")],
         invoke: fn(_extension, _event, _args, _deadline) {
           Error(hooks.Deadline)
         },
@@ -501,10 +502,10 @@ pub fn an_oversleeping_usage_handler_is_dropped_test() {
 pub fn a_wedged_notification_cannot_neutralise_a_block_test() {
   let bus =
     started([
-      hooks.Extension(name: "tracer", events: ["usage"], invoke: wedged()),
+      hooks.Extension(name: "tracer", hooks: [on("usage")], invoke: wedged()),
       hooks.Extension(
         name: "guard",
-        events: ["tool_call"],
+        hooks: [on("tool_call")],
         invoke: blocking("the workspace is frozen"),
       ),
     ])
@@ -519,6 +520,154 @@ pub fn a_wedged_notification_cannot_neutralise_a_block_test() {
   hooks.usage(bus, operation(), usage_row())
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0)
     == hooks.Block(extension: "guard", reason: "the workspace is frozen")
+}
+
+// --- payment_required -----------------------------------------------------
+
+pub fn the_first_paid_answer_in_load_order_wins_test() {
+  let bus =
+    started([
+      paying("first", "aa"),
+      paying("second", "bb"),
+    ])
+
+  // A request is paid once. A second extension answering `Paid` has
+  // bought a second credential for one request, so load order decides
+  // and the later answer is discarded rather than composed.
+  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("aa", 32))
+}
+
+pub fn a_decline_does_not_stop_a_later_payment_test() {
+  let bus =
+    started([
+      declining("thrifty", "the daily ceiling is spent"),
+      paying("wallet", "cc"),
+    ])
+  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("cc", 32))
+}
+
+pub fn every_decline_answers_with_the_first_reason_test() {
+  let bus =
+    started([
+      declining("thrifty", "the daily ceiling is spent"),
+      declining("cautious", "the amount is unstated"),
+    ])
+
+  // One reason reaches the model, and it is the first: naming both would
+  // tell whoever reads the failed request nothing they can act on.
+  assert hooks.pay(bus, "proxy", challenge(), 7)
+    == Error("the daily ceiling is spent")
+}
+
+pub fn an_unsubscribed_bus_says_nobody_answered_test() {
+  let bus = started([one("indifferent", allow())])
+
+  // Distinct from a decline on purpose: nothing decided not to pay, and
+  // an operator reading this needs to know the difference between an
+  // extension that refused and none being installed.
+  assert hooks.pay(bus, "proxy", challenge(), 7)
+    == Error("no extension answered the payment challenge")
+}
+
+pub fn a_malformed_preimage_drops_the_handler_test() {
+  let bus =
+    started([
+      // Sixty-three characters. A credential composed from this could
+      // never settle anything, and caching it would send it on every
+      // later request.
+      paying_with("typo", string.repeat("a", 63)),
+      paying("wallet", "dd"),
+    ])
+  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("dd", 32))
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
+/// Hex case carries no information, so an extension whose Lightning
+/// backend renders upper case has answered correctly and is normalized
+/// rather than dropped. The `Paid` that comes back is the lowercase
+/// form, which is what the credential is composed from.
+pub fn an_uppercase_preimage_is_accepted_test() {
+  let bus = started([paying_with("wallet", string.repeat("DD", 32))])
+
+  assert hooks.pay(bus, "proxy", challenge(), 7) == Ok(repeat("dd", 32))
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
+pub fn the_macaroon_never_crosses_the_hook_test() {
+  let captured = process.new_subject()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "wallet",
+        hooks: [on("payment_required")],
+        invoke: capturing(captured, declining_invoker("not now")),
+      ),
+    ])
+  let assert Error(_reason) = hooks.pay(bus, "proxy", challenge(), 7)
+    as "the extension declined"
+
+  let assert Ok(json.Object(fields:)) = process.receive(captured, within: 100)
+    as "the extension was asked"
+  let sent = list.map(fields, fn(pair) { pair.0 })
+
+  // The census is the ruling: a hook pays an invoice, and the credential
+  // is composed by the harness from a macaroon the extension never saw.
+  assert list.sort(sent, string.compare)
+    == [
+      "amount_sat", "challenge_id", "invoice", "now_unix_ms", "provider",
+      "route_id",
+    ]
+  assert field_of(json.Object(fields:), "now_unix_ms") == Ok(json.Int(7))
+}
+
+pub fn an_invoker_is_given_its_own_subscriptions_deadline_test() {
+  let deadlines = process.new_subject()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "wallet",
+        hooks: [
+          hooks.Subscription(event: "payment_required", deadline_ms: 20_000),
+        ],
+        invoke: fn(_extension, _event, _args, deadline) {
+          process.send(deadlines, deadline)
+          Error(hooks.Refused(reason: "not now"))
+        },
+      ),
+    ])
+  let assert Error(_reason) = hooks.pay(bus, "proxy", challenge(), 7)
+    as "the extension declined"
+
+  // The manifest's number, not the constant. A hook that pays an invoice
+  // is the first one with a reason to want more than five seconds, and
+  // the whole of `timeout_ms` is that this is the number it gets.
+  assert process.receive(deadlines, within: 100) == Ok(20_000)
+}
+
+pub fn the_fan_out_budget_sums_the_subscribed_deadlines_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "wallet",
+        hooks: [
+          hooks.Subscription(event: "payment_required", deadline_ms: 20_000),
+        ],
+        invoke: allow(),
+      ),
+      hooks.Extension(
+        name: "tracer",
+        hooks: [hooks.Subscription(event: "usage", deadline_ms: 1000)],
+        invoke: allow(),
+      ),
+    ])
+
+  // Every subscriber to the event may spend its whole deadline, plus one
+  // `deadline_ms` of margin for the decoding between them. An extension
+  // subscribed to something else contributes nothing, which is what
+  // makes this narrower than `fan_out_ms` on a long chain.
+  assert hooks.fan_out_for(bus, "payment_required")
+    == 20_000 + hooks.deadline_ms
+  assert hooks.fan_out_for(bus, "usage") == 1000 + hooks.deadline_ms
 }
 
 // --- fixtures -------------------------------------------------------------
@@ -586,6 +735,14 @@ fn no_session() -> session.Session {
   let assert Ok(opened) = session.open_memory(clock.fixed(0))
     as "an in-memory session always opens"
   opened
+}
+
+// One subscription at the manifest's default deadline. Every test here
+// is about what the bus does with an answer rather than about how long
+// it waited for one, so the deadline is the default everywhere except
+// where a test names its own.
+fn on(event: String) -> hooks.Subscription {
+  hooks.Subscription(event:, deadline_ms: hooks.deadline_ms)
 }
 
 fn started(extensions: List(hooks.Extension)) -> hooks.Bus {
@@ -709,8 +866,46 @@ fn field_of(
   }
 }
 
+// A `payment_required` extension answering with `unit` repeated to the
+// 64 characters a preimage is.
+fn paying(name: String, unit: String) -> hooks.Extension {
+  paying_with(name, repeat(unit, 32))
+}
+
+fn paying_with(name: String, hex: String) -> hooks.Extension {
+  hooks.Extension(
+    name:,
+    hooks: [on("payment_required")],
+    invoke: answering("{\"payment\":\"paid\",\"preimage\":\"" <> hex <> "\"}"),
+  )
+}
+
+fn declining(name: String, reason: String) -> hooks.Extension {
+  hooks.Extension(
+    name:,
+    hooks: [on("payment_required")],
+    invoke: declining_invoker(reason),
+  )
+}
+
+fn declining_invoker(reason: String) -> hooks.Invoker {
+  answering("{\"payment\":\"declined\",\"reason\":\"" <> reason <> "\"}")
+}
+
+// A challenge whose macaroon is distinctive, so the census test is
+// asserting on its absence rather than on an empty string.
+fn challenge() -> l402.Challenge {
+  l402.Challenge(
+    macaroon: "AGIA",
+    invoice: "lnbc2500u1xyz",
+    amount_sat: Some(250_000),
+    challenge_id: "chal-1",
+    route_id: "route-1",
+  )
+}
+
 fn one(name: String, invoke: hooks.Invoker) -> hooks.Extension {
-  hooks.Extension(name:, events: ["before_compact"], invoke:)
+  hooks.Extension(name:, hooks: [on("before_compact")], invoke:)
 }
 
 // A cue whose numbers are distinctive, so a test asserting on the wire

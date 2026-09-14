@@ -399,7 +399,12 @@ fn hooks_fire(installed_at: Installed) -> Nil {
           [
             hooks.Extension(
               name: written.name,
-              events: list.map(decoded.hooks, fn(hook) { hook.event }),
+              hooks: list.map(decoded.hooks, fn(hook) {
+                hooks.Subscription(
+                  event: hook.event,
+                  deadline_ms: hook.timeout_ms,
+                )
+              }),
               invoke: hosts.invoker(seam, at:),
             ),
           ],

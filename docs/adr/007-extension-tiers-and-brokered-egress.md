@@ -104,3 +104,55 @@ lever: a port becomes mechanical for the subset where it is meaningful.
 - A client-side extension surface, when ruled, adds a `[client]` table to
   the manifest and a body that runs in the TUI; until then the table is
   an unknown key and refuses the manifest.
+
+## Addendum — plaintext to a manifest-named loopback origin
+
+*Added 2026-09-13. The decision above is unchanged; this records one
+exception to the `https`-only rule inside it, and what the exception is
+held to.*
+
+The first extension that pays for an L402 challenge talks to a Lightning
+daemon the operator already runs on the same host. Its HTTP/JSON gateway
+is plaintext by design — `waved` puts TLS on the gRPC listener and serves
+the JSON gateway on `localhost:10031` with no macaroon — so an extension
+that cannot make an `http://` request cannot reach it at all, and the
+alternative is a second egress path outside the broker's judgement.
+
+**A manifest may name loopback origins as plaintext, and nothing else
+about the judgement moves.** `[net].plaintext_loopback` lists origins,
+each of which must also appear in `hosts`, and each of whose hosts must
+be `localhost`, `127.0.0.1` or `::1`. `egress.Policy.plaintext` carries
+that list, and `check_scheme` admits an `http://` URL only when the
+policy names its origin *and* its host is one of those three.
+
+The `https` rule exists because the network between the harness and an
+origin is untrusted: anyone on the path can read the request, and a
+credential on it is a credential given away. On a loopback address there
+is no path — no packet leaves the machine — and the process answering is
+one the operator started themselves. The rule's premise is simply absent,
+which is a narrower thing than the rule being inconvenient, and it is why
+the exception is written as an address test rather than as a flag.
+
+What it does not change:
+
+- The allowlist is still exact. `plaintext` widens a *scheme* and never a
+  host: an origin not on `hosts` is refused before the scheme is ever
+  considered, and the method list applies as it always did.
+- **No credential binding is ever injected on a plaintext hop.** The
+  manifest refuses a `[[net.secret]]` naming a plaintext origin by name,
+  and `policy.egress_for` drops such an origin from `plaintext` when
+  building the policy, so a manifest that somehow got past the installer
+  produces a policy that cannot make the request at all.
+- A non-loopback plaintext entry is refused twice: at the manifest, where
+  the author reads why, and again in `check_scheme`, so a `Policy`
+  assembled by hand in the harness cannot widen the exception to the open
+  internet.
+- A redirect is judged per hop as before. A `Location` that downgrades to
+  `http://` meets the same rule the first hop met, which for a
+  non-plaintext origin is a refusal.
+
+The cost is that the operator's trust in a loopback port is now load
+bearing: a hostile process that wins that port sees an extension's
+requests in clear. That is the same trust the operator already places in
+the daemon itself, and it is bounded by the exact allowlist — no origin
+reaches this exception without an operator approving it at install.

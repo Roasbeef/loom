@@ -29,6 +29,26 @@
 //// about a list nobody wrote, where `network_off` says the extension
 //// asked for no network at all.
 ////
+//// # A plaintext origin is the manifest's, and a bound credential vetoes it
+////
+//// `[net].plaintext_loopback` is the one manifest field that widens a
+//// scheme rather than an allowlist, and `egress.Policy.plaintext` is
+//// where it lands. It carries across verbatim but for one subtraction:
+//// an origin that a `[[net.secret]]` binds a credential to is dropped
+//// from the list, so the policy cannot reach it over `http://` at all
+//// and the credential has no plaintext hop to be injected on. The
+//// manifest refuses that contradiction at install by name, which is the
+//// error an author should read; this is the second, silent half, and it
+//// fails in the closed direction — the origin stays on `hosts` and stays
+//// reachable over `https://`, and a plaintext request to it is refused
+//// `SchemeNotHttps` as though the entry had never been written.
+////
+//// Dropping the entry rather than refusing the whole `Egress` is
+//// deliberate. `Egress` has two variants because an extension either
+//// named a `[net]` table or did not, and a third would make every reader
+//// of it carry a state that only a hand-written manifest past the
+//// installer's own check can produce.
+////
 //// # The refusal vocabulary is `cap/net`'s, and it is a contract
 ////
 //// `cap/net.map_error` sorts a denial's *code* into `NetDenied` — the
@@ -145,6 +165,7 @@ pub fn egress_for(net: Net, trust trust: egress.Trust) -> Egress {
     [_, ..] ->
       Reaches(egress.Policy(
         hosts: net.hosts,
+        plaintext: plaintext_origins(net),
         methods: list.filter_map(net.methods, method),
         max_response_bytes: int.min(net.max_response_bytes, max_response_bytes),
         redirects: egress.SameHost(at_most: redirect_hops),
@@ -153,6 +174,23 @@ pub fn egress_for(net: Net, trust trust: egress.Trust) -> Egress {
         trust:,
       ))
   }
+}
+
+/// The origins this extension may reach over `http://`.
+///
+/// The manifest's list minus every origin a credential is bound to. Both
+/// halves of that are checked at install — the installer refuses a
+/// non-loopback entry and refuses a secret naming a plaintext origin —
+/// so this subtraction removes nothing a well-formed manifest declared.
+/// It is here because `egress` is what actually makes the request, and
+/// the property worth having is that no policy this module builds can
+/// put a credential on a plaintext hop, whatever reached the installer.
+fn plaintext_origins(net: Net) -> List(String) {
+  let bound = list.map(net.secrets, fn(binding) { binding.host })
+
+  list.filter(net.plaintext_loopback, fn(origin) {
+    !list.contains(bound, origin)
+  })
 }
 
 /// The lifetime admission ceilings one extension execution runs under.

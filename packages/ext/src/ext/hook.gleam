@@ -36,12 +36,17 @@
 ////
 //// ## The events, and which of them are chained
 ////
-//// Five events are notifications or one-shot questions the harness fans
+//// Eight events are notifications or one-shot questions the harness fans
 //// out to every extension. Two — `context` and `tool_result` — are
 //// *chained transforms*: the harness folds them over the installed
 //// extensions in load order, and each one is handed its predecessor's
 //// output rather than the original. An author writing one should assume
 //// somebody else has already been here.
+////
+//// `payment_required` is the one question with a race for the answer:
+//// the harness fans it out in load order and takes the first extension
+//// that says it paid, because an invoice paid twice is money spent
+//// twice. Everything else about it is an ordinary fan-out.
 
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
@@ -192,12 +197,68 @@ pub type Context {
   )
 }
 
+/// What a `payment_required` hook is told: one priced request the
+/// harness could not make.
+///
+/// The invoice is what to pay. The macaroon deliberately does not cross
+/// this seam: an extension's job is to settle a Lightning invoice and
+/// hand back the preimage, and the harness composes the L402 credential
+/// from its own copy of the challenge, so nothing an extension holds is
+/// on its own a credential.
+///
+/// `amount_sat` is the proxy's stated price when it stated one, else the
+/// amount decoded from the invoice, else `None`. `None` is the case an
+/// author has to write for: there is no ceiling to check against, so a
+/// hook that pays anyway pays an unbounded amount, and declining is the
+/// only safe answer.
+pub type PaymentChallenge {
+  PaymentChallenge(
+    /// The catalogue entry — the provider name — whose request was
+    /// priced.
+    provider: String,
+    /// The BOLT11 invoice to pay, verbatim as the proxy sent it.
+    invoice: String,
+    /// The price in satoshis, when it is known at all.
+    amount_sat: Option(Int),
+    /// The proxy's challenge identifier, or `""` when it sent none.
+    challenge_id: String,
+    /// The proxy's route identifier, or `""` when it sent none.
+    route_id: String,
+    /// Wall-clock milliseconds since the Unix epoch, read from the
+    /// harness's clock. It rides on the payload because the extension
+    /// seam has no clock of its own, and a hook enforcing a daily spend
+    /// ceiling needs to know where the day boundary is.
+    now_unix_ms: Int,
+  )
+}
+
+/// What a `payment_required` hook answers.
+pub type Payment {
+  /// The invoice was paid. The preimage is the payment's proof, 64
+  /// lowercase hex characters; the harness checks the shape and treats a
+  /// preimage of any other shape as a broken extension.
+  Paid(preimage_hex: String)
+
+  /// Nothing was paid, with a reason the harness surfaces to the caller
+  /// as the provider error's text. Declining is the right answer when
+  /// the price is unknown, over a ceiling, or for a provider this
+  /// extension does not fund.
+  Declined(reason: String)
+}
+
 /// The typed behaviour behind one `[[hook]]` entry.
 ///
 /// One variant per event, so an entry that answers the wrong event is a
 /// compile error in the extension rather than a shape mismatch on the
 /// wire. The generated entry module pairs each of these with the event
 /// name its manifest declared.
+///
+/// All but one of them are notifications or questions about the
+/// harness's own timeline. `OnPaymentRequired` is the exception worth
+/// naming: answering it spends money, and it is the only hook whose
+/// answer the harness stops fanning out on, because the first `Paid`
+/// settles the invoice and a second payment of the same invoice buys
+/// nothing.
 pub type Hook {
   /// `session_start`: the session server booted this extension. Nothing
   /// to answer; the moment is the point.
@@ -244,6 +305,19 @@ pub type Hook {
   /// `usage`: one cost-ledger row was committed. Notify-only; there is
   /// nothing to answer, and the row is already durable when this runs.
   OnUsage(run: fn(Usage) -> Nil)
+
+  /// `payment_required`: the provider gateway holds a request a paywall
+  /// priced and it cannot be made until somebody pays. Pay the invoice
+  /// and answer `Paid` with the preimage, or `Declined` with a reason
+  /// the harness surfaces.
+  ///
+  /// Every subscriber is asked, and the first `Paid` in load order wins.
+  /// An extension that answers `Paid` after another already has will
+  /// have spent money the harness does not use, so a hook that pays
+  /// should be the only one installed for the providers it covers. The
+  /// macaroon never crosses this hook; the harness composes the
+  /// credential from the preimage.
+  OnPaymentRequired(run: fn(PaymentChallenge) -> Payment)
 }
 
 /// The manifest event name a hook answers. The pairing the generated
@@ -268,6 +342,7 @@ pub fn event(hook: Hook) -> String {
     OnAgentSettled(..) -> "agent_settled"
     OnBeforeCompact(..) -> "before_compact"
     OnUsage(..) -> "usage"
+    OnPaymentRequired(..) -> "payment_required"
   }
 }
 
@@ -341,6 +416,11 @@ pub fn answer(hook: Hook, args: String) -> Result(String, String) {
       use usage <- result.try(usage_of(document))
       run(usage)
       Ok(nothing())
+    }
+
+    OnPaymentRequired(run:) -> {
+      use challenge <- result.try(payment_challenge_of(document))
+      Ok(json.to_string(payment(run(challenge))))
     }
   }
 }
@@ -437,6 +517,49 @@ fn usage_of(document: Dynamic) -> Result(Usage, String) {
     thinking_tokens: optional_int(document, "thinking_tokens"),
     total_tokens: total,
     cost:,
+  ))
+}
+
+// The answer to a payment challenge. Two documents rather than one with
+// a nullable preimage, because the two outcomes are not the same fact:
+// the harness composes a credential from the first and raises a provider
+// error carrying the second, and a reader of either document should not
+// have to work out which happened from a null.
+fn payment(payment: Payment) -> Json {
+  case payment {
+    Paid(preimage_hex:) ->
+      json.object([
+        #("payment", json.string("paid")),
+        #("preimage", json.string(preimage_hex)),
+      ])
+    Declined(reason:) ->
+      json.object([
+        #("payment", json.string("declined")),
+        #("reason", json.string(reason)),
+      ])
+  }
+}
+
+// The priced request, read field by field. `amount_sat` is the one
+// optional field: the proxy may state no price and the invoice may
+// encode none, and "the price is unknown" is a case the hook has to
+// answer for rather than a disagreement about the wire. The two
+// identifiers are required because the harness writes `""` for a
+// challenge that carried neither, so an absent field means the two sides
+// disagree about the shape.
+fn payment_challenge_of(document: Dynamic) -> Result(PaymentChallenge, String) {
+  use provider <- result.try(field_string(document, "provider"))
+  use invoice <- result.try(field_string(document, "invoice"))
+  use challenge_id <- result.try(field_string(document, "challenge_id"))
+  use route_id <- result.try(field_string(document, "route_id"))
+  use now_unix_ms <- result.try(field_int(document, "now_unix_ms"))
+  Ok(PaymentChallenge(
+    provider:,
+    invoice:,
+    amount_sat: optional_int(document, "amount_sat"),
+    challenge_id:,
+    route_id:,
+    now_unix_ms:,
   ))
 }
 

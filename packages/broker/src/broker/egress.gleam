@@ -56,6 +56,24 @@
 ////
 //// ## Decisions recorded here
 ////
+//// - **`https` is the rule, and a loopback origin the policy names is
+////   the one exception.** The rule exists because the network between
+////   this VM and an origin is untrusted; over loopback there is no
+////   network, and the process answering is one the operator started on
+////   this host. So `Policy.plaintext` may name origins reachable over
+////   `http://`, and `check_scheme` admits one only when the policy lists
+////   it *and* its host is a loopback name *and* no bound `Secret` would
+////   fire for it — the manifest has already checked the first two, and
+////   checking them again here means a `Policy` assembled by hand cannot
+////   widen the exception to the open internet. The third is checked
+////   only here, and it is checked the way `injected` decides who gets
+////   the header, by normalized origin rather than by entry string: two
+////   spellings of one origin compare as different strings upstream and
+////   as the same origin in the injector, so a plaintext entry and a
+////   binding written differently would otherwise put a credential on an
+////   unencrypted hop. Nothing else about the judgement moves: the
+////   allowlist is still exact, the method list still applies, and a
+////   redirect to `http://` is judged by this same rule on its own hop.
 //// - **`Host`, `Content-Length`, `Transfer-Encoding` and `Connection`
 ////   are reserved to this module**, alongside every bound secret's
 ////   header. A caller-supplied `Host` would let the allowlist check and
@@ -181,6 +199,13 @@ pub type Policy {
     /// port mean the same thing. An entry this module cannot parse can
     /// never match, which is the fail-closed direction.
     hosts: List(String),
+    /// The origins, in the same grammar as `hosts`, that may also be
+    /// reached over `http://`. Every entry must appear in `hosts` too:
+    /// this list widens the *scheme*, never the allowlist. An entry
+    /// whose host is not a loopback name can never match, and neither
+    /// can one the port normalization spells differently from the URL,
+    /// so `localhost:10031` is written exactly as it is requested.
+    plaintext: List(String),
     /// The methods permitted, re-checked on every hop.
     methods: List(Method),
     /// The most body bytes that may be accepted, enforced while the
@@ -237,8 +262,11 @@ pub type Response {
 /// than a convention: there is no field one could be placed in, so
 /// `describe` has nothing to redact.
 pub type Refusal {
-  /// The URL's scheme is not `https`. Plaintext is refused rather than
-  /// upgraded.
+  /// The URL's scheme is not `https`, and it is not an `http://` URL
+  /// naming a credential-free loopback origin this policy lists in
+  /// `plaintext`. An origin a `Secret` is bound to is refused here even
+  /// when `plaintext` names it, because the credential would ride the
+  /// hop in the clear. Plaintext is refused rather than upgraded.
   SchemeNotHttps(url: String)
 
   /// The URL's origin is not on the allowlist. `allowed` is the policy's
@@ -315,6 +343,19 @@ const line_ending_escapes = [#(13, "\\r"), #(10, "\\n"), #(0, "\\0")]
 /// refusing it before a socket exists is both the safe answer and the
 /// honest one.
 const max_header_point = 255
+
+/// The hosts a plaintext entry may name.
+///
+/// The whole argument for the exception is that there is no network
+/// between this VM and the peer, which is a property of the address
+/// rather than of the operator's intent. IPv6 loopback is absent because
+/// it could never have matched: the allowlist grammar splits an entry on
+/// `:`, so `::1` never parses into an origin, and a URL spells the host
+/// bracketed as `[::1]`, which is not the text this list holds. Naming
+/// it here said the address was supported when the comparison could
+/// only ever refuse it, and the manifest now refuses such an entry at
+/// install with a sentence saying so.
+const loopback_hosts = ["localhost", "127.0.0.1"]
 
 /// The scheme's default port, normalized away so that
 /// `https://example.com` and `https://example.com:443` compare equal.
@@ -419,6 +460,7 @@ pub fn one_host(
 ) -> Policy {
   Policy(
     hosts: [host],
+    plaintext: [],
     methods: [Get],
     max_response_bytes: max,
     redirects: SameHost(at_most: 2),
@@ -443,7 +485,10 @@ pub fn one_host(
 pub fn describe(refusal: Refusal) -> String {
   case refusal {
     SchemeNotHttps(url:) ->
-      "only https:// is permitted, and " <> url <> " is not"
+      "only https:// is permitted, or http:// to a loopback origin this"
+      <> " policy names as plaintext and binds no secret to, and "
+      <> url
+      <> " is neither"
 
     HostNotAllowed(host:, allowed:) ->
       "host "
@@ -497,7 +542,7 @@ fn hop(
   deadline: Int,
   attempt: Hop,
 ) -> Result(Response, Refusal) {
-  use origin <- result.try(parse_target(attempt.url))
+  use origin <- result.try(parse_target(policy, attempt.url))
   use _ <- result.try(check_host(policy, origin))
   use _ <- result.try(check_method(policy, attempt.method))
   use remaining <- result.try(remaining_ms(policy, deadline))
@@ -565,7 +610,7 @@ fn redirect(
   location: String,
 ) -> Result(Response, Refusal) {
   use limit <- result.try(redirect_limit(policy, location))
-  use next <- result.try(redirect_target(walk, location))
+  use next <- result.try(redirect_target(policy, walk, location))
   use _ <- result.try(within_hops(walk.attempt, limit, next))
 
   hop(policy, bound, deadline, advance(walk.attempt, status, next))
@@ -588,7 +633,11 @@ fn redirect_limit(policy: Policy, location: String) -> Result(Int, Refusal) {
 /// Resolution runs first so that a relative `Location` — which cannot
 /// leave the origin by construction — and an absolute one are judged by
 /// the same equality rather than by two different rules.
-fn redirect_target(walk: Walk, location: String) -> Result(String, Refusal) {
+fn redirect_target(
+  policy: Policy,
+  walk: Walk,
+  location: String,
+) -> Result(String, Refusal) {
   use next <- result.try(
     resolve_location(walk.attempt.url, location)
     |> result.replace_error(RedirectRefused(
@@ -598,9 +647,11 @@ fn redirect_target(walk: Walk, location: String) -> Result(String, Refusal) {
   )
 
   // `parse_target` carries the scheme check, so a Location that
-  // downgrades to http:// is not this origin and is refused as a
-  // redirect rather than reaching `SchemeNotHttps` on the next hop.
-  case parse_target(next) == Ok(walk.origin) {
+  // downgrades to http:// is judged by the same rule the first hop was:
+  // refused here as a redirect unless this policy names the origin as a
+  // plaintext loopback one, in which case it was already reachable over
+  // http:// and the walk has not left the origin.
+  case parse_target(policy, next) == Ok(walk.origin) {
     True -> Ok(next)
     False ->
       Error(RedirectRefused(
@@ -676,26 +727,87 @@ fn resolve_location(base: String, location: String) -> Result(String, Nil) {
 }
 
 /// The origin a URL names, or why it cannot be requested at all.
-fn parse_target(url: String) -> Result(Origin, Refusal) {
+fn parse_target(policy: Policy, url: String) -> Result(Origin, Refusal) {
   use parsed <- result.try(
     uri.parse(url) |> result.replace_error(MalformedUrl(url)),
   )
-  use _ <- result.try(check_scheme(parsed, url))
+  use _ <- result.try(check_scheme(policy, parsed, url))
   use _ <- result.try(check_userinfo(parsed, url))
 
   origin_of(parsed) |> result.replace_error(MalformedUrl(url))
 }
 
-/// Refuses anything but `https`, including a URL with no scheme.
-fn check_scheme(parsed: uri.Uri, url: String) -> Result(Nil, Refusal) {
+/// Refuses anything but `https` and a permitted plaintext loopback
+/// origin, including a URL with no scheme.
+fn check_scheme(
+  policy: Policy,
+  parsed: uri.Uri,
+  url: String,
+) -> Result(Nil, Refusal) {
   let scheme =
     parsed.scheme
     |> option.map(string.lowercase)
     |> option.unwrap("")
 
-  case scheme == "https" {
-    True -> Ok(Nil)
-    False -> Error(SchemeNotHttps(url))
+  case scheme {
+    "https" -> Ok(Nil)
+
+    // The exception, and it is judged rather than assumed: a policy that
+    // names no plaintext origin reaches this arm and leaves it refused,
+    // which is what every policy built before this field existed does.
+    "http" -> check_plaintext(policy, parsed, url)
+
+    _other -> Error(SchemeNotHttps(url))
+  }
+}
+
+/// Admits an `http://` URL whose origin the policy named and whose host
+/// is a loopback address.
+///
+/// Both halves are required, and the second is the one that cannot be
+/// stated away: the manifest already refuses a non-loopback entry at
+/// install, so a `Policy` value reaching here with one was assembled by
+/// hand, and this is where that assembly stops being able to widen the
+/// exception past the machine the harness is running on.
+fn check_plaintext(
+  policy: Policy,
+  parsed: uri.Uri,
+  url: String,
+) -> Result(Nil, Refusal) {
+  use origin <- result.try(
+    origin_of(parsed) |> result.replace_error(MalformedUrl(url)),
+  )
+
+  let named =
+    policy.plaintext
+    |> list.filter_map(origin_from_entry)
+    |> list.contains(origin)
+
+  // "No credential rides a plaintext hop" is decided here rather than
+  // upstream, because upstream decides it by comparing entry strings and
+  // `injected` decides who gets the header by comparing *normalized*
+  // origins. Two spellings of one origin — a case difference, `:443`
+  // written out — pass a string comparison as distinct and then meet
+  // again inside `origin_from_entry`, which is the gap that would put a
+  // key on the wire in the clear. Asking the injector's own question is
+  // what closes it: if any binding would fire for this origin, the hop
+  // is refused whatever the policy's plaintext list says.
+  let bound =
+    list.any(policy.secrets, fn(secret) {
+      origin_from_entry(secret.host) == Ok(origin)
+    })
+
+  case named, list.contains(loopback_hosts, origin.host), bound {
+    True, True, False -> Ok(Nil)
+
+    True, True, True
+    | True, False, True
+    | True, False, False
+    | False, True, True
+    | False, True, False
+    | False, False, True
+    | False, False, False
+    -> Error(SchemeNotHttps(url))
   }
 }
 
