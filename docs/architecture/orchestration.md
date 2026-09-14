@@ -118,7 +118,11 @@ observation, and the machine decides:
   commits a synthetic zero-usage response under the reserved ids —
   errored while running, aborted under cancellation — and follows
   ordinary classification: another attempt if the captured retry policy
-  has attempts left, failure drain at the cap. The ids are consumed
+  has attempts left, failure drain at the cap. The runtime's default
+  policy has no cap on attempts: a rate limit is a scheduling fact, so the
+  ladder doubles from one second to a one-minute ceiling and then long
+  polls there under jitter until the provider answers or the run is
+  cancelled (issue #368). The ids are consumed
   rather than abandoned, so ledger and tree stay in step. Its content is
   empty, since Loom persists no streamed frames (there is no list store
   in the frozen transaction type).

@@ -1192,7 +1192,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:941`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:949`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1203,10 +1203,10 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1254`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1262`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:3716`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3724`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.

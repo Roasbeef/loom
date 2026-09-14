@@ -124,8 +124,18 @@ package is wrong.
 - **A provider retry hint survives settlement and recovery.** The runtime
   preserves a retryable error's `retry_after_ms` in the existing assistant
   diagnostics JSON. The machine persists the later of that minimum delay and
-  its captured exponential policy as `GenerationRetryWait.not_before`.
+  its captured policy's wait as `GenerationRetryWait.not_before`.
   Missing, malformed, negative, or shorter hints cannot shorten the policy.
+- **The retry wait is capped, jittered, and pure.** `NormalizedRetryPolicy`
+  carries a `RetryBudget` (`Bounded` or `Unbounded`) and a `max_delay_ms`
+  cap; the exponential ladder clamps to the cap and then equal-jitters into
+  the upper half of the interval. The draw is seeded from the failed
+  attempt's entry id, so replay is deterministic and no random input reaches
+  the planner. An `Unbounded` budget turns the ladder into a long poll a
+  rate limit cannot exhaust; cancellation is the exit, and it works at every
+  wait because the wait is durable state rather than a timer. The codec
+  reads a pre-cap recording (integer `maxAttempts`, no `maxDelayMs`) as an
+  uncapped bounded policy.
   Summary failures use the same convention in `OperationError.details` when
   their producer supplies it. Terminal cancellation remains terminal.
 
@@ -207,7 +217,8 @@ package is wrong.
   decision; it is a `Fault` at its own site.
 - **Faithful-but-surprising transcriptions are kept deliberately** — a
   completed tool batch sets skip-inbox-once; the threshold check also runs
-  at may-finish checkpoints; backoff saturates at exponent twenty;
+  at may-finish checkpoints; backoff saturates at exponent twenty and
+  clamps to the policy cap;
   overflow during a deferred poll drains as failure; summary usage rows
   carry no entry id.
 
