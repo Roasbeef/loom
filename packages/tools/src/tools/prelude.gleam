@@ -25,6 +25,7 @@
 //// names the file that moved:
 ////
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
+////   a279ecd0f277fa85d6869dc80ccf13b6a75b91eba7c414b7543703e3e80a7f18  packages/cap/src/cap/clock.gleam
 ////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
@@ -41,7 +42,7 @@
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): a47b0c88eba2979c9d4e0a875dee2d68f56dce2a4590b9bebe5d6a6c5e704c93
+//// Body digest (every line after the marker): af23543ff619f1a9f438f55b98554e0d094df9a5fb05c940f2954420ced2e5dc
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -115,6 +116,25 @@ pub fn spawn(a, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 pub fn spawn_bounded(a, Int, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 /// Stop the actor after this message.
 pub fn stop() -> Next(a)
+",
+  ),
+  #(
+    "cap/clock",
+    "### cap/clock
+`cap/clock` — waiting, and the one prelude module that calls no
+capability.
+
+/// Blocks the calling process for `ms` milliseconds, then returns. A
+/// negative or zero `ms` returns at once rather than failing, so a
+/// duration computed as \"the deadline minus now\" needs no guard at the
+/// call site when it has already passed.
+///
+/// This blocks one process, never the node: a `cap/task` branch or a
+/// `cap/actor` handler sleeping leaves every other process running, and
+/// the satellite's channel keeps answering. Nothing here extends the
+/// invocation's deadline, so a sleep longer than the time left simply
+/// ends with the invocation.
+pub fn sleep_ms(Int) -> Nil
 ",
   ),
   #(
