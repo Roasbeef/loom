@@ -39,6 +39,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import host/build_identity
 import host/endpoint
 import machine/strand as machine_strand
 import simplifile
@@ -590,6 +591,11 @@ pub type Model {
     daemon_host: Option(daemon_selection.Host),
     /// One bounded metadata page request; no catalogue accumulation.
     control_request: Option(ControlRequest),
+    /// The one reconnect an unexpected daemon death is allowed, and whether it
+    /// has already been spent. Kept in the model rather than beside the loop so
+    /// the decision not to reconnect twice is made from the state the operator
+    /// can see.
+    reconnect: Reconnect,
     /// Retained after an uncertain create so another key cannot duplicate it.
     creation_key: Option(String),
     /// Current pending requests and at most sixteen bounded resolved summaries.
@@ -900,6 +906,7 @@ pub fn new_model_with_clock(
     notices: 0,
     daemon_host: None,
     control_request: None,
+    reconnect: ReconnectIdle,
     creation_key: None,
     approvals: [],
     inspecting_approval: None,
@@ -1617,13 +1624,259 @@ fn attach_daemon(
       append_error(base, reason)
     }
     Ok(host) -> {
-      let model = Model(..base, daemon_host: Some(host))
+      let model = report_daemon_build(base, control)
+      let model = Model(..model, daemon_host: Some(host))
       case selected {
         "" -> load_catalogue(model, "", None)
         id -> begin_open(model, id)
       }
     }
   }
+}
+
+// Reports a client/daemon build mismatch to the transcript (issue #392).
+//
+// The mismatch is a NOTICE, not a refusal: the two halves are protocol-
+// compatible by construction — the version check is about a human
+// understanding which binary they are talking to, not about the wire — so
+// the attach proceeds and the operator is told which build is which. Three
+// cases are silent: matched builds, and a daemon that named no build at
+// all, which is an older daemon the operator already chose to keep running
+// and does not need reminding of on every attach.
+//
+// The daemon's build comes from the authenticated hello rather than the
+// endpoint record, because the hello is what the socket just proved the
+// peer is; the record is a file that could be older than the daemon.
+fn report_daemon_build(model: Model, control: daemon.Connection) -> Model {
+  case daemon.hello(control).build {
+    None -> model
+    Some(daemon_build) -> {
+      let ours = build_identity.current()
+      let theirs =
+        build_identity.Identity(daemon_build.version, daemon_build.commit)
+      case build_identity.matches(ours, theirs) {
+        True -> model
+        False ->
+          append_notice(
+            model,
+            "daemon build "
+              <> build_identity.describe(theirs)
+              <> " differs from this client's "
+              <> build_identity.describe(ours)
+              <> "; the daemon runs the build it was started with, so "
+              <> "restart it to pick up an update",
+          )
+      }
+    }
+  }
+}
+
+/// Whether this terminal may reconnect itself to a restarted daemon.
+///
+/// The attempt is offered once per daemon death and only to a local launch.
+/// A local launch names the launcher state root and the session it opened, so
+/// there is a launch to re-run and an identity to reattach; a remote
+/// attachment has neither, and a session with no identity has nothing to
+/// reattach. An operator quit is not a daemon death, and a terminal that has
+/// already spent its attempt waits for the operator instead of looping.
+@internal
+pub type Reconnect {
+  /// No attempt is running and one may still be started.
+  ReconnectIdle
+
+  /// One bounded relaunch is in flight; its outcome is drained by the tick.
+  ReconnectAttempting(
+    /// The signal that stops a relaunch whose outcome outlives the operator's
+    /// patience, cancelled when the terminal quits.
+    cancel: weft.Cancel,
+    /// Terminal-owned mailbox for the relayed outcome.
+    replies: Subject(weft.Pulled(daemon_selection.Host, String)),
+  )
+
+  /// This daemon death has had its one attempt. Nothing runs again until an
+  /// attachment is adopted, which is what proves the reconnect worked.
+  ReconnectSpent
+}
+
+// The bounded relaunch budget. It is the same ninety seconds the initial
+// local launch is allowed, because the work is the same: a launch lock, a
+// daemon start, and two authenticated probes.
+const reconnect_timeout_ms = 90_000
+
+/// Decides whether one unexpected daemon death earns a reconnect.
+///
+/// The decision is a pure read of the terminal's own state, taken at the
+/// moment the transport reported the loss, so it can be reasoned about (and
+/// tested) without a daemon. The three refusals are each a different fact:
+/// an operator quit is not a failure to recover from, a remote attachment has
+/// no launch to re-run, and an attempt already spent means the operator is
+/// owed an error rather than a loop.
+fn reconnect_decision(model: Model) -> ReconnectDecision {
+  case model.quit {
+    True -> ReconnectRefused("the terminal is closing")
+    False ->
+      case model.session {
+        "" -> ReconnectRefused("no session is attached")
+        session ->
+          case model.local_options {
+            None -> ReconnectRefused("this attachment was not launched locally")
+            Some(options) ->
+              case model.reconnect {
+                ReconnectIdle -> ReconnectWanted(session, options)
+                ReconnectAttempting(..) ->
+                  ReconnectRefused("a reconnect is already running")
+                ReconnectSpent ->
+                  ReconnectRefused("the attempt was already made")
+              }
+          }
+      }
+  }
+}
+
+// What the decision above produced: the work to do, or the reason there is
+// none. The reason is carried rather than dropped so the caller can say why
+// rather than leaving the operator with a silent terminal.
+type ReconnectDecision {
+  ReconnectWanted(session: String, options: bootstrap.Options)
+
+  ReconnectRefused(reason: String)
+}
+
+// Enters the one bounded reconnect an unexpected daemon death is allowed.
+//
+// Called from the two places a live conversation reports its loss — the
+// directly attached socket and the credited session channel — so the
+// decision is made once, at the transition, rather than at each caller. The
+// transcript is deliberately untouched: the model already holds it, and a
+// relaunch that fails must leave it exactly where the operator left it.
+fn begin_reconnect(model: Model) -> Model {
+  case reconnect_decision(model) {
+    ReconnectRefused(_) -> model
+    ReconnectWanted(session, options) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+
+      // The relaunch runs in its own bounded task because it blocks: it may
+      // take the launch lock, start a daemon, and authenticate two sockets.
+      // Nothing but the two scalars it needs is captured, because weft copies
+      // a fun's environment into the worker — and a closure over a model
+      // field would copy the transcript, the row caches and the cached frame
+      // with it.
+      let owner = process.self()
+      let _relay =
+        weft.new([
+          fn() {
+            daemon_selection.relaunch(options, owner, reconnect_timeout_ms)
+          },
+        ])
+        |> weft.deadline(reconnect_timeout_ms)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        reconnect: ReconnectAttempting(cancel, replies),
+        notice: "reconnecting to session " <> session,
+      )
+      |> invalidate_frame
+    }
+  }
+}
+
+fn drain_reconnect(model: Model) -> Model {
+  case model.reconnect {
+    ReconnectIdle | ReconnectSpent -> model
+    ReconnectAttempting(replies:, ..) ->
+      case process.receive(replies, 0) {
+        Error(Nil) -> model
+        Ok(reply) ->
+          accept_reconnect_event(model, ReconnectEvent(replies, reply))
+      }
+  }
+}
+
+/// One relayed relaunch outcome, selected by the terminal and its driver.
+@internal
+pub type ReconnectEvent {
+  ReconnectEvent(
+    source: Subject(weft.Pulled(daemon_selection.Host, String)),
+    reply: weft.Pulled(daemon_selection.Host, String),
+  )
+}
+
+/// Applies one relaunch outcome, bounded to the attempt which produced it.
+///
+/// A success reattaches the same session through the shipped open path, which
+/// is what gives the operator a working channel again; the transcript it
+/// already had is merged rather than replaced. A failure is terminal: the
+/// attempt is marked spent and the reason is written to the transcript, so a
+/// relaunch that cannot succeed is reported once instead of being retried.
+/// Every `weft.Pulled` variant is named rather than swept up, because each is a
+/// different fact about the attempt and a catch-all would hide a new one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.accept_reconnect_event(model, event)
+/// ```
+@internal
+pub fn accept_reconnect_event(model: Model, event: ReconnectEvent) -> Model {
+  case model.reconnect {
+    ReconnectIdle | ReconnectSpent -> model
+    ReconnectAttempting(replies: source, ..) if source != event.source -> model
+    ReconnectAttempting(..) ->
+      case event.reply {
+        weft.NotYet -> model
+        weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
+          let model = Model(..model, reconnect: ReconnectSpent)
+          let model = Model(..model, daemon_host: Some(host))
+          let model = report_daemon_build(model, daemon_selection.control(host))
+          reattach_after_reconnect(model)
+        }
+        weft.PulledOutcome(weft.Failed(error:, ..)) ->
+          reconnect_failed(model, error)
+        weft.PulledOutcome(weft.Crashed(reason:, ..))
+        | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+          reconnect_failed(model, string.inspect(reason))
+        weft.PulledOutcome(weft.Abandoned(..))
+        | weft.PulledOutcome(weft.NeverStarted(..))
+        | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+          reconnect_failed(model, "the daemon relaunch did not complete")
+        weft.RunLost(reason) -> reconnect_failed(model, string.inspect(reason))
+        weft.AllDelivered ->
+          reconnect_failed(
+            model,
+            "the daemon relaunch ended without an outcome",
+          )
+      }
+  }
+}
+
+// Reattaches the session the terminal was already showing. The identity comes
+// from the model, so the operator's transcript and the daemon's registration
+// are the same session; `begin_open` is the shipped path that resolves the
+// current epoch and incarnation through control and adopts the new socket.
+fn reattach_after_reconnect(model: Model) -> Model {
+  case model.session {
+    "" -> Model(..model, notice: "daemon reconnected; no session was attached")
+    session ->
+      append_system(
+        begin_open(
+          Model(..model, notice: "reattaching to " <> session),
+          session,
+        ),
+        "daemon restarted; reattaching to " <> session,
+      )
+  }
+}
+
+// The terminal failure of one reconnect. The attempt is spent either way, so
+// the operator gets the reason and the standing Disconnected advice rather
+// than a loop; `/sessions` remains the explicit way back.
+fn reconnect_failed(model: Model, reason: String) -> Model {
+  append_error(
+    Model(..model, reconnect: ReconnectSpent),
+    "reconnect failed: " <> reason <> "; press /sessions to reconnect",
+  )
 }
 
 fn begin_open(model: Model, session: String) -> Model {
@@ -3209,10 +3462,11 @@ fn editor_content_width(model: Model) -> Int {
 }
 
 fn input_title(model: Model) -> String {
-  use <- bool.guard(
-    model.peer == Disconnected,
-    " Disconnected · /sessions to reconnect · draft retained ",
-  )
+  use <- bool.guard(model.peer == Disconnected, case model.reconnect {
+    ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
+    ReconnectIdle | ReconnectSpent ->
+      " Disconnected · /sessions to reconnect · draft retained "
+  })
   use <- bool.guard(
     reading_history(model),
     " ↓ Scrollback · click for latest · End with empty prompt ",
@@ -3646,6 +3900,7 @@ fn publish_herdr(model: Model) -> Model {
 fn update_tick(model: Model) -> Model {
   let animated = advance_activity_indicator(drain_replay(model))
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
+  let switched = drain_reconnect(switched)
   let drained = drain_connection(switched, 64)
   let drained =
     tick_channel(
@@ -4576,6 +4831,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       session_channel.adopted(channel)
       let adopted =
         adopted |> send_frame(protocol.models(1)) |> request_visible_worktree
+      let adopted = Model(..adopted, reconnect: ReconnectIdle)
       case cancelled {
         Some(notice) -> append_system(adopted, notice)
         None -> adopted
@@ -4788,6 +5044,7 @@ pub fn apply_channel_update(
         ),
         "conversation: " <> reason,
       )
+      |> begin_reconnect
   }
 }
 
@@ -5378,6 +5635,7 @@ fn handle_presentation_message(
         ),
         "connection closed: " <> reason,
       )
+      |> begin_reconnect
       |> mark_activity
     connection.NetworkFault(reason) ->
       append_error(model, "network: " <> reason)
@@ -5682,10 +5940,16 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     // will differ. `tui/session_channel` acts on them by capturing; there is
     // nothing for a renderer to draw from the frame itself.
     protocol.Committed(..) | protocol.MetadataChanged -> model
+
+    // A resumed marker names a stream that continues from a cut this
+    // terminal already holds. The lane reports it as its own update, so a
+    // frame arriving outside one is nothing to paint.
+    protocol.Resumed(_) -> model
     protocol.Ignored(_) -> model
   }
   case event {
     protocol.Committed(..) | protocol.MetadataChanged -> updated
+    protocol.Resumed(_) -> updated
     protocol.Ignored(_) -> updated
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
@@ -9514,6 +9778,14 @@ fn quit(model: Model) -> Model {
     None -> Nil
     Some(run) -> weft.cancel(run.cancel)
   }
+
+  // A relaunch may be mid-start when the operator quits. Cancelling it stops
+  // spawning a daemon nobody will talk to, and the close below covers the
+  // control owner it may already have minted.
+  case model.reconnect {
+    ReconnectIdle | ReconnectSpent -> Nil
+    ReconnectAttempting(cancel:, ..) -> weft.cancel(cancel)
+  }
   case model.daemon_host {
     None -> Nil
     Some(host) -> daemon.close(daemon_selection.control(host))
@@ -9658,6 +9930,21 @@ fn append_error(model: Model, text: String) -> Model {
   Model(
     ..model,
     transcript: list.append(model.transcript, [Line(Failure, text)]),
+    record_cache_valid: False,
+    notice: text,
+  )
+  |> invalidate_transcript
+  |> invalidate_frame
+}
+
+// A transcript line that informs without alarm, in the System speaker, so
+// a build mismatch reads as a notice rather than a failure. The attach has
+// already succeeded when this is called; the line explains the pair, it
+// does not report a refusal.
+fn append_notice(model: Model, text: String) -> Model {
+  Model(
+    ..model,
+    transcript: list.append(model.transcript, [Line(System, text)]),
     record_cache_valid: False,
     notice: text,
   )
