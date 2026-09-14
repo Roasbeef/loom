@@ -1153,6 +1153,14 @@ fn stop(
     }
     Stopping -> sm.keep(book) |> sm.postpone
     Serving -> {
+      // Return every held prompt before the sockets they travel over are
+      // killed. A hub's held item reaches its submitter as a push on that
+      // submitter's session socket, so draining after `cancel_session_
+      // connections` would write into a closed peer and the operator
+      // would lose the prompt this drain exists to hand back. The drain
+      // is synchronous on the registry for the same reason: the root must
+      // know the returns were written before it severs them.
+      drain_held_sessions(book.stage)
       cancel_session_connections(book)
       cancel_lifetime(book.stage)
       sm.transition(Stopping, book) |> sm.postpone
@@ -1164,6 +1172,25 @@ fn stop(
 fn cancel_lifetime(stage: Stage(instance)) {
   case stage {
     Live(running) -> lifetime.shutdown(running.lifetime)
+    Empty
+    | Directory(_)
+    | Locked(_)
+    | Catalogued(_)
+    | Authenticated(_)
+    | WitnessedClosed(_) -> Nil
+  }
+}
+
+// Hands every resident session's held prompts back to their submitters.
+//
+// Only a Live stage holds a registry, and only that registry knows which
+// slots have a resident instance; every other stage has no instance to
+// drain and nothing held. The call is the registry's synchronous form, so
+// by the time it returns the returns have been written to the session
+// sockets and the root may safely kill them.
+fn drain_held_sessions(stage: Stage(instance)) {
+  case stage {
+    Live(running) -> manager.drain_held(lifetime.registry(running.lifetime))
     Empty
     | Directory(_)
     | Locked(_)

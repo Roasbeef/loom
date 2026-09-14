@@ -929,6 +929,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
           )
         },
         serve.instance_children,
+        fn(_) { Nil },
       ),
     )
     as "the one daemon owns the catalogue before any runtime opens"

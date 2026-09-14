@@ -42,6 +42,7 @@ fn assembly(
   manager.Assembly(
     domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
     build: fn(record, _domain, _services, owner) { build(record, owner) },
+    drain: fn(_) { Nil },
     fatal: fn(_) { [] },
   )
 }
