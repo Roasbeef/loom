@@ -182,7 +182,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:239`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:188`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** That is not fussiness, it is how the `[client]`
 table the design note reserves for a later ruling gets refused without a
@@ -195,7 +195,7 @@ codepoint (`manifest.is_legal_name` at
 lookalike in a tool name is not a normalization variant of anything.
 
 Three rules need the tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:200`): a tool's `parameters`
+`Surroundings` (`extension/manifest.gleam:254`): a tool's `parameters`
 must be a path under `schema/` that exists and *parses as JSON*; its
 `entry` must name a module `src/` actually ships; and a secret's `host`
 must be one of `[net].hosts`. The last is a contradiction check rather
@@ -279,7 +279,7 @@ userinfo is refused as malformed rather than stripped
 cannot install anything.
 
 **The fetch is a policed request, not a client of its own.**
-`cli.fetch` builds `egress.one_host` (`broker/egress.gleam:415`): host is
+`cli.fetch` builds `egress.one_host` (`broker/egress.gleam:398`): host is
 the URL's host and nothing else, method `GET`, at most two same-host
 redirects (GitHub's archive redirect is one), a 32 MiB response cap, one
 deadline for the whole transfer, and a secrets resolver that always
@@ -564,16 +564,16 @@ between invocations and may not act. `docs/architecture/code-mode.md`,
 "A satellite kept alive across calls", is the depth on the host.
 
 **A `net.request` is judged by the manifest an operator approved.**
-`policy.egress_for` (`extension/policy.gleam:142`) is the whole
+`policy.egress_for` (`extension/policy.gleam:158`) is the whole
 translation: the manifest's hosts, methods and secret *names* verbatim,
 and `redirects`, `timeout_ms` and `trust` fixed by the harness, because
 none of the three is something an author should be able to state about
 themselves. Two of the manifest's numbers are requests rather than
 settings — `max_response_bytes` is clamped to the harness ceiling
-(`max_response_bytes` at `extension/policy.gleam:64`, the install
+(`max_response_bytes` at `extension/policy.gleam:78`, the install
 fetch's own archive cap, so the two egress callers share one bound), and
 `requests_per_call` becomes an admission ceiling on the invocation
-(`ceilings` at `extension/policy.gleam:184`) — the tally is reset per
+(`ceilings` at `extension/policy.gleam:196`) — the tally is reset per
 invocation, which is what still makes it mean *per call* now that the
 node is not. A manifest with no `[net]` table is `ReachesNothing`, refused
 `network_off` rather than refused against an allowlist nobody wrote.
@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2968`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:3052`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -739,16 +739,16 @@ ceiling of one admission, since a satellite is launched to serve exactly
 one call.
 
 **A `net.request` is judged by the manifest an operator approved.**
-`policy.egress_for` (`extension/policy.gleam:142`) is the whole
+`policy.egress_for` (`extension/policy.gleam:158`) is the whole
 translation: the manifest's hosts, methods and secret *names* verbatim,
 and `redirects`, `timeout_ms` and `trust` fixed by the harness, because
 none of the three is something an author should be able to state about
 themselves. Two of the manifest's numbers are requests rather than
 settings — `max_response_bytes` is clamped to the harness ceiling
-(`max_response_bytes` at `extension/policy.gleam:67`, the install
+(`max_response_bytes` at `extension/policy.gleam:78`, the install
 fetch's own archive cap, so the two egress callers share one bound), and
 `requests_per_call` becomes a per-execution admission ceiling alongside
-`ext.call`'s one (`ceilings` at `extension/policy.gleam:184`). A
+`ext.call`'s one (`ceilings` at `extension/policy.gleam:196`). A
 manifest with no `[net]` table is `ReachesNothing`, refused
 `network_off` rather than refused against an allowlist nobody wrote.
 
@@ -791,14 +791,14 @@ The caller is model-influenced code in a jail. The asset is the
 operator's API key. The whole design follows from refusing to let the
 first one name the second.
 
-A `Secret` (`broker/egress.gleam:159`) binds an **environment variable
+A `Secret` (`broker/egress.gleam:171`) binds an **environment variable
 name** to one header and one origin — exactly as `client/catalog`'s
 `api_key_env` binds a provider key, one layer down. The value is read at
 request time through the `secrets` function injected into
 `egress.request`. It is not stored on the policy, it is not returned,
 and — the load-bearing part — **no `Refusal` variant has a field it could
 occupy** (`broker/egress.gleam:239`). That is structural rather than a
-convention: `describe` (`broker/egress.gleam:443`) has nothing to redact
+convention: `describe` (`broker/egress.gleam:470`) has nothing to redact
 because there is nothing to redact, and
 `describe_names_the_binding_but_never_the_value_test`
 (`broker/test/broker/egress_test.gleam:301`) renders every variant and
@@ -869,6 +869,24 @@ and labels, and this is what answers), and `policy.ceilings`
 tallied per invocation rather than per node. Egress has two production
 callers, the install fetch and a dispatched extension, and the web-search
 extension both installs and is called on `main`.
+
+**Also built** (the L402 stack, 2026-09-13): one exception to the
+`https`-only rule, and it is narrower than it sounds. A manifest may name
+`[net] plaintext_loopback = ["localhost:10031"]`, and the broker then
+admits an `http://` URL to that origin — only that origin, and only when
+its host is `localhost`, `127.0.0.1` or `::1`
+(`check_plaintext` at `broker/egress.gleam:761`, over the `loopback_hosts`
+constant at `broker/egress.gleam:347`). The `https` rule exists because
+the network between the harness and an origin is untrusted; on a loopback
+address there is no network, and the process on the other end is one the
+operator started. Everything else stands: the allowlist is exact, the
+method list applies, a redirect hop is judged by the same rule, and **no
+credential ever rides a plaintext hop** — the manifest refuses a
+`[[net.secret]]` whose host is a plaintext entry, and `policy.egress_for`
+drops such an origin from the plaintext list again so a hand-built policy
+cannot widen it. The first consumer is `loom-402`, whose `waved` wallet
+gateway is plaintext on loopback by that daemon's own design. The ruling
+is an addendum inside `docs/adr/007-extension-tiers-and-brokered-egress.md`.
 
 **The one exception to the rule, stated once.** MCP servers keep
 `api_key_env`, and their credential is in the environment of an unjailed
@@ -953,6 +971,118 @@ request adds that much every turn, for the life of the repository. There
 is no admission ceiling either, on the reading
 `codemode/workspace.ceilings` states and the precedent `schedule.create`
 set.
+
+## Paying for a request: `payment_required`
+
+**Built** (the L402 stack, 2026-09-13; `protocol-change/033` on the
+provider side). The hook that spends money, and the only one whose answer
+the harness stops fanning out on.
+
+The provider gateway can now dispatch to an entry with `auth = "l402"`:
+an aperture-style proxy that holds the model's real key and prices each
+request with a `402`, a macaroon and a BOLT11 invoice
+(`docs/architecture/models.md`, "Paying for inference: L402"). The
+harness parses that challenge itself, holds the macaroon itself, and asks
+an extension for one thing only: the preimage that proves the invoice
+was paid. That split is the design. An extension pays an invoice — a
+wallet's job — and never sees the credential the harness composes from
+the answer, so a hook that lied about paying would earn nothing but a
+second `402`.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant G as provider/gateway (pump)
+  participant P as client/paywall (session seam)
+  participant B as hook bus
+  participant S as satellite (loom-402)
+  participant W as waved (loopback, plaintext)
+  G->>G: attempt with no credential → 402, challenge parsed
+  G->>P: settle(provider, challenge)
+  P->>B: pay(bus, provider, challenge, now)
+  B->>S: hook_call payment_required {invoice, amount_sat, ids, now_unix_ms}
+  S->>W: prepare-send, send, inspect/activity (poll, cap/clock.sleep_ms)
+  S-->>B: {"payment":"paid","preimage":…}
+  B-->>P: first Paid in load order
+  P->>P: token = l402.authorization(macaroon, preimage); cache it
+  P-->>G: Ok(token)
+  G->>G: the attempt again, once, with Authorization: L402 …
+```
+
+**The hook.** `ext/hook.OnPaymentRequired`
+(`packages/ext/src/ext/hook.gleam:317`) is told a `PaymentChallenge`:
+the provider name, the invoice, the price in satoshis when the proxy
+stated one or the invoice's human-readable part carried one, the proxy's
+challenge and route identifiers, and `now_unix_ms` from the harness's
+clock. The timestamp rides on the payload because the extension seam has
+no clock of its own and a spend ledger needs a day boundary. An absent
+price obliges a decline: nothing on the extension side can bound what
+it would pay. The answer is `Paid(preimage_hex)` or `Declined(reason)`,
+and the reason is the text an operator reads in `PaymentDeclined`.
+
+**The bus.** `payment_required` is an answering event
+(`manifest.payment_required_event` at `extension/manifest.gleam:102`).
+`hooks.pay` (`extension/hooks.gleam:750`) fans it out and takes the
+**first `Paid` in load order** — the same rule `first_block` applies to
+a verdict, with the opposite outcome: a request is paid once, and a
+second extension's payment would be a second bill. All `Declined` answers
+yield the first reason; no answer at all yields "no extension answered
+the payment challenge", so an operator can tell an extension that chose
+not to pay from a session with none installed. A `Paid` whose preimage
+is not sixty-four lowercase hex characters is a broken extension and
+drops the handler.
+
+**A hook's deadline is its own.** A swap-backed payment takes tens of
+seconds, and the bus's `deadline_ms` is five. So `[[hook]]` gained an
+optional `timeout_ms` (`manifest.default_hook_timeout_ms` at
+`extension/manifest.gleam:128` is the default), the bus keeps a
+`Subscription(event, deadline_ms)` per declared hook
+(`extension/hooks.gleam:361`), `ask` hands the invoker that deadline, and
+`fan_out_for` (`extension/hooks.gleam:1742`) sizes the fan-out to the sum
+of the subscribed deadlines rather than the chain length. The install
+record carries the timeout beside the event and entry, which is why the
+record format is version 3 (`extension/record.gleam:97`): a version-2
+record is refused by name, at the cost of one reinstall, because an
+approval that never saw the deadline is not an approval of it.
+
+**The paywall.** `client/paywall` is the session's door from the gateway
+to the bus, and it exists because the two are built in the wrong order
+for a direct call: a session's gateway is composed before its hook bus
+starts. `slot()` (`client/paywall.gleam:144`) is an actor holding
+`Option(Bus)`; `attach` (`:166`) fills it the moment the bus exists, before
+`session_start` fires; `seam` (`:190`) renders a `provider/paywall.Paywall`
+whose `settle` borrows the bus through the slot, calls `hooks.pay`,
+composes `l402.authorization(macaroon, preimage)` and stores the token in
+a per-session `Cache` (`:127`) under the provider name, so every later
+request on that entry carries the credential proactively until the proxy
+prices it again. A session with no extensions never attaches, and
+`settle` answers "no payment extension is installed". `serve.paywall_seam`
+(`client/serve.gleam:2178`) starts both actors per session; if either
+will not start, the session keeps the unpaywalled gateway and an
+`auth = "l402"` entry declines in band exactly as it did before the wiring
+existed.
+
+**Waiting inside the jail.** The extension polls the wallet for the
+settled entry's preimage, because egress returns whole bodies and the
+wallet's own streaming endpoint is not reachable through it. Polling
+needs a pause, and the extension seam had none: `gleam_erlang` is not on
+it, and a spin loop would only burn the satellite's scheduler.
+`cap/clock.sleep_ms` (`packages/cap/src/cap/clock.gleam:51`) is the one
+prelude module with no capability call — sleeping spends the invocation's
+own deadline and nothing else, so there is nothing for a policy to
+grant. It is on the workspace seam (which the extension seam inherits)
+and not the orchestration seam, and `make gen-prelude` re-rendered the
+`code_mode` description to carry it.
+
+**What this does not decide.** Budget policy is the extension's: the
+harness asserts no ceiling on an invoice, because the amount is chosen
+by the proxy and the wallet is the extension's to protect (`loom-402`
+holds a per-request and a daily cap and refuses over either). Fallback
+from a declined payment to a keyed entry is not built; `PaymentDeclined`
+is terminal. The `Payment` HTTP-auth scheme (MPP) is not spoken; L402 is.
+The credential cache is per session, not per daemon, because the gateway
+it serves is already per session; sharing a token bundle across sessions
+is a later ruling.
 
 ## The invariants
 
@@ -1330,25 +1460,25 @@ exists today as an allowlisted stub, and this route retires it.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1931`) with `start`, `invoke` (`codemode/satellite.gleam:2122`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:605`) and `extension_stdlib_modules` (`vet/policy.gleam:633`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:622`) and `extension_stdlib_modules` (`vet/policy.gleam:650`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:234`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:188`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:209`), the staging discipline, the generated satellite entry that serves this manifest's tools and hooks. |
-| `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:121`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
+| `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:143`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
 | `packages/ext/src/ext/hook.gleam` | The extension's side: the typed `Hook` behaviours, `Verdict`, `rendered`, and the JSON marshalling of every event's payload. |
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:197`), `artifact_matches`, `summarise`. |
 | `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify`: `dispatch` (`extension/cli.gleam:106`), the one-host fetch, and `build_for` over a started build plane. |
-| `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:142`), the per-invocation `ceilings` (`extension/policy.gleam:184`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
+| `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:158`), the per-invocation `ceilings` (`extension/policy.gleam:196`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
 | `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` — the one composition of `ext/<name>/<key>` — `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:676`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:877`). |
 | `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1883`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:267`) and the collision that refuses a boot. |
-| `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
+| `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:362`), `one_host`, `Secret` (`broker/egress.gleam:171`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:729`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
