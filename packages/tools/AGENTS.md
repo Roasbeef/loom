@@ -122,13 +122,19 @@ was asked.
   and so never pass `clear_call` (#97).
 - `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
   `note`, `notes`, `roster`, plus the published `max_wait_ms` the wait
-  tool's schema states. Every closure takes a `Caller` first and is
-  judged against it.
+  tool's schema states and `model_names` advertised by the spawn schema.
+  Every closure takes a `Caller` first and is judged against it.
 - `tools/agent.{Caller, Handle, SpawnRequest, Provenance, Spawned,
   Waited, Outcome, Peer, Relation, Delivery, Refusal}` — the vocabulary
   crossing that seam. `Delivery` mirrors `runtime/api.Delivery` (which
   `tools` cannot import) the way `effects.ToolOutcome` mirrors the
   broker's `CallOutcome`.
+- **Spawn selection is a catalogue name.** `SpawnRequest.model` is optional;
+  the Agency resolves an explicit name before creating the child. Omission
+  retains host routing. `Spawned.model` and `model_id` report the child's
+  current durable configuration on both creation and replay, and the tool
+  exposes them as text and structured details. They do not attest which
+  provider eventually answers a request.
 - `tools/agent.{ResultSchema, ResultField, FieldType, Mismatch,
   TerminalResult}` plus `{parse_result_schema, render_result_schema,
   result_fields, validate_result, describe_mismatch, type_name,
