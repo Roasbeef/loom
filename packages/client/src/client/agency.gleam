@@ -207,6 +207,9 @@ pub type Config {
     /// answer at that moment rather than the host's seam.
     subagent_model: fn() ->
       Result(#(machine_strand.ModelIdentity, machine_strand.ThinkingLevel), Nil),
+    /// The host catalogue's explicit choices, keyed by identity.provider.
+    /// Selecting one seeds both identity and thinking before the child runs.
+    models: List(#(machine_strand.ModelIdentity, machine_strand.ThinkingLevel)),
   )
 }
 
@@ -259,6 +262,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     // what children did before roles reached the seam. `client/serve`
     // fills this from the gateway.
     subagent_model: fn() { Error(Nil) },
+    models: [],
   )
 }
 
@@ -338,6 +342,7 @@ pub fn seam(config: Config) -> Agency {
     notes: fn(caller, prefix) { notes(config, caller, prefix) },
     roster: fn(caller) { roster(config, caller) },
     max_wait_ms: config.max_wait_ms,
+    model_names: list.map(config.models, fn(entry) { entry.0.provider }),
   )
 }
 
@@ -502,7 +507,7 @@ fn spawn(
   })
   use name <- result.try(child_name(caller, request.purpose))
   case cell_of(ledger, name) {
-    Some(existing) -> adopt(caller, existing)
+    Some(existing) -> adopt(runtime, caller, existing)
     None -> reconcile(config, runtime, ledger, caller, request, name, depth)
   }
 }
@@ -529,15 +534,31 @@ fn spawn(
 // The check is cheap and the name derivation already makes reaching it
 // hard; it is here because a name is derived and a ledger cell is
 // recorded, and only one of those two is evidence.
-fn adopt(caller: Caller, existing: Lineage) -> Result(Spawned, Refusal) {
+fn adopt(
+  runtime: api.Runtime,
+  caller: Caller,
+  existing: Lineage,
+) -> Result(Spawned, Refusal) {
   use <- bool.guard(
     when: existing.minted_by != call_site(caller),
     return: Error(agent.NameAlreadyMinted(strand: existing.strand)),
   )
+  spawn_receipt(runtime, existing)
+}
+
+// Read the durable choice on both creation and replay. Re-resolving the
+// request here could report a newly configured route for an older child.
+fn spawn_receipt(
+  runtime: api.Runtime,
+  cell: Lineage,
+) -> Result(Spawned, Refusal) {
+  use configuration <- result.try(read_configuration(runtime, cell.strand))
   Ok(Spawned(
-    handle: Handle(strand: existing.strand, operation: existing.brief),
-    strand: existing.strand,
-    tools: existing.tools,
+    handle: Handle(strand: cell.strand, operation: cell.brief),
+    strand: cell.strand,
+    tools: cell.tools,
+    model: configuration.model.provider,
+    model_id: configuration.model.model_id,
   ))
 }
 
@@ -684,11 +705,7 @@ fn reconcile(
     request.result_schema,
   ))
   use Nil <- result.try(write_cell(runtime, cell))
-  Ok(Spawned(
-    handle: Handle(strand: name, operation: brief),
-    strand: name,
-    tools:,
-  ))
+  spawn_receipt(runtime, cell)
 }
 
 fn write_result_schema(
@@ -771,6 +788,12 @@ fn create(
   parent_configuration: machine_strand.StrandConfiguration,
   tools: List(String),
 ) -> Result(OpId, Refusal) {
+  use configuration <- result.try(child_configuration(
+    config,
+    parent_configuration,
+    tools,
+    request.model,
+  ))
   use fork_point <- result.try(case request.context {
     agent.Fresh -> Ok(None)
     agent.MyConversation ->
@@ -782,7 +805,7 @@ fn create(
   api.create_strand(
     runtime,
     named: name,
-    configuration: child_configuration(config, parent_configuration, tools),
+    configuration:,
     at: fork_point,
     brief: [brief_message(config, caller, request)],
   )
@@ -792,8 +815,8 @@ fn create(
 }
 
 // The configuration a child is seeded with: the parent's, narrowed to the
-// child's tool set, with the model and its seed thinking level replaced by
-// the host's `subagent` route when there is one.
+// child's tool set, with identity and seed thinking from an explicit
+// catalogue choice, or the host's `subagent` route when none was named.
 //
 // Role follows identity, and the identity is chosen once, here, at
 // creation — never per request. A child's durable configuration is what
@@ -806,13 +829,35 @@ fn child_configuration(
   config: Config,
   parent: machine_strand.StrandConfiguration,
   tools: List(String),
-) -> machine_strand.StrandConfiguration {
+  selection: Option(String),
+) -> Result(machine_strand.StrandConfiguration, Refusal) {
   let narrowed =
     machine_strand.StrandConfiguration(..parent, active_tool_names: tools)
-  case config.subagent_model() {
-    Ok(#(model, thinking_level)) ->
-      machine_strand.StrandConfiguration(..narrowed, model:, thinking_level:)
-    Error(Nil) -> narrowed
+  case selection {
+    Some(name) -> {
+      use selected <- result.try(
+        list.find(config.models, fn(entry) { entry.0.provider == name })
+        |> result.map_error(fn(_) {
+          agent.InvalidArgument(reason: "unknown model name: " <> name)
+        }),
+      )
+      let #(model, thinking_level) = selected
+      Ok(
+        machine_strand.StrandConfiguration(..narrowed, model:, thinking_level:),
+      )
+    }
+    None -> {
+      let inherited = case config.subagent_model() {
+        Ok(#(model, thinking_level)) ->
+          machine_strand.StrandConfiguration(
+            ..narrowed,
+            model:,
+            thinking_level:,
+          )
+        Error(Nil) -> narrowed
+      }
+      Ok(inherited)
+    }
   }
 }
 

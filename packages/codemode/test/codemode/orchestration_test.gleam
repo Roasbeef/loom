@@ -173,6 +173,7 @@ fn a_spawn_request(purpose: String) -> agent.SpawnRequest {
   agent.SpawnRequest(
     purpose:,
     brief: "do the thing",
+    model: option.None,
     tools: option.None,
     within_ms: option.None,
     result_schema: option.None,
@@ -223,6 +224,33 @@ pub fn a_call_is_judged_as_the_dispatching_strand_test() {
     as "the spawn must reach the Agency"
   assert caller.strand == "main"
   assert spawned.purpose == "review core"
+  assert spawned.model == option.None
+    as "older programs without a model key must keep default routing"
+}
+
+pub fn a_spawn_model_crosses_the_orchestration_seam_test() {
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let assert msgpack.MapValue(fields) = spawn_args("review core")
+    as "the fixture spawn must be a map"
+  let args = msgpack.MapValue([#(text("model"), text("reviewer")), ..fields])
+  let assert framing.CapOk(..) = serviced(agency, "strand.spawn", args, 0)
+    as "the explicit model must be admitted to the Agency"
+  let assert [fake_agency.SawSpawn(request:, ..)] = fake_agency.drain(seen)
+    as "one spawn must reach the Agency"
+  assert request.model == option.Some("reviewer")
+}
+
+pub fn a_malformed_spawn_model_never_reaches_the_agency_test() {
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let assert msgpack.MapValue(fields) = spawn_args("review core")
+    as "the fixture spawn must be a map"
+  let args = msgpack.MapValue([#(text("model"), msgpack.IntValue(1)), ..fields])
+  assert refused_by(agency, "strand.spawn", args)
+    == #("invalid_argument", "`model` must be text")
+    as "a non-string selection must be refused before spawning"
+  assert fake_agency.drain(seen) == []
 }
 
 pub fn the_operation_is_the_threaded_one_test() {

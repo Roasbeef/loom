@@ -23,6 +23,9 @@ that tree separately from the self-contained server.
 - Successful `context_remaining` calls retain a compact measurement row. The
   remaining budget names the checkpoint when enabled and the context limit
   otherwise. Older results without structured details retain their text.
+- Compaction entries show the pre-compaction token estimate and count of
+  retained messages. Their checkpoint text remains in the durable entry for
+  the model and exact history reads, but the transcript does not print it.
 
 - Compact successful `fs_edit` rows include a 24-line inline patch preview;
   expanded history uses the same patch projection with the complete result.
@@ -145,9 +148,18 @@ that tree separately from the self-contained server.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
   `Invalid` — and three that are not terminal applications at all,
   `Forward`, `Replay` and `Sessions`.
+  Top-level and subcommand help are also non-interactive: `--help`, `-h`,
+  and `help` print their usage before the logger is silenced, so they do not
+  create state, contact a daemon, or write terminal escape sequences. An
+  `Invalid` launch writes its reason to stderr
+  and exits nonzero instead of entering the alternate screen.
   `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
   answers it before it builds a model, so nothing draws a frame and no
-  terminal state is installed on the way past. The daemon is located by
+  terminal state is installed on the way past. Its three help forms are
+  local instead: the client-only shipment can print extension usage without
+  locating `loomd`. The private copy is compared with `loomd ext --help` by
+  the shipped acceptance, preserving the shared text without an inverted
+  package dependency. The daemon is located by
   `tui/bootstrap.server_executable`, the same ladder an implicit local
   session uses — two ladders would mean installing an extension into one
   server's world and then starting another — and the launcher exits with

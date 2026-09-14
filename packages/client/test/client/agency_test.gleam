@@ -53,6 +53,9 @@ type Provider {
   /// test can assert on what actually reached a child's model rather than
   /// on the string the harness meant to put there.
   Watches(text: String, into: Subject(List(message.AgentMessage)))
+
+  /// Captures the configuration that actually reaches provider dispatch.
+  WatchesConfiguration(into: Subject(machine_strand.StrandConfiguration))
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -160,6 +163,14 @@ fn scripted_stream(
       settle_into(events, text)
     }
     Settles(text:) -> settle_into(events, text)
+    WatchesConfiguration(into:) -> {
+      case spec {
+        effects.GenerationRequest(configuration:, ..) ->
+          process.send(into, configuration)
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
+      settle_into(events, "done")
+    }
   }
   stream.immediate(events:, cancel: fn() { Nil })
 }
@@ -262,6 +273,7 @@ fn a_spawn(purpose: String) -> agent.SpawnRequest {
   agent.SpawnRequest(
     purpose:,
     brief: "read the file and report",
+    model: None,
     tools: None,
     within_ms: None,
     result_schema: None,
@@ -494,6 +506,126 @@ pub fn an_unrouted_subagent_role_inherits_the_parent_test() {
     session.strand_configuration(harness.runtime.session, spawned.strand)
   assert child.model == configuration().model
   assert child.thinking_level == configuration().thinking_level
+  close(harness)
+}
+
+fn reviewer_model() -> machine_strand.ModelIdentity {
+  machine_strand.ModelIdentity(provider: "reviewer", model_id: "review-model")
+}
+
+fn with_model_choices(config: agency.Config) -> agency.Config {
+  agency.Config(
+    ..config,
+    models: [#(reviewer_model(), machine_strand.ThinkingHigh)],
+    subagent_model: fn() {
+      Ok(#(configuration().model, machine_strand.ThinkingLow))
+    },
+  )
+}
+
+pub fn an_explicit_spawn_model_reaches_the_first_request_test() {
+  let seen = process.new_subject()
+  let harness =
+    start_harness_with(WatchesConfiguration(seen), with_model_choices)
+  let request =
+    agent.SpawnRequest(
+      ..a_spawn("review"),
+      model: Some("reviewer"),
+      tools: Some(["fs_read"]),
+    )
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), request)
+    as "the configured explicit model must be accepted"
+  let assert Ok(dispatched) = process.receive(seen, within: 2000)
+    as "the child must dispatch its first request"
+  assert dispatched.model == reviewer_model()
+    as "explicit selection overrides both the parent and subagent route"
+  assert dispatched.thinking_level == machine_strand.ThinkingHigh
+    as "the selected catalogue entry seeds thinking before dispatch"
+  assert dispatched.active_tool_names == ["fs_read"]
+    as "model selection must preserve tool narrowing"
+
+  let assert Ok(Some(session.Cell(value: child, ..))) =
+    session.strand_configuration(harness.runtime.session, spawned.strand)
+    as "the child configuration must be durable"
+  assert child == dispatched
+  assert spawned.model == "reviewer"
+  assert spawned.model_id == "review-model"
+  let assert Ok(Some(session.Cell(value: parent, ..))) =
+    session.strand_configuration(harness.runtime.session, "main")
+    as "the parent configuration must remain present"
+  assert parent == configuration()
+  close(harness)
+}
+
+pub fn an_unknown_spawn_model_leaves_no_child_test() {
+  let harness = start_harness_with(Settles("done"), with_model_choices)
+  let assert Ok(before) = api.strands(harness.runtime)
+    as "the initial strand set must be readable"
+  let request = agent.SpawnRequest(..a_spawn("review"), model: Some("missing"))
+  assert harness.seam.spawn(caller_on("main", "turn-1:tools", 0), request)
+    == Error(agent.InvalidArgument(reason: "unknown model name: missing"))
+    as "an explicit unknown model must never fall back to the default"
+  let assert Ok(after) = api.strands(harness.runtime)
+    as "the strand set must remain readable after refusal"
+  assert after == before
+  let assert Ok(name) =
+    agency.child_name(caller_on("main", "turn-1:tools", 0), "review")
+    as "the refused child name must be derivable"
+  assert api.fact(harness.runtime, lineage.register_key(name)) == Ok(None)
+    as "the refusal must not create lineage"
+  close(harness)
+}
+
+pub fn a_replayed_model_selection_uses_the_durable_choice_test() {
+  let harness = start_harness_with(Settles("done"), with_model_choices)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let request = agent.SpawnRequest(..a_spawn("review"), model: Some("reviewer"))
+  let assert Ok(first) = harness.seam.spawn(caller, request)
+    as "the first execution must admit the selected model"
+
+  // A later host no longer lists the chosen model. Replay must adopt the
+  // existing child and report its stored identity without resolving again.
+  let changed = agency.seam(agency.Config(..harness.config, models: []))
+  let assert Ok(replayed) = changed.spawn(caller, request)
+    as "a changed catalogue must not prevent adoption of an admitted child"
+  assert replayed == first
+  assert replayed.model == "reviewer"
+  assert replayed.model_id == "review-model"
+  close(harness)
+}
+
+pub fn a_seeded_model_survives_recovery_before_the_brief_test() {
+  let seen = process.new_subject()
+  let harness = start_harness(WatchesConfiguration(seen))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(name) = agency.child_name(caller, "review")
+    as "the interrupted spawn's name must be reproducible"
+  let chosen =
+    machine_strand.StrandConfiguration(
+      model: reviewer_model(),
+      thinking_level: machine_strand.ThinkingHigh,
+      active_tool_names: ["fs_read"],
+    )
+
+  // Reproduce the committed seed before brief admission and lineage. The
+  // current host has no selectable models, so re-resolution would refuse.
+  let assert Ok(Nil) =
+    session.ensure_strand(harness.runtime.session, name, chosen)
+    as "the interrupted child's configuration must be durable"
+  let request =
+    agent.SpawnRequest(
+      ..a_spawn("review"),
+      model: Some("reviewer"),
+      tools: Some(["fs_read"]),
+    )
+  let assert Ok(recovered) = harness.seam.spawn(caller, request)
+    as "the seed must be adopted without consulting a changed catalogue"
+  let assert Ok(dispatched) = process.receive(seen, within: 2000)
+    as "the recovered brief must actually run"
+  assert dispatched == chosen
+  assert recovered.model == "reviewer"
+  assert recovered.model_id == "review-model"
   close(harness)
 }
 

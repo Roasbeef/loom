@@ -88,6 +88,9 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
   binding, capacity, and lazy session defaults. The binary rejects the removed
   per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
+  `loomd --help`, `-h`, `help`, and the `access` and `ext` help forms are
+  dispatched in `client.gleam` before daemon startup. They print usage to
+  stdout and never create state or bind a listener.
   Production startup reserves its OS PID/birth through `host/endpoint` before
   opening the catalogue, then publishes the actual port and epoch only after
   listener readiness. Shutdown retains the endpoint until the VM departs.
@@ -508,7 +511,9 @@ catalogue without opening runtimes. Explicit admission invokes
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent
   wholesale. A closure for the same reason `clock` and `rest` are — the
-  Agency is built before `api.open`.
+  Agency is built before `api.open`. `Config.models` carries the catalogue's
+  explicit choices as identity/thinking pairs. An optional spawn `model`
+  selects one by catalogue name before consulting this default route.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
   child_name, is_subagent, frame_message, frame_brief, result_contract,
   result_schema_prefix}` — the Agency:
@@ -3362,10 +3367,14 @@ across one operation a `Stop` block holds open.
   alone — switching model is not a request to un-raise a budget somebody
   raised.
 - **A spawned child's model is chosen once, at creation.**
-  `agency.Config.subagent_model` is the host's `subagent` route resolved;
-  `client/serve` fills it from the gateway. An unrouted subagent role
-  inherits the parent wholesale rather than refusing, which is what every
-  child did before the role reached the seam.
+  An explicit `SpawnRequest.model` selects a catalogue identity and its seed
+  thinking from `agency.Config.models`; an unknown name refuses before any
+  child state is written. Omission uses `Config.subagent_model`, which
+  `client/serve` fills from the gateway, or inherits the parent if unrouted.
+  The durable seed precedes the brief, so recovery with only that seed or
+  with a completed lineage cell never resolves the choice again. The spawn
+  receipt reads the child's current configuration. Existing role fallback
+  and vision routing still apply to later requests.
 - **Model facts follow the identity, not the configured role.**
   `wiring.Config.facts` is an `identity -> #(ResolvedModel, api)` seam
   `client/serve` builds from the catalogue, and it is what makes a strand

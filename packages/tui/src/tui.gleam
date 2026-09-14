@@ -703,9 +703,6 @@ pub type Model {
 /// loom --addr ws://127.0.0.1:8080/v1/ws --session demo
 /// ```
 pub fn main() {
-  // Nothing but the rendered frame may write to this terminal from here on.
-  ffi_terminal.silence_logger()
-
   // `--record` is answered here rather than inside `parse_launch` because
   // it qualifies every interactive launch rather than choosing one, and
   // the local-option parser refuses flags it does not own.
@@ -718,19 +715,54 @@ pub fn main() {
   // the passthrough is meant to be the one place that cannot happen.
   // `replay` has its own parser and no recorder to open.
   let raw = argv.load().arguments
-  let #(record, arguments) = case raw {
-    ["ext", ..] | ["replay", ..] | ["sessions", ..] -> #("", raw)
-    _other -> take_flag(raw, "--record")
+  case help_for(raw) {
+    Some(usage) -> io.println(usage)
+    None -> {
+      // Help has already returned. Suppress logger output for launches that
+      // may enter the terminal; rejected launches still exit directly without
+      // installing terminal state.
+      ffi_terminal.silence_logger()
+
+      let #(record, arguments) = case raw {
+        ["ext", ..] | ["replay", ..] | ["sessions", ..] -> #("", raw)
+        _other -> take_flag(raw, "--record")
+      }
+      let launch = parse_launch(arguments)
+      case launch {
+        // The passthrough runs before a single line of terminal setup: this
+        // process is a pipe for the duration and then it is gone.
+        Forward(arguments:) -> forward(arguments)
+        Replay(path:, frames:, size:) -> replay(path, frames, size)
+        Sessions(options:, command:) -> run_sessions(options, command)
+        Invalid(reason) -> rejected_launch(reason)
+        Demo | Local(..) | Remote(..) -> interactive(launch, record)
+      }
+    }
   }
-  let launch = parse_launch(arguments)
-  case launch {
-    // The passthrough runs before a single line of terminal setup: this
-    // process is a pipe for the duration and then it is gone.
-    Forward(arguments:) -> forward(arguments)
-    Replay(path:, frames:, size:) -> replay(path, frames, size)
-    Sessions(options:, command:) -> run_sessions(options, command)
-    Demo | Local(..) | Remote(..) | Invalid(..) -> interactive(launch, record)
+}
+
+// Help is selected before the logger or the interactive backend exist. A
+// command that only describes an invocation must not claim terminal state or
+// reach the daemon it is describing.
+fn help_for(arguments: List(String)) -> Option(String) {
+  case arguments {
+    ["--help"] | ["-h"] | ["help"] -> Some(launch_usage())
+    ["replay", "--help"] | ["replay", "-h"] | ["help", "replay"] ->
+      Some(replay_usage())
+    ["sessions", "--help"] | ["sessions", "-h"] | ["help", "sessions"] ->
+      Some(sessions_usage())
+    ["ext", "--help"] | ["ext", "-h"] | ["help", "ext"] ->
+      Some(extension_usage())
+    _ -> None
   }
+}
+
+// A rejected launch has not earned an alternate-screen session. Reporting it
+// directly preserves the shell's stdout/stderr and exit-status contract.
+fn rejected_launch(reason: String) -> Nil {
+  io.println_error("loom: " <> reason)
+  ffi_terminal.halt(1)
+  Nil
 }
 
 // Removes one `--flag value` pair from an argument list, answering its
@@ -1101,6 +1133,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     [] -> Local(default_bootstrap_options(), "")
     ["--demo"] -> Demo
     ["ext", ..rest] -> Forward(arguments: rest)
+    ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
     _ ->
@@ -1345,6 +1378,11 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
+  <> "       loom <command> [options]\n\n"
+  <> "commands:\n"
+  <> "  replay <path>       Render a recorded terminal session.\n"
+  <> "  sessions list|rm    List or remove saved sessions.\n"
+  <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
@@ -1355,6 +1393,29 @@ fn launch_usage() -> String {
   <> "may differ between runs\n"
   <> "  --width/--height size the replay until the recording's own first "
   <> "resize supersedes them"
+}
+
+fn replay_usage() -> String {
+  "usage: loom replay <path> [--at <frame>] [--all] "
+  <> "[--width <w>] [--height <h>]\n"
+  <> "  Render the last frame by default; --all prints every frame."
+}
+
+// This copy deliberately stays private to the client-only shipment. `loom`
+// must describe extension commands even when `loomd` is absent, while the
+// terminal package cannot import the daemon package without reversing the
+// dependency boundary. The shipped acceptance compares this text with
+// `loomd ext --help` so the two literals cannot silently drift.
+fn extension_usage() -> String {
+  "usage: loom ext <command>\n"
+  <> "  install <source> [--rev <r>] [--home <dir>] [--helper <path>]\n"
+  <> "                   [--codemode-seed <dir>] [--best-effort]\n"
+  <> "  list\n"
+  <> "  remove <name>\n"
+  <> "  verify <name>\n\n"
+  <> "A source is a local path, an https:// .tar.gz, or an\n"
+  <> "https://github.com/<owner>/<repo> URL. Extensions install under\n"
+  <> "<home>/.loom/extensions."
 }
 
 fn parse_replay(arguments: List(String)) -> Launch {
@@ -6573,10 +6634,14 @@ fn entry_lines(
       |> option.lazy_unwrap(fn() {
         message_lines(value, details_expanded, local_owner)
       })
-    entry.CompactionEntry(summary:, tokens_before:, ..) -> [
+    entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
         System,
-        "compacted " <> tokens(tokens_before) <> " tokens · " <> summary,
+        "Context compacted · ~"
+          <> tokens(tokens_before)
+          <> " tokens before · "
+          <> int.to_string(list.length(retained_tail))
+          <> " messages kept",
       ),
     ]
     entry.BranchSummaryEntry(summary:, ..) -> [

@@ -160,6 +160,9 @@ session and sends it many invocations.
   so the module's one effectful function was advertised and refused).
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
+  `strand.spawn` carries an optional catalogue-name `model` unchanged into
+  `SpawnRequest`; absent or nil preserves default routing, and a non-string
+  is refused before the Agency is called. The result remains a handle.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
   ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleWake,
   ScheduleRefusal, JobDoor, no_jobs, routing,
