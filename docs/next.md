@@ -71,6 +71,18 @@ The existing user daemon was neither replaced nor restarted. Its roughly
 named diagnostic instance before proposing a memory fix. These packaging
 checks are not a full `make check` or a Linux signoff.
 
+## Live profiling (September 14)
+
+`fix/profiling-flags`, based on `813daf2a`, makes that diagnostic path a normal
+opt-in launcher feature for both `loom` and `loomd`. `--profile` creates a
+unique loopback node and private cookie directory below the selected state
+root, then prints the packaged `loom-profile` census command. The cookie stays
+out of OS arguments and the application keeps its original `HOME`. The branch
+passed generated-launcher tests, the normal bundled client and full server
+release, code-mode release smoke, and live census attachment. Hosted CI and
+Linux signoff passed at `77b39805`; this merge retains #408 before #409 lands
+and needs fresh checks at its new head.
+
 ## History prefetch (September 14)
 
 Reading history starts the next fetch two transcript viewport heights before
