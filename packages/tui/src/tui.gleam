@@ -743,17 +743,43 @@ pub fn main() {
 
 // Help is selected before the logger or the interactive backend exist. A
 // command that only describes an invocation must not claim terminal state or
-// reach the daemon it is describing.
+// reach the daemon it is describing. The `--help` and `-h` flags win
+// wherever they appear in argv: a launcher that answered them only in
+// first position would report the flags before them as unknown, and the
+// conventional reading — `loom --demo --help` asks about the launch —
+// costs nothing here because every topic usage is a static string.
+//
+// The bare word `help` is recognised in first position only. Anywhere
+// else it is a plausible value — a session id, a recording path, an
+// extension name — and intercepting it would break the `loom ext`
+// passthrough's promise that every word of it is the server's.
+//
+// The topic is the first recognised subcommand word anywhere in argv, so
+// `loom replay rec.jsonl --help` describes `replay` rather than the whole
+// launcher. A help request with no topic word answers the top-level
+// usage, which is also what `loom help help` gets: `help` is a
+// dispatcher, not a topic.
 fn help_for(arguments: List(String)) -> Option(String) {
-  case arguments {
-    ["--help"] | ["-h"] | ["help"] -> Some(launch_usage())
-    ["replay", "--help"] | ["replay", "-h"] | ["help", "replay"] ->
-      Some(replay_usage())
-    ["sessions", "--help"] | ["sessions", "-h"] | ["help", "sessions"] ->
-      Some(sessions_usage())
-    ["ext", "--help"] | ["ext", "-h"] | ["help", "ext"] ->
-      Some(extension_usage())
-    _ -> None
+  let asks = case arguments {
+    ["help", ..] -> True
+    _ -> list.contains(arguments, "--help") || list.contains(arguments, "-h")
+  }
+  case asks {
+    False -> None
+    True ->
+      case list.find(arguments, is_topic) {
+        Ok("replay") -> Some(replay_usage())
+        Ok("sessions") -> Some(sessions_usage())
+        Ok("ext") -> Some(extension_usage())
+        Ok(_other) | Error(Nil) -> Some(launch_usage())
+      }
+  }
+}
+
+fn is_topic(word: String) -> Bool {
+  case word {
+    "replay" | "sessions" | "ext" -> True
+    _ -> False
   }
 }
 

@@ -110,4 +110,48 @@ run_help loomd "usage: loom ext" ext --help
 cmp "$scratch/loom-ext.stdout" "$scratch/loomd.stdout"
 run_help loomd "usage: loom ext" ext -h
 run_help loomd "usage: loom ext" help ext
+# The `--help` and `-h` flags win wherever they appear in argv: flags
+# before them describe the launch rather than failing as unknown options,
+# and no recording, state directory, or replay output is created on the
+# way out.
+run_help loom "usage: loom replay" replay some-recording.jsonl --help
+run_help loom "usage: loom sessions" sessions rm some-session --help
+run_help loom "usage: loom" --demo --help
+run_help loom "usage: loom" --record "$scratch/rec.jsonl" --help
+[ ! -e "$scratch/rec.jsonl" ] || {
+  echo "cli_help_test: loom --record ... --help created a recording" >&2
+  exit 1
+}
+run_help loomd "usage: loomd" --state-dir "$scratch/statedir" --help
+run_help loomd "usage: loomd access" --capacity 8 access --help
+
+# The bare word `help` is a plausible value, not a flag: it must reach
+# the subcommand untouched. `loom ext` is a pipe to the server, so with
+# no server installed the words arrive at the launcher error rather than
+# being answered locally; a recording named `help` reaches the replay
+# loader, which reports the missing file.
+out="$scratch/passthrough.stdout"
+err="$scratch/passthrough.stderr"
+if LOOM_SERVER="$scratch/no-loomd" "$root/bin/loom" ext verify help >"$out" 2>"$err"; then
+  echo "cli_help_test: loom ext verify help unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -Fq "usage: loom ext" "$out" "$err"; then
+  echo "cli_help_test: loom ext verify help was answered as help" >&2
+  exit 1
+fi
+grep -Fq "loom ext:" "$err" || {
+  echo "cli_help_test: loom ext verify help did not reach the launcher error" >&2
+  cat "$err" >&2
+  exit 1
+}
+if "$root/bin/loom" replay help >"$out" 2>"$err"; then
+  echo "cli_help_test: loom replay help unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -Fq "usage: loom replay" "$out" "$err"; then
+  echo "cli_help_test: loom replay help was answered as help" >&2
+  exit 1
+fi
+
 run_failure loom --workspace
