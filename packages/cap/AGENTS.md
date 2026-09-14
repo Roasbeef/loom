@@ -75,7 +75,7 @@ cannot hide the capability error. This does not grant the program a new effect.
   and a host with none allows neither.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
   the orchestration seam. `assignment`/`within`/`detached`/
-  `from_my_conversation`/`with_tools`/`expecting` build a spawn; `spawn`,
+  `from_my_conversation`/`with_model`/`with_tools`/`expecting` build a spawn; `spawn`,
   `wait` (a list of handles against **one** deadline), `send`, `note`,
   `notes` and `roster` are the six calls, serviced by the same
   `client/agency` closures the `agent_*` tools call. Every `StrandError`

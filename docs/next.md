@@ -11,6 +11,13 @@ scroll-region presentation for #367. The package docs describe the pinned
 renderer. The broader project audit below remains the September 13 snapshot;
 its unrelated status claims have not been re-audited for this change.
 
+The September 14 model-selection change is scoped in
+[protocol 034](../protocol-change/034-agent-model-selection.md).
+`agent_spawn` can select a configured catalogue name and report the child's
+durable model; `cap/strand.with_model` carries the same choice in code mode.
+The broader audit below remains the September 13 snapshot and has not been
+re-audited as part of this change.
+
 Re-baselined September 13, 2026 against merged main `10b77fc4`, the merge of
 `cap/search` (#378, closing issue #365) on a green `signoff/linux` at its exact
 head `374f6362`. At that audit, every claim below was checked against the tree, the cited

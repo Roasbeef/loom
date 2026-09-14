@@ -193,6 +193,23 @@ provider model id under different names, differing in endpoint,
 credential, or declared limits, and the harness treats them as two
 distinct identities, because they are.
 
+## Selecting a child's model
+
+`agent_spawn` accepts an optional `model` naming one of the host's catalogue
+entries. Its tool schema lists those names. The Agency resolves an explicit
+choice before creating the child and seeds both its identity and initial
+thinking level. Unknown names refuse without creating a strand. Omission uses
+the configured subagent route, or inherits the parent if no route exists.
+Code-mode assignments make the same choice with `cap/strand.with_model`.
+
+The seed is durable before the brief runs. Both an ordinary replay and recovery
+between seeding and brief admission use that stored identity, even if the host's
+catalogue has changed. The tool receipt returns `model` and `model_id` from the
+child's current configuration. Existing role fallback and vision routing still
+apply, so the receipt describes configuration rather than attesting which model
+answered a later request. [Protocol 034](../../protocol-change/034-agent-model-selection.md)
+records the argument and receipt contract.
+
 ## Roles and chains
 
 Five roles are routable: `main`, `subagent`, `plan`, `summarize`, and

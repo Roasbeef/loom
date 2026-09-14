@@ -56,6 +56,10 @@ first-request regression at the model-identity assertion: the default model
 reaches dispatch instead of the selected reviewer. Format, documentation,
 prelude, and affected-package lint checks pass. Existing lint and documentation
 warnings remain outside this change.
+`make e2e-codemode` also passes all 302 tests after rebuilding the offline seed,
+including the real jailed build and the orchestration sample. This macOS host
+cannot perform the seed script's separate Linux-network-namespace probe; the
+jailed end-to-end tests execute rather than skipping.
 
 Independent adversarial review found no actionable defect after tracing initial
 selection, both adoption paths, receipt accuracy, and code-mode compatibility.
