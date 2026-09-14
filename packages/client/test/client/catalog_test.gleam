@@ -987,17 +987,18 @@ main = [\"one\"]
 "
 }
 
-pub fn l402_auth_parses_with_no_key_name_test() {
-  let assert Ok(parsed) = catalog.parse(auth_entry("auth = \"l402\"\n"))
+pub fn extension_auth_parses_with_no_key_name_test() {
+  let assert Ok(parsed) = catalog.parse(auth_entry("auth = \"extension\"\n"))
   let assert Ok(entry) = catalog.find(parsed, "one")
     as "the parsed catalogue must carry the entry"
-  assert entry.auth == provider_gateway.L402
+  assert entry.auth == provider_gateway.Extension
 }
 
-pub fn l402_auth_refuses_a_key_name_test() {
-  let text = auth_entry("auth = \"l402\"\napi_key_env = \"KEY\"\n")
-  let assert Error("models.one: auth = \"l402\" sends no bearer key" <> _rest) =
-    catalog.parse(text)
+pub fn extension_auth_refuses_a_key_name_test() {
+  let text = auth_entry("auth = \"extension\"\napi_key_env = \"KEY\"\n")
+  let assert Error(
+    "models.one: auth = \"extension\" sends no bearer key" <> _rest,
+  ) = catalog.parse(text)
 }
 
 pub fn api_key_auth_without_a_key_name_refused_test() {

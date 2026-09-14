@@ -40,7 +40,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, type Transport}
-import provider/l402
 
 // --- stream events ------------------------------------------------------
 
@@ -162,15 +161,17 @@ pub type ProviderError {
     retry_after_ms: Option(Int),
   )
 
-  /// The provider answered 402 with an L402 challenge: the request is
-  /// priced and unpaid. Carries the challenge so a paywall can settle it
-  /// and the gateway can retry the same target once with the credential.
-  PaymentRequired(challenge: l402.Challenge)
+  /// The provider answered an HTTP authentication challenge (401, 402 or
+  /// 407) that an extension may be able to satisfy. Carries the raw
+  /// status, the response headers (lowercase names) and the body, bounded
+  /// to the adapter's error-body budget. Nothing here interprets the
+  /// challenge: the grammar belongs to whoever answers it.
+  Challenged(status: Int, headers: List(#(String, String)), body: String)
 
-  /// A paywalled attempt could not be settled: the paywall declined, the
-  /// payment failed, or no paywall is wired. `reason` is the paywall's own
-  /// text and names no macaroon, invoice, or preimage.
-  PaymentDeclined(provider: String, reason: String)
+  /// A challenged attempt could not be answered: no challenger is wired,
+  /// no extension answered, or the one that did declined with `reason`.
+  /// `reason` is the answerer's own text and carries no credential.
+  ChallengeUnanswered(provider: String, reason: String)
 
   /// The provider reported an error event inside the stream.
   StreamError(api_error_type: String, message: String)
@@ -466,22 +467,14 @@ pub fn describe_error(error: ProviderError) -> String {
       <> ": "
       <> message
 
-    // The macaroon and the invoice are deliberately absent. Both are long
-    // enough to ruin a log line, and the invoice is a payable bearer
-    // string: a rendered error travels further than the challenge should.
-    PaymentRequired(challenge:) ->
-      "provider requires payment: "
-      <> case challenge.amount_sat {
-        Some(amount) -> int.to_string(amount)
-        None -> "an unstated number of"
-      }
-      <> " sat"
-      <> case challenge.challenge_id {
-        "" -> ""
-        id -> " (challenge " <> id <> ")"
-      }
-    PaymentDeclined(provider:, reason:) ->
-      "payment declined for " <> provider <> ": " <> reason
+    // Only the status is rendered. A challenge body is remote text of a
+    // grammar this package does not read, and its headers may carry a
+    // bearer string meant for one extension: a rendered error travels
+    // further than either should.
+    Challenged(status:, headers: _, body: _) ->
+      "provider challenged the request with http " <> int.to_string(status)
+    ChallengeUnanswered(provider:, reason:) ->
+      "challenge unanswered for " <> provider <> ": " <> reason
     StreamError(api_error_type:, message:) ->
       "provider stream error (" <> api_error_type <> "): " <> message
     StreamDisconnected(context:) -> "provider stream disconnected: " <> context

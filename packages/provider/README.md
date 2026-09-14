@@ -207,8 +207,9 @@ stop reason tomorrow degrades to a readable error, never a crash.
 
 Provider configuration holds a secret *name*, never a value. An entry's
 `auth` field says how the credential is obtained: `ApiKey(secret_name)`
-reads a standing key from the store, and `L402` has no credential until
-the endpoint prices a request and the gateway's `Paywall` pays for it.
+reads a standing key from the store, and `Extension` has no credential
+until the endpoint challenges a request and the gateway's `Challenger`
+answers the challenge with the headers to retry with.
 
 ```mermaid
 flowchart LR
@@ -224,7 +225,7 @@ one call site — gateway dispatch — and the value goes straight into the
 header of the request being built. `ProviderError` carries secret names
 and status codes and never headers or request values; terminal errors are
 also scrubbed against the exact credential, whether that is an API key or
-a settled L402 token. Successful response content remains
+every header value an extension answered a challenge with. Successful response content remains
 provider-controlled and can span streaming fragments, so this is not a
 general secret-redaction boundary. The local-flow check is a grep-based
 leak test over a full session fixture. Issue #148 owns stateful cross-fragment

@@ -12,12 +12,11 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import provider/challenger
 import provider/fixture.{sse_event}
 import provider/gateway
 import provider/http
-import provider/l402
 import provider/model
-import provider/paywall
 import provider/pricing
 import provider/secret
 import provider/stream
@@ -1151,57 +1150,70 @@ fn bare_event(event) {
   }
 }
 
-// --- L402 paywalls ---------------------------------------------------------
+// --- authentication challenges ---------------------------------------------
 
-const macaroon = "AGIAJEemVQ"
+// The answer an extension gives: one header the harness never reads.
+const answered_token = "Scheme bGVhdmUtbWUtYWxvbmU"
 
-const preimage = "ab12cd34"
-
-// The challenge an aperture-style proxy answers an unpaid request with.
+// The challenge a proxy answers an unauthenticated request with.
 fn challenge_response() -> List(http.HttpEvent) {
   fixture.error_response(
     402,
-    [
-      #(
-        "www-authenticate",
-        "L402 macaroon=\"" <> macaroon <> "\", invoice=\"lnbc2500u1pvjluez\"",
-      ),
-      #("x-aperture-challenge-id", "c-7"),
+    [#("www-authenticate", "Scheme realm=\"primary\""), #("x-terms", "c-7")],
+    "the terms",
+  )
+}
+
+fn expected_challenge() -> challenger.Challenge {
+  challenger.Challenge(
+    status: 402,
+    headers: [
+      #("www-authenticate", "Scheme realm=\"primary\""),
+      #("x-terms", "c-7"),
     ],
-    "",
+    body: "the terms",
   )
 }
 
-fn expected_challenge() -> l402.Challenge {
-  l402.Challenge(
-    macaroon:,
-    invoice: "lnbc2500u1pvjluez",
-    amount_sat: Some(250_000),
-    challenge_id: "c-7",
-    route_id: "",
-  )
-}
-
-// A paywall that records every challenge it is asked to settle, answers
-// with a fixed outcome, and holds whatever credential the test gave it.
-fn stub_paywall(
-  held held: option.Option(String),
-  settled settled: process.Subject(l402.Challenge),
-  outcome outcome: Result(String, String),
-) -> paywall.Paywall {
-  paywall.Paywall(
-    credential: fn(_provider) { held },
-    settle: fn(_provider, challenge) {
-      process.send(settled, challenge)
+// A challenger that records every challenge it is asked to answer,
+// answers with a fixed outcome, and holds whatever headers the test gave
+// it.
+fn stub_challenger(
+  held held: option.Option(List(#(String, String))),
+  asked asked: process.Subject(challenger.Challenge),
+  outcome outcome: Result(List(#(String, String)), String),
+) -> challenger.Challenger {
+  challenger.Challenger(
+    headers: fn(_provider, _model_id) { held },
+    answer: fn(_provider, challenge) {
+      process.send(asked, challenge)
       outcome
     },
   )
 }
 
-// One paywalled entry, no fallback, so a walk cannot disguise a retry.
-fn paywalled_gateway(
+// A challenger that reports every `headers` call instead of holding a
+// fixed answer, so a test can count how often the gateway asks and see
+// which entry and model it asked about. It never answers a challenge:
+// the requests it serves are the point.
+fn counting_challenger(
+  consulted consulted: process.Subject(#(String, String)),
+  held held: option.Option(List(#(String, String))),
+) -> challenger.Challenger {
+  challenger.Challenger(
+    headers: fn(provider, model_id) {
+      process.send(consulted, #(provider, model_id))
+      held
+    },
+    answer: fn(_provider, _challenge) { Error("must not be called") },
+  )
+}
+
+// One extension-authenticated entry, no fallback, so a walk cannot
+// disguise a retry.
+fn challenged_gateway(
   transport: http.Transport,
-  wall: paywall.Paywall,
+  seam: challenger.Challenger,
 ) -> gateway.Gateway {
   gateway.new(
     transport:,
@@ -1211,60 +1223,70 @@ fn paywalled_gateway(
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "primary",
     base_url: "https://primary.test",
-    auth: gateway.L402,
+    auth: gateway.Extension,
   ))
   |> gateway.route(model.Main, [target("primary", "model-a")])
   |> gateway.with_attempt_timeout(2000)
-  |> gateway.with_paywall(wall)
+  |> gateway.with_challenger(seam)
 }
 
-// A transport that prices an unauthenticated request and serves a paid one.
-fn priced_transport(
+// A transport that challenges an unauthenticated request and serves an
+// authenticated one.
+fn challenging_transport(
   requests: process.Subject(http.HttpRequest),
 ) -> http.Transport {
   fixture.routing_transport(fn(request) {
     process.send(requests, request)
     case list.key_find(request.headers, "authorization") {
-      Ok(_paid) -> fixture.ok_response(happy_transcript("Paid"))
+      Ok(_answered) -> fixture.ok_response(happy_transcript("Answered"))
       Error(Nil) -> challenge_response()
     }
   })
 }
 
-pub fn a_challenge_is_settled_and_the_attempt_retried_once_test() {
+pub fn a_challenge_is_answered_and_the_attempt_retried_once_test() {
   let requests = process.new_subject()
-  let settled = process.new_subject()
-  let wall =
-    stub_paywall(
+  let asked = process.new_subject()
+
+  // The extension also answers with a `content-type` it has no business
+  // setting: the adapter owns the dialect, so that one is dropped while
+  // its `authorization` travels verbatim.
+  let seam =
+    stub_challenger(
       held: None,
-      settled:,
-      outcome: Ok(l402.authorization(macaroon, preimage)),
+      asked:,
+      outcome: Ok([
+        #("authorization", answered_token),
+        #("content-type", "text/plain"),
+      ]),
     )
   let handle =
     gateway.request(
-      paywalled_gateway(priced_transport(requests), wall),
+      challenged_gateway(challenging_transport(requests), seam),
       main_request(),
     )
   let assert Ok(#(_deltas, stream.Settled(..))) =
     stream.await_terminal(handle, within: 2000)
 
   // The first attempt is deliberately unauthenticated: that is what
-  // provokes the proxy into stating its price.
-  let assert Ok(unpaid) = process.receive(requests, within: 1000)
-  assert list.key_find(unpaid.headers, "authorization") == Error(Nil)
-  assert list.key_find(unpaid.headers, "x-api-key") == Error(Nil)
+  // provokes the proxy into stating its terms.
+  let assert Ok(unchallenged) = process.receive(requests, within: 1000)
+  assert list.key_find(unchallenged.headers, "authorization") == Error(Nil)
+  assert list.key_find(unchallenged.headers, "x-api-key") == Error(Nil)
 
-  assert process.receive(settled, within: 1000) == Ok(expected_challenge())
+  assert process.receive(asked, within: 1000) == Ok(expected_challenge())
 
-  let assert Ok(paid) = process.receive(requests, within: 1000)
-  assert list.key_find(paid.headers, "authorization")
-    == Ok("L402 " <> macaroon <> ":" <> preimage)
+  let assert Ok(answered) = process.receive(requests, within: 1000)
+  assert list.key_find(answered.headers, "authorization") == Ok(answered_token)
+  assert list.key_find(answered.headers, "content-type")
+    == Ok("application/json")
+  assert !list.contains(answered.headers, #("content-type", "text/plain"))
 }
 
-pub fn a_declined_payment_is_terminal_and_does_not_walk_test() {
-  let settled = process.new_subject()
-  let wall =
-    stub_paywall(held: None, settled:, outcome: Error("wallet has no funds"))
+pub fn an_unanswered_challenge_is_terminal_and_does_not_walk_test() {
+  let asked = process.new_subject()
+  let seam =
+    stub_challenger(held: None, asked:, outcome: Error("no extension answered"))
   let transport =
     fixture.routing_transport(fn(request) {
       case string.contains(request.url, "primary.test") {
@@ -1274,9 +1296,9 @@ pub fn a_declined_payment_is_terminal_and_does_not_walk_test() {
     })
 
   // The backup would settle happily, so a delivered decline proves the
-  // chain did not walk past a terminal payment failure.
+  // chain did not walk past a terminal challenge failure.
   let gw =
-    paywalled_gateway(transport, wall)
+    challenged_gateway(transport, seam)
     |> gateway.add_provider(gateway.AnthropicProvider(
       name: "backup",
       base_url: "https://backup.test",
@@ -1291,121 +1313,172 @@ pub fn a_declined_payment_is_terminal_and_does_not_walk_test() {
   let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
   assert stream.underlying_error(error)
-    == stream.PaymentDeclined(
+    == stream.ChallengeUnanswered(
       provider: "primary",
-      reason: "wallet has no funds",
+      reason: "no extension answered",
     )
 }
 
-pub fn a_held_credential_is_sent_on_the_first_attempt_test() {
+pub fn held_headers_are_sent_on_the_first_attempt_test() {
   let requests = process.new_subject()
-  let settled = process.new_subject()
-  let token = l402.authorization(macaroon, preimage)
-  let wall =
-    stub_paywall(
-      held: Some(token),
-      settled:,
+  let asked = process.new_subject()
+  let seam =
+    stub_challenger(
+      held: Some([#("authorization", answered_token)]),
+      asked:,
       outcome: Error("must not be called"),
     )
   let handle =
     gateway.request(
-      paywalled_gateway(priced_transport(requests), wall),
+      challenged_gateway(challenging_transport(requests), seam),
       main_request(),
     )
   let assert Ok(#(_deltas, stream.Settled(..))) =
     stream.await_terminal(handle, within: 2000)
 
   let assert Ok(first) = process.receive(requests, within: 1000)
-  assert list.key_find(first.headers, "authorization") == Ok(token)
+  assert list.key_find(first.headers, "authorization") == Ok(answered_token)
 
-  // Nothing was paid for: a held credential settles the request outright.
-  assert process.receive(settled, within: 50) == Error(Nil)
+  // Nothing was answered: held headers settle the request outright.
+  assert process.receive(asked, within: 50) == Error(Nil)
 }
 
-pub fn a_second_challenge_after_settling_is_delivered_test() {
-  // The proxy prices a request it has just been paid for. One more attempt
-  // would only earn a third challenge and a second bill, so the second
-  // `PaymentRequired` is the answer.
-  let settled = process.new_subject()
-  let wall =
-    stub_paywall(
+/// The harness caches no credential, so the challenger is the only party
+/// that knows what is current and has to be asked every time. Two
+/// requests on one gateway are two consultations, each naming the entry
+/// and the model the attempt targets — a second request that reused the
+/// first answer would go on presenting a credential the answerer may
+/// already have replaced.
+pub fn the_challenger_is_asked_before_every_attempt_test() {
+  let consulted = process.new_subject()
+  let seam =
+    counting_challenger(
+      consulted:,
+      held: Some([#("authorization", answered_token)]),
+    )
+  let gw =
+    challenged_gateway(
+      fixture.transport(fixture.ok_response(happy_transcript("Answered"))),
+      seam,
+    )
+
+  let first = gateway.request(gw, main_request())
+  let assert Ok(#(_first_deltas, stream.Settled(..))) =
+    stream.await_terminal(first, within: 2000)
+  let second = gateway.request(gw, main_request())
+  let assert Ok(#(_second_deltas, stream.Settled(..))) =
+    stream.await_terminal(second, within: 2000)
+
+  assert process.receive(consulted, within: 1000) == Ok(#("primary", "model-a"))
+  assert process.receive(consulted, within: 1000) == Ok(#("primary", "model-a"))
+  assert process.receive(consulted, within: 50) == Error(Nil)
+}
+
+pub fn a_second_challenge_after_answering_is_delivered_test() {
+  // The proxy challenges a request it has just accepted an answer for. One
+  // more attempt would only earn a third challenge, so the second
+  // `Challenged` is the answer.
+  let asked = process.new_subject()
+  let seam =
+    stub_challenger(
       held: None,
-      settled:,
-      outcome: Ok(l402.authorization(macaroon, preimage)),
+      asked:,
+      outcome: Ok([#("authorization", answered_token)]),
     )
   let handle =
     gateway.request(
-      paywalled_gateway(fixture.transport(challenge_response()), wall),
+      challenged_gateway(fixture.transport(challenge_response()), seam),
       main_request(),
     )
 
   let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
+  let challenge = expected_challenge()
   assert stream.underlying_error(error)
-    == stream.PaymentRequired(challenge: expected_challenge())
-  assert process.receive(settled, within: 1000) == Ok(expected_challenge())
-  assert process.receive(settled, within: 50) == Error(Nil)
+    == stream.Challenged(
+      status: challenge.status,
+      headers: challenge.headers,
+      body: challenge.body,
+    )
+  assert process.receive(asked, within: 1000) == Ok(challenge)
+  assert process.receive(asked, within: 50) == Error(Nil)
 }
 
-/// The preimage on its own, with none of the header around it. A proxy
-/// that parses the credential and names the half that failed reflects a
-/// string the whole-token comparison never finds, and the preimage is a
-/// payment proof in its own right — so it is scrubbed as a secret of its
-/// own rather than only as a substring of the token.
-pub fn a_reflected_preimage_alone_is_scrubbed_test() {
-  let settled = process.new_subject()
-  let token = l402.authorization(macaroon, preimage)
-  let wall = stub_paywall(held: None, settled:, outcome: Ok(token))
+/// Every value an extension answered with is a secret in its own right: a
+/// proxy that rejects one header and names it back reflects a string the
+/// other headers' comparisons never find. All of them are scrubbed, so no
+/// spelling of any of them survives into an error.
+pub fn every_reflected_header_value_is_scrubbed_test() {
+  let asked = process.new_subject()
+  let second = "opaque-receipt-9f"
+  let seam =
+    stub_challenger(
+      held: None,
+      asked:,
+      outcome: Ok([
+        #("authorization", answered_token),
+        #("x-receipt", second),
+      ]),
+    )
   let transport =
     fixture.routing_transport(fn(request) {
       case list.key_find(request.headers, "authorization") {
         Error(Nil) -> challenge_response()
-        Ok(_paid) ->
+        Ok(_answered) ->
           fixture.error_response(
             400,
             [],
             "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
-              <> "\"message\":\"preimage "
-              <> preimage
-              <> " does not hash to the payment hash\"}}",
+              <> "\"message\":\"authorization "
+              <> answered_token
+              <> " and x-receipt "
+              <> second
+              <> " were both refused\"}}",
           )
       }
     })
   let handle =
-    gateway.request(paywalled_gateway(transport, wall), main_request())
+    gateway.request(challenged_gateway(transport, seam), main_request())
 
   let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
   let rendered = stream.describe_error(error)
-  assert !string.contains(rendered, preimage)
+  assert !string.contains(rendered, answered_token)
+  assert !string.contains(rendered, second)
   assert string.contains(rendered, "[REDACTED]")
 }
 
-pub fn a_reflected_l402_token_is_scrubbed_test() {
-  let settled = process.new_subject()
-  let token = l402.authorization(macaroon, preimage)
-  let wall = stub_paywall(held: None, settled:, outcome: Ok(token))
-  let transport =
-    fixture.routing_transport(fn(request) {
-      case list.key_find(request.headers, "authorization") {
-        Error(Nil) -> challenge_response()
-        Ok(_paid) ->
-          fixture.error_response(
-            400,
-            [],
-            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
-              <> "\"message\":\"authorization: "
-              <> token
-              <> "\"}}",
-          )
-      }
-    })
-  let handle =
-    gateway.request(paywalled_gateway(transport, wall), main_request())
+/// A keyed entry has a standing credential, so a challenge against it is
+/// a failure rather than an invitation: it is delivered as it arrived and
+/// no challenger is consulted.
+pub fn a_keyed_entry_delivers_a_challenge_as_is_test() {
+  let asked = process.new_subject()
+  let seam =
+    stub_challenger(held: None, asked:, outcome: Error("must not be called"))
+  let gw =
+    gateway.new(
+      transport: fixture.transport(challenge_response()),
+      secrets: secrets(),
+      clock: clock.fixed(at: 1_700_000_000_000),
+    )
+    |> gateway.add_provider(gateway.AnthropicProvider(
+      name: "primary",
+      base_url: "https://primary.test",
+      auth: gateway.ApiKey("PRIMARY_KEY"),
+    ))
+    |> gateway.route(model.Main, [target("primary", "model-a")])
+    |> gateway.with_attempt_timeout(2000)
+    |> gateway.with_challenger(seam)
+  let handle = gateway.request(gw, main_request())
 
   let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
-  let rendered = stream.describe_error(error)
-  assert !string.contains(rendered, preimage)
-  assert string.contains(rendered, "[REDACTED]")
+  let challenge = expected_challenge()
+  assert stream.underlying_error(error)
+    == stream.Challenged(
+      status: challenge.status,
+      headers: challenge.headers,
+      body: challenge.body,
+    )
+  assert process.receive(asked, within: 50) == Error(Nil)
 }

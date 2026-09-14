@@ -72,17 +72,16 @@ import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
 import provider/internal/wire
-import provider/l402
 import provider/model.{
   type Credential, type ProviderRequest, type ResolvedModel, type ThinkingLevel,
   type ToolSpec, ThinkingHigh, ThinkingLow, ThinkingMedium, ThinkingOff,
 }
 import provider/retry
 import provider/stream.{
-  type ResponseMachine, type SseEvent, type StreamEvent, Delta, Failed,
-  HttpError, MalformedStream, PaymentRequired, ResponseMachine, Settled,
-  SseMalformed, SseMessage, StreamDisconnected, StreamError, TextDelta,
-  ThinkingDelta, ToolCallDelta, UnmappedStopReason,
+  type ResponseMachine, type SseEvent, type StreamEvent, Challenged, Delta,
+  Failed, HttpError, MalformedStream, ResponseMachine, Settled, SseMalformed,
+  SseMessage, StreamDisconnected, StreamError, TextDelta, ThinkingDelta,
+  ToolCallDelta, UnmappedStopReason,
 }
 
 /// The `api` string stamped on assistant messages produced here.
@@ -171,9 +170,13 @@ pub fn build_request(
       <> "/models/"
       <> resolved.model_id
       <> ":streamGenerateContent?alt=sse",
-    headers: list.append(auth_headers(credential), [
-      #("content-type", "application/json"),
-      #("accept", "text/event-stream"),
+    headers: list.flatten([
+      auth_headers(credential),
+      [
+        #("content-type", "application/json"),
+        #("accept", "text/event-stream"),
+      ],
+      model.extension_headers(credential),
     ]),
     body: json.to_string(body),
   )
@@ -1232,37 +1235,36 @@ fn fail(
   }
 }
 
-// The dialect's authentication header, or none at all.
+// The dialect's own authentication header, or none at all.
 //
-// An API key goes where this dialect has always put one; an L402
-// credential goes in `authorization` regardless of dialect, because it is
-// an HTTP authentication scheme rather than a vendor header. The empty
-// list is not a degenerate case: an unpaid L402 entry sends no
-// authentication at all, and that is exactly what provokes the 402
-// challenge the gateway then settles.
+// An API key goes where this dialect has always put one. Headers an
+// extension answered a challenge with are not this function's business:
+// they are rendered after the adapter's own by `model.extension_headers`,
+// because only the extension knows which scheme it is speaking. The empty
+// list is not a degenerate case: an entry that has not yet answered a
+// challenge sends no authentication at all, and that is exactly what
+// provokes the challenge the gateway then hands on.
 fn auth_headers(credential: Credential) -> List(#(String, String)) {
   case credential {
     model.NoCredential -> []
     model.ApiKeyCredential(key:) -> [#("x-goog-api-key", key)]
-    model.L402Credential(token:) -> [#("authorization", token)]
+    model.ExtensionCredential(headers: _) -> []
   }
 }
 
 // The terminal error for a non-success response.
 //
-// A 402 carrying a challenge we can parse is a priced request rather than
-// a failure, so it settles as `PaymentRequired` and the gateway may pay
-// and retry it. A 402 we cannot parse — an unpaid keyed provider, or a
-// proxy speaking some other scheme — stays the ordinary HTTP error it
-// looks like, because inventing a payment path for it would be guessing.
+// The three HTTP statuses that mean "authenticate and try again" settle
+// as `Challenged` regardless of what the body says, because the adapter
+// cannot tell an answerable challenge from an unanswerable one without
+// learning a scheme — and the gateway asks its challenger, which can.
+// The body is already bounded by the error-body budget, so handing it on
+// verbatim retains nothing a truncated diagnostic would not have.
 fn remote_error(status: Int, acc: Accumulator) -> stream.ProviderError {
   let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
-  let challenge = case status {
-    402 -> option.from_result(l402.parse(acc.headers, body_text))
-    _unpriced -> None
-  }
-  case challenge {
-    Some(challenge) -> PaymentRequired(challenge:)
-    None -> http_error(status, acc, body_text)
+  case status {
+    401 | 402 | 407 ->
+      Challenged(status:, headers: acc.headers, body: body_text)
+    _unchallenged -> http_error(status, acc, body_text)
   }
 }

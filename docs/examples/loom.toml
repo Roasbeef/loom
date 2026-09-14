@@ -112,18 +112,20 @@ output = 3.75
 cache_read = 0.075
 
 # A paid endpoint, commented out because running it needs a wallet.
-# `auth = "l402"` says the harness holds no key for this entry: the
+# `auth = "extension"` says the harness holds no key for this entry: the
 # base_url points at an aperture proxy that holds the model's real API
-# key and prices each request by answering 402 Payment Required with an
-# L402 challenge, which an installed payment extension settles before
-# the request is retried. Such an entry names no `api_key_env`, because
-# there is no key for it to name. It is deliberately left out of
-# [roles] below, so this example keeps working for a reader who has no
-# wallet; route it once the payment extension is installed.
+# key and prices each request with a 402, and an installed extension
+# (loom-402, for L402) answers that challenge with the headers the
+# request is retried under. The harness knows nothing about the scheme:
+# it forwards the challenge raw and sends the answer verbatim. Such an
+# entry names no `api_key_env`, because there is no key for it to name.
+# It is deliberately left out of [roles] below, so this example keeps
+# working for a reader who has no wallet; route it once the extension is
+# installed.
 # [models.aperture-paid]
 # dialect = "openai"
 # base_url = "http://localhost:8404/v1"
-# auth = "l402"
+# auth = "extension"
 # model_id = "kimi-k3"
 # context_window = 256000
 # max_output_tokens = 32000

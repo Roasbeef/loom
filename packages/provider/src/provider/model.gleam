@@ -166,64 +166,75 @@ pub type ProviderRequest {
 /// because where it goes on the wire is a fact about the dialect: an API
 /// key goes wherever that dialect puts one (`authorization: Bearer` for
 /// the chat-completions dialect, `x-api-key` for Messages,
-/// `x-goog-api-key` for `generateContent`), while an L402 credential
-/// always goes in `authorization`, since it is an HTTP authentication
-/// scheme rather than a vendor header.
+/// `x-goog-api-key` for `generateContent`), while headers an extension
+/// answered a challenge with are sent exactly as the extension wrote
+/// them, since only the extension knows which scheme it is speaking.
 ///
-/// Constructor invariants: the string inside `ApiKeyCredential` and
-/// `L402Credential` is a secret *value*, read at dispatch and copied into
-/// exactly one outbound header — the gateway scrubs it from any terminal
-/// error before that error can be classified, delivered, or logged.
-/// `L402Credential.token` is a complete header value, `l402.authorization`'s
-/// output, not a bare macaroon.
+/// Constructor invariants: the string inside `ApiKeyCredential` and every
+/// value inside `ExtensionCredential` is a secret *value*, read at
+/// dispatch and copied into exactly one outbound header — the gateway
+/// scrubs each from any terminal error before that error can be
+/// classified, delivered, or logged. `ExtensionCredential.headers` carry
+/// lowercase names.
 pub type Credential {
-  /// Send no authentication header at all. This is how a paywalled entry
-  /// that has not yet paid provokes its first 402 challenge.
+  /// Send no authentication header at all. This is how an entry that has
+  /// not yet answered a challenge provokes its first one.
   NoCredential
 
   /// A bearer API key, in whichever header the dialect uses for one.
   ApiKeyCredential(key: String)
 
-  /// A settled L402 credential: the whole `L402 <macaroon>:<preimage>`
-  /// value, for the `authorization` header.
-  L402Credential(token: String)
+  /// Headers an extension answered a challenge with, sent verbatim after
+  /// the adapter's own. The values are secrets: every one is scrubbed.
+  ExtensionCredential(headers: List(#(String, String)))
 }
 
-/// The secret value a credential carries, or `""` when it carries none.
-///
-/// The gateway scrubs this exact string out of an attempt's terminal
-/// error, because a remote endpoint necessarily sees whatever was sent and
-/// can reflect it back in a diagnostic field. `""` for `NoCredential` is
-/// what the scrubber treats as "nothing to redact", so the no-credential
-/// path needs no separate case anywhere above it.
+/// The header names an extension may not set, because the adapter owns
+/// them. `content-type` and `accept` decide the dialect and the framing,
+/// `content-length` is the transport's arithmetic, and `host` is the
+/// endpoint the request was built for: an extension that overrode any of
+/// the four would not be authenticating a request, it would be sending a
+/// different one.
+const adapter_owned_headers = [
+  "content-type", "content-length", "host", "accept",
+]
+
+/// The headers an extension answered with, minus the ones the adapter
+/// owns. Sent after the adapter's own headers, so an endpoint that reads
+/// the last occurrence of a name still sees the extension's answer for
+/// every name the extension is allowed to set.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert model.credential_secret(model.ApiKeyCredential("sk-1")) == "sk-1"
+/// let credential = model.ExtensionCredential([#("authorization", "T abc")])
+/// assert model.extension_headers(credential) == [#("authorization", "T abc")]
 /// ```
 ///
 /// ```gleam
-/// assert model.credential_secret(model.NoCredential) == ""
+/// assert model.extension_headers(model.NoCredential) == []
 /// ```
 ///
-pub fn credential_secret(credential: Credential) -> String {
+pub fn extension_headers(credential: Credential) -> List(#(String, String)) {
   case credential {
-    NoCredential -> ""
-    ApiKeyCredential(key:) -> key
-    L402Credential(token:) -> token
+    NoCredential -> []
+    ApiKeyCredential(key: _) -> []
+    ExtensionCredential(headers:) ->
+      list.filter(headers, fn(header) {
+        !list.contains(adapter_owned_headers, string.lowercase(header.0))
+      })
   }
 }
 
-/// Every secret string a credential carries, innermost secret last.
+/// Every secret string a credential carries.
 ///
-/// An L402 token is two secrets in one field. The whole header value is
-/// the credential, but the preimage after the final `:` is a payment
-/// proof in its own right: an endpoint that echoes a *fragment* of what
-/// it was sent — a truncated header in a diagnostic, or the preimage
-/// pulled out and named on its own — reflects a value the whole-token
-/// comparison does not find. Both are redacted, so neither spelling
-/// survives into an error.
+/// The gateway scrubs each of these out of an attempt's terminal error,
+/// because a remote endpoint necessarily sees whatever was sent and can
+/// reflect it back in a diagnostic field. An empty list is what the
+/// scrubber treats as "nothing to redact", so the no-credential path
+/// needs no separate case anywhere above it. Header *names* are not
+/// secret and are deliberately absent: redacting `authorization` would
+/// rewrite diagnostics that name a header without leaking anything.
 ///
 /// ## Examples
 ///
@@ -239,19 +250,6 @@ pub fn credential_secrets(credential: Credential) -> List(String) {
   case credential {
     NoCredential -> []
     ApiKeyCredential(key:) -> [key]
-
-    // The macaroon half needs no entry of its own: it is the proxy's
-    // minting rather than a secret, and the token already covers the
-    // one place it appears as sent.
-    L402Credential(token:) ->
-      case string.split(token, ":") {
-        [_no_separator] -> [token]
-        parts ->
-          case list.last(parts) {
-            Ok("") -> [token]
-            Ok(preimage) -> [token, preimage]
-            Error(Nil) -> [token]
-          }
-      }
+    ExtensionCredential(headers:) -> list.map(headers, fn(header) { header.1 })
   }
 }

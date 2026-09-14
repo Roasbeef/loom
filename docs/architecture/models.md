@@ -366,89 +366,114 @@ change to the OpenAI adapter at all** — not a header, not a body field,
 not a stream-parsing branch. That is the whole argument for the seam
 in one data point.
 
-## Paying for inference: L402
+## Credentials from an extension
 
-Every entry above authenticates with a key the operator holds. An L402
-entry does not. It points at a proxy that prices each request and answers
-an unpaid one with `402 Payment Required`, carrying a macaroon and a
-BOLT11 invoice; paying the invoice and retrying with the preimage is what
-turns the 402 into a response. The proxy holds the model's real API key,
-so the operator holds satoshis instead of a vendor credential.
-`protocol-change/033-payment-required.md` is the ruling this section
+Every entry above authenticates with a key the operator holds. An entry
+with `auth = "extension"` does not. It points at an endpoint that answers
+an unauthenticated request with an HTTP authentication challenge — 401,
+402 or 407 — and expects the client to retry with whatever headers the
+challenge asks for. The harness cannot produce those headers, so it asks
+an installed extension for them.
+`protocol-change/033-provider-challenge.md` is the ruling this section
 describes.
 
-**Built.** What an operator writes is an entry with `auth = "l402"` and
-no `api_key_env`, whose `base_url` is the proxy rather than the vendor.
-`dialect`, `model_id`, `context_window` and the rest are unchanged: the
-proxy speaks the dialect it fronts, so the adapter seam does not move.
-An entry that names both `auth = "l402"` and `api_key_env` is refused in
-the same worded style as every other catalogue error, because the two
-answer the same question differently.
+**Built.** What an operator writes is an entry with `auth = "extension"`
+and no `api_key_env`. `dialect`, `model_id`, `context_window` and the
+rest are unchanged: the endpoint speaks the dialect it fronts, so the
+adapter seam does not move. An entry that names both `auth = "extension"`
+and `api_key_env` is refused in the same worded style as every other
+catalogue error, because the two answer the same question differently.
 
-**Built.** The request path is four steps inside one gateway attempt.
-The first request goes out with no authentication header, which is what
-provokes the challenge. The 402 comes back and the adapter hands its
-headers and body to `l402.parse` in `provider/l402.gleam`, a pure module
-that finds the macaroon and the invoice in either carrier — the JSON
-body or `WWW-Authenticate` — and the price in the header, the body, or
-the invoice's human-readable part. A parsed challenge becomes
-`Failed(PaymentRequired(challenge))`; one that does not parse stays the
-`HttpError(402, …)` it was, so an unpaid keyed provider is unaffected.
-The gateway then checks whether a stop was requested, calls
-`Paywall.settle` with the challenge, and on success runs the same target
-once more with `Authorization: L402 <macaroon>:<preimage>`. Whatever the
-second attempt produces is the outcome; a second 402 is delivered rather
-than paid for again. Afterwards `Paywall.credential` hands the settled
-token to every request on that entry proactively, until the proxy
-answers 402 again and the cycle repeats.
+**Built.** The request path is ask → send → (challenge → ask the
+extension → retry once), inside one gateway attempt.
 
-**Built.** What this wave contains is the seam and nothing behind it:
-`provider/l402.gleam` for the challenge and the credential,
-`provider/paywall.gleam` for the injected effect, the two error
-variants, and the gateway's settle-once-retry-once rule. The default
-paywall, `paywall.none()`, declines every challenge. An `auth = "l402"`
-entry therefore fails in band as `PaymentDeclined`, naming the provider
-and the reason, until something that can pay is installed. That is the
-same posture an unset `api_key_env` has: the catalogue boots, the entry
-is listed, and the failure is one worded refusal per request rather than
-a boot error.
+The ask comes first: before *every* attempt on such an entry, the gateway
+calls `Challenger.headers(provider, model_id)` and sends exactly what it
+gets back. An extension that already holds a credential for that provider
+and model presents it here, and a first request with nothing to present
+goes out with no authentication header, which is what provokes the
+challenge.
 
-**Planned.** The thing that pays is a tier-J extension, `loom-402`,
-answering a new `payment_required` hook and settling invoices through a
-`waved` sidecar it owns. The hook is its own proposal against the frame
-vocabulary; the extension is a later wave. Budget policy — what a single
-payment may cost and what a session may spend in total — belongs to
-whatever settles, and the gateway asserts no ceiling of its own.
-Falling back from a declined payment to a keyed entry is also planned
-and deliberately absent here: `PaymentDeclined` is terminal, so a
-declined entry stops its attempt rather than walking the chain, for the
+If a 401, 402 or 407 comes back, the adapter settles it as
+`Failed(Challenged(status, headers, body))`, carrying the status, the
+response headers with lowercase names, and the body bounded to 65,536
+bytes. Nothing in the harness reads any of it. The gateway then checks
+whether a stop was requested, calls `Challenger.answer` with the
+challenge, and on success runs the same target once more with those
+headers appended after the adapter's own. Whatever the second attempt
+produces is the outcome; a second challenge is delivered rather than
+answered again.
+
+**The harness keeps no credential.** It does not retain what `answer`
+returned, and it does not remember what `headers` said last time; the
+next attempt asks again. Whoever satisfies a challenge is the only party
+that knows what it bought, for which entry and model, and when it stops
+being worth anything, so a copy here could only guess and would go on
+presenting a dead credential after the answerer had replaced it. The
+answerer holds it instead — the reference extension in a durable
+`ext/memory` cell, which is what lets a bought credential outlive a
+daemon restart.
+
+Four header names an extension returns are dropped rather than sent:
+`content-type`, `content-length`, `host` and `accept`. The adapter owns
+those, and a provider must not be able to rewrite the request it is
+answering by way of a challenge.
+
+**Built.** What this wave contains is the seam and the two hooks behind
+it, and nothing further: `provider/challenger.gleam` for the injected
+effect, the two error variants, `Credential.ExtensionCredential`, the
+gateway's ask-then-answer-once-retry-once rule, and the extension hooks
+the two functions are wired to — `provider_request` behind `headers` and
+`provider_challenge` behind `answer`
+(`docs/architecture/extensions.md`, "Credentials from an extension").
+The default challenger, `challenger.none()`, supplies no headers and
+declines every challenge. A session with no extension installed therefore
+fails an `auth = "extension"` entry in band as `ChallengeUnanswered`,
+naming the provider and the reason. That is the same posture an unset
+`api_key_env` has: the catalogue boots, the entry is listed, and the
+failure is one worded refusal per request rather than a boot error.
+
+**Planned.** The thing that answers is a tier-J extension, `loom-402`,
+which speaks L402: it parses the 402 challenge itself, pays the invoice
+through a `waved` sidecar it owns, and returns the `authorization` header
+it composed. It stores that header in its own durable `ext/memory` cell
+and answers `provider_request` out of the cell on every later attempt.
+The whole of L402 lives there and none of it here, so a second scheme is
+a second extension and not a harness change. Budget policy — what a single
+answer may cost and what a session may spend in total — belongs to the
+extension, and the gateway asserts no ceiling of its own. Falling back
+from an unanswered challenge to a keyed entry is also planned and
+deliberately absent here: `ChallengeUnanswered` is terminal, so a
+challenged entry stops its attempt rather than walking the chain, for the
 same reason `NoSecret` does.
 
 ### The threat model
 
-The proxy is an origin like any other, and the same rule the egress
-section states holds here: the response is attacker-influenced and every
-field read out of it is treated as hostile input. `l402.parse` is total
-and allocates nothing on the challenge's behalf; a malformed macaroon, a
-missing invoice, or an unknown scheme word produces an ordinary
-`HttpError` rather than a partially built challenge.
+**An extension's headers are secrets.** Every value inside an
+`ExtensionCredential` is scrubbed exactly as an API key is, so a provider
+that reflects an `authorization` header into an error body cannot hand it
+back to the operator through a log line. The harness does not know what
+any of those values mean, which is precisely why all of them are treated
+as though they were the key.
 
-**The invoice amount is chosen by the proxy.** Nothing in the harness
-bounds what a challenge may ask for, so the paywall must assert its own
-ceiling before it pays and decline above it. That is the reason the
-ceiling lives with whatever settles rather than in the gateway: the
-gateway cannot know what a request is worth to the operator, and a
-number invented here would be either useless or wrong. Payment happens
-at most once per gateway attempt, which bounds how often a proxy can
-present a price for one request, not how large the price is.
+**The challenge body is attacker-influenced text.** The provider is an
+origin like any other, and the rule the egress section states holds here:
+everything in the response is hostile input. The harness's protection is
+that it reads none of it. The status decides the classification; the
+headers and the body are carried verbatim, bounded in size, and handed to
+a jailed extension, which is the only party that parses them and the only
+party a malformed challenge can mislead. `describe_error` renders the
+status alone, never a header and never the body.
 
-**The macaroon and the invoice stay out of rendered errors.** A
-`PaymentRequired` renders as its amount and challenge identifier;
-`PaymentDeclined` renders as the provider and the paywall's reason.
-Neither the credential nor the payment instruction is diagnostic, and a
-settled token is scrubbed from every error exactly as an API key is, so
-a proxy that reflects the `authorization` header into an error body
-cannot hand it back to the operator through a log line.
+**The harness asserts no ceiling, because it knows no price.** A
+challenge may ask for anything, and nothing in the gateway bounds what,
+because the gateway cannot read the challenge and would not know what a
+request is worth to the operator if it could. The ceiling therefore lives
+with whatever answers — `loom-402` holds a per-request and a daily cap
+and refuses over either. What the gateway does bound is frequency: an
+extension is asked to *answer a challenge* at most once per gateway
+attempt — the pre-request ask spends nothing — so a provider can
+present one price per request and not a sequence of them.
 
 ## Switching models while a session runs
 
@@ -579,8 +604,7 @@ points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 | `provider/gateway.gleam` | `ProviderConfig`, the builder, `resolve`, and the chain walk. |
 | `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget` (whose `ForRole` carries the thinking overlay — `protocol-change/009`), `ThinkingLevel`, `ProviderRequest`. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | The three dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
-| `provider/l402.gleam` | `Challenge`, `parse` (headers or JSON body, `L402` or `LSAT`), the invoice-amount decoder, and `authorization` — the credential header value. Pure: no process, no FFI. |
-| `provider/paywall.gleam` | `Paywall`, the injected `credential`/`settle` pair, and `none()` — the default that declines everything. |
+| `provider/challenger.gleam` | `Challenger`, the injected `headers`/`answer` pair, `Challenge` (status, headers, body), and `none()` — the default that declines everything. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
 | `packages/tui/src/tui/model_selector.gleam` | The `/model` picker: the modal, search ranking, cursor, role tags, and selected catalogue name. |

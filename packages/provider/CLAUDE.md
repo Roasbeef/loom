@@ -22,7 +22,7 @@ processful shell around that sans-io core. WP-F.
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
   (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`,
-  `with_paywall`); exposes the frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
+  `with_challenger`); exposes the frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
   That owner is the request guard, a `weft/state_machine` over `Phase` and
@@ -31,29 +31,33 @@ processful shell around that sans-io core. WP-F.
   `ProviderConfig` carries in place of the old `api_key_secret` string.
   `ApiKey(secret_name)` is the standing arrangement: the value is in the
   secret store before the request and only its name is configuration.
-  `L402` has no credential at all until the endpoint prices a request, so
-  the first attempt goes out unauthenticated on purpose.
-- `provider/l402.{Challenge, parse, invoice_amount_sat, authorization}` —
-  the pure 402 boundary. `parse` reads either dialect an aperture-style
-  proxy uses: a JSON body carrying `invoice`/`macaroon`/`amount_sat`, or a
-  `www-authenticate: L402 …` line (the legacy `LSAT` spelling too) beside
-  `x-aperture-{challenge,route}-id` and `x-aperture-price-sat`.
-  `invoice_amount_sat` reads only the BOLT11 human-readable prefix, in
-  integer arithmetic, and answers `None` for an amountless invoice or a
-  sub-satoshi amount. `authorization` builds the credential,
-  `"L402 <macaroon>:<preimage_hex>"`. No process, no FFI, no bech32.
-- `provider/paywall.{Paywall, none}` — the injected effect that settles a
-  challenge, held by the gateway beside the transport, secret store and
-  clock. `credential(provider)` returns a token already settled;
-  `settle(provider, challenge)` spends money and returns the whole
-  authorization header value, or a reason. `none()` is the default and
-  declines everything, so an `L402` entry fails in band until a real
-  paywall is installed with `with_paywall`.
+  `Extension` has no credential at all until the endpoint challenges a
+  request, so the first attempt goes out unauthenticated on purpose.
+- `provider/challenger.{Challenge, Challenger, none}` — the injected
+  effect that answers a challenge, held by the gateway beside the
+  transport, secret store and clock. `Challenge(status, headers, body)` is
+  the response verbatim, parsed by nothing in this package;
+  `headers(provider, model_id)` returns the headers to send on the next
+  attempt against that entry and model, and is asked **before every
+  attempt** — **the harness caches nothing**, so whatever it answers is
+  what goes out and a provider asked twice is asked of the challenger
+  twice. That is the ruling rather than an omission: only the answerer
+  knows what it bought, which entry and model it bought it for, and when
+  it stops being worth anything, so a copy kept here could only present a
+  dead credential after the answerer had replaced it. The model rides
+  beside the provider because a proxy that prices per model hands out a
+  token per model. `answer(provider, challenge)` returns the headers to
+  retry with, or a reason. `none()` is the default and declines everything, so an
+  `Extension` entry fails in band until a real challenger is installed
+  with `with_challenger`.
 - `provider/model.Credential` — what one attempt authenticates with, and
   what each adapter's `build_request` now takes in place of an API key
   string. `ApiKeyCredential` renders into whichever header the dialect
   uses (`authorization: Bearer`, `x-api-key`, `x-goog-api-key`),
-  `L402Credential` always into `authorization`, and `NoCredential` sends
+  `ExtensionCredential` carries the headers an extension answered a
+  challenge with — rendered after the adapter's own by
+  `model.extension_headers`, minus `content-type`, `content-length`,
+  `host` and `accept`, which the adapter owns — and `NoCredential` sends
   nothing at all.
 - `provider/pricing.{Pricing, price, free}` — the costing layer. `Pricing`
   is one model's rate card in US dollars per million tokens, the unit
@@ -104,9 +108,10 @@ processful shell around that sans-io core. WP-F.
   operator exported are indistinguishable here — by design, since this
   package must not learn where a value came from.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
-  `is_overflow_message`, `overflow_message`. `PaymentRequired` and
-  `PaymentDeclined` both classify `Terminal`: the one retry either
-  deserves happens inside `gateway.attempt_one`, with a credential.
+  `is_overflow_message`, `overflow_message`. `Challenged` and
+  `ChallengeUnanswered` both classify `Terminal`: the one retry either
+  deserves happens inside `gateway.attempt_one`, with the headers the
+  challenger answered.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
   remote failures after transport delivery: a 64 KiB retained body budget,
   byte-bounded diagnostic fields, and exact scrubbing of the request key before
@@ -209,14 +214,11 @@ processful shell around that sans-io core. WP-F.
     `thinkingConfig` whose knob follows the model generation
     (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5). The key
     travels in `x-goog-api-key`.
-  - The L402 402 challenge, in either of the two shapes an aperture-style
-    proxy sends: a JSON body (`invoice`, `macaroon`, `amount_sat`,
-    `challenge_id`, `route_id`) when `content-type` says
-    `application/json`, otherwise `www-authenticate: L402 macaroon="…",
-    invoice="…"` — `LSAT` on older proxies — beside
-    `x-aperture-challenge-id`, `x-aperture-route-id` and
-    `x-aperture-price-sat`. The credential goes back as
-    `authorization: L402 <macaroon>:<preimage_hex>`.
+  - An HTTP authentication challenge, in no dialect at all: 401, 402 and
+    407 are handed on whole — status, lowercase-named headers and bounded
+    body — and whatever the challenger answers with goes back as headers,
+    verbatim. The scheme is the extension's business, never this
+    package's.
   - `api_name` constants pin the three dialects: `"anthropic-messages"`,
     `"openai-completions"`, `"gemini-generate-content"`.
 
@@ -247,35 +249,38 @@ processful shell around that sans-io core. WP-F.
   can reflect the credential it received, the gateway scrubs that exact
   value from terminal errors before retry classification or delivery,
   through `model.credential_secrets` for the credential the attempt was
-  run with. That is a *list* because an L402 token is two secrets in one
-  field: the whole `authorization` value, and the preimage after its
-  final `:`, which an endpoint can echo on its own where the whole-token
-  comparison would not find it. `NoCredential` yields the empty list,
-  which redacts nothing, so the unpaid first attempt of a paywalled entry
-  needs no special case. An `l402.Challenge` is the one string pair
-  deliberately left alone: the macaroon is echoed back byte-identically and
-  the invoice is paid verbatim, so bounding either would break the payment
-  rather than protect it. Successful streamed
+  run with. That is a *list* because an extension may answer with several
+  headers, and every one of their values is a secret an endpoint can echo
+  back on its own. Header *names* are not secret and are deliberately
+  absent. `NoCredential` yields the empty list, which redacts nothing, so
+  the unauthenticated first attempt of a challenged entry needs no special
+  case. A `Challenged` error is the one value deliberately left alone: its
+  headers and body are the provider's own minting rather than a reflection
+  of what we sent, whoever answers parses them, and nothing renders them
+  into a message. Successful streamed
   content is provider-controlled and is not credential-redacted across fragment
   boundaries; callers must not treat it as a secret-filtering boundary.
   Diagnostic strings are byte-bounded in the same pass. Issue #148 owns the
   stateful response-redaction work.
-- **A priced request is paid for once and retried once.** A 402 whose
-  challenge `l402.parse` accepts settles as `PaymentRequired` rather than
-  `HttpError`; a 402 it cannot parse stays the ordinary HTTP error it
-  looks like, because inventing a payment path for an unpaid keyed
-  provider would be guessing. On an `L402` entry the gateway then checks
-  cancellation — a settle spends money, and a caller who has asked to stop
-  must not be billed — asks the paywall to settle, and runs the *same*
-  target once more with the credential. Whatever that second run returns
-  is the answer, a second `PaymentRequired` included: a proxy that prices
-  a request it has just been paid for will not be talked round by a third
-  attempt, and an unbounded settle loop is an unbounded bill. A decline is
-  `PaymentDeclined(provider, reason)` carrying the paywall's own words,
-  and both payment variants are terminal, so neither walks the chain.
-  Neither rendered message carries the macaroon or the invoice: both are
-  long enough to ruin a log line and the invoice is a payable bearer
-  string.
+- **A challenged request is answered once and retried once.** Status 401,
+  402 or 407 settles as `Challenged` regardless of what the body says,
+  because telling an answerable challenge from an unanswerable one would
+  mean learning a scheme; 403 and every other non-success status stay
+  `HttpError`. Every attempt on an `Extension` entry first asks
+  `challenger.headers(provider, model_id)` — afresh, never from a
+  remembered answer — and sends `ExtensionCredential` or, on a cold
+  start, nothing at all. On an `Extension` entry the gateway then checks
+  cancellation — answering may spend money, and a caller who has asked to
+  stop must not be billed — asks the challenger, and runs the *same*
+  target once more with the headers it answered. Whatever that second run
+  returns is the answer, a second `Challenged` included: an endpoint that
+  challenges a request it has just accepted an answer for will not be
+  talked round by a third attempt, and an unbounded answer loop may be an
+  unbounded bill. A decline is `ChallengeUnanswered(provider, reason)`
+  carrying the answerer's own words, and both variants are terminal, so
+  neither walks the chain. `describe_error` renders only the status: the
+  headers may carry a bearer string and the body is remote text in a
+  grammar this package does not read.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
   terminal. The gateway owner is the sole terminal sender. Response activity

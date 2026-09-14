@@ -23,7 +23,7 @@
 //// [models.<name>]
 //// dialect = "anthropic" | "openai" | "gemini"   # which wire adapter speaks it
 //// base_url = "https://..."           # optional; dialect default used
-//// auth = "api_key"                    # optional; api_key (default) | l402
+//// auth = "api_key"                    # optional; api_key (default) | extension
 //// api_key_env = "SOME_API_KEY"       # env var *name*, never a value
 //// model_id = "provider-model-id"
 //// context_window = 200000
@@ -72,11 +72,14 @@
 //// API keys never live in the file: `api_key_env` names an environment
 //// variable, which the provider secret store reads at dispatch — the
 //// same missing-key-fails-in-band story as the env-only configuration.
-//// An entry may instead declare `auth = "l402"`, which says the endpoint
-//// is a paying proxy: the harness holds no key for it, the proxy prices
-//// each request with a `402 Payment Required`, and an installed payment
-//// extension settles the challenge. Such an entry must not set
-//// `api_key_env`, because there is no key for it to name.
+//// An entry may instead declare `auth = "extension"`, which says the
+//// entry's credential comes from an installed extension rather than
+//// from this file: the endpoint answers an unauthenticated request with
+//// an HTTP challenge, the extension answers that challenge, and the
+//// headers it hands back are what the request is retried with. The
+//// harness never learns the scheme — it forwards the challenge raw and
+//// sends the answer verbatim. Such an entry must not set `api_key_env`,
+//// because there is no key for it to name.
 //// An MCP server's `api_key_env` is the same discipline at spawn time:
 //// the *name* is read from the host environment when the server process
 //// starts and injected into its child environment under that name.
@@ -147,8 +150,8 @@ pub type CatalogModel {
     /// The endpoint root, no trailing slash.
     base_url: String,
     /// How a request to this endpoint authenticates: `ApiKey` names the
-    /// environment variable holding the bearer key, `L402` says the
-    /// endpoint is a paying proxy that prices each request instead.
+    /// environment variable holding the bearer key, `Extension` says the
+    /// credential is answered by an installed extension instead.
     auth: provider_gateway.Auth,
     /// The provider's own model identifier.
     model_id: String,
@@ -505,7 +508,8 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
 // The `auth` word and its consequence for `api_key_env`, parsed
 // together because each choice makes the other key required or refused.
 // An `api_key` entry without a key name would dispatch with no
-// credential and fail at the first request; an `l402` entry carrying one
+// credential and fail at the first request; an `extension` entry
+// carrying one
 // would name a key no adapter will ever send, which reads as a
 // configured credential and is not one. An absent `auth` is `api_key`,
 // so every catalogue written before the key existed parses unchanged.
@@ -524,24 +528,25 @@ fn parse_auth(
       Ok(provider_gateway.ApiKey(name))
     }
 
-    // The proxy holds the model's real key and prices each request, so
-    // the harness has no name to read and refuses one that is written.
-    "l402" ->
+    // The credential is whatever an installed extension answers the
+    // endpoint's challenge with, so the harness has no name to read and
+    // refuses one that is written.
+    "extension" ->
       case dict.has_key(fields, "api_key_env") {
         True ->
           Error(
             place
-            <> ": auth = \"l402\" sends no bearer key, so "
+            <> ": auth = \"extension\" sends no bearer key, so "
             <> place
             <> ".api_key_env must not be set",
           )
-        False -> Ok(provider_gateway.L402)
+        False -> Ok(provider_gateway.Extension)
       }
 
     other ->
       Error(
         place
-        <> ".auth must be \"api_key\" or \"l402\", got \""
+        <> ".auth must be \"api_key\" or \"extension\", got \""
         <> other
         <> "\"",
       )

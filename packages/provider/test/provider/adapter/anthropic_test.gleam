@@ -8,7 +8,6 @@ import gleam/string
 import provider/adapter/anthropic
 import provider/fixture.{sse_event}
 import provider/internal/wire
-import provider/l402
 import provider/model
 import provider/retry
 import provider/stream
@@ -1032,42 +1031,38 @@ pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
   assert string.contains(reason, "core/json.parse")
 }
 
-// --- L402 paywalls ------------------------------------------------------------
+// --- authentication challenges --------------------------------------------
 
-pub fn payment_required_with_a_challenge_settles_as_payment_required_test() {
-  let events =
-    fixture.drive(
-      machine(),
-      status: 402,
-      headers: [
-        #(
-          "www-authenticate",
-          "L402 macaroon=\"AGIA\", invoice=\"lnbc2500u1pvjluez\"",
-        ),
-        #("x-aperture-challenge-id", "c-7"),
-      ],
-      chunks: [bit_array.from_string("")],
-    )
+/// 401, 402 and 407 are the three HTTP statuses that mean "authenticate
+/// and try again". The adapter hands each one on whole — status, headers
+/// and body — because telling an answerable challenge from an
+/// unanswerable one would mean learning a scheme, and the gateway's
+/// challenger is the thing that knows one.
+pub fn auth_statuses_settle_as_challenges_test() {
+  let challenge_headers = [#("www-authenticate", "Scheme realm=\"proxy\"")]
+  let drive_status = fn(status) {
+    fixture.drive(machine(), status:, headers: challenge_headers, chunks: [
+      bit_array.from_string("terms of the challenge"),
+    ])
+  }
 
-  assert events
-    == [
-      stream.Failed(
-        stream.PaymentRequired(challenge: l402.Challenge(
-          macaroon: "AGIA",
-          invoice: "lnbc2500u1pvjluez",
-          amount_sat: Some(250_000),
-          challenge_id: "c-7",
-          route_id: "",
+  assert list.map([401, 402, 407], drive_status)
+    == list.map([401, 402, 407], fn(status) {
+      [
+        stream.Failed(stream.Challenged(
+          status:,
+          headers: challenge_headers,
+          body: "terms of the challenge",
         )),
-      ),
-    ]
+      ]
+    })
 }
 
-pub fn payment_required_without_a_challenge_stays_an_http_error_test() {
-  // An unpaid keyed provider, or a proxy speaking some other scheme: there
-  // is nothing to pay, so the status keeps its ordinary meaning.
+/// 403 is a refusal rather than an invitation, so it keeps its ordinary
+/// meaning and no challenger is troubled with it.
+pub fn a_forbidden_response_stays_an_http_error_test() {
   let events =
-    fixture.drive(machine(), status: 402, headers: [], chunks: [
+    fixture.drive(machine(), status: 403, headers: [], chunks: [
       bit_array.from_string(
         "{\"type\":\"error\",\"error\":{\"type\":\"billing\",\"message\":\"credit exhausted\"}}",
       ),
@@ -1076,7 +1071,7 @@ pub fn payment_required_without_a_challenge_stays_an_http_error_test() {
   assert events
     == [
       stream.Failed(stream.HttpError(
-        status: 402,
+        status: 403,
         api_error_type: "billing",
         message: "credit exhausted",
         retry_after_ms: None,

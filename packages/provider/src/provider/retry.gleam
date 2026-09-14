@@ -12,8 +12,8 @@ import gleam/int
 import gleam/option.{type Option, None}
 import gleam/string
 import provider/stream.{
-  type ProviderError, CancellationUnconfirmed, DrainProofLost, HttpError,
-  MalformedStream, NoIdentity, NoSecret, PaymentDeclined, PaymentRequired,
+  type ProviderError, CancellationUnconfirmed, ChallengeUnanswered, Challenged,
+  DrainProofLost, HttpError, MalformedStream, NoIdentity, NoSecret,
   ProviderCancelled, StreamDisconnected, StreamError, TransportFailed,
   UnknownProvider, UnmappedStopReason,
 }
@@ -49,14 +49,14 @@ pub type RetryPolicy {
 /// `timeout_error`). Terminal: every other HTTP 4xx (including overflow's
 /// 400/413 — the machine compacts those instead), unmapped stop reasons,
 /// malformed streams, configuration errors (missing identity, unknown
-/// provider, missing secret), and both payment outcomes. The payment pair
-/// is terminal because neither is answered by sending the identical
-/// request again: an unsettled `PaymentRequired` would only earn a second
-/// 402, and a `PaymentDeclined` says the paywall has already refused. The
-/// one retry either deserves happens inside `gateway.attempt_one`, which
-/// settles the challenge and repeats the attempt *with a credential*, so
-/// by the time either variant reaches this classifier the retry has been
-/// had. An error whose message matches the
+/// provider, missing secret), and both challenge outcomes. The challenge
+/// pair is terminal because neither is answered by sending the identical
+/// request again: an unanswered `Challenged` would only earn a second
+/// challenge, and a `ChallengeUnanswered` says the challenger has already
+/// refused. The one retry either deserves happens inside
+/// `gateway.attempt_one`, which asks the challenger and repeats the
+/// attempt *with the headers it answered*, so by the time either variant
+/// reaches this classifier the retry has been had. An error whose message matches the
 /// overflow patterns is always terminal, so a context-limit failure
 /// dressed as a retryable status still reaches the machine's overflow
 /// classification.
@@ -98,8 +98,8 @@ pub fn classify(error: ProviderError) -> RetryClass {
         True -> Retryable(backoff_hint_ms: None)
         False -> Terminal
       }
-    PaymentRequired(challenge: _) -> Terminal
-    PaymentDeclined(provider: _, reason: _) -> Terminal
+    Challenged(status: _, headers: _, body: _) -> Terminal
+    ChallengeUnanswered(provider: _, reason: _) -> Terminal
     MalformedStream(report: _) -> Terminal
     UnmappedStopReason(raw: _) -> Terminal
     NoIdentity(role: _) -> Terminal

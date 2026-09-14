@@ -37,25 +37,24 @@ import gleam/result
 import provider/adapter/anthropic
 import provider/adapter/gemini
 import provider/adapter/openai
+import provider/challenger.{type Challenge, type Challenger, Challenge}
 import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
 import provider/internal/diagnostic
-import provider/l402
 import provider/model.{
   type Credential, type MissingIdentity, type ProviderRequest,
   type ResolvedModel, type Role, type ThinkingLevel, ApiKeyCredential,
-  ForResolved, ForRole, L402Credential, MissingIdentity, NoCredential,
+  ExtensionCredential, ForResolved, ForRole, MissingIdentity, NoCredential,
   ResolvedModel,
 }
-import provider/paywall.{type Paywall}
 import provider/pricing.{type Pricing}
 import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
   type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
   AttemptCancellationUnconfirmed, AttemptCancelled, AttemptDrainProofLost,
-  AttemptTerminal, Cancel, ConsumerGone, Delta, Failed, NoIdentity, NoSecret,
-  PaymentDeclined, PaymentRequired, ProviderCancelled, Settled, UnknownProvider,
+  AttemptTerminal, Cancel, ChallengeUnanswered, Challenged, ConsumerGone, Delta,
+  Failed, NoIdentity, NoSecret, ProviderCancelled, Settled, UnknownProvider,
 }
 import weft/state_machine as sm
 
@@ -107,17 +106,18 @@ type AttemptPermit {
 ///
 /// The two arms differ in *when* the credential exists. A key is a
 /// standing arrangement: it is in the secret store before the request and
-/// the only question is its name. An L402 entry has no credential until
-/// the endpoint prices a request and somebody pays for it, so the first
-/// attempt is deliberately unauthenticated and the challenge it earns is
-/// the start of the exchange rather than a failure.
+/// the only question is its name. An extension-authenticated entry has no
+/// credential until the endpoint challenges a request and something
+/// answers the challenge, so the first attempt is deliberately
+/// unauthenticated and the challenge it earns is the start of the
+/// exchange rather than a failure.
 pub type Auth {
   /// A bearer key read from the secret store by name at dispatch.
   ApiKey(secret_name: String)
 
-  /// L402: the entry is unpaid until the proxy prices it, and the
-  /// gateway's `Paywall` settles the challenge (`with_paywall`).
-  L402
+  /// An extension answers the endpoint's challenge and the gateway sends
+  /// the headers it answered with (`with_challenger`).
+  Extension
 }
 
 /// One configured provider endpoint. The variant selects the adapter
@@ -150,13 +150,13 @@ pub opaque type Gateway {
   /// name shadow earlier ones via first-match lookup order); `routes`
   /// map each role to its ordered fallback chain, best target first;
   /// `prices` carries at most one rate card per provider name and a
-  /// provider absent from it is unpriced, which costs zero; `paywall`
-  /// settles the challenges L402 entries earn and declines everything
-  /// until `with_paywall` replaces the default;
+  /// provider absent from it is unpriced, which costs zero; `challenger`
+  /// answers the challenges `Extension` entries earn and declines
+  /// everything until `with_challenger` replaces the default;
   /// `attempt_timeout_ms` is positive and bounds one *run* of one target
   /// from transport start through settlement, not the whole of a
-  /// paywalled exchange: such an exchange is a run, then a settlement
-  /// spending against the paywall's own budget, then a second run, and
+  /// challenged exchange: such an exchange is a run, then an answer
+  /// spending against the challenger's own budget, then a second run, and
   /// each run carries the deadline afresh. Response activity does not
   /// renew the deadline.
   Gateway(
@@ -166,7 +166,7 @@ pub opaque type Gateway {
     transport: Transport,
     secrets: SecretStore,
     clock: Clock,
-    paywall: Paywall,
+    challenger: Challenger,
     attempt_timeout_ms: Int,
   )
 }
@@ -196,7 +196,7 @@ pub fn new(
     transport:,
     secrets:,
     clock:,
-    paywall: paywall.none(),
+    challenger: challenger.none(),
     attempt_timeout_ms: 300_000,
   )
 }
@@ -293,24 +293,28 @@ pub fn with_attempt_timeout(gateway: Gateway, timeout_ms: Int) -> Gateway {
   Gateway(..gateway, attempt_timeout_ms: timeout_ms)
 }
 
-/// Installs the paywall that settles L402 challenges, replacing the
-/// declining default.
+/// Installs the challenger that answers provider challenges, replacing
+/// the declining default.
 ///
-/// This is a setter rather than a `new` argument because a paywall is a
-/// deployment fact rather than a gateway one: every existing caller builds
-/// a gateway of keyed providers and owes nothing here, and the harness
-/// that embeds a Lightning wallet adds one line. The paywall is consulted
-/// only by entries configured `ApiKey`'s counterpart `L402`, so installing
-/// one changes nothing for a gateway that has none.
+/// This is a setter rather than a `new` argument because a challenger is
+/// a deployment fact rather than a gateway one: every existing caller
+/// builds a gateway of keyed providers and owes nothing here, and a
+/// harness that has loaded an answering extension adds one line. The
+/// challenger is consulted only by entries configured `ApiKey`'s
+/// counterpart `Extension`, so installing one changes nothing for a
+/// gateway that has none.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // gateway |> gateway.with_paywall(paywall.none())
+/// // gateway |> gateway.with_challenger(challenger.none())
 /// ```
 ///
-pub fn with_paywall(gateway: Gateway, paywall paywall: Paywall) -> Gateway {
-  Gateway(..gateway, paywall:)
+pub fn with_challenger(
+  gateway: Gateway,
+  challenger challenger: Challenger,
+) -> Gateway {
+  Gateway(..gateway, challenger:)
 }
 
 /// Resolves a role to the identity durable state should store: the first
@@ -1736,9 +1740,9 @@ fn continue_terminal(
 
 // Everything one attempt needs except the credential it authenticates
 // with. The credential is the one thing that changes between the two runs
-// of a paywalled attempt, so holding the rest still in a record is what
+// of a challenged attempt, so holding the rest still in a record is what
 // lets `run_attempt` be called twice without threading ten arguments
-// through the payment path a second time.
+// through the challenge path a second time.
 type AttemptContext {
   AttemptContext(
     gateway: Gateway,
@@ -1757,7 +1761,7 @@ type AttemptContext {
 // Runs one attempt against one target, delivering deltas as they stream
 // and returning the attempt's terminal event. How the attempt
 // authenticates is the entry's own configuration, and the two arms differ
-// enough afterwards — a keyed attempt runs once, a paywalled one may run
+// enough afterwards — a keyed attempt runs once, a challenged one may run
 // twice — to be worth separate functions rather than a branch inside one.
 fn attempt_one(
   gateway: Gateway,
@@ -1789,7 +1793,7 @@ fn attempt_one(
 
   case config.auth {
     ApiKey(secret_name:) -> keyed_attempt(attempt, secret_name)
-    L402 -> paywalled_attempt(attempt)
+    Extension -> challenged_attempt(attempt)
   }
 }
 
@@ -1811,61 +1815,69 @@ fn keyed_attempt(
   run_attempt(attempt, ApiKeyCredential(key))
 }
 
-// The paywalled path: at most one settlement and at most one retry.
+// The challenged path: at most one answer and at most one retry.
 //
-// The first run carries whatever token the paywall has already settled for
-// this provider, which is `NoCredential` on a cold start — an
-// unauthenticated request is how the proxy is asked to state its price.
-// If the answer is a challenge, the paywall settles it and the *same*
-// target runs once more with the credential. Whatever that second run
-// returns is the answer, including a second `PaymentRequired`: a proxy
-// that prices a request it has just been paid for is not going to be
-// talked round by a third attempt, and an unbounded settle loop is an
-// unbounded bill.
-fn paywalled_attempt(attempt: AttemptContext) -> AttemptOutcome {
-  let held = attempt.gateway.paywall.credential(attempt.config.name)
+// The first run carries whatever the challenger answers for this
+// provider and model, asked afresh here rather than remembered from the
+// last attempt: the harness keeps no credential of its own, so the
+// answerer is the only party that decides what is current. On a cold
+// start that is `NoCredential` — an unauthenticated request is how the
+// endpoint is asked to state its terms. If what comes back is a
+// challenge, the challenger answers it and
+// the *same* target runs once more with those headers. Whatever that
+// second run returns is the answer, including a second `Challenged`: an
+// endpoint that challenges a request it has just accepted an answer for
+// is not going to be talked round by a third attempt, and an unbounded
+// answer loop may be an unbounded bill.
+fn challenged_attempt(attempt: AttemptContext) -> AttemptOutcome {
+  let held =
+    attempt.gateway.challenger.headers(
+      attempt.config.name,
+      attempt.target.model_id,
+    )
   let credential = case held {
-    Some(token) -> L402Credential(token)
+    Some(headers) -> ExtensionCredential(headers)
     None -> NoCredential
   }
   let outcome = run_attempt(attempt, credential)
 
-  case payment_challenge(outcome) {
+  case pending_challenge(outcome) {
     None -> outcome
-    Some(challenge) -> settle_and_retry(attempt, challenge)
+    Some(challenge) -> answer_and_retry(attempt, challenge)
   }
 }
 
-// Pays for one challenge and runs the attempt again.
+// Answers one challenge and runs the attempt again.
 //
-// Cancellation is checked before the payment, not after: a settle spends
-// money, and a caller who has already asked to stop must not be billed for
-// work whose result nobody will read. `stop_requested` has itself
-// delivered the cancellation terminal to a live consumer by the time it
-// answers `True`, so this returns `ConsumerGone` — the one outcome the
-// walk delivers nothing for — rather than authoring a second terminal.
+// Cancellation is checked before the answer, not after: answering may
+// spend money, and a caller who has already asked to stop must not be
+// billed for work whose result nobody will read. `stop_requested` has
+// itself delivered the cancellation terminal to a live consumer by the
+// time it answers `True`, so this returns `ConsumerGone` — the one
+// outcome the walk delivers nothing for — rather than authoring a second
+// terminal.
 //
-// A `Cancel` that arrives *during* the settlement is not lost by being
+// A `Cancel` that arrives *during* the answer is not lost by being
 // checked too early: the retry's first select reads it, so the retry
-// begins and is cancelled immediately, and the token the settlement
-// bought stays in the paywall's cache for the next request rather than
-// being paid for twice.
-fn settle_and_retry(
+// begins and is cancelled immediately, and the credential the answer
+// bought is already in the answerer's own store — nothing is kept here —
+// so the next request recalls it rather than buying it twice.
+fn answer_and_retry(
   attempt: AttemptContext,
-  challenge: l402.Challenge,
+  challenge: Challenge,
 ) -> AttemptOutcome {
   case stop_requested(attempt.control, attempt.consumer, attempt.events) {
     True -> ConsumerGone
     False ->
-      case attempt.gateway.paywall.settle(attempt.config.name, challenge) {
-        Ok(token) -> run_attempt(attempt, L402Credential(token))
+      case attempt.gateway.challenger.answer(attempt.config.name, challenge) {
+        Ok(headers) -> run_attempt(attempt, ExtensionCredential(headers))
 
-        // A decline is terminal and carries the paywall's own words, which
-        // is the only account of *why* the request went unpaid that anyone
-        // above this seam will get.
+        // A decline is terminal and carries the answerer's own words,
+        // which is the only account of *why* the request went
+        // unauthenticated that anyone above this seam will get.
         Error(reason) ->
           AttemptTerminal(
-            Failed(PaymentDeclined(provider: attempt.config.name, reason:)),
+            Failed(ChallengeUnanswered(provider: attempt.config.name, reason:)),
           )
           |> annotate_attempt(
             attempt.ordinal,
@@ -1875,19 +1887,20 @@ fn settle_and_retry(
   }
 }
 
-// The challenge a terminal `PaymentRequired` carries, through any
-// diagnostic context wrapped around it.
+// The challenge a terminal `Challenged` carries, through any diagnostic
+// context wrapped around it.
 //
 // The inner match is a catch-all on purpose. The question is whether this
 // one error is a challenge, so a future `ProviderError` variant is
 // definitionally not one and gains nothing from being named here; the
 // outer match over the attempt outcomes is written out, because a new
 // outcome would need a decision.
-fn payment_challenge(outcome: AttemptOutcome) -> Option(l402.Challenge) {
+fn pending_challenge(outcome: AttemptOutcome) -> Option(Challenge) {
   case outcome {
     AttemptTerminal(Failed(error:)) ->
       case stream.underlying_error(error) {
-        PaymentRequired(challenge:) -> Some(challenge)
+        Challenged(status:, headers:, body:) ->
+          Some(Challenge(status:, headers:, body:))
         _not_a_challenge -> None
       }
     AttemptTerminal(terminal: _) -> None
@@ -2075,14 +2088,12 @@ fn repriced(
 // The remote endpoint necessarily sees the credential it was sent and can
 // reflect it in any diagnostic field. Scrub the terminal before retry
 // classification, not only before final delivery, so a fallback never carries
-// the credential into another lifetime or a later diagnostic. An empty secret
-// — which is what `NoCredential` yields — redacts nothing, so the unpaid first
-// attempt of a paywalled entry needs no special case.
+// the credential into another lifetime or a later diagnostic. An empty list
+// — which is what `NoCredential` yields — redacts nothing, so the
+// unauthenticated first attempt of a challenged entry needs no special case.
 // Each secret is scrubbed in turn, because one credential can carry more
-// than one: an L402 token is a header value whose tail is a payment proof
-// an endpoint may echo on its own, and a fold over the list finds that
-// spelling as well as the whole. An empty list is the no-credential case
-// and leaves the error untouched.
+// than one: an extension may answer with several headers, and every one of
+// their values is a secret an endpoint may echo back on its own.
 fn scrub_attempt(
   outcome: AttemptOutcome,
   secrets: List(String),

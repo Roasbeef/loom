@@ -14,8 +14,8 @@ import gleam/list
 import gleam/option
 import gleam/string
 import provider/stream.{
-  type ProviderError, CancellationUnconfirmed, DrainProofLost, HttpError,
-  MalformedStream, NoIdentity, NoSecret, PaymentDeclined, PaymentRequired,
+  type ProviderError, CancellationUnconfirmed, ChallengeUnanswered, Challenged,
+  DrainProofLost, HttpError, MalformedStream, NoIdentity, NoSecret,
   ProviderCancelled, StreamDisconnected, StreamError, TransportFailed,
   UnknownProvider, UnmappedStopReason,
 }
@@ -104,14 +104,14 @@ pub fn scrub_error(
         retry_after_ms:,
       )
 
-    // A challenge is the proxy's own minting, not a reflection of what we
-    // sent, and both of its long fields must survive intact: the macaroon
-    // is echoed back byte-identically in the credential and the invoice is
-    // paid verbatim. Bounding or rewriting either would break the payment
-    // rather than protect it, and neither is rendered into a message.
-    PaymentRequired(challenge:) -> PaymentRequired(challenge:)
-    PaymentDeclined(provider:, reason:) ->
-      PaymentDeclined(
+    // A challenge is the provider's own minting rather than a reflection
+    // of what we sent, and it must survive intact: whoever answers it
+    // parses the headers and the body itself, so bounding or rewriting
+    // either would break the answer rather than protect it. Nothing here
+    // is rendered into a message, which is what makes that safe.
+    Challenged(status:, headers:, body:) -> Challenged(status:, headers:, body:)
+    ChallengeUnanswered(provider:, reason:) ->
+      ChallengeUnanswered(
         provider: scrub_label(provider, secret),
         reason: scrub_message(reason, secret),
       )
