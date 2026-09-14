@@ -61,6 +61,15 @@ The existing user daemon was neither replaced nor restarted. Its roughly
 named diagnostic instance before proposing a memory fix. These packaging
 checks are not a full `make check` or a Linux signoff.
 
+`fix/profiling-flags`, based on `813daf2a`, makes that diagnostic path a normal
+opt-in launcher feature for both `loom` and `loomd`. `--profile` creates a
+unique loopback node and private cookie directory below the selected state
+root, then prints the packaged `loom-profile` census command. The cookie stays
+out of OS arguments and the application keeps its original `HOME`. The branch
+has a passing shell check, a generated slim-launcher smoke, and a temporary
+release-fixture census. Its full release rebuild was rate-limited by Hex and
+is still required before a release claim.
+
 ## Where the tree is
 
 | Body of work | Current state |
