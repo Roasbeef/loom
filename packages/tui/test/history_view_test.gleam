@@ -22,6 +22,7 @@ import tui/snapshot
 import tui/snapshot_view
 import tui/transcript_anchor
 import tui/workspace
+import tui_test/ffi_term
 
 fn id(seq) {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
@@ -406,6 +407,164 @@ fn captured_window(items, leaf, next) {
     window(items),
     Some(leaf),
   )
+}
+
+fn frozen_history() {
+  let current = view(200)
+  let assert [snapshot.Loaded(entry.MessageEntry(..) as newest, bytes), ..rest] =
+    entries(200)
+    as "the fixture has a newest message to make detail-sensitive"
+  let detailed =
+    message.AssistantMessage(
+      content: [
+        message.AssistantText(
+          string.repeat("This paragraph must wrap at the narrower width. ", 8),
+          None,
+        ),
+        message.AssistantThinking(
+          string.repeat("A separate reasoning line.\n", 8),
+          None,
+          False,
+        ),
+      ],
+      api: "messages",
+      provider: "fixture",
+      model: "fixture",
+      response_model: None,
+      response_id: None,
+      diagnostics: None,
+      usage: current.usage,
+      stop_reason: message.Stop,
+      deferred: None,
+      error_message: None,
+      raw_stop_reason: None,
+      end_turn: None,
+      timestamp: 1000,
+    )
+  let cut =
+    captured_window(
+      [
+        snapshot.Loaded(entry.MessageEntry(..newest, message: detailed), bytes),
+        ..rest
+      ],
+      1,
+      201,
+    )
+  let reading =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+    |> tui.apply_channel_update(session_channel.Captured(
+      cut,
+      current,
+      session_channel.Requested,
+    ))
+    |> tui.update(backend.Resize(272, 84), _)
+    |> tui.update(backend.MouseScroll(5, 5, True), _)
+  assert !list.is_empty(reading.rendered_anchors)
+    as "the workload must have frozen durable anchors"
+  #(cut, current, reading)
+}
+
+pub fn metadata_refresh_reuses_frozen_history_anchors_test() {
+  let #(cut, current, reading) = frozen_history()
+
+  // A metadata-only capture still refreshes the footer and transport state.
+  // Its unchanged ancestry must not re-project every message to recover the
+  // same scroll anchors; equal text alone would miss that repeated work.
+  let refreshed =
+    reading
+    |> tui.apply_channel_update(session_channel.Captured(
+      snapshot.Captured(
+        ..cut,
+        metadata: json.Object([#("revision", json.Int(1))]),
+      ),
+      current,
+      session_channel.Refreshed,
+    ))
+    |> tui.update(backend.Tick, _)
+  assert refreshed.rendered_rows == reading.rendered_rows
+  assert refreshed.scroll_offset == reading.scroll_offset
+  assert ffi_term.same_term(reading.record_rows, refreshed.record_rows)
+    as "the durable row cache stays valid across metadata-only refreshes"
+  assert ffi_term.same_term(
+    reading.rendered_anchors,
+    refreshed.rendered_anchors,
+  )
+    as "unchanged durable rows must retain their existing source anchors"
+}
+
+pub fn streamed_output_reuses_frozen_history_anchors_test() {
+  let #(_, _, reading) = frozen_history()
+  let streamed =
+    reading
+    |> tui.apply_channel_update(session_channel.Streamed(
+      "main",
+      "operation",
+      "generation",
+      "text",
+      "Output arriving below the reader.",
+    ))
+    |> tui.update(backend.Tick, _)
+  assert streamed.streams != reading.streams
+    as "live output must still be consumed while reading history"
+  assert streamed.render_revision > reading.render_revision
+    as "the test must reach a transcript refresh"
+  assert streamed.rendered_rows == reading.rendered_rows
+  assert streamed.scroll_offset == reading.scroll_offset
+  assert ffi_term.same_term(reading.rendered_anchors, streamed.rendered_anchors)
+    as "live fragments cannot rebuild the unchanged durable anchor projection"
+}
+
+pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
+  let #(_, _, reading) = frozen_history()
+  let _ =
+    list.fold(
+      [
+        backend.Resize(50, 24),
+        backend.KeyPress("ctrl+g"),
+        backend.Paste("/help"),
+        backend.KeyPress("enter"),
+        backend.KeyPress("esc"),
+        backend.MouseScroll(5, 5, True),
+        backend.Resize(272, 84),
+      ],
+      reading,
+      fn(model, event) {
+        let changed = tui.update(event, model)
+        case event {
+          backend.Resize(..) | backend.KeyPress("ctrl+g") -> {
+            assert changed.rendered_anchors != model.rendered_anchors
+              as "reflow and expansion must change durable anchors in this fixture"
+          }
+          backend.KeyPress("enter") -> {
+            assert changed.help_open
+            assert changed.rendered_anchors == []
+          }
+          backend.KeyPress("esc") -> {
+            assert !changed.help_open
+          }
+          _ -> Nil
+        }
+
+        // The control discards both record hints and anchor hints. Comparing
+        // identities as well as rows catches an old anchor retained after a
+        // reflow, a detail toggle, or a surface with no durable provenance.
+        let fresh =
+          tui.Model(
+            ..changed,
+            record_cache_valid: False,
+            rendered_revision: -1,
+            rendered_anchors: [],
+          )
+          |> tui.update(backend.Resize(changed.width, changed.height), _)
+        assert changed.rendered_rows == fresh.rendered_rows
+        assert changed.rendered_anchors == fresh.rendered_anchors
+        changed
+      },
+    )
 }
 
 pub fn short_frozen_history_keeps_return_to_live_available_at_zero_offset_test() {

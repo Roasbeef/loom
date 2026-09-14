@@ -3981,14 +3981,21 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       let rendered_rows = rendered_rows_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
 
-      // Source anchors are needed only while reading older output. Building
-      // them for every live fragment repeats the whole durable projection.
-      // The first scroll into history captures them before later updates.
+      // Source anchors belong to the durable row cache. Metadata and live
+      // fragments invalidate the outer projection even while reading frozen
+      // history, but do not change these identities. Rebuilding them there
+      // re-projects and sanitizes every retained message on every update.
+      // An empty anchor list also covers entering history or returning from
+      // help, whose rows have no durable identities to reuse.
       let rendered_anchors = case
-        after.help_open || after.notes_open || !reading_history(after)
+        after.help_open || after.notes_open || !reading_history(after),
+        record_cache_matches(after, width)
+        && list.is_empty(after.pending_records),
+        before.rendered_anchors
       {
-        True -> []
-        False -> record_anchors_for(cached, width)
+        True, _, _ -> []
+        False, True, [_, ..] -> before.rendered_anchors
+        False, _, _ -> record_anchors_for(cached, width)
       }
       let anchored = case reading_history(after) {
         False -> 0
@@ -4128,6 +4135,16 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
 // Unchanged presentation lines reuse their wrapped rows within the same width;
 // a changed outcome has a different key and cannot retain its pending label.
 // Expanded append-only history still extends the row list as one small batch.
+// Both wrapped rows and their source anchors share this layout key. Pending
+// records are checked separately: rows can append them, while anchors need a
+// complete rebuild so repeated text still names its own durable entry.
+fn record_cache_matches(model: Model, width: Int) -> Bool {
+  model.record_cache_valid
+  && model.record_cache_width == width
+  && model.record_cache_strand == model.active_strand
+  && model.record_cache_details == model.details_expanded
+}
+
 fn refresh_record_cache(model: Model, width: Int) -> Model {
   // Expanded history is append-only, so a pending record there can only add
   // rows. Compact history groups consecutive calls, and `tool_activity`
@@ -4139,12 +4156,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     && list.any(model.pending_records, fn(record) {
       tool_activity.regroups(record.entry)
     })
-  let cache_matches =
-    model.record_cache_valid
-    && model.record_cache_width == width
-    && model.record_cache_strand == model.active_strand
-    && model.record_cache_details == model.details_expanded
-    && !regrouped
+  let cache_matches = record_cache_matches(model, width) && !regrouped
   case cache_matches, model.pending_records {
     False, _ -> {
       let previous = case model.record_cache_width == width {
