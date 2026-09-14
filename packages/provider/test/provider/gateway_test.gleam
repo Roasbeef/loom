@@ -15,7 +15,9 @@ import gleam/string
 import provider/fixture.{sse_event}
 import provider/gateway
 import provider/http
+import provider/l402
 import provider/model
+import provider/paywall
 import provider/pricing
 import provider/secret
 import provider/stream
@@ -83,12 +85,12 @@ fn two_provider_gateway(transport: http.Transport) -> gateway.Gateway {
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "primary",
     base_url: "https://primary.test",
-    api_key_secret: "PRIMARY_KEY",
+    auth: gateway.ApiKey("PRIMARY_KEY"),
   ))
   |> gateway.add_provider(gateway.AnthropicProvider(
     name: "backup",
     base_url: "https://backup.test",
-    api_key_secret: "BACKUP_KEY",
+    auth: gateway.ApiKey("BACKUP_KEY"),
   ))
   |> gateway.route(model.Main, [
     target("primary", "model-a"),
@@ -250,7 +252,7 @@ pub fn gemini_provider_dispatches_through_its_adapter_test() {
     |> gateway.add_provider(gateway.GeminiProvider(
       name: "google",
       base_url: "https://gemini.test/v1beta",
-      api_key_secret: "PRIMARY_KEY",
+      auth: gateway.ApiKey("PRIMARY_KEY"),
     ))
     |> gateway.route(model.Main, [target("google", "gemini-3.5-flash")])
     |> gateway.with_attempt_timeout(2000)
@@ -1075,7 +1077,7 @@ pub fn missing_secret_fails_with_name_only_test() {
     |> gateway.add_provider(gateway.AnthropicProvider(
       name: "anthropic",
       base_url: "https://api.anthropic.com",
-      api_key_secret: "ANTHROPIC_API_KEY",
+      auth: gateway.ApiKey("ANTHROPIC_API_KEY"),
     ))
     |> gateway.route(model.Main, [target("anthropic", "model-a")])
   let handle = gateway.request(gw, main_request())
@@ -1147,4 +1149,229 @@ fn bare_event(event) {
     stream.Failed(error) -> stream.Failed(stream.underlying_error(error))
     _ -> event
   }
+}
+
+// --- L402 paywalls ---------------------------------------------------------
+
+const macaroon = "AGIAJEemVQ"
+
+const preimage = "ab12cd34"
+
+// The challenge an aperture-style proxy answers an unpaid request with.
+fn challenge_response() -> List(http.HttpEvent) {
+  fixture.error_response(
+    402,
+    [
+      #(
+        "www-authenticate",
+        "L402 macaroon=\"" <> macaroon <> "\", invoice=\"lnbc2500u1pvjluez\"",
+      ),
+      #("x-aperture-challenge-id", "c-7"),
+    ],
+    "",
+  )
+}
+
+fn expected_challenge() -> l402.Challenge {
+  l402.Challenge(
+    macaroon:,
+    invoice: "lnbc2500u1pvjluez",
+    amount_sat: Some(250_000),
+    challenge_id: "c-7",
+    route_id: "",
+  )
+}
+
+// A paywall that records every challenge it is asked to settle, answers
+// with a fixed outcome, and holds whatever credential the test gave it.
+fn stub_paywall(
+  held held: option.Option(String),
+  settled settled: process.Subject(l402.Challenge),
+  outcome outcome: Result(String, String),
+) -> paywall.Paywall {
+  paywall.Paywall(
+    credential: fn(_provider) { held },
+    settle: fn(_provider, challenge) {
+      process.send(settled, challenge)
+      outcome
+    },
+  )
+}
+
+// One paywalled entry, no fallback, so a walk cannot disguise a retry.
+fn paywalled_gateway(
+  transport: http.Transport,
+  wall: paywall.Paywall,
+) -> gateway.Gateway {
+  gateway.new(
+    transport:,
+    secrets: secrets(),
+    clock: clock.fixed(at: 1_700_000_000_000),
+  )
+  |> gateway.add_provider(gateway.AnthropicProvider(
+    name: "primary",
+    base_url: "https://primary.test",
+    auth: gateway.L402,
+  ))
+  |> gateway.route(model.Main, [target("primary", "model-a")])
+  |> gateway.with_attempt_timeout(2000)
+  |> gateway.with_paywall(wall)
+}
+
+// A transport that prices an unauthenticated request and serves a paid one.
+fn priced_transport(
+  requests: process.Subject(http.HttpRequest),
+) -> http.Transport {
+  fixture.routing_transport(fn(request) {
+    process.send(requests, request)
+    case list.key_find(request.headers, "authorization") {
+      Ok(_paid) -> fixture.ok_response(happy_transcript("Paid"))
+      Error(Nil) -> challenge_response()
+    }
+  })
+}
+
+pub fn a_challenge_is_settled_and_the_attempt_retried_once_test() {
+  let requests = process.new_subject()
+  let settled = process.new_subject()
+  let wall =
+    stub_paywall(
+      held: None,
+      settled:,
+      outcome: Ok(l402.authorization(macaroon, preimage)),
+    )
+  let handle =
+    gateway.request(
+      paywalled_gateway(priced_transport(requests), wall),
+      main_request(),
+    )
+  let assert Ok(#(_deltas, stream.Settled(..))) =
+    stream.await_terminal(handle, within: 2000)
+
+  // The first attempt is deliberately unauthenticated: that is what
+  // provokes the proxy into stating its price.
+  let assert Ok(unpaid) = process.receive(requests, within: 1000)
+  assert list.key_find(unpaid.headers, "authorization") == Error(Nil)
+  assert list.key_find(unpaid.headers, "x-api-key") == Error(Nil)
+
+  assert process.receive(settled, within: 1000) == Ok(expected_challenge())
+
+  let assert Ok(paid) = process.receive(requests, within: 1000)
+  assert list.key_find(paid.headers, "authorization")
+    == Ok("L402 " <> macaroon <> ":" <> preimage)
+}
+
+pub fn a_declined_payment_is_terminal_and_does_not_walk_test() {
+  let settled = process.new_subject()
+  let wall =
+    stub_paywall(held: None, settled:, outcome: Error("wallet has no funds"))
+  let transport =
+    fixture.routing_transport(fn(request) {
+      case string.contains(request.url, "primary.test") {
+        True -> challenge_response()
+        False -> fixture.ok_response(happy_transcript("From backup"))
+      }
+    })
+
+  // The backup would settle happily, so a delivered decline proves the
+  // chain did not walk past a terminal payment failure.
+  let gw =
+    paywalled_gateway(transport, wall)
+    |> gateway.add_provider(gateway.AnthropicProvider(
+      name: "backup",
+      base_url: "https://backup.test",
+      auth: gateway.ApiKey("BACKUP_KEY"),
+    ))
+    |> gateway.route(model.Main, [
+      target("primary", "model-a"),
+      target("backup", "model-b"),
+    ])
+  let handle = gateway.request(gw, main_request())
+
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  assert stream.underlying_error(error)
+    == stream.PaymentDeclined(
+      provider: "primary",
+      reason: "wallet has no funds",
+    )
+}
+
+pub fn a_held_credential_is_sent_on_the_first_attempt_test() {
+  let requests = process.new_subject()
+  let settled = process.new_subject()
+  let token = l402.authorization(macaroon, preimage)
+  let wall =
+    stub_paywall(
+      held: Some(token),
+      settled:,
+      outcome: Error("must not be called"),
+    )
+  let handle =
+    gateway.request(
+      paywalled_gateway(priced_transport(requests), wall),
+      main_request(),
+    )
+  let assert Ok(#(_deltas, stream.Settled(..))) =
+    stream.await_terminal(handle, within: 2000)
+
+  let assert Ok(first) = process.receive(requests, within: 1000)
+  assert list.key_find(first.headers, "authorization") == Ok(token)
+
+  // Nothing was paid for: a held credential settles the request outright.
+  assert process.receive(settled, within: 50) == Error(Nil)
+}
+
+pub fn a_second_challenge_after_settling_is_delivered_test() {
+  // The proxy prices a request it has just been paid for. One more attempt
+  // would only earn a third challenge and a second bill, so the second
+  // `PaymentRequired` is the answer.
+  let settled = process.new_subject()
+  let wall =
+    stub_paywall(
+      held: None,
+      settled:,
+      outcome: Ok(l402.authorization(macaroon, preimage)),
+    )
+  let handle =
+    gateway.request(
+      paywalled_gateway(fixture.transport(challenge_response()), wall),
+      main_request(),
+    )
+
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  assert stream.underlying_error(error)
+    == stream.PaymentRequired(challenge: expected_challenge())
+  assert process.receive(settled, within: 1000) == Ok(expected_challenge())
+  assert process.receive(settled, within: 50) == Error(Nil)
+}
+
+pub fn a_reflected_l402_token_is_scrubbed_test() {
+  let settled = process.new_subject()
+  let token = l402.authorization(macaroon, preimage)
+  let wall = stub_paywall(held: None, settled:, outcome: Ok(token))
+  let transport =
+    fixture.routing_transport(fn(request) {
+      case list.key_find(request.headers, "authorization") {
+        Error(Nil) -> challenge_response()
+        Ok(_paid) ->
+          fixture.error_response(
+            400,
+            [],
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+              <> "\"message\":\"authorization: "
+              <> token
+              <> "\"}}",
+          )
+      }
+    })
+  let handle =
+    gateway.request(paywalled_gateway(transport, wall), main_request())
+
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  let rendered = stream.describe_error(error)
+  assert !string.contains(rendered, preimage)
+  assert string.contains(rendered, "[REDACTED]")
 }

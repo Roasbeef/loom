@@ -157,3 +157,58 @@ pub type ProviderRequest {
     max_output_tokens: Option(Int),
   )
 }
+
+/// What one attempt authenticates with.
+///
+/// The credential is resolved by the gateway and rendered by the adapter,
+/// because where it goes on the wire is a fact about the dialect: an API
+/// key goes wherever that dialect puts one (`authorization: Bearer` for
+/// the chat-completions dialect, `x-api-key` for Messages,
+/// `x-goog-api-key` for `generateContent`), while an L402 credential
+/// always goes in `authorization`, since it is an HTTP authentication
+/// scheme rather than a vendor header.
+///
+/// Constructor invariants: the string inside `ApiKeyCredential` and
+/// `L402Credential` is a secret *value*, read at dispatch and copied into
+/// exactly one outbound header — the gateway scrubs it from any terminal
+/// error before that error can be classified, delivered, or logged.
+/// `L402Credential.token` is a complete header value, `l402.authorization`'s
+/// output, not a bare macaroon.
+pub type Credential {
+  /// Send no authentication header at all. This is how a paywalled entry
+  /// that has not yet paid provokes its first 402 challenge.
+  NoCredential
+
+  /// A bearer API key, in whichever header the dialect uses for one.
+  ApiKeyCredential(key: String)
+
+  /// A settled L402 credential: the whole `L402 <macaroon>:<preimage>`
+  /// value, for the `authorization` header.
+  L402Credential(token: String)
+}
+
+/// The secret value a credential carries, or `""` when it carries none.
+///
+/// The gateway scrubs this exact string out of an attempt's terminal
+/// error, because a remote endpoint necessarily sees whatever was sent and
+/// can reflect it back in a diagnostic field. `""` for `NoCredential` is
+/// what the scrubber treats as "nothing to redact", so the no-credential
+/// path needs no separate case anywhere above it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert model.credential_secret(model.ApiKeyCredential("sk-1")) == "sk-1"
+/// ```
+///
+/// ```gleam
+/// assert model.credential_secret(model.NoCredential) == ""
+/// ```
+///
+pub fn credential_secret(credential: Credential) -> String {
+  case credential {
+    NoCredential -> ""
+    ApiKeyCredential(key:) -> key
+    L402Credential(token:) -> token
+  }
+}

@@ -205,11 +205,14 @@ stop reason tomorrow degrades to a readable error, never a crash.
 
 ## Secrets
 
-Provider configuration holds a secret *name*, never a value.
+Provider configuration holds a secret *name*, never a value. An entry's
+`auth` field says how the credential is obtained: `ApiKey(secret_name)`
+reads a standing key from the store, and `L402` has no credential until
+the endpoint prices a request and the gateway's `Paywall` pays for it.
 
 ```mermaid
 flowchart LR
-  CFG["ProviderConfig<br/>api_key_secret: a name"] --> LK["secret.lookup(store, name)"]
+  CFG["ProviderConfig<br/>auth: ApiKey(a name)"] --> LK["secret.lookup(store, name)"]
   ST["SecretStore = fn(String) -> Result(String, Nil)<br/>injected at gateway construction"] --> LK
   LK -->|"Error(Nil)"| NS["Failed(NoSecret(provider, secret_name))<br/>names only — never a value"]
   LK -->|"Ok(key)"| HDR["copied into one outbound request header"]
@@ -220,7 +223,8 @@ flowchart LR
 one call site — gateway dispatch — and the value goes straight into the
 header of the request being built. `ProviderError` carries secret names
 and status codes and never headers or request values; terminal errors are
-also scrubbed against the exact key. Successful response content remains
+also scrubbed against the exact credential, whether that is an API key or
+a settled L402 token. Successful response content remains
 provider-controlled and can span streaming fragments, so this is not a
 general secret-redaction boundary. The local-flow check is a grep-based
 leak test over a full session fixture. Issue #148 owns stateful cross-fragment

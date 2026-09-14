@@ -8,6 +8,7 @@ import gleam/string
 import provider/adapter/anthropic
 import provider/fixture.{sse_event}
 import provider/internal/wire
+import provider/l402
 import provider/model
 import provider/retry
 import provider/stream
@@ -532,7 +533,7 @@ pub fn build_request_shape_test() {
   let built =
     anthropic.build_request(
       base_url: "https://api.anthropic.com",
-      api_key: "sk-test-key",
+      credential: model.ApiKeyCredential("sk-test-key"),
       resolved: resolved(),
       request:,
     )
@@ -577,7 +578,7 @@ pub fn build_request_merges_tool_results_into_one_user_turn_test() {
   let built =
     anthropic.build_request(
       base_url: "https://api.anthropic.com",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: resolved(),
       request:,
     )
@@ -688,7 +689,7 @@ fn cached_request(
 ) -> String {
   anthropic.build_request(
     base_url: "https://api.anthropic.com",
-    api_key: "k",
+    credential: model.ApiKeyCredential("k"),
     resolved: resolved(),
     request: model.ProviderRequest(
       target: model.ForResolved(resolved()),
@@ -828,7 +829,7 @@ pub fn a_short_conversation_spends_fewer_breakpoints_test() {
   let built =
     anthropic.build_request(
       base_url: "https://api.anthropic.com",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: resolved(),
       request:,
     )
@@ -1029,4 +1030,56 @@ pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
   let assert Ok(#(raw, reason)) = message.malformed_arguments_of(bad.arguments)
   assert raw == "{\"city\": \"Paris\""
   assert string.contains(reason, "core/json.parse")
+}
+
+// --- L402 paywalls ------------------------------------------------------------
+
+pub fn payment_required_with_a_challenge_settles_as_payment_required_test() {
+  let events =
+    fixture.drive(
+      machine(),
+      status: 402,
+      headers: [
+        #(
+          "www-authenticate",
+          "L402 macaroon=\"AGIA\", invoice=\"lnbc2500u1pvjluez\"",
+        ),
+        #("x-aperture-challenge-id", "c-7"),
+      ],
+      chunks: [bit_array.from_string("")],
+    )
+
+  assert events
+    == [
+      stream.Failed(
+        stream.PaymentRequired(challenge: l402.Challenge(
+          macaroon: "AGIA",
+          invoice: "lnbc2500u1pvjluez",
+          amount_sat: Some(250_000),
+          challenge_id: "c-7",
+          route_id: "",
+        )),
+      ),
+    ]
+}
+
+pub fn payment_required_without_a_challenge_stays_an_http_error_test() {
+  // An unpaid keyed provider, or a proxy speaking some other scheme: there
+  // is nothing to pay, so the status keeps its ordinary meaning.
+  let events =
+    fixture.drive(machine(), status: 402, headers: [], chunks: [
+      bit_array.from_string(
+        "{\"type\":\"error\",\"error\":{\"type\":\"billing\",\"message\":\"credit exhausted\"}}",
+      ),
+    ])
+
+  assert events
+    == [
+      stream.Failed(stream.HttpError(
+        status: 402,
+        api_error_type: "billing",
+        message: "credit exhausted",
+        retry_after_ms: None,
+      )),
+    ]
 }

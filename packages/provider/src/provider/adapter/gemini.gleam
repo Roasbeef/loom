@@ -72,16 +72,17 @@ import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/diagnostic
 import provider/internal/wire
+import provider/l402
 import provider/model.{
-  type ProviderRequest, type ResolvedModel, type ThinkingLevel, type ToolSpec,
-  ThinkingHigh, ThinkingLow, ThinkingMedium, ThinkingOff,
+  type Credential, type ProviderRequest, type ResolvedModel, type ThinkingLevel,
+  type ToolSpec, ThinkingHigh, ThinkingLow, ThinkingMedium, ThinkingOff,
 }
 import provider/retry
 import provider/stream.{
   type ResponseMachine, type SseEvent, type StreamEvent, Delta, Failed,
-  HttpError, MalformedStream, ResponseMachine, Settled, SseMalformed, SseMessage,
-  StreamDisconnected, StreamError, TextDelta, ThinkingDelta, ToolCallDelta,
-  UnmappedStopReason,
+  HttpError, MalformedStream, PaymentRequired, ResponseMachine, Settled,
+  SseMalformed, SseMessage, StreamDisconnected, StreamError, TextDelta,
+  ThinkingDelta, ToolCallDelta, UnmappedStopReason,
 }
 
 /// The `api` string stamped on assistant messages produced here.
@@ -99,7 +100,7 @@ const negligible_output_tokens = 64
 
 /// Builds the streaming `generateContent` request. `base_url` includes the
 /// API version root (e.g. `"https://generativelanguage.googleapis.com/v1beta"`);
-/// the model id is a path segment, and the key flows into the
+/// the model id is a path segment, and an API key flows into the
 /// `x-goog-api-key` header and nowhere else.
 ///
 /// Thinking levels become a `thinkingConfig` with `includeThoughts` set:
@@ -113,7 +114,7 @@ const negligible_output_tokens = 64
 /// ```gleam
 /// // gemini.build_request(
 /// //   base_url: "https://generativelanguage.googleapis.com/v1beta",
-/// //   api_key: key,
+/// //   credential: model.ApiKeyCredential(key),
 /// //   resolved: resolved,
 /// //   request: request,
 /// // ) // -> HttpRequest(method: "POST", url: ".../models/gemini-3.5-flash:streamGenerateContent?alt=sse", ..)
@@ -121,7 +122,7 @@ const negligible_output_tokens = 64
 ///
 pub fn build_request(
   base_url base_url: String,
-  api_key api_key: String,
+  credential credential: Credential,
   resolved resolved: ResolvedModel,
   request request: ProviderRequest,
 ) -> HttpRequest {
@@ -170,11 +171,10 @@ pub fn build_request(
       <> "/models/"
       <> resolved.model_id
       <> ":streamGenerateContent?alt=sse",
-    headers: [
-      #("x-goog-api-key", api_key),
+    headers: list.append(auth_headers(credential), [
       #("content-type", "application/json"),
       #("accept", "text/event-stream"),
-    ],
+    ]),
     body: json.to_string(body),
   )
 }
@@ -591,6 +591,7 @@ pub opaque type Accumulator {
     resolved: ResolvedModel,
     now: Int,
     status: Int,
+    headers: List(#(String, String)),
     retry_after_ms: Option(Int),
     error_body: BitArray,
     sse: stream.SseParser,
@@ -643,6 +644,7 @@ pub fn response_machine(
       resolved:,
       now:,
       status: 0,
+      headers: [],
       retry_after_ms: None,
       error_body: <<>>,
       sse: stream.new_parser(),
@@ -660,7 +662,12 @@ pub fn response_machine(
       done: False,
     ),
     on_status: fn(acc, status, headers) {
-      Accumulator(..acc, status:, retry_after_ms: wire.retry_after_ms(headers))
+      Accumulator(
+        ..acc,
+        status:,
+        headers:,
+        retry_after_ms: wire.retry_after_ms(headers),
+      )
     },
     on_chunk: on_chunk,
     on_end: on_end,
@@ -717,7 +724,7 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
   use <- bool.guard(when: acc.done, return: [])
   case acc.status {
     200 -> settle(acc).1
-    status -> [Failed(http_error(status, acc))]
+    status -> [Failed(remote_error(status, acc))]
   }
 }
 
@@ -725,8 +732,11 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 // — into a redacted HttpError. `status` is the gRPC-style word
 // (`RESOURCE_EXHAUSTED`, `INVALID_ARGUMENT`) and is the closest thing the
 // dialect has to a machine-readable error type.
-fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
-  let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
+fn http_error(
+  status: Int,
+  acc: Accumulator,
+  body_text: String,
+) -> stream.ProviderError {
   let error_field =
     json.parse(body_text)
     |> result.replace_error(Nil)
@@ -1219,5 +1229,40 @@ fn fail(
   case acc.done {
     True -> #(acc, [])
     False -> #(Accumulator(..acc, done: True), [Failed(error:)])
+  }
+}
+
+// The dialect's authentication header, or none at all.
+//
+// An API key goes where this dialect has always put one; an L402
+// credential goes in `authorization` regardless of dialect, because it is
+// an HTTP authentication scheme rather than a vendor header. The empty
+// list is not a degenerate case: an unpaid L402 entry sends no
+// authentication at all, and that is exactly what provokes the 402
+// challenge the gateway then settles.
+fn auth_headers(credential: Credential) -> List(#(String, String)) {
+  case credential {
+    model.NoCredential -> []
+    model.ApiKeyCredential(key:) -> [#("x-goog-api-key", key)]
+    model.L402Credential(token:) -> [#("authorization", token)]
+  }
+}
+
+// The terminal error for a non-success response.
+//
+// A 402 carrying a challenge we can parse is a priced request rather than
+// a failure, so it settles as `PaymentRequired` and the gateway may pay
+// and retry it. A 402 we cannot parse — an unpaid keyed provider, or a
+// proxy speaking some other scheme — stays the ordinary HTTP error it
+// looks like, because inventing a payment path for it would be guessing.
+fn remote_error(status: Int, acc: Accumulator) -> stream.ProviderError {
+  let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
+  let challenge = case status {
+    402 -> option.from_result(l402.parse(acc.headers, body_text))
+    _unpriced -> None
+  }
+  case challenge {
+    Some(challenge) -> PaymentRequired(challenge:)
+    None -> http_error(status, acc, body_text)
   }
 }

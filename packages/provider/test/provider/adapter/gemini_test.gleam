@@ -14,6 +14,7 @@ import gleam/string
 import provider/adapter/gemini
 import provider/fixture.{sse_data}
 import provider/internal/wire
+import provider/l402
 import provider/model
 import provider/retry
 import provider/stream
@@ -315,7 +316,7 @@ pub fn an_empty_system_prompt_sends_no_system_instruction_test() {
   let built =
     gemini.build_request(
       base_url: "https://generativelanguage.googleapis.com/v1beta",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: resolved(),
       request: model.ProviderRequest(
         ..fixture.request_for(resolved()),
@@ -528,7 +529,7 @@ pub fn build_request_shape_test() {
   let built =
     gemini.build_request(
       base_url: "https://generativelanguage.googleapis.com/v1beta",
-      api_key: "AIza-test-key",
+      credential: model.ApiKeyCredential("AIza-test-key"),
       resolved: with_thinking(model.ThinkingMedium),
       request:,
     )
@@ -558,7 +559,7 @@ pub fn thinking_off_sends_no_thinking_config_test() {
   let built =
     gemini.build_request(
       base_url: "https://generativelanguage.googleapis.com/v1beta",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: with_thinking(model.ThinkingOff),
       request: fixture.request_for(resolved()),
     )
@@ -669,7 +670,7 @@ fn contents_of(messages: List(message.AgentMessage)) -> List(json.JsonValue) {
   let built =
     gemini.build_request(
       base_url: "https://generativelanguage.googleapis.com/v1beta",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: resolved(),
       request: model.ProviderRequest(
         ..fixture.request_for(resolved()),
@@ -839,16 +840,68 @@ pub fn the_request_is_deterministic_test() {
   let once =
     gemini.build_request(
       base_url: "https://generativelanguage.googleapis.com/v1beta",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: resolved(),
       request:,
     )
   let again =
     gemini.build_request(
       base_url: "https://generativelanguage.googleapis.com/v1beta",
-      api_key: "k",
+      credential: model.ApiKeyCredential("k"),
       resolved: resolved(),
       request:,
     )
   assert once.body == again.body
+}
+
+// --- L402 paywalls ------------------------------------------------------------
+
+pub fn payment_required_with_a_challenge_settles_as_payment_required_test() {
+  let events =
+    fixture.drive(
+      machine(),
+      status: 402,
+      headers: [
+        #(
+          "www-authenticate",
+          "L402 macaroon=\"AGIA\", invoice=\"lnbc2500u1pvjluez\"",
+        ),
+        #("x-aperture-challenge-id", "c-7"),
+      ],
+      chunks: [bit_array.from_string("")],
+    )
+
+  assert events
+    == [
+      stream.Failed(
+        stream.PaymentRequired(challenge: l402.Challenge(
+          macaroon: "AGIA",
+          invoice: "lnbc2500u1pvjluez",
+          amount_sat: Some(250_000),
+          challenge_id: "c-7",
+          route_id: "",
+        )),
+      ),
+    ]
+}
+
+pub fn payment_required_without_a_challenge_stays_an_http_error_test() {
+  // An unpaid keyed provider, or a proxy speaking some other scheme: there
+  // is nothing to pay, so the status keeps its ordinary meaning.
+  let events =
+    fixture.drive(machine(), status: 402, headers: [], chunks: [
+      bit_array.from_string(
+        "{\"error\":{\"status\":\"billing\",\"message\":\"credit exhausted\"}}",
+      ),
+    ])
+
+  assert events
+    == [
+      stream.Failed(stream.HttpError(
+        status: 402,
+        api_error_type: "billing",
+        message: "credit exhausted",
+        retry_after_ms: None,
+      )),
+    ]
 }

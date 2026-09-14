@@ -40,10 +40,14 @@ import provider/adapter/openai
 import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
 import provider/internal/diagnostic
+import provider/l402
 import provider/model.{
-  type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
-  type ThinkingLevel, ForResolved, ForRole, MissingIdentity, ResolvedModel,
+  type Credential, type MissingIdentity, type ProviderRequest,
+  type ResolvedModel, type Role, type ThinkingLevel, ApiKeyCredential,
+  ForResolved, ForRole, L402Credential, MissingIdentity, NoCredential,
+  ResolvedModel,
 }
+import provider/paywall.{type Paywall}
 import provider/pricing.{type Pricing}
 import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
@@ -51,7 +55,7 @@ import provider/stream.{
   type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
   AttemptCancellationUnconfirmed, AttemptCancelled, AttemptDrainProofLost,
   AttemptTerminal, Cancel, ConsumerGone, Delta, Failed, NoIdentity, NoSecret,
-  ProviderCancelled, Settled, UnknownProvider,
+  PaymentDeclined, PaymentRequired, ProviderCancelled, Settled, UnknownProvider,
 }
 import weft/state_machine as sm
 
@@ -99,33 +103,44 @@ type AttemptPermit {
   RejectAttempt
 }
 
+/// How a provider entry authenticates.
+///
+/// The two arms differ in *when* the credential exists. A key is a
+/// standing arrangement: it is in the secret store before the request and
+/// the only question is its name. An L402 entry has no credential until
+/// the endpoint prices a request and somebody pays for it, so the first
+/// attempt is deliberately unauthenticated and the challenge it earns is
+/// the start of the exchange rather than a failure.
+pub type Auth {
+  /// A bearer key read from the secret store by name at dispatch.
+  ApiKey(secret_name: String)
+
+  /// L402: the entry is unpaid until the proxy prices it, and the
+  /// gateway's `Paywall` settles the challenge (`with_paywall`).
+  L402
+}
+
 /// One configured provider endpoint. The variant selects the adapter
-/// dialect; the fields are pure configuration — the API key itself lives
-/// in the secret store under `api_key_secret` and is only read at
-/// dispatch.
+/// dialect; the fields are pure configuration — no credential value lives
+/// here, only the `Auth` that says how to obtain one at dispatch.
 ///
 /// Constructor invariants: `name` is the registry key `ResolvedModel.
 /// provider` refers to, unique among registered providers; `base_url`
 /// has no trailing slash (Anthropic: the host root, e.g.
 /// `"https://api.anthropic.com"`; OpenAI-compatible: the API root, e.g.
 /// `"https://api.openai.com/v1"`; Gemini: the API version root, e.g.
-/// `"https://generativelanguage.googleapis.com/v1beta"`); `api_key_secret`
-/// is a secret *name*,
-/// never a value.
+/// `"https://generativelanguage.googleapis.com/v1beta"`);
+/// `ApiKey.secret_name` is a secret *name*, never a value.
 pub type ProviderConfig {
   /// An Anthropic Messages API endpoint.
-  AnthropicProvider(name: String, base_url: String, api_key_secret: String)
+  AnthropicProvider(name: String, base_url: String, auth: Auth)
 
   /// An OpenAI-compatible chat-completions endpoint.
-  OpenAiCompatibleProvider(
-    name: String,
-    base_url: String,
-    api_key_secret: String,
-  )
+  OpenAiCompatibleProvider(name: String, base_url: String, auth: Auth)
 
   /// A Gemini `generateContent` endpoint (the Gemini Developer API, or
   /// any host speaking that dialect).
-  GeminiProvider(name: String, base_url: String, api_key_secret: String)
+  GeminiProvider(name: String, base_url: String, auth: Auth)
 }
 
 /// The gateway registry. Built with `new` and the pipeable setters;
@@ -135,7 +150,9 @@ pub opaque type Gateway {
   /// name shadow earlier ones via first-match lookup order); `routes`
   /// map each role to its ordered fallback chain, best target first;
   /// `prices` carries at most one rate card per provider name and a
-  /// provider absent from it is unpriced, which costs zero;
+  /// provider absent from it is unpriced, which costs zero; `paywall`
+  /// settles the challenges L402 entries earn and declines everything
+  /// until `with_paywall` replaces the default;
   /// `attempt_timeout_ms` is positive and bounds one attempt from transport
   /// start through settlement. Response activity does not renew the deadline.
   Gateway(
@@ -145,6 +162,7 @@ pub opaque type Gateway {
     transport: Transport,
     secrets: SecretStore,
     clock: Clock,
+    paywall: Paywall,
     attempt_timeout_ms: Int,
   )
 }
@@ -174,6 +192,7 @@ pub fn new(
     transport:,
     secrets:,
     clock:,
+    paywall: paywall.none(),
     attempt_timeout_ms: 300_000,
   )
 }
@@ -187,7 +206,7 @@ pub fn new(
 /// // |> gateway.add_provider(gateway.AnthropicProvider(
 /// //   name: "anthropic",
 /// //   base_url: "https://api.anthropic.com",
-/// //   api_key_secret: "ANTHROPIC_API_KEY",
+/// //   auth: gateway.ApiKey("ANTHROPIC_API_KEY"),
 /// // ))
 /// ```
 ///
@@ -268,6 +287,26 @@ pub fn card_for(gateway: Gateway, provider: String) -> Result(Pricing, Nil) {
 ///
 pub fn with_attempt_timeout(gateway: Gateway, timeout_ms: Int) -> Gateway {
   Gateway(..gateway, attempt_timeout_ms: timeout_ms)
+}
+
+/// Installs the paywall that settles L402 challenges, replacing the
+/// declining default.
+///
+/// This is a setter rather than a `new` argument because a paywall is a
+/// deployment fact rather than a gateway one: every existing caller builds
+/// a gateway of keyed providers and owes nothing here, and the harness
+/// that embeds a Lightning wallet adds one line. The paywall is consulted
+/// only by entries configured `ApiKey`'s counterpart `L402`, so installing
+/// one changes nothing for a gateway that has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway |> gateway.with_paywall(paywall.none())
+/// ```
+///
+pub fn with_paywall(gateway: Gateway, paywall paywall: Paywall) -> Gateway {
+  Gateway(..gateway, paywall:)
 }
 
 /// Resolves a role to the identity durable state should store: the first
@@ -1691,8 +1730,31 @@ fn continue_terminal(
   }
 }
 
+// Everything one attempt needs except the credential it authenticates
+// with. The credential is the one thing that changes between the two runs
+// of a paywalled attempt, so holding the rest still in a record is what
+// lets `run_attempt` be called twice without threading ten arguments
+// through the payment path a second time.
+type AttemptContext {
+  AttemptContext(
+    gateway: Gateway,
+    request: ProviderRequest,
+    now: Int,
+    ordinal: Int,
+    target: ResolvedModel,
+    config: ProviderConfig,
+    events: process.Subject(StreamEvent),
+    attempts: process.Subject(AttemptRegistration),
+    control: process.Subject(Control),
+    consumer: process.Pid,
+  )
+}
+
 // Runs one attempt against one target, delivering deltas as they stream
-// and returning the attempt's terminal event.
+// and returning the attempt's terminal event. How the attempt
+// authenticates is the entry's own configuration, and the two arms differ
+// enough afterwards — a keyed attempt runs once, a paywalled one may run
+// twice — to be worth separate functions rather than a branch inside one.
 fn attempt_one(
   gateway: Gateway,
   request: ProviderRequest,
@@ -1704,51 +1766,186 @@ fn attempt_one(
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> AttemptOutcome {
-  let deliver = fn(delta) { process.send(events, Delta(delta:)) }
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
     AttemptTerminal(Failed(UnknownProvider(provider: target.provider)))
   })
-  use api_key <- or_failure(
-    secret.lookup(gateway.secrets, config.api_key_secret),
+  let attempt =
+    AttemptContext(
+      gateway:,
+      request:,
+      now:,
+      ordinal:,
+      target:,
+      config:,
+      events:,
+      attempts:,
+      control:,
+      consumer:,
+    )
+
+  case config.auth {
+    ApiKey(secret_name:) -> keyed_attempt(attempt, secret_name)
+    L402 -> paywalled_attempt(attempt)
+  }
+}
+
+// The standing-key path, unchanged in substance: the key is read from the
+// store at dispatch, and a name the store does not know is a
+// configuration failure carrying the name and never a value.
+fn keyed_attempt(
+  attempt: AttemptContext,
+  secret_name: String,
+) -> AttemptOutcome {
+  use key <- or_failure(
+    secret.lookup(attempt.gateway.secrets, secret_name),
     fn() {
       AttemptTerminal(
-        Failed(NoSecret(
-          provider: config.name,
-          secret_name: config.api_key_secret,
-        )),
+        Failed(NoSecret(provider: attempt.config.name, secret_name:)),
       )
     },
   )
+  run_attempt(attempt, ApiKeyCredential(key))
+}
+
+// The paywalled path: at most one settlement and at most one retry.
+//
+// The first run carries whatever token the paywall has already settled for
+// this provider, which is `NoCredential` on a cold start — an
+// unauthenticated request is how the proxy is asked to state its price.
+// If the answer is a challenge, the paywall settles it and the *same*
+// target runs once more with the credential. Whatever that second run
+// returns is the answer, including a second `PaymentRequired`: a proxy
+// that prices a request it has just been paid for is not going to be
+// talked round by a third attempt, and an unbounded settle loop is an
+// unbounded bill.
+fn paywalled_attempt(attempt: AttemptContext) -> AttemptOutcome {
+  let held = attempt.gateway.paywall.credential(attempt.config.name)
+  let credential = case held {
+    Some(token) -> L402Credential(token)
+    None -> NoCredential
+  }
+  let outcome = run_attempt(attempt, credential)
+
+  case payment_challenge(outcome) {
+    None -> outcome
+    Some(challenge) -> settle_and_retry(attempt, challenge)
+  }
+}
+
+// Pays for one challenge and runs the attempt again.
+//
+// Cancellation is checked before the payment, not after: a settle spends
+// money, and a caller who has already asked to stop must not be billed for
+// work whose result nobody will read. `stop_requested` has itself
+// delivered the cancellation terminal to a live consumer by the time it
+// answers `True`, so this returns `ConsumerGone` — the one outcome the
+// walk delivers nothing for — rather than authoring a second terminal.
+fn settle_and_retry(
+  attempt: AttemptContext,
+  challenge: l402.Challenge,
+) -> AttemptOutcome {
+  case stop_requested(attempt.control, attempt.consumer, attempt.events) {
+    True -> ConsumerGone
+    False ->
+      case attempt.gateway.paywall.settle(attempt.config.name, challenge) {
+        Ok(token) -> run_attempt(attempt, L402Credential(token))
+
+        // A decline is terminal and carries the paywall's own words, which
+        // is the only account of *why* the request went unpaid that anyone
+        // above this seam will get.
+        Error(reason) ->
+          AttemptTerminal(
+            Failed(PaymentDeclined(provider: attempt.config.name, reason:)),
+          )
+          |> annotate_attempt(
+            attempt.ordinal,
+            attempt.gateway.attempt_timeout_ms,
+          )
+      }
+  }
+}
+
+// The challenge a terminal `PaymentRequired` carries, through any
+// diagnostic context wrapped around it.
+//
+// The inner match is a catch-all on purpose. The question is whether this
+// one error is a challenge, so a future `ProviderError` variant is
+// definitionally not one and gains nothing from being named here; the
+// outer match over the attempt outcomes is written out, because a new
+// outcome would need a decision.
+fn payment_challenge(outcome: AttemptOutcome) -> Option(l402.Challenge) {
+  case outcome {
+    AttemptTerminal(Failed(error:)) ->
+      case stream.underlying_error(error) {
+        PaymentRequired(challenge:) -> Some(challenge)
+        _not_a_challenge -> None
+      }
+    AttemptTerminal(terminal: _) -> None
+    AttemptCancelled(_) -> None
+    AttemptCancellationUnconfirmed(_) -> None
+    AttemptDrainProofLost(_) -> None
+    ConsumerGone -> None
+  }
+}
+
+// One run of one target with one credential: build the dialect's request,
+// stream it, price the settlement, annotate it, and scrub the credential
+// out of anything the endpoint may have reflected.
+fn run_attempt(
+  attempt: AttemptContext,
+  credential: Credential,
+) -> AttemptOutcome {
+  let AttemptContext(
+    gateway:,
+    request:,
+    now:,
+    ordinal:,
+    target:,
+    config:,
+    events:,
+    attempts:,
+    control:,
+    consumer:,
+  ) = attempt
+  let deliver = fn(delta) { process.send(events, Delta(delta:)) }
+  let base_url = config.base_url
+  let register = fn(running) { register_attempt(attempts, running, consumer) }
+
   let outcome = case config {
-    AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
+    AnthropicProvider(..) ->
       stream.run_tracked(
         gateway.transport,
-        anthropic.build_request(base_url:, api_key:, resolved: target, request:),
+        anthropic.build_request(
+          base_url:,
+          credential:,
+          resolved: target,
+          request:,
+        ),
         anthropic.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
+        register,
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,
       )
-    OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
+    OpenAiCompatibleProvider(..) ->
       stream.run_tracked(
         gateway.transport,
-        openai.build_request(base_url:, api_key:, resolved: target, request:),
+        openai.build_request(base_url:, credential:, resolved: target, request:),
         openai.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
+        register,
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,
       )
-    GeminiProvider(name: _, base_url:, api_key_secret: _) ->
+    GeminiProvider(..) ->
       stream.run_tracked(
         gateway.transport,
-        gemini.build_request(base_url:, api_key:, resolved: target, request:),
+        gemini.build_request(base_url:, credential:, resolved: target, request:),
         gemini.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
+        register,
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,
@@ -1763,7 +1960,7 @@ fn attempt_one(
   // priced record without a second costing pass anywhere above the seam.
   priced(gateway, outcome, target)
   |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
-  |> scrub_attempt(api_key)
+  |> scrub_attempt(model.credential_secret(credential))
 }
 
 // The ordinal names this route walk, independently of the machine's retries.
@@ -1865,14 +2062,16 @@ fn repriced(
   }
 }
 
-// The remote endpoint necessarily sees the request key and can reflect it in
-// any diagnostic field. Scrub the terminal before retry classification, not
-// only before final delivery, so a fallback never carries the credential into
-// another lifetime or a later diagnostic.
-fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
+// The remote endpoint necessarily sees the credential it was sent and can
+// reflect it in any diagnostic field. Scrub the terminal before retry
+// classification, not only before final delivery, so a fallback never carries
+// the credential into another lifetime or a later diagnostic. An empty secret
+// — which is what `NoCredential` yields — redacts nothing, so the unpaid first
+// attempt of a paywalled entry needs no special case.
+fn scrub_attempt(outcome: AttemptOutcome, secret: String) -> AttemptOutcome {
   case outcome {
     AttemptTerminal(Failed(error:)) ->
-      AttemptTerminal(Failed(error: diagnostic.scrub_error(error, api_key)))
+      AttemptTerminal(Failed(error: diagnostic.scrub_error(error, secret)))
     AttemptTerminal(terminal:) -> AttemptTerminal(terminal:)
     AttemptCancelled(context) -> AttemptCancelled(context)
     AttemptCancellationUnconfirmed(context) ->

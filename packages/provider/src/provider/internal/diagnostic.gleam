@@ -15,8 +15,9 @@ import gleam/option
 import gleam/string
 import provider/stream.{
   type ProviderError, CancellationUnconfirmed, DrainProofLost, HttpError,
-  MalformedStream, NoIdentity, NoSecret, ProviderCancelled, StreamDisconnected,
-  StreamError, TransportFailed, UnknownProvider, UnmappedStopReason,
+  MalformedStream, NoIdentity, NoSecret, PaymentDeclined, PaymentRequired,
+  ProviderCancelled, StreamDisconnected, StreamError, TransportFailed,
+  UnknownProvider, UnmappedStopReason,
 }
 
 /// The largest non-success HTTP body retained by an adapter. A normal JSON API
@@ -101,6 +102,18 @@ pub fn scrub_error(
         api_error_type: scrub_label(api_error_type, secret),
         message: scrub_message(message, secret),
         retry_after_ms:,
+      )
+
+    // A challenge is the proxy's own minting, not a reflection of what we
+    // sent, and both of its long fields must survive intact: the macaroon
+    // is echoed back byte-identically in the credential and the invoice is
+    // paid verbatim. Bounding or rewriting either would break the payment
+    // rather than protect it, and neither is rendered into a message.
+    PaymentRequired(challenge:) -> PaymentRequired(challenge:)
+    PaymentDeclined(provider:, reason:) ->
+      PaymentDeclined(
+        provider: scrub_label(provider, secret),
+        reason: scrub_message(reason, secret),
       )
     StreamError(api_error_type:, message:) ->
       StreamError(

@@ -38,7 +38,12 @@ pub fn every_adapter_attributes_image_first_user_content_once_test() {
   ]
   list.each(builders, fn(build) {
     let projected =
-      build("https://fixture.invalid", "fixture-key", resolved, request)
+      build(
+        "https://fixture.invalid",
+        model.ApiKeyCredential("fixture-key"),
+        resolved,
+        request,
+      )
     assert list.length(string.split(projected.body, "Human author")) == 2
     assert string.contains(projected.body, "Alice")
     assert string.contains(projected.body, "actual human content")
@@ -65,7 +70,12 @@ pub fn anonymous_turns_do_not_gain_fictional_authors_test() {
     [anthropic.build_request, openai.build_request, gemini.build_request],
     fn(build) {
       let projected =
-        build("https://fixture.invalid", "fixture-key", resolved, request)
+        build(
+          "https://fixture.invalid",
+          model.ApiKeyCredential("fixture-key"),
+          resolved,
+          request,
+        )
       assert !string.contains(projected.body, "Human author")
     },
   )

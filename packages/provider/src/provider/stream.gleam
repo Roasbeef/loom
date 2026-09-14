@@ -40,6 +40,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, type Transport}
+import provider/l402
 
 // --- stream events ------------------------------------------------------
 
@@ -160,6 +161,16 @@ pub type ProviderError {
     message: String,
     retry_after_ms: Option(Int),
   )
+
+  /// The provider answered 402 with an L402 challenge: the request is
+  /// priced and unpaid. Carries the challenge so a paywall can settle it
+  /// and the gateway can retry the same target once with the credential.
+  PaymentRequired(challenge: l402.Challenge)
+
+  /// A paywalled attempt could not be settled: the paywall declined, the
+  /// payment failed, or no paywall is wired. `reason` is the paywall's own
+  /// text and names no macaroon, invoice, or preimage.
+  PaymentDeclined(provider: String, reason: String)
 
   /// The provider reported an error event inside the stream.
   StreamError(api_error_type: String, message: String)
@@ -454,6 +465,23 @@ pub fn describe_error(error: ProviderError) -> String {
       }
       <> ": "
       <> message
+
+    // The macaroon and the invoice are deliberately absent. Both are long
+    // enough to ruin a log line, and the invoice is a payable bearer
+    // string: a rendered error travels further than the challenge should.
+    PaymentRequired(challenge:) ->
+      "provider requires payment: "
+      <> case challenge.amount_sat {
+        Some(amount) -> int.to_string(amount)
+        None -> "an unstated number of"
+      }
+      <> " sat"
+      <> case challenge.challenge_id {
+        "" -> ""
+        id -> " (challenge " <> id <> ")"
+      }
+    PaymentDeclined(provider:, reason:) ->
+      "payment declined for " <> provider <> ": " <> reason
     StreamError(api_error_type:, message:) ->
       "provider stream error (" <> api_error_type <> "): " <> message
     StreamDisconnected(context:) -> "provider stream disconnected: " <> context

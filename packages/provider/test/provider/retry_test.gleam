@@ -1,5 +1,6 @@
 import core/corruption
 import gleam/option.{None, Some}
+import provider/l402
 import provider/retry
 import provider/stream
 
@@ -161,4 +162,26 @@ pub fn canonical_message_round_trips_test() {
     input_tokens: 1,
     context_window: 2,
   ))
+}
+
+pub fn payment_outcomes_are_terminal_test() {
+  // Neither is answered by sending the identical request again: an
+  // unsettled challenge would earn a second 402, and a decline is the
+  // paywall having already refused. The one retry either deserves happens
+  // inside `gateway.attempt_one`, with a credential.
+  let challenge =
+    l402.Challenge(
+      macaroon: "AGIA",
+      invoice: "lnbc2500u1pvjluez",
+      amount_sat: Some(250_000),
+      challenge_id: "",
+      route_id: "",
+    )
+
+  assert retry.classify(stream.PaymentRequired(challenge:)) == retry.Terminal
+  assert retry.classify(stream.PaymentDeclined(
+      provider: "proxy",
+      reason: "no paywall is wired for this gateway",
+    ))
+    == retry.Terminal
 }

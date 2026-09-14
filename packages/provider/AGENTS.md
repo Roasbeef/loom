@@ -21,12 +21,40 @@ processful shell around that sans-io core. WP-F.
   Context never substitutes for a drain witness or changes a deadline.
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
-  (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`); exposes the
-  frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
+  (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`,
+  `with_paywall`); exposes the frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
   That owner is the request guard, a `weft/state_machine` over `Phase` and
   `Guard`; see **Traffic** for its states and its three state timeouts.
+- `provider/gateway.Auth` — how one entry authenticates, and the field
+  `ProviderConfig` carries in place of the old `api_key_secret` string.
+  `ApiKey(secret_name)` is the standing arrangement: the value is in the
+  secret store before the request and only its name is configuration.
+  `L402` has no credential at all until the endpoint prices a request, so
+  the first attempt goes out unauthenticated on purpose.
+- `provider/l402.{Challenge, parse, invoice_amount_sat, authorization}` —
+  the pure 402 boundary. `parse` reads either dialect an aperture-style
+  proxy uses: a JSON body carrying `invoice`/`macaroon`/`amount_sat`, or a
+  `www-authenticate: L402 …` line (the legacy `LSAT` spelling too) beside
+  `x-aperture-{challenge,route}-id` and `x-aperture-price-sat`.
+  `invoice_amount_sat` reads only the BOLT11 human-readable prefix, in
+  integer arithmetic, and answers `None` for an amountless invoice or a
+  sub-satoshi amount. `authorization` builds the credential,
+  `"L402 <macaroon>:<preimage_hex>"`. No process, no FFI, no bech32.
+- `provider/paywall.{Paywall, none}` — the injected effect that settles a
+  challenge, held by the gateway beside the transport, secret store and
+  clock. `credential(provider)` returns a token already settled;
+  `settle(provider, challenge)` spends money and returns the whole
+  authorization header value, or a reason. `none()` is the default and
+  declines everything, so an `L402` entry fails in band until a real
+  paywall is installed with `with_paywall`.
+- `provider/model.Credential` — what one attempt authenticates with, and
+  what each adapter's `build_request` now takes in place of an API key
+  string. `ApiKeyCredential` renders into whichever header the dialect
+  uses (`authorization: Bearer`, `x-api-key`, `x-goog-api-key`),
+  `L402Credential` always into `authorization`, and `NoCredential` sends
+  nothing at all.
 - `provider/pricing.{Pricing, price, free}` — the costing layer. `Pricing`
   is one model's rate card in US dollars per million tokens, the unit
   providers publish; `price` is the pure function turning a `Usage` into a
@@ -76,7 +104,9 @@ processful shell around that sans-io core. WP-F.
   operator exported are indistinguishable here — by design, since this
   package must not learn where a value came from.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
-  `is_overflow_message`, `overflow_message`.
+  `is_overflow_message`, `overflow_message`. `PaymentRequired` and
+  `PaymentDeclined` both classify `Terminal`: the one retry either
+  deserves happens inside `gateway.attempt_one`, with a credential.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
   remote failures after transport delivery: a 64 KiB retained body budget,
   byte-bounded diagnostic fields, and exact scrubbing of the request key before
@@ -179,6 +209,14 @@ processful shell around that sans-io core. WP-F.
     `thinkingConfig` whose knob follows the model generation
     (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5). The key
     travels in `x-goog-api-key`.
+  - The L402 402 challenge, in either of the two shapes an aperture-style
+    proxy sends: a JSON body (`invoice`, `macaroon`, `amount_sat`,
+    `challenge_id`, `route_id`) when `content-type` says
+    `application/json`, otherwise `www-authenticate: L402 macaroon="…",
+    invoice="…"` — `LSAT` on older proxies — beside
+    `x-aperture-challenge-id`, `x-aperture-route-id` and
+    `x-aperture-price-sat`. The credential goes back as
+    `authorization: L402 <macaroon>:<preimage_hex>`.
   - `api_name` constants pin the three dialects: `"anthropic-messages"`,
     `"openai-completions"`, `"gemini-generate-content"`.
 
@@ -206,12 +244,35 @@ processful shell around that sans-io core. WP-F.
   nowhere else locally — not in the gateway value, not in an accumulator, and
   not in a locally constructed error or persisted structure. `ProviderError`
   carries secret *names* only (spec §3.3 invariant 4). Because a remote endpoint
-  can reflect the key it received, the gateway scrubs that exact value from
-  terminal errors before retry classification or delivery. Successful streamed
+  can reflect the credential it received, the gateway scrubs that exact
+  value from terminal errors before retry classification or delivery — an
+  L402 token exactly as an API key, through the one
+  `model.credential_secret` the attempt was run with. `NoCredential` yields
+  `""`, which redacts nothing, so the unpaid first attempt of a paywalled
+  entry needs no special case. An `l402.Challenge` is the one string pair
+  deliberately left alone: the macaroon is echoed back byte-identically and
+  the invoice is paid verbatim, so bounding either would break the payment
+  rather than protect it. Successful streamed
   content is provider-controlled and is not credential-redacted across fragment
   boundaries; callers must not treat it as a secret-filtering boundary.
   Diagnostic strings are byte-bounded in the same pass. Issue #148 owns the
   stateful response-redaction work.
+- **A priced request is paid for once and retried once.** A 402 whose
+  challenge `l402.parse` accepts settles as `PaymentRequired` rather than
+  `HttpError`; a 402 it cannot parse stays the ordinary HTTP error it
+  looks like, because inventing a payment path for an unpaid keyed
+  provider would be guessing. On an `L402` entry the gateway then checks
+  cancellation — a settle spends money, and a caller who has asked to stop
+  must not be billed — asks the paywall to settle, and runs the *same*
+  target once more with the credential. Whatever that second run returns
+  is the answer, a second `PaymentRequired` included: a proxy that prices
+  a request it has just been paid for will not be talked round by a third
+  attempt, and an unbounded settle loop is an unbounded bill. A decline is
+  `PaymentDeclined(provider, reason)` carrying the paywall's own words,
+  and both payment variants are terminal, so neither walks the chain.
+  Neither rendered message carries the macaroon or the invoice: both are
+  long enough to ruin a log line and the invoice is a payable bearer
+  string.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
   terminal. The gateway owner is the sole terminal sender. Response activity
