@@ -1319,6 +1319,45 @@ pub fn an_unanswered_challenge_is_terminal_and_does_not_walk_test() {
     )
 }
 
+/// A `Cancel` that crosses the challenge itself is honoured before the
+/// challenger is asked. The answer is where money moves, so the order is
+/// the property: a cancelled request that was still answered would have
+/// paid for a retry nobody wanted.
+pub fn cancellation_racing_a_challenge_is_not_answered_test() {
+  let asked = process.new_subject()
+  let seam =
+    stub_challenger(
+      held: None,
+      asked:,
+      outcome: Ok([#("authorization", answered_token)]),
+    )
+  let #(transport, attempts, owner_ready, cancelled) =
+    terminal_race_transport(challenge_response())
+  let handle =
+    gateway.request(challenged_gateway(transport, seam), main_request())
+  let drain = stream.watch_drain(handle)
+  let assert Ok(owner) = process.receive(owner_ready, within: 1000)
+
+  stream.cancel(handle)
+  let assert Ok(Nil) = process.receive(cancelled, within: 2500)
+    as "the cancellation deadline must reach the challenged attempt"
+  let assert Ok(#([], terminal)) = stream.await_terminal(handle, within: 1000)
+  assert case bare_event(terminal) {
+    stream.Failed(stream.ProviderCancelled)
+    | stream.Failed(stream.CancellationUnconfirmed) -> True
+    _ -> False
+  }
+    as "the challenge must not escape the cancellation race"
+
+  // No answer was sought and no retry was made: one attempt, unanswered.
+  assert stream.await_drain_forever(drain) == stream.Drained
+  assert !process.is_alive(owner)
+  assert process.receive(asked, within: 100) == Error(Nil)
+  assert process.receive(attempts, within: 0)
+    == Ok("https://primary.test/v1/messages")
+  assert process.receive(attempts, within: 100) == Error(Nil)
+}
+
 pub fn held_headers_are_sent_on_the_first_attempt_test() {
   let requests = process.new_subject()
   let asked = process.new_subject()
