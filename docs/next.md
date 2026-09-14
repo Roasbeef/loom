@@ -35,6 +35,25 @@ tolerance no jailed fixture in the tree actually gets (#376). Neither opens
 new work; both are folded into "Corrections to the previous edition" below
 because the previous edition's picture of a fully green tree predates them.
 
+## Local diagnostic installation (September 14)
+
+The `build/diagnostic-install` branch starts from `4c266dde` and adds
+`make install-debug`. It preserves BEAM debug chunks, skips stripping the
+bundled ERTS/toolchain, and supplies OTP profiling modules plus the memory
+census. The normal launcher remains undistributed. A debug launcher enables
+a loopback node only when `LOOM_DEBUG_ARGS_FILE` is supplied; the credential
+setup and attachment commands are in `docs/distribution.md`.
+
+The complete install target passed under a separate prefix. The server and
+client release smokes passed, and an installed diagnostic daemon accepted an
+observational memory census with allocator accounting. The probe also verified
+BEAM debug chunks, profiler availability, loopback configuration, removal of
+the startup environment variable, and Loom's own `tools` application metadata.
+The existing user daemon was neither replaced nor restarted. Its roughly
+3 GiB OS footprint remains unattributed at the BEAM-process level; profile a
+named diagnostic instance before proposing a memory fix. These packaging
+checks are not a full `make check` or a Linux signoff.
+
 ## Where the tree is
 
 | Body of work | Current state |

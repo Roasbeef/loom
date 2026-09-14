@@ -40,25 +40,27 @@ memory(Node) ->
 %% erlang:memory/0 is the signature of retained-but-unused address space.
 carriers(Node) ->
     case rpc:call(Node, instrument, carriers, []) of
-        {ok, {_Sched, _Cnt, Carriers}} ->
+        {ok, {_HistogramStart, Carriers}} ->
             Totals = lists:foldl(fun carrier/2, #{}, Carriers),
-            io:format("instrument:carriers/0 (allocator: carrier bytes / in use)~n"),
-            Sorted = lists:reverse(lists:keysort(2, [{A, S, U} || {A, {S, U}} <- maps:to_list(Totals)])),
-            [io:format("  ~-20s ~12.3f MiB carrier ~12.3f MiB used~n",
-                       [atom_to_list(A), S / 1048576, U / 1048576])
-             || {A, S, U} <- Sorted],
-            io:format("  ~-20s ~12.3f MiB carrier ~12.3f MiB used~n",
+            io:format("instrument:carriers/0 (allocator: carrier / scanned allocated / unscanned)~n"),
+            Sorted = lists:reverse(lists:keysort(2, [{A, S, U, N} || {A, {S, U, N}} <- maps:to_list(Totals)])),
+            [io:format("  ~-20s ~12.3f MiB carrier ~12.3f MiB scanned allocated ~12.3f MiB unscanned~n",
+                       [atom_to_list(A), S / 1048576, U / 1048576, N / 1048576])
+             || {A, S, U, N} <- Sorted],
+            io:format("  ~-20s ~12.3f MiB carrier ~12.3f MiB scanned allocated ~12.3f MiB unscanned~n",
                       [ "TOTAL"
-                      , lists:sum([S || {_, S, _} <- Sorted]) / 1048576
-                      , lists:sum([U || {_, _, U} <- Sorted]) / 1048576]);
+                      , lists:sum([S || {_, S, _, _} <- Sorted]) / 1048576
+                      , lists:sum([U || {_, _, U, _} <- Sorted]) / 1048576
+                      , lists:sum([N || {_, _, _, N} <- Sorted]) / 1048576]);
         Other ->
             io:format("instrument:carriers/0 unavailable: ~p~n", [Other])
     end,
     ok.
 
-carrier({Alloc, _Origin, Size, Blocks, _Hist}, Acc) ->
-    Used = lists:sum([B || {_Type, B, _} <- normalise(Blocks)]),
-    maps:update_with(Alloc, fun({S, U}) -> {S + Size, U + Used} end, {Size, Used}, Acc);
+carrier({Alloc, _InPool, Size, Unscanned, Blocks, _Hist}, Acc) ->
+    Used = lists:sum([B || {_Type, _Count, B} <- normalise(Blocks)]),
+    maps:update_with(Alloc, fun({S, U, N}) -> {S + Size, U + Used, N + Unscanned} end,
+                     {Size, Used, Unscanned}, Acc);
 carrier(_, Acc) ->
     Acc.
 
