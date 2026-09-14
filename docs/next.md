@@ -46,6 +46,7 @@ because the previous edition's picture of a fully green tree predates them.
 | Advisor strand | Merged in #360, closing issue #137. A catalogue that routes an `advisor` role gets a second strand beside `main`, created by the harness rather than by the Agency, that reads a rendering of what `main` did since a stored cursor at each of its run ends and answers with one `advise` call: `quiet`, `nudge` folded into `main`'s next run start, or `block` delivered now. An emission guard downgrades a block inside its cooldown and drops advice already given. Unrouted, nothing is created. #137 is closed; its phase-1 deferrals live on in `docs/architecture/advisor.md` and in "What to do next" below, no longer gated by that issue number. |
 | Vision routing | Merged in #362, closing issue #358. The catalogue's `vision` key routes an image-bearing request through the `vision` chain; a text-only target gets a text placeholder for each image instead of a silent drop; a request routed nowhere usable gets a worded in-band refusal. Two rounds of adversarial review moved the design twice before landing: the first found the classifier reading the newest user message, which misclassified the common case where a run-start digest injection sits after the operator's actual image-bearing turn, fixed by classifying the *current turn*; the second found the turn boundary sitting before a tool call, so the request carrying a tool's result back was classified imageless and handed to the text-only model, fixed by moving the boundary past tool calls. The key's default flipped for the same reason nothing on the wire marks the capability: an entry that never wrote `vision` reads images, and the routing and the refusal act only on an entry explicitly declared `vision = false`. |
 | `cap/search` | Merged in #378, closing issue #365. A read-only navigation and search capability — `glob`, `grep`, `stat`, `read_lines` — on the workspace and extension seams, served entirely in the harness with no process spawn. See "The `cap/search` rulings" below for what it settled and "Deliberately open" for what it left unmeasured. |
+| Paid inference (L402) | **In flight on a three-branch stack** (`provider/l402-payment-required`, `ext/payment-required-hook`, `docs/l402-handoff`), authored September 13, 2026 and not yet merged. A `[models.<name>]` entry may say `auth = "l402"`: the gateway parses an aperture-style `402` challenge in `provider/l402`, asks an injected `Paywall` to settle it, and retries once with `Authorization: L402 macaroon:preimage` ([protocol 033](../protocol-change/033-payment-required.md), PROPOSED). A tier-J extension answers the new `payment_required` hook with the preimage; `[[hook]] timeout_ms`, `[net] plaintext_loopback` (an ADR-007 addendum), record format 3, and `cap/clock.sleep_ms` are the surface it needed. The reference extension is `Roasbeef/loom-402`, which pays through a `waved` (lightninglabs/wavelength) sidecar on loopback. Verified by `make check` on each branch and the extension's own 65 tests; **not yet driven end to end against a live aperture and waved on regtest** — that is item 1 under "What to do next". |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
 ### Corrections to the previous edition
@@ -170,7 +171,21 @@ is unmeasured; see "Deliberately open".
 
 ## What to do next
 
-1. **Finish the imported-hooks layer's follow-ups**, tracked in #369: an
+1. **Drive paid inference end to end.** Nothing has yet paid a real
+   invoice: the stack is proven by unit and gateway tests with fake
+   transports, and the extension by pure tests with a fake wallet. Stand up
+   `waved` (`make install-wavewalletrpc`, `rpc.gateway.enabled=true`) and an
+   aperture proxy on regtest, install `Roasbeef/loom-402`, route an
+   `auth = "l402"` entry as `main`, and watch one turn pay, retry and settle.
+   Expect the first real surprises at the seams the tests could only assert
+   about: the proxy's exact `402` shape, grpc-gateway's string-encoded
+   int64s, and the preimage's arrival on `inspect/activity` rather than on
+   `send`. **Exit:** a session log showing `PaymentRequired`, one
+   `payment_required` hook round trip, and a settled response, with the
+   receipt in the extension's ledger; then protocol 033 moves from PROPOSED
+   to ACCEPTED and this row moves to "merged".
+
+2. **Finish the imported-hooks layer's follow-ups**, tracked in #369: an
    `[hooks] import = "on" | "off"` switch (default `on`); the `loom hooks
    trust` CLI, without which project and local sources can never be
    approved (the trust module already has `trust`, `revoke` and `scan`; the
@@ -182,7 +197,7 @@ is unmeasured; see "Deliberately open".
    `protocol-change/NNN.md`. **Exit:** each as its own PR with a regression
    and #369 closed or narrowed to what remains.
 
-2. **Carry the advisor's phase-1 deferrals.** Each is named in
+3. **Carry the advisor's phase-1 deferrals.** Each is named in
    `docs/architecture/advisor.md` with what it waits on; #137 tracked phase
    1 only and is closed, so none of these has an open issue yet. The
    **awaited run-end hard block** — holding the run boundary open until the
@@ -202,13 +217,13 @@ is unmeasured; see "Deliberately open".
    an issue filed and counts recorded before the hard block is built; each
    of the other five as its own PR with a regression.
 
-3. **Land the Herdr-side half.** The Herdr repo needs the `Loom` registry
+4. **Land the Herdr-side half.** The Herdr repo needs the `Loom` registry
    variant, the `("herdr:loom", "loom")` resume-plan entry mapping to
    `loom --session <id>`, and the schema enum; the wire contract this tree
    speaks is the one Herdr's schema already defines. **Exit:** a pane opened
    onto a loom session resumes by its announced id.
 
-4. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
+5. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
    commit `Aborted` with "provider cancellation could not be confirmed" even
    though the provider did stop. The smallest fix is in the client provider
    relay: deliver the owner-authored terminal on entry to `ProvingTerminal` and
@@ -218,12 +233,12 @@ is unmeasured; see "Deliberately open".
    under a delayed-owner-exit fixture. This is a runtime change, separate from
    the UX series.
 
-5. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
+6. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,
    **#244** schedules and timer recovery, and **#245** memory-off evidence.
    **Exit:** each issue's own acceptance on the final dependency set.
 
-6. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
+7. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
    re-resolution, **#296** bundled ERTS in jailed PATH, **#286** refused
    extension visibility, **#283** idle helper retirement, and **#345** the etui
    fork stack. **Exit:** reproduce the specific symptom before changing its
@@ -417,7 +432,26 @@ None of these is unfinished work somebody forgot.
   designed away. It waits on a trace that actually needs it; parsing them
   correctly is real complexity that a hidden-entries-plus-`prune` default
   has so far made unnecessary.
-- **The Escape cancellation proof-delivery race** (item 4 above) has a diagnosed
+- **A declined payment does not fall back to a keyed entry.** `PaymentDeclined`
+  is terminal by ruling in protocol 033, so a role whose head is a paid entry
+  and whose tail is a keyed one stops at the decline. Walking on would re-price
+  the same request on a different entry; whether an operator wants that is a
+  question for the first live drive, not a default to guess.
+- **The L402 credential cache is per session, not per daemon**, because the
+  gateway it serves is already per session (`client/serve.paywall_seam`). A
+  token bundle bought in one session is therefore bought again in the next.
+  Sharing it is a small actor move once a measurement says the re-purchase
+  costs more than it is worth.
+- **`waved` is not jailed and not started by loom.** The extension reaches it
+  over plaintext loopback with no macaroon, which is that daemon's gateway
+  posture; anything on the host that can open a loopback socket can spend
+  the wallet. loom-402's per-request and daily ceilings bound what *loom*
+  spends, nothing more. #109's open question about jailing third-party
+  processes applies here too.
+- **The `Payment` HTTP-auth scheme (MPP) is not spoken.** L402 and its legacy
+  `LSAT` spelling are. pi-402 negotiates both; here the second door waits on
+  a proxy that only offers it.
+- **The Escape cancellation proof-delivery race** (item 5 above) has a diagnosed
   root cause but no fix yet. The #353 presentation stands on its own: it renders
   the retained diagnostic honestly rather than hiding it.
 - **Live daemon CPU attribution** from the September 11 inspection is
