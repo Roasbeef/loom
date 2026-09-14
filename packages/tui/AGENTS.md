@@ -12,7 +12,8 @@ that tree separately from the self-contained server.
 ## Key Types
 
 - Reading mode remains frozen at offset zero until an explicit return to live
-  output. Older-page demand follows the visible boundary, including pages
+  output. Older-page demand starts two viewport heights before the loaded boundary,
+  keeps one bounded page outstanding, and continues through pages
   containing only other strands. Expanded tool results reuse the compact
   invocation's source identity through `Call.result_source`.
 - Bracketed inline paste inserts at the editor cursor, retaining both sides of

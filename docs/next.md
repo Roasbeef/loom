@@ -75,14 +75,24 @@ repeated. The next measurement should inspect the remaining process memory;
 this repair does not establish a complete memory budget or a startup speedup.
 The broader historical audit below has not been revalidated for this patch.
 
+## History prefetch (September 14)
+
+Reading history starts the next fetch two transcript viewport heights before
+the oldest loaded row. Both wheel input and idle demand use that threshold;
+the existing single pending request, hundred-position page, and retained
+window bounds remain. All 476 TUI tests passed, and the new regression rejects
+the previous ten-row threshold. Lint and doc-check passed with zero errors.
+Hosted CI and Linux signoff passed at `21ed55c6`; the merge of main preserves
+both TUI changes and needs fresh checks at its new head.
+
 ## Compaction notice (September 14)
 
 The TUI now renders compaction as one short notice with the approximate token
 count before compaction and the number of retained messages. The model-facing
 checkpoint remains in the durable entry and is omitted from the transcript,
 including expanded details. The entry carries no post-compaction token count,
-so the notice does not claim savings. All 476 TUI tests passed locally; full
-CI and Linux signoff remain pending.
+so the notice does not claim savings. PR #407 merged as `7cacb150` after
+hosted CI and exact-head Linux signoff passed.
 
 ## Where the tree is
 
