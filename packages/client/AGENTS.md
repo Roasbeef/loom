@@ -3505,6 +3505,18 @@ a retired control owner. Closure is requested before the observation outcome
 is checked, and no probe launches another daemon. Mutation replies retain
 their existing unknown-outcome semantics.
 
+## Closure ownership at process boundaries
+
+`hookserve.wire` binds each prior hook or tool function before composing its
+wrapper. Capturing the enclosing `Hooks` or `ToolSurface` would copy unrelated
+slots into every supervisor and worker that receives the effects. Likewise,
+`wiring.compaction_hooks` captures the session for projection, and
+`gateway.tool_output_observer` captures only event identity fields from
+`ToolRun`. Their regression tests vary unrelated record contents and compare
+flattened callback sizes; the size probe is confined to test support. See
+[the daemon memory investigation](../../docs/design-notes/daemon-memory.md)
+for the isolated workload measurements and their limits.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)

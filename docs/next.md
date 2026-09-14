@@ -52,24 +52,28 @@ tolerance no jailed fixture in the tree actually gets (#376). Neither opens
 new work; both are folded into "Corrections to the previous edition" below
 because the previous edition's picture of a fully green tree predates them.
 
-## Local diagnostic installation (September 14)
+## Local diagnostics and memory (September 14)
 
-The `build/diagnostic-install` branch starts from `4c266dde` and adds
-`make install-debug`. It preserves BEAM debug chunks, skips stripping the
-bundled ERTS/toolchain, and supplies OTP profiling modules plus the memory
-census. The normal launcher remains undistributed. A debug launcher enables
-a loopback node only when `LOOM_DEBUG_ARGS_FILE` is supplied; the credential
-setup and attachment commands are in `docs/distribution.md`.
+The diagnostic installation is merged in #405. Its release smokes and an
+isolated installed census passed; the user's existing daemon has not been
+restarted or collected. That daemon's exact owners remain unmeasured.
 
-The complete install target passed under a separate prefix. The server and
-client release smokes passed, and an installed diagnostic daemon accepted an
-observational memory census with allocator accounting. The probe also verified
-BEAM debug chunks, profiler availability, loopback configuration, removal of
-the startup environment variable, and Loom's own `tools` application metadata.
-The existing user daemon was neither replaced nor restarted. Its roughly
-3 GiB OS footprint remains unattributed at the BEAM-process level; profile a
-named diagnostic instance before proposing a memory fix. These packaging
-checks are not a full `make check` or a Linux signoff.
+The earlier recommendation to wait before proposing a memory fix is now
+superseded by an isolated reproduction. `fix/hook-memory-retention`, based on
+`7cacb150`, narrows the captures in imported-hook composition, the compaction
+projection, and the tool-output observer. Its client gate passed all 1,800
+tests; lint has zero errors, and the shifted documentation references are
+repaired. Independent review and three negative/positive regression checks
+are complete. Hosted CI and Linux signoff for this branch remain outstanding.
+
+Two comparable three-turn model workloads measured 1,511.755 MiB of BEAM
+memory on the baseline and 695.782 MiB with the hook-wrapper fix alone.
+[The measurement addendum](design-notes/daemon-memory.md) records the release
+composition, process totals, separate explicit-collection observations, and
+limits. The final three-module patch has not had that model-backed comparison
+repeated. The next measurement should inspect the remaining process memory;
+this repair does not establish a complete memory budget or a startup speedup.
+The broader historical audit below has not been revalidated for this patch.
 
 ## Live profiling (September 14)
 
