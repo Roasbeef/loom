@@ -37,7 +37,7 @@ because the previous edition's picture of a fully green tree predates them.
 | UX polish | #347 and its reading follow-up #349 are merged. |
 | Streaming tool output | Merged in #348 (`6a484a4f`). A running `bash`/`grep` call's bounded output tail reaches the terminal while it runs: collector observer, `Outputs` bus topic, pushed `tool_output` frame, one `ToolTail` per stream ([protocol 031](../protocol-change/031-tool-output-stream.md), issue #186). |
 | Context usage | Merged in #351. `/context`, `/context all`, and a persistent `ctx ~N%` footer; the server captures the active strand's configuration and immutable history, so the count is independent of scrollback retention ([protocol 030](../protocol-change/030-context-observation.md)). |
-| Escape and held input | Merged in #352. An explicit abort now admits every message held for that strand into one successor run, not just the first ([protocol 032](../protocol-change/032-abort-held-batch.md)). |
+| Escape and held input | #352 made an explicit abort admit every message held for that strand into one successor run ([protocol 032](../protocol-change/032-abort-held-batch.md)); that successor started the moment the abort retired, so Escape read as "skip ahead". [Protocol 033](../protocol-change/033-abort-halts-held-input.md) now halts the held queue at abort and releases it, as one batch with the operator's next message last, only when a client submits on the strand. Not halted: runs started through `runtime/api` by a parent's downward send or an advisor block; see "Deliberately open". The smoother daemon update path is filed as #392. |
 | Transcript reading and drafts | Merged in #353. A reading viewport is preserved even at offset zero, expanded tool results keep the compact call's anchor, bracketed paste inserts at the cursor without replacing a draft, and an aborted turn renders as Stopped with its diagnostic visible. |
 | Herdr integration | Merged in #354. The terminal reports idle, working and blocked to a Herdr pane over its unix socket, sequenced from the wall clock, announcing the session when its identity is first known and on every switch. `done` is Herdr's own derivation from an idle report on an unseen tab and is never sent. |
 | Imported hooks | Merged in #355 (issue #350, first wave). A Claude Code hook collection loads unchanged from the operator's `~/.claude/settings.json`, trusted on first sight and re-reviewed on change; the composed gates fire at run start, tool clearance (after the harness's own, with a rewrite re-cleared), the result fold, the summarizer, and run end. A committed acceptance fixture boots a real instance and proves each gate fires. Its follow-ups are gathered in #369, superseding the looser list a previous edition carried here; see "What to do next" below. |
@@ -268,13 +268,16 @@ are independent estimates, never summed into a provider total. The read is
 bounded by a 4096-entry scan and a 47,000-byte board. The footer refreshes at
 the operation boundary, not per committed entry; manual `/context` forces a read.
 
-**An explicit abort admits the whole held queue.**
-[Protocol 032](../protocol-change/032-abort-held-batch.md) marks the strand's
-existing held queue to drain as one batch after the aborted operation retires,
-preserving each message's content, images, and author in FIFO-within-priority
-order. An empty queue at abort carries no batch intent, so input typed inside
-the cancellation window keeps the one-head drain. Ordinary completion and
-steering retain their existing ordering.
+**An explicit abort halts the held queue until the operator speaks.**
+[Protocol 033](../protocol-change/033-abort-halts-held-input.md) marks the
+strand's existing held queue `Halted` at abort: the aborted operation retires,
+the strand goes idle, and nothing held starts. The next client submission on
+the strand joins the queue and releases it as one batch, preserving each
+message's content, images, and author in FIFO-within-priority order, with a
+prompt last and a steer first. An empty queue at abort carries no intent, so
+input typed after it keeps the one-head drain ([032](../protocol-change/032-abort-held-batch.md)'s
+surviving arm). Ordinary completion and steering retain their existing
+ordering.
 
 **Queue edits do not resubmit.** [Protocol 024](../protocol-change/024-edit-queued-input.md)
 keeps FIFO position, priority, author, timestamp, and images while comparing
@@ -418,6 +421,14 @@ None of these is unfinished work somebody forgot.
   designed away. It waits on a trace that actually needs it; parsing them
   correctly is real complexity that a hidden-entries-plus-`prune` default
   has so far made unnecessary.
+- **Escape's halt covers held client input only.** Protocol 033 halts the
+  gateway's held queue, which is what an operator sees start on its own.
+  A run started through `runtime/api` without a client — a live parent's
+  downward `send_to_strand` into an idle child, an advisor `block` — is not
+  halted, because the gateway never sees it. Closing that is a paused mark on
+  the strand cell in `machine`/`runtime`, read by `accept_request`, and is
+  worth doing only once a trace shows one of those starters undoing an
+  operator's Escape.
 - **The Escape cancellation proof-delivery race** (item 4 above) has a diagnosed
   root cause but no fix yet. The #353 presentation stands on its own: it renders
   the retained diagnostic honestly rather than hiding it.

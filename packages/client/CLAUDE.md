@@ -2593,9 +2593,11 @@ across one operation a `Stop` block holds open.
 - **Human input is bounded hub memory with explicit priority.** Busy prompts
   and follow-ups retain their submitted author and content until admission.
   Steering joins a higher-priority FIFO and stops the observed operation;
-  explicit Escape marks the existing `HeldQueue` as `AllHeld`. After the
-  captured operation retires, one `api.prompt` admits every original message
-  together. Natural completion and steering retain `OnlyHead` draining.
+  explicit Escape marks the existing `HeldQueue` as `Halted`, and nothing held
+  drains while that mark holds. The next client submission on the strand
+  (`release_halt`) flips it to `AllHeld`, and one `api.prompt` then admits
+  every original message and the release together (`protocol-change/033`).
+  Natural completion and steering retain `OnlyHead` draining.
   Removing an empty queue also removes its drain mode; reads and edits preserve
   the mode while retaining each item's identity. Each strand has four normal
   and four steering slots. `queued` acknowledges transient custody, and a gateway

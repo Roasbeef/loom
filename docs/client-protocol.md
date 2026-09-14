@@ -1076,7 +1076,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1607-1430`).
+`wrong_session`. Source: (`client/gateway.gleam:1617-1430`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1306,10 +1306,12 @@ Source: (`client/protocol.gleam:781-785`).
 The server captures the current operation identity, marks that operation
 cancelled and sweeps its effect plane, so its background jobs also stop.
 Retries retain the same identity and cannot cancel a successor. Host-held
-prompts and steers remain queued and run after reconciliation. After an
-explicit abort every message held for that strand is admitted into a single
+prompts and steers remain queued and are *halted*: nothing held starts when
+the aborted operation retires. The next `prompt`, `follow_up` or `steer` from
+any client on that strand joins the queue and releases the whole of it as one
 successor run, so a client sees one `op_transition` sequence rather than one
-per queued row. A strand with no live operation refuses with `conflict`.
+per queued row ([protocol 033](../protocol-change/033-abort-halts-held-input.md)).
+A strand with no live operation refuses with `conflict`.
 Source: (`client/gateway.gleam:3780-3823`).
 
 The durable `cancel_requested` transition reaches every subscriber
@@ -1340,7 +1342,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4951-4632`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4992-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2782,7 +2784,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2936`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2946`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**
