@@ -8948,7 +8948,15 @@ fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
   }
 }
 
+// `/steer` is an explicit instruction about ordering, so a pending interrupt
+// does not quietly turn it into a prompt. The gateway holds a steer at its own
+// priority and a release keeps that priority, which is what the operator asked
+// for (`protocol-change/033`). Only a legacy host without a gateway queue falls
+// back to the client-side hold.
 fn send_explicit_steer(cleared: Model, text: String, before: Model) -> Model {
+  use <- bool.lazy_guard(before.channel != None, fn() {
+    send_steer(cleared, text)
+  })
   case active_interrupt(before) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None -> send_steer(cleared, text)
