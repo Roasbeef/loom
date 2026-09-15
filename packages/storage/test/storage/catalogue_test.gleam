@@ -3,17 +3,22 @@
 
 import core/clock
 import core/ids
+import core/tx
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 import simplifile
 import sqlight
 import storage/catalogue
+import storage/catalogue_archives_schema
 import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
+import storage/sqlite
+import storage/storage
 import support/fixtures
 
 pub fn embedded_schema_matches_the_sqlc_input_test() {
@@ -23,6 +28,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(names) = simplifile.read("sql/catalogue_names.sql")
     as "name migration is checked in"
   assert catalogue_names_schema.schema == names
+  let assert Ok(archives) = simplifile.read("sql/catalogue_archives.sql")
+    as "archive migration is checked in"
+  assert catalogue_archives_schema.schema == archives
 }
 
 pub fn generated_queries_match_the_sqlc_input_test() {
@@ -35,7 +43,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.confirm_registration("").0,
     sql.registration_display_name("").0,
     sql.set_registration_display_name("", "").0,
-    sql.registration_page("").0,
+    sql.registration_page("", 0).0,
     sql.catalogue_revision().0,
     sql.member_registration_page("", "").0,
     sql.increment_catalogue_revision().0,
@@ -46,6 +54,9 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.delete_session_domain("").0,
     sql.delete_session_display_name("").0,
     sql.delete_registration("").0,
+    sql.session_archive("").0,
+    sql.archive_session("").0,
+    sql.restore_session("").0,
   ]
   assert normalize_queries(source)
     == normalize_queries(string.join(generated, "\n"))
@@ -55,6 +66,8 @@ pub fn generated_queries_match_the_sqlc_input_test() {
 // their line structure, so compare the same normalized text as the search pilot.
 fn normalize_queries(source: String) -> String {
   source
+  |> string.replace("@after", "?1")
+  |> string.replace("@archived", "?2")
   |> string.split("\n")
   |> list.map(string.trim)
   |> list.filter(fn(line) { line != "" && !string.starts_with(line, "--") })
@@ -106,7 +119,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -411,4 +424,121 @@ pub fn corrupt_default_mapping_is_refused_on_read_test() {
     == Error(catalogue.Invalid("workspace default refers to a missing session"))
   assert simplifile.is_file(record.path) == Ok(False)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn archive_preserves_metadata_and_default_is_not_restored_test() {
+  let path = fresh_path("archive")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let original = registration(896)
+  assert catalogue.reserve(store, original) == Ok(original)
+  let assert Ok(saved) = catalogue.confirm(store, original.id)
+    as "file is saved"
+  let assert Ok(renamed) = catalogue.rename(store, saved.id, "keep my history")
+    as "display label is set"
+  assert catalogue.set_workspace_default(store, saved.workspace, saved.id)
+    == Ok(renamed)
+  let assert Ok(before) = catalogue.page(store, after: "")
+    as "active page loads"
+
+  assert catalogue.set_visibility(store, saved.id, catalogue.Archived)
+    == Ok(renamed)
+  assert catalogue.visibility(store, saved.id) == Ok(catalogue.Archived)
+  assert catalogue.get(store, saved.id) == Ok(renamed)
+  assert catalogue.by_request_key(store, original.request_key) == Ok(saved)
+  assert catalogue.reserve(store, original) == Ok(saved)
+  assert catalogue.workspace_default(store, saved.workspace)
+    == Error(catalogue.Missing)
+  assert catalogue.set_workspace_default(store, saved.workspace, saved.id)
+    == Error(catalogue.Conflict)
+  let assert Ok(hidden) = catalogue.page(store, after: "")
+    as "active page loads"
+  assert hidden.records == []
+  assert hidden.revision == before.revision + 1
+  assert catalogue.archived_page(store, after: "")
+    == Ok(catalogue.Page(hidden.revision, [renamed]))
+  assert catalogue.set_visibility(store, saved.id, catalogue.Archived)
+    == Ok(renamed)
+  assert catalogue.page(store, after: "") == Ok(hidden)
+  assert catalogue.close(store) == Ok(Nil)
+
+  let assert Ok(reopened) = catalogue.open(path) as "archive survives restart"
+  assert catalogue.visibility(reopened, saved.id) == Ok(catalogue.Archived)
+  assert catalogue.set_visibility(reopened, saved.id, catalogue.Active)
+    == Ok(renamed)
+  assert catalogue.set_visibility(reopened, saved.id, catalogue.Active)
+    == Ok(renamed)
+  assert catalogue.workspace_default(reopened, saved.workspace)
+    == Error(catalogue.Missing)
+  assert catalogue.page(reopened, after: "")
+    == Ok(catalogue.Page(hidden.revision + 1, [renamed]))
+  assert catalogue.archived_page(reopened, after: "")
+    == Ok(catalogue.Page(hidden.revision + 1, []))
+  assert catalogue.set_visibility(reopened, saved.id, catalogue.Archived)
+    == Ok(renamed)
+  assert catalogue.delete(reopened, saved.id) == Ok(renamed)
+  assert catalogue.get(reopened, saved.id) == Error(catalogue.Missing)
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
+  let path = fresh_path("archive-migration")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let record = registration(895)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(renamed) = catalogue.rename(store, record.id, "saved label")
+    as "version two display metadata exists"
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  let assert Ok(migrated) = catalogue.open(path) as "version two migrates"
+  assert catalogue.get(migrated, record.id) == Ok(renamed)
+  assert catalogue.by_request_key(migrated, record.request_key) == Ok(record)
+  assert catalogue.visibility(migrated, record.id) == Ok(catalogue.Active)
+  assert catalogue.set_visibility(migrated, record.id, catalogue.Archived)
+    == Ok(renamed)
+  assert catalogue.close(migrated) == Ok(Nil)
+}
+
+pub fn archive_and_restore_preserve_committed_conversation_bytes_test() {
+  let directory = fixtures.scratch("archived-conversation")
+  let assert Ok(cwd) = simplifile.current_directory()
+    as "fixture cwd is available"
+  let path = cwd <> "/" <> directory <> "/conversation.db"
+  let assert Ok(conversation) =
+    sqlite.open(
+      sqlite.config(path:, owner: "archive-fixture"),
+      clock.fixed(1000),
+    )
+    as "a real conversation opens"
+  let #(entry, _) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "retain this answer")
+  let assert Ok(_) =
+    storage.commit(conversation, tx.Tx([tx.InsertEntry(entry)], []))
+    as "history is committed before archival"
+  assert storage.close(conversation) == Ok(Nil)
+  let assert Ok(before) = simplifile.read_bits(path)
+    as "closed conversation bytes are readable"
+  let assert Ok(store) = catalogue.open(directory <> "/catalogue.db")
+    as "catalogue opens separately"
+  let original = catalogue.Registration(..registration(897), path:)
+  assert catalogue.reserve(store, original) == Ok(original)
+  let assert Ok(saved) = catalogue.confirm(store, original.id)
+    as "conversation is saved"
+
+  assert catalogue.set_visibility(store, saved.id, catalogue.Archived)
+    == Ok(saved)
+  assert simplifile.read_bits(path) == Ok(before)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(reopened) = catalogue.open(directory <> "/catalogue.db")
+    as "catalogue reopens"
+  assert catalogue.set_visibility(reopened, saved.id, catalogue.Active)
+    == Ok(saved)
+  assert simplifile.read_bits(path) == Ok(before)
+  assert catalogue.close(reopened) == Ok(Nil)
 }

@@ -498,3 +498,35 @@ fn normalize(source: String) {
   })
   |> string.join("\n")
 }
+
+pub fn archived_memberships_are_filtered_before_pagination_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let records =
+    list.index_map(list.repeat(Nil, 105), fn(_, index) {
+      registration(index + 400)
+    })
+  let assert Ok(member) =
+    access.create_member(store, "reader", "Reader", digest("c"))
+    as "reader exists"
+  list.each(records, fn(record) {
+    let assert Ok(_) = catalogue.reserve(store, record)
+      as "registration is retained"
+    assert access.grant(store, member.id, record.id, access.Observer) == Ok(Nil)
+  })
+  let sorted = list.sort(records, fn(a, b) { string.compare(a.id, b.id) })
+  let hidden = list.take(sorted, 102)
+  list.each(hidden, fn(record) {
+    assert catalogue.set_visibility(store, record.id, catalogue.Archived)
+      == Ok(record)
+  })
+  let assert Ok(page) = catalogue.member_page(store, member.id, after: "")
+    as "hidden memberships do not consume the page limit"
+  assert page.records == list.drop(sorted, 102)
+  let assert Ok(first) = list.first(hidden) as "one archived row is selected"
+  assert catalogue.set_visibility(store, first.id, catalogue.Active)
+    == Ok(first)
+  let assert Ok(restored) = catalogue.member_page(store, member.id, after: "")
+    as "restoration recovers existing membership without a new grant"
+  assert restored.records == [first, ..list.drop(sorted, 102)]
+  assert catalogue.close(store) == Ok(Nil)
+}

@@ -18,6 +18,7 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
+import storage/catalogue_archives_schema
 import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
@@ -30,6 +31,15 @@ pub type State {
 
   /// The file's canonical identity has been verified by the daemon.
   Saved
+}
+
+/// Visibility is independent of file initialization and runtime residency.
+pub type Visibility {
+  /// Included in ordinary listings and eligible for explicit admission.
+  Active
+
+  /// Preserved for the owner to restore, with execution admission disabled.
+  Archived
 }
 
 /// A registration contains no provider credentials or conversation contents.
@@ -132,15 +142,23 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
   case found, version {
-    1_281_253_197, 2 -> {
+    1_281_253_197, 3 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       Ok(Nil)
     }
-    1_281_253_197, 1 -> {
+    1_281_253_197, 1 | 1_281_253_197, 2 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       transaction(connection, fn() {
-        use Nil <- result.try(execute(connection, catalogue_names_schema.schema))
-        execute(connection, "PRAGMA user_version=2")
+        use Nil <- result.try(case version {
+          1 -> execute(connection, catalogue_names_schema.schema)
+          2 -> Ok(Nil)
+          _ -> Error(Unsupported)
+        })
+        use Nil <- result.try(execute(
+          connection,
+          catalogue_archives_schema.schema,
+        ))
+        execute(connection, "PRAGMA user_version=3")
       })
     }
     0, 0 -> {
@@ -153,13 +171,17 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
               connection,
               catalogue_names_schema.schema,
             ))
+            use Nil <- result.try(execute(
+              connection,
+              catalogue_archives_schema.schema,
+            ))
             use Nil <- result.try(statement(
               Catalogue(connection),
               sql.initialize_catalogue_revision(),
             ))
             execute(
               connection,
-              "PRAGMA application_id=1281253197; PRAGMA user_version=2",
+              "PRAGMA application_id=1281253197; PRAGMA user_version=3",
             )
           })
         _ -> Error(Unsupported)
@@ -426,6 +448,11 @@ pub fn set_workspace_default(
 ) -> Result(Registration, Error) {
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
+    use state <- result.try(archive_state(catalogue, id))
+    use Nil <- result.try(case state {
+      Active -> Ok(Nil)
+      Archived -> Error(Conflict)
+    })
     use Nil <- result.try(case record.workspace == workspace {
       True -> Ok(Nil)
       False -> Error(Conflict)
@@ -444,6 +471,77 @@ pub fn set_workspace_default(
         Ok(record)
       }
       Error(error) -> Error(error)
+    }
+  })
+}
+
+/// Reads visibility independently of the immutable creation record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.visibility(store, session_id)
+/// ```
+@internal
+pub fn visibility(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Visibility, Error) {
+  use _record <- result.try(get(catalogue, id))
+  archive_state(catalogue, id)
+}
+
+fn archive_state(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Visibility, Error) {
+  use rows <- result.try(query(catalogue, sql.session_archive(id)))
+  case rows {
+    [] -> Ok(Active)
+    [sql.SessionArchive(found)] if found == id -> Ok(Archived)
+    _ -> Error(Invalid("invalid archive metadata"))
+  }
+}
+
+/// Changes visibility and the catalogue revision in one transaction.
+///
+/// Archiving clears an existing workspace default. Restoring never selects a
+/// default or starts a runtime. The caller serializes this write with runtime
+/// admission and proves the session holds no slot before entering this seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.set_visibility(store, session_id, catalogue.Archived)
+/// ```
+@internal
+pub fn set_visibility(
+  catalogue: Catalogue,
+  id: String,
+  visibility: Visibility,
+) -> Result(Registration, Error) {
+  transaction(catalogue.connection, fn() {
+    use record <- result.try(get(catalogue, id))
+    use current <- result.try(archive_state(catalogue, id))
+    case current == visibility {
+      True -> Ok(record)
+      False -> {
+        use Nil <- result.try(case visibility {
+          Active -> statement(catalogue, sql.restore_session(id))
+          Archived -> {
+            use Nil <- result.try(statement(
+              catalogue,
+              sql.delete_session_default(id),
+            ))
+            statement(catalogue, sql.archive_session(id))
+          }
+        })
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.increment_catalogue_revision(),
+        ))
+        Ok(record)
+      }
     }
   })
 }
@@ -478,6 +576,7 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
       sql.delete_session_memberships(id),
     ))
     use Nil <- result.try(statement(catalogue, sql.delete_session_domain(id)))
+    use Nil <- result.try(statement(catalogue, sql.restore_session(id)))
 
     // The display name is keyed by session id and nothing else, so it would
     // otherwise outlive the registration and be inherited by a later session
@@ -521,9 +620,39 @@ fn default_identity(
 /// // catalogue.page(catalogue, after: "")
 /// ```
 pub fn page(catalogue: Catalogue, after after: String) -> Result(Page, Error) {
+  page_for(catalogue, after, Active)
+}
+
+/// Lists one bounded owner archive page without opening conversation files.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.archived_page(store, after: "")
+/// ```
+@internal
+pub fn archived_page(
+  catalogue: Catalogue,
+  after after: String,
+) -> Result(Page, Error) {
+  page_for(catalogue, after, Archived)
+}
+
+fn page_for(
+  catalogue: Catalogue,
+  after: String,
+  visibility: Visibility,
+) -> Result(Page, Error) {
+  let archived = case visibility {
+    Active -> 0
+    Archived -> 1
+  }
   snapshot(catalogue.connection, fn() {
     use revision <- result.try(revision(catalogue))
-    use rows <- result.try(query(catalogue, sql.registration_page(after)))
+    use rows <- result.try(query(
+      catalogue,
+      sql.registration_page(after, archived),
+    ))
     use records <- result.try(
       list.try_map(rows, fn(row) {
         decoded(
