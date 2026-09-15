@@ -650,6 +650,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     | protocol.NotesSnapshot(..)
     | protocol.QueuedInputSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
+    | protocol.AdvisorPendingSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -906,6 +907,7 @@ fn matching_presentation(name, intent, event) {
     "worktree_diff", Read, protocol.WorktreeSnapshot(_) -> True
     "context", Read, protocol.ContextSnapshot(_) -> True
     "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
+    "advisor_pending", Read, protocol.AdvisorPendingSnapshot(_) -> True
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
     _, _, _ -> False
@@ -1297,7 +1299,8 @@ fn outbound(frame: String) {
         | "queued_input"
         | "context"
         | "worktree_diff"
-        | "live_jobs" -> Read
+        | "live_jobs"
+        | "advisor_pending" -> Read
         _ -> Mutation
       }
       Ok(Outbound(name, suffix, intent))
