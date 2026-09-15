@@ -1,83 +1,63 @@
 # Next
 
 Read this first for the current work, settled boundaries, and remaining
-acceptance. Rewrite it after the next body of work. Detailed measurements and
-review findings belong in their own documents.
+acceptance. Detailed measurements and review findings belong in their own
+records.
 
-This edition is checked against main `4d262bd4` and the session-archive branch
-on September 14, 2026. Recent merge status was verified against GitHub. The
-September 13 project-wide audit was not repeated: its older feature inventory
-and performance claims are historical evidence, available with
-`git show ebcda151:docs/next.md`, rather than current acceptance claims.
+This edition is based on main `fe3cfbf2` and the local #404 takeover commit
+`dde20ee8`, checked September 14, 2026 (September 15 UTC). GitHub still has
+#404 at `3b2dafb9`; the takeover commits have not been pushed. The broader
+feature, issue, and memory audit from the previous edition was not repeated.
+Its historical detail remains available at `6f598fc0:docs/next.md`.
 
 ## Where the tree is
 
 | Body of work | Verified state |
 |---|---|
-| Transcript rendering | #401 and #402 are merged with successful hosted CI. The latter carries etui scroll-region presentation. #408 adds earlier history prefetch and passed hosted CI plus Linux signoff at its final head. |
-| Completion handoff | #416 is merged with all hosted CI and exact-head Linux signoff successful. Its terminal retains bounded live fragments until their exact reserved response entry arrives. Protocol 036 records the identity and retirement rules. |
-| Terminal input | #413 and etui #2 are merged. Closed input retires both read loops; interactive startup requires terminal input and output before daemon launch. Hosted CI and exact-head Linux signoff passed for #413. |
-| Help | #406 and #410 are merged. Help is handled before terminal/daemon startup, including flags following subcommands. |
-| Session names | #412 is merged with successful hosted CI. Attachment carries the authorized display name; `/rename` and picker `r` retain session identity and acknowledged names. No final-head Linux signoff was visible in the PR status response used for this audit. |
-| Reversible removal | This branch adds archive/restore under protocol 035. The catalogue overlay preserves history and creation metadata; the picker archives ordinarily and reserves permanent deletion for its archive view. Independent review is resolved. Storage passed 104 tests; after integration with #416, 1,802 client and 490 TUI tests passed, along with lint and documentation checks. It is not yet merged. |
-| Hook memory retention | #411 is merged with successful hosted CI and Linux signoff. The final three-module patch still lacks a repeated model-backed comparison. |
-| Capture lint | #414 is merged with successful hosted CI and Linux signoff at `78406237`. R12 warns on field-only broad record captures; its 85 warnings are a review census, not proof of a leak. |
-| Profiling | #409 is merged with hosted CI and Linux signoff at `e14e90e5`. #417 adds persistent daemon profiling configuration and propagation from a profiling client to a newly launched daemon; it remains under validation. |
-| Retry and scheduling documentation | #391 is merged and #368 is closed. Open #394 owns the remaining heartbeat documentation. |
-| Updating a running daemon | IN PROGRESS in #404, addressing #392. `scripts/install.sh` installs each release into a versioned directory and switches an atomic symlink, so a running daemon, pinned to its physical tree by the launcher's `pwd -P`, is never mutated under. Build identity rides from every launcher through the control-plane `hello` and the private endpoint record ([protocol 037](../protocol-change/037-build-identity.md)); a client reports a client/daemon build mismatch on attach. A daemon drain returns held prompts to their submitters unsent ([protocol 038](../protocol-change/038-held-input-custody-return.md)) and settles an in-flight turn as `Aborted` rather than losing it. The aborted entry still carries the generic `interrupted:` diagnostic; a durable restart reason on the cancel marker awaits its own protocol change. |
+| Daemon profiling | #417 merged as `e41298c5` after hosted CI and Linux signoff passed at its final head. |
+| Session archive | #418 merged as `9a00da99` after hosted CI and Linux signoff passed at its final head. Protocol 035 owns archive/restore. |
+| Provider completion cleanup | #420 merged as `991a2c31` after hosted CI and Linux signoff passed at its final head. |
+| Numbered diff previews | #421 merged as `fe3cfbf2` after hosted CI and Linux signoff passed at its final head. Its macOS test failure passed one bounded rerun after a clean-HOME local module run passed. |
+| Updating a running daemon | #404 remains open. The local takeover integrates all four merges and fixes drain ordering in `dde20ee8`. All 1,807 client tests passed; independent drain review found no actionable defects. Installer repair and final shipment validation remain outstanding. See [the takeover record](review/update-takeover.md). |
+
+The latest main CI run, `34923050531`, was still in progress at this check.
+The preceding main run at `991a2c31` succeeded. The PR-head gates above do not
+establish the outcome of that later main run.
 
 ### Corrections to the previous edition
 
-The previous edition said #413, #411, #409, #408, and #412 still needed merge
-or final validation. They are now merged; their evidence is distinguished
-above. It also called #408 a help PR. The help lineage is #406 and #410;
-#408 is history prefetch. The renderer description omitted #402. The retry row
-called #391 open and assigned heartbeat documentation to closed #368; that
-remaining documentation belongs to #394.
+The previous edition called #417, the archive branch, and the provider cleanup
+fix unfinished. All three are merged, along with #421. Its update row also
+claimed versioned installation never mutates a live daemon's tree. That claim
+was false: replacement, legacy migration, and pruning still lack sufficient
+live-process ownership evidence. The installer has not yet been repaired.
 
-The older handoff prescribed a small Escape cancellation repair as though the
-current implementation had been rechecked. The earlier relay diagnosis was not revalidated. A new deterministic provider
-fixture instead reproduces `[DONE]` parsed from a chunk entering the 100 ms
-cancellation grace before owner retirement. Its focused fix is under local
-validation on `fix/provider-cancellation`; it retains the same positive monitor
-proof and does not change explicit cancellation deadlines.
+The original drain fixtures missed the authenticated production path, which
+re-enters the registry during delivery. Running callbacks inside the registry
+blocked that path. The takeover invokes a snapshot of callbacks outside the
+registry and root receive loops, fences gateway mutations, and flushes held
+returns through the real socket before teardown. Worker completion still does
+not replace the original lifetime witness.
 
 ## What to do next
 
-1. Finish #417 and this archive branch against their final dependency
-   set. **Exit:** local gates, independent review findings resolved, hosted CI,
-   and Linux signoff at each pushed head before normal merge. Build and verify
-   one paired client/server release after those changes land.
-2. Inspect remaining memory and cold-start latency. The earlier model-backed
-   comparison measured 1,511.755 MiB on its baseline and 695.782 MiB with the
-   hook-wrapper fix alone; [the measurement note](design-notes/daemon-memory.md)
-   records its composition and limits. A later native inspection found about
-   5 GiB physical footprint in an existing daemon, but that daemon has no named
-   distribution endpoint. Native sampling cannot attribute Erlang process
-   heaps. **Exit:** obtain an authorized process census from the intended
-   release and time startup stages before choosing further changes. A source
-   merge or newer files on disk does not identify an already running VM's
-   loaded modules. Do not restart an active user daemon to obtain the census
-   without approval.
-3. Finish the parsed-terminal cleanup fix on `fix/provider-cancellation`.
-   Its actual OpenAI `[DONE]` regression reproduces the 100 ms conversion of a
-   completed answer to unconfirmed cancellation. **Exit:** owning package
-   gates, independent review, hosted CI, and Linux signoff on the final head.
-   A timeout must not become proof of cleanup.
-4. Preserve the outstanding auth boundary for jailed CLI tools. Litbucket's
-   macOS credential store uses Keychain, which is not made available merely
-   because its GitHub login completed in a jail. The existing host secret
-   resolver can supply `LITBUCKET_TOKEN` to a new session; configuring that
-   credential remains subject to the owner's approval. **Exit:** a scoped
-   resolver and verified authentication without exposing tokens in logs or
-   granting the jail general Keychain access.
-5. Keep longer-term work tied to its own acceptance. The issue-state audit
-   found #369 (imported hooks), #392 (update path), #394 (heartbeat docs),
-   release issues #247/#241/#246/#244/#245, and maintenance issues
-   #248/#296/#286/#283/#345 open. Their implementation state was not re-audited.
-   **Exit:** check the owning issue and reproduce its symptom before changing
-   code. Advisor deferrals and Herdr-side work likewise need a fresh targeted
-   audit; this edition makes no completion claim for them.
+1. Finish **#404**, addressing **#392**. The pending installer preference is
+   whether each installation may use a fresh immutable directory and retain old
+   trees for manual cleanup. Automatic cleanup requires a separate ownership
+   design; retaining only the current and previous release cannot identify
+   every live process. **Exit:** settle that preference, implement and test the
+   installer, finish review of the remaining update path, run the full gate and
+   release checks, push to the existing PR, and obtain hosted CI plus Linux
+   signoff on the final head before normal merge. Do not restart the user's
+   daemon as part of verification. Protocols 037 and 038 remain proposed.
+2. Verify the paired client/server release after the update path lands.
+   **Exit:** release smoke and update/reconnect evidence from the actual bundle,
+   with its build identity recorded. Local client tests alone do not establish
+   installer or shipment acceptance.
+3. Revisit older work only through its owning issue. The live open PR inventory
+   also contains **#397**, **#396**, **#395**, and **#278**; they were left
+   untouched by this merge pass. **Exit:** obtain scope for that work and check
+   current evidence before carrying forward an old diagnosis.
 
 ## Rulings already made
 
@@ -121,14 +101,13 @@ owning architecture documents for the older subsystem rulings.
 
 None of these is unfinished work somebody forgot.
 
-- The 5 GiB daemon observation has no Erlang process attribution. The merged
-  closure repairs and R12 census do not establish its current root cause.
-- The final memory comparison and startup stage timings remain unmeasured.
-- #243 remains the approval-policy question and #85 remains optional microVM
-  work, according to the issue-state check.
-- The older search prompt/trace questions, advisor deferrals, and Escape's
-  interaction with non-client starters remain unverified against this baseline.
-  Consult their owning documents before treating them as current defects.
+- A durable restart-specific cancellation reason remains a separate protocol
+  decision; protocol 038 preserves the existing generic abort diagnostic.
+- Installer cleanup policy is undecided. The proposed immutable-directory
+  repair has not been implemented while that preference is pending.
+- Earlier memory footprint observations, startup timing, jailed CLI credential
+  setup, advisor deferrals, and the wider issue inventory were not re-audited.
+  Consult their owning records before treating them as current defects.
 
 ## How to verify
 
@@ -137,10 +116,9 @@ make check
 make doc-check
 make codemode-seed
 make release-smoke
-bash scripts/test.sh storage --match catalogue_test
-bash scripts/test.sh client --match daemon_manager_test
-bash scripts/test.sh client --match daemon_server_test
-bash scripts/test.sh tui --match session_delete_test
+bash scripts/test.sh client --match daemon_root_test
+bash scripts/test.sh client --match gateway_test
+bash scripts/test.sh client --match session_socket_test
 ```
 
 **Capture the gate's own exit status.** A successful log reader proves nothing
@@ -148,13 +126,10 @@ about the command that wrote the log. **Use one build/gate at a time per
 checkout.** Enforced code-mode worktrees belong outside `/tmp`, which the Linux
 jail replaces with scratch.
 
-Use normal dirty-scheduler capacity for SQLite tests. Restricting both dirty
-scheduler classes to one produced a history-reader timeout that passed unchanged
-with `ERL_FLAGS='+S 4:4'`. A Hex retry wrapper is appropriate only for dependency
-fetch failures, not test failures. Keep modules using VM-global capability
-fixtures in `scripts/serial-tests`; otherwise parallel EUnit can exchange their
-fake replies.
+**Use an empty HOME for isolated integration fixtures.** Personal hooks can
+change fixture behavior. Preserve required tool and cache paths explicitly.
+Keep modules using VM-global capability fixtures in `scripts/serial-tests`.
 
-Only `scripts/signoff.sh` posts Linux signoff for a pushed head. Ordinary local
-package gates do not establish Linux enforcement or shipment acceptance. See
-[execution](execution.md) for the rest of the operational rules.
+Only `scripts/signoff.sh` posts Linux signoff for a pushed head. Local package
+gates do not establish Linux enforcement or shipment acceptance. See
+[execution](execution.md) for the remaining operational rules.
