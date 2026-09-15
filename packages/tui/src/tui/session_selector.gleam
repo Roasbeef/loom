@@ -19,7 +19,7 @@ import tui/daemon/protocol
 import tui/text_hygiene
 import tui/theme
 
-/// Whether the picker is navigating or holding a destructive question open.
+/// Whether the picker is navigating, editing a name, or confirming removal.
 ///
 /// Deletion is the one selector action with no undo, so the question it asks
 /// is part of the picker's state rather than a flag beside it: while a
@@ -28,6 +28,14 @@ import tui/theme
 pub type Prompt {
   /// Ordinary navigation; every key means what the help line says.
   Browsing
+
+  /// A draft belongs to the identity selected when editing began.
+  Renaming(
+    /// Stable identity, independent of the highlighted row.
+    session_id: String,
+    /// Bounded single-line draft, sent only on Enter.
+    draft: String,
+  )
 
   /// A delete confirmation is open for exactly this identity. The row may
   /// have moved under the cursor since, so the answer names the session it
@@ -62,6 +70,14 @@ pub type Action {
 
   /// Request explicit creation under the terminal's retained durable key.
   NewSession
+
+  /// Commit the edited name for the identity that opened the editor.
+  Rename(
+    /// Stable catalogue identity.
+    session_id: String,
+    /// Non-empty single-line name within the wire's byte limit.
+    name: String,
+  )
 
   /// Continue only within the same catalogue revision.
   NextPage(after: String, revision: Int)
@@ -172,8 +188,51 @@ pub fn without(state: State, session_id: String) -> State {
 pub fn update(key: keys.Key, state: State) -> Action {
   case state.prompt {
     Browsing -> browsing(key, state)
+    Renaming(id, draft) -> renaming(key, state, id, draft)
     ConfirmingDelete(session_id) -> confirming(key, state, session_id)
   }
+}
+
+// Editing retains one bounded draft and its original identity. Navigation
+// keys cannot move the target, and Escape never sends a metadata mutation.
+fn renaming(key: keys.Key, state: State, id: String, draft: String) -> Action {
+  case key {
+    keys.Escape -> Continue(State(..state, prompt: Browsing))
+    keys.Enter ->
+      case string.trim(draft) {
+        "" -> Continue(state)
+        name -> Rename(id, name)
+      }
+    keys.Backspace ->
+      Continue(State(..state, prompt: Renaming(id, string.drop_end(draft, 1))))
+    keys.Ctrl("u") -> Continue(State(..state, prompt: Renaming(id, "")))
+    keys.Char(character) -> {
+      let next = draft <> text_hygiene.single_line(character)
+      case string.byte_size(next) <= 256 {
+        True -> Continue(State(..state, prompt: Renaming(id, next)))
+        False -> Continue(state)
+      }
+    }
+    _ -> Continue(state)
+  }
+}
+
+/// Replaces only the acknowledged catalogue row, preserving cursor and page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.renamed(selector, acknowledged_row)
+/// ```
+pub fn renamed(state: State, row: protocol.Session) -> State {
+  let sessions =
+    list.map(state.page.sessions, fn(previous) {
+      case previous.session_id == row.session_id {
+        True -> row
+        False -> previous
+      }
+    })
+  State(..state, page: protocol.Page(..state.page, sessions:), prompt: Browsing)
 }
 
 // While the question is open only its two answers exist. Anything else
@@ -207,6 +266,12 @@ fn browsing(key: keys.Key, state: State) -> Action {
         ),
       )
     keys.Char("n") -> NewSession
+    keys.Char("r") ->
+      case list.first(list.drop(state.page.sessions, state.selected)) {
+        Ok(row) ->
+          Continue(State(..state, prompt: Renaming(row.session_id, row.name)))
+        Error(Nil) -> Continue(state)
+      }
     keys.Char("d") ->
       case list.first(list.drop(state.page.sessions, state.selected)) {
         Ok(row) ->
@@ -353,11 +418,25 @@ fn help_line(state: State, width: Int) {
       span.line_new([
         span.span_styled(
           text.truncate(
-            "↑↓ select · Enter open · n new · d delete · → next page · ← first · Esc close",
+            "↑↓ select · Enter open · n new · r rename · d delete · → next page · ← first · Esc close",
             width,
             "…",
           ),
           theme.overlay_quiet(),
+        ),
+      ])
+
+    Renaming(_, draft) ->
+      span.line_new([
+        span.span_styled(
+          text.truncate(
+            "Name: "
+              <> text_hygiene.single_line(draft)
+              <> "▏ · Enter save · Ctrl+U clear · Esc cancel",
+            width,
+            "…",
+          ),
+          theme.overlay_signal(),
         ),
       ])
 

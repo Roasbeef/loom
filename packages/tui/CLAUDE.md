@@ -131,9 +131,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   admission, including draft retention on observer or unavailable attachments.
 
 - `command.Rename` sends control `RenameSession` for the attached identity.
-  The existing `CatalogueRequest` worker sends the mutation once, then reloads
-  the first page and opens the selector with the current ID highlighted. The
-  owner and epoch checks remain server-side; a lost reply is not retried.
+  The bounded `ControlRequest` worker sends the mutation once and applies the
+  acknowledged `SessionRenamed` row to the header and any open picker. It does
+  not open the picker or reload its page. The owner and epoch checks remain
+  server-side; a lost reply is not retried. `Model.session_label` pairs one
+  name with its identity, so legacy switches cannot carry an old title.
+  The name travels through `attachment.Target` and `Adopted` with the selected
+  workspace and becomes visible only when that attachment is adopted.
   `workspace.session_name` uses cached workspace/branch context for new names,
   normalizes terminal text, and preserves graphemes within 256 UTF-8 bytes.
   [Protocol 019](../../protocol-change/019-session-display-names.md) describes
@@ -324,8 +328,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   so no single keystroke can destroy a conversation. The answer names the
   identity the question was asked about rather than whatever is highlighted
   when it arrives. `tui.ControlRequest` is the one job slot the picker's
-  paging and its deletes share — the picker can do one or the other, never
-  both — and `session_selector.without` drops the row on the daemon's
+  paging, renames, and deletes share. `r` opens a bounded `Renaming` draft for
+  the selected identity; Enter saves, Escape cancels, and Ctrl+U clears it.
+  Pasted text belongs to that editor and leaves the hidden composer unchanged.
+  `session_selector.renamed` applies only the acknowledged row, while
+  `session_selector.without` drops the row on the daemon's
   confirmation rather than re-listing, which would move every other row
   under the cursor. A refusal reaches the footer as an error and the page is
   left alone. The confirmation explicitly includes stopping the selected session

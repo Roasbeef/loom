@@ -419,6 +419,9 @@ pub type ControlOutcome {
 
   /// The daemon removed this registration and its database.
   SessionDeleted(session_id: String)
+
+  /// The daemon acknowledged a rename with its canonical catalogue row.
+  SessionRenamed(row: control_protocol.Session)
 }
 
 /// One relayed control job, selected by the terminal and its actor-backed driver.
@@ -562,6 +565,8 @@ pub type Model {
     reviewer_rows: List(reviewer_status.Row),
     active_strand: String,
     session: String,
+    /// One catalogue display name, paired with the identity that owns it.
+    session_label: Option(#(String, String)),
     local_options: Option(bootstrap.Options),
     inbox: Subject(connection.Message),
     peer: Peer,
@@ -956,6 +961,7 @@ pub fn new_model_with_clock(
     reviewer_rows: [],
     active_strand: "main",
     session: "demo",
+    session_label: None,
     local_options: None,
     inbox:,
     peer: Preview,
@@ -1745,18 +1751,8 @@ fn begin_open(model: Model, session: String) -> Model {
   }
 }
 
+// Paging observes only authorized metadata in the requested revision.
 fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
-  load_catalogue_after(model, after, revision, None)
-}
-
-// Rename and its refreshed page share the existing bounded metadata worker.
-// The mutation is sent once; a lost response never triggers an automatic retry.
-fn load_catalogue_after(
-  model: Model,
-  after: String,
-  revision: Option(Int),
-  rename: Option(control_protocol.Command),
-) -> Model {
   case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -1776,13 +1772,6 @@ fn load_catalogue_after(
         weft.new([
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            use Nil <- result.try(case rename {
-              None -> Ok(Nil)
-              Some(command) ->
-                daemon.request(daemon_selection.control(host), command, 5000)
-                |> result.map_error(daemon_selection.failure)
-                |> result.replace(Nil)
-            })
             use reply <- result.try(
               daemon.request(
                 daemon_selection.control(host),
@@ -1824,6 +1813,46 @@ fn load_catalogue_after(
 // identity is bound outside the closure for the same reason the page job
 // binds its two scalars: weft copies the fun's environment, and a reference
 // to a model field would copy the whole presentation state with it.
+// The reply owns the displayed name. A timeout leaves the outcome unknown
+// and never causes the metadata mutation to be sent a second time.
+fn begin_rename(model: Model, session: String, name: String) -> Model {
+  case model.control_request, model.daemon_host {
+    Some(_), _ -> append_error(model, "a catalogue action is already running")
+    None, None -> append_error(model, "daemon control is disconnected")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.RenameSession(session, name),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            case reply {
+              control_protocol.SessionReply(row) if row.session_id == session ->
+                Ok(SessionRenamed(row))
+              _ -> Error("rename returned an unexpected control reply")
+            }
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: "renaming session",
+      )
+    }
+  }
+}
+
 fn begin_delete(model: Model, session: String) -> Model {
   case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue request is already running")
@@ -1945,7 +1974,27 @@ fn finish_control(model: Model, result) {
           session_selector.prioritize(page, model.workspace.path),
           selected,
         )),
-        notice: "Enter opens the highlighted session · n creates · d deletes",
+        notice: "Enter opens · n creates · r renames · d deletes",
+      )
+      |> invalidate_frame
+
+    Some(Ok(SessionRenamed(row))) ->
+      Model(
+        ..model,
+        session_label: case row.session_id == model.session {
+          True -> Some(#(row.session_id, row.name))
+          False -> model.session_label
+        },
+        overlay: case model.overlay {
+          DaemonSelector(selector) ->
+            DaemonSelector(session_selector.renamed(selector, row))
+          NoOverlay
+          | ModelSelector(_)
+          | AgentInspector(_)
+          | ApprovalInspector(_)
+          | SessionSelector(_) -> model.overlay
+        },
+        notice: "renamed session to " <> row.name,
       )
       |> invalidate_frame
 
@@ -2379,6 +2428,15 @@ fn render_agent_rail(
   }
 }
 
+// Names are presentation only. Pairing one with its identity prevents a
+// legacy switch or replay from showing a previous session's title.
+fn session_title(model: Model) -> String {
+  case model.session_label {
+    Some(#(id, name)) if id == model.session && name != "" -> name
+    Some(_) | None -> model.session
+  }
+}
+
 fn render_header(
   buf: buffer.Buffer,
   area: Rect,
@@ -2393,7 +2451,7 @@ fn render_header(
     |> statusbar.with_center([
       span.line_new([
         span.span_styled("session ", theme.quiet_text()),
-        span.span_plain(text_hygiene.single_line(model.session)),
+        span.span_plain(text_hygiene.single_line(session_title(model))),
       ]),
     ])
     |> statusbar.with_right([
@@ -4489,7 +4547,18 @@ fn transient_lines(model: Model) -> List(Line) {
   |> list.append(pending_input_lines(model))
 }
 
+// The rename overlay owns pasted text just as it owns character keys. It
+// must never leave a pasted title in the hidden conversation composer.
 fn handle_paste(model: Model, text: String) -> Model {
+  case model.overlay {
+    DaemonSelector(
+      session_selector.State(prompt: session_selector.Renaming(..), ..) as selector,
+    ) -> update_daemon_selector(keys.Char(text), model, selector)
+    _ -> handle_underlay_paste(model, text)
+  }
+}
+
+fn handle_underlay_paste(model: Model, text: String) -> Model {
   use <- bool.guard(model.context.surface != context_view.Hidden, model)
   case model.queue_editor.surface {
     queue_editor.Editor ->
@@ -4585,7 +4654,15 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         cancel_pending(model, "target change from " <> model.session),
         "open session: " <> reason,
       )
-    Some(attachment.Adopted(channel, cut, view, inbox, workspace, creation_key)) -> {
+    Some(attachment.Adopted(
+      channel,
+      cut,
+      view,
+      inbox,
+      workspace,
+      name,
+      creation_key,
+    )) -> {
       // `cancel_pending` below appends its own "Not sent: … ; draft retained"
       // notice, but `render_cut` replaces the whole transcript with the new
       // session's, so that line does not survive this arm. The fact still has
@@ -4645,6 +4722,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           },
           workspace: workspace,
           session: cut.attachment.expected.session,
+          session_label: Some(#(cut.attachment.expected.session, name)),
           records: [],
           streams: [],
           tool_tails: [],
@@ -7770,6 +7848,8 @@ fn update_daemon_selector(
     session_selector.Choose(row) -> begin_open(model, row.session_id)
     session_selector.NewSession -> create_session(model)
     session_selector.Delete(session_id) -> begin_delete(model, session_id)
+    session_selector.Rename(session_id, name) ->
+      begin_rename(model, session_id, name)
     session_selector.NextPage(after, revision) ->
       load_catalogue(model, after, Some(revision))
     session_selector.FirstPage -> load_catalogue(model, "", None)
@@ -8756,13 +8836,7 @@ fn submit_text(model: Model) -> Model {
     command.Rename(name) ->
       case cleared.session {
         "" -> append_error(cleared, "no session is attached")
-        id ->
-          load_catalogue_after(
-            cleared,
-            "",
-            None,
-            Some(control_protocol.RenameSession(id, name)),
-          )
+        id -> begin_rename(cleared, id, name)
       }
     command.Approvals(None) ->
       list.fold(approval_lines(cleared.approvals), cleared, fn(model, line) {
