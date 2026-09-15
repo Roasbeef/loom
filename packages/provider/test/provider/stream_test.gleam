@@ -5,6 +5,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import provider/adapter/openai
 import provider/fixture
 import provider/http
 import provider/stream
@@ -328,6 +329,22 @@ fn echo_machine() -> stream.ResponseMachine(Int) {
   )
 }
 
+fn openai_terminal_machine() -> stream.ResponseMachine(openai.Accumulator) {
+  openai.response_machine(
+    fixture.resolved(provider: "openrouter", model_id: "openai/gpt-5"),
+    now: 1_700_000_000_000,
+  )
+}
+
+fn openai_done_chunk() -> BitArray {
+  bit_array.from_string(
+    fixture.sse_data(
+      "{\"id\":\"chatcmpl-9x\",\"object\":\"chat.completion.chunk\",\"model\":\"openai/gpt-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+    )
+    <> fixture.sse_data("[DONE]"),
+  )
+}
+
 pub fn run_delivers_deltas_and_returns_terminal_test() {
   let transport = fixture.transport(fixture.ok_response("irrelevant"))
   let deltas = process_subject()
@@ -348,6 +365,127 @@ pub fn run_delivers_deltas_and_returns_terminal_test() {
     )
   assert receive_from(deltas, 100)
     == Ok(stream.TextDelta(index: 0, text: "chunk"))
+}
+
+pub fn run_waits_for_normal_terminal_owner_without_cancellation_grace_test() {
+  let owner_ready = process_subject()
+  let outcomes = process_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(_request, events) {
+      let ready = process_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let begin = process_subject()
+          let release = process_subject()
+          process.send(ready, #(begin, release))
+          let _begin = process.receive_forever(begin)
+          process.send(events, http.ResponseStatus(status: 200, headers: []))
+          process.send(events, http.ResponseChunk(<<"answer":utf8>>))
+          process.send(events, http.ResponseEnd)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let #(begin, release) = process.receive_forever(ready)
+      process.send(owner_ready, release)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() { Nil }),
+          begin: fn() { process.send(begin, Nil) },
+        ),
+      )
+    })
+  let _runner =
+    process.spawn_unlinked(fn() {
+      let outcome =
+        stream.run(
+          transport,
+          http.HttpRequest(
+            method: "POST",
+            url: "http://x",
+            headers: [],
+            body: "",
+          ),
+          echo_machine(),
+          fn(_delta) { Nil },
+          control: process_subject(),
+          consumer: process.self(),
+          within: 1000,
+        )
+      process.send(outcomes, outcome)
+    })
+  let release = process.receive_forever(owner_ready)
+
+  // A parsed terminal closes the response window, but the transport monitor
+  // remains the drain proof. Retire the held owner before checking either
+  // outcome so a regression cannot strand this deterministic fixture.
+  let early = receive_from(outcomes, 150)
+  process.send(release, Nil)
+
+  assert early == Error(Nil)
+  let assert Ok(outcome) = receive_from(outcomes, 1000)
+  assert bare_terminal(outcome)
+    == stream.AttemptTerminal(
+      stream.Failed(stream.StreamDisconnected(context: "echo done")),
+    )
+}
+
+pub fn run_chunk_terminal_waits_for_normal_owner_exit_test() {
+  let owner_ready = process_subject()
+  let cancelled = process_subject()
+  let outcomes = process_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(_request, events) {
+      let ready = process_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let begin = process_subject()
+          let release = process_subject()
+          process.send(ready, #(begin, release))
+          let _begin = process.receive_forever(begin)
+          process.send(events, http.ResponseStatus(status: 200, headers: []))
+          process.send(events, http.ResponseChunk(openai_done_chunk()))
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let #(begin, release) = process.receive_forever(ready)
+      process.send(owner_ready, release)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+          }),
+          begin: fn() { process.send(begin, Nil) },
+        ),
+      )
+    })
+  let _runner =
+    process.spawn_unlinked(fn() {
+      let outcome =
+        stream.run(
+          transport,
+          http.HttpRequest(
+            method: "POST",
+            url: "http://x",
+            headers: [],
+            body: "",
+          ),
+          openai_terminal_machine(),
+          fn(_delta) { Nil },
+          control: process_subject(),
+          consumer: process.self(),
+          within: 1000,
+        )
+      process.send(outcomes, outcome)
+    })
+  let release = process.receive_forever(owner_ready)
+  let cancellation = receive_from(cancelled, 1000)
+  let early = receive_from(outcomes, 150)
+  process.send(release, Nil)
+
+  assert cancellation == Ok(Nil)
+  assert early == Error(Nil)
+  let assert Ok(stream.AttemptTerminal(stream.Settled(..))) =
+    receive_from(outcomes, 1000)
 }
 
 pub fn run_times_out_in_band_test() {

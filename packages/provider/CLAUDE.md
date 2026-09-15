@@ -12,6 +12,13 @@ processful shell around that sans-io core. WP-F.
 
 ## Key Types
 
+- A terminal parsed from an HTTP chunk, including OpenAI `[DONE]`, requests
+  native transport retirement and waits on the original owner monitor. It uses
+  the same unbounded proof wait as `ResponseEnd`; the explicit-cancellation
+  reporting grace cannot replace a completed provider result. Abnormal owner
+  exit still loses proof, and explicit cancellation, request expiry, and
+  response-budget refusal retain their bounded cancellation paths.
+
 - `ProviderError.WithContext` carries the protocol 028 diagnostic envelope.
   `FailureObservation` names one of four local boundaries, the initiating
   event, known request/attempt identity, and configured time bounds. The
