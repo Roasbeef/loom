@@ -27,10 +27,12 @@
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
 ////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
+////   e56893644449905feda95679fa3bfc38881649204a0c6d5da112514671ce54d3  packages/cap/src/cap/history.gleam
 ////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
 ////   37332eb8a0ad5118fdf4391729121e71ea153714d53fed8592813308e240b010  packages/cap/src/cap/kv.gleam
 ////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
+////   e78dd747dab86bc35fb7613bf61a130ee330df98499db339222bbffb60bef25c  packages/cap/src/cap/memory.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   9f573452d1333b42e16a9521c08a7c3597e4daa4cb09a937307095641b1a232f  packages/cap/src/cap/report.gleam
@@ -39,9 +41,9 @@
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
 ////   a2d7bafec7c934c3b07f4a8eb52b406956be678f97682a4fb8fa8abea192490b  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
-////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
+////   9691d64888f960ed3652637c63d6f7d79580979477fbd3984ed2f9fc9afe592a  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 22ed190172010a86bcfb52b52eb13f66827e82821006ad2d942d0900dfa7dd87
+//// Body digest (every line after the marker): 25a0405dbf7d9abc30287c4135d07b5b9b7193443042c25b05754a2883969561
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -53,6 +55,10 @@
 /// decides what a model is shown is the one place that already
 /// knows what vetting will accept. `cap/runtime` is in here and is
 /// on neither seam's allowlist; it must never reach a description.
+///
+/// This is the whole surface, which is what `cap://<module>` reads
+/// out on demand. What the tool description carries is the shorter
+/// `type_surfaces` below.
 pub const surfaces: List(#(String, String)) = [
   #(
     "cap/actor",
@@ -219,6 +225,112 @@ pub fn diff(staged: Bool) -> Result(String, GitError)
 pub fn log(limit: Int) -> Result(List(Commit), GitError)
 /// The working-tree status as porcelain entries.
 pub fn status() -> Result(List(StatusEntry), GitError)
+",
+  ),
+  #(
+    "cap/history",
+    "### cap/history
+`cap/history` — ranked full-text recall over the durable history of every
+session in this repository, as typed calls over the capability channel.
+
+/// The answer to a `search`.
+pub type Found {
+  Found(hits: List(Hit), limit: Int)
+}
+/// Why a recall call could not be answered.
+///
+/// The four descriptive variants are the harness's own refusal names and
+/// carry its own sentence, so a program branches on the same facts the
+/// model reading the tool would. Only `IndexRefused` and `InvalidQuery`
+/// blame the call: the other two are timing, and the same call sent again
+/// will be served.
+pub type HistoryError {
+  /// No index is reachable: this host wired none, or the holder is gone
+  /// or did not answer inside its window.
+  IndexUnavailable(reason: String)
+  /// The index answered, and its answer was a refusal — a malformed full-
+  /// text query is the common one, a wrong id the other.
+  IndexRefused(reason: String)
+  /// The index is starting and has not opened yet. Nothing about the call
+  /// needs changing before it is sent again.
+  IndexNotReady(reason: String)
+  /// The holder is answering somebody else's call right now. Again the
+  /// call was fine, and the same one sent again will be served.
+  IndexBusy(reason: String)
+  /// A structurally invalid argument: an empty query, an id that is not
+  /// canonical, a scope name this wire does not carry.
+  InvalidQuery(message: String)
+  /// Any other in-band refusal, code preserved. A host that routes no
+  /// index at all answers here, under `unsupported_cap`.
+  HistoryFailed(code: String, message: String)
+  /// The capability channel could not carry the call, or its answer was
+  /// not the shape this module decodes.
+  HistoryUnavailable(reason: String)
+}
+/// One ranked hit: where it came from, and the excerpt that matched.
+///
+/// Constructor invariants: `session` and `entry` are the canonical id
+/// texts the entry was indexed under, so either may be handed straight
+/// back to `read`; `snippet` is the index's own excerpt, with `[` and `]`
+/// marking the matched terms.
+pub type Hit {
+  Hit(session: String, entry: String, snippet: String)
+}
+/// Which sessions a query runs over.
+pub type Scope {
+  /// Every session this repository's index holds — the default, and the
+  /// whole point of recall.
+  Repository
+  /// Only the calling session's own entries.
+  ThisSession
+}
+/// The limit `search_for` asks for when a caller names none.
+pub const default_limit: Int
+/// The most hits a call may ask for. Fifty ranked snippets is already
+/// more than a recall question is worth; past that a program is reading
+/// the index rather than searching it.
+pub const max_limit: Int
+/// The fewest hits a call may ask for. The harness holds the same number
+/// and is the enforcer; this side clamps so a call site can predict.
+pub const min_limit: Int
+/// The nearest limit a query may actually run with.
+///
+/// A non-positive limit is the dangerous direction — see the module doc —
+/// so it clamps up to `min_limit` rather than down to nothing.
+pub fn clamp_limit(Int) -> Int
+/// Reads one complete stored entry, named by the canonical `session` and
+/// `entry` ids a `Hit` carries.
+///
+/// The entry comes back as its **JSON text**, not as a decoded value. The
+/// prelude has no JSON vocabulary a program may import, so a decoded tree
+/// would be a type nothing could take apart; the text is what a program
+/// can search, report through `cap/report`, or hand to a subprocess. It
+/// is quoted history like a snippet is, and the whole entry rather than
+/// an excerpt — including the arguments of whatever tool call it
+/// recorded.
+///
+/// The entry travels inline, so a very large one is bounded by the
+/// channel's own 16 MiB frame cap rather than by a spill: past that the
+/// call answers `HistoryUnavailable`. Nothing the repository's own writer
+/// admits comes close.
+///
+/// Capability: `history.read`.
+pub fn read(session: String, entry: String) -> Result(String, HistoryError)
+/// Searches the repository's durable history for `query`, returning at
+/// most `limit` ranked excerpts from the sessions `scope` selects.
+///
+/// The query language is the index's full text: bare words, `\"quoted
+/// phrases\"`, `AND` / `OR` / `NOT`. An empty or whitespace-only query is
+/// `InvalidQuery` rather than a fault about full-text syntax, because the
+/// repair for one is obvious and the repair for the other is not.
+///
+/// Capability: `history.search`.
+pub fn search(for: String, limit: Int, scope: Scope) -> Result(Found, HistoryError)
+/// The same search with `default_limit` over the whole repository — the
+/// shape a program that just wants to look something up should reach for.
+///
+/// Capability: `history.search`.
+pub fn search_for(String) -> Result(Found, HistoryError)
 ",
   ),
   #(
@@ -538,6 +650,62 @@ pub type ToolResult {
 /// A result's text content: every `Text` block, joined with newlines —
 /// the common read for a tool whose answer is prose.
 pub fn text(ToolResult) -> String
+",
+  ),
+  #(
+    "cap/memory",
+    "### cap/memory
+`cap/memory` — one durable note, written for the sessions that come after
+this one.
+
+/// Why a note could not be written.
+///
+/// Every variant carries the harness's own sentence, because the harness
+/// is where every one of these decisions is made. `MemoryBusy` is the
+/// only one worth retrying unchanged.
+pub type MemoryError {
+  /// The memory session is open for writing elsewhere — a distillation
+  /// run holds its lease. Nothing is lost by saying it again later.
+  MemoryBusy(message: String)
+  /// The note, after redaction, is longer than `max_note_chars`.
+  NoteTooLong(message: String)
+  /// This repository's memory has already taken `max_notes` notes and
+  /// accepts no more.
+  MemoryFull(message: String)
+  /// The note was empty, or was nothing but whitespace.
+  NothingToRemember(message: String)
+  /// Memory could not be written at all: the store would not open, or the
+  /// capability channel could not carry the call. One variant for both
+  /// because a program can do nothing different about either — carry on
+  /// without it.
+  MemoryUnavailable(reason: String)
+  /// Any other in-band refusal, code preserved. A host that routes no
+  /// memory store at all answers here, under `unsupported_cap`.
+  MemoryRefused(code: String, message: String)
+}
+/// The most characters one note may occupy, **measured after redaction**
+/// — which is why a note that fits here may still be refused. Two
+/// thousand characters is a long paragraph.
+pub const max_note_chars: Int
+/// The most notes one repository's memory will accept over its whole
+/// life. A lifetime ceiling rather than a rate: the digest that carries
+/// memory forward is byte-capped, so an unbounded note count does not
+/// grow the injection, it grows the file.
+pub const max_notes: Int
+/// Writes one durable note into this repository's memory.
+///
+/// Use it for a lesson, a preference the user stated, or a fact about
+/// this repository that cost effort to learn — not for what is already in
+/// the files, and not as a scratchpad for the running program. Write it
+/// so it still makes sense to a reader with none of this execution's
+/// context, because that reader is a session months from now.
+///
+/// The text is sent exactly as given, untrimmed: trimming here would be a
+/// second place deciding what the stored bytes are, and the emptiness
+/// question is asked on the far side where the redaction happens.
+///
+/// Capability: `memory.remember`.
+pub fn remember(String) -> Result(Nil, MemoryError)
 ",
   ),
   #(
@@ -1480,6 +1648,932 @@ pub fn parallel_map_fail_fast(List(a), max_concurrency: Int, with: fn(a) -> Resu
 /// killing the rest. A killed loser's in-flight cap call is cancelled at
 /// the broker. If the winner returned an error, that error is returned.
 pub fn race(List(fn() -> Result(a, b))) -> Result(a, Failure(b))
+",
+  ),
+]
+
+/// The same modules in the same order, cut after their `pub type`
+/// declarations: the heading, the module's purpose line, and the
+/// types with their docs, and nothing else.
+///
+/// This is what the `code_mode` description renders. A description
+/// is the byte prefix of the provider's cached region, paid on
+/// every request of every strand, and the functions are the bulk of
+/// a module's surface while the types are what a program cannot
+/// work around: a signature can be read from `cap://<module>` when
+/// it is wanted, but a field name guessed wrong is a compile the
+/// model pays for either way.
+///
+/// Each entry is a prefix of its `surfaces` counterpart, so the
+/// block a model reads on demand extends the block it was shown
+/// rather than restating it differently.
+pub const type_surfaces: List(#(String, String)) = [
+  #(
+    "cap/actor",
+    "### cap/actor
+`cap/actor` — typed, program-scoped actors: a deliberately constrained
+`gen_server` for the cases that earn ongoing state and asynchronous input
+(watching a build's output and reacting to the first error, a stepping
+coordinator, a work-stealing queue where items generate items).
+
+/// Why an actor operation failed.
+pub type ActorError {
+  /// The actor failed to start.
+  StartFailed(message: String)
+  /// The mailbox stayed full past the timeout; the message was not
+  /// admitted.
+  MailboxTimeout
+  /// The actor did not answer a `call`/`get` within the timeout.
+  NoReply
+}
+/// An unforgeable handle to a spawned actor. Both type parameters are
+/// load-bearing: `msg` types `send`/`call`, `state` types `get`.
+pub type Address(a, b)
+/// What a message handler decides after handling a message.
+pub type Next(a) {
+  /// Keep running with this (possibly updated) state.
+  Continue(state: a)
+  /// Stop the actor.
+  Stop
+}
+/// An opaque, single-use reply channel handed to a handler during `call`.
+/// The handler answers it with `reply`; the program never sees a raw
+/// `Subject`.
+pub type Reply(a)
+",
+  ),
+  #(
+    "cap/fs",
+    "### cap/fs
+`cap/fs` — workspace filesystem access, as typed calls over the capability
+channel.
+
+/// One directory entry from `list`.
+pub type DirEntry {
+  DirEntry(name: String, is_directory: Bool)
+}
+/// Why a filesystem call failed. Descriptive variants for the causes a
+/// program branches on; `FsFailed` carries any other broker code
+/// verbatim; `FsUnavailable` is a transport failure.
+pub type FsError {
+  /// No such path.
+  NotFound(path: String)
+  /// The policy does not grant this path (read or write).
+  PermissionDenied(path: String)
+  /// A `read` target is a directory, or a `write` target's parent is a
+  /// file — an operation/kind mismatch.
+  WrongKind(path: String, message: String)
+  /// An `edit` referenced content that no longer matches; replan.
+  StaleContent(path: String, message: String)
+  /// A structurally invalid argument (empty path, bad edit).
+  InvalidArgument(message: String)
+  /// Any other in-band broker refusal, code preserved.
+  FsFailed(code: String, message: String)
+  /// The capability channel could not carry the call.
+  FsUnavailable(reason: String)
+}
+/// One find/replace edit for `edit`. `find` is matched as an exact
+/// substring and must match **exactly once**: zero matches refuses the
+/// whole edit as `StaleContent` — the file no longer contains your text —
+/// and more than one refuses it as `InvalidArgument`, because a
+/// replacement carries no position to say which occurrence was meant;
+/// include enough surrounding text to be unique. There are no anchors and
+/// no digest on this wire: staleness here means the find text itself, not
+/// a pin.
+pub type Replacement {
+  Replacement(find: String, replace_with: String)
+}
+",
+  ),
+  #(
+    "cap/git",
+    "### cap/git
+`cap/git` — common git operations as typed calls.
+
+/// One commit from `git log`.
+pub type Commit {
+  Commit(sha: String, subject: String)
+}
+/// Why a git operation failed.
+pub type GitError {
+  /// The git process ran but exited non-zero.
+  CommandFailed(exit_code: Int, stderr: String)
+  /// The underlying `cap/proc` call failed (denial, spawn, channel).
+  ProcessError(error: proc.ProcError)
+  /// Git's output could not be parsed into the expected shape.
+  ParseError(message: String)
+}
+/// One line of `git status --porcelain`: the two-character status code
+/// and the path it refers to.
+pub type StatusEntry {
+  StatusEntry(code: String, path: String)
+}
+",
+  ),
+  #(
+    "cap/history",
+    "### cap/history
+`cap/history` — ranked full-text recall over the durable history of every
+session in this repository, as typed calls over the capability channel.
+
+/// The answer to a `search`.
+pub type Found {
+  Found(hits: List(Hit), limit: Int)
+}
+/// Why a recall call could not be answered.
+///
+/// The four descriptive variants are the harness's own refusal names and
+/// carry its own sentence, so a program branches on the same facts the
+/// model reading the tool would. Only `IndexRefused` and `InvalidQuery`
+/// blame the call: the other two are timing, and the same call sent again
+/// will be served.
+pub type HistoryError {
+  /// No index is reachable: this host wired none, or the holder is gone
+  /// or did not answer inside its window.
+  IndexUnavailable(reason: String)
+  /// The index answered, and its answer was a refusal — a malformed full-
+  /// text query is the common one, a wrong id the other.
+  IndexRefused(reason: String)
+  /// The index is starting and has not opened yet. Nothing about the call
+  /// needs changing before it is sent again.
+  IndexNotReady(reason: String)
+  /// The holder is answering somebody else's call right now. Again the
+  /// call was fine, and the same one sent again will be served.
+  IndexBusy(reason: String)
+  /// A structurally invalid argument: an empty query, an id that is not
+  /// canonical, a scope name this wire does not carry.
+  InvalidQuery(message: String)
+  /// Any other in-band refusal, code preserved. A host that routes no
+  /// index at all answers here, under `unsupported_cap`.
+  HistoryFailed(code: String, message: String)
+  /// The capability channel could not carry the call, or its answer was
+  /// not the shape this module decodes.
+  HistoryUnavailable(reason: String)
+}
+/// One ranked hit: where it came from, and the excerpt that matched.
+///
+/// Constructor invariants: `session` and `entry` are the canonical id
+/// texts the entry was indexed under, so either may be handed straight
+/// back to `read`; `snippet` is the index's own excerpt, with `[` and `]`
+/// marking the matched terms.
+pub type Hit {
+  Hit(session: String, entry: String, snippet: String)
+}
+/// Which sessions a query runs over.
+pub type Scope {
+  /// Every session this repository's index holds — the default, and the
+  /// whole point of recall.
+  Repository
+  /// Only the calling session's own entries.
+  ThisSession
+}
+",
+  ),
+  #(
+    "cap/job",
+    "### cap/job
+`cap/job` — background jobs a program can start, watch, feed and stop: a
+jailed command that keeps running after the call that started it, and
+after the program itself has returned.
+
+/// Where a poll left off in each stream.
+pub type Cursors {
+  Cursors(stdout: Int, stderr: Int)
+}
+/// The helper's own report of how a job's command ended.
+///
+/// `timed_out` and `cancelled` answer different questions and a job
+/// killed by its deadline is both: the first says the wall expired, the
+/// second is the helper's witness that it climbed the TERM-then-KILL
+/// ladder. Under a jail the payload's own signal is relayed as an exit
+/// code rather than as `signal`, so read `code` for the cross-environment
+/// answer.
+pub type Exit {
+  Exit(code: Int, signal: Int, wall_ms: Int, timed_out: Bool, cancelled: Bool, stdout_bytes: Int, stderr_bytes: Int, stdout_truncated: Bool, stderr_truncated: Bool)
+}
+/// One job, as `poll` reads it.
+pub type Job {
+  Job(id: String, state: State, age_ms: Int, deadline_ms: Int, stdout: Stream, stderr: Stream, spill: Spill)
+}
+/// Why a background-job call failed.
+///
+/// Split the way `cap/proc`'s is: the reasons a program can branch on get
+/// their own variants, and everything else keeps the host's code verbatim
+/// rather than being flattened into one.
+pub type JobError {
+  /// This strand already holds every job it may hold at once. Stop one
+  /// with `kill` before starting another.
+  JobCeilingReached(message: String)
+  /// This strand owns no job of that id — which is also the answer for a
+  /// job another strand owns, so a program learns what is its own and
+  /// nothing about anyone else's.
+  JobNotFound(message: String)
+  /// The clearance refused the command before anything ran, in the
+  /// broker's own words: the same refusal a foreground command would have
+  /// met under the same policy.
+  JobRefused(message: String)
+  /// The host denied the call for a reason this module has no variant
+  /// for. `code` is the host's own, carried verbatim.
+  JobDenied(code: String, message: String)
+  /// The capability channel could not carry the call, or the host runs no
+  /// background-jobs plane at all.
+  JobUnavailable(reason: String)
+}
+/// Why a job can no longer be spoken for: nobody ended it on purpose and
+/// no exit was ever observed, so what became of the process is unknown
+/// rather than reported.
+pub type LostReason {
+  /// The harness VM restarted. Nothing in this design survives that.
+  VmRestart
+  /// The jobs plane restarted, taking every runner it owned with it.
+  OwnerRestart
+  /// The sandbox helper went away without reporting an exit.
+  HelperLoss
+}
+/// One row of this strand's job listing.
+pub type Row {
+  Row(id: String, state: State, age_ms: Int, deadline_ms: Int)
+}
+/// Where a finished job's whole output was stored.
+///
+/// Empty while the job runs. Each field is `Some` only for a stream that
+/// carried bytes and was promoted to its content address; the text is
+/// then a ref `cap/fs.read` reads. `None` means \"nothing to read\", and
+/// the exit report's byte counts are what tell a program whether a stream
+/// had output that did not reach a blob.
+pub type Spill {
+  Spill(stdout_ref: option.Option(String), stderr_ref: option.Option(String))
+}
+/// A job that has been admitted and is running.
+pub type Started {
+  Started(id: String, deadline_ms: Int, wall_ms: Int)
+}
+/// Where a job is in its life.
+///
+/// Three live states and three terminal ones. `is_pending` is the split,
+/// and a loop that waits for a job should ask through it rather than
+/// listing the variants, so a state added later does not read as
+/// finished.
+pub type State {
+  /// Cleared and dispatched; the helper has not accepted the run yet.
+  Starting
+  /// The helper accepted the run and the process is live.
+  Running
+  /// A stop was asked for and the cancel ladder is climbing; no exit has
+  /// been reported yet. Poll again for the terminal state.
+  Draining(by: StopCause)
+  /// The command ended of its own accord.
+  Exited(exit: Exit)
+  /// The job was stopped and the helper reported the stopped execution.
+  Killed(by: StopCause, exit: Exit)
+  /// The job can no longer be spoken for, and no exit was observed.
+  Lost(reason: LostReason)
+}
+/// Why a job is being stopped, or was stopped.
+///
+/// Carried separately from the exit report because the report cannot say
+/// it: a cancelled run says only *that* the ladder was climbed, never at
+/// whose asking.
+pub type StopCause {
+  /// This strand asked, through `kill`.
+  ByOwner
+  /// The wall deadline fixed at `start` expired.
+  ByDeadline
+  /// The session is closing.
+  BySessionStop
+  /// An operator aborted the operation that started the job.
+  ByOperationAbort
+}
+/// One stream's answer to a poll.
+pub type Stream {
+  Stream(bytes: BitArray, cursor: Int, dropped: Int)
+}
+",
+  ),
+  #(
+    "cap/kv",
+    "### cap/kv
+`cap/kv` — the ephemeral scratch store: a session-scoped key/value space a
+program can stash bytes in and read back, including across the calls of a
+kept-alive satellite cell.
+
+/// Why a scratch-store call failed at the infrastructure level. A missing
+/// key is *not* an error — it is `Ok(None)` from `get`.
+pub type KvError {
+  /// The broker refused the call in-band.
+  KvDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  KvUnavailable(reason: String)
+}
+",
+  ),
+  #(
+    "cap/lsp",
+    "### cap/lsp
+`cap/lsp` — semantic queries through the project's language server:
+references, go-to-definition, rename, and diagnostics.
+
+/// One diagnostic reported by the language server.
+pub type Diagnostic {
+  Diagnostic(location: Location, severity: Severity, message: String)
+}
+/// A position in a file: zero-based `line` and `character`, matching the
+/// LSP convention.
+pub type Location {
+  Location(path: String, line: Int, character: Int)
+}
+/// Why an LSP query failed.
+pub type LspError {
+  /// No language server is available for the file's language.
+  NoServer(message: String)
+  /// The broker refused the query in-band.
+  LspDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  LspUnavailable(reason: String)
+}
+/// A diagnostic's severity.
+pub type Severity {
+  SeverityError
+  SeverityWarning
+  SeverityInformation
+  SeverityHint
+}
+/// A text edit a rename would apply.
+pub type TextEdit {
+  TextEdit(path: String, line: Int, character: Int, new_text: String)
+}
+",
+  ),
+  #(
+    "cap/mcp",
+    "### cap/mcp
+`cap/mcp` — the shared vocabulary for the generated `cap/mcp/<server>`
+modules: what an MCP tool call returns, and the ways it can fail.
+
+/// One block of a tool result's content. MCP servers answer with a list
+/// of typed blocks; text is the kind a program reads, and every other
+/// kind is carried by name only in v1 (`Other`), so a result holding an
+/// image or a resource still decodes rather than failing the call.
+pub type Content {
+  /// A text block: `{type: \"text\", text}` on the wire.
+  Text(text: String)
+  /// Any other block kind, carried as its `type` string verbatim.
+  Other(kind: String)
+}
+/// Why an MCP call failed. Descriptive variants for the causes a program
+/// branches on; `McpDenied` carries any other broker code verbatim;
+/// `ServerUnavailable` is a transport or reachability failure.
+pub type McpError {
+  /// The server ran the tool and the tool reported failure (`is_error:
+  /// true`). `message` is the joined text content; the full blocks ride
+  /// along for a caller that wants more than prose.
+  ToolFailed(message: String, content: List(Content))
+  /// The capability channel could not carry the call, or the harness
+  /// router refused it as `mcp_unavailable` — the server is not running
+  /// or its client has gone. (A server this host never configured is a
+  /// different refusal: `unsupported_cap`, under `McpDenied`.)
+  ServerUnavailable(reason: String)
+  /// Any other in-band broker or router refusal, code preserved verbatim
+  /// (`unsupported_cap`, `mcp_timeout`, a ceiling, …).
+  McpDenied(code: String, message: String)
+  /// The `cap_result` did not match the pinned result shape.
+  ResultMalformed(reason: String)
+}
+/// What a successful MCP tool call returns: the content blocks, plus the
+/// tool's optional structured output (`structuredContent` in MCP terms)
+/// when the server sent one.
+pub type ToolResult {
+  ToolResult(content: List(Content), structured: option.Option(report.Value))
+}
+",
+  ),
+  #(
+    "cap/memory",
+    "### cap/memory
+`cap/memory` — one durable note, written for the sessions that come after
+this one.
+
+/// Why a note could not be written.
+///
+/// Every variant carries the harness's own sentence, because the harness
+/// is where every one of these decisions is made. `MemoryBusy` is the
+/// only one worth retrying unchanged.
+pub type MemoryError {
+  /// The memory session is open for writing elsewhere — a distillation
+  /// run holds its lease. Nothing is lost by saying it again later.
+  MemoryBusy(message: String)
+  /// The note, after redaction, is longer than `max_note_chars`.
+  NoteTooLong(message: String)
+  /// This repository's memory has already taken `max_notes` notes and
+  /// accepts no more.
+  MemoryFull(message: String)
+  /// The note was empty, or was nothing but whitespace.
+  NothingToRemember(message: String)
+  /// Memory could not be written at all: the store would not open, or the
+  /// capability channel could not carry the call. One variant for both
+  /// because a program can do nothing different about either — carry on
+  /// without it.
+  MemoryUnavailable(reason: String)
+  /// Any other in-band refusal, code preserved. A host that routes no
+  /// memory store at all answers here, under `unsupported_cap`.
+  MemoryRefused(code: String, message: String)
+}
+",
+  ),
+  #(
+    "cap/net",
+    "### cap/net
+`cap/net` — outbound network access, **deny-by-default**.
+
+/// Why a network call did not return a response. `NetDenied` is the
+/// default outcome: no policy grants the host.
+pub type NetError {
+  /// Network is off, or the host is not in the approved allowlist.
+  NetDenied(message: String)
+  /// The request was allowed but failed (DNS, connection, timeout).
+  NetFailed(code: String, message: String)
+  /// The capability channel could not carry the call.
+  NetUnavailable(reason: String)
+}
+/// An HTTP request to make through the egress proxy.
+pub type Request {
+  Request(method: String, url: String, headers: List(#(String, String)), body: BitArray)
+}
+/// A response from an approved request.
+pub type Response {
+  Response(status: Int, headers: List(#(String, String)), body: BitArray)
+}
+",
+  ),
+  #(
+    "cap/proc",
+    "### cap/proc
+`cap/proc` — run a command in a jailed executor.
+
+/// A command to run. Opaque: built through `command` and the setters so
+/// its invariants (non-empty argv) hold by construction.
+pub type Command
+/// The result of a completed run. `exit_code` is the child's status;
+/// `truncated` flags mark output cut at the policy's byte cap;
+/// `timed_out` is set when the wall deadline killed the child.
+pub type Output {
+  Output(exit_code: Int, stdout: String, stderr: String, stdout_truncated: Bool, stderr_truncated: Bool, timed_out: Bool)
+}
+/// Why a run could not produce an `Output`.
+pub type ProcError {
+  /// The broker refused to run the command in-band (e.g. policy).
+  ProcDenied(code: String, message: String)
+  /// The executor could not spawn the command at all.
+  SpawnFailed(message: String)
+  /// The capability channel could not carry the call.
+  ProcUnavailable(reason: String)
+}
+",
+  ),
+  #(
+    "cap/report",
+    "### cap/report
+`cap/report` — the structured result a program's `main` returns, plus
+artifact emission.
+
+/// A structured value: what an `Outcome` carries, what a blackboard note
+/// holds, and what a child's terminal result comes back as.
+///
+/// A re-export rather than a type of its own, so a value read off one
+/// capability can be handed straight to another without a conversion that
+/// could lose a case. The alias is what makes the type *nameable* by a
+/// program: `report.Value` resolves without an import the allowlist would
+/// refuse (see the module doc).
+pub type Value
+/// A durable reference to an emitted artifact, returned by `emit`.
+pub type ArtifactRef {
+  ArtifactRef(id: String)
+}
+/// The result of a program. `Completed` carries a structured value;
+/// `Errored` carries a human-readable message and structured details, so
+/// a failed program still returns data the model can act on rather than
+/// crashing the satellite.
+pub type Outcome {
+  /// The program finished with this value.
+  Completed(value: Value)
+  /// The program failed in a controlled way.
+  Errored(message: String, details: Value)
+}
+/// Why an artifact could not be emitted.
+pub type ReportError {
+  /// The broker refused the emission in-band.
+  EmitDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  EmitUnavailable(reason: String)
+}
+",
+  ),
+  #(
+    "cap/runtime",
+    "### cap/runtime
+`cap/runtime` — the trusted boot runtime that runs *inside* a jailed
+satellite node (design/architecture/code-mode.md, \"Layer two: the
+satellite node\").
+
+/// What one invocation produced. Mirrors the `hook_result` body.
+pub type Answer {
+  /// The invocation produced this value, which becomes `{ok: true,
+  /// value}`.
+  Answered(value: report.Value)
+  /// The invocation produced no value, under this in-band code, which
+  /// becomes `{ok: false, error: {code, msg}}`. The codes this module
+  /// mints itself are `bad_kind`, `busy` and `crashed`; everything else
+  /// is the serving function's own vocabulary.
+  Refused(code: String, message: String)
+}
+/// How long an invocation's deadline is, and what it is for. Handed to
+/// the serving function so an extension can decide to refuse rather than
+/// run past its own bound.
+pub type Asked {
+  Asked(invocation: Invocation, args: report.Value, deadline_ms: Int)
+}
+/// A setup failure the runtime cannot recover from. Program failures are
+/// never a `BootError` — they become an `Errored` outcome instead.
+pub type BootError {
+  /// The capability channel actor failed to start.
+  ChannelStartFailed(reason: String)
+  /// The socket path is unset, or the socket could not be connected.
+  TransportUnavailable(reason: String)
+  /// The token-file path is unset, or the file could not be read.
+  TokenUnavailable(reason: String)
+  /// A prior execution's capability channel still occupies the VM-global
+  /// slot. Only reachable in the kept-alive satellite mode, and only when
+  /// the executor has not reaped the prior execution first.
+  ChannelSlotOccupied(reason: String)
+}
+/// Which kind of thing the harness is asking for.
+///
+/// The wire carries `\"tool\"` or `\"event\"` as a string (Part 1.4); this is
+/// that string turned into a closed set at the edge, so nothing past this
+/// module branches on text. A `kind` that is neither is refused rather
+/// than guessed at.
+pub type Invocation {
+  /// A model-made tool call. `name` is the manifest tool's name.
+  Tool(name: String)
+  /// A hook event on the harness's timeline. `name` is the event's.
+  Event(name: String)
+}
+/// The satellite's link to the host, injected so the runtime is testable
+/// without a socket. `send` writes a framed `cap_call`/`cancel` to the
+/// channel; `recv` blocks for the next inbound bytes (`Error(Nil)` at end
+/// of stream); `outcome_sink` receives the single framed `outcome`.
+pub type Transport {
+  Transport(send: fn(BitArray) -> Nil, recv: fn() -> Result(BitArray, Nil), outcome_sink: fn(BitArray) -> Nil)
+}
+",
+  ),
+  #(
+    "cap/schedule",
+    "### cap/schedule
+`cap/schedule` — heartbeats a program can set for the strand it is running
+on: text injected back into that strand's own context later, on a timer,
+whether or not anyone is watching.
+
+/// Whether a recurring schedule takes the host's default expiry or a
+/// narrower one this program states.
+///
+/// Two variants rather than a pair of `Option`s, because \"say nothing and
+/// get the host's ceiling\" and \"state both bounds\" are the only two
+/// things a caller can usefully mean, and a record of two `Option`s would
+/// offer four. Both bounds are always active whichever variant is used —
+/// the host applies its default in place of anything this does not state
+/// — and whichever is reached first ends the schedule.
+///
+/// `Bounds` can only ever *narrow*. The host holds both numbers to the
+/// same ceilings it holds its own configuration to, so a value above one
+/// is denied with `invalid_schedule` rather than granted.
+pub type Bounds {
+  /// The host's defaults: its ceiling on both bounds. What `every`,
+  /// `cron`, `at` and `after` pass.
+  DefaultBounds
+  /// The bounds this program wants, each at or under the host's ceiling.
+  Bounds(max_fires: Int, expires_after_s: Int)
+}
+/// What a `create` actually produced.
+pub type Created {
+  Created(name: String, target: String, when: String, wake: Wake)
+}
+/// One schedule this strand owns.
+pub type Schedule {
+  Schedule(name: String, target: String, when: String, wake: Wake, fired: Int, body: String)
+}
+/// Why a scheduling call failed.
+pub type ScheduleError {
+  /// The broker refused the call in band. `code` distinguishes the
+  /// reasons worth branching on: `invalid_schedule` (a bound was missed),
+  /// `schedule_limit_reached`, `schedule_name_taken`,
+  /// `schedule_not_found`, `schedules_unavailable`.
+  ScheduleDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  ScheduleUnavailable(reason: String)
+}
+/// What a schedule is allowed to do to this strand when it is idle at the
+/// moment the schedule fires.
+///
+/// A program asks for one of these and reads back what it was actually
+/// granted, which is not always the same — see the module doc on who owns
+/// that decision. The capability wire carries a boolean either way; this
+/// type is what a program writes and reads on this side of it.
+pub type Wake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+  /// The schedule steers a run already open, and holds when the strand is
+  /// idle. What a host that forbids waking grants instead.
+  SteersOnly
+}
+",
+  ),
+  #(
+    "cap/search",
+    "### cap/search
+`cap/search` — read-only workspace navigation and search, as typed calls
+over the capability channel.
+
+/// Whether a listing is everything that matched, or everything the call
+/// was allowed to reach.
+pub type Completeness {
+  /// The walk finished and the listing is every match.
+  Complete
+  /// The walk stopped on a bound — `max_entries`, or the harness's
+  /// ceiling on entries visited — and there may be more.
+  Truncated
+}
+/// How complete a `grep`'s answer is.
+pub type Coverage {
+  /// Every candidate file was scanned to the end.
+  Exhaustive
+  /// The scan stopped because `max_matches` was reached; there may be
+  /// more matches in files or lines not yet reached.
+  MatchesCapped
+  /// The scan stopped on the harness's budget for entries visited or
+  /// bytes read, short of the match cap.
+  ScanTruncated
+}
+/// One entry a walk reached, or one `stat` answer.
+pub type Entry {
+  Entry(path: String, kind: Kind, size: Int, mtime_seconds: Int)
+}
+/// The answer to a `grep`.
+pub type Found {
+  Found(matches: List(Match), files_scanned: Int, files_skipped: Int, coverage: Coverage)
+}
+/// A path-pattern walk. Build one with `glob_query` and override fields
+/// with record update syntax.
+pub type GlobQuery {
+  GlobQuery(root: String, pattern: String, max_entries: Int, hidden: Hidden, prune: List(String))
+}
+/// A content search. Build one with `grep_query` and override fields with
+/// record update syntax.
+pub type GrepQuery {
+  GrepQuery(root: String, pattern: String, globs: List(String), context: Int, max_matches: Int, hidden: Hidden, prune: List(String))
+}
+/// Whether a walk visits entries whose name begins with a dot.
+pub type Hidden {
+  /// Skip dot-prefixed names. The default.
+  SkipHidden
+  /// Visit dot-prefixed names too. `prune` still applies, so this alone
+  /// does not walk into `.git`.
+  IncludeHidden
+}
+/// What an entry is, as `lstat` reports the final component — so a link
+/// is a link here and not the thing it points at.
+pub type Kind {
+  /// A regular file.
+  File
+  /// A directory.
+  Directory
+  /// A symbolic link, carrying the stored target verbatim. The target is
+  /// as written on disk, so it may be relative and may not resolve.
+  Symlink(target: String)
+  /// Anything else: a socket, a fifo, a device node.
+  Other
+}
+/// A span of lines read out of one file.
+pub type Lines {
+  Lines(text: String, first: Int, last: Int, total: Int)
+}
+/// The answer to a `glob`.
+pub type Listing {
+  Listing(entries: List(Entry), completeness: Completeness)
+}
+/// One line that matched a `grep` pattern, with the context lines around
+/// it that the query asked for.
+pub type Match {
+  Match(path: String, line: Int, column: Int, text: String, before: List(String), after: List(String))
+}
+/// Why a search call failed. The descriptive variants are the causes a
+/// program branches on; `SearchFailed` carries any other broker code
+/// verbatim; `SearchUnavailable` is a transport failure or a result the
+/// harness sent in a shape this module cannot read.
+pub type SearchError {
+  /// No such path.
+  NotFound(path: String)
+  /// The path is outside the workspace, or the policy refuses it.
+  PermissionDenied(path: String)
+  /// An operation/kind mismatch: a `glob` root that is a file, a
+  /// `read_lines` target that is a directory.
+  WrongKind(path: String, message: String)
+  /// A structurally invalid argument: a bound past its ceiling, a glob or
+  /// regex that does not compile, a line span that is inverted or too
+  /// wide.
+  InvalidArgument(message: String)
+  /// Any other in-band broker refusal, code preserved.
+  SearchFailed(code: String, message: String)
+  /// The capability channel could not carry the call, or its answer was
+  /// not the shape this module decodes.
+  SearchUnavailable(reason: String)
+}
+",
+  ),
+  #(
+    "cap/strand",
+    "### cap/strand
+`cap/strand` — the orchestration seam: starting, joining, and addressing
+other agents from inside a code-mode program.
+
+/// One assignment, built up before it is spawned.
+///
+/// Opaque, so a non-empty purpose and brief hold by construction and the
+/// wire shape stays this module's to change. Build it with `assignment`
+/// and narrow it with the pipeable steps below.
+pub type Assignment
+/// How a `send` payload landed.
+pub type Delivery {
+  /// The target had an open run: the message is a durable steer on it.
+  Steered(entry: String)
+  /// The target was idle: the message was accepted as a fresh run.
+  Started(operation: String)
+}
+/// One field of the result shape a spawn demands of its child.
+pub type Field {
+  Field(name: String, expects: FieldType, required: Bool)
+}
+/// The closed set of types a declared result field may have — the same
+/// vocabulary the harness enforces, and no wider. A schema the harness
+/// cannot check is refused rather than accepted and ignored, so there is
+/// deliberately no way to spell a pattern, an enum, or a bound.
+pub type FieldType {
+  /// Text.
+  StringField
+  /// A whole number.
+  IntegerField
+  /// Any number, whole or not.
+  NumberField
+  /// A boolean.
+  BooleanField
+  /// An object, its own fields undescribed.
+  ObjectField
+  /// A list of `items`.
+  ArrayField(items: FieldType)
+  /// Anything at all, `null` included.
+  AnyField
+}
+/// A durable reference to one child operation, as `spawn` minted it. It
+/// names nothing process-local, so it survives a restart.
+pub type Handle {
+  Handle(strand: String, operation: String)
+}
+/// How a child's operation ended.
+pub type Outcome {
+  /// The run finished normally.
+  Completed
+  /// The run failed terminally.
+  Failed(reason: String)
+  /// The run was aborted — deadline, reap, or operator.
+  Aborted
+}
+/// One entry in the roster: a durable read of the lineage ledger, not of
+/// process state, so it is still correct after a restart and after
+/// compaction has erased every handle from a model's context.
+pub type Peer {
+  Peer(strand: String, relation: Relation, handle: option.Option(Handle), outcome: option.Option(Outcome), tools: List(String))
+}
+/// Where a child's context starts.
+pub type Provenance {
+  /// At the root: the child reads its brief and nothing else.
+  Fresh
+  /// At the calling strand's current leaf, copying its whole conversation
+  /// into the child's context window.
+  MyConversation
+}
+/// How a peer stands in relation to the calling strand.
+pub type Relation {
+  /// The strand that spawned the caller.
+  ParentOf
+  /// A strand the caller spawned.
+  ChildOf
+}
+/// Why a call was refused.
+///
+/// Every variant but the last two is one of the harness's own refusal
+/// names, carrying the harness's own sentence verbatim: the authorization
+/// model this seam runs under is `client/agency`'s, reused rather than
+/// re-derived, and a refusal renamed on the way out would be a second
+/// vocabulary for one decision. `message` is not decoration — it names
+/// the strand, the cap, or the field that the name alone does not.
+pub type StrandError {
+  /// This host wired no messaging plane, or its holder is not up yet.
+  StrandsUnavailable(message: String)
+  /// A handle did not parse.
+  MalformedHandle(message: String)
+  /// The named strand is not the caller's parent and not a descendant of
+  /// it. Also the answer for a strand with no lineage cell at all: \"no
+  /// lineage fact\" means \"not a descendant\", never \"unknown, allow\".
+  NotAddressable(message: String)
+  /// A join named a strand that is not a descendant of the caller. Joins
+  /// are strictly downward — that is what keeps the wait graph acyclic.
+  NotADescendant(message: String)
+  /// The calling strand is already at the spawning depth cap.
+  DepthCapReached(message: String)
+  /// The caller, or the session, already has as many live strands as it
+  /// may have.
+  FanOutCapReached(message: String)
+  /// The spawn asked for a tool the calling strand does not itself hold.
+  /// A child may narrow its parent's set, never widen it.
+  UnknownTool(message: String)
+  /// An argument was unusable — an empty purpose, too many handles, a
+  /// blackboard key outside the allowed shape, a result shape the harness
+  /// cannot enforce.
+  InvalidArgument(message: String)
+  /// The name this spawn derives is already a child's, minted by a
+  /// different call. Reconciliation hands an existing child back on a
+  /// name match, but only to the caller that minted it; anything else
+  /// would be an ownership transfer. Nothing was started — spawn again
+  /// under a different purpose.
+  NameAlreadyMinted(message: String)
+  /// A send upward would have *started* a run rather than steered one:
+  /// the parent has finished and nobody is watching it.
+  ParentRunEnded(message: String)
+  /// A note did not match the result shape this strand's own spawn
+  /// demanded of it.
+  ResultSchemaUnmet(message: String)
+  /// The durable plane refused or failed underneath the call — a commit,
+  /// a read, a decode. Not the program's mistake and not a bound it hit:
+  /// the harness could not carry out a call it had no objection to.
+  PlaneFailed(message: String)
+  /// This execution has admitted as many spawns as it may. The seam's own
+  /// ceiling; see the module doc for why a loop needs one where a turn
+  /// did not.
+  SpawnCeilingReached(message: String)
+  /// This execution has admitted as many calls of some *other* capped
+  /// capability — `send`, `note` or `notes` — as it may. One variant for
+  /// the three because the answer to all three is the same, stop looping,
+  /// and the message names which capability, what the number was, and
+  /// that the bound is for the execution's whole lifetime. Retrying, or
+  /// waiting first, will not free one.
+  AdmissionCeilingReached(message: String)
+  /// Any other in-band refusal, its code preserved.
+  StrandRefused(code: String, message: String)
+  /// The capability channel could not carry the call.
+  StrandUnavailable(reason: String)
+}
+/// The verdict on the structured result a spawn asked for.
+///
+/// Four facts, three of which are not failures, so a program branches on
+/// what it actually got rather than on a `Result` that flattens \"nobody
+/// asked\" into \"nobody answered\".
+pub type TerminalResult {
+  /// The spawn declared no result shape.
+  NoResultAsked
+  /// The child recorded a result and it matched the declared shape.
+  ResultGiven(value: report.Value)
+  /// A shape was asked for and the child's run ended without recording
+  /// one.
+  ResultAbsent(schema: String)
+  /// A result is there and does not match. `reason` names the field, the
+  /// type wanted and the type found.
+  ResultUnusable(schema: String, received: report.Value, reason: String)
+}
+/// One handle's position when a join returned.
+pub type Waited {
+  /// The operation settled. `report` is the child's final assistant text,
+  /// `result` the verdict on the shape the spawn demanded, and `notes`
+  /// its blackboard cells.
+  Ready(handle: Handle, outcome: Outcome, report: String, result: TerminalResult, notes: List(#(String, report.Value)))
+  /// The deadline expired first. An answer, not a failure: join again, or
+  /// do other work and come back.
+  Pending(handle: Handle, waited_ms: Int)
+}
+",
+  ),
+  #(
+    "cap/task",
+    "### cap/task
+`cap/task` — structured concurrency, and nothing else.
+
+/// How one task ended, from the runner's point of view.
+pub type Failure(a) {
+  /// The task returned `Error(e)`.
+  Returned(index: Int, error: a)
+  /// The task's process died before returning (a panic in program code,
+  /// or a cancellation). `reason` is a coarse label.
+  Crashed(index: Int, reason: String)
+}
 ",
   ),
 ]
