@@ -116,6 +116,6 @@ jobs:
           set -euo pipefail
           actual=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
           [ "$actual" = "$SOURCE_COMMIT" ]
-          args=(--draft --verify-tag --title "Loom $RELEASE_TAG" --generate-notes)
+          args=(--draft --verify-tag --title "Loom $RELEASE_TAG" --notes-file docs/release-notes.md --generate-notes)
           if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
           gh release create "$RELEASE_TAG" "${args[@]}" upload/*

@@ -857,7 +857,7 @@ separate release-build result and must not be inferred from their success.
 
 ## Tagging and uploading a release
 
-Commit the intended version in both `packages/client/gleam.toml` and
+Update [the release notes](release-notes.md), then commit the intended version in both `packages/client/gleam.toml` and
 `packages/tui/gleam.toml`, then run from a clean checkout. The existing `v0.2.0` tag must not be reused;
 the example assumes the package versions have been committed as `0.2.1`:
 
