@@ -799,6 +799,46 @@ pub fn a_second_run_end_in_one_turn_drains_nothing_test() {
   stop(rig)
 }
 
+// A run-end drain that reaches the actor after its hook has given up.
+// The wait on the driver is bounded, and an actor busy scanning a branch
+// can answer past it; serving that request would clear the queue and
+// spend the turn into a driver that has already returned `None` and
+// ended the run, leaving an idle primary with neither the nudges nor a
+// wake left to carry them. The deadline is what tells the two apart.
+pub fn a_run_end_drain_past_its_deadline_refuses_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  a_working_primary(rig)
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Some(working) = strand_operation(rig.opened, advisor.primary)
+    as "the fixture run must be open on the primary"
+
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the nudge must queue against a working primary"
+
+  // Zero is before every stamp this rig's fixed clock reads, so this is
+  // a request whose asker stopped listening long ago.
+  assert take_at_run_end(subject, 0) == []
+    as "a drain served past its deadline must answer with nothing"
+
+  // Neither the queue nor the turn moved. The idle door delivers what
+  // the expired drain declined to take, and carries both nudges in the
+  // one frame that proves the first was still pending.
+  idle_again(rig, working)
+  let assert Ok(advise.Woke(..)) =
+    judge(subject, advise.Nudge(text: "and squash the fixups"))
+    as "the unspent turn must still wake the idle primary"
+
+  let assert [woken] =
+    primary_texts(rig.opened)
+    |> list.filter(string.contains(_, "and squash the fixups"))
+    as "the wake must have reached the primary's branch as one frame"
+  assert string.contains(woken, "rebase before you push")
+    as "the refused drain must have left the first nudge queued"
+  stop(rig)
+}
+
 // The idle door. A primary that has stopped is not left holding advice
 // until somebody types: the whole queue is drained and delivered as a run
 // of its own.
@@ -836,6 +876,12 @@ pub fn a_second_nudge_in_one_turn_is_held_test() {
   let assert Some(woken) = strand_operation(rig.opened, advisor.primary)
     as "the wake must have opened a run on the primary"
   idle_again(rig, woken)
+
+  // A working primary would queue the second nudge too, so the test
+  // would pass for the wrong reason without this: the primary really is
+  // idle, and the spent turn is the only thing holding the nudge back.
+  assert strand_operation(rig.opened, advisor.primary) == None
+    as "the primary must have no open operation when the second is judged"
 
   let assert Ok(advise.Queued) =
     judge(subject, advise.Nudge(text: "and squash the fixups"))
@@ -1113,6 +1159,18 @@ fn take_pending(
   })
 }
 
+// The primary's run-end drain, with the deadline the asking hook would
+// have computed from its own timeout. A test that means to arrive late
+// passes an instant this rig's fixed clock has already gone past.
+fn take_at_run_end(
+  subject: process.Subject(advisor.Message),
+  deadline: Int,
+) -> List(String) {
+  process.call(subject, waiting: 5000, sending: fn(reply) {
+    advisor.TakeAtRunEnd(deadline:, reply:)
+  })
+}
+
 // One verdict from the advisor strand, judged the way the seam judges
 // one.
 fn judge(
@@ -1279,12 +1337,18 @@ fn a_session() -> Session {
 // A wiring whose runtime never answers and whose actor is not registered:
 // the state every hook slot has to tolerate, since the slots run on the
 // strand driver and a run is never held up for a review.
+//
+// Its clock reads the same instant `a_rig` gives the actor, because in a
+// running session the hook slots and the actor share one `Wiring`. The
+// run-end drain compares a deadline the hook computed against the
+// actor's own reading, so two fixtures on different stamps would make
+// every drain look arbitrarily late.
 fn a_wiring(opened: Session) -> advisor.Wiring {
   advisor.Wiring(
     session: opened,
     runtime: fn() { Error(Nil) },
     settings: some_settings([]),
-    clock: clock.fixed(at: 1000),
+    clock: clock.fixed(at: 1_756_000_000_000),
     logger: log.discard(),
     name: addresses.new(),
   )

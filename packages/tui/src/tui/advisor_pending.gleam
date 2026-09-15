@@ -2,8 +2,9 @@
 //// is idle.
 ////
 //// A queued nudge has not been delivered to anything. It waits in the
-//// advisor's guard cell until the primary's next run start folds it into the
-//// prompt, so it is not on any branch and no transcript row describes it.
+//// advisor's guard cell until the primary stops, and once the turn's one
+//// unsolicited delivery is spent it waits for the operator's next prompt,
+//// so it is not on any branch and no transcript row describes it.
 //// That is why this panel exists and why it is deliberately *not* a
 //// transcript row: drawing undelivered advice where delivered messages go
 //// would tell the operator the model had already read it.
@@ -28,8 +29,8 @@ import gleam/result
 import gleam/string
 import tui/text_hygiene
 
-/// The strand the advisor advises, and whose next run start drains the
-/// queue.
+/// The strand the advisor advises, and whose next prompt drains the
+/// queue this panel shows.
 ///
 /// A copy of `client/advisor.primary`, not an import: the terminal links no
 /// server package (`docs/architecture/advisor.md`). The gateway's own tests
@@ -48,7 +49,7 @@ pub const advisor_strand = "advisor"
 /// and the count line keeps the panel honest about what it left out.
 pub const visible_nudges = 3
 
-/// One observation of the nudges waiting for the primary's next run start.
+/// One observation of the nudges waiting to reach the primary.
 pub type Board {
   Board(
     /// The strand the queue drains into — the primary the advisor advises,
@@ -142,7 +143,7 @@ pub fn lines(board: Board) -> List(String) {
   let heading =
     "advisor nudges pending ("
     <> int.to_string(board.total)
-    <> ") · folded into the next run on "
+    <> ") · held for your next prompt to "
     <> text_hygiene.single_line(board.strand)
 
   case board.total - list.length(shown) {
