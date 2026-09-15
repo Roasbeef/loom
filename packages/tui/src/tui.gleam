@@ -2983,8 +2983,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     }
     Assistant | Reasoning -> [
       span.line_plain(""),
-      ..markdown.render(line.text, width - string.length(mark))
-      |> prefix_rendered_lines(mark, mark_style)
+      ..marked_markdown_rows(line.text, mark, mark_style, width)
     ]
     ToolPatch -> markdown.diff(line.text)
 
@@ -3005,7 +3004,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
       |> list.index_map(fn(text, index) {
         let prefix = case index == 0 {
           True -> mark
-          False -> string.repeat(" ", string.length(mark))
+          False -> speaker_gutter
         }
         span.line_new([
           span.span_styled(prefix, mark_style),
@@ -3058,6 +3057,39 @@ fn digest_row(
   ])
 }
 
+// The cells every row of a block after its first is indented by.
+//
+// A mark like `"◆ Agent  "` is a heading, not a left edge. Repeating its nine
+// cells under a message's second paragraph, list or fence left that body
+// hanging in from the margin while the first paragraph's own wrapped rows
+// fell back to column zero, so one message had two left edges and neither was
+// the glyph's. Every mark this transcript draws opens with a glyph and a
+// space, so two cells is the one column all of them can share, and a list's
+// own nesting is then measured from it.
+const speaker_gutter = "  "
+
+// Markdown is wrapped here rather than left to the caller because the wrap
+// width and the prefix are a single decision. Row zero pays for the whole
+// mark and every later row pays for `speaker_gutter`, so a body measured
+// against the bare pane would overrun row zero, and the wrapper the caller
+// runs afterwards would answer that overrun by dropping the spilled words to
+// column zero — which is the two-left-edges bug itself. Measuring every row
+// against the widest of the two prefixes is what the fix costs: a
+// continuation row stops a few cells short of the pane, in exchange for one
+// left edge shared by a wrapped paragraph, a list and a fence alike.
+fn marked_markdown_rows(
+  text: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> List(span.Line) {
+  let room = int.max(1, width - string.length(mark))
+
+  markdown.render(text, room)
+  |> markdown.wrap_lines(room)
+  |> prefix_rendered_lines(mark, mark_style)
+}
+
 fn prefix_rendered_lines(
   lines: List(span.Line),
   mark: String,
@@ -3068,7 +3100,7 @@ fn prefix_rendered_lines(
     let span.Line(spans:, alignment:) = line
     let prefix = case index == 0 {
       True -> mark
-      False -> string.repeat(" ", string.length(mark))
+      False -> speaker_gutter
     }
     span.Line(
       spans: [span.span_styled(prefix, mark_style), ..spans],
