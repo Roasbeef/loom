@@ -6,17 +6,25 @@
 //// transcript under the turn that paid for the miss. The detector's own
 //// thresholds are swept in `cache_miss_test`.
 
+import core/json
 import core/message
 import etui/backend
 import etui/geometry
+import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process
-import gleam/option.{None}
+import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import tui
+import tui/attachment
 import tui/connection
 import tui/frame
+import tui/session_channel
+import tui/snapshot
 import tui/workspace
 import tui_test/gateway
+import tui_test/pushed
 
 // A quarter-million token prefix, priced at a dollar per million tokens for
 // a cached read. The figures are round so the row's text is exact rather
@@ -208,4 +216,153 @@ pub fn a_row_raised_inside_a_tool_group_follows_the_group_test() {
   let assert Ok(#(above, _)) = string.split_once(drawn, "Cache miss")
     as "the row is on screen"
   assert string.contains(above, "tools · 1 call")
+}
+
+// A `snapshot_begin` naming an arbitrary session rather than the fixed "A"
+// `tui_test/pushed` bakes in, which is what lets this fixture drive an
+// actual session switch instead of a same-session reattach.
+fn begin_for(
+  session: String,
+  id: Int,
+  transfer_id: String,
+  next_seq: Int,
+) -> connection.Message {
+  pushed.reply(
+    id,
+    "snapshot_begin",
+    json.Object([
+      #("snapshot_id", json.String(transfer_id)),
+      #("session_id", json.String(session)),
+      #("epoch", json.String("epoch")),
+      #("incarnation", json.String("incarnation")),
+      #("connection_id", json.String("connection")),
+      #(
+        "origin",
+        json.Object([
+          #("principal", json.String("alice")),
+          #("name", json.String("Alice")),
+        ]),
+      ),
+      #("role", json.String("operator")),
+      #("next_seq", json.Int(next_seq)),
+      #("oldest_seq", json.Null),
+      #("window", json.String("recent")),
+      #("complete_history", json.Bool(False)),
+      #("record_bytes_limit", json.Int(snapshot.record_limit)),
+      #("fragment_bytes_limit", json.Int(snapshot.piece_limit)),
+    ]),
+  )
+}
+
+fn piece_for(id: Int, transfer_id: String, data: String) -> connection.Message {
+  pushed.reply(
+    id,
+    "snapshot_chunk",
+    json.Object([
+      #("snapshot_id", json.String(transfer_id)),
+      #("index", json.Int(0)),
+      #("kind", json.String("metadata")),
+      #("record_id", json.String("metadata")),
+      #("record_seq", json.Null),
+      #("total_bytes", json.Int(string.byte_size(data))),
+      #("offset", json.Int(0)),
+      #(
+        "data",
+        json.String(bit_array.base64_encode(bit_array.from_string(data), True)),
+      ),
+    ]),
+  )
+}
+
+fn finish_for(
+  id: Int,
+  transfer_id: String,
+  next_seq: Int,
+) -> connection.Message {
+  pushed.reply(
+    id,
+    "snapshot_end",
+    json.Object([
+      #("snapshot_id", json.String(transfer_id)),
+      #("index", json.Int(1)),
+      #("next_seq", json.Int(next_seq)),
+      #("more_after", json.Null),
+    ]),
+  )
+}
+
+// One completed, empty transfer for an arbitrary session: its begin, its
+// single metadata fragment carrying no history, and its end.
+fn transfer_for(
+  session: String,
+  first: Int,
+  transfer_id: String,
+  next_seq: Int,
+) -> List(connection.Message) {
+  [
+    begin_for(session, first, transfer_id, next_seq),
+    piece_for(first + 1, transfer_id, pushed.metadata()),
+    finish_for(first + 2, transfer_id, next_seq),
+  ]
+}
+
+// Drives a real session switch through `candidate_outcome`, the same path
+// the terminal takes when the operator picks a different session: a fresh
+// channel is credited with the new session's first cut, and that cut is
+// handed over as an `attachment.Adopted` outcome exactly as `attachment`
+// itself would report it.
+fn adopt_session(model: tui.Model, session: String) -> tui.Model {
+  let channel =
+    session_channel.replay(snapshot.Expected(session, "epoch", "incarnation"))
+  let #(replacement, updates) =
+    list.fold(
+      transfer_for(session, 1, "1:1", 10),
+      #(channel, []),
+      fn(acc, incoming) {
+        let #(next, changes) = session_channel.receive(acc.0, incoming)
+        #(next, list.append(acc.1, changes))
+      },
+    )
+  let assert [session_channel.Captured(cut, view, _)] = updates
+    as "the switch's first cut is fully validated"
+  tui.candidate_outcome(
+    model,
+    attachment.idle(),
+    Some(attachment.Adopted(
+      replacement,
+      cut,
+      view,
+      connection.new_inbox(),
+      workspace.Context("/work-" <> session, None),
+      "Session " <> session,
+      None,
+    )),
+  )
+}
+
+pub fn a_session_switch_resets_the_watch_and_its_notices_test() {
+  // Seed a watch and a drawn notice on session A's "main" strand.
+  let seeded = after_the_second_turn(after_the_first_turn())
+  assert string.contains(text(seeded), expected_row)
+  assert seeded.cache_watch != dict.new()
+  assert seeded.cache_notices != []
+
+  // Adopt session B through the real `candidate_outcome` path the terminal
+  // takes on every session switch. Every session's primary strand is also
+  // named "main", so a watch or a notice carried over from A would be
+  // judged against the wrong baseline: B's first request would be compared
+  // to A's last row and drawn as a miss it never suffered. A live channel
+  // delivers its own usage rows only through a credited catch-up rather
+  // than the unsolicited push `tui_test/gateway` builds, so what this test
+  // can check directly is the state the switch itself must clear.
+  let switched = adopt_session(seeded, "B")
+
+  assert switched.cache_watch == dict.new()
+    as "a session switch must drop the previous session's cache watch"
+  assert switched.cache_notices == []
+    as "a session switch must drop the previous session's cache notices"
+
+  // The transcript itself is also replaced, so the drawn notice from A does
+  // not linger on screen either.
+  assert !string.contains(text(switched), "Cache miss")
 }

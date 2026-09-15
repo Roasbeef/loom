@@ -5285,6 +5285,13 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           skills: [],
           next_id: 1,
           record_cache_valid: False,
+          // Every session's primary strand is named `main`, so a watch or a
+          // notice carried over from the old session would be judged
+          // against the wrong baseline: the new session's first usage row
+          // would be compared to the old session's last one and drawn as a
+          // miss that never happened.
+          cache_watch: dict.new(),
+          cache_notices: [],
           scroll_offset: case model.scrollback.mode {
             history_view.Reading -> model.scroll_offset
             history_view.Live -> 0
@@ -8571,26 +8578,41 @@ fn receive_usage(
 ) -> Model {
   // The settlement's own output count over the time since the request went
   // out. A settlement whose clock never started (a refusal, an empty turn)
-  // leaves the last rate standing.
-  let output_rate_tps = case model.peer, model.generation_started_ms {
+  // leaves the last rate standing. `generation_clock` starts the clock only
+  // for the active strand's own row, so only that strand's settlement may
+  // read it or clear it — a sub-agent's row arriving mid-generation must
+  // not report its own output over the primary's window, and must not stop
+  // the primary's clock out from under it.
+  let #(output_rate_tps, generation_started_ms) = case
+    strand == model.active_strand,
+    model.peer,
+    model.generation_started_ms
+  {
+    False, _, _ -> #(model.output_rate_tps, model.generation_started_ms)
+
     // The window is this client's own clock from the request going out to
     // the settlement, and a replay spends that window playing a file rather
     // than waiting on a provider. `output_rate_min_ms` already discards the
     // short ones, so a brief replay would report nothing anyway; a long one
     // would report how fast the replay ran. Declining outright is the same
     // rule that stops a replay echoing a prompt.
-    Replaying, _ | Disconnected, _ -> model.output_rate_tps
+    True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
 
-    Attached(..), Some(started) | Preview, Some(started) ->
-      output_rate(settled.output, model.monotonic_time_ms() - started)
-    Attached(..), None | Preview, None -> model.output_rate_tps
+    True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
+      output_rate(settled.output, model.monotonic_time_ms() - started),
+      None,
+    )
+    True, Attached(..), None | True, Preview, None -> #(
+      model.output_rate_tps,
+      None,
+    )
   }
   let usage = add_usage(model.usage, settled)
   let settled_model =
     Model(
       ..model,
       usage:,
-      generation_started_ms: None,
+      generation_started_ms:,
       output_rate_tps:,
       notice: tokens(usage.total_tokens) <> " tokens",
     )

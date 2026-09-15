@@ -141,20 +141,33 @@ pub fn the_canonical_anthropic_shapes_fire_test() {
   assert cache_miss.idle_label(one_hour.idle_ms) == "1h 12m"
 
   // The re-read landed in the write bucket, so the estimate is the whole
-  // prefix at fresh-input rates less what the cached read would have cost.
+  // prefix at the cache-write rate less what the cached read would have
+  // cost.
   let assert Some(estimate) = five_minute.estimate as "both rows are priced"
-  assert float.loosely_equals(estimate, 0.675, tolerating: 0.0001)
+  assert float.loosely_equals(estimate, 0.8625, tolerating: 0.0001)
 }
 
 pub fn the_token_figure_never_exceeds_the_cached_prefix_test() {
   let held = 200_000
   each_int(1, 8, fn(step) {
     let re_read = step * 50_000
-    case cache_miss.detect(row(12, held, 0), 0, row(re_read, 0, 0), 600_000) {
-      None -> Nil
-      Some(miss) -> {
-        assert miss.tokens <= held
-        assert miss.tokens == int.min(re_read, held)
+    let miss =
+      cache_miss.detect(row(12, held, 0), 0, row(re_read, 0, 0), 600_000)
+    case re_read * 2 >= held {
+      // The lost prefix reappeared as uncached input, so the detector must
+      // fire, and the tokens it reports are capped at the prefix that was
+      // actually held.
+      True -> {
+        let assert Some(fired) = miss
+          as "a re-read past half the held prefix is a miss"
+        assert fired.tokens <= held
+        assert fired.tokens == int.min(re_read, held)
+      }
+
+      // Below half, the request reads too little to have been the prefix
+      // coming back, so it must not be reported as a miss at all.
+      False -> {
+        assert miss == None
       }
     }
   })
