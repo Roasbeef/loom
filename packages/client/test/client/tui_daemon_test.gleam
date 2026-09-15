@@ -48,7 +48,14 @@ fn retired_control_model(control, port) {
     // Creation now canonicalizes explicit configuration before it retains the
     // durable key. The package manifest is a real, stable file; this controlled
     // peer never parses it, but the local boundary can prove the path exists.
-    local_options: Some(bootstrap.Options("/work", "", "", "", "gleam.toml")),
+    local_options: Some(bootstrap.Options(
+      "/work",
+      "",
+      "",
+      "",
+      "gleam.toml",
+      None,
+    )),
     overlay: tui.DaemonSelector(session_selector.new(
       protocol.Page(1, [], None),
       "",
@@ -164,6 +171,7 @@ pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {
         ready.state_root,
         "Terminal session",
         ready.state_root <> "/tui-config.toml",
+        None,
       )
     let assert Ok(protocol.SessionReply(created)) =
       daemon.request(control, creation, 1000)
@@ -316,13 +324,48 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
     ),
     #(protocol.SetDefault("/work", id), server_protocol.SetDefault("/work", id)),
     #(
-      protocol.CreateSession("key", "/work", "é \\\"", "/config"),
+      protocol.CreateSession("key", "/work", "é \\\"", "/config", None),
       server_protocol.CreateSession(
         "key",
         "/work",
         "é \\\"",
         "/config",
         domain.WorkspacePrivate,
+        server_protocol.InheritRoster,
+      ),
+    ),
+    #(
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "name",
+        "/config",
+        Some(protocol.Minimal),
+      ),
+      server_protocol.CreateSession(
+        "key",
+        "/work",
+        "name",
+        "/config",
+        domain.WorkspacePrivate,
+        server_protocol.MinimalRoster,
+      ),
+    ),
+    #(
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "name",
+        "/config",
+        Some(protocol.Full),
+      ),
+      server_protocol.CreateSession(
+        "key",
+        "/work",
+        "name",
+        "/config",
+        domain.WorkspacePrivate,
+        server_protocol.FullRoster,
       ),
     ),
     #(protocol.OpenSession(id), server_protocol.OpenSession(id, "epoch")),
@@ -592,7 +635,13 @@ pub fn tui_daemon_disconnect_leaves_mutation_outcome_unknown_test() {
           outcomes,
           daemon.request(
             control,
-            protocol.CreateSession("durable-key", "/work", "Name", "/config"),
+            protocol.CreateSession(
+              "durable-key",
+              "/work",
+              "Name",
+              "/config",
+              None,
+            ),
             1000,
           ),
         )

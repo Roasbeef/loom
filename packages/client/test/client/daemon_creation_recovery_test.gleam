@@ -7,6 +7,7 @@
 import broker/token
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import core/clock
@@ -40,7 +41,13 @@ fn directory() {
 }
 
 fn request(key: String) {
-  manager.Creation(key, "/workspace/creation-recovery", "saved draft", "")
+  manager.Creation(
+    key,
+    "/workspace/creation-recovery",
+    "saved draft",
+    "",
+    roster: daemon_protocol.InheritRoster,
+  )
 }
 
 fn create(registry, directory, request, seed) {

@@ -49,6 +49,7 @@ import client/codemode
 import client/daemon/domain as domain_service
 import client/daemon/main as daemon_main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root as daemon_root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
@@ -946,7 +947,13 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
   let assert Ok(created) =
     manager.create(
       serving.ready.registry,
-      manager.Creation("terminal-fixture", settings.workspace, "terminal", ""),
+      manager.Creation(
+        "terminal-fixture",
+        settings.workspace,
+        "terminal",
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
         clock.from_function(ffi_os.system_time_ms),

@@ -6,6 +6,7 @@ import broker/token
 import client/daemon/domain as domain_service
 import client/daemon/main as entrypoint
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/internal/instance_owner as custody
 import client/serve
@@ -107,7 +108,13 @@ fn created(serving: entrypoint.Serving(String), key: String, seed: Int) {
   let assert Ok(view) =
     manager.create(
       serving.ready.registry,
-      manager.Creation(key, serving.ready.state_root, key, ""),
+      manager.Creation(
+        key,
+        serving.ready.state_root,
+        key,
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
     )
@@ -372,7 +379,13 @@ pub fn daemon_listener_production_opens_two_owned_sessions_test() {
       let assert Ok(view) =
         manager.create(
           serving.ready.registry,
-          manager.Creation(pair.0, workspace, pair.0, file),
+          manager.Creation(
+            pair.0,
+            workspace,
+            pair.0,
+            file,
+            roster: daemon_protocol.InheritRoster,
+          ),
           directory: serving.ready.sessions_directory,
           generator: ids.generator(clock.fixed(1000), pair.1),
         )

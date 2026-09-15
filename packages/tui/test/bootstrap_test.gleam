@@ -104,6 +104,41 @@ pub fn the_default_catalogue_lives_in_the_state_root_test() {
     == "/home/me/.loom/loom.toml"
 }
 
+pub fn the_tools_flag_names_a_roster_or_refuses_the_invocation_test() {
+  // Absence is the ordinary case: a launcher invoked with no opinion about
+  // tools must send no roster at all, so the daemon's own configuration
+  // decides and an operator who has never heard of the flag is unaffected.
+  assert result.map(tui.local_options([]), fn(options) { options.roster })
+    == Ok(None)
+  assert result.map(tui.local_options(["--workspace", "/work"]), fn(options) {
+      options.roster
+    })
+    == Ok(None)
+
+  assert result.map(tui.local_options(["--tools", "minimal"]), fn(options) {
+      options.roster
+    })
+    == Ok(Some(control.Minimal))
+  assert result.map(tui.local_options(["--tools", "full"]), fn(options) {
+      options.roster
+    })
+    == Ok(Some(control.Full))
+
+  // A third word is refused here rather than carried to a daemon that would
+  // have to guess. The message names the word so the operator can see the
+  // typo without consulting the usage text.
+  assert tui.local_options(["--tools", "everything"])
+    == Error("--tools takes minimal or full, not everything")
+  assert tui.local_options(["--tools"]) == Error("missing value for --tools")
+
+  // The roster does not leak into the arguments a shared daemon is started
+  // with; it is per-session metadata and travels on `sessions.create`.
+  assert !list.contains(
+    bootstrap.daemon_launch_arguments("/private/loom", "/usr/bin/loomd", ""),
+    "--tools",
+  )
+}
+
 pub fn session_configuration_resolves_trusted_default_and_explicit_paths_test() {
   let root = test_root("creation-config")
   let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
@@ -113,7 +148,7 @@ pub fn session_configuration_resolves_trusted_default_and_explicit_paths_test() 
     as "fixture workspace exists"
   assert simplifile.write(filepath.join(workspace, "loom.toml"), "untrusted")
     == Ok(Nil)
-  let options = bootstrap.Options(workspace, "", "", root, "")
+  let options = bootstrap.Options(workspace, "", "", root, "", None)
   assert bootstrap.session_configuration(options) == Ok("")
 
   let path = bootstrap.default_catalogue_path(root)
@@ -279,7 +314,8 @@ pub fn local_session_discovery_validates_launcher_records_test() {
     |> string.replace(canonical_session, canonical_pending)
     |> string.replace("\"review\"", "\"pending\"")
     |> string.replace(key, pending_key)
-  let options = bootstrap.Options(workspace, session, "/bin/loomd", state, "")
+  let options =
+    bootstrap.Options(workspace, session, "/bin/loomd", state, "", None)
   let assert Ok(Nil) =
     host_bootstrap.atomic_write_private(pending_endpoint, pending_record)
   let assert Ok([_, _]) = bootstrap.discover_sessions(options)
@@ -303,6 +339,7 @@ pub fn local_session_discovery_validates_launcher_records_test() {
       server: "/bin/loomd",
       state_directory: state,
       config: "",
+      roster: None,
     )
   let _ = simplifile.delete(root)
 }
@@ -459,7 +496,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     )
     as "a deterministic launch never uses environment-backed maintenance"
   let assert Ok(configuration) = host_bootstrap.absolute_path(configuration)
-  let options = bootstrap.Options(workspace, "", server, state, "")
+  let options = bootstrap.Options(workspace, "", server, state, "", None)
   assert bootstrap.session_configuration(options) == Ok(configuration)
   let terminal = process.self()
   let launched =

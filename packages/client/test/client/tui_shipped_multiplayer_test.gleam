@@ -275,7 +275,7 @@ fn exercise(
     )
     as "normal provider configuration selects the loopback peer with maintenance off"
   let options =
-    bootstrap.Options(workspace, "", server, paths.root, configuration)
+    bootstrap.Options(workspace, "", server, paths.root, configuration, None)
   let assert Ok(connected) =
     bootstrap.resolve_daemon(options, process.self(), 40_000)
     as "the supplied shipped executable authenticates through native bootstrap"
@@ -294,6 +294,7 @@ fn exercise(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      None,
     )
     as "explicit creation opens the fixture session"
   let id = target.expected.session
@@ -339,6 +340,7 @@ fn exercise(
       foreign_workspace,
       workspace.session_name(workspace.Context(foreign_workspace, None)),
       configuration,
+      None,
     )
     as "the owner creates an independently resident uninvited session"
   let assert endpoint.Ready(port:, ..) = connected.record
@@ -561,6 +563,7 @@ fn live_tool_switches(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      None,
     )
     as "A2 is a separate durable session in A1's actual workspace"
   let a2 = target.expected.session

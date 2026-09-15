@@ -12,6 +12,7 @@ import client/codemode
 import client/daemon/domain as domain_service
 import client/daemon/main as daemon_main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root as daemon_root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
@@ -335,7 +336,13 @@ fn with_daemon_instance(run) {
         let assert Ok(view) =
           manager.create(
             serving.ready.registry,
-            manager.Creation("serve-wire", settings.workspace, "Fixture", ""),
+            manager.Creation(
+              "serve-wire",
+              settings.workspace,
+              "Fixture",
+              "",
+              roster: daemon_protocol.InheritRoster,
+            ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1000), 887),
           )

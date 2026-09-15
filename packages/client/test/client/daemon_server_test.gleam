@@ -5,6 +5,7 @@
 import broker/token
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/daemon/server
 import core/clock
@@ -307,7 +308,13 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", ""),
+        manager.Creation(
+          "visible",
+          ready.state_root,
+          "Visible",
+          "",
+          roster: daemon_protocol.InheritRoster,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -315,7 +322,13 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(hidden) =
       manager.create(
         ready.registry,
-        manager.Creation("hidden", ready.state_root, "Hidden", ""),
+        manager.Creation(
+          "hidden",
+          ready.state_root,
+          "Hidden",
+          "",
+          roster: daemon_protocol.InheritRoster,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
       )
@@ -527,6 +540,103 @@ pub fn control_rejects_v1_and_oversized_frame_header_test() {
   })
 }
 
+pub fn creation_persists_its_roster_and_a_changed_one_is_not_the_same_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(ready.state_root <> "/loom.toml", "") == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let body = fn(roster) {
+      json.Object([
+        #("request_key", json.String("wire-roster")),
+        #("workspace", json.String(ready.state_root)),
+        #("name", json.String("Roster session")),
+        #("configuration", json.String("")),
+        #("roster", json.String(roster)),
+      ])
+    }
+
+    // The word reaches the registration, which is the whole point: a daemon
+    // restarted after this reply rebuilds the registry the operator asked
+    // for rather than the one its configuration file names today.
+    let created =
+      send(socket, 1, "sessions.create", body("minimal"), within_ms: 1000)
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its reserved canonical identity"
+    let assert Ok(saved) = manager.get(ready.registry, id)
+      as "the creation reply follows durable registration"
+    assert saved.registration.roster == "minimal"
+    assert daemon_protocol.roster_request(saved.registration.roster)
+      == Ok(daemon_protocol.MinimalRoster)
+
+    // A retry naming the same roster is the lost-reply case and recovers the
+    // original identity.
+    let retried =
+      send(socket, 2, "sessions.create", body("minimal"), within_ms: 1000)
+    assert field(field(retried, "body"), "session_id") == json.String(id)
+
+    // A retry naming a different roster is a different creation request. It
+    // must not silently hand back a session built with the other registry.
+    let changed =
+      send(socket, 3, "sessions.create", body("full"), within_ms: 1000)
+    assert field(field(changed, "body"), "code") == json.String("conflict")
+
+    // So is dropping the field: absence means inherit, which is not what
+    // this key was reserved with.
+    let dropped =
+      send(
+        socket,
+        4,
+        "sessions.create",
+        json.Object([
+          #("request_key", json.String("wire-roster")),
+          #("workspace", json.String(ready.state_root)),
+          #("name", json.String("Roster session")),
+          #("configuration", json.String("")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(dropped, "body"), "code") == json.String("conflict")
+
+    // A third word is refused as a malformed command rather than narrowed
+    // to a registry nobody asked for.
+    let unknown =
+      send(socket, 5, "sessions.create", body("everything"), within_ms: 1000)
+    assert field(field(unknown, "body"), "code") == json.String("bad_request")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_creation_with_no_roster_inherits_the_daemon_default_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(ready.state_root <> "/loom.toml", "") == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let created =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        json.Object([
+          #("request_key", json.String("wire-inherit")),
+          #("workspace", json.String(ready.state_root)),
+          #("name", json.String("Inherited session")),
+          #("configuration", json.String("")),
+        ]),
+        within_ms: 1000,
+      )
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its reserved canonical identity"
+    let assert Ok(saved) = manager.get(ready.registry, id)
+      as "the creation reply follows durable registration"
+    assert saved.registration.roster == ""
+    assert daemon_protocol.roster_request(saved.registration.roster)
+      == Ok(daemon_protocol.InheritRoster)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn owner_deletes_only_a_stopped_session_and_unlinks_its_files_test() {
   fixture(fn(_, ready, port, credential) {
     assert simplifile.write(ready.state_root <> "/loom.toml", "") == Ok(Nil)
@@ -689,7 +799,13 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("member-visible", ready.state_root, "Visible", ""),
+        manager.Creation(
+          "member-visible",
+          ready.state_root,
+          "Visible",
+          "",
+          roster: daemon_protocol.InheritRoster,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
       )
@@ -742,6 +858,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         1000,
         "wire-archive",
         catalogue.Reserved,
+        "",
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
     let assert Ok(_) = catalogue.confirm(store, id) as "the fixture is saved"

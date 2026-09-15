@@ -68,6 +68,7 @@ fn options(paths: endpoint.Paths, workspace) {
     "/missing/installed/loomd",
     paths.root,
     "/missing/operator/config",
+    None,
   )
 }
 

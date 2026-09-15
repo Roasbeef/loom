@@ -598,6 +598,7 @@ pub fn session_switch_frames_are_owned_by_the_terminal_test() {
       server: root <> "/no-such-loomd",
       state_directory: root <> "/state",
       config: "",
+      roster: None,
     )
   let status = sessions.start(choice, options)
   let assert sessions.Resolving(frames:, ..) = status

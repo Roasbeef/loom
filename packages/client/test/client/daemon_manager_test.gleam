@@ -5,6 +5,7 @@
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/distill
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
@@ -33,6 +34,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     created_at: 1_700_000_000_000,
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
+    roster: "",
   )
 }
 
@@ -73,6 +75,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         record.workspace,
         record.name,
         record.configuration,
+        roster: daemon_protocol.InheritRoster,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(at: 1), seed: 1),
@@ -144,6 +147,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         record.workspace,
         record.name,
         record.configuration,
+        roster: daemon_protocol.InheritRoster,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(1), 1),
@@ -285,6 +289,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             example.1,
             "Session",
             example.2,
+            roster: daemon_protocol.InheritRoster,
           ),
           directory: "/domain-selection/sessions",
           generator: ids.generator(clock.fixed(1), example.0),
@@ -573,7 +578,13 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       Ok(record.id)
     })
   let request =
-    manager.Creation("create-once", "/workspace/project", "first", "")
+    manager.Creation(
+      "create-once",
+      "/workspace/project",
+      "first",
+      "",
+      roster: daemon_protocol.InheritRoster,
+    )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 411)
   let assert Ok(manager.View(record, manager.Opening(operation))) =
     manager.create(
@@ -647,7 +658,13 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
   await_status(registry, occupied.id, manager.Resident(operation))
   let assert Ok(_) = process.receive(builds, 1000) as "first assembly ran"
   let request =
-    manager.Creation("capacity-retry", "/workspace/project", "second", "")
+    manager.Creation(
+      "capacity-retry",
+      "/workspace/project",
+      "second",
+      "",
+      roster: daemon_protocol.InheritRoster,
+    )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 413)
   assert manager.create(
       registry,

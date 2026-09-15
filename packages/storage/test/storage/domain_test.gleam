@@ -55,6 +55,7 @@ fn registration(seed) {
     created_at: 1,
     request_key: id,
     state: catalogue.Reserved,
+    roster: "",
   )
 }
 

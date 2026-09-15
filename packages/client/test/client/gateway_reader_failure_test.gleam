@@ -12,6 +12,7 @@
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/gateway
 import client/owned_assembly_test
 import client/protocol
@@ -86,7 +87,13 @@ fn resident(epoch: String) -> Resident {
   let assert Ok(view) =
     manager.create(
       registry,
-      manager.Creation(epoch, settings.workspace, "reader", ""),
+      manager.Creation(
+        epoch,
+        settings.workspace,
+        "reader",
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), 414),
     )

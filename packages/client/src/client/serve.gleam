@@ -37,6 +37,7 @@ import client/codemode as codemode_wiring
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
+import client/daemon/protocol as daemon_protocol
 import client/distill
 import client/distillpass
 import client/escalate
@@ -808,9 +809,18 @@ pub fn resolve_managed(
       selected.index_path,
     )),
   )
+
+  // The roster a session was created with outranks the daemon's own
+  // `[tools] roster`, and it is read from the registration on every
+  // rebuild rather than once: the registry is not journaled, so this is
+  // the only way a restarted daemon serves the same six or twenty-one
+  // definitions to the same session (protocol-change/039). A stored word
+  // the decoder does not know refuses the boot, never defaults.
+  use roster <- result.try(daemon_protocol.roster_request(registration.roster))
   Ok(
     Settings(
       ..settings,
+      tools: roster_for_session(settings.tools, roster),
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
       // The daemon's secrets, not the daemon's directory. Masking the
@@ -820,6 +830,22 @@ pub fn resolve_managed(
       base_policy: protecting_state_root(settings.base_policy, state_root),
     ),
   )
+}
+
+// The registration's choice applied over the daemon's default. `Inherit`
+// is the absent field on `sessions.create`, so a session that never named
+// a roster follows the configuration it was created under.
+fn roster_for_session(
+  tools: catalog.ToolsConfig,
+  roster: daemon_protocol.RosterRequest,
+) -> catalog.ToolsConfig {
+  case roster {
+    daemon_protocol.InheritRoster -> tools
+    daemon_protocol.MinimalRoster ->
+      catalog.ToolsConfig(..tools, roster: catalog.Minimal)
+    daemon_protocol.FullRoster ->
+      catalog.ToolsConfig(..tools, roster: catalog.Full)
+  }
 }
 
 /// Builds domain services from their stored maintenance configuration only.

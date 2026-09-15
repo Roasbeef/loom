@@ -7,6 +7,7 @@ import broker/policy
 import client/catalog
 import client/daemon/main as daemon_main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/daemon/session_socket
 import client/owned_assembly_test
@@ -160,6 +161,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
         workspace,
         "session " <> int.to_string(seed),
         "",
+        roster: daemon_protocol.InheritRoster,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),

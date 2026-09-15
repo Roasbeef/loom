@@ -15,6 +15,7 @@ import sqlight
 import storage/catalogue
 import storage/catalogue_archives_schema
 import storage/catalogue_names_schema
+import storage/catalogue_rosters_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite
@@ -31,6 +32,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(archives) = simplifile.read("sql/catalogue_archives.sql")
     as "archive migration is checked in"
   assert catalogue_archives_schema.schema == archives
+  let assert Ok(rosters) = simplifile.read("sql/catalogue_rosters.sql")
+    as "roster migration is checked in"
+  assert catalogue_rosters_schema.schema == rosters
 }
 
 pub fn generated_queries_match_the_sqlc_input_test() {
@@ -39,7 +43,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
   let generated = [
     sql.initialize_catalogue_revision().0,
     sql.find_registrations("", "", "").0,
-    sql.insert_registration("", "", "", "", "", 0, "").0,
+    sql.insert_registration("", "", "", "", "", 0, "", "").0,
     sql.confirm_registration("").0,
     sql.registration_display_name("").0,
     sql.set_registration_display_name("", "").0,
@@ -119,7 +123,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; ALTER TABLE catalogue_sessions DROP COLUMN roster; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -171,6 +175,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     created_at: 1_700_000_000_000,
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
+    roster: "",
   )
 }
 
@@ -490,7 +495,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "DROP TABLE catalogue_session_archives; ALTER TABLE catalogue_sessions DROP COLUMN roster; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
@@ -541,4 +546,75 @@ pub fn archive_and_restore_preserve_committed_conversation_bytes_test() {
     == Ok(saved)
   assert simplifile.read_bits(path) == Ok(before)
   assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn version_three_catalogue_migrates_roster_as_inherited_test() {
+  let path = fresh_path("roster-migration")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let record = registration(894)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // A version-three file is exactly this one without the column, so the
+  // fixture removes it rather than rebuilding the older schema by hand.
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "ALTER TABLE catalogue_sessions DROP COLUMN roster; PRAGMA user_version=3",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // Every registration written before the column existed inherits, which is
+  // what the empty word means everywhere above this layer.
+  let assert Ok(migrated) = catalogue.open(path) as "version three migrates"
+  assert catalogue.get(migrated, record.id) == Ok(record)
+  assert catalogue.by_request_key(migrated, record.request_key) == Ok(record)
+  let chosen = catalogue.Registration(..registration(893), roster: "full")
+  assert catalogue.reserve(migrated, chosen) == Ok(chosen)
+  assert catalogue.close(migrated) == Ok(Nil)
+}
+
+pub fn roster_round_trips_and_joins_creation_retry_equality_test() {
+  let path = fresh_path("roster-round-trip")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let inherited = registration(801)
+  let minimal = catalogue.Registration(..registration(802), roster: "minimal")
+  let full = catalogue.Registration(..registration(803), roster: "full")
+  let records = [inherited, minimal, full]
+  assert list.map(records, catalogue.reserve(store, _)) == list.map(records, Ok)
+
+  // A retry under the same key with a different roster is a different
+  // creation request, not the original one recovered.
+  assert catalogue.reserve(
+      store,
+      catalogue.Registration(..minimal, roster: "full"),
+    )
+    == Error(catalogue.Conflict)
+  assert catalogue.reserve(store, catalogue.Registration(..full, roster: ""))
+    == Error(catalogue.Conflict)
+
+  // The three words survive a close, so a restarted daemon rebuilds the
+  // registry each session asked for rather than the default.
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
+  assert list.map(records, fn(record) { catalogue.get(reopened, record.id) })
+    == list.map(records, Ok)
+  let assert Ok(page) = catalogue.page(reopened, after: "")
+    as "roster page loads"
+  assert list.sort(
+      list.map(page.records, fn(record) { record.roster }),
+      string.compare,
+    )
+    == ["", "full", "minimal"]
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn a_third_roster_word_is_refused_by_the_column_test() {
+  let path = fresh_path("roster-third-word")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = catalogue.Registration(..registration(804), roster: "everything")
+  assert result.is_error(catalogue.reserve(store, record))
+  assert catalogue.get(store, record.id) == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
 }

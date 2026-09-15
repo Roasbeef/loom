@@ -7,6 +7,7 @@
 import client/catalog
 import client/daemon/main as daemon_main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
@@ -248,6 +249,7 @@ fn first_phase(
         settings.workspace,
         "Schedules",
         "",
+        roster: daemon_protocol.InheritRoster,
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 62),

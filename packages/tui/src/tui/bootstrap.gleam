@@ -13,12 +13,14 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import host/bootstrap as host
 import host/endpoint as daemon_endpoint
 import tui/connection
 import tui/daemon/bootstrap as daemon_bootstrap
+import tui/daemon/protocol as daemon_protocol
 import tui/protocol
 import weft/poll
 
@@ -166,6 +168,14 @@ pub type Options {
     /// and each newly created session. Reusing the daemon or opening an
     /// existing registration does not replace that registration's catalogue.
     config: String,
+    /// The tool roster to create this session with, or `None` to inherit the
+    /// daemon's configured default.
+    ///
+    /// This one is deliberately absent from `daemon_launch_arguments`. The
+    /// daemon is started once and outlives any number of sessions, so a
+    /// per-session choice must not become the flag a shared daemon boots
+    /// with; it travels on `sessions.create` instead.
+    roster: Option(daemon_protocol.Roster),
   )
 }
 
@@ -245,7 +255,7 @@ type ProcessMatch {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.resolve(bootstrap.Options("", "", "", "", ""))
+/// bootstrap.resolve(bootstrap.Options("", "", "", "", "", None))
 /// // -> Ok(bootstrap.Target(..))
 /// ```
 pub fn resolve(options: Options) -> Result(Target, String) {
@@ -271,7 +281,7 @@ pub fn resolve(options: Options) -> Result(Target, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.discover_sessions(bootstrap.Options("", "", "", "", ""))
+/// bootstrap.discover_sessions(bootstrap.Options("", "", "", "", "", None))
 /// ```
 pub fn discover_sessions(
   options: Options,
@@ -334,11 +344,9 @@ pub fn discover_sessions(
 /// ```
 pub fn session_options(base: Options, choice: SessionChoice) -> Options {
   Options(
+    ..base,
     workspace: choice.workspace,
     session_file: choice.session_file,
-    server: base.server,
-    state_directory: base.state_directory,
-    config: base.config,
   )
 }
 
@@ -347,7 +355,7 @@ pub fn session_options(base: Options, choice: SessionChoice) -> Options {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.session_file(bootstrap.Options("", "", "", "", ""))
+/// bootstrap.session_file(bootstrap.Options("", "", "", "", "", None))
 /// ```
 @internal
 pub fn session_file(options: Options) -> Result(String, String) {
@@ -369,11 +377,10 @@ fn discover_session(
       use endpoint <- result.try(discard_reason(read_endpoint(path)))
       let options =
         Options(
+          ..base,
           workspace: endpoint.workspace,
           session_file: endpoint.session_file,
-          server: base.server,
           state_directory: state,
-          config: base.config,
         )
       use workspace <- result.try(
         discard_reason(canonical_workspace(endpoint.workspace)),

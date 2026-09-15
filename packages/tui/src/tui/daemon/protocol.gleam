@@ -52,6 +52,36 @@ pub type Hello {
   )
 }
 
+/// The tool roster a new session is built with, when the operator named one.
+///
+/// The launcher's `--tools` flag is the only source. It is creation metadata,
+/// not a view setting: the daemon persists it with the registration, so the
+/// session keeps the roster it was created with across a daemon restart. An
+/// `Option(Roster)` of `None` sends no field at all and inherits whatever the
+/// daemon's own `[tools] roster` says.
+pub type Roster {
+  /// The minimal roster, whatever the daemon's configured default is.
+  Minimal
+
+  /// The full roster, whatever the daemon's configured default is.
+  Full
+}
+
+/// The wire word for a roster, as `sessions.create` spells it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.roster_word(protocol.Minimal)
+/// // -> "minimal"
+/// ```
+pub fn roster_word(roster: Roster) -> String {
+  case roster {
+    Minimal -> "minimal"
+    Full -> "full"
+  }
+}
+
 /// Requests are explicit; metadata reads never imply an open.
 pub type Command {
   /// Renames the active session without changing its identity or lifetime.
@@ -123,6 +153,8 @@ pub type Command {
     name: String,
     /// Explicit operator configuration path.
     configuration: String,
+    /// The roster named on the command line, or inherit the daemon default.
+    roster: Option(Roster),
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -433,7 +465,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration) -> {
+    CreateSession(key, workspace, name, configuration, roster) -> {
       use fields <- result.try(
         text_fields([
           #("request_key", key, 256),
@@ -441,6 +473,17 @@ fn command_fields(command: Command, epoch: Epoch) {
           #("name", name, 256),
         ]),
       )
+
+      // An absent roster sends no field, which is how a daemon that inherits
+      // its own default tells the two cases apart. Only a named roster is
+      // written, and it is one of exactly two words rather than free text.
+      let fields = case roster {
+        None -> fields
+        Some(chosen) -> [
+          #("roster", json.String(roster_word(chosen))),
+          ..fields
+        ]
+      }
 
       // Empty configuration preserves daemon defaults; other control text is
       // still nonempty. The same byte ceiling applies to an explicit path.

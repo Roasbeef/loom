@@ -8,6 +8,7 @@
 import client/catalog
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/history
 import client/internal/ffi_os
@@ -164,7 +165,13 @@ fn create(
   let assert Ok(manager.View(record, manager.Opening(_))) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(name, workspace, name, ""),
+      manager.Creation(
+        name,
+        workspace,
+        name,
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed:),
       scope: domain.SessionOnly,
