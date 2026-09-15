@@ -748,7 +748,7 @@ failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `run` (`tools/bash.gleam:132`) builds a `CallSpec` naming the
+For `bash`, `run` (`tools/bash.gleam:158`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -1373,7 +1373,7 @@ background job.
 Registration is gated on discovery rather than on refusing at call time.
 `contributions.built_in` (`client/contributions.gleam`) contributes the
 tool only when
-`codemode.discover` (`client/codemode.gleam:888`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:975`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
@@ -1511,7 +1511,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:267`): the tool table
+lets it is `registry` (`client/contributions.gleam:189`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could
