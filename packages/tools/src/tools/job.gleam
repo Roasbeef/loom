@@ -317,7 +317,7 @@ pub type Jobs {
 /// ## Examples
 ///
 /// ```gleam
-/// // bash.tool(job.unavailable())
+/// // bash.tool(job.unavailable(), bash.ViaPollTool)
 /// ```
 ///
 pub fn unavailable() -> Jobs {

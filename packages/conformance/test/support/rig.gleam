@@ -39,7 +39,7 @@ pub fn configuration() -> StrandConfiguration {
 /// The full core tool registry.
 pub fn registry() -> Registry {
   tool.registry([
-    bash.tool(job.unavailable()),
+    bash.tool(job.unavailable(), bash.ViaPollTool),
     grep.tool(),
     fs.read_tool(),
     fs.write_tool(),

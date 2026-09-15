@@ -493,7 +493,7 @@ pub fn a_refused_listing_is_in_band_too_test() {
 // --- bash's two modes -------------------------------------------------------
 
 fn bash_run(jobs: job.Jobs, args: json.JsonValue) -> tool.ToolOutcome {
-  bash.tool(jobs).run(ctx(), args)
+  bash.tool(jobs, bash.ViaPollTool).run(ctx(), args)
 }
 
 pub fn the_bash_schema_defaults_to_the_foreground_test() {
@@ -502,7 +502,7 @@ pub fn the_bash_schema_defaults_to_the_foreground_test() {
   // and only `command` is required.
   let asked = recorder()
   let assert json.Object(fields) =
-    bash.tool(answering(asked, job.Running)).schema
+    bash.tool(answering(asked, job.Running), bash.ViaPollTool).schema
     as "a tool schema is an object"
   assert list.key_find(fields, "required")
     == Ok(json.Array([json.String("command")]))
@@ -528,7 +528,7 @@ pub fn a_bash_call_with_no_mode_never_reaches_the_jobs_door_test() {
       recorded: process.new_subject(),
     )
   let outcome =
-    bash.tool(answering(asked, job.Running)).run(
+    bash.tool(answering(asked, job.Running), bash.ViaPollTool).run(
       ctx,
       json.Object([#("command", json.String("true"))]),
     )
@@ -588,7 +588,7 @@ pub fn a_host_with_no_jobs_plane_answers_rather_than_crashing_test() {
   // `bash` takes the door unconditionally, so this is the path a build
   // that never stood the actor up takes.
   let outcome =
-    bash.tool(job.unavailable()).run(
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(
       ctx(),
       json.Object([
         #("command", json.String("make")),
@@ -696,4 +696,55 @@ pub fn a_host_with_no_jobs_plane_answers_unavailable_test() {
   let listing = job_read(job.unavailable(), "")
   assert listing.is_error
   assert detail(listing, "error") == json.String("scheme_unavailable")
+}
+
+// --- how `bash` words the readback ------------------------------------------
+
+/// The description names the three `job_*` tools where they are
+/// registered, and the `fs_read` scheme where they are not. Under the
+/// minimal roster nothing registers `job_poll`, so a sentence naming it
+/// would be an invitation to read a refusal.
+pub fn the_description_names_the_readback_the_roster_actually_has_test() {
+  let with_tools = bash.tool(job.unavailable(), bash.ViaPollTool).description
+  assert string.contains(with_tools, "Read a job with `job_poll`")
+  assert string.contains(with_tools, "job_send")
+  assert string.contains(with_tools, "job_kill")
+
+  let with_scheme = bash.tool(job.unavailable(), bash.ViaScheme).description
+  assert string.contains(
+    with_scheme,
+    "Read a job with `fs_read` of `job://<id>`",
+  )
+  assert string.contains(with_scheme, "`cap/job`")
+
+  // Neither write-side tool may be named where neither is registered.
+  assert !string.contains(with_scheme, "job_send")
+  assert !string.contains(with_scheme, "job_kill")
+  assert !string.contains(with_scheme, "job_poll")
+}
+
+/// The sentence a background start answers with follows the same choice,
+/// and the scheme arm spells the id out rather than leaving the model a
+/// placeholder to fill.
+pub fn a_background_start_says_how_this_session_reads_it_back_test() {
+  let started =
+    json.Object([
+      #("command", json.String("make check")),
+      #("mode", json.String("background")),
+    ])
+  let asked = recorder()
+  let with_tools =
+    bash.tool(answering(asked, job.Running), bash.ViaPollTool).run(
+      ctx(),
+      started,
+    )
+  assert string.contains(first_text(with_tools), "read it with `job_poll`.")
+
+  let asked = recorder()
+  let with_scheme =
+    bash.tool(answering(asked, job.Running), bash.ViaScheme).run(ctx(), started)
+  assert string.contains(
+    first_text(with_scheme),
+    "read it with `fs_read` of `job://" <> job_id <> "`.",
+  )
 }

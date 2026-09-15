@@ -320,10 +320,19 @@ pub fn built_in_for(
       },
     ])
 
+  // `bash` describes how to read a background job back, and the answer
+  // is the roster's rather than the plane's: `Minimal` registers no
+  // `job_*` tool, so the only readback it has is the `job://` scheme
+  // registered on `fs_read` a few lines above.
+  let readback = case roster {
+    catalog.Minimal -> bash.ViaScheme
+    catalog.Full -> bash.ViaPollTool
+  }
+
   // The five names every roster registers, in the order the system
   // prompt's index reads them.
   let core = [
-    bash.tool(door),
+    bash.tool(door, readback),
     grep.tool(),
     fs.read_tool_with(schemes),
     fs.write_tool(),
