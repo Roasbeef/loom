@@ -22,6 +22,7 @@ hosted execution. No release was tagged or published by this work.
 | Compiler pin and version reporting | The maintained Gleam patch is applied in CI and both Docker recipes, with cache-key separation and a cold-build fixture. `loom version` and `loom --version` report the invoked client build without starting a daemon. |
 | Release operations | `make update` builds and installs the current checkout. `make release-tag` previews an atomic main/tag push; `RELEASE_ARGS=--push` executes it. The tag workflow builds Linux x86_64 and macOS arm64 twice, compares and binds artifacts, then creates a draft. |
 | Broader Gun adoption | [#422](https://github.com/Roasbeef/loom/issues/422) owns the transport assessment. It is an inventory and requirements comparison, not a blanket migration. |
+| Advisor nudge priority | Landed on `advisor/nudge-priority`: a nudge now delivers at the primary's run end or at once on an idle primary, rather than waiting only for its next run start, bounded by one unsolicited delivery per operator turn; a new `advisor_pending` observation lets the terminal show the undelivered queue beside the composer. See [the design doc](architecture/advisor.md) and issue #425 for what is still open — the pending panel's three-row cap has no way to expand. |
 
 [Release updater verification](review/release-updater.md) records the updater's
 review and gates. PR #423 at `21da91d8` has successful CI run
