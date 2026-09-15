@@ -44,6 +44,16 @@ type Ctx {
   Ctx(names: Names, policy: Policy, function: String, locals: List(Eager))
 }
 
+type CaptureUse {
+  FieldUse(fields: List(String))
+  OtherUse
+}
+
+type ClosureFate {
+  Escapes
+  Scoped
+}
+
 /// Every violation in a parsed module, in no particular order.
 ///
 /// `own_path` is this file's own module path (`tools/fs`, not the
@@ -80,6 +90,569 @@ pub fn module(
   found
   |> list.append(lone_callers(module, policy))
   |> list.append(naked_bools(module))
+  |> list.append(closure_captures(module))
+}
+
+// --- R12: a closure retaining a record for its fields ----------------------
+//
+// The BEAM closure environment retains a captured value, not the slice of a
+// record that the body happens to read. A long-lived callback which mentions
+// `config.session` therefore keeps `config` and everything reachable from it
+// alive. Projecting `let opened = config.session` before constructing the
+// closure changes the environment to the value the callback actually needs.
+//
+// `glance` has neither inferred types nor escape/lifetime information. This
+// rule consequently measures only the reliable syntactic core: a binding from
+// an outer lexical scope is mentioned inside a closure, every mention is a
+// direct field access, and at least one field is read. The closure must also
+// sit in a retention-bearing position: returned, assigned, or stored in a
+// constructor. Ordinary call arguments are excluded because deciding whether
+// a callee retains its callback would require interprocedural knowledge. A
+// bare use, record update, or shorthand argument suppresses the finding.
+// Shadowing suppresses the outer binding from the point where the inner
+// binding enters scope. Nested closures are checked as their own environments
+// rather than charged to every closure around them. The result warns forever:
+// it can identify the retention shape, but cannot prove the record is broad or
+// the closure lives long enough for the retained value to matter.
+
+fn closure_captures(module: glance.Module) -> List(Raw) {
+  list.flat_map(module.functions, fn(definition) {
+    let function = definition.definition
+    closures_in_statements(
+      function.body,
+      parameter_names(function.parameters),
+      function.name,
+      Escapes,
+    )
+  })
+}
+
+fn closures_in_statements(
+  body: List(glance.Statement),
+  visible: List(String),
+  function: String,
+  tail_fate: ClosureFate,
+) -> List(Raw) {
+  case body {
+    [] -> []
+    [statement, ..rest] -> {
+      let fate = case rest {
+        [] -> tail_fate
+        _ -> Scoped
+      }
+      let found = closures_in_statement(statement, visible, function, fate)
+      let visible = list.append(statement_bindings(statement), visible)
+      list.append(
+        found,
+        closures_in_statements(rest, visible, function, tail_fate),
+      )
+    }
+  }
+}
+
+fn closures_in_statement(
+  statement: glance.Statement,
+  visible: List(String),
+  function: String,
+  fate: ClosureFate,
+) -> List(Raw) {
+  case statement {
+    glance.Use(function: value, ..) ->
+      closures_in_expression(value, visible, function, Scoped)
+    glance.Expression(value) ->
+      closures_in_expression(value, visible, function, fate)
+    glance.Assert(expression: value, message:, ..) ->
+      list.append(
+        closures_in_expression(value, visible, function, Scoped),
+        closures_in_optional(message, visible, function, Scoped),
+      )
+    glance.Assignment(kind:, value:, ..) ->
+      list.append(
+        closures_in_expression(value, visible, function, Escapes),
+        closures_in_assignment_message(kind, visible, function),
+      )
+  }
+}
+
+fn closures_in_expression(
+  value: glance.Expression,
+  visible: List(String),
+  function: String,
+  fate: ClosureFate,
+) -> List(Raw) {
+  case value {
+    glance.Int(..)
+    | glance.Float(..)
+    | glance.String(..)
+    | glance.Variable(..) -> []
+    glance.NegateInt(value: inner, ..) | glance.NegateBool(value: inner, ..) ->
+      closures_in_expression(inner, visible, function, Scoped)
+    glance.Block(statements: body, ..) ->
+      closures_in_statements(body, visible, function, fate)
+    glance.Panic(message:, ..) | glance.Todo(message:, ..) ->
+      closures_in_optional(message, visible, function, Scoped)
+    glance.Echo(expression: inner, message:, ..) ->
+      list.append(
+        closures_in_optional(inner, visible, function, Scoped),
+        closures_in_optional(message, visible, function, Scoped),
+      )
+    glance.Tuple(elements:, ..) ->
+      list.flat_map(elements, fn(element) {
+        closures_in_expression(element, visible, function, fate)
+      })
+    glance.List(elements:, rest:, ..) ->
+      list.append(
+        list.flat_map(elements, fn(element) {
+          closures_in_expression(element, visible, function, fate)
+        }),
+        closures_in_optional(rest, visible, function, fate),
+      )
+    glance.Fn(location:, arguments:, body:, ..) -> {
+      let arguments = fn_parameter_names(arguments)
+      let captured =
+        list.filter(visible, fn(name) { !list.contains(arguments, name) })
+      let direct = case fate {
+        Escapes -> capture_findings(body, captured, function, location)
+        Scoped -> []
+      }
+      let inside = list.append(arguments, visible)
+      list.append(
+        direct,
+        closures_in_statements(body, inside, function, Escapes),
+      )
+    }
+    glance.RecordUpdate(record:, fields:, ..) ->
+      list.append(
+        closures_in_expression(record, visible, function, Scoped),
+        list.flat_map(fields, fn(field) {
+          closures_in_optional(field.item, visible, function, fate)
+        }),
+      )
+    glance.FieldAccess(container:, ..) ->
+      closures_in_expression(container, visible, function, Scoped)
+    glance.Call(function: called, arguments:, ..) -> {
+      let argument_fate = case constructor_reference(called) {
+        True -> fate
+        False -> Scoped
+      }
+      list.append(
+        closures_in_expression(called, visible, function, Scoped),
+        closures_in_fields(arguments, visible, function, argument_fate),
+      )
+    }
+    glance.TupleIndex(tuple:, ..) ->
+      closures_in_expression(tuple, visible, function, Scoped)
+    glance.FnCapture(function: called, arguments_before:, arguments_after:, ..) ->
+      closures_in_expression(called, visible, function, Scoped)
+      |> list.append(closures_in_fields(
+        arguments_before,
+        visible,
+        function,
+        Scoped,
+      ))
+      |> list.append(closures_in_fields(
+        arguments_after,
+        visible,
+        function,
+        Scoped,
+      ))
+    glance.BitString(segments:, ..) ->
+      list.flat_map(segments, fn(segment) {
+        closures_in_expression(segment.0, visible, function, Scoped)
+      })
+    glance.Case(subjects:, clauses:, ..) ->
+      list.append(
+        list.flat_map(subjects, fn(subject) {
+          closures_in_expression(subject, visible, function, Scoped)
+        }),
+        list.flat_map(clauses, fn(clause) {
+          let clause_visible = list.append(clause_bindings(clause), visible)
+          list.append(
+            closures_in_optional(clause.guard, clause_visible, function, Scoped),
+            closures_in_expression(clause.body, clause_visible, function, fate),
+          )
+        }),
+      )
+    glance.BinaryOperator(left:, right:, ..) ->
+      list.append(
+        closures_in_expression(left, visible, function, Scoped),
+        closures_in_expression(right, visible, function, Scoped),
+      )
+  }
+}
+
+fn capture_findings(
+  body: List(glance.Statement),
+  visible: List(String),
+  function: String,
+  location: glance.Span,
+) -> List(Raw) {
+  visible
+  |> unique_names
+  |> list.filter_map(fn(name) {
+    case capture_use(body, name) {
+      FieldUse([]) | OtherUse -> Error(Nil)
+      FieldUse(fields) ->
+        Ok(Raw(
+          rule: finding.BroadClosureCapture,
+          offset: location.start,
+          function:,
+          detail: "closure captures `"
+            <> name
+            <> "` only to read "
+            <> field_list(fields)
+            <> "; project the field"
+            <> plural(fields)
+            <> " into local values before the closure so its environment "
+            <> "does not retain the complete outer value. This warning "
+            <> "cannot infer the value's width or the closure's lifetime",
+        ))
+    }
+  })
+}
+
+fn capture_use(body: List(glance.Statement), wanted: String) -> CaptureUse {
+  capture_statements(body, wanted, FieldUse([]))
+}
+
+fn capture_statements(
+  body: List(glance.Statement),
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  case body {
+    [] -> usage
+    [statement, ..rest] -> {
+      let usage = capture_statement(statement, wanted, usage)
+      case list.contains(statement_bindings(statement), wanted) {
+        True -> usage
+        False -> capture_statements(rest, wanted, usage)
+      }
+    }
+  }
+}
+
+fn capture_statement(
+  statement: glance.Statement,
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  case statement {
+    glance.Use(function:, ..) -> capture_expression(function, wanted, usage)
+    glance.Expression(value) -> capture_expression(value, wanted, usage)
+    glance.Assert(expression:, message:, ..) ->
+      capture_optional(
+        message,
+        wanted,
+        capture_expression(expression, wanted, usage),
+      )
+    glance.Assignment(kind:, value:, ..) ->
+      capture_assignment_message(
+        kind,
+        wanted,
+        capture_expression(value, wanted, usage),
+      )
+  }
+}
+
+fn capture_expression(
+  value: glance.Expression,
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  case value {
+    glance.Int(..) | glance.Float(..) | glance.String(..) -> usage
+    glance.Variable(name:, ..) ->
+      case name == wanted {
+        True -> OtherUse
+        False -> usage
+      }
+    glance.NegateInt(value: inner, ..) | glance.NegateBool(value: inner, ..) ->
+      capture_expression(inner, wanted, usage)
+    glance.Block(statements: body, ..) ->
+      capture_statements(body, wanted, usage)
+    glance.Panic(message:, ..) | glance.Todo(message:, ..) ->
+      capture_optional(message, wanted, usage)
+    glance.Echo(expression: inner, message:, ..) ->
+      capture_optional(message, wanted, capture_optional(inner, wanted, usage))
+    glance.Tuple(elements:, ..) -> capture_expressions(elements, wanted, usage)
+    glance.List(elements:, rest:, ..) ->
+      capture_optional(
+        rest,
+        wanted,
+        capture_expressions(elements, wanted, usage),
+      )
+    glance.Fn(arguments:, body:, ..) -> {
+      let shadowed = fn_parameter_names(arguments) |> list.contains(wanted)
+      case shadowed {
+        True -> usage
+        False ->
+          case capture_statements(body, wanted, FieldUse([])) {
+            OtherUse -> OtherUse
+            FieldUse(_) -> usage
+          }
+      }
+    }
+    glance.RecordUpdate(record:, fields:, ..) ->
+      capture_record_fields(
+        fields,
+        wanted,
+        capture_expression(record, wanted, usage),
+      )
+    glance.FieldAccess(container: glance.Variable(name:, ..), label:, ..)
+      if name == wanted
+    -> add_capture_field(usage, label)
+    glance.FieldAccess(container:, ..) ->
+      capture_expression(container, wanted, usage)
+    glance.Call(function:, arguments:, ..) ->
+      capture_fields(
+        arguments,
+        wanted,
+        capture_expression(function, wanted, usage),
+      )
+    glance.TupleIndex(tuple:, ..) -> capture_expression(tuple, wanted, usage)
+    glance.FnCapture(function:, arguments_before:, arguments_after:, ..) ->
+      capture_fields(
+        arguments_after,
+        wanted,
+        capture_fields(
+          arguments_before,
+          wanted,
+          capture_expression(function, wanted, usage),
+        ),
+      )
+    glance.BitString(segments:, ..) ->
+      list.fold(segments, usage, fn(usage, segment) {
+        capture_expression(segment.0, wanted, usage)
+      })
+    glance.Case(subjects:, clauses:, ..) -> {
+      let usage = capture_expressions(subjects, wanted, usage)
+      list.fold(clauses, usage, fn(usage, clause) {
+        case list.contains(clause_bindings(clause), wanted) {
+          True -> usage
+          False ->
+            capture_expression(
+              clause.body,
+              wanted,
+              capture_optional(clause.guard, wanted, usage),
+            )
+        }
+      })
+    }
+    glance.BinaryOperator(left:, right:, ..) ->
+      capture_expression(right, wanted, capture_expression(left, wanted, usage))
+  }
+}
+
+fn capture_expressions(
+  values: List(glance.Expression),
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  list.fold(values, usage, fn(usage, value) {
+    capture_expression(value, wanted, usage)
+  })
+}
+
+fn capture_optional(
+  value: Option(glance.Expression),
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  case value {
+    Some(inner) -> capture_expression(inner, wanted, usage)
+    None -> usage
+  }
+}
+
+fn capture_fields(
+  fields: List(glance.Field(glance.Expression)),
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  list.fold(fields, usage, fn(usage, field) {
+    case field {
+      glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+        capture_expression(item, wanted, usage)
+      glance.ShorthandField(label:, ..) ->
+        case label == wanted {
+          True -> OtherUse
+          False -> usage
+        }
+    }
+  })
+}
+
+fn capture_record_fields(
+  fields: List(glance.RecordUpdateField(glance.Expression)),
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  list.fold(fields, usage, fn(usage, field) {
+    case field.item, field.label == wanted {
+      Some(item), _ -> capture_expression(item, wanted, usage)
+      None, True -> OtherUse
+      None, False -> usage
+    }
+  })
+}
+
+fn capture_assignment_message(
+  kind: glance.AssignmentKind,
+  wanted: String,
+  usage: CaptureUse,
+) -> CaptureUse {
+  case kind {
+    glance.Let -> usage
+    glance.LetAssert(message:) -> capture_optional(message, wanted, usage)
+  }
+}
+
+fn add_capture_field(usage: CaptureUse, field: String) -> CaptureUse {
+  case usage {
+    OtherUse -> OtherUse
+    FieldUse(fields) ->
+      case list.contains(fields, field) {
+        True -> usage
+        False -> FieldUse([field, ..fields])
+      }
+  }
+}
+
+fn statement_bindings(statement: glance.Statement) -> List(String) {
+  case statement {
+    glance.Use(patterns:, ..) ->
+      list.flat_map(patterns, fn(pattern) { pattern_bindings(pattern.pattern) })
+    glance.Assignment(pattern:, ..) -> pattern_bindings(pattern)
+    glance.Assert(..) | glance.Expression(..) -> []
+  }
+}
+
+fn clause_bindings(clause: glance.Clause) -> List(String) {
+  list.flat_map(clause.patterns, fn(alternative) {
+    list.flat_map(alternative, pattern_bindings)
+  })
+}
+
+fn pattern_bindings(pattern: glance.Pattern) -> List(String) {
+  case pattern {
+    glance.PatternVariable(name:, ..) -> [name]
+    glance.PatternAssignment(pattern: inner, name:, ..) -> [
+      name,
+      ..pattern_bindings(inner)
+    ]
+    glance.PatternTuple(elements:, ..) ->
+      list.flat_map(elements, pattern_bindings)
+    glance.PatternList(elements:, tail:, ..) ->
+      list.append(list.flat_map(elements, pattern_bindings), case tail {
+        Some(inner) -> pattern_bindings(inner)
+        None -> []
+      })
+    glance.PatternConcatenate(prefix_name:, rest_name:, ..) ->
+      list.append(optional_assignment_name(prefix_name), [
+        assignment_name(rest_name),
+      ])
+    glance.PatternBitString(segments:, ..) ->
+      list.flat_map(segments, fn(segment) { pattern_bindings(segment.0) })
+    glance.PatternVariant(arguments:, ..) ->
+      list.flat_map(arguments, fn(field) {
+        case field {
+          glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+            pattern_bindings(item)
+          glance.ShorthandField(label:, ..) -> [label]
+        }
+      })
+    glance.PatternInt(..)
+    | glance.PatternFloat(..)
+    | glance.PatternString(..)
+    | glance.PatternDiscard(..) -> []
+  }
+}
+
+fn parameter_names(parameters: List(glance.FunctionParameter)) -> List(String) {
+  list.map(parameters, fn(parameter) { assignment_name(parameter.name) })
+}
+
+fn fn_parameter_names(parameters: List(glance.FnParameter)) -> List(String) {
+  list.map(parameters, fn(parameter) { assignment_name(parameter.name) })
+}
+
+fn assignment_name(name: glance.AssignmentName) -> String {
+  case name {
+    glance.Named(name) -> name
+    glance.Discarded(name) -> "_" <> name
+  }
+}
+
+fn optional_assignment_name(
+  name: Option(glance.AssignmentName),
+) -> List(String) {
+  case name {
+    Some(inner) -> [assignment_name(inner)]
+    None -> []
+  }
+}
+
+fn closures_in_optional(
+  value: Option(glance.Expression),
+  visible: List(String),
+  function: String,
+  fate: ClosureFate,
+) -> List(Raw) {
+  case value {
+    Some(inner) -> closures_in_expression(inner, visible, function, fate)
+    None -> []
+  }
+}
+
+fn closures_in_assignment_message(
+  kind: glance.AssignmentKind,
+  visible: List(String),
+  function: String,
+) -> List(Raw) {
+  case kind {
+    glance.Let -> []
+    glance.LetAssert(message:) ->
+      closures_in_optional(message, visible, function, Scoped)
+  }
+}
+
+fn closures_in_fields(
+  fields: List(glance.Field(glance.Expression)),
+  visible: List(String),
+  function: String,
+  fate: ClosureFate,
+) -> List(Raw) {
+  list.flat_map(fields, fn(field) {
+    case field {
+      glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+        closures_in_expression(item, visible, function, fate)
+      glance.ShorthandField(..) -> []
+    }
+  })
+}
+
+fn unique_names(names: List(String)) -> List(String) {
+  list.fold(names, [], fn(unique, name) {
+    case list.contains(unique, name) {
+      True -> unique
+      False -> [name, ..unique]
+    }
+  })
+}
+
+fn field_list(fields: List(String)) -> String {
+  fields
+  |> list.reverse
+  |> list.map(fn(field) { "`" <> field <> "`" })
+  |> string.join(", ")
+}
+
+fn plural(fields: List(String)) -> String {
+  case fields {
+    [_] -> ""
+    _ -> "s"
+  }
 }
 
 /// R2, which is about the function rather than about anything inside it.

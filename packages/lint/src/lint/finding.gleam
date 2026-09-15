@@ -90,6 +90,13 @@ pub type Rule {
   /// literal the formatter broke one argument per line is not density,
   /// for the reason R2 measures depth on the AST.
   DenseStanza
+
+  /// R12. A closure uses an outer binding only as the container of field
+  /// accesses. Projecting those fields before the closure prevents the
+  /// closure environment from retaining the complete outer value. The AST
+  /// has no type widths or lifetime information, so this is a warning about
+  /// a measurable capture shape rather than a claim about memory cost.
+  BroadClosureCapture
 }
 
 /// Every rule, in report order.
@@ -107,6 +114,7 @@ pub fn rules() -> List(Rule) {
     NakedBool,
     CommentStanza,
     DenseStanza,
+    BroadClosureCapture,
   ]
 }
 
@@ -208,6 +216,15 @@ pub fn rules() -> List(Rule) {
 /// argues about a number should not be able to fail a build. It is R8's
 /// kind of measurement with R2's kind of arithmetic; treat the number as a
 /// reading rather than a verdict.
+///
+/// **R12 warns forever.** It reports 85 closures in the September 14 census
+/// after restricting the scan to closures returned, assigned, or stored in
+/// constructors. The AST can prove that each closure captures an
+/// outer binding only for field access, but it carries neither inferred record
+/// types nor lifetime information. Ordinary callback arguments are omitted
+/// because whether a callee retains one is an interprocedural question. A
+/// report can therefore name a useful projection, but it cannot prove the
+/// retained value is broad or long-lived enough to cost material memory.
 pub fn error_by_default() -> List(Rule) {
   [Unparseable, NestingDepth, PanicInSource, PortablePurity, CommentStanza]
 }
@@ -251,6 +268,7 @@ pub fn id(rule: Rule) -> String {
     NakedBool -> "R9"
     CommentStanza -> "R10"
     DenseStanza -> "R11"
+    BroadClosureCapture -> "R12"
   }
 }
 
@@ -269,6 +287,7 @@ pub fn name(rule: Rule) -> String {
     NakedBool -> "naked-bool"
     CommentStanza -> "comment-stanza"
     DenseStanza -> "dense-stanza"
+    BroadClosureCapture -> "broad-closure-capture"
   }
 }
 
