@@ -17,6 +17,7 @@ import gleam/string
 import support/fake_broker
 import support/memory_fs
 import tools/bash
+import tools/fs
 import tools/job
 import tools/tool
 
@@ -614,4 +615,85 @@ pub fn a_mode_outside_the_vocabulary_is_refused_test() {
 
 fn poll_args(id: String) -> json.JsonValue {
   json.Object([#("job_id", json.String(id))])
+}
+
+// --- job://, the same poll through `fs_read` --------------------------------
+
+fn job_read(jobs: job.Jobs, reference: String) -> tool.ToolOutcome {
+  fs.read_tool_with([job.scheme(jobs)]).run(
+    ctx(),
+    json.Object([#("path", json.String("job://" <> reference))]),
+  )
+}
+
+pub fn the_scheme_renders_a_poll_exactly_as_the_tool_does_test() {
+  // One rendering, not two. A model that learned to read a `job_poll`
+  // result has learned to read a `job://` one, and neither text can
+  // drift from the other because there is only one of them.
+  let asked = recorder()
+  let polled =
+    run(
+      answering(asked, job.Running),
+      "job_poll",
+      json.Object([
+        #("job_id", json.String(job_id)),
+      ]),
+    )
+  let read = job_read(answering(recorder(), job.Running), job_id)
+  assert read.is_error == False
+  assert first_text(read) == first_text(polled)
+  assert string.contains(first_text(read), "building")
+}
+
+pub fn the_scheme_polls_without_waiting_or_a_cursor_test() {
+  // `wait_ms: 0` from the zero cursor: a read does not block, and it
+  // advances nothing — which is why `fs_read` stays `replay: Safe` where
+  // `job_poll` is `Never`.
+  let asked = recorder()
+  let _outcome = job_read(answering(asked, job.Running), job_id)
+  assert drain(asked)
+    == [PollAsked(job_id, 0, job.Cursors(stdout: 0, stderr: 0))]
+}
+
+pub fn a_bare_scheme_reference_lists_the_strands_jobs_test() {
+  let asked = recorder()
+  let listed = run(answering(asked, job.Running), "job_poll", json.Object([]))
+  let read = job_read(answering(recorder(), job.Running), "")
+  assert read.is_error == False
+  assert first_text(read) == first_text(listed)
+  assert string.contains(first_text(read), job_id)
+}
+
+pub fn a_refused_job_reference_carries_the_seams_own_words_test() {
+  // The class is re-decided for the resolver; the sentence is not. A
+  // model reading a refused `job://` reads what `job_poll` would have
+  // said for the same refusal.
+  let missing = job_read(refusing(job.NotFound(id: job_id)), job_id)
+  assert missing.is_error
+  assert string.contains(first_text(missing), "background job")
+  assert detail(missing, "error") == json.String("scheme_not_found")
+
+  let invalid = job_read(refusing(job.Invalid(reason: "not an id")), "??")
+  assert invalid.is_error
+  assert detail(invalid, "error") == json.String("scheme_malformed")
+  assert string.contains(first_text(invalid), "not an id")
+
+  let refused =
+    job_read(refusing(job.ClearanceRefused(reason: "policy said no")), job_id)
+  assert detail(refused, "error") == json.String("scheme_unavailable")
+  assert string.contains(first_text(refused), "policy said no")
+}
+
+pub fn a_host_with_no_jobs_plane_answers_unavailable_test() {
+  // `unavailable()` is the seam a host without a jobs actor hands out.
+  // A scheme read against it must say so in band rather than crash the
+  // effect process.
+  let outcome = job_read(job.unavailable(), job_id)
+  assert outcome.is_error
+  assert detail(outcome, "error") == json.String("scheme_unavailable")
+  assert string.contains(first_text(outcome), "no background jobs")
+
+  let listing = job_read(job.unavailable(), "")
+  assert listing.is_error
+  assert detail(listing, "error") == json.String("scheme_unavailable")
 }

@@ -76,6 +76,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/fs
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 /// The polling tool's name.
@@ -440,19 +441,32 @@ fn run_poll_one(
 
 fn run_list(jobs: Jobs, ctx: Ctx) -> ToolOutcome {
   use listed <- tool.or_outcome(jobs.list(ctx), refusal_outcome)
-  case listed {
-    [] ->
-      tool.success(
-        "you have no background jobs. Start one with `bash` and "
-        <> "`mode: \"background\"`.",
-      )
-      |> tool.with_details(json.Object([#("jobs", json.Array([]))]))
+  tool.success(render_listed(listed))
+  |> tool.with_details(
+    json.Object([#("jobs", json.Array(list.map(listed, listed_json)))]),
+  )
+}
 
-    rows ->
-      tool.success(string.join(list.map(rows, describe_listed), "\n"))
-      |> tool.with_details(
-        json.Object([#("jobs", json.Array(list.map(rows, listed_json)))]),
-      )
+/// The rendered listing: one line per job the strand owns, or the
+/// sentence that says there are none and how to start one.
+///
+/// Public because `job://` renders through it. There is one rendering of
+/// a listing rather than two, so the text a model reads cannot depend on
+/// which door it came through.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // job.render_listed([]) starts with "you have no background jobs"
+/// ```
+///
+pub fn render_listed(rows: List(Listed)) -> String {
+  case rows {
+    [] ->
+      "you have no background jobs. Start one with `bash` and "
+      <> "`mode: \"background\"`."
+
+    _rows -> string.join(list.map(rows, describe_listed), "\n")
   }
 }
 
@@ -470,14 +484,32 @@ fn listed_json(row: Listed) -> JsonValue {
   ])
 }
 
-// The rendered poll: a heading naming the job and its state, then each
-// stream's new bytes under its own rule, then the cursor to come back
-// with.
-//
-// The cursor line is last and unconditional even for a terminal job,
-// because a model that polled a job into its terminal state still has to
-// be able to ask again for the tail it did not consume.
 fn polled_outcome(polled: Polled) -> ToolOutcome {
+  // A pending job is a success. See the module doc: an `is_error` here
+  // would teach a model that waiting is a fault to retry out of.
+  tool.success(render_polled(polled))
+  |> tool.with_details(polled_json(polled))
+}
+
+/// The rendered poll: a heading naming the job and its state, then each
+/// stream's new bytes under its own rule, then the cursor to come back
+/// with.
+///
+/// The cursor line is last and unconditional even for a terminal job,
+/// because a model that polled a job into its terminal state still has
+/// to be able to ask again for the tail it did not consume.
+///
+/// Public because `job://<id>` renders through it. One rendering rather
+/// than two: a model that learns to read a `job_poll` result has learned
+/// to read a `job://` one, and neither can drift from the other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // job.render_polled(polled) == the text `job_poll` returns for it
+/// ```
+///
+pub fn render_polled(polled: Polled) -> String {
   let heading =
     polled.id
     <> " — "
@@ -485,21 +517,15 @@ fn polled_outcome(polled: Polled) -> ToolOutcome {
     <> ", "
     <> age_text(polled.age_ms)
 
-  let body =
-    [
-      [heading],
-      stream_lines("stdout", polled.stdout),
-      stream_lines("stderr", polled.stderr),
-      spill_lines(polled.spill),
-      ["cursor: " <> cursor_to_string(next_cursors(polled))],
-    ]
-    |> list.flatten
-    |> string.join(with: "\n")
-
-  // A pending job is a success. See the module doc: an `is_error` here
-  // would teach a model that waiting is a fault to retry out of.
-  tool.success(body)
-  |> tool.with_details(polled_json(polled))
+  [
+    [heading],
+    stream_lines("stdout", polled.stdout),
+    stream_lines("stderr", polled.stderr),
+    spill_lines(polled.spill),
+    ["cursor: " <> cursor_to_string(next_cursors(polled))],
+  ]
+  |> list.flatten
+  |> string.join(with: "\n")
 }
 
 fn next_cursors(polled: Polled) -> Cursors {
@@ -1039,4 +1065,81 @@ pub fn refusal_reason(refusal: Refusal) -> String {
 fn empty_requirements(workspace: String) -> SandboxPolicy {
   let base = tool.read_requirements(workspace)
   policy.SandboxPolicy(..base, readable_roots: [])
+}
+
+// --- job://, a poll without a tool ------------------------------------------
+
+/// The `job://` scheme: a background job read through `fs_read`.
+///
+/// `job://<id>` is a zero-wait poll of one job, rendered exactly as
+/// `job_poll` renders it; `job://` with nothing after it is the listing,
+/// rendered exactly as `job_poll` with no id renders it. Same words,
+/// same door for the model, one fewer tool definition in the provider's
+/// cached prefix — which is what a scheme buys.
+///
+/// The poll is deliberately `wait_ms: 0` from `Cursors(0, 0)`: a read
+/// does not block, and a scheme has nowhere to put a cursor the model
+/// would have to hand back. It therefore answers the whole retained tail
+/// every time and advances nothing, which is also why `fs_read` may stay
+/// `replay: Safe` where `job_poll` is `Never` — the hazard `Never`
+/// guards is a cursor moved past output the model never saw, and there
+/// is no cursor here to move. A model that wants to block, or to read
+/// only what is new, still has `job_poll`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_tool_with([job.scheme(jobs)])
+/// ```
+///
+pub fn scheme(jobs: Jobs) -> fs.Scheme {
+  fs.Scheme(
+    name: "job",
+    summary: "`job://<id>` reads a background job's state and retained "
+      <> "output without waiting, and `job://` alone lists the jobs this "
+      <> "strand owns.",
+    read: fn(ctx, reference) { read_job(jobs, ctx, reference) },
+  )
+}
+
+// The reference resolved: an empty one lists, anything else polls.
+//
+// The seam is asked with the caller's own `Ctx`, so the ownership rule
+// that makes a sibling strand's job a `NotFound` applies here exactly as
+// it applies to the tool.
+fn read_job(
+  jobs: Jobs,
+  ctx: Ctx,
+  reference: String,
+) -> Result(String, fs.SchemeRefusal) {
+  case string.is_empty(reference) {
+    True ->
+      jobs.list(ctx)
+      |> result.map(render_listed)
+      |> result.map_error(scheme_refusal)
+
+    False ->
+      jobs.poll(ctx, reference, 0, Cursors(stdout: 0, stderr: 0))
+      |> result.map(render_polled)
+      |> result.map_error(scheme_refusal)
+  }
+}
+
+// One refusal, translated into the scheme resolver's vocabulary.
+//
+// The wording is `refusal_reason`'s throughout rather than restated, so
+// the sentence a model reads for a refused `job://` is the sentence it
+// reads for the same refusal from `job_poll`. Only the *class* is
+// re-decided: a missing job is the resolver's `NotFound`, a request this
+// seam cannot parse is `Malformed`, and everything else — no jobs plane,
+// a clearance refusal, a ceiling that a read cannot possibly have hit —
+// is a host that cannot answer.
+fn scheme_refusal(refusal: Refusal) -> fs.SchemeRefusal {
+  case refusal {
+    NotFound(id:) -> fs.NotFound(what: "background job `" <> id <> "`")
+    Invalid(reason:) -> fs.Malformed(reason:)
+    CeilingReached(..) -> fs.Unavailable(reason: refusal_reason(refusal))
+    ClearanceRefused(..) -> fs.Unavailable(reason: refusal_reason(refusal))
+    Unavailable(..) -> fs.Unavailable(reason: refusal_reason(refusal))
+  }
 }
