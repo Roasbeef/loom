@@ -1769,6 +1769,34 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
   ]
 }
 
+/// Returns this instance's hub-held prompts to their submitters, unsent.
+///
+/// The graceful-drain hook the root calls on every resident session before
+/// it kills the sockets those returns travel over, and the same hook a
+/// per-session close runs on itself. Both are safe: the hub empties its
+/// queues on the first call, so the second finds nothing to return.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.drain_instance(instance)
+/// ```
+@internal
+pub fn drain_instance(instance: Instance, within_ms: Int) -> Nil {
+  let deadline = bootstrap.monotonic_time_ms() + int.max(within_ms, 0)
+
+  // The gateway owns the admission fence. Fence and return held input before
+  // aborting, so a terminal hint cannot admit it into a successor during drain.
+  hub.drain_held_within(instance.gateway, int.max(within_ms, 0))
+
+  // Cancellation retains the existing durable Aborted path. Socket flushes
+  // and runtime settlement spend the same remaining instance budget.
+  api.drain(
+    instance.runtime,
+    within_ms: int.max(deadline - bootstrap.monotonic_time_ms(), 0),
+  )
+}
+
 // Code mode, and the MCP servers it reaches — one decision, because the
 // second is unreachable without the first.
 //
@@ -3541,6 +3569,13 @@ pub fn shutdown(booted: Booted) -> Nil {
 
 /// Closes one session without touching any public listener or other session.
 ///
+/// The hub is drained first, while it is still alive: a prompt the hub was
+/// holding for a busy strand can no longer be promised to anyone once this
+/// instance is going away, so every one is returned to its submitter as a
+/// custody return before the runtime and the effect plane behind it stop.
+/// Doing this after `api.close` would race the hub's own retirement — its
+/// name may already be gone — and the held prompts would be lost with it.
+///
 /// The runtime closes before its broker and helper pool. This preserves the
 /// existing shutdown order, but does not yet return the drain outcome a
 /// daemon needs before releasing a session reservation.
@@ -3552,6 +3587,7 @@ pub fn shutdown(booted: Booted) -> Nil {
 /// ```
 @internal
 pub fn close_instance(instance: Instance) -> Nil {
+  hub.drain_held(instance.gateway)
   let _closed = api.close(instance.runtime)
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)

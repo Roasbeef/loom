@@ -23,9 +23,11 @@ import gleam/http/response.{type Response}
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option.{Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/build_identity
 import host/endpoint
 import mist
 import telemetry/field
@@ -165,6 +167,7 @@ pub fn publish_endpoint(
       config.bind_host,
       serving.listener.port,
       serving.ready.epoch,
+      Some(build_identity.current()),
     )
   bootstrap.release_launch_lock(lock)
   published
@@ -347,6 +350,7 @@ pub fn prepare(
         |> diagnose_start(logger, identity, RuntimeAssembly)
       },
       fatal: serve.instance_children,
+      drain: serve.drain_instance,
     ),
   )
 }

@@ -213,6 +213,7 @@ fn start(settings: serve.Settings) {
             services,
           )
         },
+        drain: fn(_, _) { Nil },
         fatal: serve.instance_children,
       ),
     )

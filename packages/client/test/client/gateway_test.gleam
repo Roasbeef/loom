@@ -45,6 +45,7 @@ import support/addresses
 import support/tool_registry
 import tools/tool
 import tui/notes_view as terminal_notes
+import weft
 import weft/actor
 import weft/poll
 
@@ -181,6 +182,26 @@ fn start_harness_on_bus(events_bus: bus.Bus) -> Harness {
 @internal
 pub fn reserved_fixture(id: ids.SessionId) -> Harness {
   start_harness_reserved(None, None, None, Some(id), SettlingProvider, None)
+}
+
+/// Builds a reserved session whose provider stays parked until cancellation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // The wire drain fixture uses parked_reserved_fixture as its builder.
+/// ```
+@internal
+pub fn parked_reserved_fixture(id: ids.SessionId) -> Harness {
+  let gate = start_gate()
+  start_harness_reserved(
+    None,
+    None,
+    None,
+    Some(id),
+    ScriptedProvider(parked_provider(gate)),
+    None,
+  )
 }
 
 // The provider a harness runs its runs against. The default settles the
@@ -4411,4 +4432,162 @@ pub fn queued_input_edit_repeated_request_ids_are_distinct_test() {
   assert queue_field(queued_board(alice, 1222, second_id), "text")
     == json.String("second")
   release_gate(gate)
+}
+
+// --- graceful drain (issue #392) -----------------------------------------
+
+/// A daemon drain returns every held prompt to its submitter, unsent.
+///
+/// The hub is about to be torn down, so it can no longer promise a held
+/// prompt will ever be admitted. Each one is handed back to the exact
+/// connection that submitted it as a `held_input_returned` push — the
+/// client keeps it as a draft — and the queue is emptied, which is what the
+/// `DrainHeld` acknowledgement reports. Nothing is admitted: the prompt was
+/// waiting behind a busy strand and is returned rather than started.
+pub fn a_drain_returns_held_prompts_unsent_and_empties_the_queue_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let inbox = process.new_subject()
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(901, "main", "open"))
+    as "the first prompt opens the parked run"
+
+  // A follow-up arrives while the run is parked, so it is held rather than
+  // admitted — this is the custody a drain must give back.
+  let assert Ok(held_frame) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(
+        id: 902,
+        command: protocol.FollowUp(strand: "main", text: "held for the update"),
+      )),
+    )
+    as "the follow-up is queued"
+  assert outcome_status(held_frame) == "queued"
+
+  // Drain. The call is synchronous: on return the returns have been written
+  // to the sinks and the queue is empty.
+  gateway.drain_held(harness.hub)
+
+  // The submitter's own socket receives the custody return, naming the
+  // strand, the held item, its order and its complete text.
+  let returned =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      let assert Ok(frame) = process.receive(inbox, within: 200)
+      let assert Ok(envelope) = protocol.decode_event(frame)
+      case envelope.event {
+        protocol.HeldInputReturned(..) -> poll.Done(envelope.event)
+        _ -> poll.Retry
+      }
+    })
+  let assert poll.Answered(event) = returned
+  let assert protocol.HeldInputReturned(strand:, kind:, text:, ..) = event
+  assert strand == "main"
+  assert kind == "queue"
+  assert text == "held for the update"
+
+  // The same attachment remains useful for inspection, but no command that
+  // could start work may cross the drain fence.
+  let assert Ok(prompt_refusal) =
+    gateway.connection_request(socket, prompt_frame(903, "main", "too late"))
+    as "a post-drain prompt receives an in-band refusal"
+  let assert Ok(prompt_event) = protocol.decode_event(prompt_refusal)
+    as "the post-drain prompt reply decodes"
+  let assert protocol.ErrorEvent(code: "draining", ..) = prompt_event.event
+    as "a drain refuses a new prompt"
+  let assert Ok(follow_up_refusal) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(
+        id: 904,
+        command: protocol.FollowUp(strand: "main", text: "also too late"),
+      )),
+    )
+    as "a post-drain follow-up receives an in-band refusal"
+  let assert Ok(follow_up_event) = protocol.decode_event(follow_up_refusal)
+    as "the post-drain follow-up reply decodes"
+  let assert protocol.ErrorEvent(code: "draining", ..) = follow_up_event.event
+    as "a drain refuses a new follow-up"
+
+  // And the queue is empty: a queue read reports no held input, which is
+  // the durable half of the acknowledgement.
+  let reader =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  assert queued_rows(reader, 910) == [] as "a drained queue holds nothing"
+
+  // Retire the parked run after the gateway has returned custody. Releasing
+  // its provider cannot start a successor, because the held queue is gone.
+  api.drain(harness.runtime, within_ms: 1000)
+  release_gate(gate)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(
+          value: machine_strand.StrandState(current_operation: None, ..),
+          ..,
+        ))) -> poll.Done(Nil)
+        Ok(_) | Error(_) -> poll.Retry
+      }
+    })
+    as "the parked operation retires without a held successor"
+  assert user_prompt_texts(harness) == ["open"]
+    as "neither returned nor refused input reaches the transcript"
+}
+
+/// A transport acknowledgement cannot block the gateway it may be calling.
+pub fn draining_waits_for_transport_flush_outside_the_gateway_test() {
+  let harness = network_harness()
+  let arrivals = process.new_subject()
+  let principal = operator("flush-owner", "Owner")
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture digest is valid"
+  let assert Ok(_) =
+    gateway.attach_authenticated_flushing(
+      harness.hub,
+      gateway.Binding(
+        ids.session_id_to_string(api.session_id(harness.runtime)),
+        "epoch",
+        "incarnation",
+        "flush-connection",
+        principal,
+        access.Owner,
+        digest,
+      ),
+      fn() { Ok(#(principal, access.Owner)) },
+      fn(_) { Nil },
+      fn() { Nil },
+      fn() { Nil },
+      fn(reply) { process.send(arrivals, reply) },
+      process.self(),
+    )
+    as "the controlled transport attaches"
+  let draining =
+    weft.new([fn() { gateway.drain_held_within(harness.hub, 2000) |> Ok }])
+    |> weft.deadline(3000)
+    |> weft.start_detached
+  let assert Ok(flushed) = process.receive(arrivals, 1000)
+    as "the transport receives its ordered flush marker"
+
+  assert gateway.attached(harness.hub) == 2
+    as "the gateway answers while the transport acknowledgement is pending"
+  let assert weft.NotYet = weft.pull(draining, within: 50)
+    as "a queued marker alone cannot complete the drain"
+  process.send(flushed, Nil)
+  let assert weft.PulledOutcome(weft.Completed(0, Nil)) =
+    weft.pull(draining, within: 1000)
+    as "the transport acknowledgement releases the drain caller"
+  let assert weft.AllDelivered = weft.pull(draining, within: 1000)
+    as "the bounded drain task retires after its acknowledgement"
 }

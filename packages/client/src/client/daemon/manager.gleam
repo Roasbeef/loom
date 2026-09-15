@@ -180,6 +180,28 @@ pub type Assembly(instance) {
     ) -> Result(instance, String),
     /// Root deaths which make the instance unusable.
     fatal: fn(instance) -> List(#(String, Pid)),
+    /// Hands one resident instance back whatever it still holds, at the
+    /// moment it is reachable and its peers are still live.
+    ///
+    /// This is the graceful-drain hook. A daemon shutdown has to return the
+    /// hub's held prompts to their submitters *before* the session sockets
+    /// those returns travel over are killed, and the instance is opaque to
+    /// the root that orders that teardown. So the assembly — which already
+    /// knows how to build an instance — also knows how to drain one, and the
+    /// registry calls it on every resident slot while the peers are alive.
+    /// It is `Nil`-returning and must be safe to run on an already-drained
+    /// instance, because a session may be drained once by the root and once
+    /// by its own close.
+    ///
+    /// The second argument is the caller's remaining budget in
+    /// milliseconds. The registry spends one shared deadline across every
+    /// resident instance rather than handing each its own, because the
+    /// caller is a bounded shutdown: N instances at a per-instance budget
+    /// would make the worst case N times that budget, and the root that
+    /// ordered the drain would have killed the sockets before the last
+    /// instance finished. An implementation returns when its own work is
+    /// done or the budget is spent, whichever comes first.
+    drain: fn(instance, Int) -> Nil,
   )
 }
 
@@ -429,6 +451,10 @@ type Message(instance) {
   ResolveIncarnation(String, String, Subject(Result(instance, Error)))
   Operation(String, String, Subject(Result(View, Error)))
   Shutdown
+
+  /// Snapshots resident drain capabilities without invoking user callbacks.
+  /// Delivery revalidates authority through this actor, so it must keep serving.
+  DrainHeld(Subject(List(fn(Int) -> Nil)))
   Opened(String, String, Result(instance, String))
   Faulted(String, String)
   Failed(String, String, String)
@@ -1191,6 +1217,37 @@ pub fn shutdown(manager: Manager(instance)) -> Nil {
   process.send(manager.commands, Shutdown)
 }
 
+/// Runs resident drain capabilities in the caller, within one shared budget.
+///
+/// The daemon root invokes this from its bounded Weft task. The registry only
+/// snapshots capabilities: a gateway's authenticated delivery calls back into
+/// the registry and would deadlock if this actor invoked the drain itself.
+/// An unavailable registry or an expired budget cannot confirm delivery.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.drain_held(registry)
+/// ```
+@internal
+pub fn drain_held(manager: Manager(instance)) -> Nil {
+  let deadline = bootstrap.monotonic_time_ms() + drain_budget_ms
+  let drains =
+    call.try_call(
+      manager.commands,
+      waiting: drain_budget_ms,
+      sending: DrainHeld,
+    )
+    |> result.unwrap([])
+  list.each(drains, fn(drain) {
+    drain(int.max(deadline - bootstrap.monotonic_time_ms(), 0))
+  })
+}
+
+// Every resident session spends the remainder of this same window. The root
+// also bounds the task so a misbehaving callback cannot block daemon control.
+const drain_budget_ms = 5000
+
 fn handle(
   phase: Phase,
   book: Book(instance),
@@ -1494,6 +1551,22 @@ fn handle(
       step(phase, failed(book, id, operation, reason))
     Retired(id, operation, reason) ->
       step(phase, retired(book, id, operation, reason))
+
+    // Callbacks leave the actor with their original instance. A later slot
+    // replacement must never redirect a drain to a different incarnation.
+    DrainHeld(reply) -> {
+      let drain = book.assembly.drain
+      let drains =
+        dict.values(book.slots)
+        |> list.filter_map(fn(slot) {
+          case slot.phase {
+            Running(instance) -> Ok(fn(within) { drain(instance, within) })
+            WaitingForDomain | Building | Closing | Blocked(_) -> Error(Nil)
+          }
+        })
+      process.send(reply, drains)
+      step(phase, book)
+    }
     Shutdown -> {
       let closing = list.fold(dict.keys(book.slots), book, stop_slot)
       step(ShuttingDown, closing)

@@ -15,6 +15,7 @@ import gleam/list
 import gleam/string
 import host/bootstrap
 import simplifile
+import storage/access
 import storage/catalogue
 import storage/domain
 import weft/poll
@@ -42,6 +43,7 @@ fn assembly(
   manager.Assembly(
     domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
     build: fn(record, _domain, _services, owner) { build(record, owner) },
+    drain: fn(_, _) { Nil },
     fatal: fn(_) { [] },
   )
 }
@@ -232,8 +234,20 @@ fn draining_assembly(arrivals: process.Subject(process.Subject(Nil))) {
   })
 }
 
-fn opened(ready: root.Ready(String), record: catalogue.Registration) {
-  let assert Ok(manager.Opening(_)) = manager.open(ready.registry, record.id)
+fn drain_barrier_assembly(arrivals: process.Subject(process.Subject(Nil))) {
+  let base = inert()
+  manager.Assembly(..base, drain: fn(_, _) {
+    let permit = process.new_subject()
+    process.send(arrivals, permit)
+    let assert Ok(Nil) = process.receive(permit, 5000)
+      as "the test eventually releases the resident drain callback"
+    Nil
+  })
+}
+
+fn opened(ready: root.Ready(String), record: catalogue.Registration) -> String {
+  let assert Ok(manager.Opening(incarnation)) =
+    manager.open(ready.registry, record.id)
     as "authorized explicit opening begins the controlled assembly"
   let assert poll.Answered(Nil) =
     poll.until(within: 2000, every: 1, attempt: fn() {
@@ -243,6 +257,50 @@ fn opened(ready: root.Ready(String), record: catalogue.Registration) {
       }
     })
     as "assembly is resident before shutdown"
+  incarnation
+}
+
+pub fn draining_root_keeps_control_reads_and_frame_authority_test() {
+  let path = directory("drain-control")
+  let record = saved(path)
+  let arrivals = process.new_subject()
+  let #(daemon, ready) = start(path, drain_barrier_assembly(arrivals))
+  let incarnation = opened(ready, record)
+  let assert Ok(credential) = root.listener_credential(daemon)
+    as "the serving root supplies its listener credential"
+  let assert Ok(digest) =
+    credential
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+    |> access.credential_digest
+    as "the listener credential has the durable owner digest"
+  let watch = process.monitor(root.pid(daemon))
+
+  assert root.shutdown(daemon, within: 20)
+    == Error("daemon root request timed out")
+  let assert Ok(permit) = process.receive(arrivals, 1000)
+    as "root shutdown reaches the resident drain callback"
+
+  let assert Ok(draining) =
+    root.control_state(daemon, root.ControlRead, within: 500)
+    as "a draining root still serves existing control reads"
+  assert root.control_state(daemon, root.ControlMutation, within: 500)
+    == Error("daemon control is unavailable")
+  assert manager.frame_authority(
+      draining.registry,
+      epoch: draining.epoch,
+      id: record.id,
+      incarnation:,
+      digest:,
+    )
+    == Ok(#(draining.owner, access.Owner))
+  assert bootstrap.try_launch_lock(path <> "/daemon.lock") == Error("busy")
+
+  process.send(permit, Nil)
+  assert wait_down(watch).reason == process.Normal
+  released_lock(path)
 }
 
 pub fn shutdown_timeout_preserves_lock_until_original_drain_test() {

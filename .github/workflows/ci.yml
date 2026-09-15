@@ -608,6 +608,8 @@ jobs:
           set -euo pipefail
           .github/scripts/hex_retry.sh scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
           .github/scripts/hex_retry.sh make dist 2>&1 | tee distribution-linux.log
+          VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' packages/client/gleam.toml | head -1)"
+          test -n "$VERSION"
           test -x build/release/loom/erts-17.0.5/bin/erl
           measure() {
             for path in "$@"; do
@@ -624,8 +626,8 @@ jobs:
               build/release/loom/bin/gleam \
               build/release/loom/share/codemode-seed \
               build/release/loom \
-              dist/loomd-0.1.0-linux-x86_64.tar.gz \
-              dist/loom-0.1.0-linux-x86_64.tar.gz
+              "dist/loomd-$VERSION-linux-x86_64.tar.gz" \
+              "dist/loom-$VERSION-linux-x86_64.tar.gz"
           } | tee -a distribution-linux.log
           DIST_CODEMODE=0 .github/scripts/hex_retry.sh make dist 2>&1 | tee -a distribution-linux.log
           {
@@ -633,7 +635,7 @@ jobs:
             measure build/release/loom/erts-17.0.5 \
               build/release/loom/lib build/release/loom/bin/loom-exec \
               build/release/loom \
-              dist/loomd-0.1.0-linux-x86_64.tar.gz
+              "dist/loomd-$VERSION-linux-x86_64.tar.gz"
           } | tee -a distribution-linux.log
 
       # actions/upload-artifact v7.0.1

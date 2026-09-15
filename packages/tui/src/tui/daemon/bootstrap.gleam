@@ -75,6 +75,86 @@ pub fn resolve(
   }
 }
 
+/// Waits for an accepting control endpoint or positive native vacancy.
+///
+/// Session sockets close before the old daemon VM exits. Reconnection must
+/// spend that interval observing, rather than consume its only launch attempt
+/// on the still-occupied endpoint. A healthy daemon can be reused after a
+/// transient socket loss. Only native vacancy permits the ordinary resolver
+/// to start a replacement, and that resolver is called at most once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.reconnect(paths, terminal_pid, launch, 30_000)
+/// ```
+@internal
+pub fn reconnect(
+  paths: endpoint.Paths,
+  owner: process.Pid,
+  launch: fn() -> Result(Launch, String),
+  within_ms: Int,
+) -> Result(Connected, String) {
+  use <- bool.guard(
+    within_ms <= 0 || within_ms > 90_000,
+    Error("daemon reconnect budget must be between 1 and 90000 ms"),
+  )
+  let deadline = host.monotonic_time_ms() + within_ms
+  let observed =
+    poll.until(within: within_ms, every: 25, attempt: fn() {
+      reconnect_observation(paths, owner, deadline)
+    })
+  use connected <- result.try(case observed {
+    poll.Answered(connected) -> Ok(connected)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired ->
+      Error("daemon unavailable or still draining; no replacement started")
+  })
+  case connected {
+    Some(connected) -> Ok(connected)
+    None -> resolve_bounded(paths, owner, launch, deadline)
+  }
+}
+
+fn reconnect_observation(paths, owner, deadline) {
+  case endpoint.availability(paths) {
+    Error(reason) -> poll.Fail(reason)
+    Ok(endpoint.Vacant) -> poll.Done(None)
+    Ok(endpoint.Occupied(endpoint.Starting(_))) -> poll.Retry
+    Ok(endpoint.Occupied(record)) ->
+      reconnect_probe(paths, record, owner, deadline)
+  }
+}
+
+fn reconnect_probe(paths, record, owner, deadline) {
+  // Neither a failed hello nor a draining response proves native retirement.
+  // Each temporary owner is closed before polling again, so waiting cannot
+  // accumulate authenticated sockets in the terminal's supervision tree.
+  let within = int.min(500, int.max(0, deadline - host.monotonic_time_ms()))
+  case probe(paths, record, owner, within) {
+    Error(_) -> poll.Retry
+    Ok(connected) -> {
+      let within = int.min(500, int.max(0, deadline - host.monotonic_time_ms()))
+      let status = daemon.request(connected.control, protocol.Status, within)
+      case status {
+        Ok(protocol.StatusReply(summary))
+          if summary.readiness == protocol.Accepting
+        -> poll.Done(Some(connected))
+        Ok(protocol.StatusReply(_))
+        | Ok(protocol.SessionsReply(_))
+        | Ok(protocol.SessionReply(_))
+        | Ok(protocol.LifecycleReply(_))
+        | Ok(protocol.DeletedReply(_))
+        | Ok(protocol.ShutdownReply)
+        | Error(_) -> {
+          daemon.close(connected.control)
+          poll.Retry
+        }
+      }
+    }
+  }
+}
+
 fn resolve_bounded(paths, owner, launch, deadline) {
   use lock <- result.try(acquire_lock(paths, deadline))
   let reserved = reserve(paths, launch, deadline)
@@ -227,7 +307,7 @@ pub fn probe(
   )
   let protocol.Epoch(actual_epoch) = daemon.hello(control).epoch
   case record {
-    endpoint.Ready(_, _, _, epoch) if epoch == actual_epoch ->
+    endpoint.Ready(_, _, _, epoch, _) if epoch == actual_epoch ->
       Ok(Connected(control, paths, record))
     _ -> {
       daemon.close(control)

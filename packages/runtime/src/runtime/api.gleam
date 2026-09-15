@@ -44,6 +44,7 @@ import core/tx.{type CommitError}
 import gleam/bool
 import gleam/dict
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -1277,6 +1278,80 @@ pub fn await_strand_result(
   within_ms timeout_ms: Int,
 ) -> Result(LastResult, Nil) {
   await_result(on_strand(runtime, strand_name), operation, timeout_ms)
+}
+
+/// Cancels every strand that is running something and waits, within one
+/// shared budget, for those cancellations to reach their terminals.
+///
+/// This is the daemon drain's runtime half. Requesting an abort is
+/// fire-and-forget: `abort_operation` hands the request to the strand's
+/// driver and returns, and the driver commits the durable marker and
+/// reconciles on its own next turn. A caller that stopped the tree right
+/// after requesting would kill the driver before the terminal landed, and
+/// the in-flight turn would be lost — the very outcome this exists to
+/// prevent. So the requests are made first, and only then are the
+/// resulting terminals awaited.
+///
+/// **The budget is shared, not per strand.** The caller is a bounded
+/// shutdown: awaiting N strands at a per-strand timeout would make the
+/// worst case N times that budget before the caller may proceed, which the
+/// daemon's own shutdown window will not tolerate. So the deadline is
+/// computed once, and each strand awaits only what remains of it; a strand
+/// whose share has run out is skipped — its abort was still requested, it
+/// is simply not waited for. The caller proceeds either way, because a
+/// drain that outlived its budget is worse than one that reports partial
+/// confirmation.
+///
+/// **Each strand awaits the operation it was running when it was
+/// observed**, captured before the request is sent. Re-reading the strand
+/// after the send could observe a successor admitted by a concurrent
+/// submission, and awaiting that would be waiting for the wrong run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.drain(runtime, within_ms: 5000)
+/// ```
+///
+pub fn drain(runtime: Runtime, within_ms timeout_ms: Int) -> Nil {
+  case strands(runtime) {
+    Error(_) -> Nil
+    Ok(strands) -> {
+      let deadline = poll.monotonic().now() + int.max(timeout_ms, 0)
+
+      // Observe and request first, so every strand's abort is in flight
+      // before any of them is waited for; a slow terminal cannot delay a
+      // later strand's request past the deadline.
+      let running =
+        list.filter_map(strands, fn(strand) {
+          case session.strand_state(runtime.session, strand) {
+            Ok(Some(session.Cell(
+              value: strand.StrandState(current_operation: Some(op), ..),
+              ..,
+            ))) -> {
+              abort_operation(on_strand(runtime, strand), op)
+              Ok(#(strand, op))
+            }
+            Ok(None) | Ok(Some(_)) | Error(_) -> Error(Nil)
+          }
+        })
+
+      // Then wait, each against what remains of the one deadline.
+      list.each(running, fn(pair) {
+        let #(strand, op) = pair
+        let remaining = deadline - poll.monotonic().now()
+        case remaining > 0 {
+          True -> {
+            let _ =
+              await_strand_result(runtime, strand, op, within_ms: remaining)
+            Nil
+          }
+          False -> Nil
+        }
+      })
+      Nil
+    }
+  }
 }
 
 /// Every strand the store knows, sorted by name.

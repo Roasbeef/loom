@@ -64,6 +64,9 @@ type Signal {
   // does nothing but hand the text over here, because the sink must not
   // block and a socket write can.
   Push(frame: String)
+
+  // The gateway sends this after its pushes; the drain task owns the reply.
+  Flush(reply: process.Subject(Nil))
 }
 
 // Where this socket's process sits in the two-step admission above. There is
@@ -146,6 +149,7 @@ pub fn upgrade(
           | Pending(_), mist.Custom(Refused)
           | Pending(_), mist.Custom(GatewayDown(_))
           | Pending(_), mist.Custom(Push(_))
+          | Pending(_), mist.Custom(Flush(_))
           -> mist.stop()
 
           Admitted(connection), mist.Text(frame) ->
@@ -161,6 +165,11 @@ pub fn upgrade(
               Ok(_) -> mist.continue(Admitted(connection))
               Error(_) -> mist.stop()
             }
+
+          Admitted(connection), mist.Custom(Flush(reply)) -> {
+            process.send(reply, Nil)
+            mist.continue(Admitted(connection))
+          }
 
           Admitted(_), mist.Binary(_)
           | Admitted(_), mist.Closed
@@ -228,7 +237,7 @@ fn admit(
   process.send(settled, Nil)
   let admitted = {
     use Nil <- result.try(transferred)
-    gateway.attach_authenticated(
+    gateway.attach_authenticated_flushing(
       hub,
       // Four of these are adjacent strings that the source record happens
       // to declare in the same order, so positional arguments would let a
@@ -250,6 +259,7 @@ fn admit(
       fn(frame) { process.send(outbound, Push(frame)) },
       fn() { process.send(outbound, Refused) },
       fn() { failed_reader(attachment) },
+      fn(reply) { process.send(outbound, Flush(reply)) },
       process.self(),
     )
   }

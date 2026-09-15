@@ -8,3 +8,4 @@ erl_crash.dump
 /dist/
 /.claude/worktrees/
 /scripts/__pycache__/
+/.codemode/

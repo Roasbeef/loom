@@ -1,151 +1,119 @@
 #!/usr/bin/env bash
-# Install Loom for the person at this keyboard: the self-contained server
-# release, the native terminal client, and two launchers on PATH, so that
-# typing `loom` in any directory opens the shared daemon's session picker.
-#
-#   scripts/install.sh                   # into $HOME/.local (bin/, lib/loom/)
-#   PREFIX=/usr/local scripts/install.sh
-#   LOOM_CLIENT=slim scripts/install.sh  # the client on the host's Erlang
-#
-# `make install` runs the builds first — the code-mode seed, the server
-# release, a client — and then this. Nothing here reaches the network.
-#
-# What lands where, and why each is where it is:
-#
-#   $PREFIX/lib/loom/server   a copy of build/release/loom: bin/loomd,
-#                             bin/loom-exec, bin/gleam, share/codemode-seed,
-#                             the bundled ERTS. The server finds its helper,
-#                             its compiler and its seed through
-#                             `code:root_dir()` — the release root — so the
-#                             tree must stay whole and is copied whole.
-#   $PREFIX/lib/loom/client   LOOM_CLIENT=bundled (the default): a copy of
-#                             build/release/loom-client, the client with
-#                             its own ERTS, so `loom` needs no Erlang on
-#                             the host.
-#   $PREFIX/lib/loom/tui      LOOM_CLIENT=slim: a copy of
-#                             build/tui-erlang-shipment. Compiled BEAM
-#                             files, no runtime: the client runs on the
-#                             `erl` on PATH. This is the shape a package
-#                             manager that provides Erlang as a dependency
-#                             wants; the two shapes never coexist.
-#   $PREFIX/bin/loom          the client launcher, generated here rather
-#                             than copied, because a checkout's bin/loom
-#                             names its shipment relative to itself and a
-#                             release's names its own tree.
-#   $PREFIX/bin/loomd         a two-line wrapper that execs the release's
-#                             own bin/loomd. Not a symlink: that script
-#                             resolves the release root from its own
-#                             location, and a symlink would resolve to
-#                             $PREFIX instead. The client looks for the
-#                             server beside itself before PATH, which is
-#                             why the two share a directory.
+# Install complete releases beside existing trees, then publish their links.
+# A live process can load files long after boot, so published trees are never
+# replaced, renamed, or pruned. Reinstalling the same version gets a new tree.
+# Usage: [PREFIX=$HOME/.local] [LOOM_CLIENT=bundled|slim] scripts/install.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-ROOT="$(pwd)"
+ROOT="$(pwd -P)"
 PREFIX="${PREFIX:-$HOME/.local}"
 CLIENT="${LOOM_CLIENT:-bundled}"
 case "$CLIENT" in
-  bundled|slim) ;;
-  *) echo "install.sh: LOOM_CLIENT must be bundled or slim, got $CLIENT" >&2; exit 1 ;;
+  bundled) CLIENT_STEM=client; CLIENT_SRC="$ROOT/build/release/loom-client" ;;
+  slim) CLIENT_STEM=tui; CLIENT_SRC="$ROOT/build/tui-erlang-shipment" ;;
+  *) echo 'install.sh: LOOM_CLIENT must be bundled or slim' >&2; exit 1 ;;
 esac
-
-REL="$ROOT/build/release/loom"
-CLIENT_REL="$ROOT/build/release/loom-client"
-TUI="$ROOT/build/tui-erlang-shipment"
-[ -x "$REL/bin/loomd" ] || {
-  echo "install.sh: no release at $REL — run \`make release\` first" >&2; exit 1; }
-[ -x "$REL/bin/loom-exec" ] || {
-  echo "install.sh: the release at $REL has no bin/loom-exec" >&2; exit 1; }
-[ -d "$REL/share/codemode-seed" ] || {
-  echo "install.sh: the release at $REL carries no code-mode seed;" >&2
-  echo "install.sh: build it with \`make codemode-seed release\`" >&2; exit 1; }
-case "$CLIENT" in
-  bundled) [ -x "$CLIENT_REL/bin/loom" ] || {
-    echo "install.sh: no client release at $CLIENT_REL — run \`make release-client\` first" >&2
-    exit 1; } ;;
-  slim) [ -f "$TUI/entrypoint.sh" ] || {
-    echo "install.sh: no client shipment at $TUI — run \`make tui-shipment\` first" >&2
-    exit 1; } ;;
-esac
+SERVER_SRC="$ROOT/build/release/loom"
+for launcher in "$SERVER_SRC/bin/loomd" "$SERVER_SRC/bin/loom-exec" \
+  "$CLIENT_SRC/bin/loom" "$CLIENT_SRC/bin/loom-profile"; do
+  [ -x "$launcher" ] || {
+    echo "install.sh: missing $launcher; run the release/client build first" >&2
+    exit 1
+  }
+done
+[ -d "$SERVER_SRC/share/codemode-seed" ] || {
+  echo 'install.sh: server lacks code-mode seed; run make codemode-seed release' >&2
+  exit 1
+}
 
 LIB="$PREFIX/lib/loom"
 BIN="$PREFIX/bin"
+# Preflight before copying or publishing anything. Even renaming a legacy
+# directory breaks later absolute-path loads by processes started from it.
+# No endpoint/PID check can prove that every client and daemon has retired.
+for stem in server client tui; do
+  if [ -e "$LIB/$stem" ] && [ ! -L "$LIB/$stem" ]; then
+    echo "install.sh: legacy path $LIB/$stem must be migrated offline." >&2
+    echo 'Stop all clients and daemons using this prefix, move its trees aside,' >&2
+    echo 'then reinstall, or choose a fresh PREFIX. See docs/updating.md.' >&2
+    exit 1
+  fi
+done
+for launcher in loom loomd loom-profile; do
+  if [ -d "$BIN/$launcher" ]; then
+    echo "install.sh: launcher path is a directory: $BIN/$launcher" >&2
+    exit 1
+  fi
+done
 mkdir -p "$LIB" "$BIN"
+LIB="$(CDPATH= cd -- "$LIB" && pwd -P)"
+BIN="$(CDPATH= cd -- "$BIN" && pwd -P)"
 
-# Replace, never merge: a release tree with a stale lib/ beside a fresh
-# one would load whichever the boot script found first. Both client
-# shapes are removed so a switch between them leaves one client, not two.
-rm -rf "$LIB/server" "$LIB/client" "$LIB/tui"
-cp -R "$REL" "$LIB/server"
+# Only private, unpublished wrapper files are removed on failure. A copied
+# release may already have been published when a later step fails, so retaining
+# it is safer than trying to roll back a multi-file installation in a trap.
+WRAPPERS="$(mktemp -d "$BIN/.loom-install.XXXXXXXX")"
+LINKS="$(mktemp -d "$LIB/.loom-install.XXXXXXXX")"
+trap 'rm -rf "$WRAPPERS" "$LINKS"' EXIT
 
-cat > "$BIN/loomd" <<EOF
-#!/bin/sh
-# Generated by scripts/install.sh. Execs the installed Loom multi-session daemon.
-exec "$LIB/server/bin/loomd" "\$@"
-EOF
-chmod +x "$BIN/loomd"
+# A random suffix identifies the installation, independently of package version
+# or git revision. The directory stays unreachable from launchers until its
+# whole copy succeeds. Interrupted copies remain for offline manual cleanup.
+copy_release() {
+  local src="$1" stem="$2" dest
+  dest="$(mktemp -d "$LIB/$stem.XXXXXXXX")" || return
+  cp -R "$src/." "$dest/" || return
+  printf '%s\n' "$dest"
+}
+SERVER_TREE="$(copy_release "$SERVER_SRC" server)"
+CLIENT_TREE="$(copy_release "$CLIENT_SRC" "$CLIENT_STEM")"
 
-# LOOM_EXECUTABLE is how the client knows where it is, and so where to
-# look for loomd beside itself; both launchers set it to the wrapper on
-# PATH before handing off, so the sibling lookup lands in $PREFIX/bin.
-case "$CLIENT" in
-  bundled)
-    cp -R "$CLIENT_REL" "$LIB/client"
-    PROFILE_TREE="$LIB/client"
-    cat > "$BIN/loom" <<EOF
-#!/bin/sh
-# Generated by scripts/install.sh. The Loom terminal client, self-contained.
-set -eu
-LOOM_EXECUTABLE="$BIN/loom"
-export LOOM_EXECUTABLE
-exec "$LIB/client/bin/loom" "\$@"
-EOF
-    ;;
-  slim)
-    # The same launcher `make tui-shipment` writes into bin/loom, anchored
-    # to the installed shipment. No ERTS travels with it, so a compatible
-    # Erlang/OTP must be on PATH.
-    cp -R "$TUI" "$LIB/tui"
-    PROFILE_TREE="$LIB/tui"
-    cat > "$BIN/loom" <<EOF
-#!/bin/sh
-# Generated by scripts/install.sh. The Loom terminal client, on the host's Erlang.
-set -eu
-LOOM_EXECUTABLE="$BIN/loom"
-export LOOM_EXECUTABLE
-exec erl +Bd -pa "$LIB/tui"/*/ebin -eval 'tui@@main:run(tui)' -noshell -extra "\$@"
-EOF
-    ;;
-esac
-chmod +x "$BIN/loom"
+# Quote literal filesystem paths for the generated shell, including prefixes
+# containing spaces, dollar signs, or apostrophes.
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+write_wrapper() {
+  local name="$1" stem="$2" entry="$3"
+  {
+    printf '%s\n' '#!/bin/sh' 'set -eu'
+    printf 'tree=$(CDPATH= cd -- %s && pwd -P)\n' "$(shell_quote "$LIB/$stem")"
+    if [ "$name" = loom ]; then
+      printf 'LOOM_EXECUTABLE=%s\nexport LOOM_EXECUTABLE\n' "$(shell_quote "$BIN/loom")"
+    fi
+    printf 'exec "$tree/bin/%s" "$@"\n' "$entry"
+  } > "$WRAPPERS/$name"
+  chmod +x "$WRAPPERS/$name"
+}
+write_wrapper loomd server loomd
+write_wrapper loom "$CLIENT_STEM" loom
+write_wrapper loom-profile "$CLIENT_STEM" loom-profile
 
-cat > "$BIN/loom-profile" <<EOF
-#!/bin/sh
-# Generated by scripts/install.sh. Runs the installed Loom profile census.
-exec "$PROFILE_TREE/bin/loom-profile" "\$@"
-EOF
-chmod +x "$BIN/loom-profile"
-
-echo "installed:"
-case "$CLIENT" in
-  bundled) echo "  $BIN/loom            the terminal client (self-contained)" ;;
-  slim)    echo "  $BIN/loom            the terminal client (needs erl on PATH)" ;;
-esac
-echo "  $BIN/loomd           the multi-session daemon (self-contained)"
-echo "  $BIN/loom-profile    the BEAM memory census for a --profile node"
-echo "  $LIB/server          release: helper, gleam, code-mode seed, ERTS"
-case "$CLIENT" in
-  bundled) echo "  $LIB/client          client release with its own ERTS" ;;
-  slim)    echo "  $LIB/tui             client shipment" ;;
-esac
+# GNU mv needs -T and BSD mv needs -h to replace a directory symlink rather
+# than moving the new link into its target. Both source and destination live
+# on the same filesystem. Each switch exposes a complete old or new tree.
+switch_link() {
+  local tree="$1" stem="$2" staged="$LINKS/$2.link"
+  ln -s "$tree" "$staged"
+  if ! mv -T -f "$staged" "$LIB/$stem" 2>/dev/null; then
+    mv -h -f "$staged" "$LIB/$stem"
+  fi
+}
+switch_link "$SERVER_TREE" server
+switch_link "$CLIENT_TREE" "$CLIENT_STEM"
+# Rename complete scripts rather than truncating a launcher another process
+# may still be reading. The other client shape's link and trees remain intact.
+for launcher in loomd loom loom-profile; do
+  mv -f "$WRAPPERS/$launcher" "$BIN/$launcher"
+done
+printf 'installed:\n  %s\n  %s\n  %s\n' "$BIN/loom" "$BIN/loomd" "$BIN/loom-profile"
+printf 'release trees:\n  %s\n  %s\n' "$SERVER_TREE" "$CLIENT_TREE"
+printf '%s\n' 'Old trees are retained. See docs/updating.md for restart and manual cleanup.'
 case ":$PATH:" in
   *":$BIN:"*) ;;
-  *) echo
-     echo "note: $BIN is not on PATH; add it, or run $BIN/loom directly" ;;
+  *) printf 'Add %s to PATH, or invoke the launchers there directly.\n' "$BIN" ;;
 esac
 CATALOGUE="${LOOM_STATE_DIR:-$HOME/.loom}/loom.toml"
 if [ ! -f "$CATALOGUE" ]; then
-  echo
-  echo "note: no catalogue at $CATALOGUE; the launcher uses it when present."
-  echo "      docs/examples/loom.toml is the worked example to start from."
+  printf 'No catalogue at %s; docs/examples/loom.toml is a worked example.\n' "$CATALOGUE"
 fi

@@ -59,6 +59,7 @@ fn start(store, build) {
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _, _, owner) { build(record, owner) },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "creation-recovery-"

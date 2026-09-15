@@ -46,6 +46,7 @@ fn claimed_listener() {
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
     )
@@ -136,10 +137,10 @@ pub fn daemon_bootstrap_root_kill_alive_vm_never_replaces_test() {
 
 pub fn daemon_bootstrap_mismatched_epoch_preserves_record_test() {
   let #(_, paths, serving) = claimed_listener()
-  let assert Ok(Some(endpoint.Ready(fence, host, port, _))) =
+  let assert Ok(Some(endpoint.Ready(fence, host, port, _, _))) =
     endpoint.load(paths)
     as "production publication uses the actual nonzero bound port"
-  let wrong = endpoint.Ready(fence, host, port, "different-epoch")
+  let wrong = endpoint.Ready(fence, host, port, "different-epoch", None)
   assert endpoint.write(paths, wrong) == Ok(Nil)
   let assert Error(_) =
     daemon_bootstrap.resolve(paths, process.self(), no_launch, 1000)

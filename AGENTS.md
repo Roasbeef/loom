@@ -250,7 +250,8 @@ one.
 - **Operations** — `docs/distribution.md` (what a release carries and why),
   `docs/execution.md` (how work gets done), `docs/next.md` (what to do next),
   `docs/docker.md` (the runnable image, its two isolation postures, and
-  their measured self-test counts).
+  their measured self-test counts), `docs/updating.md` (how to move a
+  running daemon from one release to the next).
 - **Concurrency** — `docs/weft.md` (when and why a process is built on
   weft, the in-tree ports to copy from, and how to extend the library).
 - **Style** — `docs/gleam-style.md`.

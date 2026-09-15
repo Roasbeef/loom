@@ -40,9 +40,32 @@ pub fn resolve_daemon(
   owner: process.Pid,
   within_ms: Int,
 ) -> Result(daemon_bootstrap.Connected, String) {
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.resolve)
+}
+
+/// Reuses an accepting daemon or waits for native retirement before relaunch.
+///
+/// Only read-only observations are repeated during the shared deadline. A
+/// failed socket probe never authorizes replacing a live native process.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.reconnect_daemon(options, terminal_pid, 30_000)
+/// ```
+@internal
+pub fn reconnect_daemon(
+  options: Options,
+  owner: process.Pid,
+  within_ms: Int,
+) -> Result(daemon_bootstrap.Connected, String) {
+  resolve_daemon_with(options, owner, within_ms, daemon_bootstrap.reconnect)
+}
+
+fn resolve_daemon_with(options: Options, owner, within_ms, resolve) {
   use state <- result.try(state_directory(options.state_directory))
   use paths <- result.try(daemon_endpoint.paths(state))
-  daemon_bootstrap.resolve(
+  resolve(
     paths,
     owner,
     fn() {

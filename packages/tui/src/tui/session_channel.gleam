@@ -258,6 +258,53 @@ pub fn start_recorded(
 }
 
 /// Creates effect-free replay state without a socket, process or wall clock.
+/// Starts a reattachment that resumes from a cut this terminal already holds.
+///
+/// A reconnect has a transcript to keep, so the subscription names the cursor
+/// that transcript ends at instead of asking the server to start again. The
+/// lane therefore begins with the retained cut and its authenticated
+/// attachment in hand: the attachment is what admits the operator's next
+/// mutation, and the cut is what the idle catch-up then reconciles from — so
+/// the entries committed while this terminal was away arrive as a bounded
+/// capture rather than as a rebuilt transcript.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.start_resumed(socket, expected, retained, trace)
+/// ```
+pub fn start_resumed(
+  socket: connection.Connection,
+  expected: snapshot.Expected,
+  retained: snapshot.Captured,
+  trace: Option(attempt.Trace),
+) -> Channel {
+  let channel =
+    Channel(
+      socket: Some(socket),
+      trace: trace,
+      timestamp: now,
+      issued: attempt.Request(1, "subscribe", attempt.Cursor(retained.next_seq)),
+      expected: expected,
+      phase: AwaitingBegin,
+      request_id: 1,
+      next_id: 2,
+      deadline: now() + 30_000,
+      attachment: Some(retained.attachment),
+      cut: Some(retained),
+      queued: None,
+      refresh_at: now(),
+      refresh: Idle,
+      trigger: Requested,
+    )
+  case trace {
+    Some(trace) -> trace.note(attempt.Started(trace.id, expected))
+    None -> Nil
+  }
+  emit(channel, protocol.subscribe_from(1, expected.session, retained.next_seq))
+  channel
+}
+
 ///
 /// ## Examples
 ///
@@ -583,8 +630,11 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // A pushed error reports a failure the daemon had on this terminal's
     // behalf — a held prompt that could not be admitted when its turn came.
     // The connection is fine, so this is the same auxiliary refusal a
-    // correlated error is, and the socket stays open.
+    // correlated error is, and the socket stays open. A custody return rides
+    // the same lane: it is pushed, it answers nothing, and the terminal is
+    // the only place the returned draft can be restored.
     protocol.ServerError(..)
+    | protocol.HeldInputReturned(..)
     | protocol.WorktreeSnapshot(_)
     | protocol.ContextSnapshot(_) -> #(channel, [
       Auxiliary(event),
@@ -606,6 +656,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     | protocol.OperationChanged(..)
     | protocol.UsageChanged(..)
     | protocol.EscalationPending(..)
+    | protocol.Resumed(_)
     | protocol.Ignored(_) -> #(channel, [])
   }
 }
@@ -654,6 +705,28 @@ fn capture_or_defer(channel: Channel) {
 
 fn apply_reply(channel: Channel, reply: session_wire.Reply) {
   case channel.phase, reply {
+    // A resumed marker is the subscribe slot's own answer: the server accepted
+    // the cursor this lane named and is continuing from it. Everything the
+    // transcript shows before that cursor came from the cut the lane already
+    // holds, so nothing is captured here and the phase moves straight to
+    // `Ready`. The cursor deliberately stays where that cut ended rather than
+    // moving up to the marker's `next_seq`: the replayed events which follow
+    // arrive as pushes, and the lane's own catch-up turns them into a bounded
+    // captured cut. A marker answering a request that named no cursor is a
+    // lane this client never built, and it fails closed.
+    AwaitingBegin, session_wire.Presentation(protocol.Resumed(_)) ->
+      case channel.issued.selection {
+        attempt.Cursor(_) -> #(
+          Channel(..channel, phase: Ready, refresh: Due),
+          [],
+        )
+        attempt.NoSelection
+        | attempt.Decisions(_)
+        | attempt.HistoryRange(..)
+        | attempt.Credit(..) ->
+          fail(channel, "resumed marker answers a request that asked for none")
+      }
+
     AwaitingBegin, session_wire.Begin(body) -> {
       let expected_window = case channel.cut {
         None -> "recent"

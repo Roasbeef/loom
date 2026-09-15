@@ -494,6 +494,7 @@ pub opaque type Message {
     fn(String) -> Nil,
     fn() -> Nil,
     fn() -> Nil,
+    fn(Subject(Nil)) -> Nil,
     process.Pid,
     Subject(Result(ConnectionHandle, String)),
   )
@@ -505,6 +506,17 @@ pub opaque type Message {
   BusHint(published: bus.Published)
   ProviderDelta(operation: OpId, generation: String, delta: stream.Delta)
   ProviderEnded(operation: OpId, generation: String)
+
+  /// Return every held prompt to its submitter and empty the queues, with
+  /// the ack that says the walk is done.
+  ///
+  /// A drain is the one exit that can promise nothing about a held item:
+  /// the hub is about to be torn down, so custody of every message it
+  /// still holds goes back to whoever submitted it. The ack is what makes
+  /// the walk observable — a caller that has received it knows every
+  /// return has been emitted on the hub's own process, before the sinks it
+  /// wrote to are closed.
+  DrainHeld(flushed: Subject(Nil), reply: Subject(Int))
 }
 
 // Whether a connection has completed the `subscribe` handshake. It gates three
@@ -525,6 +537,8 @@ type Connection {
   Connection(
     /// Encoded frames leave through here; it runs on the hub process.
     sink: fn(String) -> Nil,
+    /// Queues an acknowledgement behind prior pushes on the same transport.
+    flush: fn(Subject(Nil)) -> Nil,
     /// The original socket whose exit cancels admitted observations.
     consumer: Option(process.Pid),
     /// Whether the `subscribe` handshake has completed.
@@ -592,6 +606,12 @@ type ObservationPhase {
   Reported
 }
 
+// Once shutdown starts, no later command or idle hint can start more work.
+type Admission {
+  Accepting
+  Draining
+}
+
 type State {
   State(
     subject: Subject(Message),
@@ -603,6 +623,7 @@ type State {
     context: Option(fn(String) -> Result(JsonValue, String)),
     delivery: Delivery,
     health: Health,
+    admission: Admission,
     next_transfer: Int,
     preview_sources: Dict(Int, process.Monitor),
     next_preview_source: Int,
@@ -825,6 +846,7 @@ fn start_with_delivery(
         context: options.context,
         delivery:,
         health: Reading,
+        admission: Accepting,
         next_transfer: 1,
         preview_sources: dict.new(),
         next_preview_source: 1,
@@ -902,6 +924,39 @@ pub fn attach_authenticated(
   read_failed: fn() -> Nil,
   socket: process.Pid,
 ) -> Result(ConnectionHandle, String) {
+  attach_authenticated_flushing(
+    gateway,
+    binding,
+    check,
+    sink,
+    close,
+    read_failed,
+    fn(reply) { process.send(reply, Nil) },
+    socket,
+  )
+}
+
+/// Attaches a transport whose flush is ordered after this gateway's pushes.
+///
+/// The callback queues a marker without waiting. The drain caller owns the
+/// acknowledgement subject, so the gateway can keep answering socket requests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // The session socket sends Flush(reply) from this callback.
+/// ```
+@internal
+pub fn attach_authenticated_flushing(
+  gateway: Gateway,
+  binding: Binding,
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  sink: fn(String) -> Nil,
+  close: fn() -> Nil,
+  read_failed: fn() -> Nil,
+  flush: fn(Subject(Nil)) -> Nil,
+  socket: process.Pid,
+) -> Result(ConnectionHandle, String) {
   use subject <- result.try(
     address.lookup(gateway.name) |> result.replace_error("gateway unavailable"),
   )
@@ -911,6 +966,7 @@ pub fn attach_authenticated(
     sink,
     close,
     read_failed,
+    flush,
     socket,
     _,
   ))
@@ -1040,6 +1096,60 @@ pub fn detach(gateway: Gateway, connection: Int) -> Nil {
 ///
 pub fn handle_text(gateway: Gateway, connection: Int, text: String) -> Nil {
   send_if_alive(gateway.name, FromClient(connection, text))
+}
+
+/// Fences new work and attempts to return held input within five seconds.
+///
+/// The gateway clears its queues and addresses each return only to its
+/// submitter. Network transports acknowledge after the corresponding socket
+/// writes; host fixtures acknowledge their direct sinks. A missing gateway,
+/// a disconnected peer, or expiry leaves delivery unconfirmed. Callers with a
+/// shared shutdown budget use `drain_held_within` instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.drain_held(instance.gateway)
+/// ```
+pub fn drain_held(gateway: Gateway) -> Nil {
+  drain_held_within(gateway, 5000)
+}
+
+/// Fences mutations and gives queued socket writes one bounded flush window.
+///
+/// Acknowledgements confirm socket writes, not client receipt. Missing peers
+/// and budget expiry remain unconfirmed; neither extends the caller's budget.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.drain_held_within(instance.gateway, remaining_ms)
+/// ```
+@internal
+pub fn drain_held_within(gateway: Gateway, within_ms: Int) -> Nil {
+  let deadline = bootstrap.monotonic_time_ms() + int.max(within_ms, 0)
+  let flushed = process.new_subject()
+  let count =
+    address.lookup(gateway.name)
+    |> result.try(fn(subject) {
+      call.try_call(subject, waiting: int.max(within_ms, 0), sending: DrainHeld(
+        flushed,
+        _,
+      ))
+      |> result.replace_error(Nil)
+    })
+    |> result.unwrap(0)
+
+  // All markers came from the same gateway as the pushes they follow. Receive
+  // in the drain task, never in the gateway a socket may itself be waiting on.
+  list.each(list.repeat(Nil, count), fn(_) {
+    let _ack =
+      process.receive(
+        flushed,
+        int.max(deadline - bootstrap.monotonic_time_ms(), 0),
+      )
+    Nil
+  })
 }
 
 /// Starts a forwarder that turns the runtime writer's post-commit
@@ -1406,6 +1516,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             id,
             Connection(
               sink:,
+              flush: fn(reply) { process.send(reply, Nil) },
               consumer: None,
               subscription: Unsubscribed,
               authentication: HostFixture,
@@ -1419,7 +1530,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         ),
       )
     }
-    AttachAuthenticated(binding, check, sink, close, read_failed, socket, reply) -> {
+    AttachAuthenticated(
+      binding,
+      check,
+      sink,
+      close,
+      read_failed,
+      flush,
+      socket,
+      reply,
+    ) -> {
       let admitted = case
         binding.session_id
         == ids.session_id_to_string(api.session_id(state.runtime))
@@ -1438,6 +1558,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           let link =
             Connection(
               sink:,
+              flush:,
               consumer: Some(socket),
               subscription: Unsubscribed,
               authentication: Authenticated(
@@ -1519,6 +1640,23 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     ProviderEnded(operation:, generation:) -> {
       broadcast_delta(state, operation, generation, None)
+      continue(state)
+    }
+
+    // The ack follows the walk rather than preceding it, so a caller whose
+    // `process.call` returned has observed every return already handed to its
+    // sink. Nothing else depends on the order: a caller that stopped waiting
+    // leaves the queues empty all the same, and the returns the hub did emit
+    // are correct custody returns whether or not anyone counted them.
+    DrainHeld(flushed:, reply:) -> {
+      let state = drain_held_queues(State(..state, admission: Draining))
+
+      // Only this actor sends pushes, so every flush marker follows all of the
+      // custody returns on its socket. Waiting belongs to the caller's task.
+      dict.each(state.connections, fn(_, connection) {
+        connection.flush(flushed)
+      })
+      process.send(reply, dict.size(state.connections))
       continue(state)
     }
   }
@@ -2460,6 +2598,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.AttachmentEvent(..)
     | protocol.PresenceEvent(..)
     | protocol.InputQueueChanged
+    | protocol.HeldInputReturned(..)
     | protocol.StreamDeltaEvent(..)
     | protocol.ToolOutputEvent(..)
     | protocol.CommittedEvent(..)
@@ -3584,6 +3723,20 @@ fn run_command(
   command: Command,
 ) -> State {
   use <- bool.lazy_guard(
+    when: state.admission == Draining && !read_only(command),
+    return: fn() {
+      reply_error(
+        state,
+        connection,
+        id,
+        "draining",
+        "the session is shutting down",
+      )
+      state
+    },
+  )
+
+  use <- bool.lazy_guard(
     when: observer(state, connection) && !read_only(command),
     return: fn() {
       reply_error(
@@ -4401,6 +4554,74 @@ fn held_items(state: State, strand: String) -> List(Held) {
   |> result.unwrap([])
 }
 
+// Return every held prompt to its submitter and empty the queues.
+//
+// The walk is over the dictionary rather than over the strands, because the
+// dictionary *is* the set of strands holding something — an emptied strand
+// leaves it, so no holder is visited twice and none is missed. Each item
+// goes to `item.submitter`, which is a connection id and not an identity:
+// a submitter that detached during the drain is an unknown connection and
+// `send_to` drops the frame, exactly as the rejection path already accepts
+// (see `Held.submitter`).
+//
+// The queue is emptied wholesale rather than retired item by item. A later
+// `drain_idle_strands` must find nothing, and the batch intent of a halted
+// queue must not outlive the daemon it belonged to.
+fn drain_held_queues(state: State) -> State {
+  dict.each(state.held, fn(strand, queue) {
+    list.each(queue.items, fn(item) {
+      send_to(
+        state,
+        item.submitter,
+        EventEnvelope(
+          reply_to: None,
+          seq: None,
+          event: held_return(strand, item),
+        ),
+      )
+    })
+  })
+  broadcast_queue_changed(State(..state, held: dict.new()))
+}
+
+// The one event that says the host queue changed, sent to every attached
+// connection. Both mutations of the queue — a submission entering it and a
+// drain emptying it — end with it, so a client that renders a queue learns
+// from a push that its next read should be a read, never that a read it
+// already has is still authoritative.
+fn broadcast_queue_changed(state: State) -> State {
+  dict.each(state.connections, fn(id, _link) {
+    send_to(state, id, EventEnvelope(None, None, protocol.InputQueueChanged))
+  })
+  state
+}
+
+// One held item as the custody return a client restores a draft from. The
+// kind is the item's own order, and the text is the *complete* submitted
+// text, unlike the queue-board preview: a draft restored from a clipped
+// prefix would silently lose what the operator typed. Image blocks cannot
+// travel as text, so the count says how many the client must keep beside the
+// draft it now owns again.
+fn held_return(strand: String, item: Held) -> WireEvent {
+  let #(text, images) = editable_content(item.prompt)
+  protocol.HeldInputReturned(
+    strand:,
+    id: held_id(item),
+    kind: order_text(item.order),
+    text:,
+    attachment_count: list.length(images),
+  )
+}
+
+// The two priority names the wire uses for a held item, spelled once so the
+// return and the queue board cannot disagree about them.
+fn order_text(order: InputOrder) -> String {
+  case order {
+    AfterTurn -> "queue"
+    SteerNext -> "steer"
+  }
+}
+
 fn put_held(state: State, strand: String, queue: List(Held)) -> State {
   // A replacement queue inherits the strand's existing drain intent, which is
   // what lets input submitted after an abort join the batch that abort marked.
@@ -4421,10 +4642,7 @@ fn put_held(state: State, strand: String, queue: List(Held)) -> State {
         held: dict.insert(state.held, strand, HeldQueue(queue, drain)),
       )
   }
-  dict.each(state.connections, fn(id, _link) {
-    send_to(state, id, EventEnvelope(None, None, protocol.InputQueueChanged))
-  })
-  state
+  broadcast_queue_changed(state)
 }
 
 // These rows are queue identities, not guessed transcript matches. Two peers
@@ -4444,13 +4662,7 @@ fn pending_inputs(state: State, connection: Int) -> List(JsonValue) {
           "editable",
           json.Bool(input_author(state, connection) == Ok(item.author)),
         ),
-        #(
-          "kind",
-          json.String(case item.order {
-            AfterTurn -> "queue"
-            SteerNext -> "steer"
-          }),
-        ),
+        #("kind", json.String(order_text(item.order))),
         #(
           "text",
           json.String(preview_prefix(
@@ -4529,13 +4741,7 @@ fn queued_board(
       #("id", json.String(held_id(item))),
       #("strand", json.String(strand)),
       #("revision", json.Int(item.revision)),
-      #(
-        "kind",
-        json.String(case item.order {
-          AfterTurn -> "queue"
-          SteerNext -> "steer"
-        }),
-      ),
+      #("kind", json.String(order_text(item.order))),
       #("text", json.String(text)),
       #("attachment_count", json.Int(list.length(images))),
     ])
@@ -4674,6 +4880,10 @@ fn pending_text(prompt: AgentMessage) -> String {
 // lookup rather than a diff of two pulls: a strand whose successor
 // operation is already open reads as busy and stays held.
 fn drain_idle_strands(state: State) -> State {
+  use <- bool.lazy_guard(when: state.admission == Draining, return: fn() {
+    state
+  })
+
   list.fold(dict.keys(state.held), state, fn(state, strand) {
     case dict.has_key(state.live, strand) {
       True -> state

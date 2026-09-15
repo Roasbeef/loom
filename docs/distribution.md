@@ -360,26 +360,29 @@ them out under `PREFIX`, `~/.local` by default:
 
 | path | what |
 |---|---|
-| `$PREFIX/lib/loom/server` | the release tree, copied whole: `bin/loomd`, `bin/loom-exec`, `bin/gleam`, `share/codemode-seed`, the bundled ERTS |
-| `$PREFIX/lib/loom/client` | the client release, whole, with its own ERTS (`INSTALL_CLIENT=bundled`, the default) |
-| `$PREFIX/lib/loom/tui` | the client shipment: compiled BEAM files, no runtime (`INSTALL_CLIENT=slim`) |
-| `$PREFIX/bin/loom` | the client launcher, generated to name whichever client was installed |
-| `$PREFIX/bin/loomd` | a wrapper that execs the release's own `bin/loomd` |
+| `$PREFIX/lib/loom/server.<suffix>` | a complete server release: helper, compiler, code-mode seed, and bundled ERTS |
+| `$PREFIX/lib/loom/server` | a symlink selecting the installed server tree |
+| `$PREFIX/lib/loom/client.<suffix>` | the complete client release with ERTS (`INSTALL_CLIENT=bundled`, the default) |
+| `$PREFIX/lib/loom/client` | a symlink selecting the bundled client tree |
+| `$PREFIX/lib/loom/tui.<suffix>` | the compiled shipment and profiling launcher, without ERTS (`INSTALL_CLIENT=slim`) |
+| `$PREFIX/lib/loom/tui` | a symlink selecting the slim client tree |
+| `$PREFIX/bin/loom` | the launcher for the selected client shape |
+| `$PREFIX/bin/loomd` | the daemon launcher |
+| `$PREFIX/bin/loom-profile` | the selected client's profiling census launcher |
 
-Two shapes are deliberate. The release tree is copied whole because the
-server finds its helper, compiler and seed through `code:root_dir()`, the
-release root, and a tree with pieces moved out of it would find nothing.
-And `loomd` on `PATH` is a wrapper rather than a symlink because the
-release's own launcher resolves the root from its own location, so a
-symlink would resolve it to `$PREFIX`. The two launchers share a
-directory because the client looks for the server beside itself before
-it asks `PATH`.
+Every installation gets fresh physical directories, even for an unchanged
+version. Copies finish before their links are published. The launchers resolve
+those links to physical paths before executing, so a running process retains
+its original modules and bundled tools across later installations. The slim
+shipment carries its own build identity and profiling launcher, just as the
+bundled release does. The client wrapper preserves its installed location for
+sibling daemon discovery.
 
-By default both halves are self-contained. `INSTALL_CLIENT=slim` installs
-the shipment instead, so the client runs on the host's own Erlang; that
-is the shape for a package that declares Erlang as a dependency. With
-`~/.loom/loom.toml` present the client passes it to the server as the
-catalogue, so an installed Loom needs no flags at all.
+Links and complete wrapper files are renamed individually; installation is not
+a transaction across the whole client/server pair. Old trees and alternate
+client-shape links are retained for manual cleanup. Existing legacy directories
+at `server`, `client`, or `tui` require an offline migration or a fresh prefix.
+See [updating](updating.md) for restart, rollback, and cleanup procedures.
 
 ## Installing for live profiling
 

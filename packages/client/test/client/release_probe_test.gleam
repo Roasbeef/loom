@@ -33,7 +33,7 @@ pub fn main() -> Nil {
     as "release probe requires state root, workspace and test configuration"
   let assert Ok(paths) = endpoint.paths(directory)
     as "private paths must resolve"
-  let assert Ok(Some(endpoint.Ready(_, _, _, epoch) as record)) =
+  let assert Ok(Some(endpoint.Ready(_, _, _, epoch, _) as record)) =
     endpoint.load(paths)
     as "daemon must publish a ready native endpoint"
   let assert Ok(address) = endpoint.address(record)

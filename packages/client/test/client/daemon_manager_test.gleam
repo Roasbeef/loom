@@ -212,6 +212,7 @@ fn start(
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, owner) { build(record, owner) },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "daemon-test",
@@ -989,6 +990,7 @@ pub fn outer_shutdown_waits_for_registry_to_drain_before_normal_exit_test() {
             as "original custody owns the delayed drain"
           Ok(record.id)
         },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "lifetime-test",
@@ -1045,6 +1047,7 @@ pub fn registry_kill_loses_outer_proof_even_when_inner_cleanup_finishes_test() {
           process.send(built, custody.owner(owner))
           Ok(record.id)
         },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "lifetime-test",
@@ -1102,6 +1105,7 @@ pub fn registry_kill_with_failed_cleanup_never_proves_outer_retirement_test() {
           process.send(built, owner)
           Ok(record.id)
         },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "lifetime-test",
@@ -1136,6 +1140,7 @@ pub fn outer_lifetime_survives_repeated_incarnations_with_one_registry_test() {
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "lifetime-test",
@@ -1352,6 +1357,7 @@ pub fn domain_sources_are_enumerated_across_pages_test() {
           Ok(domain_service.inert())
         },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "domain-sources",
@@ -1389,6 +1395,7 @@ pub fn an_oversized_domain_refuses_its_source_enumeration_test() {
           Ok(domain_service.inert())
         },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
       epoch: "domain-cap",

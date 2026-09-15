@@ -4,11 +4,16 @@
 //// once, then observes only the returned operation within the same epoch.
 //// Losing admission's reply is reported as an unknown outcome, never retried.
 
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import gleam/uri
+import host/bootstrap as host_bootstrap
+import host/endpoint as daemon_endpoint
 import tui/attachment
+import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
 import tui/snapshot
@@ -74,6 +79,49 @@ pub fn reconnect(host: Host, owner: process.Pid) -> Result(Host, String) {
     |> result.map_error(failure),
   )
   Host(..host, control:)
+}
+
+/// Re-resolves the shared daemon and authenticates one control owner on its
+/// new route.
+///
+/// This is what `reconnect` cannot do. That function mints a replacement owner
+/// for a route the terminal already holds, which is right for a control request
+/// whose own connection retired and useless when the daemon itself is gone: the
+/// recorded route answers nothing, and no amount of reconnecting revives it.
+/// Resolving again is what starts whichever daemon binary is now installed — the
+/// installed launcher selects a fresh immutable tree at the same public
+/// path — and the fresh endpoint record names the port and fence that new VM
+/// actually published.
+///
+/// The resolved control belongs to the terminal PID, so a terminal that exits
+/// during the attempt still closes it, and one attempt starts at most one
+/// daemon because resolution holds the launch lock.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.relaunch(options, process.self(), 90_000)
+/// ```
+pub fn relaunch(
+  options: bootstrap.Options,
+  owner: process.Pid,
+  within_ms: Int,
+) -> Result(Host, String) {
+  use connected <- result.try(bootstrap.reconnect_daemon(
+    options,
+    owner,
+    within_ms,
+  ))
+  use address <- result.try(daemon_endpoint.address(connected.record))
+  use token <- result.try(
+    host_bootstrap.read_private_bounded(connected.paths.token, 65)
+    |> result.map_error(fn(reason) { "owner credential: " <> reason }),
+  )
+  use token <- result.try(
+    bit_array.to_string(token)
+    |> result.replace_error("invalid owner credential encoding"),
+  )
+  host(connected.control, address, string.trim(token))
 }
 
 /// Borrows live control or owns a replacement for one explicit worker action.

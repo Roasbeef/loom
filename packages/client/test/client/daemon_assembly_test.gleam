@@ -94,6 +94,7 @@ fn start(
             services,
           )
         },
+        drain: fn(_, _) { Nil },
         fatal: serve.instance_children,
       ),
       epoch:,
