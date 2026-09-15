@@ -84,7 +84,7 @@ model's request, and carries a `lineage/` cell naming its parent. That
 cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
-`ensure_strand` (`client/advisor.gleam:1676`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:1714`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1024`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
@@ -278,7 +278,7 @@ decodes the arguments and hands the pair to a single closure on an
 Two things the model does not supply. The first is its own identity:
 `judge` is handed `Ctx.strand`, which the driver set from its own
 durable name, so a verdict cannot be attributed to a strand that did not
-produce it. `judge` (`client/advisor.gleam:1100`) refuses any caller
+produce it. `judge` (`client/advisor.gleam:1134`) refuses any caller
 whose name is not `advisor`. The second is what a verdict costs.
 
 `decode_verdict` (`tools/advise.gleam:222`) is total and decodes the
@@ -416,7 +416,7 @@ is that the primary was *not* stopped for it, and either of those acks
 would claim otherwise; the wake is instead appended to the downgrade's
 own reason.
 
-The actor's `decide` (`client/advisor.gleam:1124`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:1154`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the send
 costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -465,7 +465,7 @@ cannot combine with the surrounding text to spell the literal again.
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:475`).
+The constant is `brief` (`client/advisor.gleam:495`).
 
 Three properties follow from the prepend. A durable first message would
 be summarized away by the advisor's own compaction and would sit in the
@@ -600,6 +600,18 @@ strand driver, the same bound for the same reason; an `advise` call waits
 `judge_timeout_ms` (10,000) on a live tool effect.
 Both go through a monitored send-and-select rather than `process.call`,
 which exits its *caller* on a timeout or a dead callee.
+
+The run-end drain carries that bound into the request. `TakeAtRunEnd`
+takes a `deadline` — the asking hook's `now` plus `pending_timeout_ms`,
+read from the clock the actor also reads — and a request served past it
+answers with no nudges and touches neither the queue nor the turn.
+Without it, an actor busy scanning a branch could serve the request after
+the hook had already returned `None` and ended the run, clearing the
+queue and spending the turn's one wake on a primary that has stopped: no
+nudges delivered, and no budget left to deliver them with. The run-start
+drain needs no deadline, because a late answer there loses the nudges but
+spends nothing, which is the same accepted loss as an uncommitted
+transaction.
 
 ## What each side can and cannot see
 

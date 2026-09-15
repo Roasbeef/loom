@@ -2436,8 +2436,10 @@ across one operation a `Stop` block holds open.
   call, from the `advise` tool's effect process, bounded at
   `judge_timeout_ms`), `TakePending(operation:, reply:)` (a call, from the
   wrapped `run_start` slot, bounded at `pending_timeout_ms`) and
-  `TakeAtRunEnd(reply:)` (a call, from the wrapped `run_end` slot, the
-  same bound). `TakePending` carries the operation being opened because
+  `TakeAtRunEnd(deadline:, reply:)` (a call, from the wrapped `run_end`
+  slot, the same bound, carrying that bound as a wall-clock instant so a
+  request served after the hook gave up answers with nothing rather than
+  spending the turn into an ended run). `TakePending` carries the operation being opened because
   the actor reads it as well as answering: a run start whose operation is
   not the one this actor itself last woke is where this operator turn's
   one unsolicited-delivery budget is handed back. `TakeAtRunEnd` carries

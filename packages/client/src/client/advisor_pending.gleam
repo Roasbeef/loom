@@ -2,12 +2,14 @@
 ////
 //// A queued nudge is not an entry. It lives in one field of the emission
 //// guard cell (`advisor/guard`, written by the advisor actor alone) and
-//// reaches the primary only when that strand's next run start drains it, so
-//// no ordinary transcript capture carries it to an operator. This module is
-//// the one read that does, and it exists because the operator's useful
-//// moment is exactly the one the transcript cannot describe: the primary is
-//// idle, the advice is already written, and nothing will show it until a run
-//// the operator has not started yet.
+//// reaches the primary when that strand next stops, or waits for the
+//// operator's next prompt once the turn's one unsolicited delivery is
+//// spent, so no ordinary transcript capture carries it to an operator.
+//// This module is the one read that does, and it exists because the
+//// operator's useful moment is exactly the one the transcript cannot
+//// describe: the primary is idle, the advice is already written, and
+//// the turn that would have delivered it is spent, so nothing will show
+//// it until the operator types again.
 ////
 //// Two properties shape the code. The read never speaks to the advisor actor
 //// and never calls `take_pending`: the drain belongs to the run-start hook,
@@ -43,7 +45,7 @@ pub type Error {
   Malformed(reason: String)
 }
 
-/// Reads the nudges waiting for the primary's next run start, oldest first.
+/// Reads the nudges still waiting to reach the primary, oldest first.
 ///
 /// `now` is the observing instant the board is stamped with. The caller
 /// supplies it so this function stays one projection of one storage cut and

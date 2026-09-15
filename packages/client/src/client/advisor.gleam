@@ -193,8 +193,16 @@ pub const guard_key = api.advisor_fact_prefix <> "guard"
 /// the cost of a second round trip on the driver process and a third
 /// guard state to reason about, which is more machinery than a dropped
 /// nit is worth: a lost nudge costs the primary one piece of advice it
-/// was never going to be required to take, and the advisor raises the
-/// point again at the next run end if it still holds.
+/// was never going to be required to take, and a stopped primary has no
+/// next run end, so what survives the loss is the operator's next prompt
+/// and the advisor's next review of the same branch.
+///
+/// That is why the run-end drain is refused rather than lost once this
+/// wait has expired. `TakeAtRunEnd` carries the deadline the asker
+/// computed from this number, and a request served past it answers with
+/// nothing and touches neither queue nor turn: the drain that nobody is
+/// listening for would otherwise spend the turn's one wake on a run that
+/// has already ended.
 pub const pending_timeout_ms = 500
 
 /// How long an `advise` call waits for its verdict to be judged.
@@ -242,7 +250,11 @@ pub type Settings {
     /// run-end-only cadence. See `client/catalog.AdvisorConfig` for why
     /// this is a floor rather than an interval.
     feed_every_steps: Int,
-    /// How many reviews a delivered block silences the next one for.
+    /// How many reviews a delivered block silences the next one for. A
+    /// block downgraded inside the window becomes a nudge, and a nudge
+    /// can still wake an idle primary once per operator turn, so this
+    /// rations steers against an open run while the turn budget rations
+    /// wakes.
     block_cooldown_reviews: Int,
   )
 }
@@ -329,7 +341,15 @@ pub type Message {
   /// It carries no operation because it decides nothing from one: the
   /// hook has already established whose run is ending, and the turn's
   /// delivery is spent here rather than renewed.
-  TakeAtRunEnd(reply: Subject(List(String)))
+  ///
+  /// `deadline` is the wall-clock instant past which the asking hook has
+  /// stopped listening, set to its own timeout from the same clock this
+  /// actor reads. Serving the request after that instant would drain the
+  /// queue and spend the turn into a driver that has already given up and
+  /// ended the run, leaving an idle primary with no nudges and no wake
+  /// left to carry them; past the deadline the actor answers with nothing
+  /// and touches no state, so the queue waits for the next occasion.
+  TakeAtRunEnd(deadline: Int, reply: Subject(List(String)))
 }
 
 // What the actor remembers between messages: the two cells, whether a
@@ -587,7 +607,8 @@ fn unavailable(state: State, message: Message) -> Nil {
     // Both drains answer with no nudges, which is what their callers
     // read as "nothing was queued". A run boundary is never held open
     // for a plane that is restarting.
-    TakePending(reply:, ..) | TakeAtRunEnd(reply:) -> process.send(reply, [])
+    TakePending(reply:, ..) | TakeAtRunEnd(reply:, ..) ->
+      process.send(reply, [])
 
     // The three casts. Nobody is waiting, and a step lost this way is a
     // step the counter never sees: the threshold is reached later than it
@@ -653,8 +674,8 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     // earlier layer placed a follow-up on it. This is the moment the
     // nudge channel exists for: the primary is about to stop, and a
     // queue held for its next run start would wait on the operator.
-    TakeAtRunEnd(reply:) -> {
-      let #(nudges, spent) = drain_at_run_end(state, runtime, memory)
+    TakeAtRunEnd(deadline:, reply:) -> {
+      let #(nudges, spent) = drain_at_run_end(state, runtime, memory, deadline)
       process.send(reply, nudges)
       remembering(state, spent)
     }
@@ -688,7 +709,20 @@ fn drain_at_run_end(
   state: State,
   runtime: Runtime,
   memory: Memory,
+  deadline: Int,
 ) -> #(List(String), Memory) {
+  // The hook that asked has stopped listening. Everything this drain
+  // does is irreversible — the queue is cleared, the guard cell written,
+  // the turn spent — and the reply would land in a driver that has
+  // already returned `None` and ended the run, so an idle primary would
+  // be left with no nudges and no wake left to deliver them with.
+  // Refusing here keeps both: the queue is still queued and the turn is
+  // still unspent, so the operator's next prompt or the advisor's next
+  // idle nudge carries the same advice.
+  use <- bool.lazy_guard(when: now(state.wiring) > deadline, return: fn() {
+    #([], memory)
+  })
+
   // This turn has already had its unsolicited delivery. Draining again
   // would place a second follow-up on a run that is only open because
   // the first one placed one, which is the ring the bound exists to cut.
@@ -1625,7 +1659,14 @@ fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
   // run it again — and this drain is not two-phase, so a replayed run
   // end finds the queue already empty and places nothing. That is the
   // same accepted loss as the run-start drain, for the same reason.
-  case ask(wiring.name, pending_timeout_ms, TakeAtRunEnd) {
+  //
+  // The deadline travels with the question so that the actor can tell a
+  // request it can still answer from one this hook has already given up
+  // on. Both sides read `now`, so the instant means the same thing in
+  // the actor as it does here.
+  let deadline = now(wiring) + pending_timeout_ms
+
+  case ask(wiring.name, pending_timeout_ms, TakeAtRunEnd(deadline, _)) {
     Ok([]) | Error(Nil) -> None
 
     Ok(nudges) -> Some(advisorslice.nudges_message(nudges, now(wiring)))
