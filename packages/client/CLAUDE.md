@@ -1855,7 +1855,8 @@ and may not reach a capability between them.
   rather than stripping it.
 - `client/extension/archive` — the total tar.gz reader, the local
   directory walker, and the tree digest. `extract` inflates through
-  `client/internal/ffi_zlib` under `Caps.max_total_bytes`, abandoning
+  `client/internal/ffi_zlib` under `Caps.max_total_bytes`. Its Erlang adapter
+  delegates inflation to the shared `host_zlib_ffi` primitive, abandoning
   the stream the moment it goes over, so a decompression bomb is never
   materialised; the ustar reader then admits only regular files,
   directories and pax headers, refusing links, devices, fifos and GNU
