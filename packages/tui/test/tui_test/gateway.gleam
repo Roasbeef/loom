@@ -270,6 +270,18 @@ pub fn usage(strand: String, input: Int, output: Int, cost: Float) -> String {
   ])
 }
 
+/// One `usage` event carrying a complete ledger row.
+///
+/// `usage/4` builds the row from four numbers, which is all a totals check
+/// needs. A check on the prompt-cache detector needs the cache buckets and
+/// their prices as well, so it supplies the row itself.
+pub fn usage_row(strand: String, reported: message.Usage) -> String {
+  event("usage", [
+    #("strand", json.String(strand)),
+    #("usage", codec.encode_usage(reported)),
+  ])
+}
+
 // A `message` entry is the only entry shape these snapshots need, so the
 // three builders above differ only in the message they carry.
 fn message_entry(

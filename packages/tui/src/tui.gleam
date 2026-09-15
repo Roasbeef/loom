@@ -50,6 +50,7 @@ import tui/attachment
 import tui/attempt
 import tui/attempt_replay
 import tui/bootstrap
+import tui/cache_miss
 import tui/command
 import tui/completion_summary
 import tui/composer
@@ -470,6 +471,26 @@ pub type FrameCache {
   )
 }
 
+/// A prompt-cache miss already rendered as its transcript row.
+///
+/// The row belongs inside the transcript rather than at the end of it, so
+/// the notice names the entry it follows. A usage event arrives after the
+/// entry whose request it bills, which is what puts the row under the turn
+/// that missed; naming the entry rather than a position is what survives the
+/// compact projection, which joins a call to a result several entries later
+/// and must not be cut between them.
+@internal
+pub type CacheNotice {
+  CacheNotice(
+    /// The strand whose transcript shows the row.
+    strand: String,
+    /// The last entry that strand held when the row was raised.
+    after_entry: ids.EntryId,
+    /// The operator-facing line, already formatted.
+    text: String,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -507,6 +528,16 @@ pub type Model {
     awaiting_outcome: Option(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
+    /// The last provider usage row each strand billed, with the instant it
+    /// arrived, which is all the prompt-cache detector remembers. Keyed by
+    /// strand because a sub-agent's request says nothing about whether the
+    /// primary's cached prefix survived the operator's pause.
+    cache_watch: Dict(String, cache_miss.Watch),
+    /// Cache-miss notices raised on this connection, oldest first. They are
+    /// transient by design: a reattach rebuilds the durable transcript and
+    /// these do not come back, which is acceptable for a notice about the
+    /// moment it happened, and is what keeps them out of the store.
+    cache_notices: List(CacheNotice),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
     /// Retained scrollback of every strand other than the active one, keyed
@@ -948,6 +979,8 @@ pub fn new_model_with_clock(
       ),
     ],
     records: [],
+    cache_watch: dict.new(),
+    cache_notices: [],
     scrollback: history_view.empty(),
     parked_scrollback: dict.new(),
     notice: "interactive design preview",
@@ -4664,7 +4697,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         False -> dict.new()
       }
       let #(lines, compact_call_cache, compact_entry_cache) =
-        record_lines(model.records, model)
+        record_lines(model.records, model, active_notices(model))
       let #(record_rows, record_line_cache) =
         model.transcript
         |> list.append(lines)
@@ -4684,7 +4717,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     }
     True, [] -> model
     True, pending -> {
-      let #(lines, calls, narratives) = record_lines(pending, model)
+      let #(lines, calls, narratives) = record_lines(pending, model, [])
       let #(newest_rows, appended) =
         cached_record_lines(lines, width, model.record_line_cache)
 
@@ -4734,11 +4767,8 @@ fn record_anchors_for(
   model: Model,
   width: Int,
 ) -> List(Option(transcript_anchor.Row)) {
-  let entries =
-    model.records
-    |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
-    |> list.map(fn(record) { record.entry })
+  let entries = strand_entries(model.records, model.active_strand)
+  let notices = active_notices(model)
   let blocks = case model.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -4769,20 +4799,29 @@ fn record_anchors_for(
           }
         })
         |> dict.from_list
-      list.flat_map(entries, fn(value) {
-        anchored_entry_blocks(value, model)
-        |> list.map(fn(block) {
-          #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
-        })
+      entries
+      |> splice_notices(notices, entry_holds)
+      |> list.flat_map(fn(spliced) {
+        case spliced {
+          Transient(text) -> [#("", [Line(System, text)])]
+          Projected(value) ->
+            anchored_entry_blocks(value, model)
+            |> list.map(fn(block) {
+              #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
+            })
+        }
       })
     }
     False ->
       entries
       |> tool_activity.project
-      |> list.flat_map(fn(item) {
-        case item {
-          tool_activity.Narrative(value) -> anchored_entry_blocks(value, model)
-          tool_activity.Tools(calls) -> {
+      |> splice_notices(notices, item_holds)
+      |> list.flat_map(fn(spliced) {
+        case spliced {
+          Transient(text) -> [#("", [Line(System, text)])]
+          Projected(tool_activity.Narrative(value)) ->
+            anchored_entry_blocks(value, model)
+          Projected(tool_activity.Tools(calls)) -> {
             let heading = [activity_heading(calls)]
             [
               #("", heading),
@@ -6167,34 +6206,9 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.UsageChanged(usage: settled) -> {
-      // Usage arrives once per settled generation, so this is the moment
-      // the rate is known: the settlement's own output count over the
-      // time since the request went out. A settlement whose clock never
-      // started (a refusal, an empty turn) leaves the last rate standing.
-      let output_rate_tps = case model.peer, model.generation_started_ms {
-        // The window is this client's own clock from the request going
-        // out to the settlement, and a replay spends that window playing
-        // a file rather than waiting on a provider. `output_rate_min_ms`
-        // already discards the short ones, so a brief replay would report
-        // nothing anyway; a long one would report how fast the replay
-        // ran. Declining outright is the same rule that stops a replay
-        // echoing a prompt.
-        Replaying, _ | Disconnected, _ -> model.output_rate_tps
+    protocol.UsageChanged(strand:, usage: settled) ->
+      receive_usage(model, strand, settled)
 
-        Attached(..), Some(started) | Preview, Some(started) ->
-          output_rate(settled.output, model.monotonic_time_ms() - started)
-        Attached(..), None | Preview, None -> model.output_rate_tps
-      }
-      let usage = add_usage(model.usage, settled)
-      Model(
-        ..model,
-        usage:,
-        generation_started_ms: None,
-        output_rate_tps:,
-        notice: tokens(usage.total_tokens) <> " tokens",
-      )
-    }
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
 
@@ -6960,23 +6974,98 @@ pub fn live_tool_call_summary(name: String) -> String {
   text_hygiene.single_line(name) <> " · preparing arguments…"
 }
 
+/// One place in a strand's transcript, once the transient rows are in it.
+///
+/// A transcript is durable projection with the occasional local notice
+/// spliced between its items. Naming that shape lets both projections — the
+/// drawn rows and the scroll anchors — walk the same sequence, so a notice
+/// cannot shift one of them without shifting the other.
+type Spliced(a) {
+  /// One item of the durable projection: an entry, or a projected group.
+  Projected(a)
+
+  /// A transient system-voice row that follows the item before it.
+  Transient(String)
+}
+
+// Places each notice after the projected item that holds the entry it was
+// anchored to.
+//
+// Anchoring by entry rather than by position is what keeps a notice from
+// landing inside a tool group: the compact projection joins a call to a
+// result that arrives several entries later, and cutting between them would
+// leave the call pending forever and the result orphaned. The item that
+// holds the anchor is followed by the row, whole. A notice whose anchor has
+// since left the retained window is held by nothing and is dropped, which is
+// the right end for a row that was never durable.
+fn splice_notices(
+  items: List(a),
+  notices: List(CacheNotice),
+  holds: fn(a, CacheNotice) -> Bool,
+) -> List(Spliced(a)) {
+  list.flat_map(items, fn(item) {
+    let rows =
+      notices
+      |> list.filter(holds(item, _))
+      |> list.map(fn(notice) { Transient(notice.text) })
+    [Projected(item), ..rows]
+  })
+}
+
+// Whether an expanded-history entry is the one a notice was anchored to.
+fn entry_holds(value: entry.Entry, notice: CacheNotice) -> Bool {
+  value.id == notice.after_entry
+}
+
+// Whether a compact projection item covers the entry a notice was anchored
+// to. A tool group covers every call's own entry and every result entry it
+// has joined, so a notice raised in the middle of a group follows the whole
+// group.
+fn item_holds(item: tool_activity.Item, notice: CacheNotice) -> Bool {
+  case item {
+    tool_activity.Narrative(value) -> value.id == notice.after_entry
+    tool_activity.Tools(calls) ->
+      list.any(calls, fn(call) {
+        call.source == notice.after_entry
+        || call.result_source == Some(notice.after_entry)
+      })
+  }
+}
+
+// The entries of one strand, oldest first.
+fn strand_entries(
+  records: List(protocol.EntryRecord),
+  strand: String,
+) -> List(entry.Entry) {
+  records
+  |> list.reverse
+  |> list.filter(fn(record) { record.strand == strand })
+  |> list.map(fn(record) { record.entry })
+}
+
+// The notices raised on the active strand, oldest first.
+fn active_notices(model: Model) -> List(CacheNotice) {
+  list.filter(model.cache_notices, fn(notice) {
+    notice.strand == model.active_strand
+  })
+}
+
 fn record_lines(
   records: List(protocol.EntryRecord),
   model: Model,
+  notices: List(CacheNotice),
 ) -> #(
   List(Line),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
-  let entries =
-    records
-    |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
-    |> list.map(fn(record) { record.entry })
+  let entries = strand_entries(records, model.active_strand)
   let owner = solo_owner(model.captured)
   case model.details_expanded {
     True -> #(
-      list.flat_map(entries, entry_lines(_, True, owner)),
+      entries
+        |> splice_notices(notices, entry_holds)
+        |> list.flat_map(expanded_lines(_, owner)),
       dict.new(),
       dict.new(),
     )
@@ -6984,31 +7073,68 @@ fn record_lines(
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project
-        |> list.fold(#([], dict.new(), dict.new()), fn(acc, item) {
-          case item {
-            tool_activity.Narrative(value) -> {
-              let key = #(value, owner)
-              let lines =
-                dict.get(model.compact_entry_cache, key)
-                |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
-              #(
-                list.append(list.reverse(lines), acc.0),
-                acc.1,
-                dict.insert(acc.2, key, lines),
-              )
-            }
-            tool_activity.Tools(calls) -> {
-              let #(lines, cached) =
-                cached_activity_lines(calls, model.compact_call_cache)
-              #(
-                list.append(list.reverse(lines), acc.0),
-                dict.merge(acc.1, cached),
-                acc.2,
-              )
-            }
+        |> splice_notices(notices, item_holds)
+        |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
+          case spliced {
+            Transient(text) -> #([Line(System, text), ..acc.0], acc.1, acc.2)
+            Projected(item) -> compact_item_lines(acc, item, model, owner)
           }
         })
       #(list.reverse(reversed), calls, narratives)
+    }
+  }
+}
+
+// Expanded history renders every entry in full, so a spliced place is
+// either the entry itself or the transient row standing after it.
+fn expanded_lines(
+  spliced: Spliced(entry.Entry),
+  owner: Option(message.Origin),
+) -> List(Line) {
+  case spliced {
+    Transient(text) -> [Line(System, text)]
+    Projected(value) -> entry_lines(value, True, owner)
+  }
+}
+
+// One projected item folded into the compact accumulator: reversed rows, the
+// call cache and the narrative cache. Lifted out of the fold so the caches
+// it reads are parameters rather than a closure over the model, which is
+// what lets the notice fold share the same accumulator shape.
+fn compact_item_lines(
+  acc: #(
+    List(Line),
+    Dict(tool_activity.Call, List(Line)),
+    Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+  ),
+  item: tool_activity.Item,
+  model: Model,
+  owner: Option(message.Origin),
+) -> #(
+  List(Line),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+) {
+  case item {
+    tool_activity.Narrative(value) -> {
+      let key = #(value, owner)
+      let lines =
+        dict.get(model.compact_entry_cache, key)
+        |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
+      #(
+        list.append(list.reverse(lines), acc.0),
+        acc.1,
+        dict.insert(acc.2, key, lines),
+      )
+    }
+    tool_activity.Tools(calls) -> {
+      let #(lines, cached) =
+        cached_activity_lines(calls, model.compact_call_cache)
+      #(
+        list.append(list.reverse(lines), acc.0),
+        dict.merge(acc.1, cached),
+        acc.2,
+      )
     }
   }
 }
@@ -8131,6 +8257,136 @@ fn zero_usage() -> message.Usage {
       total: 0.0,
     ),
   )
+}
+
+// Everything one usage row changes about the model.
+//
+// The row arrives once per settled generation, so this is both the moment
+// the output rate is known and the moment the prompt cache can be judged.
+// Both readings are per event rather than cumulative, which is why they sit
+// here rather than in the status-line arithmetic over `model.usage`.
+fn receive_usage(
+  model: Model,
+  strand: String,
+  settled: message.Usage,
+) -> Model {
+  // The settlement's own output count over the time since the request went
+  // out. A settlement whose clock never started (a refusal, an empty turn)
+  // leaves the last rate standing.
+  let output_rate_tps = case model.peer, model.generation_started_ms {
+    // The window is this client's own clock from the request going out to
+    // the settlement, and a replay spends that window playing a file rather
+    // than waiting on a provider. `output_rate_min_ms` already discards the
+    // short ones, so a brief replay would report nothing anyway; a long one
+    // would report how fast the replay ran. Declining outright is the same
+    // rule that stops a replay echoing a prompt.
+    Replaying, _ | Disconnected, _ -> model.output_rate_tps
+
+    Attached(..), Some(started) | Preview, Some(started) ->
+      output_rate(settled.output, model.monotonic_time_ms() - started)
+    Attached(..), None | Preview, None -> model.output_rate_tps
+  }
+  let usage = add_usage(model.usage, settled)
+  let settled_model =
+    Model(
+      ..model,
+      usage:,
+      generation_started_ms: None,
+      output_rate_tps:,
+      notice: tokens(usage.total_tokens) <> " tokens",
+    )
+  watch_cache(settled_model, strand, settled)
+}
+
+// Folds one row into its strand's cache watch and raises any notice it
+// reveals.
+//
+// The clock is the terminal's own, the same one the frame pacing and the
+// throughput reading use, because the gap being measured is wall time the
+// operator spent away and no server field reports it. A replay plays its
+// file far faster than the session originally ran, so the gaps it would
+// measure are not the gaps that happened; it observes nothing.
+fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
+  use <- bool.lazy_guard(when: replaying(model), return: fn() { model })
+
+  let now = model.monotonic_time_ms()
+  let held = dict.get(model.cache_watch, strand) |> option.from_result
+  let #(miss, watch) = cache_miss.observe(held, settled, now)
+  let watched =
+    Model(..model, cache_watch: case watch {
+      None -> model.cache_watch
+      Some(value) -> dict.insert(model.cache_watch, strand, value)
+    })
+  case miss {
+    None -> watched
+    Some(value) -> note_cache_miss(watched, strand, value)
+  }
+}
+
+// A replay has no idle time of its own to report.
+fn replaying(model: Model) -> Bool {
+  case model.peer {
+    Replaying -> True
+    Attached(..) | Preview | Disconnected -> False
+  }
+}
+
+// Files one cache-miss row against the strand's transcript.
+//
+// The row is anchored to the records the strand already holds rather than
+// appended to the local notice block, so it stays under the turn it
+// explains as later entries arrive. A new row changes the projection, so
+// the record cache is dropped whether or not the strand is the visible one:
+// switching to it later must find the row in place.
+fn note_cache_miss(
+  model: Model,
+  strand: String,
+  miss: cache_miss.CacheMiss,
+) -> Model {
+  // A strand holding no record has nowhere to put the row: a window that
+  // retained nothing, or a strand whose history this connection never
+  // fetched. A notice anchored to no entry would never be drawn, so it is
+  // not raised at all.
+  case newest_record(model, strand) {
+    None -> model
+    Some(after_entry) ->
+      Model(
+        ..model,
+        cache_notices: list.append(model.cache_notices, [
+          CacheNotice(strand:, after_entry:, text: cache_miss_row(miss)),
+        ]),
+        record_cache_valid: False,
+      )
+      |> invalidate_transcript
+      |> invalidate_frame
+  }
+}
+
+// The newest retained entry of one strand. Records are held newest first,
+// so the head of the filtered list is the turn a row raised now follows.
+fn newest_record(model: Model, strand: String) -> Option(ids.EntryId) {
+  model.records
+  |> list.find(fn(record) { record.strand == strand })
+  |> result.map(fn(record) { record.entry.id })
+  |> option.from_result
+}
+
+// The notice as the operator reads it.
+//
+// Token counts use the status line's own abbreviation so the two figures
+// can be compared without unit arithmetic, and the money is omitted rather
+// than shown as zero when the model is unpriced: a confident "$0.00" would
+// claim the pause was free.
+fn cache_miss_row(miss: cache_miss.CacheMiss) -> String {
+  "Cache miss after "
+  <> cache_miss.idle_label(miss.idle_ms)
+  <> " idle: "
+  <> tokens(miss.tokens)
+  <> " tokens re-billed"
+  <> case miss.estimate {
+    None -> ""
+    Some(amount) -> " (~$" <> money(amount) <> ")"
+  }
 }
 
 fn add_usage(left: message.Usage, right: message.Usage) -> message.Usage {
