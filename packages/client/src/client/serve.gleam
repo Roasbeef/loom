@@ -1845,6 +1845,8 @@ fn code_mode_seam(
   scratch_seam: codemode_wiring.Scratch,
   schedule_door: Option(scheduleseam.Door),
   jobs_door: jobseam.Door,
+  history_seam: Option(history_tool.History),
+  memory_seam: Option(remember.Memory),
   owner: Option(custody.Owner),
 ) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
   case discovered {
@@ -1905,6 +1907,17 @@ fn code_mode_seam(
           // the model is offered jobs unconditionally, so a program that
           // could not even ask would be the surprise.
           |> codemode_wiring.over_jobs(Some(jobs_door))
+          // `history.*` and `memory.remember` are answered over the same
+          // two seams the `history_search` and `remember` tools are
+          // built on, so a query a program runs is the query a tool call
+          // runs — one index, one set of bounds, one memory session. A
+          // plane whose boot probe failed is `None` here exactly as it
+          // is in the registry, so the capability goes unrouted rather
+          // than refusing, and no description claims it.
+          |> codemode_wiring.over_recall(
+            index: history_seam,
+            store: memory_seam,
+          )
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
@@ -2760,6 +2773,38 @@ fn assemble_in(
       clearance_ms: jobs_clearance_ms,
     ))
 
+  // Recall, on the same two-name pattern and gated the same way: the
+  // holder that owns the index cannot exist until the runtime has been
+  // opened (its canonical session id is what a scoped query and every
+  // hit from this session are named by), so the tool seam closes over
+  // the name now and the holder starts under it further down. An index
+  // that will not open registers no tool at all.
+  let history_name = address.new_address(namespace)
+  let history_pulls = address.new_address(namespace)
+  use history_seam <- result.try(case services, ownership {
+    None, _ -> Ok(history_seam(index_path, history_name, logger))
+    Some(shared), Some(#(_, identity)) ->
+      Ok(
+        option.map(domain_service.history(shared), fn(shared) {
+          history.seam_for(shared, identity)
+        }),
+      )
+    Some(_), None ->
+      Error("shared domain assembly requires owned session identity")
+  })
+
+  // The memory door, gated the same way and for the same reason: a
+  // `remember` definition renders into the provider's cached byte prefix
+  // and is paid for on every request, so a host whose memory plane will
+  // not open registers no tool and says so once.
+  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
+
+  // Both seams are decided before the code-mode configuration rather
+  // than after it, because code mode is the *second* door onto each of
+  // them: `history.*` and `memory.remember` are serviced over these very
+  // records, so a configuration built first would have to be revised
+  // afterwards and the tool seam derived from it would carry the
+  // unrevised one.
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -2774,6 +2819,8 @@ fn assemble_in(
     scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
     schedule_door,
     jobs_door,
+    history_seam,
+    memory_seam,
     owner,
   ))
   let code_mode = option.map(code_mode_host, codemode_wiring.seam)
@@ -2816,32 +2863,6 @@ fn assemble_in(
   list.each(unset_names, fn(name) {
     log.warn(logger, "tools.env_unset", [field.ident(key: "name", value: name)])
   })
-
-  // Recall, on the same two-name pattern and gated the same way: the
-  // holder that owns the index cannot exist until the runtime has been
-  // opened (its canonical session id is what a scoped query and every
-  // hit from this session are named by), so the tool seam closes over
-  // the name now and the holder starts under it further down. An index
-  // that will not open registers no tool at all.
-  let history_name = address.new_address(namespace)
-  let history_pulls = address.new_address(namespace)
-  use history_seam <- result.try(case services, ownership {
-    None, _ -> Ok(history_seam(index_path, history_name, logger))
-    Some(shared), Some(#(_, identity)) ->
-      Ok(
-        option.map(domain_service.history(shared), fn(shared) {
-          history.seam_for(shared, identity)
-        }),
-      )
-    Some(_), None ->
-      Error("shared domain assembly requires owned session identity")
-  })
-
-  // The memory door, gated the same way and for the same reason: a
-  // `remember` definition renders into the provider's cached byte prefix
-  // and is paid for on every request, so a host whose memory plane will
-  // not open registers no tool and says so once.
-  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
 
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against

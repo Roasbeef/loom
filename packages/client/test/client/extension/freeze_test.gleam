@@ -399,15 +399,27 @@ pub fn the_resident_allowlist_is_pinned_test() {
 /// resident body has no capability channel to serve it on. Pinning both
 /// sets is what catches a future `ext/…` capability landing on the
 /// resident seam because the filter matched on the `cap/` prefix.
+///
+/// `cap/history` and `cap/memory` are on this list because
+/// `policy.extension_cap_modules` is the workspace seam widened, and a
+/// capability added there reaches an extension by construction. What an
+/// extension actually meets today is `unsupported_cap`: the bridge
+/// `client/extension/dispatch` builds composes no recall arm, and an
+/// installed extension's reach is fixed at install rather than by a
+/// per-host probe, so a session's index and memory store are not its to
+/// read. Admissible and unrouted is the same posture a code-mode program
+/// meets on a host whose probes failed, and widening the bridge is a
+/// decision with its own record to write rather than a coupling to
+/// follow.
 pub fn the_extension_allowlist_is_pinned_test() {
   let expected = [
-    "cap/actor", "cap/fs", "cap/git", "cap/job", "cap/kv", "cap/lsp", "cap/net",
-    "cap/proc", "cap/report", "cap/schedule", "cap/search", "cap/task", "ext",
-    "ext/hook", "ext/memory", "gleam/bit_array", "gleam/bool", "gleam/dict",
-    "gleam/dynamic", "gleam/dynamic/decode", "gleam/float", "gleam/function",
-    "gleam/int", "gleam/json", "gleam/list", "gleam/option", "gleam/order",
-    "gleam/pair", "gleam/result", "gleam/set", "gleam/string",
-    "gleam/string_tree", "gleam/uri",
+    "cap/actor", "cap/fs", "cap/git", "cap/history", "cap/job", "cap/kv",
+    "cap/lsp", "cap/memory", "cap/net", "cap/proc", "cap/report", "cap/schedule",
+    "cap/search", "cap/task", "ext", "ext/hook", "ext/memory", "gleam/bit_array",
+    "gleam/bool", "gleam/dict", "gleam/dynamic", "gleam/dynamic/decode",
+    "gleam/float", "gleam/function", "gleam/int", "gleam/json", "gleam/list",
+    "gleam/option", "gleam/order", "gleam/pair", "gleam/result", "gleam/set",
+    "gleam/string", "gleam/string_tree", "gleam/uri",
   ]
   assert both_differences(policy.allowed_imports(policy.extension()), expected)
     == #([], [])

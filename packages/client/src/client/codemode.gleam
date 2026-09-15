@@ -195,6 +195,7 @@ import codemode/enforcement
 import codemode/identity
 import codemode/launch
 import codemode/orchestration
+import codemode/recall as recall_router
 import codemode/satellite
 import codemode/search as search_router
 import codemode/seed
@@ -217,6 +218,8 @@ import tools/agent.{type Agency}
 import tools/blob
 import tools/codemode as codemode_tool
 import tools/fs
+import tools/history as history_tool
+import tools/remember
 import tools/schedule as schedule_tool
 import tools/search
 import tools/tool
@@ -321,6 +324,20 @@ pub type Config {
     /// set them apart. `mcp.none()` is the empty layer every host has
     /// until an operator configures a server.
     mcp: McpLayer,
+    /// The recall index and memory store the `history.*` and
+    /// `memory.remember` capabilities reach, each present only where
+    /// this host's boot probe opened it.
+    ///
+    /// One field holding both halves for the reason `mcp` is one field:
+    /// they are one decision from the host's side — two durable stores
+    /// beside the session file, probed together at boot — and a host
+    /// that could set the router and the advertised capability list
+    /// apart would eventually set them apart. `recall.none()` is what a
+    /// host that opened neither serves, and it leaves all three
+    /// capabilities *unrouted*: the `cap/schedule` posture, because a
+    /// door onto a rebuildable projection that could only ever refuse is
+    /// worse than no door.
+    recall: Recall,
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -346,6 +363,11 @@ pub type McpLayer =
 /// own type, aliased for the reason `McpLayer` is.
 pub type Scratch =
   scratch.Scratch
+
+/// The recall seam a host serves `history.*` and `memory.remember` over:
+/// `codemode/recall`'s own type, aliased for the reason `McpLayer` is.
+pub type Recall =
+  recall_router.Recall
 
 /// The same host configuration, serving `kv.*` over a running scratch
 /// store.
@@ -404,6 +426,31 @@ pub fn over_schedules(
 ///
 pub fn over_jobs(config: Config, door: Option(jobseam.Door)) -> Config {
   Config(..config, jobs: door)
+}
+
+/// The same host configuration, serving `history.*` over one recall index
+/// and `memory.remember` over one memory session.
+///
+/// The two arguments are the very seams the `history_search` and
+/// `remember` tools are built over, so a query a program runs and the
+/// same query run as a tool call reach one index with one set of bounds,
+/// and a note a program writes is the same `memory/note` entry a tool
+/// call writes. A host that never calls this — or that passes `None` for
+/// a plane its boot probe could not open — leaves those capabilities
+/// unrouted and advertises none of them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.over_recall(config, index: Some(seam), store: None)
+/// ```
+///
+pub fn over_recall(
+  config: Config,
+  index index: Option(history_tool.History),
+  store store: Option(remember.Memory),
+) -> Config {
+  Config(..config, recall: recall_router.Recall(index:, store:))
 }
 
 /// The same host configuration, writing `report.emit` artifacts into a
@@ -688,7 +735,33 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
 /// ```
 ///
 pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
-  list.append(seam_caps(seam), mcp_wiring.serviced_caps(seam_mcp(config, seam)))
+  list.flatten([
+    seam_caps(seam),
+    recall_router.serviced_caps_on(seam_recall(config, seam)),
+    mcp_wiring.serviced_caps(seam_mcp(config, seam)),
+  ])
+}
+
+// The recall seam one seam of the prelude sees, and the one place that
+// decision is made — `seam_mcp`'s shape, for `seam_mcp`'s reasons.
+//
+// **The orchestration seam sees none of it, ever**, and neither does the
+// extension seam. An orchestrator that could also read every session
+// this repository has ever had, or mint a note that reaches every later
+// one, is a materially worse thing to hand a model than one that cannot;
+// `vet/policy.default_cap_modules` states the same ruling as the
+// allowlist half, and the intersection test is what pins it. An
+// extension reaches its own workspace bridge
+// (`client/extension/dispatch`), which composes no recall arm, so
+// advertising one here would describe a door that is not there.
+fn seam_recall(config: Config, seam: vet_policy.Seam) -> Recall {
+  case seam {
+    vet_policy.WorkspaceSeam -> config.recall
+
+    vet_policy.ExtensionSeam
+    | vet_policy.OrchestrationSeam
+    | vet_policy.ResidentSeam -> recall_router.none()
+  }
 }
 
 /// The pooled outstanding-effect cap one execution runs under. Above the
@@ -786,6 +859,11 @@ pub fn default_config(
     // differ here.
     jobs: None,
     mcp: mcp_wiring.none(),
+    // No recall index and no memory store by default, the posture
+    // `mcp.none()` takes: `client/serve` probes both at boot and wires
+    // whichever opened, and a host that wired neither routes none of the
+    // three capabilities.
+    recall: recall_router.none(),
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -2054,7 +2132,14 @@ fn workspace_router(
     workspace_seam(config, request),
     over: search_router.routing(
       search_seam_for(workspace: request.workspace),
-      over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+      // The recall arm is bound to the *host* and not to the request,
+      // unlike the search arm above it: an index and a memory store are
+      // one per session, opened at boot, and nothing about a program's
+      // workspace root selects between them.
+      over: recall_router.routing(
+        config.recall,
+        over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+      ),
     ),
   )
 }
