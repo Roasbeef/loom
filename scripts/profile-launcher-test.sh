@@ -41,6 +41,18 @@ loom_profile_consume daemon --config "$profile_config" --state-dir "$state/confi
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--config $profile_config --state-dir $state/configured" ]]
 
 cat > "$profile_config" <<'EOF'
+["daemon"]
+profile = true
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/quoted-configured"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+
+cat > "$profile_config" <<'EOF'
+daemon.profile = true
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/dotted-configured"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+cat > "$profile_config" <<'EOF'
 [daemon]
 profile = false
 EOF
@@ -75,22 +87,26 @@ cat > "$state/bin/erl" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$@" > "$FAKE_ERL_ARGS"
 printf '%s\n' "$HOME" > "$FAKE_ERL_HOME"
+printf '%s\n' "${LOOM_DAEMON_PROFILE:-}" > "$FAKE_ERL_DAEMON_PROFILE"
 EOF
 chmod +x "$state/bin/erl"
 
 export PATH="$state/bin:$PATH"
 export FAKE_ERL_ARGS="$state/erl.args"
 export FAKE_ERL_HOME="$state/erl.home"
+export FAKE_ERL_DAEMON_PROFILE="$state/erl.daemon-profile"
 
 # Exercise the Makefile-generated slim launcher through macOS's Bash 3. An
 # empty-array expansion under `set -u` differs from newer Bash.
 /bin/bash "$ROOT/bin/loom"
 [[ "$(head -n 1 "$FAKE_ERL_ARGS")" == +Bd ]]
 [[ "$(cat "$FAKE_ERL_HOME")" == "$HOME" ]]
+[[ -z "$(cat "$FAKE_ERL_DAEMON_PROFILE")" ]]
 
 /bin/bash "$ROOT/bin/loom" --profile --state-dir "$state/slim"
 ! rg -F -- '--profile' "$FAKE_ERL_ARGS"
 [[ "$(cat "$FAKE_ERL_HOME")" == "$state/slim/tokens"/* ]]
+[[ "$(cat "$FAKE_ERL_DAEMON_PROFILE")" == 1 ]]
 
 /bin/bash "$ROOT/bin/loom" --token --profile
 rg -Fx -- --profile "$FAKE_ERL_ARGS"

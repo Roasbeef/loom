@@ -423,11 +423,13 @@ helper uses the bundled `mem_report` module and exits after reporting process
 heaps, binary memory, ETS, and allocator carriers. It does not force garbage
 collection or inspect session payloads.
 
-The launcher consumes `--profile` before it starts Erlang, so the client does
-not forward it when it starts or attaches to a daemon. It does not inspect the
-complete tails of `ext`, `replay`, or `sessions`, stops recognizing options after
-`--`, and preserves values such as `--token --profile` as client arguments. The
-cookie never enters `ERL_FLAGS`, the application argument vector, OS process
+The launcher consumes `--profile` before it starts Erlang. When that client
+finds no local daemon, its one-time local launch carries `--profile` to the new
+`loomd`; an already-published daemon is only authenticated and never
+reconfigured. The client does not send the flag in a control RPC. It does not
+inspect the complete tails of `ext`, `replay`, or `sessions`, stops recognizing
+options after `--`, and preserves values such as `--token --profile` as client
+arguments. The cookie never enters `ERL_FLAGS`, the application argument vector, OS process
 arguments, or a child emulator's environment. Remove the printed credential
 directory after the profiled process exits.
 

@@ -29,20 +29,26 @@ loom_profile_value_option() {
 
 # A profile node has to be named before the emulator starts, while the full
 # TOML decoder lives inside that emulator. Keep this deliberately narrow: the
-# accepted spelling is the documented `[daemon]` header followed by the
-# literal `profile = true`. The daemon's normal TOML validation rejects every
-# other key or value in this table before it begins serving requests.
+# accepted spellings cover the equivalent root-table TOML forms the catalogue
+# accepts. The daemon's normal TOML validation rejects every other key or
+# value in this table before it begins serving requests.
 loom_profile_config_enabled() {
   local config="$1"
 
   [[ -r "$config" ]] || return 1
 
   awk '
+    BEGIN { root = 1 }
     /^[[:space:]]*\[/ {
-      daemon = ($0 ~ /^[[:space:]]*\[daemon\][[:space:]]*(#.*)?$/)
+      root = 0
+      daemon = ($0 ~ /^[[:space:]]*\[(daemon|"daemon")\][[:space:]]*(#.*)?$/)
       next
     }
     daemon && /^[[:space:]]*profile[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ {
+      found = 1
+      exit
+    }
+    root && /^[[:space:]]*(daemon|"daemon")[[:space:]]*\.[[:space:]]*(profile|"profile")[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ {
       found = 1
       exit
     }
