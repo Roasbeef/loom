@@ -32,7 +32,7 @@ esac
 # build time because a release is unpacked where there is no git checkout;
 # `unknown` is what a tree built without one honestly has, and the `||` keeps
 # that from failing the build under `set -e`.
-BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 STRIP_ERTS="${DIST_STRIP_ERTS:-1}"
 [ "$DEBUG" = 1 ] && STRIP_ERTS=0
 REL_ROOT="$ROOT/build/release"
@@ -196,7 +196,8 @@ cat > "$REL/bin/loom" <<EOF
 set -euo pipefail
 LOOM_BUILD_VERSION="$VERSION"
 LOOM_BUILD_COMMIT="$BUILD_COMMIT"
-export LOOM_BUILD_VERSION LOOM_BUILD_COMMIT
+LOOM_BUILD_PLATFORM="$(scripts/platform.sh)"
+export LOOM_BUILD_VERSION LOOM_BUILD_COMMIT LOOM_BUILD_PLATFORM
 here=\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd -P)
 root=\$(dirname "\$here")
 : "\${LOOM_EXECUTABLE:=\$here/loom}"

@@ -26,7 +26,7 @@ ROOT="$(pwd)"
 # tarball with no git metadata beside it; `unknown` is what a tree built
 # without one honestly has, and the `||` keeps that from failing the build
 # under `set -e`.
-BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 
 # DIST_STRIP_ERTS covers every third-party binary the release copies in:
 # the ERTS ones and the bundled `gleam`. DIST_CODEMODE=0 builds the lean
@@ -516,7 +516,8 @@ cat > "$REL/bin/loomd" <<EOF
 set -euo pipefail
 LOOM_BUILD_VERSION="$VERSION"
 LOOM_BUILD_COMMIT="$BUILD_COMMIT"
-export LOOM_BUILD_VERSION LOOM_BUILD_COMMIT
+LOOM_BUILD_PLATFORM="$(scripts/platform.sh)"
+export LOOM_BUILD_VERSION LOOM_BUILD_COMMIT LOOM_BUILD_PLATFORM
 here=\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd -P)
 root=\$(dirname "\$here")
 
