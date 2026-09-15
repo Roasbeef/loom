@@ -757,11 +757,10 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
 // this repository has ever had, or mint a note that reaches every later
 // one, is a materially worse thing to hand a model than one that cannot;
 // `context.report` travels with them because it is routed by the same
-// arm, and whether it could be admitted on its own is the open question
-// `vet/policy.default_cap_modules` records rather than one settled here;
-// `vet/policy.default_cap_modules` states the same ruling as the
-// allowlist half, and the intersection test is what pins it. An
-// extension reaches its own workspace bridge
+// arm, and whether it could be admitted on its own is an open question
+// rather than one settled here. `vet/policy.default_cap_modules` states
+// the same ruling as the allowlist half, and the intersection test is
+// what pins it. An extension reaches its own workspace bridge
 // (`client/extension/dispatch`), which composes no recall arm, so
 // advertising one here would describe a door that is not there.
 fn seam_recall(config: Config, seam: vet_policy.Seam) -> Recall {

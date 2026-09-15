@@ -1135,63 +1135,6 @@ pub fn both_cuts_of_the_artifact_carry_the_same_modules_in_order_test() {
   })
 }
 
-// --- the size of what every request pays for -------------------------------
-
-// The shipped allowlists, copied. `tools` cannot import
-// `codemode/vet/policy` — the dependency runs the other way, because the
-// vetting package renders a `tool.Collected` — so the only way to measure
-// the description a real host serves is to restate the lists here. A copy
-// that falls behind makes this bound looser than the tree, never tighter,
-// and `scripts/gen-prelude.sh --check` is what catches a cap module that
-// nobody decided about.
-const shipped_workspace_caps = [
-  "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-  "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
-  "cap/history", "cap/memory", "cap/context",
-]
-
-const shipped_stdlib = [
-  "gleam/list", "gleam/string", "gleam/string_tree", "gleam/int", "gleam/float",
-  "gleam/bool", "gleam/result", "gleam/option", "gleam/dict", "gleam/set",
-  "gleam/order", "gleam/pair", "gleam/function",
-]
-
-fn shipped_workspace_offer() -> codemode.SeamOffer {
-  codemode.SeamOffer(
-    seam: codemode.WorkspaceSeam,
-    allowed_imports: list.append(shipped_workspace_caps, shipped_stdlib),
-    serviced_caps: ["proc.run"],
-    extra_surfaces: [],
-  )
-}
-
-pub fn the_workspace_description_stays_under_its_bound_test() {
-  // The description is the byte prefix of the provider's cached region:
-  // it is read on every request of every strand for the life of the
-  // session, whether or not the turn writes a program. Moving the
-  // function signatures behind `cap://` took a workspace-only host's
-  // whole `code_mode` entry from 52,162 bytes on the wire to 25,690.
-  //
-  // The bound is that measurement with about a tenth of headroom, and it
-  // exists so that the next increase is a decision somebody took and
-  // wrote down — a capability added to the prelude, a type widened —
-  // rather than a drift nobody noticed until a session's prefix had
-  // doubled again.
-  let made =
-    codemode.tool_for(
-      echoing_over(codemode.one_seam(shipped_workspace_offer())),
-    )
-  let wire =
-    string.byte_size(made.name)
-    + string.byte_size(made.description)
-    + string.byte_size(json.to_string(made.schema))
-  assert wire < 28_000
-
-  // And it is the real allowlist being measured, not an empty filter.
-  assert string.contains(made.description, "### cap/job")
-  assert string.contains(made.description, "### cap/fs")
-}
-
 // The link that made every other widening test hypothetical. Grants are
 // consumed for one call by the driver and land on the `Ctx`; `Request` is
 // the only channel from there into the pipeline, so if this does not

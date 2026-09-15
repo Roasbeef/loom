@@ -1463,8 +1463,8 @@ fn default_bootstrap_options() -> bootstrap.Options {
 /// Published `@internal` because the flag table is the launcher's contract
 /// with the operator and a test must be able to read it without driving a
 /// terminal. Every flag here selects launcher state or, for `--tools`, the
-/// metadata of the next session created; none of them is forwarded to a
-/// daemon this launcher may be sharing with other terminals.
+/// roster recorded on every session this launcher creates; none of them is
+/// forwarded to a daemon this launcher may be sharing with other terminals.
 ///
 /// ## Examples
 ///

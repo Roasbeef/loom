@@ -1540,7 +1540,7 @@ fn read_cap(
 // belonging to a seam it does not offer is as unreachable here as it is
 // in the description. The committed blocks come from `prelude.surfaces`
 // filtered by each seam's own `allowed_imports` — the same direction
-// `surface_text` runs the filter in — and the generated ones are the
+// `type_surface_text` runs the filter in — and the generated ones are the
 // seams' `extra_surfaces`, keyed by the `### <module>` heading each
 // block opens with (`mcp/codegen.render_surface`). A generated block
 // whose first line is not such a heading names no module and is dropped

@@ -407,10 +407,10 @@ pub fn the_resident_allowlist_is_pinned_test() {
 /// bridge `client/extension/dispatch` builds composes no recall arm, and
 /// an installed extension's reach is fixed at install rather than by a
 /// per-host probe, so a session's index, memory store and context
-/// arithmetic are not its to read. Admissible and unrouted is the same posture a code-mode program
-/// meets on a host whose probes failed, and widening the bridge is a
-/// decision with its own record to write rather than a coupling to
-/// follow.
+/// arithmetic are not its to read. Admissible and unrouted is the same
+/// posture a code-mode program meets on a host whose probes failed, and
+/// widening the bridge is a decision with its own record to write rather
+/// than a coupling to follow.
 pub fn the_extension_allowlist_is_pinned_test() {
   let expected = [
     "cap/actor", "cap/context", "cap/fs", "cap/git", "cap/history", "cap/job",
