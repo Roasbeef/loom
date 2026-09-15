@@ -68,4 +68,10 @@ gleam format packages/storage/src/storage/catalogue_names_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_archives.sql \
   packages/storage/src/storage/catalogue_archives_schema.gleam
 gleam format packages/storage/src/storage/catalogue_archives_schema.gleam
+# The v4 roster migration alters a table that `schema.sql` already declares
+# with the column, so it is embedded for the runtime upgrade path but never
+# loaded into the throwaway database parrot reads the schema from.
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_rosters.sql \
+  packages/storage/src/storage/catalogue_rosters_schema.gleam
+gleam format packages/storage/src/storage/catalogue_rosters_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"

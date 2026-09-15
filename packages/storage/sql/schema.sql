@@ -11,7 +11,8 @@ CREATE TABLE catalogue_sessions(
   configuration TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   request_key TEXT NOT NULL UNIQUE,
-  state TEXT NOT NULL CHECK(state IN ('reserved', 'saved'))
+  state TEXT NOT NULL CHECK(state IN ('reserved', 'saved')),
+  roster TEXT NOT NULL DEFAULT '' CHECK(roster IN ('', 'minimal', 'full'))
 );
 CREATE INDEX catalogue_workspace ON catalogue_sessions(workspace, session_id);
 CREATE TABLE catalogue_defaults(
