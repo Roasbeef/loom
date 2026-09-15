@@ -192,6 +192,7 @@ export LOOM_EXECUTABLE
 
 LOOM_PROFILE_TOOL="\$root/bin/loom-profile"
 source "\$root/share/diagnostics/profile-launcher.sh"
+unset LOOM_DAEMON_PROFILE
 loom_profile_consume client "\$@"
 profile_args=()
 if (( LOOM_PROFILE_ENABLED == 1 )); then
@@ -201,7 +202,7 @@ fi
 
 profile_exec=()
 if (( LOOM_PROFILE_ENABLED == 1 )); then
-  profile_exec=(/usr/bin/env "HOME=\$LOOM_PROFILE_COOKIE_HOME")
+  profile_exec=(/usr/bin/env "HOME=\$LOOM_PROFILE_COOKIE_HOME" "LOOM_DAEMON_PROFILE=1")
 fi
 
 exec \${profile_exec[@]+"\${profile_exec[@]}"} "\$root/erts-$ERTS_VSN/bin/erl" +Bd \\

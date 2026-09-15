@@ -403,17 +403,37 @@ loomd --profile --state-dir /private/loom-profile
 loom --profile --state-dir /private/loom-profile
 ```
 
+For a daemon that an operator starts regularly, the same restart-only choice
+can live in its existing catalogue file:
+
+```toml
+[daemon]
+profile = true
+```
+
+`loomd` reads that setting from `--config <loom.toml>`, or from
+`<state-dir>/loom.toml` when no config path is supplied. It is deliberately a
+daemon-only setting: distribution is chosen before the VM starts, so changing
+the file affects the next daemon start and cannot expose an already-running
+node. The release first starts a short local parser process using its bundled
+TOML library, then starts the daemon once with the selected mode. This extra
+boot preserves the same TOML key semantics the daemon validates rather than
+approximating them in shell. `false`, a missing table, and an unprofiled
+client launch leave distribution off.
+
 Each launch prints the exact `loom-profile` command for its generated node. Run
 that command in another terminal to take an observational memory census. The
 helper uses the bundled `mem_report` module and exits after reporting process
 heaps, binary memory, ETS, and allocator carriers. It does not force garbage
 collection or inspect session payloads.
 
-The launcher consumes `--profile` before it starts Erlang, so the client does
-not forward it when it starts or attaches to a daemon. It does not inspect the
-complete tails of `ext`, `replay`, or `sessions`, stops recognizing options after
-`--`, and preserves values such as `--token --profile` as client arguments. The
-cookie never enters `ERL_FLAGS`, the application argument vector, OS process
+The launcher consumes `--profile` before it starts Erlang. When that client
+finds no local daemon, its one-time local launch carries `--profile` to the new
+`loomd`; an already-published daemon is only authenticated and never
+reconfigured. The client does not send the flag in a control RPC. It does not
+inspect the complete tails of `ext`, `replay`, or `sessions`, stops recognizing
+options after `--`, and preserves values such as `--token --profile` as client
+arguments. The cookie never enters `ERL_FLAGS`, the application argument vector, OS process
 arguments, or a child emulator's environment. Remove the printed credential
 directory after the profiled process exits.
 

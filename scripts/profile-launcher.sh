@@ -27,6 +27,18 @@ loom_profile_value_option() {
   esac
 }
 
+# A profile node has to be named before the daemon emulator starts. The release
+# supplies its existing TOML parser as this reader: reimplementing TOML in the
+# shell would silently disagree about equivalent key spellings.
+loom_profile_config_enabled() {
+  local config="$1"
+
+  [[ -r "$config" ]] || return 1
+
+  [[ -n "${LOOM_PROFILE_CONFIG_READER:-}" ]] || return 1
+  "$LOOM_PROFILE_CONFIG_READER" "$config"
+}
+
 # Removes this launcher's --profile option while retaining the application's
 # original argument boundaries in LOOM_PROFILE_ARGS. It recognises options
 # only before -- and skips known option values, so a value named --profile is
@@ -50,6 +62,7 @@ loom_profile_consume() {
   fi
 
   local state_root=""
+  local config_path=""
   local parsing=1
   local option=""
 
@@ -83,6 +96,15 @@ loom_profile_consume() {
         LOOM_PROFILE_ARGS+=("$1")
         shift
         ;;
+      --config)
+        LOOM_PROFILE_ARGS+=("$option")
+        if (( $# == 0 )); then
+          continue
+        fi
+        config_path="$1"
+        LOOM_PROFILE_ARGS+=("$1")
+        shift
+        ;;
       *)
         LOOM_PROFILE_ARGS+=("$option")
         if loom_profile_value_option "$role" "$option" && (( $# > 0 )); then
@@ -92,6 +114,19 @@ loom_profile_consume() {
         ;;
     esac
   done
+
+  if [[ -z "$state_root" ]]; then
+    state_root="${HOME:+$HOME/.loom}"
+  fi
+
+  if [[ -z "$config_path" && -n "$state_root" ]]; then
+    config_path="$state_root/loom.toml"
+  fi
+
+  if [[ "$role" == daemon && "$LOOM_PROFILE_ENABLED" == 0 ]] \
+    && loom_profile_config_enabled "$config_path"; then
+    LOOM_PROFILE_ENABLED=1
+  fi
 
   if (( LOOM_PROFILE_ENABLED == 0 )); then
     return 0

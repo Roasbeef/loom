@@ -126,10 +126,11 @@ tui-shipment: ## Package the native TUI: build/tui-erlang-shipment + bin/loom
 		'SHIPMENT="$$(dirname "$$0")/../build/tui-erlang-shipment"' \
 		'LOOM_PROFILE_TOOL="$$SHIPMENT/bin/loom-profile"' \
 		'source "$$SHIPMENT/share/diagnostics/profile-launcher.sh"' \
+		'unset LOOM_DAEMON_PROFILE' \
 		'loom_profile_consume client "$$@"' \
 		'profile_args=()' \
 		'profile_exec=()' \
-		'if (( LOOM_PROFILE_ENABLED == 1 )); then profile_args=(-name "$$LOOM_PROFILE_NODE" +Muatags true -env HOME "$$LOOM_PROFILE_ORIGINAL_HOME" -kernel inet_dist_use_interface '\''{127,0,0,1}'\''); profile_exec=(/usr/bin/env "HOME=$$LOOM_PROFILE_COOKIE_HOME"); fi' \
+		'if (( LOOM_PROFILE_ENABLED == 1 )); then profile_args=(-name "$$LOOM_PROFILE_NODE" +Muatags true -env HOME "$$LOOM_PROFILE_ORIGINAL_HOME" -kernel inet_dist_use_interface '\''{127,0,0,1}'\''); profile_exec=(/usr/bin/env "HOME=$$LOOM_PROFILE_COOKIE_HOME" "LOOM_DAEMON_PROFILE=1"); fi' \
 		'exec $${profile_exec[@]+"$${profile_exec[@]}"} erl +Bd -pa "$$SHIPMENT"/*/ebin $${profile_args[@]+"$${profile_args[@]}"} -eval '\''tui@@main:run(tui)'\'' -noshell -extra $${LOOM_PROFILE_ARGS[@]+"$${LOOM_PROFILE_ARGS[@]}"}' \
 		> bin/loom
 	@chmod +x bin/loom

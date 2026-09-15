@@ -50,7 +50,8 @@ pub fn resolve_daemon(
       use config <- result.try(resolve_config(options.config, paths.root))
       Ok(daemon_bootstrap.Launch(
         server,
-        daemon_launch_arguments(paths.root, server, config),
+        daemon_launch_arguments(paths.root, server, config)
+          |> daemon_profile_arguments,
       ))
     },
     within_ms,
@@ -79,9 +80,20 @@ pub fn daemon_launch_arguments(
     path -> list.append(arguments, ["--config", path])
   }
   let helper = filepath.join(filepath.directory_name(server), "loom-exec")
-  case host.is_executable_file(helper) {
+  let arguments = case host.is_executable_file(helper) {
     True -> list.append(arguments, ["--helper", helper])
     False -> arguments
+  }
+  arguments
+}
+
+// The shell launcher sets this only while it is itself profiled. This branch
+// is reached only inside `resolve_daemon`'s vacant-endpoint launch callback,
+// so the flag never reaches a running daemon's control connection.
+fn daemon_profile_arguments(arguments: List(String)) -> List(String) {
+  case host.getenv("LOOM_DAEMON_PROFILE") {
+    Ok("1") -> list.append(arguments, ["--profile"])
+    Ok(_) | Error(_) -> arguments
   }
 }
 

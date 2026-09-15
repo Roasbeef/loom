@@ -287,6 +287,24 @@ body = \"b\"
 ") as "a [[schedule]] table must not be refused by the top-level key check"
 }
 
+pub fn a_daemon_profile_table_is_validated_at_the_top_level_test() {
+  let assert Ok(_parsed) = catalog.parse(minimal <> "
+[daemon]
+profile = true
+") as "the launcher-owned daemon table must be reachable through config"
+
+  assert catalog.parse(minimal <> "
+[daemon]
+profile = \"yes\"
+") == Error("daemon.profile must be true or false")
+
+  let assert Error("unknown key `enabled` in [daemon]" <> _detail) =
+    catalog.parse(minimal <> "
+[daemon]
+enabled = true
+")
+}
+
 pub fn malformed_toml_reported_test() {
   let assert Error("not valid toml: " <> _detail) =
     catalog.parse("[models.broken\ndialect =")
