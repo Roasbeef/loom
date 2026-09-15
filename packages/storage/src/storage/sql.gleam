@@ -275,16 +275,22 @@ pub type RegistrationPage {
   )
 }
 
-pub fn registration_page(session_id session_id: String) {
+pub fn registration_page(after after: String, archived archived: Int) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
        s.configuration, s.created_at, s.request_key, s.state
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
-WHERE s.session_id > ?
+WHERE s.session_id > ?1
+  AND EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+              WHERE a.session_id = s.session_id) = CAST(?2 AS INTEGER)
 ORDER BY s.session_id
 LIMIT 100"
-  #(sql, [dev.ParamString(session_id)], registration_page_decoder())
+  #(
+    sql,
+    [dev.ParamString(after), dev.ParamInt(archived)],
+    registration_page_decoder(),
+  )
 }
 
 pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
@@ -347,6 +353,8 @@ JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE m.principal_id = ? AND s.session_id > ?
   AND m.role IN ('operator', 'observer')
+  AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+                  WHERE a.session_id = s.session_id)
 ORDER BY s.session_id
 LIMIT 100"
   #(
@@ -431,6 +439,31 @@ pub fn delete_session_display_name(session_id session_id: String) {
 
 pub fn delete_registration(session_id session_id: String) {
   let sql = "DELETE FROM catalogue_sessions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub type SessionArchive {
+  SessionArchive(session_id: String)
+}
+
+pub fn session_archive(session_id session_id: String) {
+  let sql =
+    "SELECT session_id FROM catalogue_session_archives WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_archive_decoder())
+}
+
+pub fn session_archive_decoder() -> decode.Decoder(SessionArchive) {
+  use session_id <- decode.field(0, decode.string)
+  decode.success(SessionArchive(session_id:))
+}
+
+pub fn archive_session(session_id session_id: String) {
+  let sql = "INSERT INTO catalogue_session_archives (session_id) VALUES (?)"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn restore_session(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_archives WHERE session_id = ?"
   #(sql, [dev.ParamString(session_id)])
 }
 
