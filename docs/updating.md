@@ -1,11 +1,65 @@
 # Updating Loom
 
-Installing a new build leaves running clients and daemons on their original
-files. Restart the daemon when you want it to use the new build. This guide
-covers installation, restart, rollback, and cleanup; [distribution](distribution.md)
-describes the release artifacts.
+`loom update` downloads a published release, verifies its manifest and archives,
+installs fresh immutable trees, then gracefully restarts the shared daemon.
+Running terminals retain their original client files until they are reopened.
+This guide covers updates, source installation, restart, rollback and cleanup;
+[distribution](distribution.md) describes the release artifacts.
 
-## Install the new build
+## Update a published release
+
+```sh
+loom update                         # Latest stable GitHub release.
+loom update --check                 # Verify metadata without installing.
+loom update --version v0.3.0        # Select a published tag.
+loom update --commit FULL_COMMIT    # Require a published commit build.
+loom update --install-only          # Leave daemon lifecycle to the operator.
+```
+
+Commit selection resolves the full source SHA and looks for a GitHub release
+named `commit-<full-sha>`. It does not compile an unpublished commit. A short
+hexadecimal commit prefix of at least seven characters is accepted. Positional
+hexadecimal values select commits; use `--version` for a tag that looks like a
+commit. Latest selection refuses a known package-version downgrade. An explicit
+tag or commit is an intentional selection and can move backwards.
+
+The managed launcher records its prefix and bundled/slim client choice. An
+unmanaged client requires `--prefix DIR`; package-managed installations should
+be updated through their package manager. `--client bundled|slim` overrides the
+selected shape. `--state-dir DIR` and `--config FILE` choose the shared daemon
+that will be restarted; an installation prefix does not select a separate state
+root.
+
+A mirror can be selected with
+`--manifest-url https://example.com/releases/manifest-macos-arm64.json`. The
+manifest must match the running client's platform. The signature and archives
+are fetched beside it. `--from DIR` instead reads a local distribution directory;
+it is useful for an independently rebuilt candidate and performs no download.
+
+Every archive must match its manifest's exact size and SHA-256. Signatures are
+currently optional and no production trust roots ship with Loom:
+
+```sh
+loom update --keyring /trusted/path/release-keys.gpg --require-signature
+```
+
+An absent signature is allowed unless `--require-signature` is set. A present
+signature must verify with the supplied local keyring, even in optional mode.
+The manifest is verified before it is parsed. `gpgv` is needed when verifying a
+signature; the updater does not fetch keys or add them to a user's GPG home.
+Unsigned updates rely on the HTTPS source for authenticity. Artifact hashes
+alone do not authenticate that source. Key rotation is documented in
+[ADR-012](adr/012-release-manifests-and-updates.md).
+
+After installation, the updater requests authenticated graceful shutdown and
+waits up to 90 seconds for the captured daemon process to retire. It then starts
+or adopts an accepting daemon and checks its full source commit. It never
+force-kills the old daemon. A timeout or identity mismatch fails the command and
+leaves the installed and retained trees intact. Coordinate this restart with
+other users of the shared daemon, or use `--install-only` and the manual restart
+procedure below. Downloading and publication do not hot-load a running VM.
+
+## Install a source build
 
 From a checkout containing the revision you want:
 

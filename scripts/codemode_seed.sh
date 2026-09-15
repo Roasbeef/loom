@@ -22,6 +22,25 @@ case "$output" in
   *) echo "codemode seed: layout did not complete" >&2; exit 1 ;;
 esac
 
+# The seed is a release input, including every transitive Hex dependency.
+# Recreating its directory must not turn a source-identical build into a new
+# dependency resolution when a compatible version is published later.
+cp scripts/codemode-seed-manifest.toml "$seed/manifest.toml"
+
+# Generated source timestamps become part of Gleam's cache metadata. Release
+# builds use the source commit epoch before compiling the newly laid-out seed.
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+  python3 - "$seed" <<'PYTIME'
+import os
+from pathlib import Path
+import sys
+epoch = int(os.environ['SOURCE_DATE_EPOCH'])
+for path in Path(sys.argv[1]).rglob('*'):
+    if path.is_file():
+        os.utime(path, (epoch, epoch), follow_symlinks=False)
+PYTIME
+fi
+
 # Built until it stops resolving. Gleam writes *one* local dependency's
 # config fingerprint into build/packages per resolution pass, and a seed
 # missing any of them is treated as stale by the next build — which then
@@ -36,6 +55,11 @@ for _attempt in 1 2 3 4 5 6; do
   if ! log=$(cd "$seed" && gleam build 2>&1); then
     printf '%s\n' "$log" >&2
     echo "codemode seed: the seed project did not build" >&2
+    exit 1
+  fi
+  if ! cmp -s scripts/codemode-seed-manifest.toml "$seed/manifest.toml"; then
+    echo "codemode seed: dependency resolution changed the committed seed lock" >&2
+    echo "Review the generated manifest and update scripts/codemode-seed-manifest.toml explicitly." >&2
     exit 1
   fi
   case "$log" in

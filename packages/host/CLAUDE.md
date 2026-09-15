@@ -57,9 +57,12 @@ callers own launch timing, authentication policy, and application messages.
 - **Depended on by**: `client` for daemon state-root ownership; `tui` for
   local server bootstrap and its own bounded file reads. Terminal logger
   suppression, stdout forwarding, and VM exit remain in `tui`.
-- **FFI**: `host/bootstrap` is the only module in the package that declares an
-  `@external`, and `host_bootstrap_ffi.erl` holds only what no Gleam package
-  reaches: cross-process advisory locking through a helper port,
+- **FFI**: `host/internal/ffi_zlib` exposes the shared bounded gzip inflater
+  in `host_zlib_ffi.erl`. Extension installation retains its original client
+  adapter, while release installation calls the shared primitive directly.
+  OTP zlib produces bounded chunks; the shim rejects excess output before
+  retaining another chunk. `host/bootstrap` and `host_bootstrap_ffi.erl` hold
+  the remaining operations no Gleam package reaches: cross-process advisory locking through a helper port,
   `open_port` process launch and release, a positioned bounded read
   (`read_prefix`/`read_bounded`), an exclusive-create atomic rename,
   `realpath`, `os:find_executable`, `os:getpid`, `id -u`, procfs and Darwin

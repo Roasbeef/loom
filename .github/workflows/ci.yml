@@ -603,11 +603,18 @@ jobs:
       # The downloadable server carries this runner's ERTS and SQLite NIF.
       # Building it on the Linux gate proves the OTP pin reaches the shipped
       # artifact rather than stopping at source tests.
+      - name: Verify release update integration
+        run: |
+          set -euo pipefail
+          mkdir -p build/ci-deliverables
+          .github/scripts/hex_retry.sh make check-release-update 2>&1 | tee build/ci-deliverables/release-update.log
+
       - name: Build and smoke-test Linux deliverables
         run: |
           set -euo pipefail
-          .github/scripts/hex_retry.sh scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
-          .github/scripts/hex_retry.sh make dist 2>&1 | tee distribution-linux.log
+          .github/scripts/hex_retry.sh scripts/dev.sh --shipment-smoke 2>&1 | tee build/ci-deliverables/server-shipment-smoke.log
+          .github/scripts/hex_retry.sh make dist 2>&1 | tee build/ci-deliverables/distribution-linux.log
+          make update-release-smoke 2>&1 | tee build/ci-deliverables/update-release-smoke.log
           VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' packages/client/gleam.toml | head -1)"
           test -n "$VERSION"
           test -x build/release/loom/erts-17.0.5/bin/erl
@@ -628,15 +635,15 @@ jobs:
               build/release/loom \
               "dist/loomd-$VERSION-linux-x86_64.tar.gz" \
               "dist/loom-$VERSION-linux-x86_64.tar.gz"
-          } | tee -a distribution-linux.log
-          DIST_CODEMODE=0 .github/scripts/hex_retry.sh make dist 2>&1 | tee -a distribution-linux.log
+          } | tee -a build/ci-deliverables/distribution-linux.log
+          DIST_CODEMODE=0 .github/scripts/hex_retry.sh make dist 2>&1 | tee -a build/ci-deliverables/distribution-linux.log
           {
             echo "==> measured distribution without code mode"
             measure build/release/loom/erts-17.0.5 \
               build/release/loom/lib build/release/loom/bin/loom-exec \
               build/release/loom \
               "dist/loomd-$VERSION-linux-x86_64.tar.gz"
-          } | tee -a distribution-linux.log
+          } | tee -a build/ci-deliverables/distribution-linux.log
 
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -645,8 +652,7 @@ jobs:
           name: deliverables-linux-log
           retention-days: 14
           path: |
-            server-shipment-smoke.log
-            distribution-linux.log
+            build/ci-deliverables/*.log
 
   # ------------------------------------------------------------- the gate
   #

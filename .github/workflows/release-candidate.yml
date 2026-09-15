@@ -1,0 +1,87 @@
+# Candidate builds do not publish GitHub releases or access signing keys.
+# Two separate runners use one content-addressed Linux toolchain image.
+name: Reproduce release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full source commit to reproduce.
+        type: string
+        required: true
+      builder_image:
+        description: Toolchain image pinned as registry/name@sha256:full-digest.
+        type: string
+        required: true
+      release_tag:
+        description: Published tag name; empty uses commit-full-sha.
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [first, second]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source-${{ matrix.builder }}
+          persist-credentials: false
+      - name: Build inside the pinned toolchain
+        env:
+          BUILDER_IMAGE: ${{ inputs.builder_image }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILDER: ${{ matrix.builder }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUILDER_IMAGE" =~ ^[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]]
+          source="$GITHUB_WORKSPACE/source-$BUILDER"
+          [ "$(git -C "$source" rev-parse HEAD)" = "$SOURCE_COMMIT" ]
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          docker pull "$BUILDER_IMAGE"
+          docker run --rm --entrypoint bash \
+            --cap-add SYS_ADMIN \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --mount "type=bind,src=$source,dst=/source,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/output,dst=/out" \
+            -e "LOOM_BUILDER_ID=$BUILDER_IMAGE" \
+            -e "LOOM_RELEASE_TAG=${RELEASE_TAG:-commit-$SOURCE_COMMIT}" \
+            "$BUILDER_IMAGE" -c '
+              set -euo pipefail
+              git config --global --add safe.directory /source/.git
+              git clone --no-hardlinks /source /work/loom
+              cd /work/loom
+              scripts/release-build.sh
+              cp dist/* /out/
+            '
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-${{ matrix.builder }}
+          path: output/*
+          if-no-files-found: error
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          pattern: release-*
+          path: candidates
+      - name: Compare every artifact byte
+        run: python3 scripts/release-compare.py candidates/release-first candidates/release-second > reproduction.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reproduction-attestation
+          path: reproduction.json

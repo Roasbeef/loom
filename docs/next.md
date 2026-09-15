@@ -1,62 +1,66 @@
 # Next
 
-Read this first for the current work, settled boundaries, and remaining
-acceptance. Detailed measurements and review findings belong in their own
-records.
+Read this first for the current work, settled boundaries and remaining
+acceptance. Detailed verification belongs in the linked review records.
 
-This edition is based on main `fe3cfbf2` and the local #404 takeover commit
-`76030114`, checked September 15, 2026 UTC. The implementation has completed
-independent review; shipment and final-head CI acceptance remain separate. The broader
-feature, issue, and memory audit from the previous edition was not repeated.
-Its historical detail remains available at `6f598fc0:docs/next.md`.
+This edition is based on merged #404 at
+`cc797e4182ab37d79f10b851bf4262d36be1832a` and the release-updater change set,
+checked September 15, 2026. Git ancestry, current implementation and local gate
+results were checked. Hosted candidate builds and independent artifact
+comparison have not been run for this change.
 
 ## Where the tree is
 
 | Body of work | Verified state |
 |---|---|
-| Daemon profiling | #417 merged as `e41298c5` after hosted CI and Linux signoff passed at its final head. |
-| Session archive | #418 merged as `9a00da99` after hosted CI and Linux signoff passed at its final head. Protocol 035 owns archive/restore. |
-| Provider completion cleanup | #420 merged as `991a2c31` after hosted CI and Linux signoff passed at its final head. |
-| Numbered diff previews | #421 merged as `fe3cfbf2` after hosted CI and Linux signoff passed at its final head. Its macOS test failure passed one bounded rerun after a clean-HOME local module run passed. |
-| Updating a running daemon | #404 remains open. The takeover integrates all four merges and fixes drain ordering, immutable installation, build identity, and reconnect. Independent review is resolved through `76030114`; the full local gate passed, while release and final-head CI validation remain required. See [the takeover record](review/update-takeover.md). |
+| Daemon profiling, session archive, provider completion cleanup and numbered diffs | #417, #418, #420 and #421 are merged ancestors of the baseline. Their current code was retained. |
+| Updating a running daemon | #404 is merged at the baseline. It supplies immutable installation, graceful drain, build identity and reconnect. |
+| Broad closure captures | #414 is merged and included in the baseline. R12 warns about retained outer records used only through direct field access; no duplicate implementation issue is needed. |
+| Native release updater | `loom update` resolves manifests, optionally verifies local-keyring signatures, downloads through Gun, stages checked archives, publishes complete trees and gracefully restarts the shared daemon. Installed bundled and slim transitions passed on macOS arm64. |
+| Release reproduction | Canonical archives, complete manifests, a committed seed lock, toolchain inventory and a two-runner Linux x86_64 candidate workflow are implemented. No independent complete rebuild comparison or Linux candidate execution has passed yet. |
+| Broader Gun adoption | [#422](https://github.com/Roasbeef/loom/issues/422) owns the transport assessment. It is an inventory and requirements comparison, not a blanket migration. |
 
-Main CI run `34923050531` completed successfully at `fe3cfbf2`. On the #404
-implementation at `76030114`, the full local `make check` gate passed, including
-1,807 client and 510 TUI tests. Final release and pushed-head checks still own
-shipment acceptance.
+[Release updater verification](review/release-updater.md) records the independent
+review, corrections and completed gates. The full `make check` gate completed with exit status 0, including the updater
+fixtures and house lint. `make doc-check` also completed with exit status 0.
+Neither result substitutes for hosted candidate or independent rebuild evidence.
 
 ### Corrections to the previous edition
 
-The previous edition called #417, the archive branch, and the provider cleanup
-fix unfinished. All three are merged, along with #421. Its update row also
-claimed versioned installation never mutates a live daemon's tree. That claim
-was false: replacement, legacy migration, and pruning still lack sufficient
-live-process ownership evidence. The takeover now gives each install a fresh directory and performs no pruning.
+The previous handoff said #404 remained open. It is now merged. Its deliberate
+manual restart procedure remains valid for `make install` and
+`loom update --install-only`; the new default `loom update` performs an
+authenticated graceful restart after publication.
 
-The original drain fixtures missed the authenticated production path, which
-re-enters the registry during delivery. Running callbacks inside the registry
-blocked that path. The takeover invokes a snapshot of callbacks outside the
-registry and root receive loops, fences gateway mutations, and flushes held
-returns through the real socket before teardown. Worker completion still does
-not replace the original lifetime witness.
+Canonical packaging alone does not establish reproducibility of a release that
+also carries OTP, native libraries and compiler caches. The new recipe fixes
+the source prefix, records the toolchain and locks the seed's complete dependency
+graph. Its complete outputs still need independent comparison per platform.
+
+A portable slim client cannot use its builder's platform as its update target.
+Its launcher now detects the execution host. The archive reader also admits
+Gleam's generated `@` module separators while preserving path containment.
+Both corrections are covered by the installed-release smoke.
 
 ## What to do next
 
-1. Validate and present **#404**, addressing **#392**, for the owner's final
-   merge decision. The installer uses fresh immutable directories and retains
-   old trees for manual cleanup; legacy layouts require offline migration.
-   **Exit:** full gate, release checks, hosted CI, and Linux signoff on the
-   pushed head, followed by the owner's merge decision. Do not restart the
-   user's daemon for verification. Protocols 037 and 038 are accepted with
-   their review corrections recorded.
-2. Verify the paired client/server release after the update path lands.
-   **Exit:** release smoke and update/reconnect evidence from the actual bundle,
-   with its build identity recorded. Local client tests alone do not establish
-   installer or shipment acceptance.
-3. Revisit older work only through its owning issue. The live open PR inventory
-   also contains **#397**, **#396**, **#395**, and **#278**; they were left
-   untouched by this merge pass. **Exit:** obtain scope for that work and check
-   current evidence before carrying forward an old diagnosis.
+1. Complete the release-candidate execution environment and independent builds.
+   **Exit:** two clean builders using the same recorded inputs produce identical
+   complete files, with successful bundle smoke checks. Linux candidate smoke
+   needs an approved environment capable of the nested sandbox namespaces.
+   Add equivalent, separately verified builders for the other supported
+   platforms before claiming coverage there.
+2. Present the release updater with its local verification and remaining hosted
+   evidence kept explicit. **Exit:** full repository gate, final branch review,
+   hosted CI and applicable Linux signoff at the proposed head. Do not use the
+   operator's live daemon or installed prefix as a fixture.
+3. Establish production release keys when signing is enabled. **Exit:** approved
+   fingerprints, independently distributed trust roots and a tested overlap
+   rotation. Unsigned releases remain permitted by default in this change;
+   a present signature always requires a valid supplied keyring.
+4. Assess other HTTP consumers under **#422**. **Exit:** each consumer has a
+   documented keep/adopt/defer decision based on its streaming, policy and
+   ownership requirements. No transport migration is bundled into this updater.
 
 ## Rulings already made
 
@@ -96,39 +100,48 @@ activation and jail policy. Portable packages stay free of I/O and externals;
 process ownership follows [the Weft mapping](weft.md). Use the design/spec and
 owning architecture documents for the older subsystem rulings.
 
+**Release authenticity and restart are explicit.**
+[ADR-012](adr/012-release-manifests-and-updates.md) defines the manifest, optional
+signatures, explicit local trust, fixed-prefix reproduction and native download
+boundary. [Updating](updating.md) defines publication and graceful restart.
+Socket loss alone never authorizes replacement; the captured native lifetime
+must retire and the accepting daemon must report the expected full commit.
+
 ## Deliberately open
 
-None of these is unfinished work somebody forgot.
-
-- A durable restart-specific cancellation reason remains a separate protocol
-  decision; protocol 038 preserves the existing generic abort diagnostic.
-- Automatic installer pruning is deliberately absent. Manual cleanup must
-  account for every live client and daemon, not just the latest symlink pair.
-- Earlier memory footprint observations, startup timing, jailed CLI credential
-  setup, advisor deferrals, and the wider issue inventory were not re-audited.
-  Consult their owning records before treating them as current defects.
+- Production signing and default embedded release trust roots are not enabled.
+- Independent full-artifact reproduction is unverified on every platform; the
+  initial hosted recipe covers Linux x86_64 provisioning only.
+- Old immutable release trees require coordinated manual cleanup. Neither the
+  installer nor updater infers that every process has stopped using them.
+- Broader transport adoption belongs to #422. R12 closure-capture lint is already
+  implemented by #414.
 
 ## How to verify
 
 ```sh
 make check
 make doc-check
-make codemode-seed
-make release-smoke
-bash scripts/test.sh client --match daemon_root_test
-bash scripts/test.sh client --match gateway_test
-bash scripts/test.sh client --match session_socket_test
+make codemode-seed release release-client tui-shipment
+make release-smoke release-client-smoke
+make check-release-update
+make update-release-smoke
+python3 scripts/release-compare.py first/dist second/dist
 ```
 
-**Capture the gate's own exit status.** A successful log reader proves nothing
-about the command that wrote the log. **Use one build/gate at a time per
-checkout.** Enforced code-mode worktrees belong outside `/tmp`, which the Linux
-jail replaces with scratch.
+**Capture each gate's own exit status.** A successful log reader proves nothing
+about the process that wrote it. Do not edit a shell driver while it is running:
+a changed file offset can turn a successful package suite into a failed wrapper.
 
-**Use an empty HOME for isolated integration fixtures.** Personal hooks can
-change fixture behavior. Preserve required tool and cache paths explicitly.
-Keep modules using VM-global capability fixtures in `scripts/serial-tests`.
+**Use one build per checkout.** Installed-bundle smoke tests use private copied
+release trees and state roots. Enforced code-mode worktrees belong outside
+`/tmp`, which the Linux jail replaces with scratch.
 
-Only `scripts/signoff.sh` posts Linux signoff for a pushed head. Local package
-gates do not establish Linux enforcement or shipment acceptance. See
-[execution](execution.md) for the remaining operational rules.
+**Reap fixture-owned children concurrently.** A stopped but unreaped daemon is
+still a native lifetime; an updater correctly refuses replacement while it is
+present. Keep failed fixture trees until their processes have retired.
+
+**Keep local gates separate from release certification.** Only
+`scripts/signoff.sh` posts Linux signoff for a pushed head. Native unit tests,
+canonical packaging tests and a local installed-update smoke do not certify
+independent artifact reproduction. See [execution](execution.md).

@@ -791,3 +791,14 @@ session and sends it many invocations.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules. `make
   codemode-seed` prepares the offline package cache; `make e2e-codemode`
   runs the jailed acceptance against it.
+
+
+## Release seed lock
+
+`scripts/codemode_seed.sh` installs the committed
+`scripts/codemode-seed-manifest.toml` after `seed.prepare` lays out the fresh
+project. It checks byte equality after every online build, so changing a
+vendored requirement cannot silently select newer transitive dependencies.
+Release builds normalize seed source timestamps before compilation and retain
+the warm compiler cache. The seed lock and fixed builder prefix are recorded
+release inputs; see `docs/adr/012-release-manifests-and-updates.md`.

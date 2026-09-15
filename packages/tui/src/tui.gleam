@@ -84,6 +84,9 @@ import tui/text_hygiene
 import tui/theme
 import tui/tool_activity
 import tui/transcript_anchor
+import tui/update
+import tui/update/download
+import tui/update/options as update_options
 import tui/virtual_backend
 import tui/workspace
 import tui/worktree_view
@@ -255,6 +258,9 @@ type Launch {
   // Forwarding rather than reimplementing is what stops the launcher and
   // the server disagreeing about what an install did.
   Forward(arguments: List(String))
+
+  // Updates run before terminal setup and own their daemon restart policy.
+  Update(arguments: List(String))
 
   // `loom replay …` is not one either: it installs no terminal state and
   // opens no socket. It plays a recording through the virtual backend and
@@ -751,7 +757,10 @@ pub fn main() {
       ffi_terminal.silence_logger()
 
       let #(record, arguments) = case raw {
-        ["ext", ..] | ["replay", ..] | ["sessions", ..] -> #("", raw)
+        ["ext", ..] | ["replay", ..] | ["sessions", ..] | ["update", ..] -> #(
+          "",
+          raw,
+        )
         _other -> take_flag(raw, "--record")
       }
       let launch = parse_launch(arguments)
@@ -759,12 +768,29 @@ pub fn main() {
         // The passthrough runs before a single line of terminal setup: this
         // process is a pipe for the duration and then it is gone.
         Forward(arguments:) -> forward(arguments)
+        Update(arguments:) -> run_update(arguments)
         Replay(path:, frames:, size:) -> replay(path, frames, size)
         Sessions(options:, command:) -> run_sessions(options, command)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
     }
+  }
+}
+
+// Update admission has no terminal dependency; its failures retain a shell status.
+fn run_update(arguments: List(String)) -> Nil {
+  let outcome = {
+    use choices <- result.try(update_options.parse(arguments))
+    let platform =
+      host_bootstrap.getenv("LOOM_BUILD_PLATFORM")
+      |> result.unwrap("")
+    let temporary = host_bootstrap.getenv("TMPDIR") |> result.unwrap("/tmp")
+    update.run(choices, platform, temporary, download.fetch)
+  }
+  case outcome {
+    Ok(Nil) -> Nil
+    Error(reason) -> rejected_launch("update: " <> reason)
   }
 }
 
@@ -807,6 +833,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
         Ok("replay") -> Some(replay_usage())
         Ok("sessions") -> Some(sessions_usage())
         Ok("ext") -> Some(extension_usage())
+        Ok("update") -> Some(update_options.usage())
         Ok(_other) | Error(Nil) -> Some(launch_usage())
       }
   }
@@ -814,7 +841,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "replay" | "sessions" | "ext" -> True
+    "replay" | "sessions" | "ext" | "update" -> True
     _ -> False
   }
 }
@@ -1061,7 +1088,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // recorded.
   let launched = case launch {
     // Unreachable: `main` answers these before it builds a model.
-    Forward(..) | Replay(..) | Sessions(..) | Demo -> base
+    Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo -> base
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -1197,6 +1224,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     [] -> Local(default_bootstrap_options(), "")
     ["--demo"] -> Demo
     ["ext", ..rest] -> Forward(arguments: rest)
+    ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -1444,6 +1472,7 @@ fn launch_usage() -> String {
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
+  <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"

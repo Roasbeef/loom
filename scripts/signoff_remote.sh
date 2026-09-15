@@ -230,7 +230,8 @@ git -C "$work" checkout --quiet --detach "$LOOM_SHA"
 # here, which needs no systemd handoff — and then runs signoff.sh itself
 # with --dry-run, because posting happens after the container exits (see
 # this script's own header comment for why).
-cat >"$work/.ci-container-entrypoint.sh" <<'ENTRYPOINT'
+mkdir -p "$work/build"
+cat >"$work/build/.ci-container-entrypoint.sh" <<'ENTRYPOINT'
 #!/usr/bin/env bash
 set -euo pipefail
 # The bind-mounted working tree keeps the host's UID as owner, which
@@ -253,7 +254,7 @@ scripts/signoff.sh --commit "$2" --dry-run || st=$?
 rmdir "$base" 2>/dev/null || true
 exit "$st"
 ENTRYPOINT
-chmod +x "$work/.ci-container-entrypoint.sh"
+chmod +x "$work/build/.ci-container-entrypoint.sh"
 
 echo "== building loom-signoff:$short (scripts/signoff/Dockerfile at $LOOM_SHA)"
 docker build --quiet -f scripts/signoff/Dockerfile -t "loom-signoff:$short" scripts/signoff >"$logs/image-build.log"
@@ -271,7 +272,7 @@ docker run --rm \
 	-v loom-signoff-go-mod-cache:/var/cache/loom-signoff/go/pkg/mod \
 	${LOOM_PARALLEL:+-e "SIGNOFF_PARALLEL=$LOOM_PARALLEL"} \
 	"loom-signoff:$short" \
-	/work/.ci-container-entrypoint.sh "$short" "$LOOM_SHA" >"$logs/signoff.log" 2>&1
+	/work/build/.ci-container-entrypoint.sh "$short" "$LOOM_SHA" >"$logs/signoff.log" 2>&1
 verdict=$?
 set -e
 elapsed=$(($(date +%s) - started))
