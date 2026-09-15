@@ -1,0 +1,121 @@
+# A tag starts native builds; publication remains a reviewed draft, as in lnd.
+name: Build release draft
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (never a branch or commit).
+        required: true
+        type: string
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - name: Check tag syntax
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - name: Bind tag to the checked-out source
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 scripts/release-tag.py "$RELEASE_TAG" --check
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  linux:
+    needs: prepare
+    uses: ./.github/workflows/release-candidate.yml
+    with:
+      source_commit: ${{ needs.prepare.outputs.commit }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+      builder_image: ghcr.io/roasbeef/loom/release-builder@sha256:719150305f134457b2842679bcb1e330bd49682cec9ceb28d25a8867ff523ede
+  macos:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [first, second]
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: '1.18.1'
+          gleam-patches: '860f8224ddb7e1ecb7f983fb622ede12466225e5'
+          otp-version: '29.0.5'
+          rebar3-version: '3.27.0'
+          go-version: '1.26.3'
+          cache-namespace: release-macos-${{ matrix.builder }}
+          cache: 'false'
+      - name: Build from a clean fixed prefix
+        env:
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          LOOM_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = arm64 ]
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" /Users/Shared/loom-release
+          cd /Users/Shared/loom-release
+          [ "$(git rev-parse HEAD)" = "$SOURCE_COMMIT" ]
+          export LOOM_BUILDER_ID="macos-15-${ImageVersion:?}"
+          scripts/release-build.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-macos-${{ matrix.builder }}
+          path: /Users/Shared/loom-release/dist/*
+          if-no-files-found: error
+  publish:
+    needs: [prepare, linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          pattern: release-*
+          path: candidates
+      - name: Compare and bind all release assets
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: python3 scripts/release-stage.py candidates upload --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"
+      # No overwrite path: rerunning after creation fails rather than replacing
+      # bytes that someone may already have installed from this release.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          set -euo pipefail
+          actual=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          [ "$actual" = "$SOURCE_COMMIT" ]
+          args=(--draft --verify-tag --title "Loom $RELEASE_TAG" --generate-notes)
+          if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "${args[@]}" upload/*

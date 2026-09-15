@@ -31,7 +31,7 @@ def tree_digest(root):
     return digest.hexdigest()
 
 
-record = {'builder': os.environ['LOOM_BUILDER_ID'], 'source_prefix': '/work/loom', 'tools': {}}
+record = {'builder': os.environ['LOOM_BUILDER_ID'], 'source_prefix': str(Path.cwd().resolve()), 'tools': {}}
 for name, arguments in [('gleam', ['--version']), ('rebar3', ['--version']), ('go', ['version']),
                         ('cc', ['--version']), ('python3', ['--version'])]:
     path = Path(shutil.which(name) or name).resolve(strict=True)
