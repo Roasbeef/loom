@@ -15,6 +15,9 @@ class InstallTest(unittest.TestCase):
         self.repo = self.root / "repo"
         (self.repo / "scripts").mkdir(parents=True)
         shutil.copy(Path(__file__).with_name("install.sh"), self.repo / "scripts/install.sh")
+        (self.repo / "packages/tui/priv").mkdir(parents=True)
+        shutil.copy(Path(__file__).resolve().parent.parent / "packages/tui/priv/install.sh",
+                    self.repo / "packages/tui/priv/install.sh")
         self.prefix = self.root / "prefix space $cash 'quote"
         self.lib = self.prefix / "lib/loom"
         self.env = dict(os.environ, PREFIX=str(self.prefix), HOME=str(self.root / "home"))
