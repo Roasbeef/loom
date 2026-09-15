@@ -134,3 +134,31 @@ pub fn domain_status_counts_are_separate_required_observations_test() {
       as "a missing domain observation is not silently reported as zero"
   })
 }
+
+// The owner actions retain the epoch fence while archive listing stays read-only.
+pub fn archive_controls_encode_with_their_authority_fields_test() {
+  let id = "00000000-0000-7000-8000-000000000001"
+  let epoch = protocol.Epoch("current")
+  list.each(
+    [
+      #(protocol.ArchiveSession(id), "sessions.archive"),
+      #(protocol.RestoreSession(id), "sessions.restore"),
+    ],
+    fn(pair) {
+      assert protocol.mutates(pair.0)
+      assert protocol.encode(7, pair.0, epoch)
+        == Ok(
+          "{\"v\":2,\"id\":7,\"cmd\":\""
+          <> pair.1
+          <> "\",\"body\":{\"epoch\":\"current\",\"session_id\":\""
+          <> id
+          <> "\"}}",
+        )
+    },
+  )
+  assert !protocol.mutates(protocol.ListArchivedSessions("", None))
+  assert protocol.encode(7, protocol.ListArchivedSessions("", None), epoch)
+    == Ok(
+      "{\"v\":2,\"id\":7,\"cmd\":\"sessions.archived\",\"body\":{\"after\":\"\"}}",
+    )
+}

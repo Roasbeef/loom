@@ -417,10 +417,20 @@ pub type Interrupt {
 @internal
 pub type ControlOutcome {
   /// One authorized page and the identity to highlight in it.
-  PageLoaded(page: control_protocol.Page, selected: String)
+  PageLoaded(
+    page: control_protocol.Page,
+    selected: String,
+    collection: session_selector.Collection,
+  )
 
   /// The daemon removed this registration and its database.
   SessionDeleted(session_id: String)
+
+  /// Acknowledged archive preserves files while removing the active row.
+  SessionArchived(session_id: String)
+
+  /// Acknowledged restoration removes the row from the archive page.
+  SessionRestored(session_id: String)
 
   /// The daemon acknowledged a rename with its canonical catalogue row.
   SessionRenamed(row: control_protocol.Session)
@@ -1755,6 +1765,22 @@ fn begin_open(model: Model, session: String) -> Model {
 
 // Paging observes only authorized metadata in the requested revision.
 fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
+  load_catalogue_collection(model, after, revision, session_selector.Active)
+}
+
+// Collection belongs to the request, so a late page cannot be relabelled by
+// a key pressed while its one bounded control job is still outstanding.
+fn load_catalogue_collection(
+  model: Model,
+  after: String,
+  revision: Option(Int),
+  collection: session_selector.Collection,
+) -> Model {
+  let command = case collection {
+    session_selector.Active -> control_protocol.ListSessions(after, revision)
+    session_selector.Archived ->
+      control_protocol.ListArchivedSessions(after, revision)
+  }
   case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -1775,11 +1801,7 @@ fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
           fn() {
             use host <- daemon_selection.with_live_control(host)
             use reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.ListSessions(after, revision),
-                5000,
-              )
+              daemon.request(daemon_selection.control(host), command, 5000)
               |> result.map_error(daemon_selection.failure),
             )
             use page <- result.try(case reply {
@@ -1795,7 +1817,7 @@ fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
               "" -> default_selection(host, workspace)
               id -> id
             }
-            Ok(PageLoaded(page, selected))
+            Ok(PageLoaded(page, selected, collection))
           },
         ])
         |> weft.deadline(12_000)
@@ -1856,6 +1878,18 @@ fn begin_rename(model: Model, session: String, name: String) -> Model {
 }
 
 fn begin_delete(model: Model, session: String) -> Model {
+  begin_removal(model, session, PermanentlyDelete)
+}
+
+// The ADT keeps a confirmed permanent deletion distinct from reversible
+// archive and restore requests while they share one bounded job slot.
+type Removal {
+  Archive
+  Restore
+  PermanentlyDelete
+}
+
+fn begin_removal(model: Model, session: String, removal: Removal) -> Model {
   case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue request is already running")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -1866,8 +1900,23 @@ fn begin_delete(model: Model, session: String) -> Model {
         weft.new([
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            use id <- result.map(daemon_selection.delete(host, session))
-            SessionDeleted(id)
+            case removal {
+              Archive ->
+                result.map(
+                  daemon_selection.archive(host, session),
+                  SessionArchived,
+                )
+              Restore ->
+                result.map(
+                  daemon_selection.restore(host, session),
+                  SessionRestored,
+                )
+              PermanentlyDelete ->
+                result.map(
+                  daemon_selection.delete(host, session),
+                  SessionDeleted,
+                )
+            }
           },
         ])
         |> weft.deadline(85_000)
@@ -1876,7 +1925,12 @@ fn begin_delete(model: Model, session: String) -> Model {
       Model(
         ..model,
         control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "stopping and deleting session " <> session,
+        notice: case removal {
+          Archive -> "stopping and archiving session " <> session
+          Restore -> "restoring session " <> session
+          PermanentlyDelete ->
+            "stopping and permanently deleting session " <> session
+        },
       )
     }
   }
@@ -1969,16 +2023,24 @@ pub fn accept_control_event(model: Model, event: ControlEvent) -> Model {
 
 fn finish_control(model: Model, result) {
   case result {
-    Some(Ok(PageLoaded(page, selected))) ->
-      Model(
-        ..model,
-        overlay: DaemonSelector(session_selector.new(
+    Some(Ok(PageLoaded(page, selected, collection))) -> {
+      let selector =
+        session_selector.new(
           session_selector.prioritize(page, model.workspace.path),
           selected,
-        )),
-        notice: "Enter opens · n creates · r renames · d deletes",
+        )
+      Model(
+        ..model,
+        overlay: DaemonSelector(session_selector.State(..selector, collection:)),
+        notice: case collection {
+          session_selector.Active ->
+            "Enter opens · d archives · a shows archived sessions"
+          session_selector.Archived ->
+            "Enter restores · d permanently deletes · a shows active sessions"
+        },
       )
       |> invalidate_frame
+    }
 
     Some(Ok(SessionRenamed(row))) ->
       Model(
@@ -2004,23 +2066,33 @@ fn finish_control(model: Model, result) {
     // re-listing: the reply proves this identity is gone, and a fresh page
     // would move every other row under the operator's cursor.
     Some(Ok(SessionDeleted(id))) ->
-      Model(
-        ..model,
-        overlay: case model.overlay {
-          DaemonSelector(selector) ->
-            DaemonSelector(session_selector.without(selector, id))
-          NoOverlay
-          | ModelSelector(_)
-          | AgentInspector(_)
-          | ApprovalInspector(_)
-          | SessionSelector(_) -> model.overlay
-        },
-        notice: "deleted session " <> id,
-      )
-      |> invalidate_frame
+      catalogue_removed(model, id, "deleted session ")
+    Some(Ok(SessionArchived(id))) ->
+      catalogue_removed(model, id, "archived session ")
+    Some(Ok(SessionRestored(id))) ->
+      catalogue_removed(model, id, "restored session ")
     Some(Error(reason)) -> append_error(model, reason)
     None -> append_error(model, "control job ended without an outcome")
   }
+}
+
+// Acknowledgements update only the collection already on screen. Restoring a
+// row never opens it, and no metadata acknowledgement retargets attachment.
+fn catalogue_removed(model: Model, id: String, description: String) -> Model {
+  Model(
+    ..model,
+    overlay: case model.overlay {
+      DaemonSelector(selector) ->
+        DaemonSelector(session_selector.without(selector, id))
+      NoOverlay
+      | ModelSelector(_)
+      | AgentInspector(_)
+      | ApprovalInspector(_)
+      | SessionSelector(_) -> model.overlay
+    },
+    notice: description <> id,
+  )
+  |> invalidate_frame
 }
 
 fn create_session(model: Model) -> Model {
@@ -7918,11 +7990,23 @@ fn update_daemon_selector(
     session_selector.Choose(row) -> begin_open(model, row.session_id)
     session_selector.NewSession -> create_session(model)
     session_selector.Delete(session_id) -> begin_delete(model, session_id)
+    session_selector.Archive(session_id) ->
+      begin_removal(model, session_id, Archive)
+    session_selector.Restore(session_id) ->
+      begin_removal(model, session_id, Restore)
+    session_selector.ShowCollection(collection) ->
+      load_catalogue_collection(model, "", None, collection)
     session_selector.Rename(session_id, name) ->
       begin_rename(model, session_id, name)
     session_selector.NextPage(after, revision) ->
-      load_catalogue(model, after, Some(revision))
-    session_selector.FirstPage -> load_catalogue(model, "", None)
+      load_catalogue_collection(
+        model,
+        after,
+        Some(revision),
+        selector.collection,
+      )
+    session_selector.FirstPage ->
+      load_catalogue_collection(model, "", None, selector.collection)
   }
 }
 

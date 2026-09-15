@@ -55,6 +55,26 @@ pub type Command {
     revision: Option(Int),
   )
 
+  /// Reads one owner archive page without opening a conversation.
+  ListArchivedSessions(
+    /// Empty for the first page; otherwise the prior continuation identity.
+    after: String,
+    /// The first page's revision fences subsequent pages.
+    revision: Option(Int),
+  )
+
+  /// Preserves a stopped session outside ordinary listings.
+  ArchiveSession(
+    /// Canonical registration selected by the owner.
+    session_id: String,
+  )
+
+  /// Makes a preserved session eligible for explicit admission again.
+  RestoreSession(
+    /// Canonical archived registration selected by the owner.
+    session_id: String,
+  )
+
   /// Reads one saved registration.
   GetSession(
     /// Canonical authorized session identity.
@@ -292,6 +312,9 @@ pub fn name(command: Command) -> String {
     RenameSession(..) -> "sessions.rename"
     Status -> "status"
     ListSessions(..) -> "sessions.list"
+    ListArchivedSessions(..) -> "sessions.archived"
+    ArchiveSession(..) -> "sessions.archive"
+    RestoreSession(..) -> "sessions.restore"
     GetSession(..) -> "sessions.get"
     WorkspaceDefault(..) -> "sessions.default"
     SetDefault(..) -> "sessions.set_default"
@@ -315,6 +338,7 @@ pub fn mutates(command: Command) -> Bool {
   case command {
     Status
     | ListSessions(..)
+    | ListArchivedSessions(..)
     | GetSession(..)
     | WorkspaceDefault(..)
     | GetOperation(..) -> False
@@ -324,6 +348,8 @@ pub fn mutates(command: Command) -> Bool {
     | OpenSession(..)
     | StopSession(..)
     | DeleteSession(..)
+    | ArchiveSession(..)
+    | RestoreSession(..)
     | Shutdown -> True
   }
 }
@@ -364,7 +390,7 @@ fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
   case command {
     Status -> Ok([])
-    ListSessions(after, revision) -> {
+    ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
         _ -> valid_id(after)
@@ -406,7 +432,11 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       [#("configuration", json.String(configuration)), ..fields]
     }
-    OpenSession(id) | StopSession(id) | DeleteSession(id) -> {
+    OpenSession(id)
+    | StopSession(id)
+    | DeleteSession(id)
+    | ArchiveSession(id)
+    | RestoreSession(id) -> {
       use fields <- result.map(identity_fields(id))
       [#("epoch", json.String(epoch_value)), ..fields]
     }
@@ -500,9 +530,12 @@ pub fn decode(text: String) -> Result(Event, String) {
 fn decode_reply(event: String, body: json.JsonValue) {
   case event {
     "status" -> result.map(summary(body), StatusReply)
-    "sessions.list" -> result.map(page(body), SessionsReply)
+    "sessions.list" | "sessions.archived" ->
+      result.map(page(body), SessionsReply)
     "sessions.get"
     | "sessions.rename"
+    | "sessions.archive"
+    | "sessions.restore"
     | "sessions.default"
     | "sessions.set_default"
     | "sessions.create"
