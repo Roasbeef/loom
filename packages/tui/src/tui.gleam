@@ -117,6 +117,16 @@ pub type Speaker {
 
   ToolFailure
   Failure
+
+  /// One blank row, placed by the projection that knows it is needed.
+  ///
+  /// Every other block closes itself with a blank, but the tool family is
+  /// excluded from that so a call's summary can never be split from the
+  /// patch, result or note rows beneath it. The gap between one call and the
+  /// next is therefore nobody's trailing blank, and only a fold that can see
+  /// where one group ends and another begins is in a position to emit it.
+  /// This is the row it emits.
+  Spacer
 }
 
 /// Whether the transcript area is showing captured edits.
@@ -2958,6 +2968,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error  ", theme.danger_text())
+    Spacer -> #("", theme.quiet_text())
   }
   case line.speaker {
     User -> {
@@ -2986,6 +2997,11 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
       ..marked_markdown_rows(line.text, mark, mark_style, width)
     ]
     ToolPatch -> markdown.diff(line.text)
+
+    // The spacer is a row and nothing else: the fold that placed it has
+    // already decided it belongs here, so there is no mark to draw and
+    // nothing to wrap.
+    Spacer -> [span.line_plain("")]
 
     // A digest stands in for a whole reasoning block, and the one property
     // it has to keep is its height: the collapsed live row and the
@@ -3020,7 +3036,8 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
         | Failure
         | Assistant
         | ToolDetail
-        | ToolPatch -> [
+        | ToolPatch
+        | Spacer -> [
           span.line_plain(""),
         ]
       })
@@ -4878,9 +4895,8 @@ fn record_anchors_for(
           tool_activity.Narrative(value) -> anchored_entry_blocks(value, model)
           tool_activity.Tools(calls) -> {
             let heading = [activity_heading(calls)]
-            [
-              #("", heading),
-              ..list.map(calls, fn(call) {
+            let called =
+              list.map(calls, fn(call) {
                 #(
                   ids.entry_id_to_string(call.source)
                     <> "/call/"
@@ -4889,7 +4905,7 @@ fn record_anchors_for(
                     |> result.lazy_unwrap(fn() { activity_call_lines(call) }),
                 )
               })
-            ]
+            [#("", heading), ..separated_tool_blocks(called)]
           }
         }
       })
@@ -4941,6 +4957,7 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
           }
           #(key, assistant_block_lines(block, details))
         })
+        |> separated_tool_blocks
       let terminal = assistant_terminal_lines(stop_reason, error_message)
       case terminal {
         [] -> blocks
@@ -7118,12 +7135,67 @@ fn cached_activity_lines(
       let lines =
         dict.get(previous, call)
         |> result.lazy_unwrap(fn() { activity_call_lines(call) })
-      #(
-        list.append(list.reverse(lines), acc.0),
-        dict.insert(acc.1, call, lines),
-      )
+      #([lines, ..acc.0], dict.insert(acc.1, call, lines))
     })
-  #([activity_heading(calls), ..list.reverse(reversed)], cached)
+
+  // The separation is applied to the groups and not stored in the cache:
+  // whether a call needs a blank above it is a fact about its neighbours,
+  // and the cached rows belong to the call alone. The heading closes itself
+  // with a blank, so the first group is already separated from it.
+  #(
+    [activity_heading(calls), ..separated_tool_groups(list.reverse(reversed))],
+    cached,
+  )
+}
+
+// A tool call owns the rows under it — its patch, its result, a note excerpt
+// — which is why `render_line` closes none of the tool family with a blank of
+// its own: a blank there would split a call from its own detail. Nothing then
+// separates one call from the next, so this is where that row is placed,
+// above every tool group but the first. A group that opens with prose brings
+// its own blank above it and is left alone, which is what keeps a message and
+// the call after it one row apart rather than two.
+fn separated_tool_groups(groups: List(List(Line))) -> List(Line) {
+  groups
+  |> list.index_map(fn(group, index) {
+    case index > 0 && opens_tool_group(group) {
+      True -> [Line(Spacer, ""), ..group]
+      False -> group
+    }
+  })
+  |> list.flatten
+}
+
+// The same separation over blocks that carry an anchor identity.
+//
+// `record_anchors_for` rebuilds this projection block by block to pair every
+// rendered row with the durable call it came from, so a spacer added to the
+// rows has to appear here too or each anchor below a group drifts up by one
+// row per gap. The blank belongs to no call, so it is its own idless block
+// and resolves to no anchor at all.
+fn separated_tool_blocks(
+  blocks: List(#(String, List(Line))),
+) -> List(#(String, List(Line))) {
+  blocks
+  |> list.index_map(fn(block, index) {
+    case index > 0 && opens_tool_group(block.1) {
+      True -> [#("", [Line(Spacer, "")]), block]
+      False -> [block]
+    }
+  })
+  |> list.flatten
+}
+
+// A group opens a tool block when its first row is the call's own summary,
+// whether that call is pending, succeeded, or failed. A failed call's summary
+// is a `ToolFailure` row and its output the `ToolResult` row beneath it, so
+// leading with a result row means continuing a group rather than opening one.
+fn opens_tool_group(group: List(Line)) -> Bool {
+  case group {
+    [Line(speaker: ToolCall, ..), ..] | [Line(speaker: ToolFailure, ..), ..] ->
+      True
+    [] | [_, ..] -> False
+  }
 }
 
 // Compact mode folds arguments and results, never invocation history. Every
@@ -7634,8 +7706,14 @@ fn message_lines(
       ),
     ]
     message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
+      // Expanded history has no activity group to fold these into, so a run
+      // of tool calls in one response is the place the same blank has to be
+      // placed for the two views to agree about spacing.
       let lines =
-        list.flat_map(content, assistant_block_lines(_, details_expanded))
+        content
+        |> list.map(assistant_block_lines(_, details_expanded))
+        |> separated_tool_groups
+
       list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
