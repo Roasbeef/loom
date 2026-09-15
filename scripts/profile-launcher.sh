@@ -56,7 +56,7 @@ loom_profile_consume() {
   # These client subcommands own their complete argument tail. In particular,
   # `loom ext` forwards every word to the server, so a server-side --profile
   # must not be mistaken for a launcher option.
-  if [[ "$role" == client && ( "${1:-}" == ext || "${1:-}" == replay || "${1:-}" == sessions ) ]]; then
+  if [[ "$role" == client && ( "${1:-}" == ext || "${1:-}" == replay || "${1:-}" == sessions || "${1:-}" == version || "${1:-}" == --version ) ]]; then
     LOOM_PROFILE_ARGS=("$@")
     return 0
   fi

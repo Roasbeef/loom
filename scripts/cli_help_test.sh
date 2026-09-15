@@ -91,6 +91,18 @@ do
   fi
 done
 
+# Version reporting must remain usable with no terminal, server or state home.
+run_help loom "usage: loom version" version --help
+run_help loom "usage: loom version" help version
+LOOM_SERVER="$scratch/no-loomd" run_help loom "commit $(git -C "$root" rev-parse HEAD)" version
+cp "$scratch/loom.stdout" "$scratch/loom-version.stdout"
+run_help loom "platform $("$root/scripts/platform.sh")" --version
+cmp "$scratch/loom-version.stdout" "$scratch/loom.stdout"
+run_failure loom version --profile
+run_failure loom --version --profile
+run_failure loom version --record "$scratch/version-recording.jsonl"
+[ ! -e "$scratch/version-recording.jsonl" ]
+
 run_help loom "usage: loom replay" replay --help
 run_help loom "usage: loom replay" replay -h
 run_help loom "usage: loom replay" help replay

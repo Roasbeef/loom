@@ -12,6 +12,12 @@ summary observations retain their old completion behavior. See
 
 ## Build identity and daemon updates
 
+`loom version` (also `loom --version`) reports the invoked client's launcher
+metadata: release version, full build commit and platform. It does not inspect
+a live daemon or the current directory, open a terminal, or create state.
+Unstamped direct runs retain the honest `dev`/`unknown` defaults. Shipment and
+bundled-release smoke checks exercise the command without a host daemon.
+
 The authenticated control host owns the daemon build identity. `render_cut`
 projects a mismatch into each transcript capture, so successful adoption and
 later refreshes cannot erase it. Missing identity stays silent. Shipment and

@@ -248,6 +248,9 @@ pub type SubmissionSource {
 }
 
 type Launch {
+  // Build reporting reads launcher metadata without opening a terminal or daemon.
+  Version
+
   Demo
   Local(bootstrap.Options, selected: String)
   Remote(address: String, session: String, token: String)
@@ -757,16 +760,19 @@ pub fn main() {
       ffi_terminal.silence_logger()
 
       let #(record, arguments) = case raw {
-        ["ext", ..] | ["replay", ..] | ["sessions", ..] | ["update", ..] -> #(
-          "",
-          raw,
-        )
+        ["ext", ..]
+        | ["replay", ..]
+        | ["sessions", ..]
+        | ["update", ..]
+        | ["version", ..]
+        | ["--version", ..] -> #("", raw)
         _other -> take_flag(raw, "--record")
       }
       let launch = parse_launch(arguments)
       case launch {
         // The passthrough runs before a single line of terminal setup: this
         // process is a pipe for the duration and then it is gone.
+        Version -> print_version()
         Forward(arguments:) -> forward(arguments)
         Update(arguments:) -> run_update(arguments)
         Replay(path:, frames:, size:) -> replay(path, frames, size)
@@ -776,6 +782,28 @@ pub fn main() {
       }
     }
   }
+}
+
+// The launcher owns these values; inspecting another checkout or a live daemon
+// here could report a different build than the executable the operator invoked.
+fn print_version() -> Nil {
+  let identity = build_identity.current()
+  let platform =
+    host_bootstrap.getenv("LOOM_BUILD_PLATFORM") |> result.unwrap("unknown")
+  io.println(
+    "loom "
+    <> identity.version
+    <> "\ncommit "
+    <> identity.commit
+    <> "\nplatform "
+    <> platform,
+  )
+}
+
+fn version_usage() -> String {
+  "usage: loom version\n       loom --version\n\n"
+  <> "Print this client's release version, full build commit and platform.\n"
+  <> "Runs without starting a terminal or connecting to the daemon.\n"
 }
 
 // Update admission has no terminal dependency; its failures retain a shell status.
@@ -834,6 +862,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
         Ok("sessions") -> Some(sessions_usage())
         Ok("ext") -> Some(extension_usage())
         Ok("update") -> Some(update_options.usage())
+        Ok("version") -> Some(version_usage())
         Ok(_other) | Error(Nil) -> Some(launch_usage())
       }
   }
@@ -841,7 +870,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "replay" | "sessions" | "ext" | "update" -> True
+    "replay" | "sessions" | "ext" | "update" | "version" -> True
     _ -> False
   }
 }
@@ -1088,7 +1117,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // recorded.
   let launched = case launch {
     // Unreachable: `main` answers these before it builds a model.
-    Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo -> base
+    Version | Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo ->
+      base
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -1223,6 +1253,8 @@ fn parse_launch(arguments: List(String)) -> Launch {
   case arguments {
     [] -> Local(default_bootstrap_options(), "")
     ["--demo"] -> Demo
+    ["version"] | ["--version"] -> Version
+    ["version", ..] | ["--version", ..] -> Invalid(version_usage())
     ["ext", ..rest] -> Forward(arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(arguments: ["--help"])
@@ -1472,6 +1504,7 @@ fn launch_usage() -> String {
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
+  <> "  version            Print version, build commit and platform.\n"
   <> "  update [TAG|COMMIT]  Install a release and restart the daemon.\n"
   <> "  replay <path>       Render a recorded terminal session.\n"
   <> "  sessions list|rm    List or remove saved sessions.\n"

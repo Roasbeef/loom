@@ -45,12 +45,9 @@ SMOKE=0
 # The claim under test is that the built client runs with no Erlang on
 # the host, so the smoke asks nothing of PATH beyond the system shell
 # tools. It boots the bundled emulator exactly as the launcher does — the
-# same boot file, the same code path — and asks it to load the client's
-# entry module, then halt. The client itself is not run: it is a terminal
-# program and, given no terminal, it waits for one rather than exiting,
-# which is correct for a client and useless for a smoke. Loading the
-# module is the whole claim anyway: the runtime is there, it boots, and
-# the client's code is on its path.
+# same boot file and code path, and asks it to load the client's entry
+# module. The version command then exercises the actual launcher and checks
+# that it reports its own metadata without a terminal or daemon.
 if [ "$SMOKE" = 1 ]; then
   [ -x "$REL/bin/loom" ] || {
     echo "release-client.sh: no release at $REL — run \`make release-client\` first" >&2
@@ -66,6 +63,17 @@ if [ "$SMOKE" = 1 ]; then
        printf '%s\n' "$out" | sed 's/^/  /' >&2
        exit 1 ;;
   esac
+  version="$(sed -n 's/^version *= *"\(.*\)"/\1/p' packages/tui/gleam.toml | head -1)"
+  expected="$(printf 'loom %s\ncommit %s\nplatform %s' "$version" "$BUILD_COMMIT" "$(scripts/platform.sh)")"
+  reported="$(env -i PATH=/usr/bin:/bin HOME="${HOME:-/tmp}" \
+    LOOM_BUILD_VERSION=stale LOOM_BUILD_COMMIT=stale LOOM_BUILD_PLATFORM=stale \
+    "$REL/bin/loom" version)"
+  [ "$reported" = "$expected" ] || {
+    echo "release-client smoke: launcher reported the wrong build identity" >&2
+    printf '%s\n' "$reported" >&2
+    exit 1
+  }
+  echo "release-client smoke: version reports this release's identity without host Erlang"
   exit 0
 fi
 
