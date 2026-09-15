@@ -577,8 +577,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:7370`) extracts one of three
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7461`) renders
+`advisor_payload` (`tui.gleam:7399`) extracts one of three
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7490`) renders
 it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
 `advisor feed`) with an opening excerpt and the expand hint; expanded,
 the body under the same heading with the frame lines dropped, since

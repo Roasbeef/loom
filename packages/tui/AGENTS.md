@@ -1168,3 +1168,45 @@ separate from the worktree's Git totals; repeated edits count each mutation,
 and shell-only changes have no fabricated file-tool attribution. The summary
 also separates cumulative uncached/cache/output counts from the latest measured
 request's input context. Reasoning remains a subset of output.
+
+## Release update implementation
+
+`tui/update` owns release selection, private staging, immutable publication and
+post-install daemon lifecycle. `tui/update/options` represents intent with
+`Selection`, `Action` and `Signature`; `source` resolves the full commit and
+checks repository, platform and tag binding before any artifact is installed.
+A supplied local keyring is the signature authority. An absent signature is
+allowed in optional mode; an invalid present signature is always refused.
+
+`manifest` uses the shared duplicate-key-refusing JSON decoder. `archive`
+admits only the release writer's ustar subset: regular files, explicit
+directories, and aliases of regular siblings. It validates the complete tree
+before writes, caps inflated data at 512 MiB, and stages aliases last. Its
+compressed archive SHA-256 and size are checked first. Extension archive
+policy remains independent and continues to refuse every link.
+
+`files.publish` invokes this running client's `priv/install.sh`, never an
+installer from the incoming archive. The publisher copies fresh immutable
+trees and switches links; old trees survive success and failure. Updates to
+one prefix serialize on `lib/loom/update.lock`. Installed wrappers carry their
+prefix and selected client shape for subsequent updates.
+
+`lifecycle.capture` authenticates an existing daemon without starting one.
+After installation, `lifecycle.restart` requests `protocol.Shutdown`, observes
+the captured native fence for retirement, and uses ordinary reconnection to
+start or adopt a replacement. An accepting daemon must report the manifest's
+full commit. Socket loss alone never authorizes replacement; timeout never
+escalates to forceful termination. `loom update` dispatches before terminal
+setup; `--install-only` leaves daemon lifecycle to the operator.
+
+`download` implements the injected fetch seam using Gun 2.6's native HTTPS
+stream. `internal/ffi_download` only adapts Gun calls, system certificate roots,
+hostname verification and typed events. Gun and its Cowlib parser are release
+dependencies. Each request runs in a weft managed task with a five-minute total
+deadline, a fifteen-second idle wait, at most five redirects, 64 headers and a
+32 KiB header block. Only HTTPS URLs without credentials or fragments are
+admitted, including redirect targets. One body-message credit is restored
+after its fragment is written, and total bytes are checked before appending.
+Gun does not automatically redirect or retry. A normal transport-owner stop is
+the managed task's drain witness. Error bodies are never collected; only an
+explicit HTTP 404 counts as absence.

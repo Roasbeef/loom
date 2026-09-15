@@ -311,10 +311,11 @@ The client ships in two shapes, and `make dist` produces both:
   it by booting the launcher with `erl` removed from `PATH`. This is the
   download, and what `make install` installs by default. It is
   per-platform, like the server.
-- **Slim**, `loom-slim-<version>.tar.gz`, built by `make tui-shipment`:
+- **Slim**, `loom-slim-<version>-<platform>.tar.gz`, built by `make tui-shipment`:
   the compiled BEAM closure and a thin `bin/loom` launcher over the `erl`
   on `PATH`, needing compatible Erlang/OTP 29 on the host. It carries no
-  ERTS and so no platform, which is the shape a package manager that
+  ERTS; the filename identifies its builder, while it remains portable across
+  compatible OTP hosts. This is the shape a package manager that
   provides Erlang as a dependency wants; `INSTALL_CLIENT=slim make
   install` installs it.
 
@@ -785,3 +786,60 @@ an intended GitHub token available without asking the model to open credential
 files. `[tools.set]` can provide other ordinary environment settings. PATH,
 HOME, and TMPDIR remain server-owned. Provider credentials are not implicitly
 copied into tool environments.
+
+
+## Reproducible candidates and release manifests
+
+`scripts/release-build.sh` is the clean-source candidate recipe. The initial
+hosted workflow, `release-candidate.yml`, accepts a full source commit and an
+OCI toolchain image pinned by SHA-256. Two separate Linux x86_64 runners clone
+into different host directories; each container builds at `/work/loom` without
+a shared build cache. Tool versions alone are insufficient: the manifest also
+records the builder identity, executable digests, and complete OTP and Go tree
+digests. The image must provide the repository's documented Gleam, OTP, Go,
+rebar3, C compiler, Python and release-smoke dependencies.
+
+The recipe retains the warm code-mode seed and its compiler caches.
+`scripts/codemode-seed-manifest.toml` pins its complete dependency graph; seed
+preparation fails if resolution changes that committed lock. Those
+caches contain source paths and timestamps, so the fixed prefix and normalized
+source times are part of the build inputs. It does not claim that arbitrary
+checkout paths yield identical releases, or that a supplied toolchain image was
+itself reproducibly bootstrapped.
+
+`scripts/dist.sh` emits the three native artifacts, `manifest-<platform>.json`
+and `SHA256SUMS`. The manifest binds their exact sizes, roots and SHA-256 values
+to the full source commit. Its default tag is `commit-<full-sha>`;
+`LOOM_RELEASE_TAG` supplies a version tag. Canonical ustar and gzip metadata
+remove directory iteration order, host ownership and packaging-time differences.
+The command refuses an uncommitted source tree. Plain development packaging
+records an unrecorded builder; it is not an independently reproduced candidate.
+
+Compare complete outputs from independent builders with:
+
+```sh
+python3 scripts/release-compare.py first/dist second/dist > reproduction.json
+```
+
+The comparison refuses missing artifacts and manifest/hash mismatches. A
+successful result covers the supplied platform's complete files, including the
+server, bundled client and slim shipment. Each other supported platform needs
+its own comparison. The slim launcher determines the execution platform at runtime, so copying it
+to a different compatible OTP host does not select the original builder's
+server artifacts. The initial hosted workflow covers Linux x86_64; macOS and
+Linux arm64 require separately provisioned builders and are not certified by
+that workflow. No workflow publishes a release or signs an artifact.
+
+Signing remains an operator action after successful independent comparison. A
+detached armored OpenPGP signature is named `manifest-<platform>.json.asc` and
+covers the exact manifest bytes. Publish it beside the manifest and its three
+archives when signing is enabled. Distribute verification keys and fingerprints
+through a separately authenticated channel. The updater requires an explicit
+local keyring to verify a present signature; no production keys are currently
+embedded. See [updating](updating.md) and
+[ADR-012](adr/012-release-manifests-and-updates.md) for verification and rotation.
+
+`make check-release-update` runs canonical-archive tests and private native HTTPS,
+installation and signature fixtures. It is also part of the full `make check`
+gate. These fixtures establish updater behavior; complete artifact equality is a
+separate release-build result and must not be inferred from their success.

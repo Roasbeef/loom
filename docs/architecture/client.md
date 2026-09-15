@@ -1261,3 +1261,17 @@ replays hooks or calls a provider. The terminal's `/context` inspector and
 persistent percentage consume this board, not retained scrollback or cumulative
 billing. [Protocol 030](../../protocol-change/030-context-observation.md) owns
 request correlation, byte bounds, and the estimate semantics.
+
+
+## Release updates
+
+The terminal dispatches `loom update` before terminal setup. `tui/update`
+resolves a release manifest, verifies optional signatures against an explicit
+local keyring, stages bounded archives and calls the running client's bundled
+installer. `tui/update/download` uses native Gun HTTPS streams through a narrow
+FFI and a weft-managed transport owner. After publication,
+`tui/update/lifecycle` uses the authenticated daemon control connection to
+request shutdown, observe the original native fence's retirement and verify the
+replacement's full commit. `--install-only` leaves lifecycle to the operator.
+See [updating](../updating.md) and
+[ADR-012](../adr/012-release-manifests-and-updates.md) for the complete contract.
