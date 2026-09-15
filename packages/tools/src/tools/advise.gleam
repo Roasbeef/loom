@@ -50,8 +50,10 @@ pub type Verdict {
   /// nothing at all.
   Quiet
 
-  /// A nit, a reminder or a small correction that can wait. Folded into
-  /// the start of the primary's next run rather than delivered now.
+  /// A nit, a reminder or a small correction that can wait for the
+  /// primary to stop. It never interrupts the work in front of it: it
+  /// arrives at the end of the run the primary is working, or at once
+  /// when the primary has already stopped.
   Nudge(text: String)
 
   /// A wrong direction, a missed requirement or an unsafe step. Asks to
@@ -71,11 +73,23 @@ pub type Ack {
   /// own words, since only it knows whether the primary had a run open.
   Delivered(how: String)
 
-  /// The nudge is held for the start of the primary's next run.
+  /// The nudge is held: the primary is working, or this operator turn
+  /// has already been woken once. It reaches the primary at the end of
+  /// the run it is in, or at the start of the next run somebody asks it
+  /// for, whichever comes first.
   Queued
 
+  /// The nudge did not wait. The primary had stopped, so the harness
+  /// spent this operator turn's one unsolicited delivery and sent the
+  /// whole pending queue at once. `how` names the door it went through
+  /// and how many nudges rode it, since the queue drains whole and an
+  /// advisor that wrote one may see four go out.
+  Woke(how: String)
+
   /// The block arrived inside the cooldown window and was queued as a
-  /// nudge instead. `reason` says why.
+  /// nudge instead. `reason` says why, and says so even when that nudge
+  /// queue was then delivered at once: a downgrade means the primary was
+  /// not stopped, which is the one thing `Delivered` would claim.
   Downgraded(reason: String)
 
   /// Nothing was emitted: the advice repeated something the primary has
@@ -127,7 +141,9 @@ pub fn tool(advice: Advice) -> Tool {
       <> "exactly one call of this tool. Use `quiet` when the primary agent "
       <> "is on track and nothing needs saying, and send no text with it. "
       <> "Use `nudge` for a nit, a reminder or a small correction that can "
-      <> "wait until the primary's next prompt. Use `block` for a wrong "
+      <> "wait for the primary to stop: it is delivered at the end of the "
+      <> "run the primary is working, or at once if it has already "
+      <> "stopped. Use `block` for a wrong "
       <> "direction, a missed requirement or an unsafe step: it interrupts "
       <> "the primary where it stands, so it is worth the interruption or "
       <> "it is a nudge. A block raised while an earlier block is still "
@@ -146,8 +162,8 @@ pub fn tool(advice: Advice) -> Tool {
           "verdict",
           tool.enum_property(
             ["quiet", "nudge", "block"],
-            "quiet to say nothing, nudge to reach the primary at its next "
-              <> "prompt, block to reach it now",
+            "quiet to say nothing, nudge to reach the primary when it next "
+              <> "stops, block to interrupt it now",
           ),
         ),
         #(
@@ -254,7 +270,8 @@ fn verdict_of(word: String, text: String) -> Result(Verdict, String) {
 fn ack_text(ack: Ack) -> String {
   case ack {
     Delivered(how:) -> "block delivered: " <> how
-    Queued -> "nudge queued for the primary's next run start"
+    Queued -> "nudge queued for the primary's run end or its next run start"
+    Woke(how:) -> "nudges delivered now: " <> how
     Downgraded(reason:) -> "block downgraded to a nudge: " <> reason
     Dropped(reason:) -> "nothing was emitted: " <> reason
     Acknowledged -> "quiet recorded; nothing was sent"

@@ -71,9 +71,11 @@ pub type Verdict {
   /// case, and the only verdict that leaves the guard untouched.
   Quiet
 
-  /// Advice that can wait for the primary's next prompt. It joins the
-  /// pending queue and is folded into the next run start; it never wakes
-  /// the primary and never starts a run.
+  /// Advice that can wait for the primary to stop. It joins the pending
+  /// queue, and the actor drains that queue at the first moment the
+  /// primary is not working: its run end, its next run start, or at once
+  /// when it is already idle. It never interrupts a run in progress,
+  /// which is the whole of what separates it from a `Block`.
   Nudge(text: String)
 
   /// Advice the advisor believes the primary needs now. Delivery steers a
@@ -171,7 +173,7 @@ const duplicate_reason = "the advisor already delivered this advice"
 
 const empty_reason = "empty advice"
 
-const queue_full_reason = "the nudge queue is full; it drains at the primary's next run start"
+const queue_full_reason = "the nudge queue is full; it drains at the primary's run end or its next run start"
 
 const decode_where = "client/advisorguard.decode"
 
@@ -215,8 +217,8 @@ pub fn reviews(guard: Guard) -> Int {
   guard.reviews
 }
 
-/// The nudges waiting for the primary's next run start, oldest first.
-/// Reading them does not drain them; `take_pending` does.
+/// The nudges waiting for the primary to stop, oldest first. Reading
+/// them does not drain them; `take_pending` does.
 ///
 /// ## Examples
 ///
@@ -300,8 +302,10 @@ pub fn decide(
 
 /// Drains the pending nudges, returning them oldest first.
 ///
-/// Called from the primary's run-start hook, which folds them into one
-/// fenced message. Draining does not clear the ring: advice that was
+/// Called from every moment the primary is not working — its run-end
+/// hook, its run-start hook, and a verdict judged against an idle
+/// primary — each of which folds them into one fenced message. Draining
+/// does not clear the ring: advice that was
 /// queued was also remembered, and repeating it after it has been read is
 /// the duplicate the ring exists to stop.
 ///
@@ -470,7 +474,8 @@ fn downgrade_reason(elapsed: Int, policy: Policy) -> String {
   ago_phrase(elapsed)
   <> " and the cooldown is "
   <> reviews_phrase(policy.block_cooldown_reviews)
-  <> "; this advice was queued as a nudge for the primary's next run start"
+  <> "; this advice was queued as a nudge for the primary's run end or its "
+  <> "next run start"
 }
 
 fn ago_phrase(elapsed: Int) -> String {

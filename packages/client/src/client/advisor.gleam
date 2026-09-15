@@ -34,7 +34,8 @@
 //// review clock. The advisor answers with an `advise` call, which
 //// reaches `Judge` through the seam in `seam`. `client/advisorguard`
 //// then says what that verdict becomes: delivered to the primary now,
-//// queued for the primary's next run start, downgraded, or dropped.
+//// queued for the moment the primary next stops, downgraded, or
+//// dropped.
 ////
 //// The step occasion is the one that makes a long run legible. A run is
 //// one admitted prompt driven to a finishable boundary and is many steps
@@ -42,18 +43,43 @@
 //// occasion, an agentic loop that keeps finding tool calls to make could
 //// work indefinitely without its reviewer seeing a word of it.
 ////
+//// # When a nudge lands
+////
+//// The nudge is the quiet channel, and quiet is not the same as late. A
+//// nudge reaches the primary at the first of three moments: at once, if
+//// the primary has already stopped when the verdict is judged; at the
+//// end of the run it is working, as a born-placed follow-up the driver
+//// continues that same operation with; or folded into the start of the
+//// next run somebody asks the primary for. Only the third of those was
+//// there before, and it is the one an idle primary never reaches — a
+//// session whose primary stopped to ask a question holds its nudges
+//// until the operator answers, which is exactly when they are no longer
+//// worth reading.
+////
+//// The first two moments are unsolicited: nobody asked the primary to
+//// wake, so the two of them share one delivery per operator turn,
+//// `Memory.turn`. Without that bound the loop closes on itself — a
+//// follow-up ends a run of its own, that run end feeds the advisor, and
+//// the advisor's next nudge places another follow-up, for as long as it
+//// keeps finding something to say. The guard's duplicate ring cannot cut
+//// that loop, because a paraphrase passes the ring, and the block
+//// cooldown is a different counter measuring a different thing. The turn
+//// is handed back at a run start this actor did not open, which is the
+//// operator (or a schedule, or another layer) arriving with work of its
+//// own.
+////
 //// # What runs where
 ////
 //// The strand driver's hook slots are plain functions called on the
 //// driver's own process, so nothing expensive may happen in one. The
-//// run-end slot therefore casts and returns: a driver that waited on a
-//// branch scan and a provider round trip would stop serving `Nudge`,
-//// `RequestAbort` and `PollTick` for the length of a review. The
-//// run-start slot is the one exception and it is a bounded call, because
-//// the nudges it drains have to be in the message list it returns; a
-//// slow or absent actor yields no nudges rather than a stalled run.
-//// Everything else — the scan, the render, the sends, the durable
-//// writes — happens on this actor's process.
+//// run-end slot therefore casts its notification and returns: a driver
+//// that waited on a branch scan and a provider round trip would stop
+//// serving `Nudge`, `RequestAbort` and `PollTick` for the length of a
+//// review. The two nudge drains are the exception and both are bounded
+//// calls, because the messages they hand back have to be in what the
+//// slot returns; a slow or absent actor yields no nudges rather than a
+//// stalled run. Everything else — the scan, the render, the sends, the
+//// durable writes — happens on this actor's process.
 ////
 //// # Backpressure is coalescing, and the threshold is a floor
 ////
@@ -112,6 +138,7 @@ import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import gleam/bool
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
@@ -150,7 +177,8 @@ pub const cursor_key = api.advisor_fact_prefix <> "feed/cursor"
 /// it. Composed from the reserved prefix for the reason `cursor_key` is.
 pub const guard_key = api.advisor_fact_prefix <> "guard"
 
-/// How long the primary's run-start hook waits for the pending nudges.
+/// How long the primary's run-start and run-end hooks wait for the
+/// pending nudges.
 ///
 /// A drain is a list swap and one durable write, so half a second is
 /// generous; the number exists because the wait happens on the strand
@@ -159,14 +187,14 @@ pub const guard_key = api.advisor_fact_prefix <> "guard"
 ///
 /// The drain is not two-phase, and the loss that follows is accepted
 /// rather than prevented. The actor clears the queue and writes the
-/// guard cell before it replies, so nudges drained into a run start that
-/// then times out here — or into an admission transaction that does not
-/// commit — are gone. A claim-then-confirm protocol would close that
-/// window at the cost of a second round trip on the driver process and a
-/// third guard state to reason about, which is more machinery than a
-/// dropped nit is worth: a lost nudge costs the primary one piece of
-/// advice it was never going to be required to take, and the advisor
-/// raises the point again at the next run end if it still holds.
+/// guard cell before it replies, so nudges drained into a run boundary
+/// that then times out here — or into a transaction that does not commit
+/// — are gone. A claim-then-confirm protocol would close that window at
+/// the cost of a second round trip on the driver process and a third
+/// guard state to reason about, which is more machinery than a dropped
+/// nit is worth: a lost nudge costs the primary one piece of advice it
+/// was never going to be required to take, and the advisor raises the
+/// point again at the next run end if it still holds.
 pub const pending_timeout_ms = 500
 
 /// How long an `advise` call waits for its verdict to be judged.
@@ -287,14 +315,39 @@ pub type Message {
   )
 
   /// The primary's run start, draining the nudges that were queued for
-  /// it.
-  TakePending(reply: Subject(List(String)))
+  /// it. `operation` is the run being opened, and it is here because a
+  /// run start is also where this operator turn's one unsolicited
+  /// delivery comes back — unless the run is the one this actor opened
+  /// itself, which is the tail of the last turn rather than a new one.
+  TakePending(operation: OpId, reply: Subject(List(String)))
+
+  /// The primary's run end, draining the nudges that were queued while
+  /// it worked. The answer becomes a born-placed follow-up on the same
+  /// operation, so the primary reads its nudges before it stops rather
+  /// than after the operator next types.
+  ///
+  /// It carries no operation because it decides nothing from one: the
+  /// hook has already established whose run is ending, and the turn's
+  /// delivery is spent here rather than renewed.
+  TakeAtRunEnd(reply: Subject(List(String)))
 }
 
 // What the actor remembers between messages: the two cells, whether a
 // feed the advisor was too busy to take is still owed to it, which
-// review the actor has already seen the end of, and how many of the
-// primary's steps have gone by since it was last offered anything.
+// review the actor has already seen the end of, how many of the
+// primary's steps have gone by since it was last offered anything, and
+// the two fields that ration the nudge channel's unsolicited doors.
+//
+// `turn` is this operator turn's one unsolicited delivery and `woke` is
+// the newest run this actor opened on the primary. They are read
+// together: a run start whose operation is not `woke` is somebody asking
+// the primary for something, so the turn begins again; a run start whose
+// operation *is* `woke` is this actor's own wake coming back around, and
+// renewing there would let one nudge's delivery pay for the next. Both
+// are heap state rather than guard fields. A restart that forgets them
+// costs one extra wake, the guard's JSON does not move, and the guard is
+// a record of what the advisor said rather than of when the harness last
+// interrupted somebody.
 //
 // `stepped` is heap state for the same reason `owed` is. It gates when
 // the next feed is offered and the durable cursor already says which
@@ -317,7 +370,23 @@ type Memory {
     owed: Owed,
     reviewed: Option(OpId),
     stepped: Int,
+    turn: Turn,
+    woke: Option(OpId),
   )
+}
+
+// Whether this operator turn's one unsolicited nudge delivery is still
+// available.
+//
+// The two doors that spend it — a verdict judged against an idle
+// primary, and a drain at the primary's run end — are the two that reach
+// the primary without anybody having asked. The third, the run-start
+// drain, spends nothing: the run was going to carry a prompt anyway, so
+// folding the queue into it costs no wake.
+type Turn {
+  Unspent
+
+  Spent
 }
 
 // Whether a primary run end was coalesced away and its delta is still
@@ -414,8 +483,10 @@ Answer every feed with exactly one `advise` call.
 Use `quiet` when the primary is on track. This is the common case, and a
 review that says nothing costs the primary nothing.
 
-Use `nudge` for a nit, a reminder, or a correction that can wait: it is
-folded into the start of the primary's next run.
+Use `nudge` for a nit, a reminder, or a correction that can wait for the
+primary to stop. A nudge never interrupts the work in front of it: it is
+delivered at the end of the run the primary is working, or at once if the
+primary has already stopped.
 
 Use `block` only for a wrong direction, a missed requirement, or an
 unsafe or destructive step. A block interrupts the primary where it
@@ -513,7 +584,10 @@ fn unavailable(state: State, message: Message) -> Nil {
         Error("the advisor plane is unavailable; nothing was emitted"),
       )
 
-    TakePending(reply:) -> process.send(reply, [])
+    // Both drains answer with no nudges, which is what their callers
+    // read as "nothing was queued". A run boundary is never held open
+    // for a plane that is restarting.
+    TakePending(reply:, ..) | TakeAtRunEnd(reply:) -> process.send(reply, [])
 
     // The three casts. Nobody is waiting, and a step lost this way is a
     // step the counter never sees: the threshold is reached later than it
@@ -556,19 +630,85 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     Judge(strand: caller, verdict:, reply:) ->
       judge(state, runtime, memory, caller, verdict, reply)
 
-    TakePending(reply:) -> {
-      let #(nudges, drained) = advisorguard.take_pending(memory.guard)
+    // A run is opening on the primary. Somebody is asking it for
+    // something, so this is where the turn's unsolicited delivery comes
+    // back — before the drain rather than after it, because the drain
+    // that follows is the one door that spends nothing and the two must
+    // not be read as a pair.
+    TakePending(operation:, reply:) -> {
+      let renewed = renew(memory, operation)
+      let #(nudges, drained) = advisorguard.take_pending(renewed.guard)
 
       // An empty queue drains to an equal guard, and committing that on
       // every primary run start is a durable write for no change.
       let memory = case nudges {
-        [] -> memory
-        _queued -> store_guard(state, runtime, memory, drained)
+        [] -> renewed
+        _queued -> store_guard(state, runtime, renewed, drained)
       }
       process.send(reply, nudges)
       remembering(state, memory)
     }
+
+    // A run on the primary has reached a finishable boundary and no
+    // earlier layer placed a follow-up on it. This is the moment the
+    // nudge channel exists for: the primary is about to stop, and a
+    // queue held for its next run start would wait on the operator.
+    TakeAtRunEnd(reply:) -> {
+      let #(nudges, spent) = drain_at_run_end(state, runtime, memory)
+      process.send(reply, nudges)
+      remembering(state, spent)
+    }
   }
+}
+
+// Whether a run start hands this operator turn its unsolicited delivery
+// back.
+//
+// A run this actor opened is not somebody asking the primary for
+// something: it is the tail of the wake that opened it. Renewing there
+// would let one nudge's delivery pay for the next — the woken run ends,
+// its run end feeds the advisor, the advisor's next nudge wakes the
+// primary again — and nothing else would stop that, because the guard's
+// duplicate ring is defeated by a paraphrase. Every other run start is a
+// prompt, a schedule or another layer's send, and the turn begins again
+// there.
+//
+// A born-placed follow-up fires no run start at all (`machine/planner`'s
+// `finish_boundary` continues the same operation), so the run-end door
+// cannot renew its own turn even once.
+fn renew(memory: Memory, operation: OpId) -> Memory {
+  case memory.woke == Some(operation) {
+    True -> memory
+    False -> Memory(..memory, turn: Unspent)
+  }
+}
+
+// The run-end drain, and the bound that keeps it from running away.
+fn drain_at_run_end(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(List(String), Memory) {
+  // This turn has already had its unsolicited delivery. Draining again
+  // would place a second follow-up on a run that is only open because
+  // the first one placed one, which is the ring the bound exists to cut.
+  use <- bool.lazy_guard(when: memory.turn == Spent, return: fn() {
+    #([], memory)
+  })
+
+  let #(nudges, drained) = advisorguard.take_pending(memory.guard)
+
+  // An empty queue drains to an equal guard, so there is nothing to
+  // commit and nothing was delivered: the turn keeps its wake for the
+  // nudge that has not been written yet.
+  use <- bool.lazy_guard(when: nudges == [], return: fn() { #([], memory) })
+
+  // The guard is written before the reply, the ordering the run-start
+  // drain already takes: a reply whose wait has expired, or a boundary
+  // whose transaction does not commit, loses these nudges, and
+  // `pending_timeout_ms` says why that loss is the cheaper one.
+  let stored = store_guard(state, runtime, memory, drained)
+  #(nudges, Memory(..stored, turn: Spent))
 }
 
 fn remembering(state: State, memory: Memory) -> State {
@@ -595,6 +735,8 @@ fn recall(state: State, runtime: Runtime) -> Memory {
         owed: NothingOwed,
         reviewed: None,
         stepped: 0,
+        turn: Unspent,
+        woke: None,
       )
   }
 }
@@ -994,43 +1136,237 @@ fn decide(
   // send costs one lost block, and the reverse ordering would cost an
   // unbounded one.
   let memory = store_guard(state, runtime, memory, guard)
-  let answer = outcome(decision, fn(text) { emit(state, runtime, text) })
+
+  // The nudge door is taken before the acknowledgement is rendered,
+  // because whether the queue went out is half of what the advisor is
+  // told and all of what this actor has to remember about it.
+  let #(nudges, memory) = nudge_door(state, runtime, memory, decision)
+
+  let #(answer, started) =
+    outcome(decision, fn(text) { emit(state, runtime, text) }, nudges)
   process.send(reply, answer)
 
-  remembering(state, memory)
+  // A block delivered onto an idle primary opened a run, and that run's
+  // own start must not be read as the operator arriving with fresh work.
+  // `option.or` keeps the older wake when this verdict opened nothing,
+  // since what matters is the newest run this actor is responsible for.
+  remembering(state, Memory(..memory, woke: option.or(started, memory.woke)))
 }
 
-/// What the advisor is told, given the guard's decision and a way to
-/// deliver a block.
+/// What became of the pending nudges while one verdict was judged.
+///
+/// The actor decides this before it renders the acknowledgement, because
+/// only it can see whether the primary had stopped and whether this
+/// operator turn still had its one unsolicited delivery. `outcome` says
+/// what the advisor is told about it.
+@internal
+pub type Nudges {
+  /// The queue is waiting, as every nudge queue waited before this door
+  /// existed. Either the primary has a run open — and a nudge is the
+  /// verdict that does not interrupt work in progress — or this operator
+  /// turn has already been woken once.
+  Held
+
+  /// The queue was drained and sent. `how` names the door it went
+  /// through and how many nudges rode it.
+  Woken(how: String)
+
+  /// The queue was drained and the send refused, so those nudges are
+  /// gone. `reason` is the host's own words, which the advisor reads as
+  /// the call's error.
+  Refused(reason: String)
+}
+
+// Which decisions may wake a stopped primary, and which may not.
+//
+// Only the two that just added to the queue: a `Deliver` has already
+// sent its own text through the block channel, and a `Dropped` or a
+// `Silent` recorded nothing at all, so waking the primary for either
+// would deliver on an occasion the guard did not authorize.
+fn nudge_door(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  decision: advisorguard.Decision,
+) -> #(Nudges, Memory) {
+  case decision {
+    advisorguard.Queued(..) | advisorguard.Downgraded(..) ->
+      wake_primary(state, runtime, memory)
+
+    advisorguard.Deliver(..) | advisorguard.Dropped(..) | advisorguard.Silent -> #(
+      Held,
+      memory,
+    )
+  }
+}
+
+// The nudge channel's own door onto a primary that has stopped.
+fn wake_primary(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(Nudges, Memory) {
+  // The primary is working. A nudge that reached it here would steer it
+  // at its next checkpoint, which is what a `block` costs and what the
+  // whole distinction between the two verdicts is about. The run end is
+  // the next moment, and drains the queue there if this turn still has
+  // its delivery.
+  use <- bool.lazy_guard(
+    when: running(state.wiring.session, primary) != None,
+    return: fn() { #(Held, memory) },
+  )
+
+  // This operator turn has already been woken once. See the module's
+  // "When a nudge lands" for why the second wake is the one that never
+  // stops arriving.
+  use <- bool.lazy_guard(when: memory.turn == Spent, return: fn() {
+    #(Held, memory)
+  })
+
+  deliver_nudges(state, runtime, memory)
+}
+
+// Drains the whole queue onto the primary as one fenced message.
+//
+// The queue cannot be empty here: the only decisions that reach this
+// door are `Queued` and `Downgraded`, and both of them have just put
+// their own text on it.
+fn deliver_nudges(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(Nudges, Memory) {
+  let #(nudges, drained) = advisorguard.take_pending(memory.guard)
+
+  // Stored before the send, the ordering `client/advisorguard`
+  // documents and the one `decide` above already took for the guard's
+  // own transition. A crash between the two loses the drained nudges —
+  // the loss `pending_timeout_ms` argues is the cheaper one — while the
+  // reverse ordering would deliver them and leave them queued to be
+  // delivered a second time.
+  let memory = store_guard(state, runtime, memory, drained)
+  let framed = advisorslice.nudges_message(nudges, now(state.wiring))
+
+  // The turn is spent on every outcome, a refusal included. A second
+  // attempt inside one turn would be a second unsolicited wake against a
+  // primary whose queue is already refusing, and the nudges it would
+  // carry are gone either way.
+  let spent = Memory(..memory, turn: Spent)
+
+  case send_advice(state, runtime, framed) {
+    Ok(api.Started(operation:)) -> #(
+      Woken(how: carrying("started a run on the idle primary", nudges)),
+      Memory(..spent, woke: Some(operation)),
+    )
+
+    // A run opened between the idle read and the send. The nudges are on
+    // that run's queue as a steer, which is where they would have gone
+    // had the read been one commit later.
+    Ok(api.Steered(..)) -> #(
+      Woken(how: carrying("steered the primary's open run", nudges)),
+      spent,
+    )
+
+    Error(reason) -> #(Refused(reason:), spent)
+  }
+}
+
+// What the advisor is told a wake carried. The count is in it because
+// the queue drains whole: an advisor that wrote one nudge may well see
+// four go out, and a reviewer that cannot tell the two apart will repeat
+// the three it thinks were never read.
+fn carrying(door: String, nudges: List(String)) -> String {
+  door <> ", carrying " <> nudges_phrase(list.length(nudges))
+}
+
+fn nudges_phrase(count: Int) -> String {
+  case count {
+    1 -> "1 nudge"
+    _ -> int.to_string(count) <> " nudges"
+  }
+}
+
+/// What the advisor is told, given the guard's decision, a way to
+/// deliver a block and what became of the nudge queue — and, beside it,
+/// the run a block opened on an idle primary.
 ///
 /// The delivery is a function rather than a value so that only a
 /// `Deliver` sends anything: the other four decisions have already
 /// happened inside the guard, and evaluating a send to produce an
-/// argument they ignore would deliver advice the guard just dropped.
+/// argument they ignore would deliver advice the guard just dropped. The
+/// nudge side is the opposite shape and for the opposite reason: waking
+/// the primary changes what this actor has to remember, so the actor
+/// takes that door itself and hands the answer in as data.
+///
+/// The second half of the pair is the block's own opened run. The caller
+/// cannot see inside the delivery closure, and a run this actor opened
+/// must not later be read as the operator arriving, so it travels back
+/// out here rather than being re-derived from the store.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let sent = fn(_text) { Error("unreachable") }
-/// assert advisor.outcome(advisorguard.Silent, sent)
-///   == Ok(advise.Acknowledged)
+/// assert advisor.outcome(advisorguard.Silent, sent, advisor.Held)
+///   == #(Ok(advise.Acknowledged), option.None)
 /// ```
 ///
 @internal
 pub fn outcome(
   decision: advisorguard.Decision,
   delivery: fn(String) -> Result(api.Delivery, String),
-) -> Result(advise.Ack, String) {
+  nudges: Nudges,
+) -> #(Result(advise.Ack, String), Option(OpId)) {
   case decision {
-    advisorguard.Deliver(text:) -> result.map(delivery(text), landed)
+    advisorguard.Deliver(text:) -> {
+      let sent = delivery(text)
+      #(result.map(sent, landed), opened_run(sent))
+    }
 
-    advisorguard.Queued(..) -> Ok(advise.Queued)
+    advisorguard.Queued(..) -> #(queued_ack(nudges), None)
 
-    advisorguard.Downgraded(reason:, ..) -> Ok(advise.Downgraded(reason:))
+    // A downgraded block keeps its own variant even when the queue it
+    // joined went out at once. `advise.Delivered` would tell the advisor
+    // the primary had been stopped, and not being stopped is the whole
+    // of what a downgrade means; the delivery is appended to the reason
+    // instead, where it reads as the correction it is.
+    advisorguard.Downgraded(reason:, ..) -> #(
+      downgraded_ack(nudges, reason),
+      None,
+    )
 
-    advisorguard.Dropped(reason:) -> Ok(advise.Dropped(reason:))
+    advisorguard.Dropped(reason:) -> #(Ok(advise.Dropped(reason:)), None)
 
-    advisorguard.Silent -> Ok(advise.Acknowledged)
+    advisorguard.Silent -> #(Ok(advise.Acknowledged), None)
+  }
+}
+
+fn queued_ack(nudges: Nudges) -> Result(advise.Ack, String) {
+  case nudges {
+    Held -> Ok(advise.Queued)
+    Woken(how:) -> Ok(advise.Woke(how:))
+    Refused(reason:) -> Error(reason)
+  }
+}
+
+fn downgraded_ack(
+  nudges: Nudges,
+  reason: String,
+) -> Result(advise.Ack, String) {
+  case nudges {
+    Held -> Ok(advise.Downgraded(reason:))
+    Woken(how:) -> Ok(advise.Downgraded(reason: reason <> "; " <> how))
+    Refused(reason: detail) -> Error(detail)
+  }
+}
+
+// The run a delivery opened on the primary, if it opened one. A steer
+// joined a run somebody else had already opened, and a refusal opened
+// nothing at all.
+fn opened_run(sent: Result(api.Delivery, String)) -> Option(OpId) {
+  case sent {
+    Ok(api.Started(operation:)) -> Some(operation)
+    Ok(api.Steered(..)) | Error(_refused) -> None
   }
 }
 
@@ -1056,8 +1392,22 @@ fn emit(
   runtime: Runtime,
   text: String,
 ) -> Result(api.Delivery, String) {
-  let framed = advisorslice.advice_message(text, now(state.wiring))
+  send_advice(
+    state,
+    runtime,
+    advisorslice.advice_message(text, now(state.wiring)),
+  )
+}
 
+// The one door onto the primary, shared by the block channel and the
+// nudge channel's wake. One send, one warned line and one wording for a
+// refusal, whichever channel was speaking: the advisor reads the same
+// sentence either way, and a census groups both under one event name.
+fn send_advice(
+  state: State,
+  runtime: Runtime,
+  framed: AgentMessage,
+) -> Result(api.Delivery, String) {
   api.send_to_strand(runtime, to: primary, message: framed)
   |> result.map_error(fn(error) {
     log.warn(state.wiring.logger, "advisor.advice_failed", [
@@ -1134,9 +1484,19 @@ pub fn hooks(built: effects.Hooks, wiring: Wiring) -> effects.Hooks {
     run_start: fn(operation) {
       list.append(started(operation), pending(wiring, operation))
     },
+    // The drain is asked before the notification is cast, and the order
+    // matters on this slot in a way it does not on the others: both go
+    // to one actor from one process, so a mailbox that took the feed
+    // first would leave this bounded wait queued behind a branch scan
+    // and a durable send, and a drain that times out loses what it
+    // drained. The notification is cast on every path all the same — the
+    // drain returns early on a foreign strand and on a follow-up an
+    // earlier layer placed, and a review skipped on either of those
+    // paths is a stretch of the primary's work nobody ever reads.
     run_end: fn(operation) {
+      let placed = follow_up(wiring, operation, ended(operation))
       notify(wiring, operation)
-      ended(operation)
+      placed
     },
     context: fn(operation, projected) {
       instructed(wiring, operation, contextual(operation, projected))
@@ -1217,14 +1577,58 @@ fn cast(wiring: Wiring, message: Option(Message)) -> Nil {
 // The nudges queued for the primary, folded in after whatever the inner
 // layers injected. A strand that is not the primary never asks, so the
 // advisor's own run start pays nothing.
+//
+// The operation travels with the question because the actor reads it as
+// well as answering: a run start is where the turn's unsolicited
+// delivery is handed back, and which run this is decides whether it is.
 fn pending(wiring: Wiring, operation: OpId) -> List(AgentMessage) {
   let mine = notes.strand_of(wiring.session, operation) == Ok(primary)
   use <- bool.guard(when: !mine, return: [])
 
-  case ask(wiring.name, pending_timeout_ms, TakePending) {
+  case ask(wiring.name, pending_timeout_ms, TakePending(operation, _)) {
     Ok([]) | Error(Nil) -> []
 
     Ok(nudges) -> [advisorslice.nudges_message(nudges, now(wiring))]
+  }
+}
+
+// The primary's run end, and the nudge channel's second door.
+//
+// A follow-up placed here is born placed: `machine/planner`'s
+// `finish_boundary` commits the message and a `NeedAssistant`
+// continuation of the *same* operation together, so no run start fires
+// and no fresh run is opened. That is what makes this the right slot for
+// a nudge — the primary reads it before it stops, at the cost of one
+// more provider request on a run it was already paying for.
+fn follow_up(
+  wiring: Wiring,
+  operation: OpId,
+  placed: Option(AgentMessage),
+) -> Option(AgentMessage) {
+  case placed {
+    // An earlier layer has already decided this run continues, and the
+    // slot carries one message. Draining here would have to drop one of
+    // the two, and there is nothing to gain by choosing: the
+    // continuation ends in a run end of its own, which asks again with
+    // the queue still in it.
+    Some(message) -> Some(message)
+
+    None -> drained(wiring, operation)
+  }
+}
+
+fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
+  let mine = notes.strand_of(wiring.session, operation) == Ok(primary)
+  use <- bool.guard(when: !mine, return: None)
+
+  // A hook slot is replayable — a crash before the consuming commit may
+  // run it again — and this drain is not two-phase, so a replayed run
+  // end finds the queue already empty and places nothing. That is the
+  // same accepted loss as the run-start drain, for the same reason.
+  case ask(wiring.name, pending_timeout_ms, TakeAtRunEnd) {
+    Ok([]) | Error(Nil) -> None
+
+    Ok(nudges) -> Some(advisorslice.nudges_message(nudges, now(wiring)))
   }
 }
 

@@ -133,43 +133,89 @@ pub fn the_run_end_answer_is_passed_through_test() {
 pub fn only_a_delivery_sends_test() {
   let exploding = fn(_text) { panic as "no send is allowed on this arm" }
 
-  assert advisor.outcome(advisorguard.Silent, exploding)
-    == Ok(advise.Acknowledged)
-  assert advisor.outcome(advisorguard.Queued(text: "a nit"), exploding)
-    == Ok(advise.Queued)
+  assert advisor.outcome(advisorguard.Silent, exploding, advisor.Held)
+    == #(Ok(advise.Acknowledged), None)
+  assert advisor.outcome(
+      advisorguard.Queued(text: "a nit"),
+      exploding,
+      advisor.Held,
+    )
+    == #(Ok(advise.Queued), None)
   assert advisor.outcome(
       advisorguard.Downgraded(text: "too soon", reason: "one run left"),
       exploding,
+      advisor.Held,
     )
-    == Ok(advise.Downgraded(reason: "one run left"))
+    == #(Ok(advise.Downgraded(reason: "one run left")), None)
   assert advisor.outcome(
       advisorguard.Dropped(reason: "said already"),
       exploding,
+      advisor.Held,
     )
-    == Ok(advise.Dropped(reason: "said already"))
+    == #(Ok(advise.Dropped(reason: "said already")), None)
+}
+
+// A queue that went out at once is its own acknowledgement, and a
+// downgraded block keeps the variant that says it was downgraded: an
+// advisor told `Delivered` would believe the primary had been stopped,
+// which is the one thing a downgrade means did not happen.
+pub fn a_woken_queue_is_told_apart_from_a_delivered_block_test() {
+  let exploding = fn(_text) { panic as "no send is allowed on this arm" }
+  let woken = advisor.Woken(how: "started a run on the idle primary")
+
+  assert advisor.outcome(advisorguard.Queued(text: "a nit"), exploding, woken)
+    == #(Ok(advise.Woke(how: "started a run on the idle primary")), None)
+
+  let assert #(Ok(advise.Downgraded(reason:)), None) =
+    advisor.outcome(
+      advisorguard.Downgraded(text: "too soon", reason: "one review left"),
+      exploding,
+      woken,
+    )
+    as "a downgrade must stay a downgrade even when its queue went out"
+  assert string.contains(reason, "one review left")
+  assert string.contains(reason, "idle primary")
+}
+
+// A wake whose send was refused loses the nudges it drained, so the call
+// is an error outcome rather than a quiet success.
+pub fn a_refused_wake_is_an_error_outcome_test() {
+  let exploding = fn(_text) { panic as "no send is allowed on this arm" }
+  let refused = advisor.Refused(reason: "the primary would not take it")
+
+  assert advisor.outcome(advisorguard.Queued(text: "a nit"), exploding, refused)
+    == #(Error("the primary would not take it"), None)
 }
 
 // The advisor is told which door the message went through, because that
-// is what it decides its next verdict from.
+// is what it decides its next verdict from. The run a block opened
+// travels back beside it, because the actor must not later read that run
+// start as the operator arriving.
 pub fn a_delivery_names_the_door_test() {
   let steered = fn(_text) { Ok(api.Steered(entry: an_entry_id())) }
-  let assert Ok(advise.Delivered(how:)) =
-    advisor.outcome(advisorguard.Deliver(text: "stop"), steered)
-    as "a steer must be reported as a delivery"
+  let assert #(Ok(advise.Delivered(how:)), None) =
+    advisor.outcome(advisorguard.Deliver(text: "stop"), steered, advisor.Held)
+    as "a steer must be reported as a delivery and open no run"
   assert string.contains(how, "open run")
 
-  let started = fn(_text) { Ok(api.Started(operation: an_op_id(1))) }
-  let assert Ok(advise.Delivered(how: how_started)) =
-    advisor.outcome(advisorguard.Deliver(text: "stop"), started)
-    as "a fresh run must be reported as a delivery"
+  let opened = an_op_id(1)
+  let started = fn(_text) { Ok(api.Started(operation: opened)) }
+  let assert #(Ok(advise.Delivered(how: how_started)), Some(run)) =
+    advisor.outcome(advisorguard.Deliver(text: "stop"), started, advisor.Held)
+    as "a fresh run must be reported as a delivery and handed back"
   assert string.contains(how_started, "idle")
+  assert run == opened
 }
 
 pub fn a_refused_delivery_is_an_error_outcome_test() {
   let refused = fn(_text) { Error("the primary would not take it") }
 
-  assert advisor.outcome(advisorguard.Deliver(text: "stop"), refused)
-    == Error("the primary would not take it")
+  assert advisor.outcome(
+      advisorguard.Deliver(text: "stop"),
+      refused,
+      advisor.Held,
+    )
+    == #(Error("the primary would not take it"), None)
 }
 
 // --- the active tool list --------------------------------------------------
@@ -452,7 +498,7 @@ pub fn a_primary_run_end_after_a_seen_review_end_is_fed_test() {
       message: user("an earlier feed"),
     )
     as "the advisor must take the fixture feed"
-  let assert Some(open) = advisor_operation(rig.opened)
+  let assert Some(open) = strand_operation(rig.opened, advisor.strand)
     as "the advisor must be mid-run"
 
   let assert Ok(subject) = address.lookup(rig.name)
@@ -629,19 +675,19 @@ pub fn a_block_reaches_the_primary_test() {
 // whatever the inner layers injected, and into nobody else's. This is the
 // drain the run-start slot exists for, over a live actor rather than over
 // an absent one.
+//
+// The primary has to be working for the nudge to queue at all: a verdict
+// judged against one that has stopped is delivered there and then, which
+// is the door `an_idle_primary_is_woken_with_the_drained_queue_test`
+// covers.
 pub fn a_queued_nudge_reaches_the_primarys_next_run_start_test() {
   let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  a_working_primary(rig)
   let assert Ok(subject) = address.lookup(rig.name)
     as "the advisor actor must be registered"
   let assert Ok(advise.Queued) =
-    process.call(subject, waiting: 5000, sending: fn(reply) {
-      advisor.Judge(
-        strand: advisor.strand,
-        verdict: advise.Nudge(text: "the helper is still unclosed"),
-        reply:,
-      )
-    })
-    as "the nudge must be queued"
+    judge(subject, advise.Nudge(text: "the helper is still unclosed"))
+    as "the nudge must be queued against a working primary"
 
   let hooked =
     advisor.hooks(
@@ -659,6 +705,197 @@ pub fn a_queued_nudge_reaches_the_primarys_next_run_start_test() {
   // Draining is what the slot does: the same run start twice must not
   // fold the same nudge in twice.
   assert hooked.run_start(mine) == []
+  stop(rig)
+}
+
+// --- the nudge channel's two unsolicited doors ------------------------------
+
+// The run-end door. A nudge queued while the primary worked is handed
+// back as the run's follow-up, so the primary reads it before it stops
+// rather than after the operator next types — which, on a primary that
+// stopped to ask a question, is not a moment that arrives on its own.
+pub fn a_queued_nudge_is_handed_back_at_the_primarys_run_end_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  a_working_primary(rig)
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the nudge must queue against a working primary"
+
+  let hooked =
+    advisor.hooks(
+      hooks.build(hooks.new()),
+      a_wiring_named(rig.opened, rig.name),
+    )
+  let mine = an_operation(rig.opened, advisor.primary, 51)
+
+  let assert Some(placed) = hooked.run_end(mine)
+    as "the run end must place the queued nudge as its follow-up"
+  assert string.contains(text_of(placed), "rebase before you push")
+
+  // Drained, not copied: the follow-up carries the queue away with it.
+  assert settle(subject) == []
+  stop(rig)
+}
+
+// And not when an earlier layer has already placed one. The slot carries
+// a single message, so the two cannot both ride it; the continuation ends
+// in a run end of its own, which asks again with the queue still in it.
+pub fn an_inner_follow_up_keeps_the_queue_waiting_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  a_working_primary(rig)
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the nudge must queue against a working primary"
+
+  let hooked =
+    advisor.hooks(
+      hooks.new()
+        |> hooks.with_run_end(fn(_operation) { Some(user("carry on")) })
+        |> hooks.build,
+      a_wiring_named(rig.opened, rig.name),
+    )
+  let mine = an_operation(rig.opened, advisor.primary, 53)
+
+  let assert Some(placed) = hooked.run_end(mine)
+    as "the inner follow-up must survive the drain"
+  assert text_of(placed) == "carry on"
+  assert settle(subject) == ["rebase before you push"]
+  stop(rig)
+}
+
+// The run-end door spends the same turn as the idle door, and that is
+// what cuts the ring: a follow-up ends in a run end of its own, which
+// feeds the advisor, whose next nudge would place another follow-up for
+// as long as it kept finding something to say.
+pub fn a_second_run_end_in_one_turn_drains_nothing_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  a_working_primary(rig)
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let hooked =
+    advisor.hooks(
+      hooks.build(hooks.new()),
+      a_wiring_named(rig.opened, rig.name),
+    )
+  let mine = an_operation(rig.opened, advisor.primary, 55)
+
+  let assert Ok(advise.Queued) = judge(subject, advise.Nudge(text: "the first"))
+    as "the first nudge must queue"
+  let assert Some(_placed) = hooked.run_end(mine)
+    as "the first run end must spend the turn"
+
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "the second"))
+    as "the second nudge must queue against the same working primary"
+  assert hooked.run_end(mine) == None
+    as "a second run end inside one turn must place nothing"
+
+  // Held rather than lost: the operator's next run start drains it.
+  assert settle(subject) == ["the second"]
+  stop(rig)
+}
+
+// The idle door. A primary that has stopped is not left holding advice
+// until somebody types: the whole queue is drained and delivered as a run
+// of its own.
+pub fn an_idle_primary_is_woken_with_the_drained_queue_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(advise.Woke(how:)) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "an idle primary must be woken rather than left the queue"
+  assert string.contains(how, "idle primary")
+  assert string.contains(how, "1 nudge")
+
+  let assert [woken] = primary_texts(rig.opened)
+    as "the nudges must have reached the primary's own branch"
+  assert string.contains(woken, "rebase before you push")
+
+  // The queue went with it, so the next run start folds in nothing.
+  assert settle(subject) == []
+  stop(rig)
+}
+
+// One wake per operator turn. The second nudge is judged against a
+// primary that is idle again, so what holds it back is the spent turn and
+// nothing else.
+pub fn a_second_nudge_in_one_turn_is_held_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Ok(advise.Woke(..)) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the first nudge must wake the idle primary"
+
+  let assert Some(woken) = strand_operation(rig.opened, advisor.primary)
+    as "the wake must have opened a run on the primary"
+  idle_again(rig, woken)
+
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "and squash the fixups"))
+    as "the second nudge of one turn must be held"
+  assert list.length(primary_texts(rig.opened)) == 1
+    as "the held nudge must not have reached the primary"
+  stop(rig)
+}
+
+// The turn comes back at a run start this actor did not open, and not at
+// one it did. Without that distinction the woken run's own start would
+// pay for the next wake, and the loop would sustain itself.
+pub fn the_turn_renews_only_on_a_run_the_advisor_did_not_open_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Ok(advise.Woke(..)) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the first nudge must wake the idle primary"
+
+  let assert Some(woken) = strand_operation(rig.opened, advisor.primary)
+    as "the wake must have opened a run on the primary"
+  idle_again(rig, woken)
+
+  // The woken run's own start. It is this actor's wake coming back
+  // around, not somebody asking the primary for something.
+  assert take_pending(subject, woken) == []
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "and squash the fixups"))
+    as "the advisor's own run start must not renew the turn"
+
+  // A run start the actor did not open is the operator arriving, and it
+  // drains what was waiting on the way in.
+  assert take_pending(subject, an_op_id(61)) == ["and squash the fixups"]
+  let assert Ok(advise.Woke(..)) =
+    judge(subject, advise.Nudge(text: "and rerun the gate"))
+    as "a renewed turn must wake the idle primary again"
+  stop(rig)
+}
+
+// The turn's delivery and the block cooldown are separate counters. A
+// nudge that woke the primary spends the turn and nothing else, so the
+// block that follows it is judged against the cooldown alone.
+pub fn a_block_after_a_wake_is_governed_by_the_cooldown_alone_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  let assert Ok(advise.Woke(..)) =
+    judge(subject, advise.Nudge(text: "rebase before you push"))
+    as "the first nudge must wake the idle primary"
+
+  let assert Ok(advise.Delivered(..)) =
+    judge(subject, advise.Block(text: "the migration has no down step"))
+    as "a spent turn must not silence the block channel"
+
+  // And the cooldown still rations the next one, which is the counter
+  // that was supposed to be doing this all along.
+  let assert Ok(advise.Downgraded(..)) =
+    judge(subject, advise.Block(text: "and the gate was never run"))
+    as "the second block inside the window must still be downgraded"
   stop(rig)
 }
 
@@ -791,10 +1028,11 @@ fn a_rig_with(settings: advisor.Settings) -> Result(Rig, String) {
   Ok(Rig(opened:, runtime:, name:))
 }
 
-// The advisor's open operation as the store shows it, which is what
-// `reviewing` reads.
-fn advisor_operation(opened: Session) -> Option(OpId) {
-  case session.strand_state(opened, advisor.strand) {
+// A strand's open operation as the store shows it, which is what
+// `reviewing` reads of the advisor and what the nudge door reads of the
+// primary.
+fn strand_operation(opened: Session, name: String) -> Option(OpId) {
+  case session.strand_state(opened, name) {
     Ok(Some(session.Cell(value: current, ..))) -> current.current_operation
     Ok(None) | Error(_) -> None
   }
@@ -854,10 +1092,58 @@ fn stop(rig: Rig) -> Nil {
 // A call after a cast, to the same actor and from the same process, is
 // answered only once the cast has been handled: the mailbox is FIFO per
 // sender. That is what makes this a barrier rather than a sleep.
+//
+// It is a run-start drain, so it renews the operator turn as well as
+// draining. Every test that cares about the turn's one unsolicited
+// delivery uses `take_pending` with an operation it chose instead.
 fn settle(subject: process.Subject(advisor.Message)) -> List(String) {
+  take_pending(subject, an_op_id(97))
+}
+
+// The primary's run-start drain, with the operation the run is opening.
+// That operation is what decides whether the turn's unsolicited delivery
+// comes back, so a test that means to renew names a run the advisor
+// cannot have opened.
+fn take_pending(
+  subject: process.Subject(advisor.Message),
+  operation: OpId,
+) -> List(String) {
   process.call(subject, waiting: 5000, sending: fn(reply) {
-    advisor.TakePending(reply:)
+    advisor.TakePending(operation:, reply:)
   })
+}
+
+// One verdict from the advisor strand, judged the way the seam judges
+// one.
+fn judge(
+  subject: process.Subject(advisor.Message),
+  verdict: advise.Verdict,
+) -> Result(advise.Ack, String) {
+  process.call(subject, waiting: 5000, sending: fn(reply) {
+    advisor.Judge(strand: advisor.strand, verdict:, reply:)
+  })
+}
+
+// A primary with a run open, which is the state every test needs before
+// it can queue a nudge rather than have one delivered: the fixture
+// provider never answers, so the run stays open for the rest of the
+// test.
+fn a_working_primary(rig: Rig) -> Nil {
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+  Nil
+}
+
+// Ends whatever run the primary has open, so the next verdict is judged
+// against an idle one. The fixture provider hangs, so a run is only
+// finishable by abort.
+fn idle_again(rig: Rig, operation: OpId) -> Nil {
+  api.abort(rig.runtime)
+  let assert Ok(_aborted) =
+    api.await_result(rig.runtime, operation, within_ms: 5000)
+    as "the aborted run must settle"
+  Nil
 }
 
 fn cursor(runtime: api.Runtime) -> Option(json.JsonValue) {
@@ -933,7 +1219,17 @@ fn a_configuration() -> machine_strand.StrandConfiguration {
 // what the advisor was actually handed, read back out of the store rather
 // than out of anything this test built.
 fn advisor_texts(opened: Session) -> List(String) {
-  case advisor_leaf(opened) {
+  strand_texts(opened, advisor.strand)
+}
+
+// The same read against the primary, which is where a delivered block
+// and a woken nudge queue land.
+fn primary_texts(opened: Session) -> List(String) {
+  strand_texts(opened, advisor.primary)
+}
+
+fn strand_texts(opened: Session, name: String) -> List(String) {
+  case strand_leaf(opened, name) {
     None -> []
 
     Some(leaf) ->
@@ -945,10 +1241,10 @@ fn advisor_texts(opened: Session) -> List(String) {
   }
 }
 
-fn advisor_leaf(opened: Session) -> Option(EntryId) {
+fn strand_leaf(opened: Session, name: String) -> Option(EntryId) {
   let assert Ok(Some(session.Cell(value: leaf, ..))) =
-    session.strand_leaf(opened, advisor.strand)
-    as "the advisor strand must be seeded"
+    session.strand_leaf(opened, name)
+    as "the strand must be seeded"
   leaf
 }
 
