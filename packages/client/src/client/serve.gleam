@@ -122,6 +122,7 @@ import telemetry/log.{type Logger}
 import tom
 import tools/advise
 import tools/agent.{type Agency}
+import tools/context as context_tool
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -1847,6 +1848,7 @@ fn code_mode_seam(
   jobs_door: jobseam.Door,
   history_seam: Option(history_tool.History),
   memory_seam: Option(remember.Memory),
+  context_seam: context_tool.Context,
   owner: Option(custody.Owner),
 ) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
   case discovered {
@@ -1907,16 +1909,21 @@ fn code_mode_seam(
           // the model is offered jobs unconditionally, so a program that
           // could not even ask would be the surprise.
           |> codemode_wiring.over_jobs(Some(jobs_door))
-          // `history.*` and `memory.remember` are answered over the same
-          // two seams the `history_search` and `remember` tools are
-          // built on, so a query a program runs is the query a tool call
-          // runs — one index, one set of bounds, one memory session. A
-          // plane whose boot probe failed is `None` here exactly as it
-          // is in the registry, so the capability goes unrouted rather
-          // than refusing, and no description claims it.
+          // `history.*`, `memory.remember` and `context.report` are
+          // answered over the same three seams the `history_search`,
+          // `remember` and `context_remaining` tools are built on, so a
+          // query a program runs is the query a tool call runs — one
+          // index, one set of bounds, one memory session, one estimate of
+          // how full the window is. A plane whose boot probe failed is
+          // `None` here exactly as it is in the registry, so the
+          // capability goes unrouted rather than refusing, and no
+          // description claims it. The context seam is unconditional
+          // because it is derived rather than opened: it reads the
+          // session this boot already has.
           |> codemode_wiring.over_recall(
             index: history_seam,
             store: memory_seam,
+            context: Some(context_seam),
           )
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
@@ -2799,12 +2806,27 @@ fn assemble_in(
   // not open registers no tool and says so once.
   let memory_seam = memory_seam(memory_store, clock, entropy, logger)
 
-  // Both seams are decided before the code-mode configuration rather
+  // The model's own door onto the compaction arithmetic. It reads the
+  // strand's window the way the threshold will — the strand's own
+  // catalogue entry, else the configured fallback — so what the model is
+  // told and what it is compacted on are one number.
+  let facts = catalogue_facts(settings.catalog)
+  let context_seam =
+    checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
+      wiring.strand_window(
+        opened,
+        facts,
+        strand,
+        fallback: settings.context_window,
+      )
+    })
+
+  // All three seams are decided before the code-mode configuration rather
   // than after it, because code mode is the *second* door onto each of
-  // them: `history.*` and `memory.remember` are serviced over these very
-  // records, so a configuration built first would have to be revised
-  // afterwards and the tool seam derived from it would carry the
-  // unrevised one.
+  // them: `history.*`, `memory.remember` and `context.report` are
+  // serviced over these very records, so a configuration built first
+  // would have to be revised afterwards and the tool seam derived from it
+  // would carry the unrevised one.
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -2821,6 +2843,7 @@ fn assemble_in(
     jobs_door,
     history_seam,
     memory_seam,
+    context_seam,
     owner,
   ))
   let code_mode = option.map(code_mode_host, codemode_wiring.seam)
@@ -2909,21 +2932,6 @@ fn assemble_in(
       code_mode_host,
       extension_memory.for_session(agency_config),
     )
-
-  // The model's own door onto the compaction arithmetic. It reads the
-  // strand's window the way the threshold will — the strand's own
-  // catalogue entry, else the configured fallback — so what the model is
-  // told and what it is compacted on are one number.
-  let facts = catalogue_facts(settings.catalog)
-  let context_seam =
-    checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
-      wiring.strand_window(
-        opened,
-        facts,
-        strand,
-        fallback: settings.context_window,
-      )
-    })
 
   // The advisor, on the same two-name pattern as the scratch store and
   // the satellite registry: the address is minted now so the `advise`

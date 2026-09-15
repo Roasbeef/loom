@@ -1147,7 +1147,7 @@ pub fn both_cuts_of_the_artifact_carry_the_same_modules_in_order_test() {
 const shipped_workspace_caps = [
   "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
   "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
-  "cap/history", "cap/memory",
+  "cap/history", "cap/memory", "cap/context",
 ]
 
 const shipped_stdlib = [

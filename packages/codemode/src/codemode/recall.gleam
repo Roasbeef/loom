@@ -7,29 +7,34 @@
 //// For the reason `codemode/search` is one: the module a program imports
 //// is the unit of authorization. `cap/history` reads a repository's past
 //// and writes nothing; `cap/memory` writes one durable note and reads
-//// nothing. Folding either into `codemode/workspace` would put "may read
-//// every session this repository has ever had" and "may write a file"
-//// behind one import, and a reader asking what a program can reach would
-//// have to subtract one list out of another by eye.
+//// nothing; `cap/context` reads how full the calling strand's window is
+//// and touches nothing at all. Folding any of them into
+//// `codemode/workspace` would put "may read every session this
+//// repository has ever had" and "may write a file" behind one import,
+//// and a reader asking what a program can reach would have to subtract
+//// one list out of another by eye.
 ////
-//// The two capabilities are in *one* module rather than two because they
-//// are one plane from the host's side: both are durable session stores
-//// beside this session's file, both are probed at boot, and both are
-//// absent on a host where that probe failed. A program still names them
-//// separately, because it imports them separately.
+//// The three capabilities are in *one* module rather than three because
+//// they are one plane from the host's side: each is a read or a write
+//// the harness performs against durable state it already holds, each is
+//// wired from whatever `client/serve` managed to open at boot, and each
+//// is absent on a host where that did not happen. A program still names
+//// them separately, because it imports them separately.
 ////
 //// # One implementation behind both doors
 ////
-//// Nothing here decides anything. The closures are `tools/history.History`
-//// and `tools/remember.Memory` — the tool seams verbatim, filled by
-//// `client/serve` with the same holder actor and the same memory session
-//// the tool calls reach. So a query issued from a program runs over the
-//// same index with the same bounds and comes back with the same refusals
-//// as the identical query issued as a tool call. The types are the tools'
-//// own directly, for the reason `codemode/search` takes `tools/search`'s:
-//// `codemode` already depends on `tools`, and a private copy of a recall
-//// vocabulary would be a second place to keep in step for no isolation
-//// gained.
+//// Nothing here decides anything. The closures are `tools/history.History`,
+//// `tools/remember.Memory` and `tools/context.Context` — the tool seams
+//// verbatim, filled by `client/serve` with the same holder actor, the
+//// same memory session and the same compaction projection the tool calls
+//// reach. So a query issued from a program runs over the same index with
+//// the same bounds and comes back with the same refusals as the identical
+//// query issued as a tool call, and a program's context report is the
+//// number the threshold will act on rather than a second estimate of it.
+//// The types are the tools' own directly, for the reason
+//// `codemode/search` takes `tools/search`'s: `codemode` already depends
+//// on `tools`, and a private copy of a recall vocabulary would be a
+//// second place to keep in step for no isolation gained.
 ////
 //// # What this module *does* own: the two guards the closure contract names
 ////
@@ -58,15 +63,27 @@
 ////
 //// # Absent rather than refusing
 ////
-//// Each half is an `Option`, and a `None` leaves its capabilities
+//// Each plane is an `Option`, and a `None` leaves its capabilities
 //// **unrouted** rather than routed to a closure that always refuses. A
 //// program then meets `unsupported_cap` from the innermost router, which
 //// is the honest answer for a host whose index or memory store would not
 //// open: both are gated on a boot probe, both log one line saying so,
 //// and neither tool is registered either. This is `cap/schedule`'s
-//// posture and deliberately not `cap/job`'s — recall and memory hold
-//// authority over nothing, so a program that cannot reach them carries
-//// on.
+//// posture and deliberately not `cap/job`'s — recall, memory and the
+//// context report hold authority over nothing, so a program that cannot
+//// reach them carries on.
+////
+//// # The strand is the caller's, and it arrives beside the seam
+////
+//// `context.report` is about *a* strand, and the only defensible one is
+//// the strand whose driver dispatched this `code_mode` call. It is
+//// therefore an argument to `routing` rather than a field a program can
+//// reach or a value this module derives: `CapRequest` carries the
+//// pooled `{op_id, step_id}` and no durable strand name, so the caller
+//// is threaded in from the dispatching `Ctx` exactly as
+//// `codemode/orchestration.Orchestration.strand` is. A program that
+//// could name a strand could read the context of a sibling it never
+//// started.
 
 import broker/framing.{type CapOutcome}
 import codemode/internal/args
@@ -82,6 +99,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/context as context_tool
 import tools/history
 import tools/remember
 
@@ -97,11 +115,15 @@ pub const read_cap = "history.read"
 /// The capability a program writes one durable note with.
 pub const remember_cap = "memory.remember"
 
+/// The capability a program asks how full its own context window is
+/// with.
+pub const report_cap = "context.report"
+
 /// Every capability this router services, in the order a program meets
 /// them. Published so the tool description a model reads states the real
 /// set rather than a copy that can drift — and read per host rather than
 /// statically, because a host whose probes failed services none of them.
-pub const serviced_caps = [search_cap, read_cap, remember_cap]
+pub const serviced_caps = [search_cap, read_cap, remember_cap, report_cap]
 
 // --- the wire's refusal vocabulary ----------------------------------------------
 
@@ -147,6 +169,15 @@ pub const memory_full_code = "memory_full"
 /// The code an empty note travels under.
 pub const note_empty_code = "note_empty"
 
+/// The code a context report that could not be built travels under.
+///
+/// One code for the whole seam, because the seam answers one worded
+/// reason and the call has no argument to have got wrong: the strand's
+/// branch would not read, or its notes would not. A program can do
+/// nothing different about either, which is the same test
+/// `cap/context.ContextUnavailable` applies from the far side.
+pub const context_unavailable_code = "context_unavailable"
+
 // --- the seam ----------------------------------------------------------------
 
 /// The harness-side seams this router calls: the recall index and the
@@ -163,6 +194,9 @@ pub type Recall {
     /// The memory session `memory.remember` writes into, or `None` on a
     /// host whose store would not open.
     store: Option(remember.Memory),
+    /// The compaction projection `context.report` reads, or `None` on a
+    /// host that wired no `context_remaining` seam.
+    context: Option(context_tool.Context),
   )
 }
 
@@ -176,7 +210,7 @@ pub type Recall {
 /// ```
 ///
 pub fn none() -> Recall {
-  Recall(index: None, store: None)
+  Recall(index: None, store: None, context: None)
 }
 
 /// The capabilities one seam actually services, which is the subset of
@@ -196,7 +230,11 @@ pub fn none() -> Recall {
 /// ```
 ///
 pub fn serviced_caps_on(seam: Recall) -> List(String) {
-  list.append(index_caps(seam.index), store_caps(seam.store))
+  list.flatten([
+    index_caps(seam.index),
+    store_caps(seam.store),
+    context_caps(seam.context),
+  ])
 }
 
 fn index_caps(index: Option(history.History)) -> List(String) {
@@ -215,18 +253,38 @@ fn store_caps(store: Option(remember.Memory)) -> List(String) {
   }
 }
 
-/// The recall router, in front of `inner`.
+fn context_caps(context: Option(context_tool.Context)) -> List(String) {
+  case context {
+    Some(_context) -> [report_cap]
+
+    None -> []
+  }
+}
+
+/// The recall router, in front of `inner`, judging `context.report` as
+/// `caller`.
 ///
 /// Composed rather than total, like every other arm of the workspace
-/// seam: it answers three names and hands everything else down.
+/// seam: it answers four names and hands everything else down.
+///
+/// `caller` is the strand whose driver dispatched the `code_mode` call,
+/// taken from the dispatching `Ctx` and never from anything the program
+/// says — the module doc's last section has the argument. It is an
+/// argument here rather than a field on `Recall` because the seams are
+/// one per host and opened at boot, while the caller is one per
+/// execution.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // recall.routing(seam, over: satellite.default_router)
+/// // recall.routing(seam, caller: "main", over: satellite.default_router)
 /// ```
 ///
-pub fn routing(seam: Recall, over inner: CapRouter) -> CapRouter {
+pub fn routing(
+  seam: Recall,
+  caller caller: String,
+  over inner: CapRouter,
+) -> CapRouter {
   fn(request: CapRequest) {
     // Gleam patterns cannot name a constant, so the arms below are string
     // literals while `serviced_caps` holds the constants — two lists that
@@ -236,6 +294,7 @@ pub fn routing(seam: Recall, over inner: CapRouter) -> CapRouter {
       "history.search" -> over_index(seam, request, inner, search_plan)
       "history.read" -> over_index(seam, request, inner, read_plan)
       "memory.remember" -> over_store(seam, request, inner)
+      "context.report" -> over_context(seam, request, inner, caller)
       _other -> inner(request)
     }
   }
@@ -265,6 +324,22 @@ fn over_store(
 ) -> Result(CapPlan, CapDenial) {
   case seam.store {
     Some(store) -> remember_plan(store, request)
+
+    None -> inner(request)
+  }
+}
+
+// The context arm, falling through for the same reason. The caller is
+// threaded past the request rather than read out of it: the request
+// carries no durable strand name at all.
+fn over_context(
+  seam: Recall,
+  request: CapRequest,
+  inner: CapRouter,
+  caller: String,
+) -> Result(CapPlan, CapDenial) {
+  case seam.context {
+    Some(context) -> report_plan(context, caller)
 
     None -> inner(request)
   }
@@ -356,6 +431,27 @@ fn remember_plan(
   )
 }
 
+// The one arm that decodes nothing: `context.report` takes no arguments,
+// because the only argument it could take is the identity of somebody
+// else. The strand is the dispatching call's own, so a request's `args`
+// are not even read — a program that sent a `strand` key would find it
+// ignored rather than honoured.
+fn report_plan(
+  context: context_tool.Context,
+  caller: String,
+) -> Result(CapPlan, CapDenial) {
+  Ok(
+    ServedHere(fn() {
+      case context.report(caller) {
+        Error(reason) ->
+          refused(CapDenial(code: context_unavailable_code, message: reason))
+
+        Ok(report) -> answered(report_fields(report))
+      }
+    }),
+  )
+}
+
 // --- argument decoding -----------------------------------------------------------
 
 // The wire carries the scope as one of two names, which are the tool's
@@ -401,6 +497,37 @@ fn answered(fields: List(#(String, MsgPackValue))) -> CapOutcome {
       list.map(fields, fn(entry) { #(msgpack.StringValue(entry.0), entry.1) }),
     ),
   )
+}
+
+// The boundary travels as a tag beside its own two numbers rather than
+// as a nested map: msgpack has no variant shape, so a nested map would
+// need the same tag one level further down and buy nothing. The two
+// numbers are absent under `none` rather than sent as zeroes, because a
+// zero keep-recent budget is a thing a host could really configure and
+// the decoder must not have to tell the two apart.
+fn report_fields(report: context_tool.Report) -> List(#(String, MsgPackValue)) {
+  let head = [
+    #("strand", msgpack.StringValue(report.strand)),
+    #("window", msgpack.IntValue(report.window)),
+    #("context_window", msgpack.IntValue(report.context_window)),
+    #("used_tokens", msgpack.IntValue(report.used_tokens)),
+    #("notes", msgpack.IntValue(report.notes)),
+  ]
+  list.append(head, boundary_fields(report.boundary))
+}
+
+fn boundary_fields(
+  boundary: context_tool.Boundary,
+) -> List(#(String, MsgPackValue)) {
+  case boundary {
+    context_tool.CheckpointAt(tokens:, keep_recent_tokens:) -> [
+      #("boundary", msgpack.StringValue("checkpoint")),
+      #("checkpoint_tokens", msgpack.IntValue(tokens)),
+      #("keep_recent_tokens", msgpack.IntValue(keep_recent_tokens)),
+    ]
+
+    context_tool.NoCheckpoint -> [#("boundary", msgpack.StringValue("none"))]
+  }
 }
 
 fn hit_value(hit: history.Hit) -> MsgPackValue {

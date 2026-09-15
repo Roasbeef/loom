@@ -539,6 +539,17 @@ pub fn extension_authority_modules() -> List(String) {
 /// argument that a workspace program is the one reading and writing this
 /// repository's own record.
 ///
+/// `cap/context` is the third of that set and the newest: it reads how
+/// full the calling strand's own context window is, over the very seam
+/// the `context_remaining` tool reads. Whether it belongs on the
+/// orchestration seam as well is **open**. A context read mints nothing
+/// durable and reaches no other strand, which is the bar `report.emit`
+/// clears, and an orchestrator deciding how much of a child's report it
+/// can afford to read is the case for it. What holds it back is that
+/// widening the two seams' intersection past `cap/report` is its own
+/// ruling with its own record to write, and the test that pins that
+/// intersection is what would have to be changed to take it.
+///
 /// `cap/strand` is deliberately not here. A workspace program that imports
 /// it is rejected by exactly the same rule that rejects an orchestration
 /// program importing `cap/fs`, which is what makes the confinement one
@@ -561,7 +572,7 @@ pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
     "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
-    "cap/history", "cap/memory",
+    "cap/history", "cap/memory", "cap/context",
   ]
 }
 

@@ -1,5 +1,5 @@
-//// The recall router: what a `history.*` or `memory.remember` frame
-//// becomes, what the injected seam is asked, what shape the answer comes
+//// The recall router: what a `history.*`, `memory.remember` or
+//// `context.report` frame becomes, what the injected seam is asked, what shape the answer comes
 //// back in, what code a refusal keeps, and what an absent plane does.
 ////
 //// These drive `recall.routing` directly against scripted closures,
@@ -30,6 +30,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import tools/context as context_tool
 import tools/history
 import tools/remember
 import tools/tool
@@ -45,6 +46,23 @@ type Seen {
   SearchAsked(query: String, limit: Int, scope: history.Scope)
   ReadAsked(session: ids.SessionId, entry: ids.EntryId)
   RememberAsked(note: String)
+  ReportAsked(strand: String)
+}
+
+// The strand every routed call below is judged as. A constant rather
+// than a fixture, because the whole point of the context arm is that
+// this name comes from the dispatching call and from nowhere else.
+const caller = "main"
+
+fn a_report(boundary: context_tool.Boundary) -> context_tool.Report {
+  context_tool.Report(
+    strand: caller,
+    window: 2,
+    context_window: 200_000,
+    used_tokens: 140_000,
+    boundary:,
+    notes: 3,
+  )
 }
 
 fn recorder() -> Subject(Seen) {
@@ -87,6 +105,32 @@ fn answering(seen: Subject(Seen)) -> recall.Recall {
         Ok(Nil)
       }),
     ),
+    context: Some(
+      context_tool.Context(report: fn(strand) {
+        process.send(seen, ReportAsked(strand:))
+        Ok(
+          a_report(context_tool.CheckpointAt(
+            tokens: 160_000,
+            keep_recent_tokens: 40_000,
+          )),
+        )
+      }),
+    ),
+  )
+}
+
+// The same seam with a context plane answering under `boundary`, which
+// is the one field of a report whose carriage is a decision rather than
+// a copy.
+fn reporting(
+  seam: recall.Recall,
+  boundary: context_tool.Boundary,
+) -> recall.Recall {
+  recall.Recall(
+    ..seam,
+    context: Some(
+      context_tool.Context(report: fn(_strand) { Ok(a_report(boundary)) }),
+    ),
   )
 }
 
@@ -101,6 +145,11 @@ fn refusing(index: history.Refusal, store: remember.Refusal) -> recall.Recall {
       ),
     ),
     store: Some(remember.Memory(remember: fn(_note) { Error(store) })),
+    context: Some(
+      context_tool.Context(report: fn(_strand) {
+        Error("the strand's branch could not be read")
+      }),
+    ),
   )
 }
 
@@ -110,7 +159,7 @@ fn refusing(index: history.Refusal, store: remember.Refusal) -> recall.Recall {
 const passed_through = "reached_the_inner_router"
 
 fn routed(seam: recall.Recall) -> satellite.CapRouter {
-  recall.routing(seam, over: fn(request: satellite.CapRequest) {
+  recall.routing(seam, caller: caller, over: fn(request: satellite.CapRequest) {
     Error(satellite.CapDenial(code: passed_through, message: request.cap))
   })
 }
@@ -220,10 +269,24 @@ pub fn every_serviced_cap_routes_test() {
   let seen = recorder()
   let seam = answering(seen)
   list.each(recall.serviced_caps, fn(cap) {
-    // Routed, not passed down: a missing argument is this router's own
-    // refusal, and the inner arm would have answered `passed_through`.
-    assert refused(seam, cap, map([])).code == recall.invalid_argument_code
+    // Routed, not passed down. Three of the four decode an argument, so
+    // an empty map is this router's own refusal; `context.report` takes
+    // none at all and is simply serviced. Either way the inner arm was
+    // not reached, which is the thing under test.
+    case routed(seam)(request(cap, map([]))) {
+      Error(denial) -> {
+        assert denial.code == recall.invalid_argument_code
+      }
+
+      Ok(_plan) -> {
+        assert cap == recall.report_cap
+      }
+    }
   })
+
+  // No plan was run, so no closure was called — including the context
+  // one, whose plan decodes nothing and so could have been tempted to
+  // answer at plan time.
   assert drain(seen) == []
 }
 
@@ -644,7 +707,98 @@ pub fn the_advertised_capabilities_are_the_routed_ones_test() {
   let seam = answering(seen)
   assert recall.serviced_caps_on(seam) == recall.serviced_caps
   assert recall.serviced_caps_on(recall.Recall(..seam, index: None))
-    == [recall.remember_cap]
+    == [recall.remember_cap, recall.report_cap]
   assert recall.serviced_caps_on(recall.Recall(..seam, store: None))
-    == [recall.search_cap, recall.read_cap]
+    == [recall.search_cap, recall.read_cap, recall.report_cap]
+  assert recall.serviced_caps_on(recall.Recall(..seam, context: None))
+    == [recall.search_cap, recall.read_cap, recall.remember_cap]
+}
+
+// --- the context arm -------------------------------------------------------------
+
+/// A report crosses as flat fields with the boundary as a tag beside its
+/// own two numbers. The keys are asserted by name for the reason the
+/// file header gives: this is one end of a wire whose other end is
+/// `cap/context`, and the two packages share no dependency.
+pub fn a_report_carries_every_field_and_a_checkpoint_boundary_test() {
+  let seen = recorder()
+  let value = ok_value(serviced(answering(seen), "context.report", map([])))
+
+  assert value
+    == map([
+      #("strand", text(caller)),
+      #("window", int(2)),
+      #("context_window", int(200_000)),
+      #("used_tokens", int(140_000)),
+      #("notes", int(3)),
+      #("boundary", text("checkpoint")),
+      #("checkpoint_tokens", int(160_000)),
+      #("keep_recent_tokens", int(40_000)),
+    ])
+
+  // And the seam was asked about the dispatching strand, which a program
+  // never names: the arm decodes no arguments at all.
+  assert drain(seen) == [ReportAsked(strand: caller)]
+}
+
+/// A host with compaction off carries the tag and *no* numbers beside
+/// it. Sending zeroes instead would make a real host configured with a
+/// zero keep-recent budget indistinguishable from one that cuts nothing.
+pub fn a_report_carries_an_absent_boundary_as_its_own_tag_test() {
+  let seen = recorder()
+  let seam = reporting(answering(seen), context_tool.NoCheckpoint)
+  let value = ok_value(serviced(seam, "context.report", map([])))
+
+  assert field(value, "boundary") == Ok(text("none"))
+  assert field(value, "checkpoint_tokens") == Error(Nil)
+  assert field(value, "keep_recent_tokens") == Error(Nil)
+}
+
+/// A program's own arguments cannot move the strand the report is about.
+/// The arm reads none, so a `strand` key is ignored rather than honoured
+/// — which is what stops a program reading the context of a sibling it
+/// never started.
+pub fn a_report_ignores_a_strand_a_program_names_test() {
+  let seen = recorder()
+  let value =
+    ok_value(serviced(
+      answering(seen),
+      "context.report",
+      map([#("strand", text("sub:main/other-0123456789abcdef"))]),
+    ))
+
+  assert field(value, "strand") == Ok(text(caller))
+  assert drain(seen) == [ReportAsked(strand: caller)]
+}
+
+/// The seam answers one worded reason and it becomes one code. There is
+/// no argument to have got wrong, so the far side has nothing to repair
+/// and `cap/context` folds this into its own carry-on variant.
+pub fn a_context_refusal_keeps_its_code_and_its_sentence_test() {
+  let outcome =
+    serviced(
+      refusing(history.IndexBusy(reason: "r"), remember.NothingToRemember),
+      "context.report",
+      map([]),
+    )
+
+  assert outcome
+    == framing.CapErr(
+      code: recall.context_unavailable_code,
+      message: "the strand's branch could not be read",
+    )
+}
+
+/// A host that wired no context seam leaves the capability unrouted, the
+/// same posture an absent index takes.
+pub fn an_absent_context_leaves_its_capability_unrouted_test() {
+  let seen = recorder()
+  let seam = recall.Recall(..answering(seen), context: None)
+  assert refused(seam, "context.report", map([])).code == passed_through
+
+  // And the other two planes are untouched by its absence.
+  let _answer =
+    serviced(seam, "history.search", search_args("x", 5, "repository"))
+  assert drain(seen)
+    == [SearchAsked(query: "x", limit: 5, scope: history.Repository)]
 }

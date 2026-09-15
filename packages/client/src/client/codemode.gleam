@@ -217,6 +217,7 @@ import simplifile
 import tools/agent.{type Agency}
 import tools/blob
 import tools/codemode as codemode_tool
+import tools/context as context_tool
 import tools/fs
 import tools/history as history_tool
 import tools/remember
@@ -324,19 +325,19 @@ pub type Config {
     /// set them apart. `mcp.none()` is the empty layer every host has
     /// until an operator configures a server.
     mcp: McpLayer,
-    /// The recall index and memory store the `history.*` and
-    /// `memory.remember` capabilities reach, each present only where
-    /// this host's boot probe opened it.
+    /// The recall index, memory store and compaction projection the
+    /// `history.*`, `memory.remember` and `context.report` capabilities
+    /// reach, each present only where this host opened it.
     ///
-    /// One field holding both halves for the reason `mcp` is one field:
-    /// they are one decision from the host's side — two durable stores
-    /// beside the session file, probed together at boot — and a host
-    /// that could set the router and the advertised capability list
-    /// apart would eventually set them apart. `recall.none()` is what a
-    /// host that opened neither serves, and it leaves all three
-    /// capabilities *unrouted*: the `cap/schedule` posture, because a
-    /// door onto a rebuildable projection that could only ever refuse is
-    /// worse than no door.
+    /// One field holding all three for the reason `mcp` is one field:
+    /// they are one decision from the host's side — durable state the
+    /// harness already holds, wired from what boot managed to open — and
+    /// a host that could set the router and the advertised capability
+    /// list apart would eventually set them apart. `recall.none()` is
+    /// what a host that opened none of them serves, and it leaves all
+    /// four capabilities *unrouted*: the `cap/schedule` posture, because
+    /// a door onto a rebuildable projection that could only ever refuse
+    /// is worse than no door.
     recall: Recall,
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
@@ -364,8 +365,9 @@ pub type McpLayer =
 pub type Scratch =
   scratch.Scratch
 
-/// The recall seam a host serves `history.*` and `memory.remember` over:
-/// `codemode/recall`'s own type, aliased for the reason `McpLayer` is.
+/// The recall seam a host serves `history.*`, `memory.remember` and
+/// `context.report` over: `codemode/recall`'s own type, aliased for the
+/// reason `McpLayer` is.
 pub type Recall =
   recall_router.Recall
 
@@ -428,29 +430,34 @@ pub fn over_jobs(config: Config, door: Option(jobseam.Door)) -> Config {
   Config(..config, jobs: door)
 }
 
-/// The same host configuration, serving `history.*` over one recall index
-/// and `memory.remember` over one memory session.
+/// The same host configuration, serving `history.*` over one recall index,
+/// `memory.remember` over one memory session and `context.report` over
+/// one compaction projection.
 ///
-/// The two arguments are the very seams the `history_search` and
-/// `remember` tools are built over, so a query a program runs and the
-/// same query run as a tool call reach one index with one set of bounds,
-/// and a note a program writes is the same `memory/note` entry a tool
-/// call writes. A host that never calls this — or that passes `None` for
-/// a plane its boot probe could not open — leaves those capabilities
-/// unrouted and advertises none of them.
+/// The three arguments are the very seams the `history_search`,
+/// `remember` and `context_remaining` tools are built over, so a query a
+/// program runs and the same query run as a tool call reach one index
+/// with one set of bounds, a note a program writes is the same
+/// `memory/note` entry a tool call writes, and the fullness a program
+/// computes on is the number the compaction threshold will act on. A
+/// host that never calls this — or that passes `None` for a plane its
+/// boot probe could not open — leaves those capabilities unrouted and
+/// advertises none of them.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.over_recall(config, index: Some(seam), store: None)
+/// // codemode.over_recall(config, index: Some(seam), store: None,
+/// //   context: Some(report))
 /// ```
 ///
 pub fn over_recall(
   config: Config,
   index index: Option(history_tool.History),
   store store: Option(remember.Memory),
+  context context: Option(context_tool.Context),
 ) -> Config {
-  Config(..config, recall: recall_router.Recall(index:, store:))
+  Config(..config, recall: recall_router.Recall(index:, store:, context:))
 }
 
 /// The same host configuration, writing `report.emit` artifacts into a
@@ -749,6 +756,9 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
 // extension seam. An orchestrator that could also read every session
 // this repository has ever had, or mint a note that reaches every later
 // one, is a materially worse thing to hand a model than one that cannot;
+// `context.report` travels with them because it is routed by the same
+// arm, and whether it could be admitted on its own is the open question
+// `vet/policy.default_cap_modules` records rather than one settled here;
 // `vet/policy.default_cap_modules` states the same ruling as the
 // allowlist half, and the intersection test is what pins it. An
 // extension reaches its own workspace bridge
@@ -859,10 +869,10 @@ pub fn default_config(
     // differ here.
     jobs: None,
     mcp: mcp_wiring.none(),
-    // No recall index and no memory store by default, the posture
-    // `mcp.none()` takes: `client/serve` probes both at boot and wires
-    // whichever opened, and a host that wired neither routes none of the
-    // three capabilities.
+    // No recall index, no memory store and no context projection by
+    // default, the posture `mcp.none()` takes: `client/serve` opens what
+    // it can at boot and wires whichever came up, and a host that wired
+    // none routes none of the four capabilities.
     recall: recall_router.none(),
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
@@ -2132,12 +2142,16 @@ fn workspace_router(
     workspace_seam(config, request),
     over: search_router.routing(
       search_seam_for(workspace: request.workspace),
-      // The recall arm is bound to the *host* and not to the request,
-      // unlike the search arm above it: an index and a memory store are
-      // one per session, opened at boot, and nothing about a program's
-      // workspace root selects between them.
+      // The recall arm's seams are bound to the *host* and not to the
+      // request, unlike the search arm above it: an index, a memory
+      // store and a compaction projection are one per session, opened at
+      // boot, and nothing about a program's workspace root selects
+      // between them. The *caller* is the one thing that is per
+      // execution — `context.report` is about a strand — and it is the
+      // dispatching call's own strand, never anything the program said.
       over: recall_router.routing(
         config.recall,
+        caller: request.strand,
         over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
       ),
     ),

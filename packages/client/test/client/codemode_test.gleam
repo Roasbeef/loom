@@ -59,6 +59,7 @@ import support/addresses
 import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
+import tools/context as context_tool
 import tools/fs
 import tools/history as history_tool
 import tools/remember
@@ -1692,6 +1693,26 @@ fn fake_store() -> remember.Memory {
   remember.Memory(remember: fn(_note) { Ok(Nil) })
 }
 
+// A context seam answering a fixed report about whichever strand it is
+// asked, and recording the name, because the strand is the one thing
+// about this capability that is per execution rather than per host.
+fn fake_context(seen: Subject(String)) -> context_tool.Context {
+  context_tool.Context(report: fn(strand) {
+    process.send(seen, strand)
+    Ok(context_tool.Report(
+      strand:,
+      window: 2,
+      context_window: 200_000,
+      used_tokens: 140_000,
+      boundary: context_tool.CheckpointAt(
+        tokens: 160_000,
+        keep_recent_tokens: 40_000,
+      ),
+      notes: 3,
+    ))
+  })
+}
+
 // The workspace seam's whole router stack for one request, which is what
 // a satellite's capability calls actually meet.
 fn workspace_router_for(config: codemode.Config) -> satellite.CapRouter {
@@ -1699,6 +1720,24 @@ fn workspace_router_for(config: codemode.Config) -> satellite.CapRouter {
     codemode.exec_config(
       config,
       request_for("turn-1:tools"),
+      "/work/x",
+      9000,
+      widened_by: [],
+    )
+  built.satellite.router
+}
+
+// The same stack for a request dispatched by a named strand, which is
+// what `context.report` is answered about.
+fn router_for_strand(
+  config: codemode.Config,
+  strand: String,
+) -> satellite.CapRouter {
+  let request = request_for("turn-1:tools")
+  let built =
+    codemode.exec_config(
+      config,
+      codemode_tool.Request(..request, strand:),
       "/work/x",
       9000,
       widened_by: [],
@@ -1756,6 +1795,7 @@ pub fn the_workspace_seam_advertises_recall_only_where_it_is_wired_test() {
       bare,
       index: Some(fake_index(seen)),
       store: Some(fake_store()),
+      context: Some(fake_context(process.new_subject())),
     )
   list.each(recall_router.serviced_caps, fn(cap) {
     assert list.contains(
@@ -1784,11 +1824,51 @@ pub fn one_half_of_the_recall_plane_advertises_only_its_own_test() {
       config_for(broker_actor),
       index: Some(fake_index(seen)),
       store: None,
+      context: None,
     )
   let advertised = codemode.seam_caps_on(index_only, vet_policy.WorkspaceSeam)
   assert list.contains(advertised, recall_router.search_cap)
   assert list.contains(advertised, recall_router.read_cap)
   assert !list.contains(advertised, recall_router.remember_cap)
+  assert !list.contains(advertised, recall_router.report_cap)
+  broker.stop(broker_actor)
+}
+
+pub fn the_workspace_router_serves_a_context_report_test() {
+  // End to end through the same stack, and the one capability whose
+  // answer depends on a value the *request* carries: the report is about
+  // the strand whose driver dispatched the call, and a program that
+  // named one in its arguments would not be believed.
+  let broker_actor = idle_broker()
+  let asked = process.new_subject()
+  let config =
+    codemode.over_recall(
+      config_for(broker_actor),
+      index: None,
+      store: None,
+      context: Some(fake_context(asked)),
+    )
+  let assert Ok(satellite.ServedHere(serve:)) =
+    router_for_strand(config, "sub:main/scan-0123456789abcdef")(cap_request(
+      "context.report",
+      msgpack_map([#("strand", msgpack.StringValue("main"))]),
+    ))
+    as "the workspace router must service context.report"
+  let assert framing.CapOk(value:) = serve() as "the fake seam must answer"
+
+  // The dispatching strand, not the one the program wrote.
+  assert process.receive(asked, 100) == Ok("sub:main/scan-0123456789abcdef")
+  assert value
+    == msgpack_map([
+      #("strand", msgpack.StringValue("sub:main/scan-0123456789abcdef")),
+      #("window", msgpack.IntValue(2)),
+      #("context_window", msgpack.IntValue(200_000)),
+      #("used_tokens", msgpack.IntValue(140_000)),
+      #("notes", msgpack.IntValue(3)),
+      #("boundary", msgpack.StringValue("checkpoint")),
+      #("checkpoint_tokens", msgpack.IntValue(160_000)),
+      #("keep_recent_tokens", msgpack.IntValue(40_000)),
+    ])
   broker.stop(broker_actor)
 }
 
@@ -1804,6 +1884,7 @@ pub fn the_workspace_router_serves_a_history_search_test() {
       config_for(broker_actor),
       index: Some(fake_index(seen)),
       store: Some(fake_store()),
+      context: Some(fake_context(process.new_subject())),
     )
   let router = workspace_router_for(config)
   let assert Ok(satellite.ServedHere(serve:)) =
