@@ -49,7 +49,7 @@ flowchart LR
     SRC["a .gleam source file"]
     PARSE["glance.module<br/>lexes + parses to an AST"]
     UNPARSED["R0: report Unparseable<br/>nothing else runs on this file"]
-    WALK["lint/scan.module<br/>one recursive walk, six rules at once"]
+    WALK["lint/scan.module<br/>AST rules in one analysis"]
     RAW["Raw findings<br/>rule + byte offset + function + detail"]
     LINES["lint.check<br/>byte offsets -> line numbers, one merged pass"]
     FINDINGS["Finding list"]
@@ -177,6 +177,17 @@ that bar today, per the package's own `CLAUDE.md`:
 | R3 catch-all | a `_ ->` hiding a sibling variant | **never** — see below |
 | R4 panic-in-src | `panic` / `let assert` outside `test/` | yes, once `conformance`'s exemption is scripted |
 | R5 bounded-length | `list.length` walking past where the question is settled | precise; the rest are bounded and harmless |
+| R12 broad-closure-capture | a retained closure reads an outer binding only through its fields | **never**: `glance` has no record widths or closure lifetimes |
+
+R12 follows the memory-retention repair in PR #411. It reports a closure only
+when an outer binding appears exclusively as the direct container of field
+access and the closure is returned, assigned, or stored in a constructor.
+Projecting those fields first gives the
+closure a smaller environment. The September 14 census reports 85 such
+captures. The rule deliberately ignores callbacks passed to ordinary calls,
+because deciding whether an arbitrary callee retains a callback would require
+interprocedural analysis. It also cannot tell whether the captured record is
+wide or whether the closure lives long enough to matter, so it stays a warning.
 
 ## Why it parses rather than greps
 
