@@ -735,9 +735,18 @@ pub fn main() {
         Replay(path:, frames:, size:) -> replay(path, frames, size)
         Sessions(options:, command:) -> run_sessions(options, command)
         Invalid(reason) -> rejected_launch(reason)
-        Demo | Local(..) | Remote(..) -> interactive(launch, record)
+        Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
       }
     }
+  }
+}
+
+// Reject a detached launch before it can start a daemon or claim the screen.
+// The backend also handles later EOF, since a terminal can close after startup.
+fn interactive_terminal(launch: Launch, record: String) -> Nil {
+  case ffi_terminal.require_terminal() {
+    Ok(Nil) -> interactive(launch, record)
+    Error(reason) -> rejected_launch(reason)
   }
 }
 

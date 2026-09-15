@@ -9,6 +9,11 @@ slash commands. `make tui-shipment` exports its compiled
 BEAM closure beside a thin `bin/loom` launcher, and `make dist` packages
 that tree separately from the self-contained server.
 
+Interactive launches require both terminal stdin and stdout before starting a
+local daemon or entering terminal mode. Help, replay, session commands, and
+extension passthrough retain their noninteractive paths. The etui backend owns
+later input closure and terminates its reader and cleanup drain on EOF/error.
+
 ## Key Types
 
 - Reading mode remains frozen at offset zero until an explicit return to live
