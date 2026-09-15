@@ -10,6 +10,7 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
 import client/daemon_server_test as wire
+import client/gateway
 import client/gateway_test
 import client/internal/ffi_os
 import core/clock
@@ -49,6 +50,27 @@ import weft/registry
 /// ```
 @internal
 pub fn fixture(run) {
+  fixture_with(
+    gateway_test.reserved_fixture,
+    fn(_, _) { Nil },
+    fn(_, port, credential, id, epoch, harness) {
+      run(port, credential, id, epoch, harness)
+    },
+  )
+}
+
+fn fixture_with(
+  build: fn(ids.SessionId) -> gateway_test.Harness,
+  drain_instance: fn(gateway_test.Harness, Int) -> Nil,
+  run: fn(
+    root.Root(gateway_test.Harness),
+    Int,
+    String,
+    String,
+    String,
+    gateway_test.Harness,
+  ) -> a,
+) {
   let directory =
     "build/test_db/session-socket-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -62,9 +84,9 @@ pub fn fixture(run) {
         build: fn(record, _domain, _services, _) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "reserved IDs are canonical"
-          Ok(gateway_test.reserved_fixture(id))
+          Ok(build(id))
         },
-        drain: fn(_, _) { Nil },
+        drain: drain_instance,
         fatal: fn(_) { [] },
       ),
     )
@@ -126,15 +148,33 @@ pub fn fixture(run) {
   // failure left the listener, the daemon root, its lock and the SQLite writer
   // lease alive for the rest of the VM, beside every later test. A task turns
   // that death into an outcome and lets the teardown below run either way.
+  let daemon_watch = process.monitor(root.pid(daemon))
   let outcomes =
     weft.new([
       fn() {
-        Ok(run(port, credential, view.registration.id, ready.epoch, harness))
+        Ok(run(
+          daemon,
+          port,
+          credential,
+          view.registration.id,
+          ready.epoch,
+          harness,
+        ))
       },
     ])
     |> weft.deadline(40_000)
     |> weft.start
-  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+  case root.shutdown(daemon, within: 5000) {
+    Ok(Nil) | Error("daemon root is unavailable") -> Nil
+    Error(reason) -> panic as reason
+  }
+  let assert Ok(retired) =
+    process.new_selector()
+    |> process.select_specific_monitor(daemon_watch, fn(down) { down })
+    |> process.selector_receive(5000)
+    as "the original daemon monitor confirms retirement"
+  assert retired.reason == process.Normal
+    as "an already-closed daemon still needs a normal retirement witness"
   let _ = api.close(harness.runtime)
   process.kill(listener.pid)
 
@@ -678,4 +718,65 @@ pub fn original_gateway_death_closes_real_socket_test() {
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
+}
+
+/// Real authenticated delivery must finish before root shutdown kills sockets.
+pub fn daemon_drain_writes_held_input_before_socket_teardown_test() {
+  fixture_with(
+    gateway_test.parked_reserved_fixture,
+    fn(harness, within) {
+      let deadline = bootstrap.monotonic_time_ms() + within
+      gateway.drain_held_within(harness.hub, within)
+      api.drain(harness.runtime, deadline - bootstrap.monotonic_time_ms())
+    },
+    fn(daemon, port, credential, id, _, _) {
+      let #(socket, response) =
+        wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
+      assert string.contains(response, "101 Switching Protocols")
+      let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
+      let _snapshot = drain(socket, snapshot_id, 0, [], 32, within_ms: 1000)
+      let opened =
+        request(
+          socket,
+          101,
+          "prompt",
+          json.Object([
+            #("strand", json.String("main")),
+            #("text", json.String("open")),
+          ]),
+          within_ms: 1000,
+        )
+      assert field(opened, "event") == json.String("mutation_outcome")
+      let held =
+        request(
+          socket,
+          102,
+          "follow_up",
+          json.Object([
+            #("strand", json.String("main")),
+            #("text", json.String("return over the socket")),
+          ]),
+          within_ms: 1000,
+        )
+      assert field(field(held, "body"), "status") == json.String("queued")
+
+      // Shutdown returns only after the original custody witness retires. The
+      // peer reads afterward, so queued Push messages killed with the socket
+      // cannot accidentally satisfy this assertion.
+      assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+      let returned =
+        poll.until(within: 1000, every: 1, attempt: fn() {
+          let frame = wire.frame(socket, within_ms: 1000)
+          case field(frame, "event") {
+            json.String("held_input_returned") ->
+              poll.Done(field(frame, "body"))
+            _ -> poll.Retry
+          }
+        })
+      let assert poll.Answered(body) = returned
+        as "the complete held input was written before the socket closed"
+      assert field(body, "text") == json.String("return over the socket")
+      ffi_ws.tcp_close(socket)
+    },
+  )
 }

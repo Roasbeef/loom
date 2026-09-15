@@ -452,13 +452,9 @@ type Message(instance) {
   Operation(String, String, Subject(Result(View, Error)))
   Shutdown
 
-  /// Hands every resident instance back what it still holds, then acks.
-  ///
-  /// Separate from `Shutdown` because it must complete *before* admission
-  /// is fenced and the session sockets are killed: the hub's held prompts
-  /// travel back over those sockets, so draining after them would write
-  /// into the void. The ack is what lets the root order the two.
-  DrainHeld(Subject(Nil))
+  /// Snapshots resident drain capabilities without invoking user callbacks.
+  /// Delivery revalidates authority through this actor, so it must keep serving.
+  DrainHeld(Subject(List(fn(Int) -> Nil)))
   Opened(String, String, Result(instance, String))
   Faulted(String, String)
   Failed(String, String, String)
@@ -1221,15 +1217,12 @@ pub fn shutdown(manager: Manager(instance)) -> Nil {
   process.send(manager.commands, Shutdown)
 }
 
-/// Hands every resident instance back what it still holds, and waits.
+/// Runs resident drain capabilities in the caller, within one shared budget.
 ///
-/// The caller is the root, ordering a graceful daemon shutdown. It must run
-/// this *before* it kills the session sockets, because the hub's held prompts
-/// travel back over those sockets; the synchronous form is what lets the root
-/// know the returns have been written before it severs them. A registry that
-/// has already stopped, or does not answer within the bound, returns `Nil`:
-/// the caller is already tearing the daemon down, and a dead registry had
-/// nothing left to drain.
+/// The daemon root invokes this from its bounded Weft task. The registry only
+/// snapshots capabilities: a gateway's authenticated delivery calls back into
+/// the registry and would deadlock if this actor invoked the drain itself.
+/// An unavailable registry or an expired budget cannot confirm delivery.
 ///
 /// ## Examples
 ///
@@ -1238,22 +1231,21 @@ pub fn shutdown(manager: Manager(instance)) -> Nil {
 /// ```
 @internal
 pub fn drain_held(manager: Manager(instance)) -> Nil {
-  call.try_call(
-    manager.commands,
-    waiting: drain_budget_ms + 2000,
-    sending: DrainHeld,
-  )
-  |> result.unwrap(Nil)
+  let deadline = bootstrap.monotonic_time_ms() + drain_budget_ms
+  let drains =
+    call.try_call(
+      manager.commands,
+      waiting: drain_budget_ms,
+      sending: DrainHeld,
+    )
+    |> result.unwrap([])
+  list.each(drains, fn(drain) {
+    drain(int.max(deadline - bootstrap.monotonic_time_ms(), 0))
+  })
 }
 
-// How long one whole registry drain may take, shared across every resident
-// instance rather than allowed to each of them. It is the budget the handler
-// hands each instance the remainder of, and the caller waits a couple of
-// seconds past it so an acknowledgement from a handler that spent the whole
-// budget still arrives before the caller gives up. It sits well inside the
-// daemon's own shutdown window (the SIGTERM path allows thirty seconds),
-// because a drain that outlived the shutdown is worse than one that reports
-// partial confirmation.
+// Every resident session spends the remainder of this same window. The root
+// also bounds the task so a misbehaving callback cannot block daemon control.
 const drain_budget_ms = 5000
 
 fn handle(
@@ -1560,25 +1552,19 @@ fn handle(
     Retired(id, operation, reason) ->
       step(phase, retired(book, id, operation, reason))
 
-    // Runs the assembly's drain on every resident slot and only then acks.
-    // Ordering is the whole point: the root calls this before it kills the
-    // session sockets, and the hub's held returns travel back over them.
-    // A slot still building has no instance and nothing to drain; a slot
-    // whose instance is gone has nothing left either, so only `Running`
-    // slots are visited.
+    // Callbacks leave the actor with their original instance. A later slot
+    // replacement must never redirect a drain to a different incarnation.
     DrainHeld(reply) -> {
-      let deadline = bootstrap.monotonic_time_ms() + drain_budget_ms
-      dict.each(book.slots, fn(_id, slot) {
-        case slot.phase {
-          Running(instance) ->
-            book.assembly.drain(
-              instance,
-              int.max(deadline - bootstrap.monotonic_time_ms(), 0),
-            )
-          WaitingForDomain | Building | Closing | Blocked(_) -> Nil
-        }
-      })
-      process.send(reply, Nil)
+      let drain = book.assembly.drain
+      let drains =
+        dict.values(book.slots)
+        |> list.filter_map(fn(slot) {
+          case slot.phase {
+            Running(instance) -> Ok(fn(within) { drain(instance, within) })
+            WaitingForDomain | Building | Closing | Blocked(_) -> Error(Nil)
+          }
+        })
+      process.send(reply, drains)
       step(phase, book)
     }
     Shutdown -> {

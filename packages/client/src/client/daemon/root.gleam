@@ -43,6 +43,7 @@ import host/bootstrap
 import mist
 import storage/access
 import storage/catalogue
+import weft
 import weft/state_machine as sm
 
 /// Configuration independent of session assembly and listener routing.
@@ -186,6 +187,8 @@ type Book(instance) {
     allocations: Dict(process.Pid, Allocation),
     reserved_bytes: Int,
     listener: Option(listener.Listener),
+    // The return task must retire before the original lifetime can be released.
+    returns: Option(Subject(weft.Pulled(Nil, Nil))),
   )
 }
 
@@ -194,6 +197,7 @@ type Message(instance) {
   Readiness(Subject(Result(Ready(instance), String)))
   ControlState(ControlUse, Subject(Result(Ready(instance), String)))
   Credential(Subject(Result(String, String)))
+  Returns(weft.Pulled(Nil, Nil))
   Stop(Subject(Result(Nil, String)))
   CallerGone
   LockGone
@@ -240,7 +244,17 @@ pub fn start(
       })
     sm.initialised(
       Dormant,
-      Book(config, assembly, commands, selector, Empty, dict.new(), 0, None),
+      Book(
+        config,
+        assembly,
+        commands,
+        selector,
+        Empty,
+        dict.new(),
+        0,
+        None,
+        None,
+      ),
     )
     |> sm.selecting(selector)
     |> sm.returning(commands)
@@ -547,6 +561,7 @@ fn handle(
       process.send(reply, credential_for(phase, book.stage))
       sm.keep(book)
     }
+    Returns(report) -> returned(phase, book, report)
     Stop(reply) -> stop(phase, book, reply)
     CallerGone -> stop(phase, book, process.new_subject())
     LockGone -> block(book, "daemon lifetime lock was lost")
@@ -1123,6 +1138,13 @@ fn listener_gone(phase: Phase, book: Book(instance), reason) {
 }
 
 fn finish_draining(book: Book(instance)) {
+  case book.returns {
+    Some(_) -> sm.transition(Stopping, book)
+    None -> finish_lifetime(book)
+  }
+}
+
+fn finish_lifetime(book: Book(instance)) {
   case book.stage, dict.size(book.allocations), book.listener {
     WitnessedClosed(identity), 0, None -> close_store(book, identity.store)
     WitnessedClosed(_), _, listener -> {
@@ -1153,28 +1175,12 @@ fn stop(
     }
     Stopping -> sm.keep(book) |> sm.postpone
     Serving -> {
-      // Fence admission before the drain, not after it. The hub has no
-      // drain-phase check of its own, so a prompt submitted while the
-      // drain below is running would be acknowledged `queued` and land
-      // in the held map *after* the drain emptied it — lost at teardown
-      // with neither a return nor a refusal, the exact silent loss this
-      // path exists to prevent. In `Stopping` every admission point is
-      // already closed: control mutations are refused, new session
-      // sockets are not transferred, and `stop` itself postpones, so
-      // the drain below walks queues nothing can still grow.
-      let stopped = sm.transition(Stopping, book)
-
-      // Return every held prompt before the sockets they travel over are
-      // killed. A hub's held item reaches its submitter as a push on that
-      // submitter's session socket, so draining after `cancel_session_
-      // connections` would write into a closed peer and the operator
-      // would lose the prompt this drain exists to hand back. The drain
-      // is synchronous on the registry for the same reason: the root must
-      // know the returns were written before it severs them.
-      drain_held_sessions(book.stage)
-      cancel_session_connections(book)
-      cancel_lifetime(book.stage)
-      stopped |> sm.postpone
+      // Returning the next state, rather than constructing it before a blocking
+      // call, closes root admission while the callback task remains in flight.
+      let book = start_returning(book)
+      sm.transition(Stopping, book)
+      |> sm.with_selector(book.selector)
+      |> sm.postpone
     }
     Dormant | Starting | Refused(_) -> close_unstarted(book) |> sm.postpone
   }
@@ -1192,22 +1198,62 @@ fn cancel_lifetime(stage: Stage(instance)) {
   }
 }
 
-// Hands every resident session's held prompts back to their submitters.
-//
-// Only a Live stage holds a registry, and only that registry knows which
-// slots have a resident instance; every other stage has no instance to
-// drain and nothing held. The call is the registry's synchronous form, so
-// by the time it returns the returns have been written to the session
-// sockets and the root may safely kill them.
-fn drain_held_sessions(stage: Stage(instance)) {
-  case stage {
-    Live(running) -> manager.drain_held(lifetime.registry(running.lifetime))
-    Empty
-    | Directory(_)
-    | Locked(_)
-    | Catalogued(_)
-    | Authenticated(_)
-    | WitnessedClosed(_) -> Nil
+// The root owns the task but never waits inside its receive loop. Keeping the
+// report subject until AllDelivered also prevents early lock release if the
+// original lifetime happens to retire while the task is still unwinding.
+fn start_returning(book: Book(instance)) -> Book(instance) {
+  let reports = process.new_subject()
+  let stage = book.stage
+  let _relay =
+    weft.new_prepared([
+      weft.task(fn() {
+        case stage {
+          Live(running) ->
+            manager.drain_held(lifetime.registry(running.lifetime))
+          Empty
+          | Directory(_)
+          | Locked(_)
+          | Catalogued(_)
+          | Authenticated(_)
+          | WitnessedClosed(_) -> Nil
+        }
+        Ok(Nil)
+      }),
+    ])
+    |> weft.deadline(7000)
+    |> weft.start_relayed(to: reports)
+  Book(
+    ..book,
+    returns: Some(reports),
+    selector: process.select_map(book.selector, reports, Returns),
+  )
+}
+
+fn returned(phase: Phase, book: Book(instance), report: weft.Pulled(Nil, Nil)) {
+  case report {
+    weft.PulledOutcome(_) | weft.NotYet -> sm.keep(book)
+    weft.RunLost(_) ->
+      block(book, "daemon input-return task retirement was lost")
+    weft.AllDelivered -> finish_returning(phase, book)
+  }
+}
+
+fn finish_returning(phase: Phase, book: Book(instance)) {
+  let selector = case book.returns {
+    Some(reports) -> process.deselect(book.selector, reports)
+    None -> book.selector
+  }
+  let book = Book(..book, returns: None, selector:)
+  case phase {
+    Stopping -> {
+      // Socket writes were given their bounded opportunity. Custody shutdown
+      // still waits for the original monitor before releasing the daemon lock.
+      cancel_session_connections(book)
+      cancel_lifetime(book.stage)
+      finish_draining(book) |> sm.with_selector(selector)
+    }
+    Dormant | Starting | Serving | Refused(_) | RecoveryBlocked(_) | Closed ->
+      sm.keep(book) |> sm.with_selector(selector)
   }
 }
 

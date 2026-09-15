@@ -119,6 +119,11 @@ catalogue without opening runtimes. Explicit admission invokes
   `start_listener` publishes a parked `client/daemon/listener.Listener` before
   `begin` releases socket acquisition. `control_state` permits existing control
   sockets to inspect drain progress without widening `ready` or new admission.
+  Shutdown enters `Stopping` and runs held-input return in a bounded Weft task.
+  `manager.DrainHeld` snapshots resident callbacks; the task invokes them outside
+  the registry so authenticated delivery can call `frame_authority` there.
+  `root.Returns` consumes the task's final report before session cancellation.
+  Task completion never replaces the original lifetime monitor's cleanup proof.
   Connection admission caps 64 owners and 160MiB of accounted payload:
   inbound message limits plus 8MiB of bounded delivery allowance per session
   connection, with no exact BEAM heap/RSS claim. Only the original socket DOWN
@@ -2389,6 +2394,12 @@ across one operation a `Stop` block holds open.
   joins the `Outputs` topic alone and turns each `ToolOutput` into a
   pushed `tool_output` frame without pulling; every other `BusHint` is a
   pull. The host fixture joins every topic.
+- `gateway.DrainHeld(flushed, reply)` fences mutations, returns held items,
+  queues each transport's flush marker, and replies with the acknowledgement
+  count. `daemon/session_socket.Flush` follows `Push` from the same gateway
+  sender and acknowledges completed socket writes. The drain task receives
+  these acknowledgements outside the gateway, within its remaining budget;
+  a socket can still finish a request against that gateway while flushing.
 - `advisor.Message` — `PrimaryRunEnded(operation)` and
   `AdvisorRunEnded(operation)` (casts, from the wrapped `run_end` slot on
   the strand driver's own process), `PrimaryStepped(operation)` (a cast,
@@ -2668,6 +2679,14 @@ across one operation a `Stop` block holds open.
   input. `pending_inputs` exposes bounded excerpts keyed by server-minted
   monotonic item identity, while `input_queue_changed` requests a refresh even
   when the durable cursor did not move.
+- **Graceful drain is a permanent gateway admission fence.** `Draining`
+  refuses mutations on existing sockets while retaining authenticated reads.
+  It also disables idle-queue admission before `serve.drain_instance` requests
+  runtime abort, so a terminal hint cannot start a held successor. One deadline
+  covers the registry snapshot, all resident callbacks, socket flushes and
+  runtime settlement. Socket acknowledgements do not prove client receipt;
+  expiry and disconnection leave return unconfirmed. [Protocol 038](../../protocol-change/038-held-input-custody-return.md)
+  preserves the queue's memory-only contract and documents this limit.
 - **Held input edits preserve admission identity.** `QueuedInputGet` returns
   complete text and revision only to the currently mutable original principal.
   `EditQueuedInput` compares the held ID and revision in the gateway actor,

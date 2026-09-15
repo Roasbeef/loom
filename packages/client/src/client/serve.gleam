@@ -1783,32 +1783,18 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
 /// ```
 @internal
 pub fn drain_instance(instance: Instance, within_ms: Int) -> Nil {
-  // Abort every strand that is running something, first, and WAIT for the
-  // terminals. A daemon drain must not simply drop an in-flight turn: the
-  // operator would be left with a conversation that stops mid-answer and
-  // no record that it did. Requesting cancellation routes each strand
-  // through the durable `CancelRequested` marker and the existing
-  // synthetic-response path, so the turn settles as an ordinary `Aborted`
-  // terminal with its partial content retained — the same terminal an
-  // explicit Escape produces. `api.drain` both requests and waits: the
-  // request is fire-and-forget, so a caller that only sent it could have
-  // the trees stopped under it before the terminal committed, which is the
-  // exact loss this drain exists to prevent. It captures each strand's
-  // current operation before sending, so a strand that went idle is a
-  // no-op rather than a request against a successor, and it spends one
-  // shared budget rather than one per strand.
-  //
-  // The budget is the caller's remaining share of the registry's one drain
-  // deadline, not a budget of this instance's own: the registry spends a
-  // single window across every resident session, so the last instance does
-  // not outlive the caller's wait. A negative or zero budget means the
-  // window is already spent, so the abort is requested but not waited for.
-  api.drain(instance.runtime, within_ms: int.max(within_ms, 0))
+  let deadline = bootstrap.monotonic_time_ms() + int.max(within_ms, 0)
 
-  // Then hand back whatever the hub still holds. Ordering matters: a
-  // held prompt is returned over the submitter's session socket, which
-  // the root kills only after this call returns.
-  hub.drain_held(instance.gateway)
+  // The gateway owns the admission fence. Fence and return held input before
+  // aborting, so a terminal hint cannot admit it into a successor during drain.
+  hub.drain_held_within(instance.gateway, int.max(within_ms, 0))
+
+  // Cancellation retains the existing durable Aborted path. Socket flushes
+  // and runtime settlement spend the same remaining instance budget.
+  api.drain(
+    instance.runtime,
+    within_ms: int.max(deadline - bootstrap.monotonic_time_ms(), 0),
+  )
 }
 
 // Code mode, and the MCP servers it reaches — one decision, because the
