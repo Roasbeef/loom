@@ -34,6 +34,7 @@
 //// The default token count runs in a second or so. `LOOM_TUI_STREAM_DELTAS`
 //// raises it for a hunt.
 
+import core/json
 import etui/backend
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -201,7 +202,7 @@ fn feed(
   case from >= to {
     True -> deepest
     False -> {
-      process.send(commands, Frame(pushed.delta("main", "op-1", token(from))))
+      process.send(commands, Frame(named_delta(token(from))))
 
       // Reading the queue on every frame would cost more than the frame does.
       let deepest = case from % 256 {
@@ -211,6 +212,29 @@ fn feed(
       feed(commands, pid, from + 1, to, deepest)
     }
   }
+}
+
+// Exercise the production response identity while measuring retention and
+// projection throughput, not only the legacy stream shape without an ID.
+fn named_delta(text: String) -> connection.Message {
+  pushed.push([
+    #("event", json.String("stream_delta")),
+    #(
+      "body",
+      json.Object([
+        #("strand", json.String("main")),
+        #("op", json.String("op-1")),
+        #(
+          "generation",
+          json.String(
+            "[\"generation\",\"step\",1,\"00000000-0000-7000-8000-000000000001\"]",
+          ),
+        ),
+        #("kind", json.String("text")),
+        #("text", json.String(text)),
+      ]),
+    ),
+  ])
 }
 
 pub fn a_long_live_stream_is_bounded_in_what_the_terminal_keeps_test() {
