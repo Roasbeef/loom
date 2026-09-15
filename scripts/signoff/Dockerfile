@@ -72,6 +72,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 		python3 \
 		tmux \
 		git \
+		gnupg \
 		ca-certificates \
 		curl \
 		openssh-client \

@@ -216,6 +216,22 @@ if [ -z "${verdict:-}" ]; then
 		fi
 	done
 
+	# Release assembly writes shared shipment directories, so it follows
+	# the package lanes instead of racing their builds. This also runs
+	# the native updater against the complete artifacts it will install.
+	echo "== release update verification"
+	lane_logs+=("$logs/release.log")
+	if (
+		$retry make check-release-update &&
+			$retry make dist &&
+			make update-release-smoke
+	) >"$logs/release.log" 2>&1; then
+		echo "   ok   release"
+	else
+		echo "   FAIL release      see $logs/release.log"
+		verdict=1
+	fi
+
 	# Skips are censused over every lane at once. A single check bucket
 	# without a cgroup base would print the enforcement-unavailable skips
 	# the linux-gate declarations cover; this run has the base, so it is
