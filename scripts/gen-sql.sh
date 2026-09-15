@@ -48,6 +48,7 @@ gen_package() {
   sqlite3 "$tmpdb" < "packages/$pkg/sql/schema.sql"
   if [[ "$pkg" == storage ]]; then
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_names.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_archives.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
@@ -64,4 +65,7 @@ gleam format packages/storage/src/storage/session_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_names.sql \
   packages/storage/src/storage/catalogue_names_schema.gleam
 gleam format packages/storage/src/storage/catalogue_names_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_archives.sql \
+  packages/storage/src/storage/catalogue_archives_schema.gleam
+gleam format packages/storage/src/storage/catalogue_archives_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"

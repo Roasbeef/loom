@@ -26,6 +26,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 
 ## Key Types
 
+- `session_selector.Collection` distinguishes active and archived pages. Active
+  `d` confirms archival; `a` switches collections. Archived Enter restores without
+  opening, while archived `d` explicitly confirms permanent deletion. Page loads
+  carry their collection so their response updates the matching picker. Archive
+  and deletion share the existing bounded stop-and-retire path in
+  `daemon/selection`; restoration sends one control request without admission.
+
 - Reading mode remains frozen at offset zero until an explicit return to live
   output. Older-page demand starts two viewport heights before the loaded boundary,
   keeps one bounded page outstanding, and continues through pages

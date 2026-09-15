@@ -77,6 +77,21 @@ pub fn every_control_command_has_one_typed_decode_test() {
   let workspace = #("workspace", json.String("/workspace"))
   let cases = [
     #(
+      "sessions.archive",
+      [session, epoch],
+      protocol.ArchiveSession(id, "epoch"),
+    ),
+    #(
+      "sessions.restore",
+      [session, epoch],
+      protocol.RestoreSession(id, "epoch"),
+    ),
+    #(
+      "sessions.archived",
+      [#("after", json.String(""))],
+      protocol.ListArchivedSessions("", None),
+    ),
+    #(
       "sessions.rename",
       [session, epoch, #("name", json.String("review auth"))],
       protocol.RenameSession(id, "review auth", "epoch"),

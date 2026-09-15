@@ -12,8 +12,17 @@ by WP-C-full.
 
 ## Key Types
 
+- `catalogue.Visibility` separates active and archived rows from initialization
+  state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
+  from versions 1 and 2. `set_visibility` changes the overlay, clears an archived
+  workspace default, and advances revision in one transaction. Restore preserves
+  the original creation key, name, domain, memberships, and conversation files;
+  it does not restore defaults. Owner and member pages exclude archived rows
+  before their limit. `archived_page` uses the same revision and bounded shape.
+  [Protocol 035](../../protocol-change/035-session-archive.md) defines the boundary.
+
 - `catalogue.rename` writes a session display-name override and increments the
-  catalogue revision in one immediate transaction. Schema version 2 adds
+  catalogue revision in one immediate transaction. The version-2 migration adds
   `catalogue_session_names`; the embedded `catalogue_names_schema` migrates
   version 1 atomically. Display reads join the override, while `by_request_key`
   and reservation comparisons retain the original creation name. Named queries
@@ -64,7 +73,7 @@ by WP-C-full.
   saved choice; `set_workspace_default` changes it only to a registration in
   that workspace. `member_page` applies membership in SQL before its 100-row
   limit, so a continuation never exposes an unrelated session identity.
-  The catalogue revision advances only on registration, default or membership changes,
+  The catalogue revision advances on registration, names, visibility, defaults, or membership changes,
   not on identical retries.
 - `storage/snapshot.{Reader, Plan, Cut, Descriptor}` supplies bounded client
   reads without changing the frozen `Storage` record. A declarative plan
@@ -82,7 +91,8 @@ by WP-C-full.
 - `storage/sql` contains parrot/sqlc-generated catalogue and snapshot queries.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the
-  version-2 name-override table. Generation loads all three schemas for
+  version-2 name-override table; `catalogue_archives_schema` embeds the version-3
+  archive overlay. Generation loads all four schemas for
   query checking, but each database executes only its own schema. `make gen-sql`
   regenerates these artifacts, and tests pin them to their sources.
 - `storage/catalogue.{query, statement, atomic, coherent}` are internal

@@ -19,6 +19,15 @@ import tui/daemon/protocol
 import tui/text_hygiene
 import tui/theme
 
+/// The selected metadata collection, independent of runtime status.
+pub type Collection {
+  /// Sessions available for explicit opening.
+  Active
+
+  /// Preserved sessions that must be restored before opening.
+  Archived
+}
+
 /// Whether the picker is navigating, editing a name, or confirming removal.
 ///
 /// Deletion is the one selector action with no undo, so the question it asks
@@ -35,6 +44,12 @@ pub type Prompt {
     session_id: String,
     /// Bounded single-line draft, sent only on Enter.
     draft: String,
+  )
+
+  /// Archiving preserves history and is bound to the originally selected row.
+  ConfirmingArchive(
+    /// The identity whose history will be retained.
+    session_id: String,
   )
 
   /// A delete confirmation is open for exactly this identity. The row may
@@ -55,6 +70,8 @@ pub type State {
     selected: Int,
     /// Currently attached session or the saved default before attachment.
     current: String,
+    /// Which collection this page belongs to.
+    collection: Collection,
     /// Navigation, or an open question about one identity.
     prompt: Prompt,
   )
@@ -88,7 +105,22 @@ pub type Action {
   /// Return to the old conversation without opening any row.
   Close
 
-  /// The operator confirmed removal of this registration and its database.
+  /// Request the other collection without opening any session.
+  ShowCollection(Collection)
+
+  /// The operator confirmed preserving this session outside the active list.
+  Archive(
+    /// Canonical identity bound when confirmation opened.
+    session_id: String,
+  )
+
+  /// Restore a selected archived row without opening it.
+  Restore(
+    /// Canonical identity selected explicitly by the owner.
+    session_id: String,
+  )
+
+  /// The operator confirmed permanent removal of this registration and database.
   Delete(
     /// The identity the confirmation was asked about.
     session_id: String,
@@ -110,7 +142,7 @@ pub fn new(page: protocol.Page, current: String) -> State {
         False -> found
       }
     })
-  State(page, selected, current, Browsing)
+  State(page, selected, current, Active, Browsing)
 }
 
 /// Moves this workspace's sessions first without changing order within groups.
@@ -189,7 +221,8 @@ pub fn update(key: keys.Key, state: State) -> Action {
   case state.prompt {
     Browsing -> browsing(key, state)
     Renaming(id, draft) -> renaming(key, state, id, draft)
-    ConfirmingDelete(session_id) -> confirming(key, state, session_id)
+    ConfirmingDelete(session_id) -> confirming(key, state, Delete(session_id))
+    ConfirmingArchive(session_id) -> confirming(key, state, Archive(session_id))
   }
 }
 
@@ -238,9 +271,9 @@ pub fn renamed(state: State, row: protocol.Session) -> State {
 // While the question is open only its two answers exist. Anything else
 // withdraws it, because a stray key must never be read as consent to remove
 // a conversation.
-fn confirming(key: keys.Key, state: State, session_id: String) -> Action {
+fn confirming(key: keys.Key, state: State, action: Action) -> Action {
   case key {
-    keys.Char("y") -> Delete(session_id)
+    keys.Char("y") -> action
     _other -> Continue(State(..state, prompt: Browsing))
   }
 }
@@ -250,7 +283,11 @@ fn browsing(key: keys.Key, state: State) -> Action {
     keys.Escape -> Close
     keys.Enter ->
       case list.first(list.drop(state.page.sessions, state.selected)) {
-        Ok(row) -> Choose(row)
+        Ok(row) ->
+          case state.collection {
+            Active -> Choose(row)
+            Archived -> Restore(row.session_id)
+          }
         Error(Nil) -> Continue(state)
       }
     keys.Up ->
@@ -265,6 +302,11 @@ fn browsing(key: keys.Key, state: State) -> Action {
           ),
         ),
       )
+    keys.Char("a") ->
+      case state.collection {
+        Active -> ShowCollection(Archived)
+        Archived -> ShowCollection(Active)
+      }
     keys.Char("n") -> NewSession
     keys.Char("r") ->
       case list.first(list.drop(state.page.sessions, state.selected)) {
@@ -274,8 +316,13 @@ fn browsing(key: keys.Key, state: State) -> Action {
       }
     keys.Char("d") ->
       case list.first(list.drop(state.page.sessions, state.selected)) {
-        Ok(row) ->
-          Continue(State(..state, prompt: ConfirmingDelete(row.session_id)))
+        Ok(row) -> {
+          let prompt = case state.collection {
+            Active -> ConfirmingArchive(row.session_id)
+            Archived -> ConfirmingDelete(row.session_id)
+          }
+          Continue(State(..state, prompt:))
+        }
         Error(Nil) -> Continue(state)
       }
     keys.Right ->
@@ -310,7 +357,10 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     |> block.with_title_styled(
       [
         span.span_styled(
-          " SESSIONS · daemon catalogue ",
+          case state.collection {
+            Active -> " SESSIONS · active "
+            Archived -> " SESSIONS · archived "
+          },
           theme.overlay_signal(),
         ),
       ],
@@ -418,7 +468,12 @@ fn help_line(state: State, width: Int) {
       span.line_new([
         span.span_styled(
           text.truncate(
-            "↑↓ select · Enter open · n new · r rename · d delete · → next page · ← first · Esc close",
+            case state.collection {
+              Active ->
+                "↑↓ select · Enter open · n new · r rename · d archive · a archived · → next · ← first · Esc close"
+              Archived ->
+                "↑↓ select · Enter restore · r rename · d permanently delete · a active · → next · ← first · Esc close"
+            },
             width,
             "…",
           ),
@@ -443,11 +498,21 @@ fn help_line(state: State, width: Int) {
     // A canonical identity is bounded by the wire at 64 bytes, so this line
     // needs no truncation of its own; hygiene still applies because the text
     // reaches a terminal.
+    ConfirmingArchive(session_id) ->
+      span.line_new([
+        span.span_styled(
+          text_hygiene.single_line(
+            "stop and archive " <> session_id <> "? history is kept · y/n",
+          ),
+          theme.overlay_signal(),
+        ),
+      ])
+
     ConfirmingDelete(session_id) ->
       span.line_new([
         span.span_styled(
           text_hygiene.single_line(
-            "stop and delete " <> session_id <> "? y/n · any other key cancels",
+            "permanently delete " <> session_id <> " and its history? y/n",
           ),
           theme.overlay_signal(),
         ),
