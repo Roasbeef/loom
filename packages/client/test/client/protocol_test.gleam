@@ -415,3 +415,39 @@ pub fn queued_input_protocol_round_trip_and_required_revision_test() {
     )
   assert protocol.decode_event(protocol.encode_event(envelope)) == Ok(envelope)
 }
+
+/// The pending-nudge observation's two rules the golden corpus cannot state:
+/// the command carries no scope at all, and an unknown field in its body is
+/// tolerated rather than refused, so a later revision of the body cannot turn
+/// an older client's frame into an error.
+///
+/// `scripts/test.sh client --match advisor_pending_protocol` runs these codecs.
+pub fn advisor_pending_protocol_round_trips_and_tolerates_a_body_test() {
+  let envelope = protocol.CommandEnvelope(9, protocol.AdvisorPendingGet)
+  assert protocol.decode_command(protocol.encode_command(envelope))
+    == Ok(envelope)
+
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.AdvisorPendingGet,
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":9,\"cmd\":\"advisor_pending\",\"body\":{\"strand\":\"main\"}}",
+    )
+    as "a body field this command does not define is ignored, not refused"
+
+  let board =
+    json.Object([
+      #("strand", json.String("main")),
+      #("observed_at_ms", json.Int(1000)),
+      #("pending", json.Array([json.String("the migration has no down step")])),
+      #("total", json.Int(1)),
+    ])
+  let observed =
+    protocol.EventEnvelope(
+      Some(9),
+      None,
+      protocol.SnapshotEvent(protocol.AdvisorPendingSnapshot(board)),
+    )
+  assert protocol.decode_event(protocol.encode_event(observed)) == Ok(observed)
+}

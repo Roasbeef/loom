@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:910`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:921`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
