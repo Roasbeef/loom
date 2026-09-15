@@ -2909,7 +2909,8 @@ fn assemble_in(
   })
   use tool_registry <- result.try(
     list.append(
-      contributions.built_in(
+      contributions.built_in_for(
+        settings.tools.roster,
         Some(agency_seam),
         code_mode,
         history_seam,

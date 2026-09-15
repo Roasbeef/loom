@@ -12,6 +12,7 @@
 //// so a change that made the built-ins collide fails the test suite
 //// loudly rather than being papered over.
 
+import client/catalog
 import client/contributions
 import gleam/option.{type Option, None}
 import tools/agent.{type Agency}
@@ -45,8 +46,43 @@ pub fn built_in(
   memory: Option(remember.Memory),
   schedules: Option(schedule_tool.Schedules),
 ) -> Registry {
+  built_in_for(catalog.Full, agency, code_mode, history, memory, schedules)
+}
+
+/// The same, under an operator's chosen roster.
+///
+/// A twin rather than a sixth parameter on `built_in`, because every one
+/// of this helper's callers wants the roster the tree has always built
+/// and none of them is about the roster. A test that *is* about it says
+/// so here; nothing else changes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let registry =
+///   tool_registry.built_in_for(
+///     catalog.Minimal,
+///     option.None,
+///     option.None,
+///     option.None,
+///     option.None,
+///     option.None,
+///   )
+/// assert tool.names(registry)
+///   == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
+/// ```
+///
+pub fn built_in_for(
+  roster: catalog.Roster,
+  agency: Option(Agency),
+  code_mode: Option(codemode_tool.CodeMode),
+  history: Option(history_tool.History),
+  memory: Option(remember.Memory),
+  schedules: Option(schedule_tool.Schedules),
+) -> Registry {
   let assert Ok(registry) =
-    contributions.built_in(
+    contributions.built_in_for(
+      roster,
       agency,
       code_mode,
       history,

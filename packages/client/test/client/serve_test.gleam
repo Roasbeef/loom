@@ -1580,6 +1580,7 @@ pub fn a_boot_with_schedules_runs_a_supervised_scanner_test() {
 fn networked_tools() -> catalog.ToolsConfig {
   catalog.ToolsConfig(
     network: catalog.ToolNetworkFull,
+    roster: catalog.Full,
     env: ["GH_TOKEN"],
     path: ["/opt/homebrew/bin"],
     set: [

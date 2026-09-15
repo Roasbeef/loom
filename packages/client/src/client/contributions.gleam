@@ -77,7 +77,33 @@
 //// prompt sits inside a one-hour cache breakpoint, and a registry that
 //// could grow under a live session would move bytes every strand had
 //// already paid for.
+////
+//// ## Two rosters: a plane can be open and still not be a wire tool
+////
+//// The `Option` per plane answers whether this *host* has the thing. It
+//// is the wrong instrument for a second question an operator also has to
+//// answer: whether this *deployment* wants that thing on the wire. The
+//// two come apart because a tool definition is not paid for when it is
+//// called — it is paid for in the cached prefix of every request of every
+//// strand, called or not.
+////
+//// `built_in_for` takes the answer as a `catalog.Roster`. `Full` is the
+//// roster this module has always built. `Minimal` registers the five core
+//// tools and `code_mode`, and ignores every other plane *even when it is
+//// present*, because each of the tools it drops is reachable from a
+//// code-mode program through the capability prelude. That is what makes
+//// the drop cheap: nothing is taken away from the session, only from the
+//// prefix. It is also what makes `Minimal` the roster under which code
+//// mode is the only door — the planes are all still there, and a model
+//// that wants one writes a program.
+////
+//// One tool has no code-mode twin, because its whole content is a number
+//// the harness already holds: `context_remaining`. The roster does not
+//// leave the model without that number. `client/wiring.context_footer`
+//// renders it onto the newest tool result as the request is built, which
+//// is strictly better than a tool — see that function for why.
 
+import client/catalog
 import client/scheduleseam
 import gleam/dict.{type Dict}
 import gleam/list
@@ -154,6 +180,12 @@ pub type Collision {
 /// compaction settings and nothing else — so its `Option` is for a
 /// registry built with no session behind it, which only a test does.
 ///
+/// This is `built_in_for(catalog.Full, ..)` under its historical name and
+/// its historical signature. Both are kept because the roster is an
+/// operator's choice that only the serving host makes: everything else
+/// that builds a registry — every test, every fixture — wants the roster
+/// that has always been built and should not have to say so.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -178,6 +210,87 @@ pub fn built_in(
   context: Option(context_tool.Context),
   jobs: Option(job_tool.Jobs),
 ) -> List(Contribution) {
+  built_in_for(
+    catalog.Full,
+    agency,
+    code_mode,
+    history,
+    memory,
+    schedules,
+    context,
+    jobs,
+  )
+}
+
+/// The same contribution under an operator's chosen roster.
+///
+/// ## Why a roster is a knob at all
+///
+/// Plane gating already answers "does this host *have* the thing". It
+/// cannot answer "does this deployment want to *pay* for the thing",
+/// because the price is not paid by the plane — it is paid by every
+/// request of every strand. The wire tool array renders ahead of the
+/// system prompt and is the byte prefix of the provider's cached region,
+/// so seventeen definitions are seventeen definitions in every prefix for
+/// the life of the session, whether or not the model ever calls one. That
+/// is a bill an operator should be able to decide, and a host fact cannot
+/// decide it.
+///
+/// ## What `Minimal` drops, and why dropping it costs nothing
+///
+/// `Minimal` registers `bash`, `grep`, `fs_read`, `fs_write`, `fs_edit`
+/// and — when this host opened the plane — `code_mode`. The six
+/// `agent_*` tools, the three `job_*`, the three `schedule_*`,
+/// `history_search`, `remember` and `context_remaining` are not
+/// registered *even when their plane is present*, and that is the whole
+/// design: each of them is reachable from a code-mode program through the
+/// capability prelude, so `Minimal` narrows the door rather than the
+/// ability. A session on this roster still spawns agents, starts
+/// background jobs, writes schedules and searches history; it writes a
+/// program to do it. A registered-but-dropped plane therefore costs an
+/// operator nothing except the wire tool it no longer pays for — the
+/// planes are still opened, still wired, still behind the broker, and the
+/// program that reaches them is checked by exactly the same policy a wire
+/// call would have been.
+///
+/// `context_remaining` is the one drop with no code-mode twin, because
+/// its answer is a number the harness already holds. The roster does not
+/// leave the model blind to it: `client/wiring.context_footer` renders
+/// that number onto the newest tool result at request-build time.
+///
+/// `bash` still receives the jobs door under `Minimal`, exactly as it
+/// does under `Full`. The door is not one of the dropped tools — it is
+/// what makes `mode: "background"` answerable — and taking it away would
+/// change what a core tool does rather than how many definitions the
+/// prefix carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert [contributions.Contribution(tools:, ..)] =
+///   contributions.built_in_for(
+///     catalog.Minimal,
+///     option.None,
+///     option.None,
+///     option.None,
+///     option.None,
+///     option.None,
+///     option.None,
+///     option.None,
+///   )
+/// assert list.length(tools) == 5
+/// ```
+///
+pub fn built_in_for(
+  roster: catalog.Roster,
+  agency: Option(Agency),
+  code_mode: Option(codemode_tool.CodeMode),
+  history: Option(history_tool.History),
+  memory: Option(remember.Memory),
+  schedules: Option(schedule_tool.Schedules),
+  context: Option(context_tool.Context),
+  jobs: Option(job_tool.Jobs),
+) -> List(Contribution) {
   // The jobs plane is the one that reaches a *core* tool: `bash` takes
   // the door whether or not there is one behind it, because `mode:
   // "background"` has to be answered on a host with no jobs actor rather
@@ -186,25 +299,53 @@ pub fn built_in(
   // are — a host without the actor pays no cached bytes for tools that
   // could only refuse.
   let door = option.unwrap(jobs, job_tool.unavailable())
-  [
-    Contribution(
-      origin: BuiltIn,
-      tools: list.flatten([
-        [
-          bash.tool(door),
-          grep.tool(),
-          fs.read_tool(),
-          fs.write_tool(),
-          fs.edit_tool(),
-        ],
+
+  // What `fs_read` can read besides a workspace file follows the planes
+  // the host opened, the same way the tools do, and for the same reason:
+  // a scheme this host cannot serve would be a sentence in the cached
+  // prefix describing a refusal. `cap://` is the on-demand half of the
+  // `code_mode` description and only means something beside that tool;
+  // `job://` is the read-only poll that lets `Minimal` drop `job_poll`.
+  let schemes =
+    list.flatten([
+      case code_mode {
+        None -> []
+        Some(mode) -> [codemode_tool.cap_scheme(mode)]
+      },
+      case jobs {
+        None -> []
+        Some(jobs) -> [job_tool.scheme(jobs)]
+      },
+    ])
+
+  // The five names every roster registers, in the order the system
+  // prompt's index reads them.
+  let core = [
+    bash.tool(door),
+    grep.tool(),
+    fs.read_tool_with(schemes),
+    fs.write_tool(),
+    fs.edit_tool(),
+  ]
+  let tools = case roster {
+    // Code mode is the door that stands in for all the others, so it is
+    // the one plane `Minimal` still reads. A host that opened no
+    // pipeline registers the five and nothing else, which is also the
+    // only roster under which a model has no way at all to reach the
+    // other planes — a posture an operator states knowingly.
+    catalog.Minimal -> list.flatten([core, code_mode_tools(code_mode)])
+
+    // The roster Loom has always registered, in the order it has always
+    // registered it. The order is load-bearing: it is the byte order of
+    // the cached prefix, and moving a definition reprices every strand.
+    catalog.Full ->
+      list.flatten([
+        core,
         case agency {
           None -> []
           Some(agency) -> agent.tools(agency)
         },
-        case code_mode {
-          None -> []
-          Some(code_mode) -> codemode_tool.tools(code_mode)
-        },
+        code_mode_tools(code_mode),
         case history {
           None -> []
           Some(history) -> [history_tool.tool(history)]
@@ -226,9 +367,19 @@ pub fn built_in(
           None -> []
           Some(jobs) -> job_tool.tools(jobs)
         },
-      ]),
-    ),
-  ]
+      ])
+  }
+  [Contribution(origin: BuiltIn, tools:)]
+}
+
+// Code mode's definitions, or none on a host that opened no pipeline.
+// Named because both rosters read this plane and the two call sites must
+// not be able to disagree about what "code mode is present" means.
+fn code_mode_tools(code_mode: Option(codemode_tool.CodeMode)) -> List(Tool) {
+  case code_mode {
+    None -> []
+    Some(code_mode) -> codemode_tool.tools(code_mode)
+  }
 }
 
 /// Drops the named tools from every built-in contribution, leaving
