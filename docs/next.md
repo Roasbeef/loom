@@ -1,11 +1,5 @@
 # Next
 
-The diff-preview follow-up on `codex/diff-line-numbers` adds source line
-numbers to unified patches and increases compact previews from 24 to 60
-lines. The 494-test TUI gate, lint, documentation checks, and independent
-review passed. Hosted CI and required Linux signoff remain pending. See
-[Diff previews](review/diff-preview-2026-09-14.md) for behavior and limits.
-
 Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
