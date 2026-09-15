@@ -125,13 +125,73 @@ pub fn a_wrapped_paragraph_continues_at_the_gutter_test() {
   })
 }
 
+/// A paragraph and the call beneath it in one response are one row apart.
+///
+/// This is the half of the rule the separation can get wrong in the other
+/// direction. A paragraph closes itself with a blank already, so a spacer
+/// placed above every group without looking up would draw the gap twice and
+/// push the call a row further from the prose that introduced it than a
+/// reader of `main` ever saw.
+pub fn prose_and_the_call_below_it_are_one_blank_row_apart_test() {
+  let rows = transcript_rows(narrated_call())
+  let prose = row_index(rows, "so here is the command")
+  let call = row_index(rows, "third-command")
+
+  assert call == prose + 2
+    as "a paragraph's own trailing blank is the only gap above the call"
+  assert at(rows, prose + 1) == "" as "that one row is blank"
+}
+
+/// Two note-bodied calls in a group are one blank row apart.
+///
+/// A call whose value the transcript renders as Markdown — `agent_note` here,
+/// `remember` and `agent_send` by the same path — ends in a detail row, and a
+/// detail row closes itself with a blank. So this is the group boundary where
+/// a one-sided rule doubles the gap, and the bare summary rows of
+/// `consecutive_tool_calls_are_one_blank_row_apart_test` cannot see it.
+pub fn consecutive_note_bodies_are_one_blank_row_apart_test() {
+  let rows = transcript_rows(two_notes())
+
+  // The call summary folds the arguments away, so the note value reaches
+  // the pane only as the rendered body beneath it.
+  let body = row_index(rows, "alphanote")
+
+  assert at(rows, body + 1) == "" as "the note body closes with its own blank"
+  assert row_index(rows, "betanote") == body + 3
+    as "the second call and its body follow that one blank, with no second"
+}
+
+/// Expanded history separates one call from the next, and only there.
+///
+/// In this view a response carrying a call and the entry carrying its result
+/// are separate entries, and both close bare, so the gap between one call and
+/// the next is nobody's trailing blank. The failing call is the control: its
+/// output arrives as a `ToolFailure` row opening its own entry, and a rule
+/// that read that row as the start of a new group would separate a call from
+/// its own outcome.
+pub fn expanded_history_separates_calls_but_not_outcomes_test() {
+  let rows = transcript_rows(expanded_calls())
+  let first = row_index(rows, "first-command")
+  let output = row_index(rows, "result-output")
+  let second = row_index(rows, "second-command")
+  let failure = row_index(rows, "failure-output")
+
+  assert output == first + 2
+    as "a call's result must stay adjacent to the call it answers"
+  assert second == output + 2
+    as "a settled call and the next call are exactly one blank row apart"
+  assert at(rows, second - 1) == "" as "that row between them is blank"
+  assert failure == second + 2
+    as "a failed result must stay adjacent to the call it answers"
+}
+
 // --- fixtures --------------------------------------------------------------
 
 // One assistant turn per call, each answered by its own result, which is the
 // shape `tool_activity` folds into a single group of two rows. The call IDs
 // differ because a repeated ID ends a group rather than extending it.
 fn two_calls() -> Pane {
-  let model = quiet_model(connection.new_inbox())
+  let model = quiet_model(connection.new_inbox(), Compact)
   let steps = [
     deliver(gateway.full_snapshot("demo")),
     deliver(gateway.identified_tool_call_entry(
@@ -159,12 +219,81 @@ fn two_calls() -> Pane {
   run(model, steps)
 }
 
+// One response whose prose and call arrive together. A response carrying
+// prose is a narrative rather than a member of an activity group, so its
+// blocks are separated where the message itself is rendered.
+fn narrated_call() -> Pane {
+  let model = quiet_model(connection.new_inbox(), Compact)
+  let steps = [
+    deliver(gateway.full_snapshot("demo")),
+    deliver(gateway.narrated_tool_call_entry(
+      "main",
+      "call-c",
+      "so here is the command",
+      "third-command",
+      1,
+    )),
+  ]
+  run(model, steps)
+}
+
+// Two `agent_note` calls, each settled, which group together and each end in
+// a rendered note body rather than a bare summary row.
+fn two_notes() -> Pane {
+  let model = quiet_model(connection.new_inbox(), Compact)
+  let steps = [
+    deliver(gateway.full_snapshot("demo")),
+    deliver(gateway.note_call_entry("main", "note-a", "alphanote", 1)),
+    deliver(gateway.identified_tool_result_ok_entry("main", "note-a", "ok", 2)),
+    deliver(gateway.note_call_entry("main", "note-b", "betanote", 3)),
+    deliver(gateway.identified_tool_result_ok_entry("main", "note-b", "ok", 4)),
+  ]
+  run(model, steps)
+}
+
+// The same call-and-answer traffic drawn with details expanded, where every
+// call and every result is its own durable entry and nothing folds them into
+// a group. The second call fails, so the run carries both outcomes.
+fn expanded_calls() -> Pane {
+  let model = quiet_model(connection.new_inbox(), Expanded)
+  let steps = [
+    deliver(gateway.full_snapshot("demo")),
+    deliver(gateway.identified_tool_call_entry(
+      "main",
+      "call-a",
+      "bash",
+      "first-command",
+      1,
+    )),
+    deliver(gateway.identified_tool_result_ok_entry(
+      "main",
+      "call-a",
+      "result-output",
+      2,
+    )),
+    deliver(gateway.identified_tool_call_entry(
+      "main",
+      "call-b",
+      "bash",
+      "second-command",
+      3,
+    )),
+    deliver(gateway.identified_tool_failure_entry(
+      "main",
+      "call-b",
+      "failure-output",
+      4,
+    )),
+  ]
+  run(model, steps)
+}
+
 // A message whose body is rendered straight from the model, which is the
 // shortest path to the prefixing this file is about: no provider, no
 // grouping, one durable line.
 fn said(text: String) -> Pane {
   let model =
-    tui.Model(..quiet_model(connection.new_inbox()), transcript: [
+    tui.Model(..quiet_model(connection.new_inbox(), Compact), transcript: [
       tui.Line(tui.Assistant, text),
     ])
   run(model, [])
@@ -207,14 +336,16 @@ fn body_rows(rows: List(String)) -> List(String) {
 }
 
 fn row_index(rows: List(String), needle: String) -> Int {
-  let found =
-    rows
-    |> list.index_map(fn(row, index) { #(row, index) })
-    |> list.filter(fn(pair) { string.contains(pair.0, needle) })
-
-  let assert [#(_, index), ..] = found
+  let assert [index, ..] = matching_rows(rows, needle)
     as { "the pane never drew a row containing " <> needle }
   index
+}
+
+fn matching_rows(rows: List(String), needle: String) -> List(Int) {
+  rows
+  |> list.index_map(fn(row, index) { #(row, index) })
+  |> list.filter(fn(pair) { string.contains(pair.0, needle) })
+  |> list.map(fn(pair) { pair.1 })
 }
 
 // A row past the end of the pane reads as blank, which is what an unfilled
@@ -283,12 +414,29 @@ fn deliver(payload: String) -> virtual_backend.Step {
 
 // The demo scaffolding removed, so every row in the pane was put there by
 // this module.
-fn quiet_model(inbox: Subject(connection.Message)) -> tui.Model {
+fn quiet_model(
+  inbox: Subject(connection.Message),
+  view: TranscriptView,
+) -> tui.Model {
   tui.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
     strands: [],
     agent_summary: agents.summary([]),
     notice: "ready",
+    details_expanded: case view {
+      Compact -> False
+      Expanded -> True
+    },
   )
+}
+
+// Which of the two transcript views a scripted run is drawn in. They place
+// the same blank at different boundaries — compact between the calls of one
+// activity group, expanded between one durable entry and the next — so a
+// spacing rule has to be pinned in whichever view owns the boundary.
+type TranscriptView {
+  Compact
+
+  Expanded
 }
