@@ -199,6 +199,15 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      build-release-image:
+        description: 'Build the committed toolchain image and reproduce the release on two runners.'
+        type: boolean
+        required: false
+        default: false
+      release-builder:
+        description: 'Optional registry/name@sha256:digest for two independent release builds.'
+        required: false
+        default: ""
       cache:
         description: 'Use build caches ("false" forces a fully cold build)'
         required: false
@@ -1342,3 +1351,54 @@ jobs:
 
       - name: make soak (seeds 1..200)
         run: .github/scripts/hex_retry.sh make soak SOAK_SEEDS=200 SOAK_FROM=1 SOAK_CHUNK=50
+
+  # Image publication is explicit and separate from releases or signing. The
+  # generated digest, not the mutable tag, is passed to both candidate runners.
+  release-builder:
+    name: build release toolchain image
+    if: github.event_name == 'workflow_dispatch' && inputs.build-release-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build and publish the toolchain
+        id: publish
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/release-builder"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f scripts/signoff/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "$image:$GITHUB_SHA" .
+          docker push "$image:$GITHUB_SHA"
+          digest=$(docker image inspect "$image:$GITHUB_SHA" --format '{{index .RepoDigests 0}}')
+          [[ "$digest" =~ @sha256:[0-9a-f]{64}$ ]]
+          printf 'image=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+  # This registered entry point can verify the candidate workflow before its
+  # standalone dispatch entry reaches main. A failed image build cannot become
+  # a successful reproduction by falling back to a different supplied image.
+  reproduce-release:
+    name: reproduce release candidate
+    needs: release-builder
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' &&
+      ((inputs.build-release-image && needs.release-builder.result == 'success') ||
+       (!inputs.build-release-image && inputs.release-builder != ''))
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/release-candidate.yml
+    with:
+      source_commit: ${{ github.sha }}
+      builder_image: ${{ needs.release-builder.outputs.image || inputs.release-builder }}

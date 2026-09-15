@@ -40,6 +40,7 @@ concurrency:
 
 env:
   GLEAM_VERSION: "1.18.1"
+  GLEAM_PATCHES: "860f8224ddb7e1ecb7f983fb622ede12466225e5"
   OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
   GO_VERSION: "1.26.3"
@@ -70,6 +71,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -109,6 +111,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}

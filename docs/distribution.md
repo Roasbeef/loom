@@ -800,6 +800,10 @@ digests. The image must provide the repository's documented Gleam, OTP, Go,
 rebar3, C compiler, Python and release-smoke dependencies.
 
 The recipe retains the warm code-mode seed and its compiler caches.
+The maintained [Gleam patch](../scripts/toolchain/gleam/README.md) makes their
+serialization and imported type-ID assignment deterministic. CI and both Docker
+recipes apply the same patch, and their compiler/compiled-module cache keys
+include its digest.
 `scripts/codemode-seed-manifest.toml` pins its complete dependency graph; seed
 preparation fails if resolution changes that committed lock. Those
 caches contain source paths and timestamps, so the fixed prefix and normalized
@@ -828,7 +832,13 @@ its own comparison. The slim launcher determines the execution platform at runti
 to a different compatible OTP host does not select the original builder's
 server artifacts. The initial hosted workflow covers Linux x86_64; macOS and
 Linux arm64 require separately provisioned builders and are not certified by
-that workflow. No workflow publishes a release or signs an artifact.
+that workflow. No workflow publishes a Loom release or signs an artifact. To build the
+committed toolchain image and compare two candidates before merging, dispatch
+`CI` on the source branch with `build-release-image=true`. Its image job
+publishes only the toolchain to GHCR; candidate jobs pull the resulting immutable
+registry digest on separate runners. `release-builder` accepts an existing
+pinned image instead. The candidate workflow is also directly dispatchable
+once it is on the default branch.
 
 Signing remains an operator action after successful independent comparison. A
 detached armored OpenPGP signature is named `manifest-<platform>.json.asc` and
