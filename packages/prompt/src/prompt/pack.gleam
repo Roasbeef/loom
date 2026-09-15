@@ -377,8 +377,8 @@ pub const canonical_sections = [
 pub const required_fragments = [
   "_enforcement_enforced", "_enforcement_platform", "_enforcement_degraded",
   "_enforcement_best_effort", "_network_blocked", "_network_proxied",
-  "_network_open", "_protected_paths", "_available_tools",
-  "_repository_guidance",
+  "_network_open", "_protected_paths", "_available_tools", "_delegation",
+  "_delegation_via_code_mode", "_code_mode_discovery", "_repository_guidance",
 ]
 
 /// Every placeholder name a pack may use. The closed list is half of why
@@ -388,7 +388,8 @@ pub const required_fragments = [
 pub const binding_names = [
   "workspace", "platform", "shell", "tools", "protected_paths", "network_allow",
   "available_tools_list", "repository_guidance_text", "enforcement", "network",
-  "protected", "available_tools", "repository_guidance",
+  "protected", "available_tools", "delegation", "code_mode_discovery",
+  "repository_guidance",
 ]
 
 /// Something wrong with a pack that is not bad syntax: the file decoded,
@@ -929,12 +930,50 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
       [] -> ""
       _ -> fragment(pack, "_available_tools", literal)
     }),
+    // Which delegation wording this host gets, if any. The two wordings
+    // instruct against different machinery, so the one a host cannot act
+    // on is worse than silence.
+    #("delegation", case delegation_fragment(environment) {
+      Ok(name) -> fragment(pack, name, literal)
+      Error(Nil) -> ""
+    }),
+    // The sentence telling an agent how to read a prelude module's
+    // signatures. It names `code_mode` and is worth nothing without it.
+    #(
+      "code_mode_discovery",
+      case list.contains(environment.tools, "code_mode") {
+        True -> fragment(pack, "_code_mode_discovery", literal)
+        False -> ""
+      },
+    ),
     #("repository_guidance", case environment.repository_guidance {
       None -> ""
       Some(_) -> fragment(pack, "_repository_guidance", literal)
     }),
   ]
   dict.merge(literal, dict.from_list(selected))
+}
+
+// Delegation follows the tool roster, because the two wordings describe
+// two different seams. A host that registered `agent_spawn` gets the
+// prose about the `agent_*` tools; a host that did not, but has
+// `code_mode`, reaches the same machinery through the capability prelude
+// and gets the prose about that. A host with neither cannot delegate at
+// all, so it is told nothing: an instruction naming tools the model was
+// never given is an invitation to call them and read a refusal.
+//
+// The roster is read here rather than carried as a flag so that the
+// prompt cannot disagree with the schemas on the wire — both come from
+// the one registry.
+fn delegation_fragment(environment: Environment) -> Result(String, Nil) {
+  case list.contains(environment.tools, "agent_spawn") {
+    True -> Ok("_delegation")
+    False ->
+      case list.contains(environment.tools, "code_mode") {
+        True -> Ok("_delegation_via_code_mode")
+        False -> Error(Nil)
+      }
+  }
 }
 
 fn enforcement_fragment(enforcement: Enforcement) -> String {

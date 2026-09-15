@@ -8,6 +8,13 @@
 //// a host failure rather than a policy denial; and the delegation
 //// section states the facts about the `agent_*` tools that their
 //// schemas cannot carry.
+////
+//// The delegation section is also where the tool roster shows up in the
+//// prompt. A host that registered the `agent_*` tools reads the prose
+//// about them; a host that registered only `code_mode` reads the prose
+//// about the capability prelude instead; a host with neither reads
+//// nothing, because prose about tools the model was never given is an
+//// invitation to call them.
 
 import gleam/list
 import gleam/option.{None}
@@ -20,18 +27,38 @@ fn shipped() -> Pack {
   decoded
 }
 
+// A host on the full roster: the `agent_*` tools are registered, so the
+// delegation section says what it has always said. Every test that is
+// not about the roster itself runs here.
 fn on(enforcement: pack.Enforcement) -> Environment {
+  with_roster(enforcement, ["agent_spawn", "bash", "fs_read"])
+}
+
+fn with_roster(
+  enforcement: pack.Enforcement,
+  tools: List(String),
+) -> Environment {
   pack.environment(
     workspace: "/work",
     platform: "linux/x86_64",
     shell: "/bin/bash",
-    tools: ["bash", "fs_read"],
+    tools:,
     available_tools: [],
     enforcement:,
     network: pack.NetworkBlocked,
     protected_paths: [],
     repository_guidance: None,
   )
+}
+
+// The rendered prompt for one roster, lowercased and flattened the same
+// way `phrases` flattens it.
+fn roster(tools: List(String)) -> String {
+  pack.render(shipped(), with_roster(pack.FullyEnforced, tools))
+  |> string.lowercase
+  |> string.split(on: "\n")
+  |> list.map(string.trim)
+  |> string.join(" ")
 }
 
 // The rendered prompt, lowercased and with every run of whitespace
@@ -49,7 +76,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-7"
+  assert decoded.version == "loom-default-8"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -69,17 +96,36 @@ pub fn shipped_pack_carries_the_canonical_sections_in_design_order_test() {
 
 // --- the build-constant half ---------------------------------------------
 
-pub fn build_constant_sections_carry_no_placeholders_test() {
+pub fn build_constant_sections_vary_only_with_the_tool_roster_test() {
   // Guarantee 3 of the stability contract: identical for every strand,
-  // including model-spawned children. A placeholder in any of these
-  // would make the prompt vary with the host for text that has no reason
-  // to.
+  // including model-spawned children. The only placeholders allowed in
+  // these four select a whole fragment from the registered tool names,
+  // which are fixed for the life of a session; a binding that splices a
+  // host value in would make words vary that have no reason to.
   list.each(["identity", "tool_discipline", "delegation", "conduct"], fn(name) {
+    let assert Ok(section) =
+      list.find(shipped().sections, fn(section) { section.name == name })
+    list.each(pack.placeholders(section.template), fn(placeholder) {
+      assert list.contains(roster_bindings, placeholder)
+    })
+  })
+
+  // And what those selections reach is itself build-constant, so the
+  // guarantee survives one level down.
+  list.each(roster_fragments, fn(name) {
     let assert Ok(section) =
       list.find(shipped().sections, fn(section) { section.name == name })
     assert pack.placeholders(section.template) == []
   })
 }
+
+// The two bindings a build-constant section may carry, and every
+// fragment they can select.
+const roster_bindings = ["delegation", "code_mode_discovery"]
+
+const roster_fragments = [
+  "_delegation", "_delegation_via_code_mode", "_code_mode_discovery",
+]
 
 pub fn host_specific_sections_use_only_environment_bindings_test() {
   list.each(shipped().sections, fn(section) {
@@ -96,12 +142,10 @@ pub fn host_specific_sections_use_only_environment_bindings_test() {
 // carry, and each test below pins one fact that is true of the code in
 // `tools/agent` and `client/agency` and false of a plausible guess.
 
-pub fn delegation_is_rendered_on_every_host_test() {
-  // Placeholder-free, so it is the same bytes for every strand of every
-  // session on this build — and never dropped as an empty section.
-  let assert Ok(section) =
-    list.find(shipped().sections, fn(section) { section.name == "delegation" })
-  assert pack.placeholders(section.template) == []
+pub fn delegation_is_rendered_under_every_enforcement_posture_test() {
+  // The delegation wording follows the tool roster and nothing else: no
+  // enforcement posture withholds it, so every strand of a session on
+  // this roster reads the same bytes.
   list.each(
     [pack.FullyEnforced, pack.DegradedRefusing, pack.BestEffort],
     fn(enforcement) {
@@ -174,6 +218,65 @@ pub fn delegation_distinguishes_a_note_from_a_message_test() {
   assert string.contains(rendered, "writing one notifies nobody")
   assert string.contains(rendered, "read once")
   assert string.contains(rendered, "parent whose run has ended is refused")
+}
+
+// --- delegation follows the roster ---------------------------------------
+//
+// Under the minimal roster the six `agent_*` tools are not registered at
+// all and the same work is done from a `code_mode` program. Prose about
+// tools the model has no schema for is not harmless: it is an invitation
+// to call them and read a refusal. So exactly one of the two wordings
+// reaches a host, and neither reaches a host that can do neither.
+
+// A phrase from each wording, chosen from a sentence the other does not
+// contain.
+const agent_tool_wording = "a subagent is a strand of this session"
+
+const code_mode_wording = "modules of the capability prelude"
+
+pub fn a_host_with_agent_spawn_gets_the_agent_tool_wording_test() {
+  let rendered = roster(["agent_spawn", "bash", "code_mode", "fs_read"])
+  assert string.contains(rendered, agent_tool_wording)
+  assert !string.contains(rendered, code_mode_wording)
+}
+
+pub fn a_host_with_code_mode_and_no_agent_spawn_gets_the_prelude_wording_test() {
+  // The minimal roster: `code_mode` is registered, the `agent_*` tools
+  // are not, and `cap/strand` is where a subagent comes from.
+  let rendered = roster(["bash", "code_mode", "fs_read"])
+  assert string.contains(rendered, code_mode_wording)
+  assert !string.contains(rendered, agent_tool_wording)
+  assert string.contains(rendered, "`cap/strand` spawns a")
+  assert string.contains(rendered, "`cap/job` starts background work")
+  assert string.contains(rendered, "`cap/schedule` arranges a heartbeat")
+  assert string.contains(rendered, "`cap/memory` writes the")
+  assert string.contains(rendered, "`cap/history` searches")
+}
+
+pub fn a_host_with_neither_is_told_nothing_about_delegation_test() {
+  // The empty section is dropped along with its blank line, so there is
+  // no dangling heading and no byte paid.
+  let rendered = roster(["bash", "fs_read"])
+  assert !string.contains(rendered, agent_tool_wording)
+  assert !string.contains(rendered, code_mode_wording)
+}
+
+// --- the capability-prelude discovery sentence ---------------------------
+
+pub fn the_discovery_sentence_appears_exactly_when_code_mode_is_registered_test() {
+  // `cap://` reads are worth describing only to a host that can run a
+  // program against what they return.
+  // A phrase only the discovery fragment carries: the delegation
+  // wording names `cap://` too, so the `cap://` spelling alone would not
+  // tell the two apart.
+  let sentence = "read a module's signatures before you write against it"
+  assert string.contains(roster(["bash", "code_mode", "fs_read"]), sentence)
+  assert string.contains(
+    roster(["agent_spawn", "bash", "code_mode", "fs_read"]),
+    sentence,
+  )
+  assert !string.contains(roster(["agent_spawn", "bash", "fs_read"]), sentence)
+  assert !string.contains(roster(["bash", "fs_read"]), sentence)
 }
 
 // --- the sandbox section, as the judgment rewrote it ---------------------
