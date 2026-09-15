@@ -97,11 +97,14 @@
 //// mode is the only door — the planes are all still there, and a model
 //// that wants one writes a program.
 ////
-//// One tool has no code-mode twin, because its whole content is a number
-//// the harness already holds: `context_remaining`. The roster does not
-//// leave the model without that number. `client/wiring.context_footer`
-//// renders it onto the newest tool result as the request is built, which
-//// is strictly better than a tool — see that function for why.
+//// `context_remaining` is dropped without a tool-shaped replacement. Its
+//// whole content is a number the harness already holds, and the model
+//// must know to ask for it, so the near-limit reminder `client/wiring`
+//// appends when the window is nearly full stays the one unprompted
+//// signal; a program that wants the number reads it through
+//// `cap/context`. A per-request footer was considered and rejected: it
+//// duplicated the reminder, cost a cache write each turn, and was
+//// harness commentary inside tool output.
 
 import client/catalog
 import client/scheduleseam
@@ -253,10 +256,9 @@ pub fn built_in(
 /// program that reaches them is checked by exactly the same policy a wire
 /// call would have been.
 ///
-/// `context_remaining` is the one drop with no code-mode twin, because
-/// its answer is a number the harness already holds. The roster does not
-/// leave the model blind to it: `client/wiring.context_footer` renders
-/// that number onto the newest tool result at request-build time.
+/// `context_remaining` is dropped and not replaced by a tool: the
+/// near-limit reminder is the unprompted signal, and `cap/context` is the
+/// programmatic read of the same number.
 ///
 /// `bash` still receives the jobs door under `Minimal`, exactly as it
 /// does under `Full`. The door is not one of the dropped tools — it is
