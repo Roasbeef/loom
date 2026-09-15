@@ -50,6 +50,10 @@ fn shipped_workspace_offer() -> codemode.SeamOffer {
   codemode.SeamOffer(
     seam: codemode.WorkspaceSeam,
     allowed_imports: policy.allowed_imports(policy.default()),
+    // A floor, not the shipped line: a real workspace host also lists the
+    // search and recall capabilities here, a few hundred bytes more in the
+    // legend that the bound's headroom covers. The client package that
+    // knows the full list depends on this one, so it cannot be asked.
     serviced_caps: ["proc.run"],
     extra_surfaces: [],
   )

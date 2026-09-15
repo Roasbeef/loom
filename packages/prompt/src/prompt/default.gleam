@@ -191,9 +191,10 @@ that strand's run and is read once. A message to a parent whose run has
 ended is refused, so put it in your own final answer instead.
 
 %% section _delegation_via_code_mode
-Subagents, background work, heartbeats, durable notes and past-session
-search are not tools on this host. They are modules of the capability
-prelude, reached from a `code_mode` program: when the host serves the
+Background work, heartbeats, durable notes and past-session search are
+not tools on this host, and neither are subagents where the host serves
+the orchestration seam. They are modules of the capability prelude,
+reached from a `code_mode` program: when the host serves the
 orchestration seam, `cap/strand` spawns a subagent, joins it and
 addresses it; `cap/job` starts background work and collects it, as
 `bash` still does when its mode is background;

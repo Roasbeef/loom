@@ -352,6 +352,33 @@ pub fn the_minimal_roster_registers_six_tools_test() {
     == ["bash", "grep", "fs_read", "fs_write", "fs_edit", "code_mode"]
 }
 
+pub fn the_roster_chooses_how_bash_reads_a_job_back_test() {
+  // The same roster value that decides whether job_poll is on the wire
+  // decides which readback bash names, so swapping the two arms cannot
+  // leave the description pointing at an absent tool.
+  let bash_of = fn(roster) {
+    let #(agency, code_mode, history, memory, schedules, context, jobs) =
+      every_plane()
+    let assert Ok(registry) =
+      contributions.registry(contributions.built_in_for(
+        roster,
+        agency,
+        code_mode,
+        history,
+        memory,
+        schedules,
+        context,
+        jobs,
+      ))
+    let assert Ok(bash) = tool.lookup(registry, "bash")
+    bash.description
+  }
+  assert string.contains(bash_of(catalog.Minimal), "job://<id>")
+  assert !string.contains(bash_of(catalog.Minimal), "`job_poll`")
+  assert string.contains(bash_of(catalog.Full), "`job_poll`")
+  assert !string.contains(bash_of(catalog.Full), "job://<id>")
+}
+
 pub fn the_minimal_roster_ignores_a_present_plane_test() {
   // The point of the roster, stated as an absence: the agency, jobs,
   // schedules, history and memory planes are all wired here, and none of
