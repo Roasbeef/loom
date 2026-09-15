@@ -2956,18 +2956,51 @@ fn transcript_content(lines: List(Line), width: Int) -> span.Text {
   |> span.text_new
 }
 
+// Rows for one transcript line, wrapped to the pane and ready to paint.
+//
+// The wrapping lives here rather than at the call sites because only this
+// function knows which bodies arrive already wrapped. A Markdown body is
+// wrapped inside `marked_markdown_rows`, at the room the mark leaves rather
+// than at the full pane, which is what seats a continuation row at the
+// gutter instead of the left margin; prefixing the mark brings those rows
+// back to exactly `width`. A second pass over them would re-measure every
+// span of every row to arrive at the rows it was handed, and the live stream
+// re-renders its whole body on every delta, so that pass was paid per token.
 fn render_line(line: Line, width: Int) -> List(span.Line) {
+  case line.speaker {
+    Assistant | Reasoning -> speaker_rows(line, width)
+
+    // Every other body is laid out against the full pane and has never been
+    // measured, so it is wrapped on the way out.
+    System
+    | User
+    | ReasoningDigest
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | Spacer -> speaker_rows(line, width) |> markdown.wrap_lines(width)
+  }
+}
+
+// The rows one speaker's body occupies, before any wrapping the speaker did
+// not already do for itself. Every arm ends by handing its mark to
+// `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
+// beneath it are decided in one place.
+fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
-    Assistant -> #("◆ Agent  ", theme.current_bold())
-    Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
+    Assistant -> #("◆ Agent ", theme.current_bold())
+    Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
-    Failure -> #("! error  ", theme.danger_text())
+    Failure -> #("! error ", theme.danger_text())
     Spacer -> #("", theme.quiet_text())
   }
   case line.speaker {
@@ -3066,7 +3099,7 @@ fn digest_row(
 
 // The cells every row of a block after its first is indented by.
 //
-// A mark like `"◆ Agent  "` is a heading, not a left edge. Repeating its nine
+// A mark like `"◆ Agent "` is a heading, not a left edge. Repeating its eight
 // cells under a message's second paragraph, list or fence left that body
 // hanging in from the margin while the first paragraph's own wrapped rows
 // fell back to column zero, so one message had two left edges and neither was
@@ -4848,9 +4881,7 @@ fn cached_record_lines(
     let #(rows, cached) = acc
     let rendered =
       dict.get(previous, line)
-      |> result.lazy_unwrap(fn() {
-        render_line(line, width) |> markdown.wrap_lines(width)
-      })
+      |> result.lazy_unwrap(fn() { render_line(line, width) })
     #(
       list.append(list.reverse(rendered), rows),
       dict.insert(cached, line, rendered),
@@ -4944,9 +4975,7 @@ fn record_anchors_for(
     |> list.flat_map(fn(pair) {
       let rendered =
         dict.get(model.record_line_cache, pair.0)
-        |> result.lazy_unwrap(fn() {
-          render_line(pair.0, width) |> markdown.wrap_lines(width)
-        })
+        |> result.lazy_unwrap(fn() { render_line(pair.0, width) })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {
           "" -> None
@@ -5006,16 +5035,13 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
   case model.help_open, model.notes_open {
     True, _ ->
       help_content().lines |> markdown.wrap_lines(width) |> list.reverse
-    False, True ->
-      notes_content(model, width).lines
-      |> markdown.wrap_lines(width)
-      |> list.reverse
-    False, False ->
-      option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
-      |> transcript_content(width)
-      |> fn(content) { markdown.wrap_lines(content.lines, width) }
-      |> list.reverse
-      |> list.append(model.record_rows)
+    False, True -> notes_content(model, width).lines |> list.reverse
+    False, False -> {
+      let content =
+        option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
+        |> transcript_content(width)
+      content.lines |> list.reverse |> list.append(model.record_rows)
+    }
   }
 }
 
