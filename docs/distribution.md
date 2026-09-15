@@ -830,9 +830,9 @@ successful result covers the supplied platform's complete files, including the
 server, bundled client and slim shipment. Each other supported platform needs
 its own comparison. The slim launcher determines the execution platform at runtime, so copying it
 to a different compatible OTP host does not select the original builder's
-server artifacts. The initial hosted workflow covers Linux x86_64; macOS and
-Linux arm64 require separately provisioned builders and are not certified by
-that workflow. No workflow publishes a Loom release or signs an artifact. To build the
+server artifacts. The standalone candidate workflow covers Linux x86_64. The tag workflow below
+adds native macOS arm64 builders; Linux arm64 has no hosted release lane.
+No workflow signs an artifact. To build the
 committed toolchain image and compare two candidates before merging, dispatch
 `CI` on the source branch with `build-release-image=true`. Its image job
 publishes only the toolchain to GHCR; candidate jobs pull the resulting immutable
@@ -853,3 +853,59 @@ embedded. See [updating](updating.md) and
 installation and signature fixtures. It is also part of the full `make check`
 gate. These fixtures establish updater behavior; complete artifact equality is a
 separate release-build result and must not be inferred from their success.
+
+
+## Tagging and uploading a release
+
+Update [the release notes](release-notes.md), then commit the intended version in both `packages/client/gleam.toml` and
+`packages/tui/gleam.toml`, then run from a clean checkout. The existing `v0.2.0` tag must not be reused;
+the example assumes the package versions have been committed as `0.2.1`:
+
+```sh
+make release-tag TAG=v0.2.1                         # Preview only.
+make release-tag TAG=v0.2.1 RELEASE_ARGS=--push     # Create and push the tag.
+```
+
+The script releases the current checkout's **HEAD**. It checks the two package
+versions, refuses existing tags, fetches the remote main tip and requires HEAD
+to contain it. It creates an annotated tag and atomically pushes HEAD to main
+and the tag to the same remote. Branch protections still apply; normally merge
+and verify the release commit first, then run this command at that commit.
+Use `python3 scripts/release-tag.py v0.2.1 --remote origin --push` to choose a
+remote explicitly. It accepts `-alpha.N`, `-beta.N` and `-rc.N` versions when
+both package versions contain the same suffix. Python 3.11 or newer is required.
+
+A rejected atomic push changes neither remote ref. The local annotated tag
+remains for inspection; inspect the remote and resolve the rejection before
+retrying the printed push command. Never move a release tag that reached the
+remote. The script does not install anything or restart a daemon.
+
+A `v*` tag starts `.github/workflows/release.yml`:
+
+1. Resolve the tag to a full commit and check its package versions.
+2. Build Linux x86_64 twice on separate runners using the pinned GHCR toolchain
+   image and the existing candidate workflow.
+3. Build macOS arm64 twice on native `macos-15` runners, with pinned language
+   toolchains and the fixed `/Users/Shared/loom-release` source directory.
+4. Require complete byte equality for each platform, including the manifests
+   and toolchain inventory, and bind every manifest to the tag and commit.
+5. Upload the six archives, two manifests, aggregate `SHA256SUMS` and comparison
+   record to a **draft** GitHub release. Release candidates are also marked as
+   prereleases. Only this final job receives repository write permission.
+
+Each build runs the server and bundled-client release smoke checks. Regular CI
+and required signoff remain separate gates to check before publishing the draft.
+The macOS runner image is recorded, but its label is not immutable like the
+Linux image digest; equality is checked for each run, never assumed. The new
+macOS release lane still needs its first successful hosted comparison. A
+mismatch stops the workflow and leaves the candidate artifacts available for
+inspection. Do not publish a platform based on local unit tests alone.
+
+After merging the workflow, a failed run can be dispatched again with its
+existing tag. The upload step refuses an existing release rather than replacing
+its assets. If GitHub creation or upload was interrupted, inspect the draft and
+its assets before deciding how to recover. After review, publish the draft in
+GitHub; only then will normal updater release discovery see it. Authentication
+for private GHCR pulls is confined to the Linux runner, outside the build
+container. Bump the workflow's Linux image digest when its committed toolchain
+recipe changes, and keep the macOS version inputs aligned with regular CI.

@@ -4,8 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd -P)"
-[ "$ROOT" = /work/loom ] || {
-  echo 'release-build: run inside the fixed /work/loom builder prefix' >&2
+case "$(uname -s)" in
+  Darwin) expected_root=/Users/Shared/loom-release ;;
+  *) expected_root=/work/loom ;;
+esac
+[ "$ROOT" = "$expected_root" ] || {
+  echo "release-build: run inside the fixed $expected_root builder prefix" >&2
   exit 1
 }
 [ -z "$(git status --porcelain)" ] || {

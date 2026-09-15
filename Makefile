@@ -236,6 +236,17 @@ dist: release release-smoke release-client release-client-smoke tui-shipment ## 
 INSTALL_CLIENT ?= bundled
 CLIENT_ARTIFACT := $(if $(filter slim,$(INSTALL_CLIENT)),tui-shipment,release-client)
 
+# Use the freshly built updater so an older installed client can be upgraded.
+# Serialize distribution prerequisites even under `make -j`: smoke tests load
+# the release trees that their sibling prerequisites assemble.
+UPDATE_ARGS ?=
+
+.PHONY: update
+update: ## Build this commit, install it, and gracefully restart the daemon (UPDATE_ARGS=flags)
+	@$(MAKE) codemode-seed
+	@$(MAKE) -j1 dist
+	@build/release/loom-client/bin/loom update --from "$(CURDIR)/dist" --prefix "$(PREFIX)" --client "$(INSTALL_CLIENT)" $(UPDATE_ARGS)
+
 .PHONY: install
 install: codemode-seed release $(CLIENT_ARTIFACT) ## Install loom and loomd under PREFIX (INSTALL_CLIENT=bundled|slim)
 	@PREFIX="$(PREFIX)" LOOM_CLIENT="$(INSTALL_CLIENT)" scripts/install.sh
@@ -497,3 +508,8 @@ loc: ## Report source and test line counts per package
 help: ## Show this help
 	@grep -hE '^[a-zA-Z0-9_%-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+.PHONY: release-tag
+release-tag: ## Preview a release tag; TAG=vX.Y.Z RELEASE_ARGS=--push publishes the tag
+	@test -n "$(TAG)" || { echo "usage: make release-tag TAG=vX.Y.Z [RELEASE_ARGS=--push]" >&2; exit 1; }
+	python3 scripts/release-tag.py "$(TAG)" $(RELEASE_ARGS)

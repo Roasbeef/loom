@@ -61,7 +61,34 @@ procedure below. Downloading and publication do not hot-load a running VM.
 
 ## Install a source build
 
-From a checkout containing the revision you want:
+To build and activate the current commit from a clean checkout:
+
+```sh
+make update
+# Or select the checkout without changing directories:
+make -C /path/to/loom update
+```
+
+The target prepares the code-mode seed, builds and smoke-tests `dist/`, then
+runs the newly built client's updater against those artifacts. It works even
+when the installed client predates `loom update`. Packaging requires a clean,
+committed source tree and the platform's build toolchain. A failed build or
+smoke test stops before installation or daemon shutdown.
+
+`PREFIX` defaults to `$HOME/.local`; `INSTALL_CLIENT` defaults to `bundled`
+and accepts `slim`. Pass other updater options through `UPDATE_ARGS`:
+
+```sh
+make update PREFIX="$HOME/.local" INSTALL_CLIENT=slim
+make update UPDATE_ARGS='--state-dir /path/to/state --config /path/to/loom.toml'
+```
+
+Without a state override, the updater uses the normal shared daemon state,
+not `make run-tui`'s development `STATE_DIR`. Use `loom version` after updating
+to inspect the installed client version, full commit and platform. Running
+terminals retain their old client code until reopened.
+
+For installation without automatically restarting the daemon:
 
 ```sh
 make install
