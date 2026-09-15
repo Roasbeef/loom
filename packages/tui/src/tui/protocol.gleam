@@ -12,6 +12,7 @@ import core/message.{type Usage, type UserBlock}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/advisor_pending
 import tui/context_view
 import tui/live_jobs
 import tui/notes_view
@@ -132,6 +133,10 @@ pub type Event {
 
   /// Current live jobs, observed separately from a completed operation.
   LiveJobsSnapshot(board: live_jobs.Board)
+
+  /// The advisor's undelivered nudge queue, observed while the primary is
+  /// idle. Not a transcript row: nothing here has reached the model.
+  AdvisorPendingSnapshot(board: advisor_pending.Board)
 
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
@@ -550,6 +555,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | WorktreeSnapshot(_)
     | ContextSnapshot(_)
     | LiveJobsSnapshot(_)
+    | AdvisorPendingSnapshot(_)
     | SchedulesSnapshot(_)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
@@ -691,6 +697,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "live_jobs" -> {
       use board <- result.try(required_value(fields, "board"))
       live_jobs.decode(board) |> result.map(LiveJobsSnapshot)
+    }
+    "advisor_pending" -> {
+      use board <- result.try(required_value(fields, "board"))
+      advisor_pending.decode(board) |> result.map(AdvisorPendingSnapshot)
     }
     "context" -> {
       use board <- result.try(required_value(fields, "board"))
@@ -1133,6 +1143,20 @@ pub fn worktree_diff(id: Int) -> String {
 /// ```
 pub fn live_jobs(id: Int, strand: String) -> String {
   command(id, "live_jobs", [#("strand", json.String(strand))])
+}
+
+/// Reads the advisor's queued nudges without draining them.
+///
+/// Unscoped on purpose: a session has one advisor and one primary it
+/// advises, and the board names that strand itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.advisor_pending(10)
+/// ```
+pub fn advisor_pending(id: Int) -> String {
+  command(id, "advisor_pending", [])
 }
 
 /// Requests one page of loaded skill commands from the attached daemon.

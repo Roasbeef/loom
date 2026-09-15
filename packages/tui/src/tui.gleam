@@ -43,6 +43,7 @@ import host/build_identity
 import host/endpoint
 import machine/strand as machine_strand
 import simplifile
+import tui/advisor_pending
 import tui/agents
 import tui/approval
 import tui/approval_panel
@@ -549,6 +550,16 @@ pub type Model {
     jobs_request: Option(Int),
     /// Missing observations are unavailable, never a zero-job assertion.
     jobs_notice: String,
+    /// The advisor's undelivered nudge queue, observed while the primary is
+    /// idle. `None` is "nothing observed", never "the queue is empty".
+    nudges: Option(advisor_pending.Board),
+    /// One pending-nudge read waiting for a free command lane.
+    nudges_refresh: worktree_view.Refresh,
+    /// Attachment which owns the one issued nudge read; a board answering an
+    /// attachment that has gone describes a session nobody is watching.
+    nudges_awaiting: Option(String),
+    /// Actual lane request ID, so an unrelated refusal cannot settle it.
+    nudges_request: Option(Int),
     help_open: Bool,
     notes_open: Bool,
     /// A dedicated view of captured edit diffs, without tool retries.
@@ -964,6 +975,10 @@ pub fn new_model_with_clock(
     jobs_awaiting: None,
     jobs_request: None,
     jobs_notice: "Live jobs unavailable; /summary requests a current observation",
+    nudges: None,
+    nudges_refresh: worktree_view.Settled,
+    nudges_awaiting: None,
+    nudges_request: None,
     help_open: False,
     notes_open: False,
     diff_view: DiffAutomatic,
@@ -3643,9 +3658,18 @@ fn composer_status_lines(model: Model) -> List(String) {
     None -> []
     Some(text) -> [text]
   }
+
+  // The nudge panel sits under the reviewer roster and above the send state:
+  // it is context for the prompt about to be written, not a report on one
+  // already sent. An empty queue renders nothing, so the band keeps its
+  // height when the advisor has nothing waiting.
+  let nudges = case model.nudges {
+    None -> []
+    Some(board) -> advisor_pending.lines(board)
+  }
   list.append(
     reviewer_status.lines(model.reviewer_rows, model.active_strand),
-    pending,
+    list.append(nudges, pending),
   )
 }
 
@@ -4040,6 +4064,7 @@ fn settle_update(
     False -> updated
   }
   let updated = sync_context(model, updated)
+  let updated = sync_advisor_nudges(model, updated)
   let published = publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
@@ -4149,8 +4174,10 @@ fn update_tick(model: Model) -> Model {
   let drained = drain_connection(switched, 64)
   let drained =
     tick_channel(
-      service_context_read(
-        service_jobs_read(service_worktree_read(service_queue_read(drained))),
+      service_advisor_nudges_read(
+        service_context_read(
+          service_jobs_read(service_worktree_read(service_queue_read(drained))),
+        ),
       ),
     )
   let quiet_for_ms =
@@ -5297,6 +5324,10 @@ pub fn apply_channel_update(
           jobs_refresh: worktree_view.Settled,
           jobs_awaiting: None,
           jobs_notice: "Live jobs unavailable: conversation disconnected",
+          nudges: None,
+          nudges_refresh: worktree_view.Settled,
+          nudges_awaiting: None,
+          nudges_request: None,
           worktree: case model.worktree.awaiting {
             Some(id) ->
               worktree_view.receive(
@@ -6006,6 +6037,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         None -> model
       }
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
+    protocol.AdvisorPendingSnapshot(board) ->
+      receive_advisor_nudges(model, board)
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
@@ -6244,6 +6277,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.ContextSnapshot(..)
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
+    | protocol.AdvisorPendingSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -10092,6 +10126,7 @@ fn apply_submission(
         "context" ->
           Model(..model, context: context_view.sent(model.context, request_id))
         "live_jobs" -> Model(..model, jobs_request: Some(request_id))
+        "advisor_pending" -> Model(..model, nudges_request: Some(request_id))
         "worktree_diff" ->
           Model(
             ..model,
@@ -11057,6 +11092,166 @@ fn service_jobs_read(model: Model) -> Model {
   }
 }
 
+// --- the advisor's pending nudges -------------------------------------------
+
+/// What one model transition asks of the pending-nudge panel.
+///
+/// Named rather than answered with a pair of booleans, because the three
+/// cases are genuinely different events and a caller reading `False, True`
+/// would have to remember which question each half asked.
+pub type NudgeAction {
+  /// The primary is running. Anything the panel holds is no longer a
+  /// pending queue, because a run start drains it into that run.
+  DropNudges
+
+  /// The primary is idle at a boundary worth exactly one observation.
+  ReadNudges
+
+  /// Nothing the panel depends on moved.
+  HoldNudges
+}
+
+/// Whether this transition is worth a pending-nudge read, a clear, or
+/// neither.
+///
+/// Three edges are worth a read and no others: the primary's own operation
+/// settling, a review settling while the primary waits — which is where a
+/// nudge is queued in the first place — and the primary appearing in the
+/// roster at all, which is the first snapshot after an attachment or a
+/// session switch. Everything else holds, a phase change on an unrelated
+/// strand included, because the queue cannot have grown without the advisor
+/// finishing a review.
+///
+/// Whether there is an attachment to ask is deliberately not asked here.
+/// `service_advisor_nudges_read` refuses to send without one and a closed
+/// conversation clears the board outright, so this function answers only
+/// about the conversation's own edges.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.advisor_nudges_action(before, after)
+/// ```
+@internal
+pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
+  case strand_running(after, advisor_pending.primary_strand) {
+    // A run on the primary folds the whole queue into its first message, so
+    // what the panel was showing has been delivered rather than discarded.
+    // The local submit flag counts: it is the edge the operator sees, and
+    // waiting for the server's phase would leave delivered advice on screen.
+    True -> DropNudges
+
+    False -> idle_boundary(before, after)
+  }
+}
+
+// The primary is idle in `after`, so a primary that was running in `before`
+// is one that just settled. The advisor needs both halves of its own edge,
+// because it can still be mid-review and only a review's end adds to the
+// queue.
+fn idle_boundary(before: Model, after: Model) -> NudgeAction {
+  let primary_settled = strand_running(before, advisor_pending.primary_strand)
+  let review_settled =
+    strand_running(before, advisor_pending.advisor_strand)
+    && !strand_running(after, advisor_pending.advisor_strand)
+  let newly_listed =
+    !strand_listed(before, advisor_pending.primary_strand)
+    && strand_listed(after, advisor_pending.primary_strand)
+
+  case primary_settled || review_settled || newly_listed {
+    True -> ReadNudges
+    False -> HoldNudges
+  }
+}
+
+// Whether one named strand has work in flight. Unlike `active_strand_phase`
+// this asks about a strand the operator may not be looking at, and it counts
+// a local submission the server has not yet reported a phase for.
+fn strand_running(model: Model, target: String) -> Bool {
+  model.submitting == Some(target)
+  || list.any(model.strands, fn(strand) {
+    let Strand(id:, live_phase:, ..) = strand
+    id == target && live_phase != None
+  })
+}
+
+// Whether the roster names this strand at all. A terminal that has just
+// attached holds no roster, so the primary's first appearance in one is the
+// edge that says there is a session here to ask about.
+fn strand_listed(model: Model, target: String) -> Bool {
+  list.any(model.strands, fn(strand) {
+    let Strand(id:, ..) = strand
+    id == target
+  })
+}
+
+fn sync_advisor_nudges(before: Model, after: Model) -> Model {
+  case advisor_nudges_action(before, after) {
+    HoldNudges -> after
+
+    DropNudges ->
+      Model(
+        ..after,
+        nudges: None,
+        nudges_refresh: worktree_view.Settled,
+        nudges_awaiting: None,
+        nudges_request: None,
+      )
+
+    ReadNudges -> Model(..after, nudges_refresh: worktree_view.Requested)
+  }
+}
+
+// The read waits for a free command lane like every other observation, so a
+// queued prompt is never held up behind an advisory panel.
+fn service_advisor_nudges_read(model: Model) -> Model {
+  case model.channel, model.nudges_refresh, model.peer {
+    Some(channel), worktree_view.Requested, Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_frame(
+            Model(
+              ..model,
+              nudges_refresh: worktree_view.Settled,
+              nudges_awaiting: Some(queue_owner(model)),
+            ),
+            protocol.advisor_pending(model.next_id),
+          )
+        False -> model
+      }
+
+    // A request that cannot be sent is dropped rather than left standing:
+    // the next attachment reaches an idle primary and raises it again.
+    _, worktree_view.Requested, _ ->
+      Model(..model, nudges_refresh: worktree_view.Settled)
+
+    _, worktree_view.Settled, _ -> model
+  }
+}
+
+// Only the attachment that asked may be answered. Request ids restart with an
+// attachment, so the owner is what tells a fresh board from a stale one.
+fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
+  let current = queue_owner(model)
+  case model.nudges_awaiting {
+    Some(owner) ->
+      case owner == current {
+        True ->
+          Model(
+            ..model,
+            nudges: Some(board),
+            nudges_awaiting: None,
+            nudges_request: None,
+          )
+          |> invalidate_frame
+
+        False -> model
+      }
+
+    None -> model
+  }
+}
+
 fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
@@ -11310,6 +11505,22 @@ fn apply_request_refused(
             jobs_request: None,
             jobs_awaiting: None,
             jobs_notice: "Live jobs unavailable: " <> reason,
+          )
+        False -> model
+      }
+
+    // A refused observation draws nothing. The panel is unobtrusive context
+    // beside the composer, and an error line there would cost a row of the
+    // conversation to report a read the operator never asked for; an older
+    // daemon that does not know the command refuses every one of them.
+    "advisor_pending" ->
+      case model.nudges_request == Some(request_id) {
+        True ->
+          Model(
+            ..model,
+            nudges: None,
+            nudges_request: None,
+            nudges_awaiting: None,
           )
         False -> model
       }
