@@ -61,3 +61,8 @@ ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_t
 # the kill takes every httpc handler in the emulator with it, whichever
 # profile they serve. No profile arrangement makes that private.
 provider|provider@http_test|kills the node-wide httpc_manager and httpc_handler_sup as the property under test, which severs every other httpc request in the emulator
+
+# --- process-wide build identity environment -------------------------------
+# These tests set, clear and read the same process environment variables.
+# Concurrent test functions otherwise observe another test's identity.
+host|host@build_identity_test|sets and clears LOOM_BUILD_VERSION and LOOM_BUILD_COMMIT in the VM-wide process environment
