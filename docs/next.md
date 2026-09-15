@@ -4,15 +4,18 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Issue #383 is implemented on `fix/cli-help`. The shipped `loom` and `loomd`
-launchers answer top-level and subcommand help before terminal or daemon
-startup, including extension help without an installed server. The shipped
-help acceptance, 475 TUI tests, and 1,792 client tests passed locally, and
-the independent review findings are resolved. Hosted CI and Linux signoff
-remain outstanding. The broader shipped multiplayer fixture fails locally
-on both this branch and its unchanged base, `7635d029`: the provider rejects
-the latest-message shape, then the terminal wait expires. That baseline
-failure remains open; the help acceptance is independently green.
+The terminal EOF incident is fixed on `fix/terminal-input`, with the dependency
+change in etui PR #2. Closed input retires the reader, reports a backend I/O
+error, and terminates the cleanup drain. Interactive startup additionally
+requires terminal input and output before starting a daemon. The tests bound
+both old loops by answering only one read. Local Erlang/JavaScript dependency
+tests and the TUI gate passed; combined Loom CI and Linux signoff are pending.
+
+Issue #383's help work and the subsequent help-position fix are merged in
+PRs #408 and #410. Profiling flags (#409) and hook-memory retention (#411) are
+also merged. This corrects the previous edition's claim that the original help
+work still awaited CI and signoff. The unrelated broader audit below retains
+its explicitly dated September 13 scope.
 
 The September 14 scrolling work is recorded in
 [Transcript scrolling](review/scroll-presentation-2026-09-14.md): PR #401
