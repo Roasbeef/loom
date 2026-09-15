@@ -415,7 +415,11 @@ profile = true
 `<state-dir>/loom.toml` when no config path is supplied. It is deliberately a
 daemon-only setting: distribution is chosen before the VM starts, so changing
 the file affects the next daemon start and cannot expose an already-running
-node. `false`, a missing table, and every client launch leave distribution off.
+node. The release first starts a short local parser process using its bundled
+TOML library, then starts the daemon once with the selected mode. This extra
+boot preserves the same TOML key semantics the daemon validates rather than
+approximating them in shell. `false`, a missing table, and an unprofiled
+client launch leave distribution off.
 
 Each launch prints the exact `loom-profile` command for its generated node. Run
 that command in another terminal to take an observational memory census. The

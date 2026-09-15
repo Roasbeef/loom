@@ -27,33 +27,16 @@ loom_profile_value_option() {
   esac
 }
 
-# A profile node has to be named before the emulator starts, while the full
-# TOML decoder lives inside that emulator. Keep this deliberately narrow: the
-# accepted spellings cover the equivalent root-table TOML forms the catalogue
-# accepts. The daemon's normal TOML validation rejects every other key or
-# value in this table before it begins serving requests.
+# A profile node has to be named before the daemon emulator starts. The release
+# supplies its existing TOML parser as this reader: reimplementing TOML in the
+# shell would silently disagree about equivalent key spellings.
 loom_profile_config_enabled() {
   local config="$1"
 
   [[ -r "$config" ]] || return 1
 
-  awk '
-    BEGIN { root = 1 }
-    /^[[:space:]]*\[/ {
-      root = 0
-      daemon = ($0 ~ /^[[:space:]]*\[(daemon|"daemon")\][[:space:]]*(#.*)?$/)
-      next
-    }
-    daemon && /^[[:space:]]*profile[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ {
-      found = 1
-      exit
-    }
-    root && /^[[:space:]]*(daemon|"daemon")[[:space:]]*\.[[:space:]]*(profile|"profile")[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$/ {
-      found = 1
-      exit
-    }
-    END { exit(found ? 0 : 1) }
-  ' "$config"
+  [[ -n "${LOOM_PROFILE_CONFIG_READER:-}" ]] || return 1
+  "$LOOM_PROFILE_CONFIG_READER" "$config"
 }
 
 # Removes this launcher's --profile option while retaining the application's

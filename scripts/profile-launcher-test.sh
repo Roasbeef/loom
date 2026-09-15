@@ -32,6 +32,23 @@ loom_profile_consume daemon --bind 127.0.0.1:0 --profile --state-dir "$state/dae
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--bind 127.0.0.1:0 --state-dir $state/daemon" ]]
 
 profile_config="$state/daemon-profile.toml"
+reader="$state/profile-reader"
+cat > "$reader" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" > "$PROFILE_READER_PATH"
+if rg -q '=[[:space:]]*true' "$1"; then
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$reader"
+export LOOM_PROFILE_CONFIG_READER="$reader"
+export PROFILE_READER_PATH="$state/profile-reader.path"
+loom_profile_consume daemon --profile --config "$profile_config" --state-dir "$state/explicit-configured"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ ! -e "$PROFILE_READER_PATH" ]]
+
 cat > "$profile_config" <<'EOF'
 [daemon]
 profile = true
@@ -52,6 +69,15 @@ daemon.profile = true
 EOF
 loom_profile_consume daemon --config "$profile_config" --state-dir "$state/dotted-configured"
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+
+cat > "$profile_config" <<'EOF'
+[ "daemon" ]
+profile = true
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/reader-configured"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "$(cat "$PROFILE_READER_PATH")" == "$profile_config" ]]
+
 cat > "$profile_config" <<'EOF'
 [daemon]
 profile = false
@@ -67,6 +93,8 @@ EOF
 loom_profile_consume daemon --state-dir "$state/default-config"
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--state-dir $state/default-config" ]]
+
+unset LOOM_PROFILE_CONFIG_READER PROFILE_READER_PATH
 
 loom_profile_consume daemon --config --profile
 [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
