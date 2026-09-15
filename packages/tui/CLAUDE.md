@@ -49,13 +49,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   retained messages. Their checkpoint text remains in the durable entry for
   the model and exact history reads, but the transcript does not print it.
 
-- Compact successful `fs_edit` rows include a 24-line inline patch preview;
+- Compact successful `fs_edit` rows include a 60-line inline patch preview;
   expanded history uses the same patch projection with the complete result.
   Failed edits and older results without a diff retain their summaries.
   Indented user-message rows preserve spacing and stanza breaks rather than
   passing through prose word wrapping; long source rows clip like code blocks.
 - `ToolPatch` renders unified patches directly with addition/removal colors;
-  filenames remain separate `PatchHeading` rows, and embedded fences cannot
+  unified hunk coordinates give removed rows their old-file number and added
+  or context rows their new-file number. Hard-wrapped continuations repeat that
+  source coordinate. Hunk counts bound numbering; metadata and patches without
+  valid coordinates stay unnumbered. Filenames remain separate `PatchHeading` rows, and embedded fences cannot
   terminate a patch. The worktree navigator includes a separate committed view
   even when current status has no files. Its decoder accepts older hosts with
   an explicit unavailable notice and bounds new commit streams at four KiB.
