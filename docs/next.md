@@ -3,12 +3,12 @@
 Read this first for the current work, settled boundaries and remaining
 acceptance. Detailed verification belongs in the linked review records.
 
-This edition is based on compiler-pin commit `a4a5445b`, stacked on release
-updater #423 at `21da91d8992cdc02e50ec6d6631beee88b47d236`, checked September
-15, 2026. The merged baseline remains #404 at
-`cc797e4182ab37d79f10b851bf4262d36be1832a`. Implementation, ancestry, local
-results and live PR status were checked. The compiler-pin head still needs
-hosted CI, Linux signoff and independent hosted artifact comparison.
+This edition is based on merged main `228078b6`, including updater #423 and
+compiler-pin #424, plus the local `make update` and release-automation changes,
+checked September 15, 2026. PR #424 passed hosted CI and Linux signoff before
+merge. The new tag workflow has passed local script tests and workflow lint;
+its native macOS reproduction and GitHub draft upload remain unverified until
+hosted execution. No release was tagged or published by this work.
 
 ## Where the tree is
 
@@ -18,8 +18,9 @@ hosted CI, Linux signoff and independent hosted artifact comparison.
 | Updating a running daemon | #404 is merged at the baseline. It supplies immutable installation, graceful drain, build identity and reconnect. |
 | Broad closure captures | #414 is merged and included in the baseline. R12 warns about retained outer records used only through direct field access; no duplicate implementation issue is needed. |
 | Native release updater | `loom update` resolves manifests, optionally verifies local-keyring signatures, downloads through Gun, stages checked archives, publishes complete trees and gracefully restarts the shared daemon. Installed bundled and slim transitions passed on macOS arm64. |
-| Release reproduction | Canonical archives, complete manifests, a committed seed lock, toolchain inventory and a two-runner Linux x86_64 candidate workflow are implemented. Two clean Linux containers on one host produced identical complete artifacts with the patched compiler. Independent hosted comparison remains pending. |
+| Release reproduction | Canonical archives, complete manifests, a committed seed lock, toolchain inventory and a two-runner Linux x86_64 candidate workflow are implemented. Two clean Linux containers on one host produced identical complete artifacts with the patched compiler. The standalone workflow supports independent hosted comparison; the new combined tag workflow still needs validation. |
 | Compiler pin and version reporting | The maintained Gleam patch is applied in CI and both Docker recipes, with cache-key separation and a cold-build fixture. `loom version` and `loom --version` report the invoked client build without starting a daemon. |
+| Release operations | `make update` builds and installs the current checkout. `make release-tag` previews an atomic main/tag push; `RELEASE_ARGS=--push` executes it. The tag workflow builds Linux x86_64 and macOS arm64 twice, compares and binds artifacts, then creates a draft. |
 | Broader Gun adoption | [#422](https://github.com/Roasbeef/loom/issues/422) owns the transport assessment. It is an inventory and requirements comparison, not a blanket migration. |
 
 [Release updater verification](review/release-updater.md) records the updater's
@@ -60,15 +61,14 @@ Both corrections are covered by the installed-release smoke.
 
 ## What to do next
 
-1. Run the compiler-pin head through the hosted candidate workflow.
-   **Exit:** two clean builders using the same recorded inputs produce identical
-   complete files, with successful bundle smoke checks. Linux candidate smoke
-   uses the committed toolchain image and nested sandbox namespace settings.
-   Add equivalent, separately verified builders for the other supported
-   platforms before claiming coverage there.
-2. Finish the updater and compiler-pin PR review and merge sequence. **Exit:** full repository gate, final branch review,
-   hosted CI and applicable Linux signoff at the proposed head. Do not use the
-   operator's live daemon or installed prefix as a fixture.
+1. Review and merge the local update wrapper and release-automation changes.
+   **Exit:** applicable CI and signoff at the proposed head. No live daemon or
+   installed prefix is a test fixture.
+2. Exercise the tag workflow on the intended first release after that merge.
+   **Exit:** two matching native builds per platform, successful smoke checks,
+   and a draft with all ten expected assets bound to the requested commit.
+   The new macOS fixed-prefix recipe has not yet run on hosted builders. Inspect
+   any interrupted draft upload before retrying; existing assets are not replaced.
 3. Establish production release keys when signing is enabled. **Exit:** approved
    fingerprints, independently distributed trust roots and a tested overlap
    rotation. Unsigned releases remain permitted by default in this change;
