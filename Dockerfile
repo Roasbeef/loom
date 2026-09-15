@@ -183,6 +183,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 RUN useradd --create-home --uid 10000 --shell /usr/sbin/nologin loom
 
 COPY --from=build /opt/loom /opt/loom
+
+# The installer publishes owner-private trees. Here root installs public image
+# contents for the unprivileged runtime user, so the published roots must be
+# traversable. Keep root ownership and grant no runtime write permission.
+RUN chmod a+rx /opt/loom/lib/loom/server.* /opt/loom/lib/loom/client.*
 ENV PATH="/opt/loom/bin:${PATH}"
 
 # install.sh puts loom-exec inside the copied release tree
