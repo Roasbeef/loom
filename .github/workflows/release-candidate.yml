@@ -47,6 +47,9 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/output"
           docker pull "$BUILDER_IMAGE"
           docker run --rm --entrypoint bash \
+            --cap-add SYS_ADMIN \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
             --mount "type=bind,src=$source,dst=/source,readonly" \
             --mount "type=bind,src=$GITHUB_WORKSPACE/output,dst=/out" \
             -e "LOOM_BUILDER_ID=$BUILDER_IMAGE" \
