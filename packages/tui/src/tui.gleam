@@ -1742,8 +1742,12 @@ fn attach_daemon(
       append_error(base, reason)
     }
     Ok(host) -> {
-      let model = report_daemon_build(base, control)
-      let model = Model(..model, daemon_host: Some(host))
+      let model =
+        Model(
+          ..base,
+          daemon_host: Some(host),
+          transcript: daemon_build_lines(Some(host)),
+        )
       case selected {
         "" -> load_catalogue(model, "", None)
         id -> begin_open(model, id)
@@ -1752,38 +1756,36 @@ fn attach_daemon(
   }
 }
 
-// Reports a client/daemon build mismatch to the transcript (issue #392).
-//
-// The mismatch is a NOTICE, not a refusal: the two halves are protocol-
-// compatible by construction — the version check is about a human
-// understanding which binary they are talking to, not about the wire — so
-// the attach proceeds and the operator is told which build is which. Three
-// cases are silent: matched builds, and a daemon that named no build at
-// all, which is an older daemon the operator already chose to keep running
-// and does not need reminding of on every attach.
-//
-// The daemon's build comes from the authenticated hello rather than the
-// endpoint record, because the hello is what the socket just proved the
-// peer is; the record is a file that could be older than the daemon.
-fn report_daemon_build(model: Model, control: daemon.Connection) -> Model {
-  case daemon.hello(control).build {
-    None -> model
-    Some(daemon_build) -> {
+// The authenticated build belongs to the retained control host. Projecting
+// its mismatch on every coherent cut keeps attachment and later captures from
+// erasing the update notice when they replace the transcript presentation.
+fn daemon_build_lines(host: Option(daemon_selection.Host)) -> List(Line) {
+  case host {
+    None -> []
+    Some(host) ->
+      build_mismatch_lines(daemon.hello(daemon_selection.control(host)).build)
+  }
+}
+
+fn build_mismatch_lines(build: Option(control_protocol.Build)) -> List(Line) {
+  case build {
+    None -> []
+    Some(theirs) -> {
       let ours = build_identity.current()
-      let theirs =
-        build_identity.Identity(daemon_build.version, daemon_build.commit)
+      let theirs = build_identity.Identity(theirs.version, theirs.commit)
       case build_identity.matches(ours, theirs) {
-        True -> model
-        False ->
-          append_notice(
-            model,
+        True -> []
+        False -> [
+          Line(
+            System,
             "daemon build "
               <> build_identity.describe(theirs)
               <> " differs from this client's "
               <> build_identity.describe(ours)
               <> "; the daemon runs the build it was started with, so "
               <> "restart it to pick up an update",
-          )
+          ),
+        ]
       }
     }
   }
@@ -1959,7 +1961,6 @@ pub fn accept_reconnect_event(model: Model, event: ReconnectEvent) -> Model {
         weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
           let model = Model(..model, reconnect: ReconnectSpent)
           let model = Model(..model, daemon_host: Some(host))
-          let model = report_daemon_build(model, daemon_selection.control(host))
           reattach_after_reconnect(model)
         }
         weft.PulledOutcome(weft.Failed(error:, ..)) ->
@@ -5453,8 +5454,14 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      configuration_lines(view, active),
-      list.append(unconfirmed_lines(model.unconfirmed), approval_lines(reviews)),
+      daemon_build_lines(model.daemon_host),
+      list.append(
+        configuration_lines(view, active),
+        list.append(
+          unconfirmed_lines(model.unconfirmed),
+          approval_lines(reviews),
+        ),
+      ),
     )
   ]
 
@@ -6218,9 +6225,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     // with the daemon. An empty composer takes the text outright; an
     // occupied one keeps what the operator is typing, and the return is
     // appended below it — both are theirs, and neither may be lost.
-    // Attachments never left this terminal (their bytes were local from
-    // the start), so the count only explains what the restored text is
-    // missing.
+    // The return carries no attachment bytes. Its count tells the operator
+    // which images must be reattached before submitting the restored draft.
     protocol.HeldInputReturned(strand:, kind:, text:, attachment_count:, ..) ->
       restore_returned_draft(model, strand, kind, text, attachment_count)
   }
@@ -6255,8 +6261,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
 
 // Restores a custody-returned prompt as a local draft (protocol-change/038).
 //
-// The daemon held the prompt only in memory, so the returned text is the
-// last copy in existence. An untouched composer simply becomes the draft.
+// The daemon held the prompt only in memory, so the returned text must be
+// retained before the socket closes. An untouched composer simply becomes the draft.
 // A composer the operator is typing in keeps its text and grows the return
 // below it, separated by a blank line: discarding either half would lose
 // work the operator can see, and silently replacing the draft would move

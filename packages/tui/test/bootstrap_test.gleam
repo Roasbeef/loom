@@ -9,6 +9,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import host/build_identity
 import host/endpoint
 import simplifile
 import tui
@@ -16,6 +17,7 @@ import tui/attachment
 import tui/bootstrap
 import tui/connection
 import tui/daemon
+import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol as control
 import tui/daemon/selection
 import tui/session_channel
@@ -521,6 +523,26 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     tui.candidate_outcome(creating, attachment.idle(), Some(switched))
   assert adopted.current_model == "fixture"
   assert adopted.creation_key == None
+  let assert Some(server_build) = daemon.hello(first.control).build
+    as "the built daemon launcher exports its own artifact identity"
+  assert !build_identity.matches(
+    build_identity.current(),
+    build_identity.Identity(server_build.version, server_build.commit),
+  )
+    as "the e2e client identity differs from the built daemon"
+  assert_build_notice(adopted)
+  let assert Some(#(adopted_cut, adopted_view)) = adopted.captured
+    as "adoption retained its coherent projection"
+  let refreshed =
+    tui.apply_channel_update(
+      adopted,
+      session_channel.Captured(
+        adopted_cut,
+        adopted_view,
+        session_channel.Refreshed,
+      ),
+    )
+  assert_build_notice(refreshed)
   let assert Ok(target) = selection.open(host, cut.attachment.expected.session)
     as "the created session is already resident"
   assert cut.attachment.expected == target.expected
@@ -587,11 +609,34 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert identity == first.record.fence.birth
   assert host_bootstrap.process_identity(pid)
     == Ok(host_bootstrap.ProcessPresent(identity))
+  let assert Ok(reused) = bootstrap.reconnect_daemon(options, terminal, 5000)
+    as "a healthy native daemon can be reused after a transient socket loss"
+  assert reused.record == first.record
+  daemon.close(reused.control)
   daemon.close(third.control)
   host_bootstrap.terminate_process_group(pid)
+
+  // Drive the shipped loss transition without first waiting for VM exit.
+  // The bounded observation must bridge that interval and publish one new
+  // host. The actual successful event then starts the normal adoption path.
+  let reconnecting =
+    tui.apply_channel_update(adopted, session_channel.Failed("daemon exited"))
+  let assert tui.ReconnectAttempting(replies:, ..) = reconnecting.reconnect
+    as "the attached local terminal owns one reconnect attempt"
+  let assert Ok(reconnected) = process.receive(replies, 40_000)
+    as "the bounded relaunch produces an outcome"
+  let assert weft.PulledOutcome(weft.Completed(value: restarted_host, ..)) =
+    reconnected
+    as "native retirement permits a replacement daemon"
+  let assert Ok(Some(record)) = endpoint.load(first.paths)
+    as "the replacement publishes its own native fence and epoch"
+  let restarted =
+    daemon_bootstrap.Connected(
+      selection.control(restarted_host),
+      first.paths,
+      record,
+    )
   assert_process_stops(pid, 200)
-  let assert Ok(restarted) = bootstrap.resolve_daemon(options, terminal, 40_000)
-    as "an observed departed native owner permits a new daemon epoch"
   assert daemon.hello(restarted.control).epoch
     != daemon.hello(first.control).epoch
   assert simplifile.read(restarted.paths.token) == Ok(token)
@@ -602,17 +647,12 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     as "the single explicitly created session survives daemon restart"
   assert saved.session_id == target.expected.session
   assert saved.status == control.Saved
-  let assert Ok(restarted_address) = endpoint.address(restarted.record)
-  let assert Ok(restarted_host) =
-    selection.host(restarted.control, restarted_address, string.trim(token))
-  let reopened =
-    wait_for_attachment(
-      attachment.start(
-        fn() { selection.open(restarted_host, saved.session_id) },
-        20_000,
-      ),
-      20_000,
+  let reattaching =
+    tui.accept_reconnect_event(
+      reconnecting,
+      tui.ReconnectEvent(replies, reconnected),
     )
+  let reopened = wait_for_attachment(reattaching.candidate, 20_000)
   let assert attachment.Adopted(
     reopened_channel,
     reopened_cut,
@@ -626,6 +666,11 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert reopened_cut.attachment.expected.session == saved.session_id
   assert reopened_name == saved.name
   assert reopened_cut.attachment.expected.epoch != target.expected.epoch
+  let readopted =
+    tui.candidate_outcome(reattaching, attachment.idle(), Some(reopened))
+  assert readopted.session == adopted.session
+  assert text_area.value(readopted.input) == "retained draft"
+  assert_build_notice(readopted)
   session_channel.close(reopened_channel)
 
   // A control request that times out retires its owner, and closing it is the
@@ -765,4 +810,14 @@ fn digest_prefix(value: String, length: Int) -> String {
   |> bit_array.base16_encode
   |> string.lowercase
   |> string.slice(at_index: 0, length:)
+}
+
+// The update notice is a projection of retained authenticated identity. Each
+// adoption and refresh must leave exactly one copy in the visible transcript.
+fn assert_build_notice(model: tui.Model) {
+  assert list.count(model.transcript, fn(line) {
+      string.contains(line.text, "differs from this client's")
+    })
+    == 1
+    as "coherent capture must retain the authenticated build mismatch"
 }

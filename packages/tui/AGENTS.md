@@ -10,6 +10,21 @@ A successor request or exact operation result also retires it. Legacy and
 summary observations retain their old completion behavior. See
 `protocol-change/036-stream-response-handoff.md`.
 
+## Build identity and daemon updates
+
+The authenticated control host owns the daemon build identity. `render_cut`
+projects a mismatch into each transcript capture, so successful adoption and
+later refreshes cannot erase it. Missing identity stays silent. Shipment and
+release launchers export their own build metadata, replacing inherited values.
+
+A local terminal makes one bounded reconnect attempt after conversation loss.
+`bootstrap.reconnect_daemon` uses read-only control status and native endpoint
+observations before selecting a host. It can reuse an accepting VM; a draining
+or unreachable live VM remains fenced. Only positive native vacancy permits
+one normal resolver launch. Polling and startup share the deadline, and session
+open remains outside that polling loop. Held prompt returns restore text in the
+composer; image bytes must be reattached by the operator.
+
 ## Purpose
 
 The shipped native terminal client. It authenticates one daemon control

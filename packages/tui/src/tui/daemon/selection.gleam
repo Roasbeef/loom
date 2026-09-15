@@ -88,8 +88,8 @@ pub fn reconnect(host: Host, owner: process.Pid) -> Result(Host, String) {
 /// for a route the terminal already holds, which is right for a control request
 /// whose own connection retired and useless when the daemon itself is gone: the
 /// recorded route answers nothing, and no amount of reconnecting revives it.
-/// Resolving again is what starts whichever daemon binary is now installed — a
-/// daemon that has been updated in place is a different executable at the same
+/// Resolving again is what starts whichever daemon binary is now installed — the
+/// installed launcher selects a fresh immutable tree at the same public
 /// path — and the fresh endpoint record names the port and fence that new VM
 /// actually published.
 ///
@@ -107,7 +107,7 @@ pub fn relaunch(
   owner: process.Pid,
   within_ms: Int,
 ) -> Result(Host, String) {
-  use connected <- result.try(bootstrap.resolve_daemon(
+  use connected <- result.try(bootstrap.reconnect_daemon(
     options,
     owner,
     within_ms,
