@@ -24,8 +24,10 @@ import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import gleam/string
 import tools/codemode
+import tools/fs
 import tools/prelude
 import tools/tool.{type Ctx}
 
@@ -879,6 +881,20 @@ pub fn the_description_states_the_real_allowlist_test() {
   })
   assert string.contains(described, "proc.run")
   assert string.contains(described, "report.Outcome")
+
+  // And every prelude module it admits is indexed by name, which is what
+  // makes the allowlist above something a model can act on rather than a
+  // list of strings: a module named in the import sentence and absent
+  // from the index would be a module it cannot find out anything about.
+  list.each(cap_modules(allowlist), fn(module) {
+    assert string.contains(described, "### " <> module)
+  })
+}
+
+// The `cap/*` entries of an allowlist: the ones the prelude renders a
+// block for. The stdlib entries are the compiler's to document.
+fn cap_modules(allowed: List(String)) -> List(String) {
+  list.filter(allowed, string.starts_with(_, "cap/"))
 }
 
 pub fn the_requirements_ask_for_the_workspace_and_nothing_else_test() {
@@ -894,23 +910,60 @@ pub fn the_requirements_ask_for_the_workspace_and_nothing_else_test() {
 
 // --- the prelude signatures in the description -----------------------------
 
-pub fn the_description_carries_the_signatures_of_every_admitted_module_test() {
+pub fn the_description_carries_the_types_of_every_admitted_module_test() {
   // The point of the whole exercise: a model writing a program can read
   // what is in the modules it may import, instead of learning it from a
   // `CompileFailed` round trip that carried a hermetic build (issue #36).
   let described = codemode.description(echoing())
   assert string.contains(described, "### cap/proc")
   assert string.contains(described, "### cap/report")
-  assert string.contains(
-    described,
-    "pub fn run(Command) -> Result(Output, ProcError)",
-  )
-  // The record a signature returns, not only the signature: a program
-  // that cannot name `stdout` cannot read the output it just paid for.
+
+  // The record a signature returns is what stays: a program that cannot
+  // name `stdout` cannot read the output it just paid for, and a model
+  // that guesses the field pays a compile for the guess.
+  assert string.contains(described, "pub type Output {")
   assert string.contains(described, "stdout: String")
+
   // And the labelled/positional convention the rendering depends on is
   // stated rather than left to be guessed at.
   assert string.contains(described, "`label: Type` is labelled")
+}
+
+pub fn a_function_signature_is_read_on_demand_and_not_described_test() {
+  // The other half of the same decision. A signature is bytes in the
+  // provider's cached prefix, read on every request of every strand
+  // whether or not the turn writes a program; the same bytes reached
+  // through `cap://proc` land in the conversation tail and are paid for
+  // by the one turn that asked for them.
+  let signature = "pub fn run(Command) -> Result(Output, ProcError)"
+  assert !string.contains(codemode.description(echoing()), signature)
+
+  let assert Ok(block) = cap_read(echoing(), "proc")
+    as "the module the description indexes must be readable"
+  assert string.contains(block, signature)
+}
+
+pub fn the_legend_says_where_the_rest_of_a_module_is_test() {
+  // An index with no lookup is worse than no index: a model shown a type
+  // and no way to reach the function that returns it will guess the
+  // signature, which is exactly the round trip the whole rendering
+  // exists to avoid. The sentence names the scheme and the tool that
+  // reads it, and it is the same sentence on every host — no seam, no
+  // module, nothing a host could vary.
+  let legends =
+    list.map(
+      [
+        echoing(),
+        echoing_over(codemode.one_seam(orchestration_offer())),
+        echoing_over(both_seams()),
+      ],
+      fn(mode) { codemode.description(mode) },
+    )
+  list.each(legends, fn(described) {
+    assert string.contains(described, "`cap://<module>`")
+    assert string.contains(described, "fs_read")
+    assert string.contains(described, "`cap://` on its own for the list")
+  })
 }
 
 pub fn the_signatures_never_advertise_a_module_the_seam_refuses_test() {
@@ -979,23 +1032,37 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
   // the half of the sentence this host controls. The signature blocks
   // below carry the prelude's own doc comments verbatim, so what they say
   // is `packages/cap`'s business rather than this rendering's.
-  let assert [prose, ..] = string.split(described, "Each module's public")
+  let assert [prose, ..] = string.split(described, "Each module a program")
   assert !string.contains(prose, "seam")
 }
 
-pub fn a_generated_surface_is_rendered_after_the_committed_ones_test() {
+pub fn a_generated_surface_is_indexed_after_the_committed_ones_test() {
   // A `cap/mcp/<server>` façade is generated from one host's configured
   // server (issue #106), so it can never be in the committed artifact
-  // `make gen-prelude` produces. It is rendered the same way and read
-  // the same way; only where the bytes came from differs.
-  let generated = "### cap/mcp/github\n\npub fn create_issue(title: String)"
-  let offer =
-    codemode.SeamOffer(..workspace_offer(), extra_surfaces: [generated])
+  // `make gen-prelude` produces. It is indexed the same way a committed
+  // module is and read the same way; only where the bytes came from
+  // differs.
+  let offer = offer_with_surface(workspace_offer())
   let described = codemode.description(echoing_over(codemode.one_seam(offer)))
-  assert string.contains(described, generated)
+  assert string.contains(described, "### cap/mcp/demo")
+  assert string.contains(
+    described,
+    "`cap/mcp/demo` — the tools of the MCP server \"demo\", as typed calls.",
+  )
+
+  // Indexed, not pasted: a façade has no type section to cut it down to,
+  // so a host that configured a thirty-tool server would otherwise put
+  // all thirty signatures in the cached prefix. The façade is read
+  // through `cap://mcp/demo` like anything else.
+  assert !string.contains(described, "pub fn search(query: String)")
+  let assert Ok(block) =
+    cap_read(echoing_over(codemode.one_seam(offer)), "mcp/demo")
+    as "the indexed façade must be readable"
+  assert string.contains(block, "pub fn search(query: String)")
+
   // After the committed blocks, not instead of them.
-  let assert [_before, after] = string.split(described, "### cap/mcp/github")
-    as "the generated block appears exactly once"
+  let assert [_before, after] = string.split(described, "### cap/mcp/demo")
+    as "the generated index line appears exactly once"
   assert !string.contains(after, "### cap/proc")
   assert string.contains(described, "### cap/proc")
 }
@@ -1018,14 +1085,11 @@ pub fn a_generated_surface_is_never_shared_between_seams_test() {
   // it, so it renders under that seam's heading and never under the
   // shared one — where it would read as a claim about the other seam
   // that no host makes.
-  let generated = "### cap/mcp/github"
+  let generated = "### cap/mcp/demo"
   let seams =
-    codemode.Seams(
-      default: codemode.SeamOffer(..workspace_offer(), extra_surfaces: [
-        generated,
-      ]),
-      alternates: [orchestration_offer()],
-    )
+    codemode.Seams(default: offer_with_surface(workspace_offer()), alternates: [
+      orchestration_offer(),
+    ])
   let described = codemode.description(echoing_over(seams))
   let assert [_shared, workspace_and_after] =
     string.split(described, "## Only on the `workspace` seam")
@@ -1050,6 +1114,82 @@ pub fn two_seams_state_a_shared_module_once_test() {
   assert string.contains(described, "## Only on the `orchestration` seam")
   assert string.contains(described, "### cap/proc")
   assert string.contains(described, "### cap/strand")
+}
+
+pub fn both_cuts_of_the_artifact_carry_the_same_modules_in_order_test() {
+  // A generator invariant, asserted here because this is the only place
+  // that reads both lists. The description renders from `type_surfaces`
+  // and `cap://` reads from `surfaces`, so a module present in one and
+  // missing from the other is either a module indexed and unreadable or
+  // a module readable and unadvertised, and both are failures a reader
+  // of either list alone cannot see.
+  assert list.map(prelude.surfaces, fn(entry) { entry.0 })
+    == list.map(prelude.type_surfaces, fn(entry) { entry.0 })
+
+  // And the shorter is a prefix of the longer, which is what lets the
+  // description and the read state the same contract in the same words.
+  list.each(prelude.type_surfaces, fn(entry) {
+    let assert Ok(whole) = list.key_find(prelude.surfaces, entry.0)
+      as "every indexed module has a whole surface"
+    assert string.starts_with(whole, entry.1)
+  })
+}
+
+// --- the size of what every request pays for -------------------------------
+
+// The shipped allowlists, copied. `tools` cannot import
+// `codemode/vet/policy` — the dependency runs the other way, because the
+// vetting package renders a `tool.Collected` — so the only way to measure
+// the description a real host serves is to restate the lists here. A copy
+// that falls behind makes this bound looser than the tree, never tighter,
+// and `scripts/gen-prelude.sh --check` is what catches a cap module that
+// nobody decided about.
+const shipped_workspace_caps = [
+  "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
+  "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
+  "cap/history", "cap/memory",
+]
+
+const shipped_stdlib = [
+  "gleam/list", "gleam/string", "gleam/string_tree", "gleam/int", "gleam/float",
+  "gleam/bool", "gleam/result", "gleam/option", "gleam/dict", "gleam/set",
+  "gleam/order", "gleam/pair", "gleam/function",
+]
+
+fn shipped_workspace_offer() -> codemode.SeamOffer {
+  codemode.SeamOffer(
+    seam: codemode.WorkspaceSeam,
+    allowed_imports: list.append(shipped_workspace_caps, shipped_stdlib),
+    serviced_caps: ["proc.run"],
+    extra_surfaces: [],
+  )
+}
+
+pub fn the_workspace_description_stays_under_its_bound_test() {
+  // The description is the byte prefix of the provider's cached region:
+  // it is read on every request of every strand for the life of the
+  // session, whether or not the turn writes a program. Moving the
+  // function signatures behind `cap://` took a workspace-only host's
+  // whole `code_mode` entry from 52,162 bytes on the wire to 25,690.
+  //
+  // The bound is that measurement with about a tenth of headroom, and it
+  // exists so that the next increase is a decision somebody took and
+  // wrote down — a capability added to the prelude, a type widened —
+  // rather than a drift nobody noticed until a session's prefix had
+  // doubled again.
+  let made =
+    codemode.tool_for(
+      echoing_over(codemode.one_seam(shipped_workspace_offer())),
+    )
+  let wire =
+    string.byte_size(made.name)
+    + string.byte_size(made.description)
+    + string.byte_size(json.to_string(made.schema))
+  assert wire < 28_000
+
+  // And it is the real allowlist being measured, not an empty filter.
+  assert string.contains(made.description, "### cap/job")
+  assert string.contains(made.description, "### cap/fs")
 }
 
 // The link that made every other widening test hypothetical. Grants are
@@ -1281,4 +1421,155 @@ pub fn request_carries_the_callers_output_observer_test() {
     tool.OutputTail(stream: framing.Stdout, tail: "compiling", total_bytes: 9)
   request.observe_output(seen)
   assert process.receive(observed, 100) == Ok(seen)
+}
+
+// --- cap://, the prelude read on demand ------------------------------------
+
+// The surface a host generates for a configured MCP server, in the shape
+// `mcp/codegen.render_surface` emits: a `### <module>` heading first,
+// then the façade's own text.
+const generated_surface = "### cap/mcp/demo
+`cap/mcp/demo` — the tools of the MCP server \"demo\", as typed calls.
+Descriptions below are the server's own text, not Loom's.
+
+pub fn search(query: String) -> Result(mcp.ToolResult, mcp.McpError)
+"
+
+fn offer_with_surface(offer: codemode.SeamOffer) -> codemode.SeamOffer {
+  codemode.SeamOffer(..offer, extra_surfaces: [generated_surface])
+}
+
+// The scheme's own answer, unwrapped from `fs_read`'s windowing, so a
+// test asserting on a refusal asserts on the refusal this side produced.
+fn cap_read(
+  mode: codemode.CodeMode,
+  reference: String,
+) -> Result(String, fs.SchemeRefusal) {
+  let scheme = codemode.cap_scheme(mode)
+  scheme.read(ctx_for("s1"), reference)
+}
+
+fn index_modules(index: String) -> List(String) {
+  string.split(index, "\n")
+  |> list.filter_map(fn(line) {
+    string.split_once(line, on: ": ") |> result.map(fn(pair) { pair.0 })
+  })
+}
+
+pub fn cap_reads_the_block_of_an_offered_module_test() {
+  // The scheme is the description's tail moved behind a read rather than
+  // a second rendering that can drift from it: what the description
+  // shows is the head of this block, character for character, and what
+  // the read adds is the part that was cut.
+  let assert Ok(block) = cap_read(echoing(), "proc")
+  assert string.starts_with(block, "### cap/proc")
+  assert string.contains(
+    block,
+    "pub fn run(Command) -> Result(Output, ProcError)",
+  )
+
+  let assert Ok(shown) = list.key_find(prelude.type_surfaces, "cap/proc")
+    as "the artifact renders both cuts of every module"
+  assert string.contains(block, shown)
+  assert string.contains(codemode.description(echoing()), shown)
+}
+
+pub fn cap_refuses_a_module_no_offered_seam_admits_test() {
+  // `cap/runtime` is the satellite's trusted boot runtime: in the
+  // committed artifact, on neither seam's allowlist, and undescribed for
+  // that reason. A door onto the documentation must not be wider than
+  // the door onto the thing it documents.
+  //
+  // The first assertion keeps the second from being vacuous: the
+  // artifact does carry `cap/runtime`, so its refusal here is the
+  // allowlist filter working rather than an empty input.
+  let carried =
+    list.any(prelude.surfaces, fn(entry) { entry.0 == "cap/runtime" })
+  assert carried
+
+  assert cap_read(echoing(), "runtime")
+    == Error(fs.NotFound(what: "prelude module `cap/runtime`"))
+  assert !string.contains(cap_index(echoing()), "cap/runtime")
+}
+
+pub fn cap_serves_exactly_what_the_offered_seams_admit_test() {
+  // An orchestration-only host describes `cap/strand` and `cap/report`
+  // and nothing else, so those two and nothing else are what it reads
+  // out. A model on such a host that could read `cap/proc` would write
+  // against a module vetting rejects.
+  let orchestration = echoing_over(codemode.one_seam(orchestration_offer()))
+  assert cap_read(orchestration, "proc")
+    == Error(fs.NotFound(what: "prelude module `cap/proc`"))
+  let assert Ok(strand) = cap_read(orchestration, "strand")
+  assert string.starts_with(strand, "### cap/strand")
+
+  // And the workspace-only host is the mirror image.
+  let assert Ok(_proc) = cap_read(echoing(), "proc")
+  assert cap_read(echoing(), "strand")
+    == Error(fs.NotFound(what: "prelude module `cap/strand`"))
+}
+
+pub fn cap_reads_a_generated_surface_by_its_heading_test() {
+  // A host-generated `cap/mcp/<server>` façade is readable the same way
+  // a committed module is, and it is keyed by the heading its own
+  // renderer wrote rather than by anything this side guessed.
+  let with_surface =
+    echoing_over(codemode.one_seam(offer_with_surface(workspace_offer())))
+  assert cap_read(with_surface, "mcp/demo") == Ok(generated_surface)
+  assert list.contains(index_modules(cap_index(with_surface)), "cap/mcp/demo")
+
+  // And only on the seam that generated it: a host offering the other
+  // seam holds no such module.
+  let elsewhere = echoing_over(codemode.one_seam(orchestration_offer()))
+  assert cap_read(elsewhere, "mcp/demo")
+    == Error(fs.NotFound(what: "prelude module `cap/mcp/demo`"))
+}
+
+pub fn cap_indexes_exactly_the_readable_modules_sorted_test() {
+  // The index is what a model lists before it reads, so it must name
+  // every readable module and nothing else. A host serving both seams
+  // reads out the union, `cap/report` once.
+  assert index_modules(cap_index(echoing())) == ["cap/proc", "cap/report"]
+  assert index_modules(cap_index(echoing_over(both_seams())))
+    == ["cap/proc", "cap/report", "cap/strand"]
+
+  // Each line carries the module's opening sentence, so listing is
+  // enough to choose what to read.
+  let assert Ok(line) =
+    string.split(cap_index(echoing()), "\n")
+    |> list.find(fn(line) { string.starts_with(line, "cap/proc: ") })
+    as "the index must carry a line for every readable module"
+  assert string.contains(line, "`cap/proc`")
+  assert string.ends_with(line, ".")
+}
+
+pub fn cap_refuses_a_module_nobody_ships_test() {
+  assert cap_read(echoing(), "nonesuch")
+    == Error(fs.NotFound(what: "prelude module `cap/nonesuch`"))
+}
+
+pub fn cap_reads_through_fs_read_and_windows_test() {
+  // End to end: the scheme is reached through `fs_read`, renders plain,
+  // and pages by line like any other read.
+  let read = fs.read_tool_with([codemode.cap_scheme(echoing())])
+  let outcome =
+    read.run(
+      ctx_for("s1"),
+      json.Object([
+        #("path", json.String("cap://proc")),
+        #("limit", json.Int(1)),
+      ]),
+    )
+  assert outcome.is_error == False
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
+    as "expected a single text block"
+  assert text == "### cap/proc"
+  assert string.contains(read.description, "`cap://<module>` reads")
+}
+
+fn cap_index(mode: codemode.CodeMode) -> String {
+  let assert Ok(index) = cap_read(mode, "")
+    as "a bare `cap://` must answer with the index"
+  index
 }
