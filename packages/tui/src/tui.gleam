@@ -117,6 +117,16 @@ pub type Speaker {
 
   ToolFailure
   Failure
+
+  /// One blank row, placed by the projection that knows it is needed.
+  ///
+  /// Every other block closes itself with a blank, but the tool family is
+  /// excluded from that so a call's summary can never be split from the
+  /// patch, result or note rows beneath it. The gap between one call and the
+  /// next is therefore nobody's trailing blank, and only a fold that can see
+  /// where one group ends and another begins is in a position to emit it.
+  /// This is the row it emits.
+  Spacer
 }
 
 /// Whether the transcript area is showing captured edits.
@@ -2958,6 +2968,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error  ", theme.danger_text())
+    Spacer -> #("", theme.quiet_text())
   }
   case line.speaker {
     User -> {
@@ -2983,10 +2994,14 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     }
     Assistant | Reasoning -> [
       span.line_plain(""),
-      ..markdown.render(line.text, width - string.length(mark))
-      |> prefix_rendered_lines(mark, mark_style)
+      ..marked_markdown_rows(line.text, mark, mark_style, width)
     ]
     ToolPatch -> markdown.diff(line.text)
+
+    // The spacer is a row and nothing else: the fold that placed it has
+    // already decided it belongs here, so there is no mark to draw and
+    // nothing to wrap.
+    Spacer -> [span.line_plain("")]
 
     // A digest stands in for a whole reasoning block, and the one property
     // it has to keep is its height: the collapsed live row and the
@@ -3005,25 +3020,16 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
       |> list.index_map(fn(text, index) {
         let prefix = case index == 0 {
           True -> mark
-          False -> string.repeat(" ", string.length(mark))
+          False -> speaker_gutter
         }
         span.line_new([
           span.span_styled(prefix, mark_style),
           span.span_plain(text),
         ])
       })
-      |> list.append(case line.speaker {
-        ToolCall | ToolResult | ToolFailure -> []
-        System
-        | User
-        | Reasoning
-        | ReasoningDigest
-        | Failure
-        | Assistant
-        | ToolDetail
-        | ToolPatch -> [
-          span.line_plain(""),
-        ]
+      |> list.append(case closes_bare(line.speaker) {
+        True -> []
+        False -> [span.line_plain("")]
       })
   }
 }
@@ -3058,6 +3064,42 @@ fn digest_row(
   ])
 }
 
+// The cells every row of a block after its first is indented by.
+//
+// A mark like `"◆ Agent  "` is a heading, not a left edge. Repeating its nine
+// cells under a message's second paragraph, list or fence left that body
+// hanging in from the margin while the first paragraph's own wrapped rows
+// fell back to column zero, so one message had two left edges and neither was
+// the glyph's. Every mark this transcript draws opens with a glyph and a
+// space, so two cells is the one column all of them can share, and a list's
+// own nesting is then measured from it.
+const speaker_gutter = "  "
+
+// Markdown is wrapped here rather than left to the caller because the wrap
+// width and the prefix are a single decision. Row zero pays for the whole
+// mark and every later row pays for `speaker_gutter`, so a body measured
+// against the bare pane would overrun row zero, and the wrapper the caller
+// runs afterwards would answer that overrun by dropping the spilled words to
+// column zero — which is the two-left-edges bug itself. Measuring every row
+// against the widest of the two prefixes is what the fix costs: a
+// continuation row stops a few cells short of the pane, in exchange for one
+// left edge shared by a wrapped paragraph, a list and a fence alike.
+fn marked_markdown_rows(
+  body: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> List(span.Line) {
+  // The mark is measured in cells rather than codepoints for the same reason
+  // `digest_row` measures it that way: a two-cell glyph counted as one would
+  // leave row zero a cell short of the room it was promised and spill.
+  let room = int.max(1, width - text.cell_width(mark))
+
+  markdown.render(body, room)
+  |> markdown.wrap_lines(room)
+  |> prefix_rendered_lines(mark, mark_style)
+}
+
 fn prefix_rendered_lines(
   lines: List(span.Line),
   mark: String,
@@ -3068,7 +3110,7 @@ fn prefix_rendered_lines(
     let span.Line(spans:, alignment:) = line
     let prefix = case index == 0 {
       True -> mark
-      False -> string.repeat(" ", string.length(mark))
+      False -> speaker_gutter
     }
     span.Line(
       spans: [span.span_styled(prefix, mark_style), ..spans],
@@ -4748,7 +4790,9 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     True, pending -> {
       let #(lines, calls, narratives) = record_lines(pending, model)
       let #(newest_rows, appended) =
-        cached_record_lines(lines, width, model.record_line_cache)
+        lines
+        |> separated_from_screen(model)
+        |> cached_record_lines(width, model.record_line_cache)
 
       // Every cache here describes the current projection, and the appended
       // records have just joined it. Merging rather than replacing keeps the
@@ -4763,6 +4807,30 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         pending_records: [],
       )
     }
+  }
+}
+
+// The entry-level separation at the one seam the fold above cannot see.
+//
+// `record_lines` separates the entries handed to it, but the append path
+// hands it a suffix: the entry above the first new one was projected on an
+// earlier pass and is no longer in reach. The row it drew is, though, and a
+// drawn row answers the same question `closes_bare` answers about a speaker
+// — a blank row already separates whatever follows it, a drawn one does not
+// — so the seam is decided from the screen rather than from a second copy of
+// the projection. Compact history has no entry-level rule to apply, so the
+// seam belongs to the expanded view alone.
+fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
+  let drawn = case list.first(model.record_rows) {
+    Ok(row) -> span.line_width(row) > 0
+    Error(Nil) -> False
+  }
+  let wanted =
+    model.details_expanded && drawn && opens_tool_group(lines, BetweenEntries)
+
+  case wanted {
+    True -> [Line(Spacer, ""), ..lines]
+    False -> lines
   }
 }
 
@@ -4831,12 +4899,20 @@ fn record_anchors_for(
           }
         })
         |> dict.from_list
+
+      // The mirror of the entry-level separation `record_lines` applies in
+      // this mode. It runs over the flattened blocks rather than over whole
+      // entries, which reaches the same boundaries and no others: within a
+      // response `anchored_entry_blocks` has already placed every spacer a
+      // wider rule would ask for, and a spacer's own last row is blank, so a
+      // second pass can only decline.
       list.flat_map(entries, fn(value) {
         anchored_entry_blocks(value, model)
         |> list.map(fn(block) {
           #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
         })
       })
+      |> separated_tool_blocks(BetweenEntries)
     }
     False ->
       entries
@@ -4846,9 +4922,8 @@ fn record_anchors_for(
           tool_activity.Narrative(value) -> anchored_entry_blocks(value, model)
           tool_activity.Tools(calls) -> {
             let heading = [activity_heading(calls)]
-            [
-              #("", heading),
-              ..list.map(calls, fn(call) {
+            let called =
+              list.map(calls, fn(call) {
                 #(
                   ids.entry_id_to_string(call.source)
                     <> "/call/"
@@ -4857,7 +4932,7 @@ fn record_anchors_for(
                     |> result.lazy_unwrap(fn() { activity_call_lines(call) }),
                 )
               })
-            ]
+            [#("", heading), ..separated_tool_blocks(called, WithinResponse)]
           }
         }
       })
@@ -4909,6 +4984,7 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
           }
           #(key, assistant_block_lines(block, details))
         })
+        |> separated_tool_blocks(WithinResponse)
       let terminal = assistant_terminal_lines(stop_reason, error_message)
       case terminal {
         [] -> blocks
@@ -7037,8 +7113,15 @@ fn record_lines(
     |> list.map(fn(record) { record.entry })
   let owner = solo_owner(model.captured)
   case model.details_expanded {
+    // Expanded history alternates a response carrying a call with the entry
+    // carrying its result, and both close bare, so without this fold a run
+    // of calls arrives as one undivided block. The entry boundary is the
+    // only place that gap can be seen: the fold inside `message_lines` sees
+    // one response at a time.
     True -> #(
-      list.flat_map(entries, entry_lines(_, True, owner)),
+      entries
+        |> list.map(entry_lines(_, True, owner))
+        |> separated_tool_groups(BetweenEntries),
       dict.new(),
       dict.new(),
     )
@@ -7086,12 +7169,134 @@ fn cached_activity_lines(
       let lines =
         dict.get(previous, call)
         |> result.lazy_unwrap(fn() { activity_call_lines(call) })
-      #(
-        list.append(list.reverse(lines), acc.0),
-        dict.insert(acc.1, call, lines),
-      )
+      #([lines, ..acc.0], dict.insert(acc.1, call, lines))
     })
-  #([activity_heading(calls), ..list.reverse(reversed)], cached)
+
+  // The separation is applied to the groups and not stored in the cache:
+  // whether a call needs a blank above it is a fact about its neighbours,
+  // and the cached rows belong to the call alone. The heading closes itself
+  // with a blank, so the first group is already separated from it.
+  #(
+    [
+      activity_heading(calls),
+      ..separated_tool_groups(list.reverse(reversed), WithinResponse)
+    ],
+    cached,
+  )
+}
+
+/// Which first row counts as opening a tool group, which depends on the
+/// boundary the fold is walking.
+///
+/// A `ToolFailure` row is the same speaker in two different roles. Inside one
+/// assistant response it is a failed call's own summary and therefore opens a
+/// group. Between durable entries it is the first row of the failed *result*
+/// entry answering the call in the entry above, so treating it as an opening
+/// would put a blank between a call and its own outcome.
+type GroupOpening {
+  WithinResponse
+
+  BetweenEntries
+}
+
+// A tool call owns the rows under it — its patch, its result, a note excerpt
+// — which is why `render_line` closes none of the tool family with a blank of
+// its own: a blank there would split a call from its own detail. Nothing then
+// separates one call from the next, so this is where that row is placed.
+//
+// The test is two-sided, because most of the transcript does close itself. A
+// paragraph, a note body, a rendered program and an error all end in a blank
+// already, so a spacer above the call that follows one of them would draw the
+// same gap twice. A blank goes in only where the block above ended bare and
+// the block below opens a group.
+//
+// This is also the fold `record_anchors_for` runs, block by block, to pair
+// every rendered row with the durable call it came from: a spacer added to
+// the rows has to appear there too, or each anchor below a group drifts up by
+// one row per gap. The blank belongs to no call, so it is its own idless
+// block and resolves to no anchor at all.
+fn separated_tool_blocks(
+  blocks: List(#(String, List(Line))),
+  opening: GroupOpening,
+) -> List(#(String, List(Line))) {
+  blocks
+  |> list.fold([], fn(placed, block) {
+    // `placed` is newest first, and its head is always a real block: a
+    // spacer is only ever pushed immediately beneath the block it precedes,
+    // so the row consulted here is never one this fold wrote.
+    let wanted = case placed {
+      [#(_, previous), ..] ->
+        block_closes_bare(previous) && opens_tool_group(block.1, opening)
+      [] -> False
+    }
+
+    case wanted {
+      True -> [block, #("", [Line(Spacer, "")]), ..placed]
+      False -> [block, ..placed]
+    }
+  })
+  |> list.reverse
+}
+
+// The same separation over rows that carry no anchor identity.
+//
+// Groups are wrapped as idless blocks and run through the one fold rather
+// than folded again here. Two copies of a two-sided rule drift, and the two
+// projections have to agree row for row or the anchors slide.
+fn separated_tool_groups(
+  groups: List(List(Line)),
+  opening: GroupOpening,
+) -> List(Line) {
+  groups
+  |> list.map(fn(group) { #("", group) })
+  |> separated_tool_blocks(opening)
+  |> list.flat_map(fn(block) { block.1 })
+}
+
+// Whether a block ends without a blank row of its own.
+//
+// Only the last row decides it, because that is the row the next block comes
+// to sit under. An empty block draws nothing and so closes nothing; the fold
+// treats it as already separated rather than reaching past it, which costs at
+// most a missing blank in a shape no projection currently produces.
+fn block_closes_bare(rows: List(Line)) -> Bool {
+  case list.last(rows) {
+    Ok(line) -> closes_bare(line.speaker)
+    Error(Nil) -> False
+  }
+}
+
+// The speakers `render_line` draws with no trailing blank row of their own.
+//
+// `render_line` asks this same question when it decides whether to append a
+// blank, which is why it is a function rather than a second copy of the list:
+// moving a speaker into or out of the tool family changes both the row drawn
+// and the gap the fold above owes it, and the two have to move together.
+// Everything else already ends in a blank, and a `Spacer` is a blank.
+fn closes_bare(speaker: Speaker) -> Bool {
+  case speaker {
+    ToolCall | ToolResult | ToolFailure | ToolPatch | ReasoningDigest -> True
+    System | User | Assistant | Reasoning | ToolDetail | Failure | Spacer ->
+      False
+  }
+}
+
+// A block opens a tool group when its first row is a call's own summary,
+// whether that call is pending, succeeded or failed.
+fn opens_tool_group(rows: List(Line), opening: GroupOpening) -> Bool {
+  case rows {
+    [Line(speaker: ToolCall, ..), ..] -> True
+
+    // The one row whose meaning depends on the boundary being walked; see
+    // `GroupOpening`.
+    [Line(speaker: ToolFailure, ..), ..] ->
+      case opening {
+        WithinResponse -> True
+        BetweenEntries -> False
+      }
+
+    [] | [_, ..] -> False
+  }
 }
 
 // Compact mode folds arguments and results, never invocation history. Every
@@ -7602,8 +7807,15 @@ fn message_lines(
       ),
     ]
     message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
+      // Expanded history has no activity group to fold a run of parallel
+      // calls into, so one response's own blocks are separated here. The gap
+      // between one response and the next entry is a different boundary and
+      // belongs to the fold over entries, not to this one.
       let lines =
-        list.flat_map(content, assistant_block_lines(_, details_expanded))
+        content
+        |> list.map(assistant_block_lines(_, details_expanded))
+        |> separated_tool_groups(WithinResponse)
+
       list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
