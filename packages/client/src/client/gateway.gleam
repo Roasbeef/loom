@@ -136,6 +136,7 @@ import broker/escalation as broker_escalation
 import broker/framing
 import broker/internal/call
 import broker/policy.{type Grant}
+import client/advisor_pending
 import client/catalog
 import client/daemon/transfer
 import client/grants
@@ -1799,6 +1800,7 @@ fn network_command(
     | protocol.WorktreeDiffGet
     | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
+    | protocol.AdvisorPendingGet
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
     | protocol.SetConfig(..)
@@ -2526,6 +2528,7 @@ fn read_only(command: Command) {
     | protocol.WorktreeDiffGet
     | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
+    | protocol.AdvisorPendingGet
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
     | protocol.ListSchedules -> True
@@ -3716,6 +3719,37 @@ fn read_live_jobs(
   state
 }
 
+// The advisor's queued nudges, read straight from the guard cell through the
+// bounded reader. There is no host capability to inject and no actor to ask:
+// the advisor actor owns the write side, and a read that went through it
+// could be made to drain a queue the primary's next run start is entitled to.
+//
+// A malformed cell is `unavailable` rather than an empty board, because an
+// empty board asserts that the advisor has nothing waiting. A refused capture
+// is the server's own reader failing on the server's own budget, so it takes
+// the same path every other capture here takes.
+fn read_advisor_pending(state: State, connection: Int, id: Int) -> State {
+  case advisor_pending.read(state.runtime.session, bootstrap.system_time_ms()) {
+    Ok(board) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.AdvisorPendingSnapshot(board)),
+      )
+      state
+    }
+
+    Error(advisor_pending.Malformed(reason:)) -> {
+      reply_error(state, connection, id, "unavailable", reason)
+      state
+    }
+
+    Error(advisor_pending.Unreadable(error:)) ->
+      reader_failed(state, connection, id, error, ReaderBudget)
+  }
+}
+
 fn run_command(
   state: State,
   connection: Int,
@@ -3821,6 +3855,8 @@ fn run_command(
       begin_context(state, connection, id, strand)
     protocol.LiveJobsGet(strand:), Subscribed ->
       read_live_jobs(state, connection, id, strand)
+    protocol.AdvisorPendingGet, Subscribed ->
+      read_advisor_pending(state, connection, id)
     protocol.QueuedInputGet(strand:, id: input_id), Subscribed ->
       read_queued_input(state, connection, id, strand, input_id)
     protocol.EditQueuedInput(strand:, id: input_id, expected_revision:, text:),

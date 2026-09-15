@@ -187,6 +187,13 @@ pub type Command {
   /// Reads the bounded live job roster of one strand.
   LiveJobsGet(strand: String)
 
+  /// Reads the advisor's undelivered nudge queue without draining it.
+  ///
+  /// Deliberately empty-bodied. A session has one advisor and one primary
+  /// it advises, so there is nothing to scope: a strand argument could
+  /// only repeat the answer or contradict it.
+  AdvisorPendingGet
+
   /// Observes one strand's context without running hooks or a model.
   ContextGet(strand: String)
 
@@ -259,6 +266,9 @@ pub type Snapshot {
 
   /// Live job rows captured from the jobs actor.
   LiveJobsSnapshot(board: JsonValue)
+
+  /// The advisor's queued nudges, observed without delivering them.
+  AdvisorPendingSnapshot(board: JsonValue)
 
   /// Bounded asynchronous context accounting.
   ContextSnapshot(board: JsonValue)
@@ -755,6 +765,7 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "live_jobs",
       json.Object([#("strand", json.String(strand))]),
     )
+    AdvisorPendingGet -> #("advisor_pending", json.Object([]))
     ListModels -> #("models", json.Object([]))
     ListSkills(offset) -> #(
       "skills",
@@ -994,6 +1005,13 @@ fn decode_command_body(
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
       Ok(LiveJobsGet(strand:))
+    }
+
+    // Empty today, and read tolerantly for the reason `worktree_diff` is:
+    // a later field must not turn an older client's frame into a refusal.
+    "advisor_pending" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(AdvisorPendingGet)
     }
     "context" -> {
       use fields <- result.try(body_fields(body))
@@ -1262,6 +1280,11 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       json.Object([#("mode", json.String("context")), #("board", board)])
     LiveJobsSnapshot(board:) ->
       json.Object([#("mode", json.String("live_jobs")), #("board", board)])
+    AdvisorPendingSnapshot(board:) ->
+      json.Object([
+        #("mode", json.String("advisor_pending")),
+        #("board", board),
+      ])
     QueuedInputSnapshot(board:) ->
       json.Object([
         #("mode", json.String("queued_input")),
@@ -1822,6 +1845,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing live_jobs board"),
       )
       Ok(SnapshotEvent(LiveJobsSnapshot(board:)))
+    }
+    "advisor_pending" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing advisor_pending board"),
+      )
+      Ok(SnapshotEvent(AdvisorPendingSnapshot(board:)))
     }
     "queued_input" -> {
       use board <- result.try(

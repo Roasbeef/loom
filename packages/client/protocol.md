@@ -59,6 +59,7 @@ mode-`0600` token file beside the session.
 | `navigate`     | `snapshot` (mode `strands`)                |
 | `compact`      | `op_transition` (phase `compacting`)       |
 | `context`      | `snapshot` (mode `context`, pending; final pushed) |
+| `advisor_pending` | `snapshot` (mode `advisor_pending`)     |
 | `models`       | `snapshot` (mode `models`)                 |
 | `set_config`   | `snapshot` (mode `config`)                 |
 | `schedules`    | `snapshot` (mode `schedules`)              |
@@ -172,6 +173,28 @@ once, in seq order**.
   never used and a name already cancelled are the same absence. A
   gateway with no scheduling plane refuses with `unsupported`, never an
   empty success.
+
+### Advisor nudge queue observation
+
+`advisor_pending` takes `{}` and requires ordinary session-read authority. It
+answers a `snapshot` with `{mode: "advisor_pending", board}`, where the board is
+`{strand, observed_at_ms, pending: [string], total}`. `pending` holds the nudges
+the advisor has queued, oldest first and exactly as queued, and `strand` names
+the strand whose next run start folds them in — there is one advisor per session
+and one primary it advises, which is why the command takes no scope. `total` is
+how many were waiting; it never falls below the number of rows sent. The nudge
+texts are model-written display data, so a client sanitises terminal controls
+before drawing them.
+
+The board needs no omission field: the emission guard admits at most eight
+nudges totalling four kilobytes, so the whole queue fits. The read never drains
+the queue — that belongs to the primary's run start — so a client may call it
+repeatedly and must not treat the board as delivery. An absent guard cell is an
+empty board, which is a session whose advisor has nothing waiting; a store that
+will not answer, or a cell the guard's decoder rejects, is `unavailable` rather
+than an empty success. A gateway that does not know the command refuses it with
+`unsupported`. [Protocol 039](../../protocol-change/039-advisor-pending-observation.md)
+has the whole decision.
 
 ### Current context observation
 

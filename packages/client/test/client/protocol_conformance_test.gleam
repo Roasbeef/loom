@@ -56,6 +56,7 @@ const command_fixtures = [
   "cmd_set_config.json", "cmd_set_config_model.json", "cmd_steer.json",
   "cmd_subscribe.json", "cmd_subscribe_resume.json", "cmd_queued_input.json",
   "cmd_edit_queued_input.json", "cmd_worktree_diff.json", "cmd_live_jobs.json",
+  "cmd_advisor_pending.json",
 ]
 
 const event_fixtures = [
@@ -71,7 +72,7 @@ const event_fixtures = [
   "event_snapshot_queued_input.json", "event_snapshot_worktree_pending.json",
   "event_snapshot_worktree_ready.json", "event_snapshot_worktree_failed.json",
   "event_snapshot_live_jobs.json", "event_tool_output.json",
-  "event_snapshot_context_pending.json",
+  "event_snapshot_context_pending.json", "event_snapshot_advisor_pending.json",
 ]
 
 pub fn command_fixtures_roundtrip_test() {
@@ -100,7 +101,7 @@ pub fn corpus_is_complete_test() {
     list.append(command_fixtures, event_fixtures)
     |> list.sort(string.compare)
   assert covered == json_files
-  assert list.length(json_files) == 51
+  assert list.length(json_files) == 53
 }
 
 // --- strictness and tolerance ----------------------------------------------
