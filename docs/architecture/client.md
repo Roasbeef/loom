@@ -659,15 +659,15 @@ than growing the one already running.
 `contributions.built_in_for` takes a `catalog.Roster` alongside the
 per-plane `Option`s. The two questions are different: the `Option`
 answers whether this host *has* a plane, while the roster answers whether
-this deployment wants to *pay* for it, and the price is the cached prefix
+this deployment wants to *pay* for it. The price is the cached prefix
 of every request of every strand rather than anything the call itself
 costs. `Full` is the registry Loom has always built, twenty-one
 definitions where every plane is open. `Minimal` registers `bash`,
 `grep`, `fs_read`, `fs_write`, `fs_edit` and, where the host opened the
 plane, `code_mode`, and ignores every other plane even when it is
-present. Nothing is taken away from the session by that: each dropped
+present. Nothing is taken away from the session by that. Each dropped
 tool is reachable from a code-mode program through the capability
-prelude, so the roster narrows the door rather than the ability, and the
+prelude, so the roster narrows the door rather than the ability. The
 program is checked by the same vetting policy and reaches the same seams
 the wire call would have. That reachability is why `Minimal` also moves
 the seams: `cap/strand` lives on the orchestration seam, which the
@@ -690,12 +690,12 @@ session overrides it: `loom --tools minimal|full` travels as an optional
 `catalogue_sessions`. `serve.resolve_managed` reads that word back on
 every rebuild and applies it over the daemon's default, so a restarted
 daemon serves the same registry to the same session rather than whatever
-its configuration file names at recovery time. A stored word this build
+its configuration file names at recovery time. A stored word that this build
 cannot mean refuses the boot instead of defaulting. A session that stored
-no word follows the daemon's configured roster at every boot while its
-pinned prompt and its seeded `active_tool_names` do not re-render, so an
+no word follows the daemon's configured roster at every boot, while its
+pinned prompt and its seeded `active_tool_names` do not re-render. So an
 operator who flips the daemon's default should expect such a session to
-carry a prompt index naming tools that are no longer registered until a
+carry a prompt index naming tools that are no longer registered, until a
 new session is created.
 
 Because the prompt is rendered from the registry and then pinned, the

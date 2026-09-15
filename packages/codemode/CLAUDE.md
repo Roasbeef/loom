@@ -265,11 +265,11 @@ session and sends it many invocations.
   not copies, which is
   what makes "one implementation behind both doors" a fact about the code
   rather than a claim: a query from a program runs over the same index
-  with the same bounds and meets the same refusals as the identical query
-  as a tool call. Every plan is `satellite.ServedHere`, since a search
+  with the same bounds and meets the same refusals it would meet as a
+  tool call. Every plan is `satellite.ServedHere`, since a search
   over an index the harness holds and a commit into a session file it
   owns spawn no process and cross no namespace. What this module owns are
-  the two guards `tools/history.History`'s closure contract names, met
+  the two guards that `tools/history.History`'s closure contract names, met
   the same way the tool's own `run` meets them: `history.clamp_limit` is
   the tool's function rather than a second number, and an empty query is
   refused at plan time in words a program can act on, because the index
@@ -480,7 +480,7 @@ session and sends it many invocations.
   `default_cap_modules` and on no other seam's list, because an
   orchestration program holding recall could read the transcripts of
   agents it never ran, and a note reaches every later session as quoted
-  context, which is `cap/schedule`'s fault exactly.
+  context, exactly the risk `cap/schedule` already carries.
 - **Recall is unrouted rather than refusing, and the router is bound to
   the host.** `client/serve` probes the recall index and the memory store
   at boot and wires whichever opened; a plane that did not open is `None`

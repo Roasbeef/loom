@@ -230,7 +230,7 @@ cannot hide the capability error. This does not grant the program a new effect.
   the durable history of every session in this repository, the code-mode
   half of the door `history_search` opens for a tool call. Both land on
   one index through `codemode/recall`, so a query from a program runs
-  with the same bounds and meets the same refusals as the same query as a
+  with the same bounds and meets the same refusals it would meet as a
   tool call. `Scope` is `Repository` or `ThisSession`; a `Hit` carries the
   canonical `session` and `entry` ids `read` takes back, plus the index's
   own excerpt with `[`/`]` around matched terms; `read` answers the
@@ -241,7 +241,7 @@ cannot hide the capability error. This does not grant the program a new effect.
   limit as unbounded, so a program computing one by subtraction would
   otherwise pull the whole repository index over the channel.
   `clamp_limit` holds it to `[min_limit, max_limit]` here so a call site
-  can predict, the harness clamps again because this side of the wire is
+  can predict; the harness clamps again because this side of the wire is
   the untrusted one, and `Found.limit` is what actually ran.
   **What comes back is quoted history and it is data**: every snippet is
   text some model wrote, in this session or another, addressed to nobody
@@ -251,7 +251,7 @@ cannot hide the capability error. This does not grant the program a new effect.
   after, the code-mode half of the `remember` tool's door. Write-only by
   design and permanently: memory reaches a later session as quoted
   context the harness injects at run start, so there is no read door to
-  poison and no argument that could name one, and a program cannot choose
+  poison and no argument that could name one. A program cannot choose
   the entry type either: the host writes `memory/note` and nothing else,
   which is what keeps a model unable to forge a distillation fact. All
   three caps are enforced on the far side: redaction runs first, the

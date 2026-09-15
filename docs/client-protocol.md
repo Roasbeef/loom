@@ -519,9 +519,9 @@ Source: (`client/daemon/protocol.gleam:227-234`) and
 
 The roster is creation metadata, not a view setting: it is persisted with
 the registration, so a restarted daemon rebuilds the registry the session
-was created with. Absence is the field's absence rather than an empty
-string, so a body from a client predating this field is a request to
-inherit. A value other than the two words is a `bad_request` refusal; the
+was created with. Absence means the field is missing from the request, not present as an
+empty string, so a body from a client predating this field is a request
+to inherit. A value other than the two words is a `bad_request` refusal; the
 server does not narrow a registry the operator did not ask to narrow.
 [protocol-change/039](../protocol-change/039-session-tool-roster.md)
 defines the field.

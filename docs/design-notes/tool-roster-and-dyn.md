@@ -35,8 +35,8 @@ the model reaches into when it needs to.
 The `omp2` branch acts on that conclusion with a shell builtin,
 `dyn`, in `crates/shell-builtins/src/dyn.rs`, decided in that
 repository's ADR 0024 and ADR 0025. It does three things. It lists a live
-catalog of everything the harness can do, so the model discovers a
-capability without a definition for it being resident. It synthesizes a
+catalog of everything the harness can do, so the model can discover a
+capability whose definition never has to be resident. It synthesizes a
 `--help` page for any entry from that entry's JSON schema, so the model
 reads an argument list on demand. And it dispatches the call, so the
 catalog entry is reachable without ever becoming a wire tool.
@@ -52,8 +52,9 @@ shape with different parts: a small fixed roster, a discovery index, a
 
 ## What Loom's roster costs
 
-Loom's own numbers, measured on the wire as name plus description plus
-JSON schema, against the allowlists the tree actually ships.
+These are Loom's own numbers, measured on the wire as name plus
+description plus JSON schema, against the allowlists the tree actually
+ships.
 
 The whole registry, before this change and with the description as it
 then rendered:
@@ -89,8 +90,8 @@ wrote down rather than a drift nobody noticed.
 
 ### The roster is an operator setting, and a per-session one
 
-`[tools] roster = "minimal" | "full"` in `loom.toml`, parsed into
-`catalog.Roster` and defaulting to `Full`. `contributions.built_in_for`
+`[tools] roster = "minimal" | "full"` in `loom.toml` is parsed into
+`catalog.Roster`, defaulting to `Full`. `contributions.built_in_for`
 takes it and builds the registry from it.
 
 Plane gating was already there and is the wrong instrument. An `Option`
@@ -115,8 +116,8 @@ registry to the same session.
 
 ### `Minimal` is six tools
 
-`bash`, `grep`, `fs_read`, `fs_write`, `fs_edit`, and `code_mode` where
-the host opened that plane. The six `agent_*`, the three `job_*`, the
+The six are `bash`, `grep`, `fs_read`, `fs_write`, `fs_edit`, and
+`code_mode` where the host opened that plane. The six `agent_*`, the three `job_*`, the
 three `schedule_*`, `history_search`, `remember` and `context_remaining`
 are not registered, even where their plane is open and wired.
 
@@ -138,9 +139,9 @@ is not served by default. `cap/strand` lives on the orchestration seam,
 which a shipped server offers only when `--codemode-seams` names
 `orchestration` or `both`; the flag's own default is the workspace seam
 alone. So `Minimal` makes the orchestration seam part of the roster
-rather than a separate choice: when the roster is `Minimal` and
-`--codemode-seams` was not named, the server serves both seams, because
-a session with no `agent_*` tools and no orchestration seam could not
+rather than a separate choice. When the roster is `Minimal` and
+`--codemode-seams` was not named, the server serves both seams: a
+session with no `agent_*` tools and no orchestration seam could not
 spawn an agent at all. An operator who names `--codemode-seams`
 explicitly keeps exactly what they named, `Minimal` included, and a
 session on that server reaches whatever those seams admit.
@@ -183,18 +184,18 @@ model than one that cannot.
 The `code_mode` description used to paste every admitted module's whole
 public surface. It now carries, per seam section, an index line and the
 module's `pub type` declarations, and nothing else. `scripts/gen-prelude.py`
-emits a second constant, `tools/prelude.type_surfaces`, which is each
-module's block cut after the types, character for character a prefix of
-its `surfaces` counterpart. An MCP façade gets only its index line,
+emits a second constant, `tools/prelude.type_surfaces`, holding each
+module's block cut off after the types. Character for character, it is a
+prefix of that module's `surfaces` counterpart. An MCP façade gets only its index line,
 because a `cap/mcp/<server>` block is one host's server rendered whole and
 has no separable type section to keep.
 
-What left the description is read back through a scheme on `fs_read`.
-`cap://<module>` returns that module's full rendered block from
+The content removed from the description is read back through a scheme
+on `fs_read`. `cap://<module>` returns that module's full rendered block from
 `prelude.surfaces`, or a seam's `extra_surfaces` façade found by its
 `### cap/mcp/<segment>` heading, filtered by the offered seams'
 `allowed_imports`; `cap://` alone is the index. The filter direction is
-the security-relevant one: a module vetting will reject must not be
+the security-relevant one: a module that vetting will reject must not be
 readable here, or the model writes against something it cannot import and
 reads a refusal it has no way to understand.
 
@@ -251,19 +252,19 @@ the `--help`, which is what `cap://` is.
 decision to move it is a measurement rather than an opinion: drive the
 same tasks on both rosters against GLM and Kimi via Baseten, and against
 Anthropic, and compare wall-clock and drive quality. Until that says
-otherwise a session registers what it has always registered.
+otherwise, a session registers what it has always registered.
 
 **What inherit means across a flip.** A session created with `--tools`
 stores that word and gets the same registry back on every rebuild. A
 session created without one stores nothing and follows the daemon's
-`[tools] roster` at each boot, and the rest of the session does not
-follow with it: the system prompt is pinned once and keyed only on the
+`[tools] roster` at each boot. The rest of the session does not follow
+along: the system prompt is pinned once and keyed only on the
 enforcement demand, and `strand.config`'s `active_tool_names` is seeded
 once at the first boot. So an operator who flips the daemon's default
 and restarts should expect existing inherit sessions to rebuild a
-different registry than their pinned prompt describes, with the prompt's
-available-tools index naming tools that are no longer on the wire,
-`wiring.tool_specs` dropping them at render and `wiring.clear` refusing
+different registry than their pinned prompt describes. The prompt's
+available-tools index keeps naming tools that are no longer on the wire.
+`wiring.tool_specs` drops them at render, and `wiring.clear` refuses
 a call on one, until each such session is replaced by a new one. This is
 the same class of behaviour `LOOM_DISABLE_TOOLS` has today, and it is
 documented rather than mechanised. Binding the resolved roster into the

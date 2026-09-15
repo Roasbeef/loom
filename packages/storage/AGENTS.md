@@ -25,7 +25,7 @@ by WP-C-full.
   `minimal`, `full`, or the empty word for a session that named none and
   inherits the daemon's own configured default. Schema version 4 adds the
   column with that empty default, so every registration written before it
-  reads as inherit, and versions 1, 2 and 3 migrate transactionally
+  reads as inherit. Versions 1, 2 and 3 migrate transactionally
   through `catalogue_rosters_schema`. This layer does not know the
   vocabulary: it stores the word the client chose and hands it back
   unchanged, and the column's own `CHECK` constraint is what keeps a

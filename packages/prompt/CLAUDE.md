@@ -113,15 +113,15 @@ pack is held against it. The shipped version is `loom-default-8`.
 Two of those selections follow the **tool roster**, and both choose a
 whole fragment rather than splicing a host value in. `delegation` selects
 `_delegation` where `agent_spawn` is registered, `_delegation_via_code_mode`
-where only `code_mode` is, and nothing where neither is: the two wordings
-instruct against different machinery, and a wording a host cannot act on
-is worse than silence, because an instruction naming tools the model was
+where only `code_mode` is, and nothing where neither is. The two wordings
+instruct against different machinery, and a wording that a host cannot
+act on is worse than silence: an instruction naming tools the model was
 never given is an invitation to call them and read a refusal.
 `tool_discipline` gains `_code_mode_discovery`, the sentence telling an
 agent to read `cap://<module>` before writing against it, wherever
 `code_mode` is registered. Both read `Environment.tools`, the registry's
-own names, so the prompt cannot disagree with the schemas on the wire,
-and both are fixed for the life of a session, so every strand still
+own names, so the prompt cannot disagree with the schemas on the wire.
+Both are fixed for the life of a session, so every strand still
 shares one cached prefix.
 
 ## Relationships
@@ -268,7 +268,7 @@ written by whoever calls `render`, not here.
   `build_constant_sections_vary_only_with_the_tool_roster_test` holds
   them that way. The two placeholders they now carry choose between whole
   fragments from the registered tool names, and the fragments they reach
-  are themselves placeholder-free, so nothing host-specific can enter
+  are themselves placeholder-free. So nothing host-specific can enter
   through them.
 
 ## Deep Docs

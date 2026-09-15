@@ -198,9 +198,9 @@ was asked.
 - `tools/prelude.{surfaces, type_surfaces}` — **generated**
   (`make gen-prelude`): the same capability-prelude modules in the same
   order, rendered twice from `gleam export package-interface` over
-  `packages/cap`. `surfaces` is the whole public surface — `pub type`
+  `packages/cap`. `surfaces` is the whole public surface (`pub type`
   declarations with their constructors, `pub const`, `pub fn` signatures,
-  each under the prelude's own `///` docs — and is what `cap://<module>`
+  each under the prelude's own `///` docs), and is what `cap://<module>`
   reads out. `type_surfaces` is that block cut after the type
   declarations and is what the `code_mode` description renders; each
   entry is a character-for-character prefix of its `surfaces`
@@ -572,9 +572,9 @@ was asked.
   held to the same inline ceiling and refuses above it rather than
   spilling, because a spill costs a second round trip to read back and
   `limit` is the knob that makes the answer fit.
-- **A scheme read renders plain, and stays `replay: Safe`.** No digest
-  line and no `line:anchor|` prefixes, because nothing edits a prelude
-  module's documentation or a job's state; `offset`/`limit` still window
+- **A scheme read renders plain, and stays `replay: Safe`.** It carries no
+  digest line and no `line:anchor|` prefixes, because nothing edits a
+  prelude module's documentation or a job's state; `offset`/`limit` still window
   it by line, through the file reader's own windowing, so a model that
   learns to page one has learned to page the other. `job://` stays `Safe`
   where `job_poll` is `Never` because it polls with `wait_ms: 0` from
@@ -642,8 +642,8 @@ was asked.
   and no language server: it authors blind and learns a signature from a
   `CompileFailed` round trip carrying a whole hermetic build (issue #36).
   So every module a seam admits is rendered into the description
-  statically — its heading, its purpose line and its `pub type`
-  declarations, from `prelude.type_surfaces` — and the legend says in one
+  statically: its heading, its purpose line and its `pub type`
+  declarations, from `prelude.type_surfaces`. The legend says in one
   sentence that function signatures are not there and that `fs_read` of
   `cap://<module>` returns them. Nothing is added to the tool array
   either way, because `cap://` is a scheme on a tool that is already
@@ -653,9 +653,9 @@ was asked.
   so the declarations stay where they cannot be missed. `cap/runtime` and
   `cap/mcp` are on no seam's allowlist, so `type_surface_text` runs each
   `SeamOffer.allowed_imports` over the artifact and not the other way
-  round, and `cap_scheme` applies the same filter to the same modules —
-  a door onto the documentation must not be wider than the door onto the
-  thing it documents. Advertising a module vetting will reject is the
+  round. `cap_scheme` applies the same filter to the same modules, for
+  the same reason: a door onto the documentation must not be wider than
+  the door onto the thing it documents. Advertising a module vetting will reject is the
   same class of lie as classifying a submission by reading its imports. A
   host-generated `cap/mcp/<server>` façade is indexed rather than
   rendered, because it carries no separable type section to keep. The

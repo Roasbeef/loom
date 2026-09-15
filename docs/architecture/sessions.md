@@ -39,7 +39,7 @@ as empty. Storage does not know the vocabulary. It holds the word the
 creation request carried and hands it back, and the column's own
 constraint is what keeps a third word out. Because the roster is creation
 metadata, it joins the equality a creation retry is compared against: a
-retry under the same request key that names a different roster answers
+retry that names a different roster under the same request key answers
 `conflict`, exactly as a different name or configuration does. Version 1,
 2 and 3 catalogues migrate transactionally. See
 [protocol-change/039](../../protocol-change/039-session-tool-roster.md).

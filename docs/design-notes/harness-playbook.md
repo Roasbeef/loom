@@ -104,8 +104,8 @@ This chapter is the one the tree has since acted on directly.
 `loom --tools` makes it a per-session one, and `minimal` is six
 definitions: the five core tools and `code_mode`. Everything the narrow
 roster drops is reachable from a program, so what it narrows is the door
-rather than the ability, and the `code_mode` description that would
-otherwise have been the largest thing in the prefix was cut roughly in
+rather than the ability. The `code_mode` description, which would
+otherwise have been the largest thing in the prefix, was cut roughly in
 half by moving function signatures behind a `cap://` read on `fs_read`.
 `docs/design-notes/tool-roster-and-dyn.md` has the measurements, the
 comparison with the post's own `dyn` builtin, and what was left open.
@@ -239,8 +239,8 @@ parent's workspace outright with no copy-on-write view, a known and
 unmitigated collision.
 
 *The resolver half of #192 has since shipped.* `fs_read` takes a list of
-`fs.Scheme` registrations, a path containing `://` never resolves as a
-file, and two schemes are wired from the planes a host opened:
+`fs.Scheme` registrations, and a path containing `://` never resolves as a
+file. Two schemes are wired from the planes a host opened:
 `cap://<module>` reads one capability-prelude module's surface, and
 `job://<id>` polls a background job without waiting. `history://`,
 `agent://` and an artifact scheme are still open, and the resolver they

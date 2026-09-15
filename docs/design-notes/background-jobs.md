@@ -306,8 +306,8 @@ Since then the roster has become an operator setting
 (`docs/design-notes/tool-roster-and-dyn.md`). Under `full` the three job
 tools are registered as described here and the count is twenty-one. Under
 `minimal` none of them is: `bash` keeps its jobs door, so `mode:
-"background"` still admits a job, and a job is read back through
-`job://<id>` on `fs_read` or reached in full from a program through
+"background"` still admits a job. A job is read back through
+`job://<id>` on `fs_read`, or reached in full from a program through
 `cap/job`.
 
 `bash` gains `mode`, a two-value enum (`"foreground"`, the default, or

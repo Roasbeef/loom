@@ -202,11 +202,12 @@ The **cap prelude** is the set of modules a code-mode program may import:
 `cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, `cap/job`,
 `cap/search` — read-only navigation and search over the workspace, so a
 program that needs to find its way around a tree can import it instead of
-`cap/fs` and say in its imports that it will not write, and the three
-recall modules: `cap/history`, ranked full-text search over the durable
-history of every session in this repository, `cap/memory`, which writes
-one durable note and reads nothing, and `cap/context`, which reports the
-window, the tokens used, the compaction boundary and the note count.
+`cap/fs` and say in its imports that it will not write. The prelude also
+carries three recall modules: `cap/history`, ranked full-text search over
+the durable history of every session in this repository; `cap/memory`,
+which writes one durable note and reads nothing; and `cap/context`, which
+reports the window, the tokens used, the compaction boundary and the
+note count.
 Each is an ordinary typed Gleam
 module whose functions look like local calls but whose bodies are stubs: a
 call marshals its arguments and sends them as a `cap_call` over the framed
@@ -343,8 +344,8 @@ The three recall modules are the most recent application of that rule.
 every session this repository has ever had, so an orchestration program
 holding it could read the transcripts of agents it never ran; memory
 mints a durable note that reaches every later session as quoted context,
-which is `cap/schedule`'s fault exactly, the ability to affect an
-execution nobody present asked for. They are workspace capabilities on
+exactly the risk `cap/schedule` already carries: the ability to affect
+an execution nobody present asked for. They are workspace capabilities on
 the plain argument that a workspace program is the one reading and
 writing this repository's own record. Whether `cap/context` belongs on
 the orchestration seam as well is open; it is not there today.
@@ -427,8 +428,8 @@ program may import them, is admitted by vetting, and meets
 posture a code-mode program meets on a host whose probes failed. The
 asymmetry is deliberate: an extension's reach is fixed at install rather
 than by a per-host probe, so a session's index and memory store are not
-its to read, and widening the bridge is a decision with its own record to
-write. `packages/client/test/client/extension/freeze_test.gleam` pins the
+the extension's to read, and widening the bridge is a decision with its
+own record to write. `packages/client/test/client/extension/freeze_test.gleam` pins the
 allowlist and states the reasoning beside it.
 
 Two consequences worth stating. **The extension seam sees no generated
@@ -578,7 +579,7 @@ the index is listed for free while the oracle is reachable only by being
 wrong first.
 
 The description now carries an index and the types. For every module a
-seam admits it renders the `### cap/<name>` heading, the module's purpose
+seam admits, the description renders the `### cap/<name>` heading, the module's purpose
 line, and its `pub type` declarations with their constructors and fields,
 each under the prelude's own `///` documentation. Function signatures,
 constants and their docs are **not** there, and the legend says so in one
@@ -612,8 +613,8 @@ untouched either way.
 two constants over the same modules in the same order. `prelude.surfaces`
 is the whole public surface, which `cap://<module>` reads out.
 `prelude.type_surfaces` is that block cut after the `pub type`
-declarations, character for character a prefix of its counterpart, and it
-is what the description carries. The cut is where it is because the two
+declarations. Character for character, it is a prefix of its counterpart,
+and it is what the description carries. The cut is where it is because the two
 halves fail differently: a signature a program needs can be read when it
 is needed, while `proc.run` returns a `proc.Output` and a program that
 cannot name the `stdout` field cannot read the output it just paid for.

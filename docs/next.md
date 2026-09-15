@@ -64,8 +64,9 @@ defaulting to `Full` (`default_tools`, `catalog.gleam:1064`). Under
 `bash`, `grep`, `fs_read`, `fs_write`, `fs_edit` and, when the host
 opened the plane, `code_mode`. The fifteen it drops are the six `agent_*`
 tools, the three `job_*`, the three `schedule_*`, `history_search`,
-`remember` and `context_remaining`, which is the 21-tool `Full` roster
-Loom has always registered. An unflagged `Minimal` serves both code-mode
+`remember` and `context_remaining`. Together with the six `Minimal`
+keeps, that is the 21-tool `Full` roster Loom has always registered. An
+unflagged `Minimal` serves both code-mode
 seams (`seams_for`, `serve.gleam:1290`), because `cap/strand` is admitted
 on the orchestration seam only and a narrowed door must not narrow the
 ability. An explicit `--codemode-seams` word outranks the roster in

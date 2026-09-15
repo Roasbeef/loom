@@ -31,9 +31,9 @@ Add one optional field to the existing `sessions.create` body:
 refusal, not a narrowing: a daemon that guessed would start the session
 with a registry the operator did not ask for and could not see.
 
-An absent field means inherit, and it is absent — not an empty string —
-so a body written by a launcher that predates this change and a body from
-a launcher with no `--tools` flag are the same body. The daemon's own
+An absent field means inherit; it is absent, not an empty string, so a
+body written by a launcher that predates this change and a body from a
+launcher with no `--tools` flag are the same body. The daemon's own
 `[tools] roster` decides in that case.
 
 The word is persisted with the registration, so a restarted daemon
@@ -47,10 +47,10 @@ boundary decodes it totally and refuses any word this build cannot mean,
 rather than defaulting to inherit.
 
 Because it is creation metadata, `roster` joins the equality that
-recovers a lost creation reply. A retry under the same `request_key` that
-names a different roster — including one that drops the field — answers
-`conflict`, exactly as a retry with a different `name` or `configuration`
-does today. Recovering the original identity is only correct when the
+recovers a lost creation reply. A retry that names a different roster
+under the same `request_key`, including one that drops the field,
+answers `conflict`, exactly as a retry with a different `name` or
+`configuration` does today. Recovering the original identity is only correct when the
 original request is the one being repeated.
 
 The terminal gains a launcher flag, `loom --tools <minimal|full>`, which
@@ -70,7 +70,7 @@ The system prompt's available-tools index is rendered from the full
 registry and pinned before any `set_config` can arrive, so the model would
 be told about tools its active list no longer contains. And it needs an
 attached socket and a named strand, which a session created and left
-unattached does not have — while the roster has to be settled before the
+unattached does not have, while the roster has to be settled before the
 first turn runs.
 
 **A third roster value, or a per-tool list.** Both were left out. The
@@ -102,12 +102,12 @@ created without `--tools` and every session created before this change,
 follows the daemon's `[tools] roster` at each boot. The rest of the
 session does not follow it. The system prompt is pinned once and keyed
 only on the enforcement demand, and `strand.config`'s
-`active_tool_names` is seeded once at the session's first boot, so
+`active_tool_names` is seeded once at the session's first boot. So
 neither re-renders when the configuration moves. An operator who flips
 the daemon's default and restarts should therefore expect an existing
 inherit session to rebuild a different registry than its pinned prompt
-describes: the prompt's available-tools index names tools that are no
-longer on the wire, `wiring.tool_specs` drops the unregistered names
+describes. The prompt's available-tools index still names tools that are
+no longer on the wire. `wiring.tool_specs` drops the unregistered names
 when it renders, and `wiring.clear` refuses a call on one. The session
 recovers by being replaced; a new session renders its prompt from the
 registry it actually got. This is the same class of behaviour

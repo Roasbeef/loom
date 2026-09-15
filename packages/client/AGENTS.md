@@ -37,14 +37,15 @@ catalogue without opening runtimes. Explicit admission invokes
   restarted daemon rebuilds the registry the operator asked for instead
   of the one its configuration file names today. There is no fourth
   variant for changing one's mind; that would be a new session.
-  `roster_word` is the durable word storage holds, the empty word being
-  inherit and also what every registration written before the column
-  reads as, and `roster_request` reads it back totally: a word this build
-  cannot mean refuses the boot rather than silently inheriting, because a
-  session started with a registry it was not created for is a change the
-  operator has no way to see. The field joins the creation-retry equality
-  in `manager.Creation`, so a retry under the same request key that names
-  a different roster is a `conflict`. `serve.resolve_managed` applies the
+  `roster_word` is the durable word storage holds. The empty word means
+  inherit, and it is also what every registration written before the
+  column reads as. `roster_request` reads it back totally: a word that
+  this build cannot mean refuses the boot rather than silently
+  inheriting, because a session started with a registry it was not
+  created for is a change the operator has no way to see. The field
+  joins the creation-retry equality in `manager.Creation`, so a retry
+  that names a different roster under the same request key is a
+  `conflict`. `serve.resolve_managed` applies the
   stored choice over the daemon's own `[tools] roster` on every rebuild
   (`roster_for_session`). See
   [protocol-change/039](../../protocol-change/039-session-tool-roster.md).
@@ -416,12 +417,12 @@ catalogue without opening runtimes. Explicit admission invokes
   parse_tools, parse_roster}` — the `[tools]` table of the same file.
   `Roster` is `Minimal` or `Full` and answers which built-in tools a
   session puts on the wire. It lives here beside `network` because it is
-  an operator decision rather than a host fact, and the arithmetic behind
+  an operator decision rather than a host fact. The arithmetic behind
   it is the cached prefix: the wire tool array renders ahead of the
   system prompt, so every definition is paid for on every request of
-  every strand for the life of the session whether it is called or not.
-  Two named rosters and no per-tool list, because a list would let an
-  operator state a set nobody measured. The default is `Full` and is
+  every strand for the life of the session, whether it is called or not.
+  There are two named rosters and no per-tool list, because a list would
+  let an operator state a set nobody measured. The default is `Full` and is
   stated once, in `default_tools`, so an omitted key and an absent
   `[tools]` table cannot drift apart; `parse_roster` is total and an
   unrecognized word is a worded refusal rather than a silent default.
@@ -645,7 +646,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `remember` and `context_remaining` tools are built over, so a query a
   program runs is the query a tool call runs, a note a program writes is
   the same `memory/note` entry, and a program's context report is the
-  tool's. One field for all three for the reason `mcp` is one field: they
+  tool's. One field for all three for the reason that `mcp` is one field: they
   are one decision from the host's side, probed together at boot. A host that never calls it, or that
   passes `None` for a plane whose probe failed, leaves those capabilities
   unrouted and advertises none of them. The arm is stacked in
@@ -1655,13 +1656,13 @@ catalogue without opening runtimes. Explicit admission invokes
   every request.
   Under `catalog.Minimal` it is the five core tools and `code_mode`
   alone, and every other plane is ignored **even when it is present**.
-  That costs the session nothing but the wire definitions: each dropped
+  That costs the session nothing but the wire definitions. Each dropped
   tool is reachable from a code-mode program through the capability
-  prelude, so the roster narrows the door rather than the ability, and
-  the program is checked by the same policy and reaches the same seams.
+  prelude, so the roster narrows the door rather than the ability. The
+  program is checked by the same policy and reaches the same seams.
   That reachability is why `Minimal` also moves the seams: `cap/strand`
   is on the orchestration seam, which the shipped server offers only
-  when `--codemode-seams` names it, so a `Minimal` server whose operator
+  when `--codemode-seams` names it. So a `Minimal` server whose operator
   did not name the flag serves both seams rather than the workspace seam
   alone, and one who named it keeps exactly what they named.
   `bash` takes the jobs door under both rosters, since the door is what
@@ -1669,8 +1670,8 @@ catalogue without opening runtimes. Explicit admission invokes
   prefix. `built_in(..)` remains as `built_in_for(catalog.Full, ..)`
   under its historical name and signature, which is what every test and
   fixture wants.
-  The list of `fs.Scheme` registrations `fs_read` is built with follows
-  the planes the same way: `codemode.cap_scheme` where code mode exists,
+  The list of `fs.Scheme` registrations that `fs_read` is built with
+  follows the planes the same way: `codemode.cap_scheme` where code mode exists,
   `job.scheme` where the jobs plane does. `cap://` only means something
   beside `code_mode`, and `job://` is the read that lets `Minimal` drop
   `job_poll`.
@@ -2842,15 +2843,15 @@ across one operation a `Stop` block holds open.
   `list.contains` on this same list, and set membership is blind to
   order and multiplicity.
 - **The roster is settled before the first turn, and nothing narrows a
-  registry afterwards.** The registry is built during assembly, the
+  registry afterwards.** The registry is built during assembly. The
   prompt's available-tools index is rendered from it and pinned, and
-  `active_tool_names` is seeded from it at the same moment, so a roster
+  `active_tool_names` is seeded from it at the same moment. So a roster
   arriving later would be narrowing something already built and paid for.
   That is why the choice is creation metadata on `sessions.create` rather
   than a `set_config` change, and why it is persisted: the registry is
   not journaled, so the stored word is the only way a restarted daemon
   serves the same six or twenty-one definitions to the same session. A
-  stored word the decoder does not know refuses the boot; it never
+  stored word that the decoder does not know refuses the boot; it never
   defaults.
 - **The system prompt is assembled at a session's first open and pinned
   with its enforcement demand.** Every later boot at the same demand sends
