@@ -236,6 +236,17 @@ dist: release release-smoke release-client release-client-smoke tui-shipment ## 
 INSTALL_CLIENT ?= bundled
 CLIENT_ARTIFACT := $(if $(filter slim,$(INSTALL_CLIENT)),tui-shipment,release-client)
 
+# Use the freshly built updater so an older installed client can be upgraded.
+# Serialize distribution prerequisites even under `make -j`: smoke tests load
+# the release trees that their sibling prerequisites assemble.
+UPDATE_ARGS ?=
+
+.PHONY: update
+update: ## Build this commit, install it, and gracefully restart the daemon (UPDATE_ARGS=flags)
+	@$(MAKE) codemode-seed
+	@$(MAKE) -j1 dist
+	@build/release/loom-client/bin/loom update --from "$(CURDIR)/dist" --prefix "$(PREFIX)" --client "$(INSTALL_CLIENT)" $(UPDATE_ARGS)
+
 .PHONY: install
 install: codemode-seed release $(CLIENT_ARTIFACT) ## Install loom and loomd under PREFIX (INSTALL_CLIENT=bundled|slim)
 	@PREFIX="$(PREFIX)" LOOM_CLIENT="$(INSTALL_CLIENT)" scripts/install.sh
