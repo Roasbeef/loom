@@ -1187,15 +1187,17 @@ fn observe_provider(
 // the same identity without minting a second counter or consulting live state.
 fn request_identity(spec: effects.RequestSpec) -> String {
   let parts = case spec {
-    effects.GenerationRequest(step_id:, attempt:, ..) -> [
+    effects.GenerationRequest(step_id:, attempt:, response_entry:, ..) -> [
       json.String("generation"),
       json.String(step_id),
       json.Int(attempt),
+      json.String(ids.entry_id_to_string(response_entry)),
     ]
-    effects.PollRequest(step_id:, poll:, ..) -> [
+    effects.PollRequest(step_id:, poll:, response_entry:, ..) -> [
       json.String("poll"),
       json.String(step_id),
       json.Int(poll),
+      json.String(ids.entry_id_to_string(response_entry)),
     ]
     effects.SummaryRequest(task_id:, attempt:, request_index:, ..) -> [
       json.String("summary"),
