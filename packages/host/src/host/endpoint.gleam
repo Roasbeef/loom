@@ -63,12 +63,12 @@ pub type Endpoint {
     epoch: String,
     /// The build that wrote this record, when it knew one.
     ///
-    /// Read so the launcher can report a client/daemon build mismatch
-    /// (issue #392) before the authenticated hello would. `None` means the
-    /// record predates build identity — a daemon started by an older
-    /// install — and is reported as an unknown build rather than refused,
-    /// because the alternative is a launcher that cannot find a running
-    /// daemon merely because the daemon is old.
+    /// Discovery preserves this optional metadata without using it as
+    /// replacement authority. The terminal compares the authenticated
+    /// hello, rather than trusting an older record for its visible notice.
+    /// `None` remains readable for records predating build identity;
+    /// an absent identity is not a version mismatch and does not prevent
+    /// attachment to that daemon.
     identity: Option(build_identity.Identity),
   )
 }

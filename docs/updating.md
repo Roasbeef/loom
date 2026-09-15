@@ -126,11 +126,14 @@ shapes requires reinstalling the chosen shape. Restart after both links name
 the intended builds. The installer preserves old client-shape links too.
 
 An older client that only understands endpoint schema version one cannot
-discover a running daemon whose record uses version two. Stop the newer daemon
-before starting an older client; the next daemon writes its own endpoint
-record. Retaining binaries does not establish backward compatibility of every
-future durable data format: check the release's compatibility notes before a
-rollback.
+read a version-two endpoint, even after its daemon exits. That record survives
+shutdown. Such a downgrade requires an offline endpoint recovery step using a
+schema the older release accepts, preserving the recorded native fence. Do not
+delete the record alone: an existing catalogue without its fence also fails
+closed. This guide does not provide an automatic schema downgrade; use a
+release-specific recovery procedure before attempting that rollback. Retaining
+binaries does not establish backward compatibility of future durable data
+formats either: check the release's compatibility notes.
 
 ## Manual cleanup
 

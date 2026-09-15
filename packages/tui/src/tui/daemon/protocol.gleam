@@ -26,9 +26,9 @@ pub type Epoch {
 ///
 /// Two opaque comparison strings and nothing more: this module does not
 /// order versions, so it needs no version grammar. `None` in a `Hello`
-/// means the daemon predates build identity (issue #392) and is reported
-/// as an unknown build rather than refused — a client that could not read
-/// an old daemon's hello could not tell the operator the daemon is old.
+/// means the daemon omitted build identity. The terminal leaves that case
+/// silent and accepts the handshake; absence cannot establish a mismatch.
+/// Explicit identities are compared only after authentication.
 pub type Build {
   Build(
     /// The daemon's release version, or `dev` for a tree built ad hoc.

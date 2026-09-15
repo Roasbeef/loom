@@ -25,7 +25,7 @@ import gleam/option.{type Option, None, Some}
 
 /// The version a tree built outside any release reports.
 ///
-/// A contributor running `gleam run` or `make run-server` set no
+/// A direct `gleam run` without launcher metadata sets no
 /// `LOOM_BUILD_VERSION`, and a value invented here would be a version the tree
 /// never had. It is a distinct word so a mismatch against a real release is
 /// legible in a diagnostic rather than reading as a plausible old number.

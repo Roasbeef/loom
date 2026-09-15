@@ -41,11 +41,10 @@ release metadata — `gleam run`, a hand-built checkout — names `dev` and
 
 **2. The fields are additive and optional, not version-gated.** A daemon
 that predates this proposal omits both; a client reads the absence as
-"unknown build" and says so rather than refusing the frame. The version
-comparison exists to *inform* an operator, not to gate an attach, so a
-new client must be able to complete a handshake with an old daemon in
-order to report that it is old. That is the whole point and it sets the
-compatibility direction: new-client-versus-old-daemon works and reports;
+an absent identity without refusing the frame. The terminal leaves that
+case silent because there is no identity to compare. The comparison informs
+an operator when both identities exist; it does not gate attachment.
+New-client-versus-old-daemon therefore completes the handshake;
 old-client-versus-new-daemon ignores two unknown keys, which the control
 codec already tolerates.
 
@@ -65,12 +64,12 @@ version one and fails closed on a version-two record — so after a
 rollback (the symlink switch `docs/updating.md` documents), the older
 client cannot *discover* a running newer daemon from its record. That
 is accepted rather than engineered around: discovery failure is loud
-(the launcher reports no ready daemon and the record is rewritten by
-whichever daemon next starts), the alternative — a record every future
-schema must keep readable by every past client — costs more than the
-case is worth, and the record is an identity fence whose strictness is
-the point. The rollback runbook carries the instruction: stop the newer
-daemon first.
+and neither an old client nor an old daemon can read that retained record,
+even after the newer VM exits. An offline, release-specific endpoint recovery
+must preserve its native fence while converting to a supported schema.
+Deleting the record beside an existing catalogue also fails closed. The
+update guide names this additional prerequisite instead of claiming that
+stopping the newer daemon alone makes the downgrade startable.
 
 **4. Mismatch is reported, not refused.** A client that reads a daemon
 build different from its own writes one line naming both — `daemon build
