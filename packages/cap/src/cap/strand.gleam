@@ -347,6 +347,7 @@ pub opaque type Assignment {
   Assignment(
     purpose: String,
     brief: String,
+    model: Option(String),
     within_ms: Option(Int),
     detach: Bool,
     context: Provenance,
@@ -371,12 +372,30 @@ pub fn assignment(purpose purpose: String, brief brief: String) -> Assignment {
   Assignment(
     purpose:,
     brief:,
+    model: None,
     within_ms: None,
     detach: False,
     context: Fresh,
     tools: None,
     result_schema: [],
   )
+}
+
+/// Selects a configured model by catalogue name for the child's first run.
+///
+/// The host refuses unknown names before creating a child. Without this step,
+/// the assignment uses the host's subagent route or inherits the parent model.
+/// The chosen entry also supplies the child's initial thinking level.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.assignment(purpose: "review", brief: "Check the change")
+/// // |> strand.with_model("reviewer")
+/// // |> strand.spawn
+/// ```
+pub fn with_model(assignment: Assignment, name: String) -> Assignment {
+  Assignment(..assignment, model: Some(name))
 }
 
 /// Gives the child a wall budget of its own, in milliseconds.
@@ -429,6 +448,7 @@ pub fn spawn(assignment: Assignment) -> Result(Handle, StrandError) {
     wire.args([
       #("purpose", wire.string(assignment.purpose)),
       #("brief", wire.string(assignment.brief)),
+      #("model", optional_string(assignment.model)),
       #("within_ms", optional_int(assignment.within_ms)),
       #("detach", wire.bool(assignment.detach)),
       #("context", wire.string(provenance_name(assignment.context))),

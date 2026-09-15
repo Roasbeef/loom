@@ -1,5 +1,13 @@
 # client
 
+## Streamed response handoff
+
+Provider observation identities include the reserved response entry for
+generation and poll requests. The runtime supplies that ID from its durable
+intent; `gateway.request_identity` never mints a replacement. This lets the
+terminal distinguish provider completion from the delivery of its saved answer.
+See `protocol-change/036-stream-response-handoff.md`.
+
 ## Purpose
 
 The single daemon and ClientGateway: one listener manages independently
@@ -21,6 +29,14 @@ catalogue without opening runtimes. Explicit admission invokes
 `serve.resolve_managed` and `serve.assemble_in_domain` for one saved registration.
 
 ## Key Types
+
+- Daemon archive and restore requests enter `manager.set_visibility`, whose
+  serialized dispatch reauthenticates the owner, checks the daemon epoch, and
+  refuses any live runtime slot before changing catalogue visibility. Archive
+  listing is owner-only. Admission checks visibility before domain acquisition
+  or runtime assembly, including retries with an existing creation key. Restore
+  returns saved metadata without opening a runtime. The existing permanent
+  deletion command retains its file-removal contract.
 
 - `client/session_git.prepare` writes the reserved `session/git-start` record
   before the runtime writer starts. First activation probes HEAD through the
@@ -88,6 +104,13 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
   binding, capacity, and lazy session defaults. The binary rejects the removed
   per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
+  The `--help` and `-h` flags anywhere in argv — after daemon flags as
+  readily as first — and the bare word `help` in first position are
+  dispatched in `client.gleam` before daemon startup,
+  with the first `access` or `ext` word choosing the topic. `help` in any
+  other position stays a value: principal and display names are free-form.
+  Help prints
+  usage to stdout and never creates state or binds a listener.
   Production startup reserves its OS PID/birth through `host/endpoint` before
   opening the catalogue, then publishes the actual port and epoch only after
   listener readiness. Shutdown retains the endpoint until the VM departs.
@@ -508,7 +531,9 @@ catalogue without opening runtimes. Explicit admission invokes
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent
   wholesale. A closure for the same reason `clock` and `rest` are — the
-  Agency is built before `api.open`.
+  Agency is built before `api.open`. `Config.models` carries the catalogue's
+  explicit choices as identity/thinking pairs. An optional spawn `model`
+  selects one by catalogue name before consulting this default route.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
   child_name, is_subagent, frame_message, frame_brief, result_contract,
   result_schema_prefix}` — the Agency:
@@ -3362,10 +3387,14 @@ across one operation a `Stop` block holds open.
   alone — switching model is not a request to un-raise a budget somebody
   raised.
 - **A spawned child's model is chosen once, at creation.**
-  `agency.Config.subagent_model` is the host's `subagent` route resolved;
-  `client/serve` fills it from the gateway. An unrouted subagent role
-  inherits the parent wholesale rather than refusing, which is what every
-  child did before the role reached the seam.
+  An explicit `SpawnRequest.model` selects a catalogue identity and its seed
+  thinking from `agency.Config.models`; an unknown name refuses before any
+  child state is written. Omission uses `Config.subagent_model`, which
+  `client/serve` fills from the gateway, or inherits the parent if unrouted.
+  The durable seed precedes the brief, so recovery with only that seed or
+  with a completed lineage cell never resolves the choice again. The spawn
+  receipt reads the child's current configuration. Existing role fallback
+  and vision routing still apply to later requests.
 - **Model facts follow the identity, not the configured role.**
   `wiring.Config.facts` is an `identity -> #(ResolvedModel, api)` seam
   `client/serve` builds from the catalogue, and it is what makes a strand
@@ -3491,6 +3520,18 @@ fifteen-second deadline. A transport failure ends that wait; it never retries
 a retired control owner. Closure is requested before the observation outcome
 is checked, and no probe launches another daemon. Mutation replies retain
 their existing unknown-outcome semantics.
+
+## Closure ownership at process boundaries
+
+`hookserve.wire` binds each prior hook or tool function before composing its
+wrapper. Capturing the enclosing `Hooks` or `ToolSurface` would copy unrelated
+slots into every supervisor and worker that receives the effects. Likewise,
+`wiring.compaction_hooks` captures the session for projection, and
+`gateway.tool_output_observer` captures only event identity fields from
+`ToolRun`. Their regression tests vary unrelated record contents and compare
+flattened callback sizes; the size probe is confined to test support. See
+[the daemon memory investigation](../../docs/design-notes/daemon-memory.md)
+for the isolated workload measurements and their limits.
 
 ## Deep Docs
 

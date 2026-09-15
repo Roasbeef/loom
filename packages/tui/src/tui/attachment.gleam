@@ -30,6 +30,8 @@ pub type Target {
     expected: snapshot.Expected,
     /// Canonical workspace returned by the authorized catalogue record.
     workspace: workspace.Context,
+    /// Display name from the authorized catalogue, adopted with this identity.
+    session_name: String,
     /// Only successful adoption of this creation may clear its retained key.
     creation_key: Option(String),
   )
@@ -40,6 +42,7 @@ type Prepared {
     connection.Connection,
     snapshot.Expected,
     workspace.Context,
+    String,
     Option(String),
     Subject(Nil),
   )
@@ -72,6 +75,8 @@ type Candidate {
     acknowledgement: Subject(Nil),
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
     workspace: workspace.Context,
+    /// Display name from the authorized catalogue, adopted with this identity.
+    session_name: String,
     creation_key: Option(String),
   )
 }
@@ -96,6 +101,8 @@ pub type Outcome {
     view: snapshot_view.View,
     inbox: Subject(connection.Message),
     workspace: workspace.Context,
+    /// Display name from the authorized catalogue, adopted with this identity.
+    session_name: String,
     creation_key: Option(String),
   )
 
@@ -173,6 +180,7 @@ pub fn start_recorded(
             socket,
             target.expected,
             target.workspace,
+            target.session_name,
             target.creation_key,
             acknowledged,
           ),
@@ -269,7 +277,7 @@ pub fn accept(status: Status, event: Event) -> #(Status, Option(Outcome)) {
     Opening(run, _, _, _), Settled(source, outcome) if source == run.outcomes ->
       apply_outcome(status, outcome)
     Opening(run, prepared, frames, None),
-      Preparation(source, Prepared(socket, expected, workspace, key, ack))
+      Preparation(source, Prepared(socket, expected, workspace, name, key, ack))
       if prepared == source
     ->
       settle(Opening(
@@ -281,6 +289,7 @@ pub fn accept(status: Status, event: Event) -> #(Status, Option(Outcome)) {
           ack,
           None,
           workspace,
+          name,
           key,
         )),
       ))
@@ -307,7 +316,7 @@ pub fn accept(status: Status, event: Event) -> #(Status, Option(Outcome)) {
         Error(reason) -> failed(status, reason)
       }
     }
-    _, Preparation(_, Prepared(socket, _, _, _, _)) -> {
+    _, Preparation(_, Prepared(socket, _, _, _, _, _)) -> {
       connection.close(socket)
       #(status, None)
     }
@@ -321,12 +330,13 @@ fn prepare(prepared, candidate, trace) {
     None ->
       case process.receive(prepared, 0) {
         Error(Nil) -> None
-        Ok(Prepared(socket, expected, workspace, key, acknowledgement)) ->
+        Ok(Prepared(socket, expected, workspace, name, key, acknowledgement)) ->
           Some(Candidate(
             channel.start_recorded(socket, expected, trace),
             acknowledgement,
             None,
             workspace,
+            name,
             key,
           ))
       }
@@ -429,7 +439,7 @@ fn apply_outcome(status: Status, outcome) {
 
 fn adopt(status, candidate, frames) {
   case candidate {
-    Some(Candidate(channel, _, Some(#(cut, view)), workspace, key)) ->
+    Some(Candidate(channel, _, Some(#(cut, view)), workspace, name, key)) ->
       case
         channel.socket(channel)
         |> option.to_result("replay channels cannot be adopted as live sockets")
@@ -437,7 +447,7 @@ fn adopt(status, candidate, frames) {
       {
         Ok(Nil) -> #(
           Idle,
-          Some(Adopted(channel, cut, view, frames, workspace, key)),
+          Some(Adopted(channel, cut, view, frames, workspace, name, key)),
         )
         Error(reason) -> failed(status, reason)
       }
@@ -471,7 +481,7 @@ pub fn cancel(status: Status) -> Nil {
       case candidate {
         None ->
           case process.receive(prepared, 0) {
-            Ok(Prepared(socket, _, _, _, _)) -> connection.close(socket)
+            Ok(Prepared(socket, _, _, _, _, _)) -> connection.close(socket)
             Error(Nil) -> Nil
           }
         Some(candidate) -> channel.close(candidate.channel)

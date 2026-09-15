@@ -48,6 +48,7 @@ import provider/http
 import provider/model
 import provider/secret
 import runtime/api
+import runtime/effects
 import session/session
 import simplifile
 import storage/sqlite
@@ -773,6 +774,88 @@ fn thinking_catalog(level: model.ThinkingLevel) -> catalog.Catalog {
   catalog.Catalog(..scripted_catalog(), models: [
     catalog.CatalogModel(..entry, thinking: level),
   ])
+}
+
+pub fn a_spawn_model_from_the_boot_catalogue_reaches_the_provider_test() {
+  let bodies = process.new_subject()
+  let assert [main] = scripted_catalog().models
+    as "the fixture must have one main model"
+  let reviewer =
+    catalog.CatalogModel(
+      ..main,
+      name: "reviewer",
+      model_id: "review-model",
+      thinking: model.ThinkingHigh,
+    )
+  let catalogue =
+    catalog.Catalog(..scripted_catalog(), models: [main, reviewer], roles: [
+      #(model.Main, ["acme"]),
+      #(model.Subagent, ["acme"]),
+    ])
+  let assert Ok(instance) =
+    serve.open_instance(
+      serve.Settings(
+        ..instance_settings(fresh_instance_root()),
+        catalog: catalogue,
+        gateway: recording_gateway(catalogue, bodies),
+      ),
+      log.discard(),
+    )
+    as "the production assembly must expose the configured models"
+
+  // Run the assembled tool surface, then inspect the request emitted by the
+  // real runtime, gateway and adapter. This catches a missing catalogue seam
+  // even when the Agency's injected unit-test configuration is correct.
+  let arguments =
+    json.Object([
+      #("purpose", json.String("review")),
+      #("brief", json.String("inspect the change")),
+      #("model", json.String("reviewer")),
+    ])
+  let generator = ids.generator(clock.fixed(at: 1000), seed: 11)
+  let #(operation_id, generator) = ids.mint_op(generator)
+  let #(step, _generator) = ids.mint_entry(generator)
+  let result =
+    instance.runtime.effects.tools.run(
+      effects.ToolRun(
+        operation: operation_id,
+        step_id: ids.entry_id_to_string(step),
+        source_index: 0,
+        strand: "main",
+        call: message.ToolCall(
+          id: "spawn-reviewer",
+          name: "agent_spawn",
+          arguments:,
+          thought_signature: None,
+          namespace: None,
+        ),
+        arguments:,
+        replay: operation.ReplaySafe,
+        grants: [],
+      ),
+    )
+  let received = process.receive(bodies, within: 5000)
+  serve.close_instance(instance)
+
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(
+      is_error: False,
+      details: Some(details),
+      ..,
+    ),
+    ..,
+  ) = result
+    as "the assembled tool must accept the explicit catalogue name"
+  let assert json.Object(fields) = details
+    as "the spawn receipt must be structured"
+  assert list.key_find(fields, "model") == Ok(json.String("reviewer"))
+  assert list.key_find(fields, "model_id") == Ok(json.String("review-model"))
+  let assert Ok(body) = received as "the selected child must reach its provider"
+  let assert Ok(json.Object(request)) = json.parse(body)
+    as "the provider request must be JSON"
+  assert list.key_find(request, "model") == Ok(json.String("review-model"))
+  assert string.contains(body, "\"budget_tokens\":16384")
+    as "the selected model's thinking seed must reach the adapter"
 }
 
 // A gateway whose transport reports the request body it was handed and

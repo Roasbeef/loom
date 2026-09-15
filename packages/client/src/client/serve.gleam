@@ -2653,6 +2653,15 @@ fn assemble_in(
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
+      models: list.map(settings.catalog.models, fn(entry) {
+        #(
+          machine_strand.ModelIdentity(
+            provider: entry.name,
+            model_id: entry.model_id,
+          ),
+          wiring.strand_thinking_level(entry.thinking),
+        )
+      }),
       // Role follows identity: a spawned child is seeded from the
       // `subagent` route when the catalogue routes one, and inherits its
       // parent when it does not. Resolved at spawn from the gateway built

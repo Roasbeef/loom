@@ -86,6 +86,8 @@ fn echoing_agency() -> agent.Agency {
           <> "|"
           <> bool_text(request.detach),
         tools: option.unwrap(request.tools, ["inherited"]),
+        model: option.unwrap(request.model, "default-model"),
+        model_id: "provider-model-id",
       ))
     },
     send: fn(caller, to, text) {
@@ -131,6 +133,7 @@ fn echoing_agency() -> agent.Agency {
       ])
     },
     max_wait_ms: 30_000,
+    model_names: ["reviewer", "worker"],
   )
 }
 
@@ -213,13 +216,13 @@ fn watching_spawn(
   Result(agent.Spawned, agent.Refusal) {
   fn(caller: agent.Caller, request: agent.SpawnRequest) {
     process.send(seen, request.result_schema)
-    Ok(
-      agent.Spawned(
-        handle: agent.Handle(strand: "sub:x", operation: caller.operation),
-        strand: "sub:x",
-        tools: [],
-      ),
-    )
+    Ok(agent.Spawned(
+      handle: agent.Handle(strand: "sub:x", operation: caller.operation),
+      strand: "sub:x",
+      tools: [],
+      model: "default-model",
+      model_id: "provider-model-id",
+    ))
   }
 }
 
@@ -232,6 +235,7 @@ fn refusing_agency(refusal: agent.Refusal) -> agent.Agency {
     notes: fn(_caller, _prefix) { Error(refusal) },
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
+    model_names: ["reviewer", "worker"],
   )
 }
 
@@ -288,6 +292,78 @@ pub fn replay_and_mode_declarations_test() {
 }
 
 // --- identity --------------------------------------------------------------
+
+pub fn a_spawn_advertises_and_carries_model_selection_test() {
+  let agency = echoing_agency()
+  let registry = tool.registry(agent.tools(agency))
+  let assert Ok(spawn) = tool.lookup(registry, "agent_spawn")
+    as "the spawn tool must be registered"
+  let assert json.Object(schema) = spawn.schema
+    as "the schema must be an object"
+  let assert Ok(json.Object(properties)) = list.key_find(schema, "properties")
+    as "the schema must declare its properties"
+  let assert Ok(json.Object(model)) = list.key_find(properties, "model")
+    as "the model selection must be advertised"
+  assert list.key_find(model, "enum")
+    == Ok(json.Array([json.String("reviewer"), json.String("worker")]))
+
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      agency,
+      json.Object([
+        #("purpose", json.String("review")),
+        #("brief", json.String("inspect the change")),
+        #("model", json.String("reviewer")),
+      ]),
+    )
+  assert !outcome.is_error
+  let assert option.Some(json.Object(details)) = outcome.details
+    as "the receipt must have structured details"
+  assert list.key_find(details, "model") == Ok(json.String("reviewer"))
+    as "the fake reports the selection the tool actually passed"
+  assert list.key_find(details, "model_id")
+    == Ok(json.String("provider-model-id"))
+  assert string.contains(text_of(outcome), "on model `reviewer`")
+}
+
+pub fn an_omitted_spawn_model_preserves_the_default_test() {
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      echoing_agency(),
+      json.Object([
+        #("purpose", json.String("review")),
+        #("brief", json.String("inspect the change")),
+      ]),
+    )
+  assert !outcome.is_error
+  let assert option.Some(json.Object(details)) = outcome.details
+    as "an inherited selection must still be observable"
+  assert list.key_find(details, "model") == Ok(json.String("default-model"))
+}
+
+pub fn a_non_string_spawn_model_never_reaches_the_agency_test() {
+  let unreachable =
+    agent.Agency(..echoing_agency(), spawn: fn(_caller, _request) {
+      panic as "a malformed model selection must never reach the Agency"
+    })
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "turn", 0),
+      unreachable,
+      json.Object([
+        #("purpose", json.String("review")),
+        #("brief", json.String("inspect the change")),
+        #("model", json.Int(1)),
+      ]),
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "model")
+}
 
 pub fn the_caller_comes_from_the_context_not_the_arguments_test() {
   // A model that names another strand in its arguments must not become

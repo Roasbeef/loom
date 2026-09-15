@@ -64,6 +64,38 @@ pub fn user_entry(strand: String, text: String, seq: Int) -> String {
   )
 }
 
+/// One durable compaction carrying model-facing checkpoint text and retained messages.
+///
+/// ## Examples
+///
+/// ```gleam
+/// compaction_entry("main", "checkpoint", [], 204_143, 1)
+/// ```
+pub fn compaction_entry(
+  strand: String,
+  summary: String,
+  retained_tail: List(message.AgentMessage),
+  tokens_before: Int,
+  seq: Int,
+) -> String {
+  let placed =
+    entry.CompactionEntry(
+      id: fixed_entry_id(seq),
+      parent: None,
+      seq:,
+      ts: 0,
+      summary:,
+      retained_tail:,
+      tokens_before:,
+      from_hook: True,
+      usage: None,
+    )
+  event("entry", [
+    #("strand", json.String(strand)),
+    #("entry", codec.encode_entry(placed)),
+  ])
+}
+
 /// One durable assistant turn of prose, the reply a reader actually reads.
 ///
 /// This is the markdown path rather than the plain one: an assistant body is

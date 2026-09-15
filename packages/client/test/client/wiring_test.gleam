@@ -20,12 +20,14 @@ import broker/policy
 import broker/token
 import client/catalog
 import client/escalate
+import client/gateway as client_gateway
 import client/grants
 import client/wiring
 import core/clock
 import core/ids
 import core/json
 import core/message
+import events/bus
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -41,6 +43,7 @@ import provider/model
 import provider/secret
 import runtime/effects
 import session/session
+import support/internal/ffi_memory
 import support/provider as provider_test
 import support/tool_registry
 import tools/tool
@@ -191,6 +194,38 @@ fn clearance(active: List(String), name: String) -> effects.Clearance {
   )
 }
 
+/// Projection retains the opened session without retaining tool environment.
+pub fn overflow_projection_does_not_copy_tool_environment_test() {
+  let base = config()
+  let heavy =
+    wiring.Config(..base, env: list.repeat(#("MARKER", "value"), times: 4096))
+  let small = wiring.compaction_hooks(base)
+  let large = wiring.compaction_hooks(heavy)
+
+  assert ffi_memory.flat_words(heavy) > ffi_memory.flat_words(base) + 4096
+  assert ffi_memory.flat_words(large.overflow_preparation)
+    == ffi_memory.flat_words(small.overflow_preparation)
+}
+
+/// A collector's output callback carries identity independently of arguments.
+pub fn output_observer_does_not_copy_run_payload_test() {
+  let opened = memory_session()
+  let assert Ok(_) =
+    session.ensure_id(opened, ids.generator(clock.fixed(at: 0), seed: 1))
+    as "the observer must take the publishing branch"
+  let observer = client_gateway.tool_output_observer(bus.start(), opened)
+  let small = tool_run([])
+  let large =
+    effects.ToolRun(
+      ..small,
+      arguments: json.Array(list.repeat(json.String("marker"), times: 4096)),
+    )
+
+  assert ffi_memory.flat_words(large) > ffi_memory.flat_words(small) + 4096
+  assert ffi_memory.flat_words(observer(large))
+    == ffi_memory.flat_words(observer(small))
+}
+
 // --- the cached prefix -----------------------------------------------------
 
 // Three permutations of one set must render one byte-identical array.
@@ -261,6 +296,7 @@ pub fn a_generation_request_still_carries_the_head_test() {
     wiring.provider_request(
       wiring.Config(..config(), system: Some("you are an agent")),
       effects.GenerationRequest(
+        response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
         operation: operation_id,
         step_id: "turn-1",
         attempt: 1,

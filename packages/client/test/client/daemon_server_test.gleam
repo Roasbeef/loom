@@ -24,6 +24,7 @@ import storage/access
 import storage/catalogue
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
+import tui/daemon/protocol as terminal_protocol
 import weft
 import weft/poll
 
@@ -721,5 +722,92 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
       |> result.is_ok
     let _ = ffi_ws.tcp_close(socket)
     assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+pub fn owner_archives_and_restores_through_the_control_socket_test() {
+  fixture(fn(_, ready, port, credential) {
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "the fixture seeds saved metadata in the daemon catalogue"
+    let #(identity, _) = ids.mint_session(ids.generator(clock.fixed(1000), 891))
+    let id = ids.session_id_to_string(identity)
+    let path = ready.sessions_directory <> "/" <> id <> ".db"
+    let registration =
+      catalogue.Registration(
+        id,
+        path,
+        ready.state_root,
+        "Retained session",
+        "",
+        1000,
+        "wire-archive",
+        catalogue.Reserved,
+      )
+    assert catalogue.reserve(store, registration) == Ok(registration)
+    let assert Ok(_) = catalogue.confirm(store, id) as "the fixture is saved"
+    assert simplifile.write(path, "preserved conversation bytes") == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let body =
+      json.Object([
+        #("session_id", json.String(id)),
+        #("epoch", json.String(ready.epoch)),
+      ])
+
+    let archived = send(socket, 1, "sessions.archive", body, within_ms: 1000)
+    let assert Ok(terminal_protocol.Answer(
+      1,
+      "sessions.archive",
+      terminal_protocol.SessionReply(saved),
+    )) = terminal_protocol.decode(json.to_string(archived))
+      as "the terminal decodes the actual archive response"
+    assert saved.session_id == id
+    assert simplifile.read(path) == Ok("preserved conversation bytes")
+    let active =
+      send(
+        socket,
+        2,
+        "sessions.list",
+        json.Object([#("after", json.String(""))]),
+        within_ms: 1000,
+      )
+    assert field(field(active, "body"), "sessions") == json.Array([])
+    let hidden =
+      send(
+        socket,
+        3,
+        "sessions.archived",
+        json.Object([#("after", json.String(""))]),
+        within_ms: 1000,
+      )
+    let assert Ok(terminal_protocol.Answer(
+      3,
+      "sessions.archived",
+      terminal_protocol.SessionsReply(page),
+    )) = terminal_protocol.decode(json.to_string(hidden))
+      as "archive listings use the terminal's bounded page codec"
+    assert list.map(page.sessions, fn(session) { session.session_id }) == [id]
+    let refused = send(socket, 4, "sessions.open", body, within_ms: 1000)
+    assert field(field(refused, "body"), "code")
+      == json.String("session_archived")
+
+    let restored = send(socket, 5, "sessions.restore", body, within_ms: 1000)
+    let assert Ok(terminal_protocol.Answer(
+      5,
+      "sessions.restore",
+      terminal_protocol.SessionReply(restored),
+    )) = terminal_protocol.decode(json.to_string(restored))
+      as "restoration uses the same typed metadata without attaching"
+    assert restored.session_id == id
+    assert simplifile.read(path) == Ok("preserved conversation bytes")
+    let assert Ok(view) = manager.get(ready.registry, id)
+      as "restored metadata remains saved"
+    assert view.status == manager.Saved
+    let assert Ok(summary) = manager.summary(ready.registry)
+      as "runtime occupancy is readable"
+    assert summary.occupied == 0
+    assert catalogue.close(store) == Ok(Nil)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
   })
 }

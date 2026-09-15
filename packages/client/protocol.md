@@ -250,7 +250,7 @@ submitted text, not the queue board's clipped preview;
 `attachment_count` counts image blocks the body cannot carry, which the
 client must keep beside the restored draft). `id` matches the `queued`
 acknowledgement's item identity; `kind` is the item's order spelling
-(`"queue"` or `"steer"`). See protocol-change/035.
+(`"queue"` or `"steer"`). See protocol-change/038.
 
 ### `op_transition`
 

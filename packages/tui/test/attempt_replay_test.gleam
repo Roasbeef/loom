@@ -1062,6 +1062,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
         view,
         connection.new_inbox(),
         workspace.Context("B", None),
+        "Session B",
         None,
       )),
     )
@@ -1122,6 +1123,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
         view,
         connection.new_inbox(),
         workspace.Context("B", None),
+        "Session B",
         None,
       )),
     )

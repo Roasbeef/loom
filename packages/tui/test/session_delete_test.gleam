@@ -23,10 +23,12 @@ fn row(id: String) -> protocol.Session {
 }
 
 fn page() -> session_selector.State {
-  session_selector.new(
-    protocol.Page(1, [row("first"), row("second")], None),
-    "first",
-  )
+  let active =
+    session_selector.new(
+      protocol.Page(1, [row("first"), row("second")], None),
+      "first",
+    )
+  session_selector.State(..active, collection: session_selector.Archived)
 }
 
 pub fn delete_needs_a_confirmation_before_it_is_requested_test() {
@@ -155,4 +157,23 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   assert shown.page == page().page
   assert shown.selected == page().selected
   assert shown.prompt == session_selector.ConfirmingDelete("first")
+}
+
+pub fn active_picker_archives_and_archive_picker_restores_test() {
+  let active =
+    session_selector.new(protocol.Page(1, [row("first")], None), "first")
+  let assert session_selector.Continue(asking) =
+    session_selector.update(keys.Char("d"), active)
+    as "removal from the active picker asks before archiving"
+  assert asking.prompt == session_selector.ConfirmingArchive("first")
+  assert session_selector.update(keys.Char("y"), asking)
+    == session_selector.Archive("first")
+  let archived =
+    session_selector.State(..active, collection: session_selector.Archived)
+  assert session_selector.update(keys.Enter, archived)
+    == session_selector.Restore("first")
+  let assert session_selector.Continue(deleting) =
+    session_selector.update(keys.Char("d"), archived)
+    as "permanent deletion remains a separate confirmed archive action"
+  assert deleting.prompt == session_selector.ConfirmingDelete("first")
 }

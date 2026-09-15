@@ -38,6 +38,7 @@ import machine/operation
 import machine/strand
 import runtime/effects
 import simplifile
+import support/internal/ffi_memory
 import weft/actor
 
 // A settings file of the ordinary shape: hooks under their own key,
@@ -58,6 +59,61 @@ const settings_with_hooks = "{
     ]
   }
 }"
+
+/// Unrelated hook and tool slots must not become each wrapper's captures.
+/// The marker stays reachable through its own slot, but copying another slot
+/// must cost the same number of words regardless of the marker's size.
+pub fn wrappers_do_not_copy_unrelated_slots_test() {
+  let rig = rig()
+  let serving = load(rig, None)
+  let base = effects_placing(None)
+  let messages = list.repeat(follow_up(), times: 4096)
+  let names = list.repeat("marker", times: 4096)
+  let heavy =
+    effects.Effects(
+      ..base,
+      hooks: effects.Hooks(..base.hooks, run_start: fn(_) { messages }),
+      tools: effects.ToolSurface(..base.tools, replay_still_safe: fn(name) {
+        list.contains(names, name)
+      }),
+    )
+  let assert Ok(small) =
+    hookserve.wire(base, serving, rig.clock, fn(_) { False })
+    as "the small composition must start"
+  let assert Ok(large) =
+    hookserve.wire(heavy, serving, rig.clock, fn(_) { False })
+    as "the marker composition must start"
+
+  assert ffi_memory.flat_words(large.hooks.run_start)
+    > ffi_memory.flat_words(small.hooks.run_start) + 4096
+  assert ffi_memory.flat_words(large.hooks.run_end)
+    == ffi_memory.flat_words(small.hooks.run_end)
+  assert ffi_memory.flat_words(large.hooks.compaction_note)
+    == ffi_memory.flat_words(small.hooks.compaction_note)
+  assert ffi_memory.flat_words(large.tools.clear)
+    == ffi_memory.flat_words(small.tools.clear)
+  assert ffi_memory.flat_words(large.tools.run)
+    == ffi_memory.flat_words(small.tools.run)
+  assert large.tools.replay_still_safe("marker")
+
+  // Growing a different hook protects run_start too: its own marker above
+  // must grow, so that comparison cannot detect an extra sibling capture.
+  let follow_up =
+    message.UserMessage(
+      content: list.repeat(message.UserText("marker", None), times: 4096),
+      timestamp: 0,
+      origin: None,
+    )
+  let assert Ok(other) =
+    hookserve.wire(effects_placing(Some(follow_up)), serving, rig.clock, fn(_) {
+      False
+    })
+    as "the unrelated-hook composition must start"
+  assert ffi_memory.flat_words(other.hooks.run_end)
+    > ffi_memory.flat_words(small.hooks.run_end) + 4096
+  assert ffi_memory.flat_words(other.hooks.run_start)
+    == ffi_memory.flat_words(small.hooks.run_start)
+}
 
 // --- the load ----------------------------------------------------------------
 

@@ -2061,6 +2061,7 @@ fn cancellable_provider(cancelled: Subject(Nil)) -> effects.ProviderSurface {
 
 fn cancellation_spec() -> effects.RequestSpec {
   effects.GenerationRequest(
+    response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
     operation: op_id(919),
     step_id: "turn-1",
     attempt: 1,
@@ -3106,8 +3107,21 @@ pub fn a_provider_delta_reaches_only_a_subscribed_socket_test() {
   ) = envelope.event
     as "a subscribed peer is pushed the delta"
   assert text == Some("tok")
-  assert generation != None
-    as "production deltas identify their provider request"
+  let assert effects.GenerationRequest(response_entry:, ..) =
+    cancellation_spec()
+    as "the fixture dispatches a generation request"
+  assert generation
+    == Some(
+      json.to_string(
+        json.Array([
+          json.String("generation"),
+          json.String("turn-1"),
+          json.Int(1),
+          json.String(ids.entry_id_to_string(response_entry)),
+        ]),
+      ),
+    )
+    as "production deltas name the exact reserved durable response"
   let terminal = next_on(inbox)
   let assert protocol.StreamDeltaEvent(
     kind: protocol.EndKind,

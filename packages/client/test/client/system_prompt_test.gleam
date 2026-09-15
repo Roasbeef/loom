@@ -214,14 +214,14 @@ pub fn the_shipped_prompt_is_complete_and_affordable_test() {
   // Nothing to warn about: the shipped pack carries every canonical
   // section and every fragment, and spells every placeholder right.
   assert rendered.warnings == []
-  assert rendered.version == "loom-default-6"
+  assert rendered.version == "loom-default-7"
   assert rendered.digest == pack.fingerprint(default.source)
   // Every byte here is paid on every request of every strand for the life
   // of the session. The bound is loose; it is here to make a prompt that
   // doubles in size a test failure rather than a bill.
   let size = byte_size(rendered.text)
   assert size > 1000 as "an empty-looking prompt is the bug this seam ends"
-  assert size < 8000
+  assert size < 8500
     as { "the system prompt has grown to " <> int.to_string(size) <> " bytes" }
 }
 
@@ -248,6 +248,7 @@ pub fn every_strand_is_handed_the_same_bytes_test() {
     wiring.provider_request(
       config,
       effects.GenerationRequest(
+        response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
         operation: op_id(),
         step_id: "step-1",
         attempt: 1,

@@ -1428,6 +1428,166 @@ pub fn r11_does_not_count_a_wrapped_literal_test() {
   |> should.be_false
 }
 
+// --- R12: a closure retaining a record for its fields ----------------------
+
+/// The imported-hook composition regression from PR #411. Each installed
+/// callback used one slot on `built`, retaining the complete hook record in
+/// every closure environment.
+pub fn r12_flags_the_hook_composition_regression_test() {
+  module(
+    "fn wire(effects) {
+  let built = effects.hooks
+  Hooks(
+    run_start: fn(operation) { built.run_start(operation) },
+    run_end: fn(operation) { built.run_end(operation) },
+  )
+}",
+  )
+  |> findings
+  |> list.filter(fn(found) { found.rule == finding.BroadClosureCapture })
+  |> list.length
+  |> should.equal(2)
+}
+
+/// The compaction regression from PR #411 is the single-field form. The AST
+/// cannot know how wide `config` is, so the report says this is a warning and
+/// leaves the cost decision to the reader.
+pub fn r12_flags_the_compaction_projection_regression_test() {
+  let found =
+    module(
+      "fn hooks(config) {
+  fn(strand) { project(config.session, strand) }
+}",
+    )
+    |> findings
+    |> list.filter(fn(found) { found.rule == finding.BroadClosureCapture })
+  let assert [only] = found as "one capture finding"
+  should.be_true(string.contains(only.detail, "cannot infer"))
+}
+
+/// The nested tool-output observer from PR #411. The inner callback captures
+/// the outer callback's `run` parameter, and it reads four fields from it.
+pub fn r12_flags_the_nested_observer_regression_test() {
+  module(
+    "fn observer() {
+  fn(run) {
+    let call = run.call
+    fn(output) {
+      publish(run.strand, run.operation, run.step_id, run.source_index, call, output)
+    }
+  }
+}",
+  )
+  |> findings
+  |> list.filter(fn(found) { found.rule == finding.BroadClosureCapture })
+  |> list.length
+  |> should.equal(1)
+}
+
+/// Projected locals are the repair: the closure no longer mentions the
+/// outer record, so there is no retained-record shape to report.
+pub fn r12_accepts_projected_fields_test() {
+  module(
+    "fn hooks(config) {
+  let opened = config.session
+  fn(strand) { project(opened, strand) }
+}",
+  )
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// A bare mention means field projection is not an equivalent rewrite. The
+/// rule drops the candidate rather than offering advice that changes what the
+/// closure receives.
+pub fn r12_leaves_a_bare_use_alone_test() {
+  module("fn hooks(config) { fn() { consume(config, config.session) } }")
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// The inner `config` owns every mention after its binding. Treating those as
+/// uses of the parameter would manufacture a capture that does not exist.
+pub fn r12_respects_local_shadowing_test() {
+  module(
+    "fn hooks(config) {
+  fn() {
+    let config = Local()
+    consume(config.session)
+  }
+}",
+  )
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// A closure parameter shadows an outer binding for the whole body, before
+/// the first expression is inspected.
+pub fn r12_respects_parameter_shadowing_test() {
+  module("fn hooks(config) { fn(config) { consume(config.session) } }")
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// Whether an ordinary callee retains its callback is an interprocedural
+/// question. The warning stays quiet rather than treating every iterator as a
+/// long-lived callback.
+pub fn r12_leaves_an_ordinary_callback_argument_alone_test() {
+  module("fn names(config, rows) { list.map(rows, fn(_) { config.name }) }")
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// A nested closure owns its own environment. Report the innermost closure
+/// once instead of charging the same capture to every wrapper around it.
+pub fn r12_attributes_a_nested_capture_once_test() {
+  module("fn hooks(config) { fn() { fn() { consume(config.session) } } }")
+  |> findings
+  |> list.filter(fn(found) { found.rule == finding.BroadClosureCapture })
+  |> list.length
+  |> should.equal(1)
+}
+
+/// A nested closure which needs the complete outer value prevents projection
+/// in the enclosing closure too. Skipping the nested body would offer a
+/// rewrite which no longer compiles.
+pub fn r12_sees_a_nested_whole_value_use_test() {
+  module(
+    "fn hooks(config) {
+  fn() { #(config.session, fn() { config }) }
+}",
+  )
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// Record-update shorthand stores the complete value just as an ordinary
+/// shorthand argument does.
+pub fn r12_sees_record_update_shorthand_test() {
+  module(
+    "fn hooks(config, template) {
+  fn() { #(config.session, Envelope(..template, config:)) }
+}",
+  )
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
+/// A `let assert` message is evaluated on the failure path and belongs to the
+/// closure's capture set even though it sits on the assignment kind.
+pub fn r12_sees_let_assert_message_use_test() {
+  module(
+    "fn hooks(config) {
+  fn() {
+    let assert Ok(value) = config.session as inspect(config)
+    value
+  }
+}",
+  )
+  |> fired(finding.BroadClosureCapture)
+  |> should.be_false
+}
+
 // --- how a file's lines are classified --------------------------------------
 
 pub fn classify_names_the_three_kinds_of_line_test() {

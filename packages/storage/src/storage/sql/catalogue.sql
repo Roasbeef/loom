@@ -28,7 +28,9 @@ SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT)
        s.configuration, s.created_at, s.request_key, s.state
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
-WHERE s.session_id > ?
+WHERE s.session_id > @after
+  AND EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+              WHERE a.session_id = s.session_id) = CAST(@archived AS INTEGER)
 ORDER BY s.session_id
 LIMIT 100;
 
@@ -43,6 +45,8 @@ JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE m.principal_id = ? AND s.session_id > ?
   AND m.role IN ('operator', 'observer')
+  AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+                  WHERE a.session_id = s.session_id)
 ORDER BY s.session_id
 LIMIT 100;
 
@@ -70,3 +74,12 @@ DELETE FROM catalogue_session_names WHERE session_id = ?;
 
 -- name: DeleteRegistration :exec
 DELETE FROM catalogue_sessions WHERE session_id = ?;
+
+-- name: SessionArchive :many
+SELECT session_id FROM catalogue_session_archives WHERE session_id = ?;
+
+-- name: ArchiveSession :exec
+INSERT INTO catalogue_session_archives (session_id) VALUES (?);
+
+-- name: RestoreSession :exec
+DELETE FROM catalogue_session_archives WHERE session_id = ?;

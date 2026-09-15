@@ -390,6 +390,7 @@ fn spawn_plan(
 fn decode_spawn(args: MsgPackValue) -> Result(agent.SpawnRequest, CapDenial) {
   use purpose <- result.try(decode.string(args, "purpose"))
   use brief <- result.try(decode.string(args, "brief"))
+  use model <- result.try(optional_string_arg(args, "model"))
   use within_ms <- result.try(optional_int_arg(args, "within_ms"))
   use detach <- result.try(bool_arg(args, "detach"))
   use context <- result.try(provenance_arg(args))
@@ -398,6 +399,7 @@ fn decode_spawn(args: MsgPackValue) -> Result(agent.SpawnRequest, CapDenial) {
   Ok(agent.SpawnRequest(
     purpose:,
     brief:,
+    model:,
     tools:,
     within_ms:,
     result_schema:,

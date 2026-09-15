@@ -171,7 +171,14 @@ pub fn open(host: Host, session: String) -> Result(attachment.Target, String) {
     // An observer may attach to an already resident session without asking
     // for execution authority. Saved sessions still require explicit open.
     protocol.Resident(_) ->
-      target(host, session, selected.workspace, None, selected.status)
+      target(
+        host,
+        session,
+        selected.workspace,
+        selected.name,
+        None,
+        selected.status,
+      )
 
     // No database was ever established under this identity, so asking the
     // daemon to open it can only earn a `not_initialized` refusal. Say what
@@ -207,7 +214,14 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.ShutdownReply ->
       Error("open returned an unexpected control reply")
   })
-  target(host, selected.session_id, selected.workspace, None, status)
+  target(
+    host,
+    selected.session_id,
+    selected.workspace,
+    selected.name,
+    None,
+    status,
+  )
 }
 
 /// Creates with a name derived from the terminal's cached workspace context.
@@ -237,7 +251,14 @@ pub fn create_named(
   )
   case reply {
     protocol.SessionReply(row) ->
-      target(host, row.session_id, row.workspace, Some(key), row.status)
+      target(
+        host,
+        row.session_id,
+        row.workspace,
+        row.name,
+        Some(key),
+        row.status,
+      )
     protocol.StatusReply(_)
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
@@ -276,6 +297,67 @@ pub fn delete_using(
   session: String,
   request: fn(protocol.Command, Int) -> Result(protocol.Reply, String),
 ) -> Result(String, String) {
+  remove_using(session, EraseHistory, request)
+}
+
+// The mutation is selected before stopping. A timeout never changes an archive
+// into a delete or resends either mutation after an unknown outcome.
+type Removal {
+  KeepHistory
+  EraseHistory
+}
+
+/// Stops and archives one session while retaining all conversation files.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.archive(host, selected_id)
+/// ```
+pub fn archive(host: Host, session: String) -> Result(String, String) {
+  archive_using(session, fn(command, within) {
+    daemon.request(host.control, command, within) |> result.map_error(failure)
+  })
+}
+
+/// Exercises the archive lifecycle through the production bounded request seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.archive_using(selected_id, request)
+/// ```
+@internal
+pub fn archive_using(
+  session: String,
+  request: fn(protocol.Command, Int) -> Result(protocol.Reply, String),
+) -> Result(String, String) {
+  remove_using(session, KeepHistory, request)
+}
+
+/// Restores metadata without opening or selecting the session as a default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.restore(host, selected_id)
+/// ```
+pub fn restore(host: Host, session: String) -> Result(String, String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.RestoreSession(session), 10_000)
+    |> result.map_error(failure),
+  )
+  case reply {
+    protocol.SessionReply(row) if row.session_id == session -> Ok(session)
+    _ -> Error("restore returned an unexpected control reply")
+  }
+}
+
+fn remove_using(
+  session: String,
+  removal: Removal,
+  request: fn(protocol.Command, Int) -> Result(protocol.Reply, String),
+) -> Result(String, String) {
   use stopped <- result.try(request(protocol.StopSession(session), 10_000))
   use status <- result.try(case stopped {
     protocol.LifecycleReply(status) -> Ok(status)
@@ -294,16 +376,20 @@ pub fn delete_using(
     protocol.Resident(_) | protocol.Opening(_) ->
       Error("session did not enter stopping; session kept")
   })
-  use reply <- result.try(request(protocol.DeleteSession(session), 10_000))
-  case reply {
-    protocol.DeletedReply(id) if id == session -> Ok(id)
-    protocol.StatusReply(_)
-    | protocol.SessionsReply(_)
-    | protocol.SessionReply(_)
-    | protocol.LifecycleReply(_)
-    | protocol.DeletedReply(_)
-    | protocol.ShutdownReply ->
-      Error("delete returned an unexpected control reply")
+  let command = case removal {
+    KeepHistory -> protocol.ArchiveSession(session)
+    EraseHistory -> protocol.DeleteSession(session)
+  }
+  use reply <- result.try(request(command, 10_000))
+  case removal, reply {
+    KeepHistory, protocol.SessionReply(row) if row.session_id == session ->
+      Ok(session)
+    EraseHistory, protocol.DeletedReply(id) if id == session -> Ok(id)
+    _, _ ->
+      Error(case removal {
+        KeepHistory -> "archive returned an unexpected control reply"
+        EraseHistory -> "delete returned an unexpected control reply"
+      })
   }
 }
 
@@ -370,7 +456,7 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
   }
 }
 
-fn target(host: Host, session, workspace, creation_key, status) {
+fn target(host: Host, session, workspace, name, creation_key, status) {
   use incarnation <- result.try(case status {
     protocol.Resident(incarnation) -> Ok(incarnation)
     protocol.Opening(operation) -> await(host, session, operation)
@@ -393,6 +479,7 @@ fn target(host: Host, session, workspace, creation_key, status) {
     host.token,
     snapshot.Expected(session, epoch, incarnation),
     workspace.Context(..workspace.discover_from(workspace), path: workspace),
+    name,
     creation_key,
   ))
 }

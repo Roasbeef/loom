@@ -97,7 +97,7 @@ Two pieces of wiring in `client/serve` make the pushes reach the shipped
 binary. It starts one `commit_forwarder` (`client/gateway.gleam:1102`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:3067`), so
+`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:3081`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
 answer.
@@ -152,8 +152,8 @@ pushed delivery.
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:3078`). Both paths call
-`check_binding` (`client/gateway.gleam:2186`) immediately before the
+through `deliver` (`client/gateway.gleam:3151`). Both paths call
+`check_binding` (`client/gateway.gleam:2195`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -232,8 +232,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4778`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2460`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:4787`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2469`) after `state.live` has
 been refreshed from the registers and before any frame leaves. Ordinarily only
 the head is submitted. An explicit abort marks the existing `HeldQueue` as
 `Halted`, and `drain_strand` admits nothing from it while the mark holds. The

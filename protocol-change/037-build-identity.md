@@ -1,4 +1,4 @@
-# protocol-change/034 — build identity on the control wire
+# protocol-change/037 — build identity on the control wire
 
 **Status**: PROPOSED 2026-09-14 · **Affects**: the control-plane `hello`
 body and the private daemon endpoint record (Part 1.6 client protocol, as

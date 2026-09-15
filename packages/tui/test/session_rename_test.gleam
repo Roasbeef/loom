@@ -5,6 +5,7 @@ import gleam/option.{None, Some}
 import tui
 import tui/connection
 import tui/daemon/protocol
+import tui/session_selector
 import tui/workspace
 import weft
 
@@ -46,7 +47,7 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
         replies,
         weft.PulledOutcome(weft.Completed(
           0,
-          tui.PageLoaded(page, row.session_id),
+          tui.PageLoaded(page, row.session_id, session_selector.Active),
         )),
       ),
     )

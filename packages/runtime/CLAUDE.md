@@ -1,5 +1,13 @@
 # runtime
 
+## Streamed response handoff
+
+Generation and poll `RequestSpec` values carry the response entry already
+reserved by the effect intent. The gateway uses that identity to let the
+terminal retain its bounded streamed answer until the exact durable entry is
+visible; request completion alone is not a presentation handoff. See
+`protocol-change/036-stream-response-handoff.md`.
+
 ## Purpose
 
 The orchestration plane's live half: the OTP tree that turns an open

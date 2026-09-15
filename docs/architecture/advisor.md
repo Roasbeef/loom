@@ -542,7 +542,7 @@ whole effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2525`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2582`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That is deliberate: the isolation is between the two
 models, not between the harness and the person running it.
@@ -577,8 +577,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:6956`) extracts one of three
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7131`) renders
+`advisor_payload` (`tui.gleam:7364`) extracts one of three
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7455`) renders
 it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
 `advisor feed`) with an opening excerpt and the expand hint; expanded,
 the body under the same heading with the frame lines dropped, since
@@ -643,7 +643,7 @@ advisor` line, which is the ordinary posture and says nothing, and one
 that routes the role to a chain this host cannot serve, whose only other
 symptom is a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1492`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1517`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is: an unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

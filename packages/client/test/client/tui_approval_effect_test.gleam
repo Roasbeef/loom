@@ -460,6 +460,10 @@ fn exercise(
   // already open and is discarded otherwise, which fixes the ordering: the
   // close must follow the inspector, or a late reply opens the panel over the
   // transcript the fixture then reads.
+  //
+  // A driver sample can retain the control event's model before its separate
+  // rendering script returns the corresponding frame. Wait for both facts so
+  // the assertion below observes the panel this fixture is about to close.
   let inspected =
     tui_v2_test.await(terminal.data, fn(sample) {
       case sample.model.overlay {
@@ -467,6 +471,7 @@ fn exercise(
           list.any(sample.model.approvals, fn(record) {
             record.id == pending.id && record.origin == Some(author)
           })
+          && string.contains(sample.frame, "EXACT APPROVAL")
         _ -> False
       }
     })

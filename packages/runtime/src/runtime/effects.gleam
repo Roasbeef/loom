@@ -21,7 +21,7 @@
 
 import core/clock.{type Clock}
 import core/entry.{type UsageRow}
-import core/ids.{type OpId}
+import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{
   type AgentMessage, type DeferredHandle, type ToolCall, AssistantMessage,
@@ -58,6 +58,8 @@ pub type RequestSpec {
     operation: OpId,
     step_id: String,
     attempt: Int,
+    /// The entry reserved by the durable intent for this response.
+    response_entry: EntryId,
     configuration: StrandConfiguration,
     context: List(AgentMessage),
     stream_options: JsonValue,
@@ -68,6 +70,8 @@ pub type RequestSpec {
     operation: OpId,
     step_id: String,
     poll: Int,
+    /// The entry reserved by the durable intent for this poll response.
+    response_entry: EntryId,
     handle: DeferredHandle,
     configuration: StrandConfiguration,
     stream_options: JsonValue,

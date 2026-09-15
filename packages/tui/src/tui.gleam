@@ -79,6 +79,7 @@ import tui/session_selector
 import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
+import tui/stream_identity
 import tui/text_hygiene
 import tui/theme
 import tui/tool_activity
@@ -159,8 +160,9 @@ pub const live_stream_limit = 24_576
 ///
 /// A request owns its text, thinking and tool-call fragments. Operation IDs
 /// alone cannot separate requests around tool batches or retries. An `end`
-/// observation keeps an empty marker until the next request so an older cut's
-/// sampled preview cannot resurrect a completed answer.
+/// observation keeps an identity marker so an older captured preview cannot
+/// resurrect a completed answer. When the request names its reserved response
+/// entry, its bounded fragments remain visible until that entry arrives.
 ///
 /// `bytes` is what the fragments weigh, carried rather than recomputed: the
 /// budget is checked once per delta and a delta arrives per provider token,
@@ -416,10 +418,23 @@ pub type Interrupt {
 @internal
 pub type ControlOutcome {
   /// One authorized page and the identity to highlight in it.
-  PageLoaded(page: control_protocol.Page, selected: String)
+  PageLoaded(
+    page: control_protocol.Page,
+    selected: String,
+    collection: session_selector.Collection,
+  )
 
   /// The daemon removed this registration and its database.
   SessionDeleted(session_id: String)
+
+  /// Acknowledged archive preserves files while removing the active row.
+  SessionArchived(session_id: String)
+
+  /// Acknowledged restoration removes the row from the archive page.
+  SessionRestored(session_id: String)
+
+  /// The daemon acknowledged a rename with its canonical catalogue row.
+  SessionRenamed(row: control_protocol.Session)
 }
 
 /// One relayed control job, selected by the terminal and its actor-backed driver.
@@ -563,6 +578,8 @@ pub type Model {
     reviewer_rows: List(reviewer_status.Row),
     active_strand: String,
     session: String,
+    /// One catalogue display name, paired with the identity that owns it.
+    session_label: Option(#(String, String)),
     local_options: Option(bootstrap.Options),
     inbox: Subject(connection.Message),
     peer: Peer,
@@ -709,9 +726,6 @@ pub type Model {
 /// loom --addr ws://127.0.0.1:8080/v1/ws --session demo
 /// ```
 pub fn main() {
-  // Nothing but the rendered frame may write to this terminal from here on.
-  ffi_terminal.silence_logger()
-
   // `--record` is answered here rather than inside `parse_launch` because
   // it qualifies every interactive launch rather than choosing one, and
   // the local-option parser refuses flags it does not own.
@@ -724,19 +738,89 @@ pub fn main() {
   // the passthrough is meant to be the one place that cannot happen.
   // `replay` has its own parser and no recorder to open.
   let raw = argv.load().arguments
-  let #(record, arguments) = case raw {
-    ["ext", ..] | ["replay", ..] | ["sessions", ..] -> #("", raw)
-    _other -> take_flag(raw, "--record")
+  case help_for(raw) {
+    Some(usage) -> io.println(usage)
+    None -> {
+      // Help has already returned. Suppress logger output for launches that
+      // may enter the terminal; rejected launches still exit directly without
+      // installing terminal state.
+      ffi_terminal.silence_logger()
+
+      let #(record, arguments) = case raw {
+        ["ext", ..] | ["replay", ..] | ["sessions", ..] -> #("", raw)
+        _other -> take_flag(raw, "--record")
+      }
+      let launch = parse_launch(arguments)
+      case launch {
+        // The passthrough runs before a single line of terminal setup: this
+        // process is a pipe for the duration and then it is gone.
+        Forward(arguments:) -> forward(arguments)
+        Replay(path:, frames:, size:) -> replay(path, frames, size)
+        Sessions(options:, command:) -> run_sessions(options, command)
+        Invalid(reason) -> rejected_launch(reason)
+        Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
+      }
+    }
   }
-  let launch = parse_launch(arguments)
-  case launch {
-    // The passthrough runs before a single line of terminal setup: this
-    // process is a pipe for the duration and then it is gone.
-    Forward(arguments:) -> forward(arguments)
-    Replay(path:, frames:, size:) -> replay(path, frames, size)
-    Sessions(options:, command:) -> run_sessions(options, command)
-    Demo | Local(..) | Remote(..) | Invalid(..) -> interactive(launch, record)
+}
+
+// Reject a detached launch before it can start a daemon or claim the screen.
+// The backend also handles later EOF, since a terminal can close after startup.
+fn interactive_terminal(launch: Launch, record: String) -> Nil {
+  case ffi_terminal.require_terminal() {
+    Ok(Nil) -> interactive(launch, record)
+    Error(reason) -> rejected_launch(reason)
   }
+}
+
+// Help is selected before the logger or the interactive backend exist. A
+// command that only describes an invocation must not claim terminal state or
+// reach the daemon it is describing. The `--help` and `-h` flags win
+// wherever they appear in argv: a launcher that answered them only in
+// first position would report the flags before them as unknown, and the
+// conventional reading — `loom --demo --help` asks about the launch —
+// costs nothing here because every topic usage is a static string.
+//
+// The bare word `help` is recognised in first position only. Anywhere
+// else it is a plausible value — a session id, a recording path, an
+// extension name — and intercepting it would break the `loom ext`
+// passthrough's promise that every word of it is the server's.
+//
+// The topic is the first recognised subcommand word anywhere in argv, so
+// `loom replay rec.jsonl --help` describes `replay` rather than the whole
+// launcher. A help request with no topic word answers the top-level
+// usage, which is also what `loom help help` gets: `help` is a
+// dispatcher, not a topic.
+fn help_for(arguments: List(String)) -> Option(String) {
+  let asks = case arguments {
+    ["help", ..] -> True
+    _ -> list.contains(arguments, "--help") || list.contains(arguments, "-h")
+  }
+  case asks {
+    False -> None
+    True ->
+      case list.find(arguments, is_topic) {
+        Ok("replay") -> Some(replay_usage())
+        Ok("sessions") -> Some(sessions_usage())
+        Ok("ext") -> Some(extension_usage())
+        Ok(_other) | Error(Nil) -> Some(launch_usage())
+      }
+  }
+}
+
+fn is_topic(word: String) -> Bool {
+  case word {
+    "replay" | "sessions" | "ext" -> True
+    _ -> False
+  }
+}
+
+// A rejected launch has not earned an alternate-screen session. Reporting it
+// directly preserves the shell's stdout/stderr and exit-status contract.
+fn rejected_launch(reason: String) -> Nil {
+  io.println_error("loom: " <> reason)
+  ffi_terminal.halt(1)
+  Nil
 }
 
 // Removes one `--flag value` pair from an argument list, answering its
@@ -895,6 +979,7 @@ pub fn new_model_with_clock(
     reviewer_rows: [],
     active_strand: "main",
     session: "demo",
+    session_label: None,
     local_options: None,
     inbox:,
     peer: Preview,
@@ -1108,6 +1193,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     [] -> Local(default_bootstrap_options(), "")
     ["--demo"] -> Demo
     ["ext", ..rest] -> Forward(arguments: rest)
+    ["help", "ext"] -> Forward(arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
     _ ->
@@ -1352,6 +1438,11 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
+  <> "       loom <command> [options]\n\n"
+  <> "commands:\n"
+  <> "  replay <path>       Render a recorded terminal session.\n"
+  <> "  sessions list|rm    List or remove saved sessions.\n"
+  <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
@@ -1362,6 +1453,29 @@ fn launch_usage() -> String {
   <> "may differ between runs\n"
   <> "  --width/--height size the replay until the recording's own first "
   <> "resize supersedes them"
+}
+
+fn replay_usage() -> String {
+  "usage: loom replay <path> [--at <frame>] [--all] "
+  <> "[--width <w>] [--height <h>]\n"
+  <> "  Render the last frame by default; --all prints every frame."
+}
+
+// This copy deliberately stays private to the client-only shipment. `loom`
+// must describe extension commands even when `loomd` is absent, while the
+// terminal package cannot import the daemon package without reversing the
+// dependency boundary. The shipped acceptance compares this text with
+// `loomd ext --help` so the two literals cannot silently drift.
+fn extension_usage() -> String {
+  "usage: loom ext <command>\n"
+  <> "  install <source> [--rev <r>] [--home <dir>] [--helper <path>]\n"
+  <> "                   [--codemode-seed <dir>] [--best-effort]\n"
+  <> "  list\n"
+  <> "  remove <name>\n"
+  <> "  verify <name>\n\n"
+  <> "A source is a local path, an https:// .tar.gz, or an\n"
+  <> "https://github.com/<owner>/<repo> URL. Extensions install under\n"
+  <> "<home>/.loom/extensions."
 }
 
 fn parse_replay(arguments: List(String)) -> Launch {
@@ -1914,18 +2028,24 @@ fn begin_open(model: Model, session: String) -> Model {
   }
 }
 
+// Paging observes only authorized metadata in the requested revision.
 fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
-  load_catalogue_after(model, after, revision, None)
+  load_catalogue_collection(model, after, revision, session_selector.Active)
 }
 
-// Rename and its refreshed page share the existing bounded metadata worker.
-// The mutation is sent once; a lost response never triggers an automatic retry.
-fn load_catalogue_after(
+// Collection belongs to the request, so a late page cannot be relabelled by
+// a key pressed while its one bounded control job is still outstanding.
+fn load_catalogue_collection(
   model: Model,
   after: String,
   revision: Option(Int),
-  rename: Option(control_protocol.Command),
+  collection: session_selector.Collection,
 ) -> Model {
+  let command = case collection {
+    session_selector.Active -> control_protocol.ListSessions(after, revision)
+    session_selector.Archived ->
+      control_protocol.ListArchivedSessions(after, revision)
+  }
   case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -1945,19 +2065,8 @@ fn load_catalogue_after(
         weft.new([
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            use Nil <- result.try(case rename {
-              None -> Ok(Nil)
-              Some(command) ->
-                daemon.request(daemon_selection.control(host), command, 5000)
-                |> result.map_error(daemon_selection.failure)
-                |> result.replace(Nil)
-            })
             use reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.ListSessions(after, revision),
-                5000,
-              )
+              daemon.request(daemon_selection.control(host), command, 5000)
               |> result.map_error(daemon_selection.failure),
             )
             use page <- result.try(case reply {
@@ -1973,7 +2082,7 @@ fn load_catalogue_after(
               "" -> default_selection(host, workspace)
               id -> id
             }
-            Ok(PageLoaded(page, selected))
+            Ok(PageLoaded(page, selected, collection))
           },
         ])
         |> weft.deadline(12_000)
@@ -1993,7 +2102,59 @@ fn load_catalogue_after(
 // identity is bound outside the closure for the same reason the page job
 // binds its two scalars: weft copies the fun's environment, and a reference
 // to a model field would copy the whole presentation state with it.
+// The reply owns the displayed name. A timeout leaves the outcome unknown
+// and never causes the metadata mutation to be sent a second time.
+fn begin_rename(model: Model, session: String, name: String) -> Model {
+  case model.control_request, model.daemon_host {
+    Some(_), _ -> append_error(model, "a catalogue action is already running")
+    None, None -> append_error(model, "daemon control is disconnected")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.RenameSession(session, name),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            case reply {
+              control_protocol.SessionReply(row) if row.session_id == session ->
+                Ok(SessionRenamed(row))
+              _ -> Error("rename returned an unexpected control reply")
+            }
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: "renaming session",
+      )
+    }
+  }
+}
+
 fn begin_delete(model: Model, session: String) -> Model {
+  begin_removal(model, session, PermanentlyDelete)
+}
+
+// The ADT keeps a confirmed permanent deletion distinct from reversible
+// archive and restore requests while they share one bounded job slot.
+type Removal {
+  Archive
+  Restore
+  PermanentlyDelete
+}
+
+fn begin_removal(model: Model, session: String, removal: Removal) -> Model {
   case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue request is already running")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -2004,8 +2165,23 @@ fn begin_delete(model: Model, session: String) -> Model {
         weft.new([
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            use id <- result.map(daemon_selection.delete(host, session))
-            SessionDeleted(id)
+            case removal {
+              Archive ->
+                result.map(
+                  daemon_selection.archive(host, session),
+                  SessionArchived,
+                )
+              Restore ->
+                result.map(
+                  daemon_selection.restore(host, session),
+                  SessionRestored,
+                )
+              PermanentlyDelete ->
+                result.map(
+                  daemon_selection.delete(host, session),
+                  SessionDeleted,
+                )
+            }
           },
         ])
         |> weft.deadline(85_000)
@@ -2014,7 +2190,12 @@ fn begin_delete(model: Model, session: String) -> Model {
       Model(
         ..model,
         control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "stopping and deleting session " <> session,
+        notice: case removal {
+          Archive -> "stopping and archiving session " <> session
+          Restore -> "restoring session " <> session
+          PermanentlyDelete ->
+            "stopping and permanently deleting session " <> session
+        },
       )
     }
   }
@@ -2107,14 +2288,42 @@ pub fn accept_control_event(model: Model, event: ControlEvent) -> Model {
 
 fn finish_control(model: Model, result) {
   case result {
-    Some(Ok(PageLoaded(page, selected))) ->
-      Model(
-        ..model,
-        overlay: DaemonSelector(session_selector.new(
+    Some(Ok(PageLoaded(page, selected, collection))) -> {
+      let selector =
+        session_selector.new(
           session_selector.prioritize(page, model.workspace.path),
           selected,
-        )),
-        notice: "Enter opens the highlighted session · n creates · d deletes",
+        )
+      Model(
+        ..model,
+        overlay: DaemonSelector(session_selector.State(..selector, collection:)),
+        notice: case collection {
+          session_selector.Active ->
+            "Enter opens · d archives · a shows archived sessions"
+          session_selector.Archived ->
+            "Enter restores · d permanently deletes · a shows active sessions"
+        },
+      )
+      |> invalidate_frame
+    }
+
+    Some(Ok(SessionRenamed(row))) ->
+      Model(
+        ..model,
+        session_label: case row.session_id == model.session {
+          True -> Some(#(row.session_id, row.name))
+          False -> model.session_label
+        },
+        overlay: case model.overlay {
+          DaemonSelector(selector) ->
+            DaemonSelector(session_selector.renamed(selector, row))
+          NoOverlay
+          | ModelSelector(_)
+          | AgentInspector(_)
+          | ApprovalInspector(_)
+          | SessionSelector(_) -> model.overlay
+        },
+        notice: "renamed session to " <> row.name,
       )
       |> invalidate_frame
 
@@ -2122,23 +2331,33 @@ fn finish_control(model: Model, result) {
     // re-listing: the reply proves this identity is gone, and a fresh page
     // would move every other row under the operator's cursor.
     Some(Ok(SessionDeleted(id))) ->
-      Model(
-        ..model,
-        overlay: case model.overlay {
-          DaemonSelector(selector) ->
-            DaemonSelector(session_selector.without(selector, id))
-          NoOverlay
-          | ModelSelector(_)
-          | AgentInspector(_)
-          | ApprovalInspector(_)
-          | SessionSelector(_) -> model.overlay
-        },
-        notice: "deleted session " <> id,
-      )
-      |> invalidate_frame
+      catalogue_removed(model, id, "deleted session ")
+    Some(Ok(SessionArchived(id))) ->
+      catalogue_removed(model, id, "archived session ")
+    Some(Ok(SessionRestored(id))) ->
+      catalogue_removed(model, id, "restored session ")
     Some(Error(reason)) -> append_error(model, reason)
     None -> append_error(model, "control job ended without an outcome")
   }
+}
+
+// Acknowledgements update only the collection already on screen. Restoring a
+// row never opens it, and no metadata acknowledgement retargets attachment.
+fn catalogue_removed(model: Model, id: String, description: String) -> Model {
+  Model(
+    ..model,
+    overlay: case model.overlay {
+      DaemonSelector(selector) ->
+        DaemonSelector(session_selector.without(selector, id))
+      NoOverlay
+      | ModelSelector(_)
+      | AgentInspector(_)
+      | ApprovalInspector(_)
+      | SessionSelector(_) -> model.overlay
+    },
+    notice: description <> id,
+  )
+  |> invalidate_frame
 }
 
 fn create_session(model: Model) -> Model {
@@ -2548,6 +2767,15 @@ fn render_agent_rail(
   }
 }
 
+// Names are presentation only. Pairing one with its identity prevents a
+// legacy switch or replay from showing a previous session's title.
+fn session_title(model: Model) -> String {
+  case model.session_label {
+    Some(#(id, name)) if id == model.session && name != "" -> name
+    Some(_) | None -> model.session
+  }
+}
+
 fn render_header(
   buf: buffer.Buffer,
   area: Rect,
@@ -2562,7 +2790,7 @@ fn render_header(
     |> statusbar.with_center([
       span.line_new([
         span.span_styled("session ", theme.quiet_text()),
-        span.span_plain(text_hygiene.single_line(model.session)),
+        span.span_plain(text_hygiene.single_line(session_title(model))),
       ]),
     ])
     |> statusbar.with_right([
@@ -4660,7 +4888,18 @@ fn transient_lines(model: Model) -> List(Line) {
   |> list.append(pending_input_lines(model))
 }
 
+// The rename overlay owns pasted text just as it owns character keys. It
+// must never leave a pasted title in the hidden conversation composer.
 fn handle_paste(model: Model, text: String) -> Model {
+  case model.overlay {
+    DaemonSelector(
+      session_selector.State(prompt: session_selector.Renaming(..), ..) as selector,
+    ) -> update_daemon_selector(keys.Char(text), model, selector)
+    _ -> handle_underlay_paste(model, text)
+  }
+}
+
+fn handle_underlay_paste(model: Model, text: String) -> Model {
   use <- bool.guard(model.context.surface != context_view.Hidden, model)
   case model.queue_editor.surface {
     queue_editor.Editor ->
@@ -4756,7 +4995,15 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         cancel_pending(model, "target change from " <> model.session),
         "open session: " <> reason,
       )
-    Some(attachment.Adopted(channel, cut, view, inbox, workspace, creation_key)) -> {
+    Some(attachment.Adopted(
+      channel,
+      cut,
+      view,
+      inbox,
+      workspace,
+      name,
+      creation_key,
+    )) -> {
       // `cancel_pending` below appends its own "Not sent: … ; draft retained"
       // notice, but `render_cut` replaces the whole transcript with the new
       // session's, so that line does not survive this arm. The fact still has
@@ -4816,6 +5063,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           },
           workspace: workspace,
           session: cut.attachment.expected.session,
+          session_label: Some(#(cut.attachment.expected.session, name)),
           records: [],
           streams: [],
           tool_tails: [],
@@ -5229,6 +5477,7 @@ fn render_cut(
       stream.strand == active
       && { stream.generation != "" || operation == Ok(stream.operation) }
       && !snapshot_view.has_result(view, active, stream.operation)
+      && !response_recorded(branch.records, stream.generation)
     })
 
   // A captured tool-result names the exact provider call, so one completed
@@ -5813,7 +6062,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Model(
           ..model,
           streams: receive_stream(
-            model.streams,
+            streams_before_end(model, strand, operation, generation, kind),
             strand,
             operation,
             generation,
@@ -6000,7 +6249,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
   }
 }
 
-// Restores a custody-returned prompt as a local draft (protocol-change/035).
+// Restores a custody-returned prompt as a local draft (protocol-change/038).
 //
 // The daemon held the prompt only in memory, so the returned text is the
 // last copy in existence. An untouched composer simply becomes the draft.
@@ -6088,6 +6337,35 @@ fn set_strand_phase(
   })
 }
 
+// A client attaching near completion may have only a sampled preview, with
+// no later delta before end. Transfer that exact sample into the bounded live
+// region before adding the end marker; an older request's sample cannot qualify.
+fn streams_before_end(
+  model: Model,
+  strand: String,
+  operation: String,
+  generation: String,
+  kind: String,
+) -> List(Stream) {
+  use <- bool.guard(
+    kind != "end"
+      || stream_identity.response_entry(generation) == None
+      || list.any(model.streams, fn(stream) { stream.strand == strand }),
+    model.streams,
+  )
+  let preview = option.then(model.captured, fn(captured) { captured.1.preview })
+  case preview {
+    Some(sample)
+      if sample.operation == operation && sample.generation == generation
+    ->
+      case response_recorded(model.records, generation) {
+        True -> model.streams
+        False -> [preview_stream(strand, sample), ..model.streams]
+      }
+    _ -> model.streams
+  }
+}
+
 // A provider request owns all its fragment kinds. A new request replaces
 // them together; an old terminal can retire only its own request. Completion
 // comes from the same observer as deltas, independent of snapshot timing.
@@ -6099,6 +6377,18 @@ fn receive_stream(
   kind: String,
   text: String,
 ) -> List(Stream) {
+  // Completion is final for this exact request. Late fragments cannot
+  // reopen it, while a successor still replaces the whole old generation.
+  use <- bool.guard(
+    kind != "end"
+      && list.any(streams, fn(stream) {
+      stream.strand == strand
+      && stream.operation == operation
+      && stream.generation == generation
+      && stream.kind == "end"
+    }),
+    streams,
+  )
   case kind {
     "end" -> {
       let newer =
@@ -6110,10 +6400,19 @@ fn receive_stream(
         })
       case newer {
         True -> streams
-        False -> [
-          Stream(strand, operation, generation, "end", [], 0),
-          ..list.filter(streams, fn(stream) { stream.strand != strand })
-        ]
+        False -> {
+          // A named response remains visible until its exact record replaces
+          // it. The marker suppresses stale previews without copying text.
+          let retained =
+            list.filter(streams, fn(stream) {
+              stream.strand != strand
+              || {
+                stream.kind != "end"
+                && stream_identity.response_entry(generation) != None
+              }
+            })
+          [Stream(strand, operation, generation, "end", [], 0), ..retained]
+        }
       }
     }
     _ -> {
@@ -6471,11 +6770,16 @@ fn display_streams(model: Model) -> List(Stream) {
   let active =
     list.filter(model.streams, fn(stream) {
       stream.strand == model.active_strand
+      && !response_recorded(model.records, stream.generation)
     })
   let preview = case model.captured {
     Some(#(_, view)) ->
       case view.preview, dict.get(view.operations, model.active_strand) {
-        Some(sample), Ok(op) if op == sample.operation -> Some(sample)
+        Some(sample), Ok(op) if op == sample.operation ->
+          case response_recorded(model.records, sample.generation) {
+            True -> None
+            False -> Some(sample)
+          }
         Some(_), Ok(_) | Some(_), Error(Nil) | None, _ -> None
       }
     None -> None
@@ -6483,6 +6787,18 @@ fn display_streams(model: Model) -> List(Stream) {
   case active, preview {
     [], Some(sample) -> [preview_stream(model.active_strand, sample)]
     _, _ -> active
+  }
+}
+
+// The record and the live answer change ownership in one render projection.
+// Text equality cannot establish that transfer: two answers may be identical.
+fn response_recorded(
+  records: List(protocol.EntryRecord),
+  generation: String,
+) -> Bool {
+  case stream_identity.response_entry(generation) {
+    None -> False
+    Some(id) -> list.any(records, fn(record) { record.entry.id == id })
   }
 }
 
@@ -6901,10 +7217,14 @@ fn entry_lines(
       |> option.lazy_unwrap(fn() {
         message_lines(value, details_expanded, local_owner)
       })
-    entry.CompactionEntry(summary:, tokens_before:, ..) -> [
+    entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
         System,
-        "compacted " <> tokens(tokens_before) <> " tokens · " <> summary,
+        "Context compacted · ~"
+          <> tokens(tokens_before)
+          <> " tokens before · "
+          <> int.to_string(list.length(retained_tail))
+          <> " messages kept",
       ),
     ]
     entry.BranchSummaryEntry(summary:, ..) -> [
@@ -7998,9 +8318,23 @@ fn update_daemon_selector(
     session_selector.Choose(row) -> begin_open(model, row.session_id)
     session_selector.NewSession -> create_session(model)
     session_selector.Delete(session_id) -> begin_delete(model, session_id)
+    session_selector.Archive(session_id) ->
+      begin_removal(model, session_id, Archive)
+    session_selector.Restore(session_id) ->
+      begin_removal(model, session_id, Restore)
+    session_selector.ShowCollection(collection) ->
+      load_catalogue_collection(model, "", None, collection)
+    session_selector.Rename(session_id, name) ->
+      begin_rename(model, session_id, name)
     session_selector.NextPage(after, revision) ->
-      load_catalogue(model, after, Some(revision))
-    session_selector.FirstPage -> load_catalogue(model, "", None)
+      load_catalogue_collection(
+        model,
+        after,
+        Some(revision),
+        selector.collection,
+      )
+    session_selector.FirstPage ->
+      load_catalogue_collection(model, "", None, selector.collection)
   }
 }
 
@@ -8476,7 +8810,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
           let history = case
             older
             && offset + transcript_viewport_height(model)
-            >= model.rendered_row_count - 10
+            >= model.rendered_row_count - history_prefetch_rows(model)
           {
             True ->
               history_view.older(
@@ -8490,6 +8824,12 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       }
     }
   }
+}
+
+// Start the existing bounded read two screens before the loaded boundary,
+// leaving time for the reply while the reader continues scrolling.
+fn history_prefetch_rows(model: Model) -> Int {
+  int.max(10, 2 * transcript_viewport_height(model))
 }
 
 // A page can contain only other strands, and collapsing details can leave
@@ -8509,7 +8849,7 @@ fn request_history_for_view(model: Model) -> Model {
       || model.help_open
       || model.notes_open
       || model.scroll_offset + transcript_viewport_height(model)
-      < model.rendered_row_count - 10,
+      < model.rendered_row_count - history_prefetch_rows(model),
     model,
   )
   case model.captured {
@@ -8978,13 +9318,7 @@ fn submit_text(model: Model) -> Model {
     command.Rename(name) ->
       case cleared.session {
         "" -> append_error(cleared, "no session is attached")
-        id ->
-          load_catalogue_after(
-            cleared,
-            "",
-            None,
-            Some(control_protocol.RenameSession(id, name)),
-          )
+        id -> begin_rename(cleared, id, name)
       }
     command.Approvals(None) ->
       list.fold(approval_lines(cleared.approvals), cleared, fn(model, line) {

@@ -13,11 +13,11 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Five of the twelve rules gate — R0, R2, R4, R6 and R10 — and each of
-their censuses must stay zero; the other seven report. See **Staging** below before wiring anything else to the exit
+classification of every source. Five of the thirteen rules gate — R0, R2, R4, R6 and R10 — and each of
+their censuses must stay zero; the other eight report. See **Staging** below before wiring anything else to the exit
 code.
 
-Three of the twelve are not questions about the AST at all. R10 and R11
+Three of the thirteen are not questions about the AST at all. R10 and R11
 ask how the source was *laid out* — where the blank lines and comments
 are — which `glance` throws away entirely, so `lint/layout` reads the tree
 for where each sibling begins and the file's own line table for what was
@@ -64,8 +64,8 @@ wrote ourselves. Nothing here is a security control.
   error_by_default}` — the vocabulary. `Rule` is `Unparseable |
   EagerFallback | NestingDepth | CatchAll | PanicInSource |
   BoundedLength | PortablePurity | AssertWithoutMessage |
-  LoneCallerArity | NakedBool | CommentStanza | DenseStanza`, printed as
-  `R0`..`R11`.
+  LoneCallerArity | NakedBool | CommentStanza | DenseStanza |
+  BroadClosureCapture`, printed as `R0`..`R12`.
   `error_by_default` is the staging decision as data — `[Unparseable,
   NestingDepth, PanicInSource, PortablePurity]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
@@ -382,12 +382,25 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   `use field <- result.try(…)` lines and is exactly right. One finding per
   function, at the function, the way R2's is: what a reader does about it
   is re-read the body and decide where its paragraphs are.
+- **R12 `broad-closure-capture`** — a closure which is returned, assigned,
+  or stored in a constructor, and which uses an outer binding only as the
+  direct container of field
+  access. A bare use, record update or shorthand argument drops the finding,
+  and lexical bindings are tracked so a shadowed name is not charged to the
+  outer value. Nested closures own their findings. This is the syntax behind
+  PR #411's imported-hook, compaction-projection and tool-output-observer
+  retention bugs: project the fields before constructing the closure and its
+  environment no longer retains the complete record. The September 14 census
+  is 85. It stays a warning forever because `glance` has no inferred record
+  widths or closure lifetimes. Ordinary callback arguments are excluded too,
+  since deciding whether an arbitrary callee retains one would require
+  interprocedural analysis.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
 ## Staging
 
-**R0, R2, R4, R6 and R10 gate; R1, R3, R5, R7, R8, R9 and R11 warn.**
+**R0, R2, R4, R6 and R10 gate; R1, R3, R5, R7, R8, R9, R11 and R12 warn.**
 `make lint` and `make check` fail on any of the five. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
@@ -435,7 +448,7 @@ arguing.
   between a stated rule and an enforced one was exactly this flag. The
   missing `as "message"` is R7's, not R4's.
 
-Promotion of the remaining five is per rule and costs one flag,
+Promotion of the remaining six is per rule and costs one flag,
 `scripts/lint.sh --error=R5` — except R3 and R8, which can never be
 promoted at all. The census over `packages/*/src` reads (after the
 `conformance` exemption, R1's body check and its cross-module pass, R3's
@@ -457,6 +470,7 @@ for the censuses this superseded):
 | R9 naked-bool | 223 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
 | R10 comment-stanza | 0, swept from 1137 | **error level**; zero in `src/` and `test/` alike, and the sweep is formatter-verified |
 | R11 dense-stanza | 17 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
+| R12 broad-closure-capture | 85 | **stays a warning**; record width and closure lifetime are absent from the AST |
 
 R1's twenty are what the triage left after the body check removed nine
 false positives: every one is a real eager argument, none of them

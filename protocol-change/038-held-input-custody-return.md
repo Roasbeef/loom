@@ -1,4 +1,4 @@
-# protocol-change/035 — held-input custody return on drain
+# protocol-change/038 — held-input custody return on drain
 
 **Status**: PROPOSED 2026-09-14 · **Affects**: the session-protocol v2 event
 vocabulary (Part 1.6), adding one pushed event and no command ·
@@ -10,7 +10,7 @@ vocabulary (Part 1.6), adding one pushed event and no command ·
 One daemon serves many workspaces and outlives the terminal that started
 it, so an update installs a new release *beside* the old one and the old
 daemon keeps running until it exits (issue #392, see
-[034](034-build-identity.md)). When it does exit, its gateway's held
+[037](037-build-identity.md)). When it does exit, its gateway's held
 queue — prompts held for a strand that was busy when they arrived
 ([018](018-pushed-delivery.md), [033](033-abort-halts-held-input.md)) —
 lives only in hub memory. The daemon drain tears the hub down with the
@@ -57,7 +57,7 @@ already carries: the `daemon.shutdown` acknowledgement (`state:
 "draining"`) at the moment they ask for the update, and the transport
 closing when the daemon actually exits. What this proposal adds is not a
 second "I am going away" event — it is the *custody* half, so that when
-the client reconnects ([034](034-build-identity.md) carries the identity
+the client reconnects ([037](037-build-identity.md) carries the identity
 a reattached client compares) the operator's held prompts are already
 back in their hands as drafts rather than lost. A separate draining
 notice was considered and rejected as redundant with the existing
@@ -65,6 +65,41 @@ acknowledgement and the transport close, which the client already
 handles.
 
 ## Impact
+
+### Drain ordering and confirmation
+
+The gateway enters a permanent draining state before returning held input.
+It refuses subsequent mutations, continues authenticated reads, and does not
+start a held successor when an aborted strand becomes idle. This fence is
+owned by the gateway: changing the daemon root's phase cannot fence frames
+on a session socket that was already admitted.
+
+The registry only snapshots the resident drain capabilities. A bounded Weft
+task owned by the daemon root invokes them outside both actors' receive
+loops. Delivery revalidates session authority through the registry, so an
+inline registry callback would wait on its own blocked receive loop. The
+root must also remain responsive to control reads throughout the drain.
+
+Each instance fences its gateway before requesting runtime cancellation.
+All instances, gateway calls, transport flushes, and runtime waits spend one
+shared deadline. The transport places its flush acknowledgement after the
+gateway's pushed frames from the same sender; the acknowledgement is awaited
+outside the gateway, where it cannot block a socket's in-flight request.
+It confirms completed socket writes, not receipt or persistence by the
+remote client. A dead peer or an expired budget cannot confirm custody
+return. The held queue remains memory-only, so this is a bounded graceful
+shutdown facility, not a guarantee against disconnection or daemon failure.
+
+After this drain attempt, normal lifetime shutdown still requires the
+original custody monitor's retirement evidence. Completion of the drain
+worker does not replace that evidence or permit early lock release.
+
+These corrections follow an independent review of the production callback
+chain during the #404 takeover. Its authenticated gateway delivery calls
+back into the registry; the original host-only fixtures did not exercise
+that dependency. Acceptance requires a barrier test with real registry
+authority checks, a late-mutation refusal, an abort that starts no held
+successor, and a socket fixture that observes the return before closure.
 
 `client/protocol` gains the event name, its encoder and decoder.
 `client/gateway` gains `drain_held`, a synchronous call that walks every

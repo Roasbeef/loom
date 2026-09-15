@@ -848,3 +848,33 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
   assert dict.has_key(retired.parked_scrollback, "main") == False
     as "the active strand's window is held directly, not parked beside it"
 }
+
+pub fn history_prefetch_starts_before_the_last_ten_rows_test() {
+  let initial =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+    |> tui.apply_channel_update(session_channel.Captured(
+      captured_window(list.take(entries(400), 100), 301, 401),
+      view(400),
+      session_channel.Requested,
+    ))
+    |> tui.update(backend.Resize(120, 24), _)
+  let requested =
+    list.fold(list.repeat(Nil, 200), initial, fn(model, _) {
+      case model.scrollback.request {
+        history_view.Quiet -> tui.update(backend.MouseScroll(5, 5, True), model)
+        history_view.Wanted | history_view.Pending(_) -> model
+      }
+    })
+  assert requested.scrollback.request == history_view.Wanted
+
+  // The entire terminal is taller than the transcript viewport. Subtracting
+  // it gives a conservative lower bound on the rows still available to read.
+  assert requested.rendered_row_count - requested.scroll_offset - 24 > 10
+    as "the read starts while more than the old ten-row margin remains"
+  assert history_view.range(requested.scrollback) == Some(#(200, 301))
+    as "earlier admission preserves the hundred-position page bound"
+}

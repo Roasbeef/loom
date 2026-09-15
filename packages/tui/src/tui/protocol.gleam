@@ -262,7 +262,7 @@ pub type Event {
   /// This is a custody return, not a rejection: the daemon is going away
   /// and can no longer promise the prompt will ever be admitted, so
   /// ownership of the text comes back to the client that typed it. The
-  /// held queue is deliberately memory-only (protocol-change/035), so
+  /// held queue is deliberately memory-only (protocol-change/038), so
   /// this push is the only surviving copy — a client that decodes it as
   /// `Ignored` loses the operator's draft exactly as if no drain existed.
   HeldInputReturned(
@@ -652,7 +652,7 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
 // A custody return carries everything a restored draft needs, so each of
 // the five fields is required: a partial return would restore a draft that
 // silently dropped what the operator typed, which is the loss the drain
-// exists to prevent (protocol-change/035).
+// exists to prevent (protocol-change/038).
 fn decode_held_input_returned(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "held input return body"))
   use strand <- result.try(required_string(fields, "strand"))

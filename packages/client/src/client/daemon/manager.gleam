@@ -82,6 +82,9 @@ pub type Error {
   /// The file's creation reservation has not been reconciled yet.
   NotInitialized
 
+  /// An archived registration requires explicit restoration before admission.
+  SessionArchived
+
   /// Every runtime slot is reserved, including stopping and blocked slots.
   Capacity
 
@@ -418,6 +421,18 @@ type Message(instance) {
     String,
     Subject(Result(domain.Domain, AdminError)),
   )
+  SetVisibility(
+    access.Digest,
+    String,
+    String,
+    catalogue.Visibility,
+    Subject(Result(View, AdminError)),
+  )
+  ArchivedPage(
+    access.Digest,
+    String,
+    Subject(Result(#(Int, List(View)), AdminError)),
+  )
   Delete(
     access.Digest,
     String,
@@ -576,6 +591,55 @@ pub fn rename(
     epoch,
     id,
     name,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Archives or restores a stopped session under owner and epoch authority.
+///
+/// The slot check and catalogue transaction share one actor turn, so no open
+/// can acquire custody between deciding the session is stopped and hiding it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.set_visibility(registry, owner, epoch, id, catalogue.Archived)
+/// ```
+@internal
+pub fn set_visibility(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  id: String,
+  visibility: catalogue.Visibility,
+) -> Result(View, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: SetVisibility(
+    caller,
+    epoch,
+    id,
+    visibility,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Lists only the owner's archived metadata without opening a session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.archived_page(registry, owner, after: "")
+/// ```
+@internal
+pub fn archived_page(
+  manager: Manager(instance),
+  caller: access.Digest,
+  after after: String,
+) -> Result(#(Int, List(View)), AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: ArchivedPage(
+    caller,
+    after,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -1255,6 +1319,46 @@ fn handle(
       )
       sm.keep(book)
     }
+    SetVisibility(caller, epoch, id, visibility, reply) -> {
+      let outcome = {
+        use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+        use Nil <- result.try(case dict.has_key(book.slots, id) {
+          True -> Error(AdminBusy)
+          False -> Ok(Nil)
+        })
+        use record <- result.map(
+          catalogue.set_visibility(book.catalogue, id, visibility)
+          |> result.map_error(AdminMetadata),
+        )
+        View(record, status(book, record))
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    ArchivedPage(caller, after, reply) -> {
+      let outcome = {
+        use principal <- result.try(
+          access.authenticate(book.catalogue, caller)
+          |> result.replace_error(AdminForbidden),
+        )
+        use Nil <- result.try(case principal.kind {
+          access.OwnerPrincipal -> Ok(Nil)
+          access.MemberPrincipal -> Error(AdminForbidden)
+        })
+        use page <- result.map(
+          catalogue.archived_page(book.catalogue, after:)
+          |> result.map_error(AdminMetadata),
+        )
+        #(
+          page.revision,
+          list.map(page.records, fn(record) {
+            View(record, status(book, record))
+          }),
+        )
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
     Delete(caller, epoch, id, sessions, reply) -> {
       process.send(reply, delete_now(phase, book, caller, epoch, id, sessions))
       sm.keep(book)
@@ -1900,8 +2004,19 @@ fn prepare_slot(
   book: Book(instance),
   record: catalogue.Registration,
 ) -> #(Book(instance), Result(Status, Error)) {
-  case domain.for_session(book.catalogue, record.id) {
-    Error(error) -> #(book, Error(Catalogue(error)))
+  let selected = {
+    use visibility <- result.try(
+      catalogue.visibility(book.catalogue, record.id)
+      |> result.map_error(Catalogue),
+    )
+    use Nil <- result.try(case visibility {
+      catalogue.Active -> Ok(Nil)
+      catalogue.Archived -> Error(SessionArchived)
+    })
+    domain.for_session(book.catalogue, record.id) |> result.map_error(Catalogue)
+  }
+  case selected {
+    Error(error) -> #(book, Error(error))
     Ok(selected) -> {
       let #(book, admitted) = ensure_domain(book, selected)
       case admitted {

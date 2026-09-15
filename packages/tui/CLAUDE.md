@@ -1,5 +1,15 @@
 # tui
 
+## Streamed response handoff
+
+For generation and poll observations carrying a reserved response entry,
+`stream_identity` validates the entry ID. An end marker closes fragment intake
+while the already-bounded answer stays visible. The exact saved entry replaces
+it during capture adoption; unrelated records and stale idle captures do not.
+A successor request or exact operation result also retires it. Legacy and
+summary observations retain their old completion behavior. See
+`protocol-change/036-stream-response-handoff.md`.
+
 ## Purpose
 
 The shipped native terminal client. It authenticates one daemon control
@@ -9,10 +19,23 @@ slash commands. `make tui-shipment` exports its compiled
 BEAM closure beside a thin `bin/loom` launcher, and `make dist` packages
 that tree separately from the self-contained server.
 
+Interactive launches require both terminal stdin and stdout before starting a
+local daemon or entering terminal mode. Help, replay, session commands, and
+extension passthrough retain their noninteractive paths. The etui backend owns
+later input closure and terminates its reader and cleanup drain on EOF/error.
+
 ## Key Types
 
+- `session_selector.Collection` distinguishes active and archived pages. Active
+  `d` confirms archival; `a` switches collections. Archived Enter restores without
+  opening, while archived `d` explicitly confirms permanent deletion. Page loads
+  carry their collection so their response updates the matching picker. Archive
+  and deletion share the existing bounded stop-and-retire path in
+  `daemon/selection`; restoration sends one control request without admission.
+
 - Reading mode remains frozen at offset zero until an explicit return to live
-  output. Older-page demand follows the visible boundary, including pages
+  output. Older-page demand starts two viewport heights before the loaded boundary,
+  keeps one bounded page outstanding, and continues through pages
   containing only other strands. Expanded tool results reuse the compact
   invocation's source identity through `Call.result_source`.
 - Bracketed inline paste inserts at the editor cursor, retaining both sides of
@@ -22,6 +45,9 @@ that tree separately from the self-contained server.
 - Successful `context_remaining` calls retain a compact measurement row. The
   remaining budget names the checkpoint when enabled and the context limit
   otherwise. Older results without structured details retain their text.
+- Compaction entries show the pre-compaction token estimate and count of
+  retained messages. Their checkpoint text remains in the durable entry for
+  the model and exact history reads, but the transcript does not print it.
 
 - Compact successful `fs_edit` rows include a 24-line inline patch preview;
   expanded history uses the same patch projection with the complete result.
@@ -122,9 +148,13 @@ that tree separately from the self-contained server.
   admission, including draft retention on observer or unavailable attachments.
 
 - `command.Rename` sends control `RenameSession` for the attached identity.
-  The existing `CatalogueRequest` worker sends the mutation once, then reloads
-  the first page and opens the selector with the current ID highlighted. The
-  owner and epoch checks remain server-side; a lost reply is not retried.
+  The bounded `ControlRequest` worker sends the mutation once and applies the
+  acknowledged `SessionRenamed` row to the header and any open picker. It does
+  not open the picker or reload its page. The owner and epoch checks remain
+  server-side; a lost reply is not retried. `Model.session_label` pairs one
+  name with its identity, so legacy switches cannot carry an old title.
+  The name travels through `attachment.Target` and `Adopted` with the selected
+  workspace and becomes visible only when that attachment is adopted.
   `workspace.session_name` uses cached workspace/branch context for new names,
   normalizes terminal text, and preserves graphemes within 256 UTF-8 bytes.
   [Protocol 019](../../protocol-change/019-session-display-names.md) describes
@@ -144,9 +174,23 @@ that tree separately from the self-contained server.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
   `Invalid` — and three that are not terminal applications at all,
   `Forward`, `Replay` and `Sessions`.
+  Top-level and subcommand help are also non-interactive: the `--help` and
+  `-h` flags anywhere in argv, and the bare word `help` in first position,
+  print usage before the logger is
+  silenced — `loom --demo --help` describes the launch rather than failing
+  on the flags before it, while `help` elsewhere stays a value, so the
+  `ext` passthrough never intercepts a word that belongs to the server.
+  Help does not create state, contact a daemon,
+  or write terminal escape sequences. An
+  `Invalid` launch writes its reason to stderr
+  and exits nonzero instead of entering the alternate screen.
   `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
   answers it before it builds a model, so nothing draws a frame and no
-  terminal state is installed on the way past. The daemon is located by
+  terminal state is installed on the way past. Its three help forms are
+  local instead: the client-only shipment can print extension usage without
+  locating `loomd`. The private copy is compared with `loomd ext --help` by
+  the shipped acceptance, preserving the shared text without an inverted
+  package dependency. The daemon is located by
   `tui/bootstrap.server_executable`, the same ladder an implicit local
   session uses — two ladders would mean installing an extension into one
   server's world and then starting another — and the launcher exits with
@@ -301,8 +345,11 @@ that tree separately from the self-contained server.
   so no single keystroke can destroy a conversation. The answer names the
   identity the question was asked about rather than whatever is highlighted
   when it arrives. `tui.ControlRequest` is the one job slot the picker's
-  paging and its deletes share — the picker can do one or the other, never
-  both — and `session_selector.without` drops the row on the daemon's
+  paging, renames, and deletes share. `r` opens a bounded `Renaming` draft for
+  the selected identity; Enter saves, Escape cancels, and Ctrl+U clears it.
+  Pasted text belongs to that editor and leaves the hidden composer unchanged.
+  `session_selector.renamed` applies only the acknowledged row, while
+  `session_selector.without` drops the row on the daemon's
   confirmation rather than re-listing, which would move every other row
   under the cursor. A refusal reaches the footer as an error and the page is
   left alone. The confirmation explicitly includes stopping the selected session

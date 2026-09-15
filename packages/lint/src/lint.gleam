@@ -29,7 +29,7 @@
 ////
 //// # Layout is not in the tree
 ////
-//// Three of the twelve rules are not questions about the AST. R9 reads
+//// Three of the thirteen rules are not questions about the AST. R9 reads
 //// annotations, which `glance` does carry; R10 and R11 ask where the blank
 //// lines and comments *are*, which it throws away entirely. `lint/layout`
 //// is that half: it reads the tree for where each sibling begins and the

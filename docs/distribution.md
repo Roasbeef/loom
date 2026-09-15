@@ -403,68 +403,65 @@ For example, `make install-debug PREFIX="$HOME/.local/loom-debug"` keeps the
 normal installation beside a diagnostic installation. Installation does not
 stop or replace a running daemon; its next start uses the installed files.
 
-Debug information and live attachment are separate. A diagnostic build boots
-without distribution unless `LOOM_DEBUG_ARGS_FILE` names an operator-owned
-Erlang arguments file. With that variable set, the launcher names the node
-`loom_debug@127.0.0.1` and binds its distribution listener to loopback. Only
-one daemon with that node name can run on the host. The variable is consumed
-before boot, so code-mode emulators do not inherit it. Do not use `ERL_FLAGS`
-for the node name: every child emulator would inherit the same name.
-
-Prepare a fresh credential before starting the diagnostic daemon. The example
-uses the default `~/.loom` state root. For another `--state-dir`, put the file
-under that root's `tokens` directory instead. That directory is masked from
-session tools and the code-mode build plane; Unix mode 0600 alone would not
-protect a credential from a tool running as the same user.
+Use `--profile` on either normal launcher to opt into a local BEAM distribution
+node. The launcher creates a fresh random node name and cookie, binds it to
+loopback, and stores the 0600 cookie in a private directory below the selected
+state root's `tokens` directory. That directory is masked from session tools and the
+code-mode build plane. `--state-dir` selects that root for both `loom` and
+`loomd`; otherwise it is `~/.loom`.
 
 ```sh
-DIAG_ARGS=$(python3 - <<'PYTHON'
-import os
-from pathlib import Path
-import secrets
-import tempfile
-
-root = Path.home() / ".loom" / "tokens"
-root.mkdir(parents=True, exist_ok=True, mode=0o700)
-fd, path = tempfile.mkstemp(prefix="diagnostic-", suffix=".args", dir=root)
-with os.fdopen(fd, "w") as out:
-    out.write("-setcookie " + secrets.token_hex(32) + "\n")
-    out.write("+Muatags true\n")
-print(path)
-PYTHON
-)
-printf '%s\n' "$DIAG_ARGS"
-LOOM_DEBUG_ARGS_FILE="$DIAG_ARGS" "$HOME/.local/loom-debug/bin/loomd"
+loomd --profile --state-dir /private/loom-profile
+loom --profile --state-dir /private/loom-profile
 ```
 
-Start this after the existing daemon has shut down cleanly, or supply a
-separate state directory and its matching credential location. A terminal
-client connecting to an existing daemon cannot change that daemon's startup
-flags. Erlang distribution grants full VM access to the cookie holder; keep
-the arguments file out of transcripts, repositories, and shared artifacts.
+For a daemon that an operator starts regularly, the same restart-only choice
+can live in its existing catalogue file:
 
-From a second terminal, set `DIAG_ARGS` to the path printed by the preparation
-step (the path, not its contents), then take an observational memory census:
-
-```sh
-REL="$HOME/.local/loom-debug/lib/loom/server"
-"$REL"/erts-*/bin/erl -boot "$REL/bin/no_dot_erlang" \
-  -pa "$REL"/lib/*/ebin "$REL/share/diagnostics/ebin" \
-  -name loom_probe@127.0.0.1 -args_file "$DIAG_ARGS" \
-  -kernel inet_dist_use_interface '{127,0,0,1}' -hidden -noshell \
-  -run mem_report main loom_debug@127.0.0.1 live observe
+```toml
+[daemon]
+profile = true
 ```
 
-The census reports process heaps, binary memory, ETS and allocator carriers.
-It does not force garbage collection. The same connection can use `tprof`
-and `msacc` for bounded CPU or allocation profiling. OTP 29 puts `instrument`
-and `msacc` in `runtime_tools`; `tprof` comes from OTP `tools`. Loom also has
-an application named `tools`, so the debug release carries OTP's tool modules
-in a separate code directory without replacing Loom's application metadata.
+`loomd` reads that setting from `--config <loom.toml>`, or from
+`<state-dir>/loom.toml` when no config path is supplied. It is deliberately a
+daemon-only setting: distribution is chosen before the VM starts, so changing
+the file affects the next daemon start and cannot expose an already-running
+node. The release first starts a short local parser process using its bundled
+TOML library, then starts the daemon once with the selected mode. This extra
+boot preserves the same TOML key semantics the daemon validates rather than
+approximating them in shell. `false`, a missing table, and an unprofiled
+client launch leave distribution off.
 
+Each launch prints the exact `loom-profile` command for its generated node. Run
+that command in another terminal to take an observational memory census. The
+helper uses the bundled `mem_report` module and exits after reporting process
+heaps, binary memory, ETS, and allocator carriers. It does not force garbage
+collection or inspect session payloads.
+
+The launcher consumes `--profile` before it starts Erlang. When that client
+finds no local daemon, its one-time local launch carries `--profile` to the new
+`loomd`; an already-published daemon is only authenticated and never
+reconfigured. The client does not send the flag in a control RPC. It does not
+inspect the complete tails of `ext`, `replay`, or `sessions`, stops recognizing
+options after `--`, and preserves values such as `--token --profile` as client
+arguments. The cookie never enters `ERL_FLAGS`, the application argument vector, OS process
+arguments, or a child emulator's environment. Remove the printed credential
+directory after the profiled process exits.
+
+An ordinary stripped release includes the census and OTP `runtime_tools`, so it
+can report heap and allocator state without debug symbols. `make install-debug`
+also retains BEAM debug information and carries OTP's detailed profilers. OTP
+29 provides `instrument` and `msacc` in `runtime_tools`; `tprof` comes from
+OTP `tools`. Loom has an application named `tools`, so the debug release copies
+OTP's modules into a separate diagnostics directory without replacing Loom's
+application metadata.
+
+Diagnostic release launchers also retain `LOOM_DEBUG_ARGS_FILE` for an operator
+who must attach a prepared OTP argument file. It is consumed before boot and
+does not reach code-mode emulators. Use `--profile` for normal profiling
+because it creates a unique node and credential without a wrapper script.
 `make install` restores the normal stripped artifacts and launcher on disk.
-Distribution closes when the diagnostic daemon exits. Remove its temporary
-arguments file after stopping it.
 
 ## Cross-compilation: there is none
 
