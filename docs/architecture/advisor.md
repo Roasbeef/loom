@@ -8,8 +8,9 @@ the harness renders the entries appended to the primary's branch since a
 stored cursor into one text, sends that text to the advisor as a single
 framed user message, and the advisor answers with exactly one call of a
 built-in tool named `advise`. The verdict is `quiet`, `nudge` or
-`block`: `quiet` emits nothing, `nudge` is folded into the start of the
-primary's next run, and `block` is delivered to the primary now.
+`block`: `quiet` emits nothing, `nudge` is delivered at the first
+moment the primary is not working, and `block` is delivered to the
+primary now.
 
 The boundary exists because the two models must not share a context and
 must not be able to talk to each other. A reviewer that shared the
@@ -37,6 +38,11 @@ cadence depends on the distinction.
   it is many steps long.
 - A **review** is one feed the advisor was handed and answered. It is the
   unit the block cooldown is counted in.
+- An **operator turn** is one primary run start whose operation the
+  advisor did not itself open — the operator typing, a schedule firing,
+  or any other layer arriving with work of its own. It is the unit the
+  nudge channel's one-unsolicited-delivery budget is counted in; see
+  "The one-unsolicited-delivery-per-operator-turn budget" below.
 
 **The feed fires at a run's end and at a step threshold inside it.** Two
 occasions, and each answers a failure of the other. Per run alone left a
@@ -66,7 +72,7 @@ the reviewer is deliberately the slower model — and it is also the cost.
 | `client/advisor` | The actor that joins those three to a session: the four hook slots, the step count, the branch scan, the sends, the two durable cells, and the `advise` seam. |
 | `client/catalog` | The `advisor` role and the `[advisor]` table. |
 | `client/serve` | The wiring: resolving the role through the gateway, registering the tool, composing the hooks, seeding the strand, supervising the actor. |
-| `tui` | Recognizing advisor traffic in a transcript and drawing it as harness speech rather than as the operator's. |
+| `tui` | Recognizing advisor traffic in a transcript and drawing it as harness speech rather than as the operator's; `tui/advisor_pending` pulls and draws the undelivered nudge queue beside the composer. |
 
 Each path is relative to its package's source root: `client/advisor` is
 `packages/client/src/client/advisor.gleam`.
@@ -78,8 +84,8 @@ model's request, and carries a `lineage/` cell naming its parent. That
 cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
-`ensure_strand` (`client/advisor.gleam:1269`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1019`) instead, which is the
+`ensure_strand` (`client/advisor.gleam:1714`) creates the advisor through
+`create_idle_strand` (`runtime/api.gleam:1024`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
 
@@ -230,7 +236,7 @@ withheld too, because a marker still discloses that the turn reasoned
 and roughly how much.
 
 **A tool result is clipped from the middle**, by `middle_clip`
-(`client/advisorslice.gleam:406`), because both ends carry signal: a
+(`client/advisorslice.gleam:423`), because both ends carry signal: a
 build says what it was doing at the top and whether it failed at the
 bottom, and a head-only clip throws the verdict away. The marker between
 the halves names how many bytes fell out.
@@ -263,7 +269,7 @@ promote its own output to advice by quoting the header.
 ## Advisor to primary: the verdict
 
 The advisor answers a feed with one `advise` call. The tool value is
-built by `tool` (`tools/advise.gleam:123`), and it decides nothing: it
+built by `tool` (`tools/advise.gleam:137`), and it decides nothing: it
 decodes the arguments and hands the pair to a single closure on an
 `Advice` record the host fills, the same arrangement `tools/agent`'s
 `Agency` and `tools/context`'s `Context` use, and for the same reason:
@@ -272,10 +278,10 @@ decodes the arguments and hands the pair to a single closure on an
 Two things the model does not supply. The first is its own identity:
 `judge` is handed `Ctx.strand`, which the driver set from its own
 durable name, so a verdict cannot be attributed to a strand that did not
-produce it. `judge` (`client/advisor.gleam:958`) refuses any caller
+produce it. `judge` (`client/advisor.gleam:1134`) refuses any caller
 whose name is not `advisor`. The second is what a verdict costs.
 
-`decode_verdict` (`tools/advise.gleam:203`) is total and decodes the
+`decode_verdict` (`tools/advise.gleam:222`) is total and decodes the
 verdict and its text as one pair, because half the failure modes are
 disagreements between them: a `nudge` with nothing to say has no advice
 in it, and a `quiet` carrying text is a model that decided to say
@@ -286,7 +292,7 @@ text are one case, so that the empty string is not a way through.
 | Verdict | What it asks for | What the primary sees |
 |---|---|---|
 | `quiet` | Nothing. The expected common case. | Nothing. The guard records nothing either. |
-| `nudge` | A nit, a reminder, or a correction that can wait. | One fenced `advisor-nudges` message folded into the start of its next run. |
+| `nudge` | A nit, a reminder, or a correction that can wait for the primary to stop. | One fenced `advisor-nudges` message, delivered at the first of three moments: a born-placed follow-up at the primary's run end when the inner layer placed none; at once, as a fresh run, if the primary is already idle; otherwise folded into the start of its next run. |
 | `block` | A wrong direction, a missed requirement, an unsafe step. | A framed advice message delivered now: a steer at its next checkpoint if it is mid-run, a fresh run if it is idle. |
 
 The word `block` is honest about what it means today: the primary is
@@ -299,6 +305,41 @@ run end. See "Deferred" below.
 went through is reported back to the advisor: `Steered` renders as
 "steered the primary's open run" and `Started` as "started a run on the
 idle primary".
+
+### The one-unsolicited-delivery-per-operator-turn budget
+
+Two of the nudge channel's three delivery doors reach the primary
+without anybody having asked: a verdict judged against an already-idle
+primary, and the born-placed follow-up at the primary's run end. The
+third — folding the queue into the start of a run somebody else opened —
+spends nothing, because that run was going to carry a prompt anyway.
+The two unsolicited doors share one delivery per **operator turn**
+(`Memory.turn`), and only one, because without a bound they close a loop
+on themselves: a follow-up ends a run of its own, that run end feeds the
+advisor, the advisor's next nudge places another follow-up, and so on
+for as long as the advisor keeps finding something to say. The guard's
+duplicate ring cannot cut this loop — a paraphrase passes it — which is
+exactly why the bound has to live somewhere else.
+
+`turn` is heap state, not a guard field, for the same reason the
+coalesced-feed debt and the step count are: it is derived from which
+run starts this actor itself opened, a restart that forgets it costs at
+most one extra wake, and the guard's JSON should describe what the
+advisor said rather than when the harness last interrupted somebody.
+The actor pairs `turn` with `woke`, the newest run this actor opened on
+the primary, and reads them together at every run start: a run whose
+operation is not `woke` is somebody arriving with work of their own, so
+the turn begins again; a run whose operation *is* `woke` is this actor's
+own wake coming back around, and renewing the turn there would let one
+nudge's delivery pay for the next.
+
+The block cooldown is a separate counter measuring a separate thing —
+reviews, not operator turns — and the two interact only at one point. A
+block downgraded by the cooldown becomes a nudge, joins the pending
+queue, and is then free to go through either unsolicited door like any
+other nudge: it can therefore wake an idle primary, once per operator
+turn, the same as a nudge the advisor wrote as a nudge in the first
+place.
 
 ### The emission guard
 
@@ -348,12 +389,34 @@ The rules, in the order `decide` applies them:
    when its judgement about urgency is overridden.
 4. **A nudge that does not fit the queue is dropped.** Both caps are
    checked: a count and a byte total, because one nudge can be a page.
+   `queue_full_reason` reads "the nudge queue is full; it drains at the
+   primary's run end or its next run start", naming both occasions now
+   that a nudge no longer waits only for the next prompt.
 
 The shipped bounds are `default_policy`: a two-review cooldown, a ring of
-thirty-two digests, and at most eight nudges or four kilobytes waiting
-for the next run start. Only the cooldown is configurable.
+thirty-two digests, and at most eight nudges or four kilobytes waiting to
+be drained. Only the cooldown is configurable.
 
-The actor's `decide` (`client/advisor.gleam:978`) writes the guard to
+The model-facing wording moved with the mechanism. The tool's own
+description of `nudge` and the `Queued` ack ("nudge queued for the
+primary's run end or its next run start") no longer promise the next run
+start alone, and a `block` downgraded inside the cooldown window carries
+the same pair of occasions in its reason. `advise` also gained a fourth
+ack, `Woke(how:)`: when a verdict's own queue goes out through one of the
+unsolicited doors, the advisor is told a nudge woke the primary — "nudges
+delivered now: …" — rather than being told `Queued`, which would claim
+the queue was still waiting when it was not. `how` names the door it
+went through ("started a run on the idle primary" or "steered the
+primary's open run") and appends how many nudges rode it — "…, carrying 2
+nudges" — because the queue drains whole and an advisor that wrote one
+nudge may see four go out. A
+downgraded block whose queue was delivered at once keeps `Downgraded`
+rather than becoming `Woke` or `Delivered`: a downgrade's whole meaning
+is that the primary was *not* stopped for it, and either of those acks
+would claim otherwise; the wake is instead appended to the downgrade's
+own reason.
+
+The actor's `decide` (`client/advisor.gleam:1154`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the send
 costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -402,7 +465,7 @@ cannot combine with the surrounding text to spell the literal again.
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:406`).
+The constant is `brief` (`client/advisor.gleam:495`).
 
 Three properties follow from the prepend. A durable first message would
 be summarized away by the advisor's own compaction and would sit in the
@@ -427,6 +490,7 @@ orders.
 | The advisor strand itself | Its three strand registers, as any strand's | No. A reboot restores the driver. |
 | The standing brief | Nowhere. Re-applied per request. | Not applicable. |
 | The coalesced-feed debt and the step count | The actor's heap, deliberately. | Yes, and each costs at most one deferred review. |
+| The operator turn's unsolicited-delivery budget (`turn`) and the newest run this actor opened (`woke`) | The actor's heap, deliberately. | Yes, and that costs at most one extra wake: a restart resets `turn` to `Unspent`, so the next nudge is free to wake the primary again whether or not this turn had already spent its one delivery. |
 | The actor's process state | Its heap, and it is otherwise only a cache of the two cells. | Yes, and that costs at most one skipped review. |
 
 The advisor actor is the only writer of both cells, and forging either
@@ -502,10 +566,11 @@ costs at most one review.
   reported to the advisor in its tool result.
 - **The advisor's own runs fail.** A provider error or a refused tool
   settles in its own tree the way any strand's does.
-- **A nudge drain is lost.** The run-start drain clears the queue and
-  writes the guard cell before it replies, so nudges drained into a run
-  start whose wait has already expired — or into an admission that does
-  not commit — are gone. This is accepted rather than prevented: the
+- **A nudge drain is lost.** Both drains — the run-start drain and the
+  run-end drain that places a born-placed follow-up — clear the queue and
+  write the guard cell before they reply, so nudges drained into a run
+  boundary whose wait has already expired — or into a transaction that
+  does not commit — are gone. This is accepted rather than prevented: the
   alternative is a claim-then-confirm protocol, a second round trip on
   the driver process and a third guard state to reason about, which is
   more machinery than a dropped nit is worth. A lost nudge costs the
@@ -514,13 +579,39 @@ costs at most one review.
   The feed path is deliberately stricter, because a lost feed is a
   stretch of the primary's work nobody reviews: the cursor advances only
   on a successful send.
+- **An idle wake fails to send.** `deliver_nudges` drains and stores the
+  guard before it sends, the same ordering the other two drains take, so
+  a wake whose send fails loses the drained nudges exactly the way the
+  run-start drain does — an accepted loss, not a new one. Unlike the
+  other two drains, though, the failure is not silent to the advisor: the
+  call that spent this operator turn's delivery gets back `Error(reason)`
+  rather than an ack, so the advisor's tool result reads as the failed
+  call it was. The rare case is a run opening on the primary between the
+  idle read and the send — another layer's prompt landing in the same
+  window — where the drain's `Steered` outcome finds the nudges queued as
+  a steer on that new run rather than lost; this is the same result the
+  primary would have gotten had the read happened one commit later, and
+  the advisor is told `Woke` all the same.
 
 Two waits are bounded, and both are bounded because the caller is a
-place where a dead caller is a run that never settles. The run-start
-nudge drain waits `pending_timeout_ms` (500) on the strand driver; an
-`advise` call waits `judge_timeout_ms` (10,000) on a live tool effect.
+place where a dead caller is a run that never settles. Both nudge
+drains — run-start and run-end — wait `pending_timeout_ms` (500) on the
+strand driver, the same bound for the same reason; an `advise` call waits
+`judge_timeout_ms` (10,000) on a live tool effect.
 Both go through a monitored send-and-select rather than `process.call`,
 which exits its *caller* on a timeout or a dead callee.
+
+The run-end drain carries that bound into the request. `TakeAtRunEnd`
+takes a `deadline` — the asking hook's `now` plus `pending_timeout_ms`,
+read from the clock the actor also reads — and a request served past it
+answers with no nudges and touches neither the queue nor the turn.
+Without it, an actor busy scanning a branch could serve the request after
+the hook had already returned `None` and ended the run, clearing the
+queue and spending the turn's one wake on a primary that has stopped: no
+nudges delivered, and no budget left to deliver them with. The run-start
+drain needs no deadline, because a late answer there loses the nudges but
+spends nothing, which is the same accepted loss as an uncommitted
+transaction.
 
 ## What each side can and cannot see
 
@@ -542,7 +633,7 @@ whole effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2663`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2666`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That is deliberate: the isolation is between the two
 models, not between the harness and the person running it.
@@ -577,8 +668,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:7799`) extracts one of three
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7890`) renders
+`advisor_payload` (`tui.gleam:7807`) extracts one of three
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7898`) renders
 it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
 `advisor feed`) with an opening excerpt and the expand hint; expanded,
 the body under the same heading with the frame lines dropped, since
@@ -604,6 +695,36 @@ the dependency posture and not an oversight:
 strings the server writes, so a drift on either side fails a test rather
 than quietly rendering a raw frame at an operator.
 
+### The pending panel is a pull observation, not a transcript frame
+
+Everything above describes advice and nudges that already reached the
+primary's branch. A nudge sitting in the guard cell, still undelivered,
+is not on any branch and has no frame to recognize — so the terminal
+reads it separately, through the read-only `advisor_pending` command
+(`packages/client/src/client/advisor_pending.gleam`, `docs/client-protocol.md`
+§"Advisor nudge queue observation") and draws it as a compact panel,
+headed `advisor nudges pending (N)`, above the composer.
+
+The terminal issues this read itself, with no operator keystroke, on
+three transitions and no others: the primary's own run settling, a
+review settling while the primary is already idle (a review's end is
+where a nudge is queued in the first place), and the primary first
+appearing in the roster (the attach edge, where idleness is otherwise
+unknown until the first snapshot). `tui.advisor_nudges_action`
+(`packages/tui/src/tui.gleam`) is the decision function; every other
+transition — a phase change on an unrelated strand included — holds,
+because the queue cannot have grown without one of those three edges.
+
+The panel is deliberately not a transcript row, for the same reason the
+protocol proposal (`protocol-change/039-advisor-pending-observation.md`)
+gives for rejecting an entry-shaped alternative: drawing undelivered
+advice where delivered messages go would tell the operator the model had
+already read it, when the whole reason to show it is that the model has
+not. It clears the moment the primary leaves idle — that run start is
+what drains the queue into the prompt — and it never enters model
+context: the read is a snapshot pulled by the terminal for the operator
+alone, never fed back to either model.
+
 ## Configuration
 
 Two pieces of `loom.toml`, both optional.
@@ -620,7 +741,7 @@ block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
 The `advisor` route is a sixth routable role, parsed to
-`advisor_role` (`client/catalog.gleam:285`) — `model.Custom("advisor")`
+`advisor_role` (`client/catalog.gleam:289`) — `model.Custom("advisor")`
 rather than a sixth named variant, because `provider/model.Role`'s five
 names are the design vocabulary and `Custom` is what that type provides
 for a role an application defines. It is last in the canonical order
@@ -643,7 +764,7 @@ advisor` line, which is the ordinary posture and says nothing, and one
 that routes the role to a chain this host cannot serve, whose only other
 symptom is a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1517`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1525`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is: an unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default
@@ -677,11 +798,11 @@ existing roles.
 
 ## Where the code refined the design
 
-Seven differences from issue #137's September 12 comment, each recorded
-here rather than left for a reader to find.
+Eight differences from issue #137's September 12 comment, each recorded
+here rather than left for a reader to find. Two of the eight reverse a
+ruling rather than sharpen it, and both are listed first.
 
-- **The feed is no longer per run.** This is the one that reverses a
-  ruling rather than sharpening it, so it is first. The September 12
+- **The feed is no longer per run.** The September 12
   comment struck the opening post's proposed on-checkpoint hook and fixed
   the cadence at one feed per run, on the grounds that per step would
   cost an inference per tool round trip against a primary that has not
@@ -698,6 +819,24 @@ here rather than left for a reader to find.
   the opening post modelled this on, feeds per turn and adds a bounded
   wait (`advisor.syncBacklog`) we still decline — a wait shorter than a
   review is inert and a longer one is the awaited block under "Deferred".
+- **A nudge may now wake an idle primary.** The September 12 comment
+  deliberately left a queued nudge waiting for the primary's next run
+  start, on the reasoning that delivering it to an idle primary is the
+  block channel by another name. A live session reversed that ruling:
+  the advisor queued four nudges from mid-run feeds, the primary stopped
+  to ask the operator whether to push a branch, and the nudges — saying
+  to rebase before pushing — reached it only after the operator had
+  already answered, which is exactly the case a nudge is supposed to
+  catch (issue #425). The operator asked for the higher priority in
+  those words, and the ladder became quiet, nudge, block: a nudge is now
+  delivered at the first of three moments the primary is not working,
+  rather than only at its next run start. What still bounds it is not
+  the old ruling's caution but a new one built for this reversal: the
+  two doors that reach the primary unsolicited — the idle wake and the
+  run-end follow-up — spend one delivery per operator turn between them,
+  which is what "The one-unsolicited-delivery-per-operator-turn budget"
+  above exists to enforce. A nudge still never interrupts a run in
+  progress; only *how soon after it stops* changed.
 - **The silent verdict is spelled `quiet`, not `nil`.** The three words
   the tool accepts are `quiet`, `nudge` and `block`; the design comment
   wrote the first as `nil`.
@@ -740,9 +879,19 @@ waiting on.
 - **A brief override file.** The brief is a constant.
 - **Interrupt-policy nuance** — plan mode, terminal-answer suppression.
   The cooldown is the one policy shipped.
-- **Advisor status in the terminal.** The advisor's branch is reachable
-  through the strand list, but nothing reports that a review is in
-  flight or when the last verdict landed.
+- **Advisor status in the terminal.** Narrowed by the pending-nudge
+  panel: an operator can now see what the advisor is holding for an idle
+  primary. What is still missing is review *progress* — nothing reports
+  that a review is in flight right now or when the last verdict landed —
+  which the panel does not address, since it reads the guard cell rather
+  than the advisor actor's live state.
+- **The pending panel has no way to expand past three nudges.** It shows
+  at most `visible_nudges` (3) and a remainder count
+  (`packages/tui/src/tui/advisor_pending.gleam`); an operator who wants
+  the fourth nudge and beyond has no command to see it. Open question
+  from the implementation: whether that earns a keybinding, a wider
+  panel on demand, or is left as the reviewer roster's own three-row
+  allowance already is.
 
 ## Verification
 
@@ -785,9 +934,14 @@ feeding the advisor, a busy advisor not fed again, the advisor's own run
 end catching up on a feed that was coalesced away, a review end with
 nothing owed polling nothing, an empty branch sending nothing, a caller
 that is not the advisor refused, a block reaching the primary, a queued
-nudge reaching the primary's next run start, and the isolation the whole
-design rests on — no lineage cell for the advisor, and an Agency send
-from the primary to it refused as unaddressable.
+nudge reaching the primary's next run start, a nudge waking an idle
+primary and a downgraded block keeping its own acknowledgement even when
+its queue went out at once, a refused wake becoming an error outcome, the
+run-end drain placing a born-placed follow-up and declining a second one
+inside the same operator turn, a run this actor opened not renewing that
+turn's budget, and the isolation the whole design rests on — no lineage
+cell for the advisor, and an Agency send from the primary to it refused
+as unaddressable.
 
 It also covers the step trigger, which is the half a run-end fixture
 cannot reach: steps below the threshold feeding nothing, the step that
@@ -826,6 +980,24 @@ bullet count with a multi-line nudge counted once, a feed frame
 recognized on the advisor's branch, an ordinary turn left alone, and all
 six frame literals matched against the server's.
 
+**`client/gateway_test`** covers the `advisor_pending` observation
+against a real session store: the queue reported oldest first without
+draining the guard cell, a session with no guard cell answering an empty
+board rather than a refusal, a malformed cell answering `unavailable`
+rather than an empty board, the terminal's copied strand-name constants
+pinned against the server's own, and the command refused before the
+store is touched when the attachment has not subscribed.
+
+**`packages/tui/test/advisor_pending_test.gleam`** covers the panel's
+own half: the decoder refusing every malformed shape, the rendering's
+count and remainder line, control characters sanitized out of a drawn
+nudge, the panel appearing beside the composer and clearing the moment
+the primary leaves idle, each of the three read-worthy transitions and
+that every other one holds, and the command lane regression the real
+terminal drive found — an unlisted command name defaulting to the
+mutation lane and hanging the composer, and an unlisted reply shape
+failing the recording replayer as an answer to no command.
+
 **`advisor_e2e_test`** is the acceptance fixture, and it is the only
 test that asks the question issue #137 actually asks: whether a second
 model, routed by the catalogue and driven by the harness alone, sees a
@@ -837,12 +1009,14 @@ seam, the actor against a fake runtime. This one is the whole assembly:
 scripted transport keyed on the request URL so the two strands can be
 told apart. Three operator turns on the primary: the first review
 answers `block`, and the framed advice appears in a *primary request
-body*; the second answers `nudge`, which is folded into the next run
-start as one fenced `advisor-nudges` message; the third answers `quiet`,
-and the assertion is that no further primary request appears.
-Assertions are on request bodies rather than on the durable tree
-throughout, because the tree shows a message that was written and a body
-shows one that was sent to a model.
+body*; the second answers `nudge`, which reaches `main` as one fenced
+`advisor-nudges` message the moment the primary stops — a fresh run if it
+is already idle, a born-placed follow-up on the run that is ending
+otherwise, either costing `main` exactly one more request — and the third
+answers `quiet`, and the assertion is that no further primary request
+appears. Assertions are on request bodies rather than on the durable
+tree throughout, because the tree shows a message that was written and a
+body shows one that was sent to a model.
 
 The advisor's lane is scripted by position rather than by count, which
 is worth knowing before changing the fixture. The loop is not lockstep:
