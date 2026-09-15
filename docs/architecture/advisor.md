@@ -643,7 +643,7 @@ advisor` line, which is the ordinary posture and says nothing, and one
 that routes the role to a chain this host cannot serve, whose only other
 symptom is a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1492`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1517`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is: an unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default
