@@ -109,8 +109,9 @@ def main():
     parser.add_argument('--client', type=Path, required=True)
     parser.add_argument('--slim', type=Path, required=True)
     args = parser.parse_args()
-    if git(args.root, 'status', '--porcelain'):
-        parser.error('release manifests require a clean committed source tree')
+    dirty = git(args.root, 'status', '--porcelain')
+    if dirty:
+        parser.error('release manifests require a clean committed source tree:\n' + dirty)
     epoch = int(os.environ.get('SOURCE_DATE_EPOCH', git(args.root, 'show', '-s', '--format=%ct', 'HEAD')))
     if not 0 <= epoch <= 0xffffffff:
         parser.error('SOURCE_DATE_EPOCH must fit an unsigned 32-bit timestamp')
