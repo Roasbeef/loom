@@ -195,6 +195,7 @@ fn generation_spec(
   configuration: strand.StrandConfiguration,
 ) -> effects.RequestSpec {
   effects.GenerationRequest(
+    response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
     operation: op_id(),
     step_id: "turn-1",
     attempt: 1,
@@ -298,6 +299,7 @@ pub fn a_deferred_poll_never_walks_a_chain_test() {
     wiring.provider_request(
       wide_config(),
       effects.PollRequest(
+        response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
         operation: op_id(),
         step_id: "poll-1",
         poll: 1,
@@ -394,6 +396,7 @@ pub fn poll_requests_settle_in_band_as_unsupported_test() {
   let effects_record = wiring.build_effects(wide_config())
   let handle =
     effects_record.provider.request(effects.PollRequest(
+      response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
       operation: op_id(),
       step_id: "poll-1",
       poll: 1,

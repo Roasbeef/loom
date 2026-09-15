@@ -78,6 +78,7 @@ import tui/session_selector
 import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
+import tui/stream_identity
 import tui/text_hygiene
 import tui/theme
 import tui/tool_activity
@@ -158,8 +159,9 @@ pub const live_stream_limit = 24_576
 ///
 /// A request owns its text, thinking and tool-call fragments. Operation IDs
 /// alone cannot separate requests around tool batches or retries. An `end`
-/// observation keeps an empty marker until the next request so an older cut's
-/// sampled preview cannot resurrect a completed answer.
+/// observation keeps an identity marker so an older captured preview cannot
+/// resurrect a completed answer. When the request names its reserved response
+/// entry, its bounded fragments remain visible until that entry arrives.
 ///
 /// `bytes` is what the fragments weigh, carried rather than recomputed: the
 /// budget is checked once per delta and a delta arrives per provider token,
@@ -5134,6 +5136,7 @@ fn render_cut(
       stream.strand == active
       && { stream.generation != "" || operation == Ok(stream.operation) }
       && !snapshot_view.has_result(view, active, stream.operation)
+      && !response_recorded(branch.records, stream.generation)
     })
 
   // A captured tool-result names the exact provider call, so one completed
@@ -5717,7 +5720,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Model(
           ..model,
           streams: receive_stream(
-            model.streams,
+            streams_before_end(model, strand, operation, generation, kind),
             strand,
             operation,
             generation,
@@ -5934,6 +5937,35 @@ fn set_strand_phase(
   })
 }
 
+// A client attaching near completion may have only a sampled preview, with
+// no later delta before end. Transfer that exact sample into the bounded live
+// region before adding the end marker; an older request's sample cannot qualify.
+fn streams_before_end(
+  model: Model,
+  strand: String,
+  operation: String,
+  generation: String,
+  kind: String,
+) -> List(Stream) {
+  use <- bool.guard(
+    kind != "end"
+      || stream_identity.response_entry(generation) == None
+      || list.any(model.streams, fn(stream) { stream.strand == strand }),
+    model.streams,
+  )
+  let preview = option.then(model.captured, fn(captured) { captured.1.preview })
+  case preview {
+    Some(sample)
+      if sample.operation == operation && sample.generation == generation
+    ->
+      case response_recorded(model.records, generation) {
+        True -> model.streams
+        False -> [preview_stream(strand, sample), ..model.streams]
+      }
+    _ -> model.streams
+  }
+}
+
 // A provider request owns all its fragment kinds. A new request replaces
 // them together; an old terminal can retire only its own request. Completion
 // comes from the same observer as deltas, independent of snapshot timing.
@@ -5945,6 +5977,18 @@ fn receive_stream(
   kind: String,
   text: String,
 ) -> List(Stream) {
+  // Completion is final for this exact request. Late fragments cannot
+  // reopen it, while a successor still replaces the whole old generation.
+  use <- bool.guard(
+    kind != "end"
+      && list.any(streams, fn(stream) {
+      stream.strand == strand
+      && stream.operation == operation
+      && stream.generation == generation
+      && stream.kind == "end"
+    }),
+    streams,
+  )
   case kind {
     "end" -> {
       let newer =
@@ -5956,10 +6000,19 @@ fn receive_stream(
         })
       case newer {
         True -> streams
-        False -> [
-          Stream(strand, operation, generation, "end", [], 0),
-          ..list.filter(streams, fn(stream) { stream.strand != strand })
-        ]
+        False -> {
+          // A named response remains visible until its exact record replaces
+          // it. The marker suppresses stale previews without copying text.
+          let retained =
+            list.filter(streams, fn(stream) {
+              stream.strand != strand
+              || {
+                stream.kind != "end"
+                && stream_identity.response_entry(generation) != None
+              }
+            })
+          [Stream(strand, operation, generation, "end", [], 0), ..retained]
+        }
       }
     }
     _ -> {
@@ -6317,11 +6370,16 @@ fn display_streams(model: Model) -> List(Stream) {
   let active =
     list.filter(model.streams, fn(stream) {
       stream.strand == model.active_strand
+      && !response_recorded(model.records, stream.generation)
     })
   let preview = case model.captured {
     Some(#(_, view)) ->
       case view.preview, dict.get(view.operations, model.active_strand) {
-        Some(sample), Ok(op) if op == sample.operation -> Some(sample)
+        Some(sample), Ok(op) if op == sample.operation ->
+          case response_recorded(model.records, sample.generation) {
+            True -> None
+            False -> Some(sample)
+          }
         Some(_), Ok(_) | Some(_), Error(Nil) | None, _ -> None
       }
     None -> None
@@ -6329,6 +6387,18 @@ fn display_streams(model: Model) -> List(Stream) {
   case active, preview {
     [], Some(sample) -> [preview_stream(model.active_strand, sample)]
     _, _ -> active
+  }
+}
+
+// The record and the live answer change ownership in one render projection.
+// Text equality cannot establish that transfer: two answers may be identical.
+fn response_recorded(
+  records: List(protocol.EntryRecord),
+  generation: String,
+) -> Bool {
+  case stream_identity.response_entry(generation) {
+    None -> False
+    Some(id) -> list.any(records, fn(record) { record.entry.id == id })
   }
 }
 

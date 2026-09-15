@@ -2,8 +2,10 @@
 //// These fixtures enter through actual v2 frames and the adopted channel.
 
 import core/clock
+import core/entry
 import core/ids
 import core/json
+import core/message
 import core/register
 import etui/backend
 import etui/geometry
@@ -15,8 +17,11 @@ import machine/operation
 import machine/strand
 import tui
 import tui/frame
+import tui/protocol
 import tui/session_channel
 import tui/snapshot
+import tui/snapshot_view
+import tui_test/gateway
 import tui_test/pushed
 
 fn delta(generation, kind, text) {
@@ -235,4 +240,180 @@ pub fn exact_durable_retirement_clears_a_request_without_an_end_push_test() {
   assert retired.streams == []
     as "the exact result closes a relay failure which omitted its end push"
   assert !string.contains(rendered(retired), "live-fragment")
+}
+
+// A terminal observation precedes the durable response. The answer already
+// shown to the reader must survive that interval without replaying history.
+pub fn completed_answer_stays_visible_until_its_record_arrives_test() {
+  let generation = named_generation()
+  let streaming =
+    pushed.attached()
+    |> tui.accept_connection_message(delta(
+      generation,
+      "text",
+      "completed-answer",
+    ))
+  assert string.contains(rendered(streaming), "completed-answer")
+    as "the answer is visible before the terminal observation"
+  let ended =
+    streaming |> tui.accept_connection_message(delta(generation, "end", ""))
+  assert string.contains(rendered(ended), "completed-answer")
+    as "provider completion cannot erase the answer before durable handoff"
+}
+
+fn named_generation() -> String {
+  let #(entry, _) = ids.mint_entry(ids.generator(clock.fixed(0), 991))
+  json.to_string(
+    json.Array([
+      json.String("generation"),
+      json.String("step"),
+      json.Int(1),
+      json.String(ids.entry_id_to_string(entry)),
+    ]),
+  )
+}
+
+// The saved entry replaces its live presentation in one adoption. Another
+// entry, including identical prose, cannot perform that handoff.
+pub fn exact_response_record_replaces_ended_stream_once_test() {
+  let generation = named_generation()
+  let started =
+    pushed.attached()
+    |> tui.accept_connection_message(delta(
+      generation,
+      "text",
+      "completed-answer",
+    ))
+    |> tui.accept_connection_message(delta(generation, "end", ""))
+  let unrelated = capture_answer(started, 992)
+  assert list.length(unrelated.streams) == 2
+    as "equal text in a different entry cannot retire the response"
+  let recorded = capture_answer(started, 991)
+  assert recorded.streams == []
+    as "the exact response entry retires both fragments and marker"
+  assert list.length(string.split(rendered(recorded), "completed-answer")) == 2
+    as "the durable answer is rendered exactly once"
+}
+
+pub fn ended_response_rejects_late_fragments_and_preserves_idle_cut_test() {
+  let generation = named_generation()
+  let ended =
+    pushed.attached()
+    |> tui.accept_connection_message(delta(
+      generation,
+      "text",
+      "completed-answer",
+    ))
+    |> tui.accept_connection_message(delta(generation, "end", ""))
+  let late =
+    ended
+    |> tui.accept_connection_message(delta(
+      generation,
+      "text",
+      "obsolete-fragment",
+    ))
+  assert late.streams == ended.streams
+    as "a late fragment cannot reopen a completed response"
+  let stale = captured(late, metadata(None, None, json.Null))
+  assert string.contains(rendered(stale), "completed-answer")
+    as "an older idle capture is not evidence of response retirement"
+}
+
+fn capture_answer(model, seed) {
+  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(0), seed))
+  let assert Ok(protocol.EntryAdded(protocol.EntryRecord(
+    _,
+    entry.MessageEntry(message: response, ..),
+  ))) =
+    protocol.decode_event(gateway.assistant_entry("main", "completed-answer", 1))
+    as "the fixture uses the production assistant codec"
+  let row = entry.MessageEntry(id, None, 1, 0, response, False)
+  let assert Ok(json.Object(fields)) =
+    json.parse(metadata(None, None, json.Null))
+    as "metadata is a valid object"
+  let cells = [
+    cell(
+      register.StrandConfig,
+      codec.encode_configuration(
+        strand.StrandConfiguration(
+          strand.ModelIdentity("test", "test"),
+          strand.ThinkingOff,
+          [],
+        ),
+      ),
+    ),
+    cell(register.StrandLeaf, json.String(ids.entry_id_to_string(id))),
+    cell(
+      register.StrandState,
+      codec.encode_strand_state(strand.StrandState(None, [])),
+    ),
+  ]
+  let data =
+    json.Object([
+      #("cells", json.Array(cells)),
+      ..list.filter(fields, fn(pair) { pair.0 != "cells" })
+    ])
+  let cut =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected("A", "epoch", "incarnation"),
+        "connection",
+        message.Origin("alice", "Alice"),
+        snapshot.Operator,
+      ),
+      10,
+      data,
+      snapshot.Window([snapshot.Loaded(row, 100)], 100, None),
+      None,
+    )
+  let assert Ok(view) = snapshot_view.decode(cut)
+    as "the captured response and strand leaf form a valid cut"
+  tui.apply_channel_update(
+    model,
+    session_channel.Captured(cut, view, session_channel.Refreshed),
+  )
+}
+
+pub fn provider_end_does_not_replay_a_screenful_of_completed_text_test() {
+  let generation = named_generation()
+  let text = string.repeat("visible answer paragraph.\n\n", 80)
+  let painted =
+    pushed.attached()
+    |> tui.accept_connection_message(delta(generation, "text", text))
+    |> tui.update(backend.Resize(84, 24), _)
+  assert painted.rendered_row_count > 24
+    as "the completed answer actually exceeds one viewport"
+  let ended =
+    painted
+    |> tui.accept_connection_message(delta(generation, "end", ""))
+    |> tui.update(backend.Tick, _)
+  assert ended.rendered_rows == painted.rendered_rows
+    as "the terminal marker cannot replace the answer with older history"
+  assert ended.revealed_rows == painted.revealed_rows
+    as "the terminal marker cannot restart the viewport animation"
+}
+
+pub fn preview_only_answer_survives_its_matching_end_test() {
+  let #(op, _) = ids.mint_op(ids.generator(clock.fixed(1000), 1))
+  let id = ids.op_id_to_string(op)
+  let generation = named_generation()
+  let preview =
+    json.Object([
+      #("revision", json.Int(1)),
+      #("operation", json.String(id)),
+      #("discontinuous", json.Bool(True)),
+      #("generation", json.String(generation)),
+      #("kind", json.String("text")),
+      #("text", json.String("sampled-answer")),
+    ])
+  let attached = captured(pushed.attached(), metadata(Some(op), None, preview))
+  assert string.contains(rendered(attached), "sampled-answer")
+    as "an attachment can display only the captured preview"
+  let ended =
+    attached
+    |> tui.accept_connection_message(delta_for(id, generation, "end", ""))
+  assert string.contains(rendered(ended), "sampled-answer")
+    as "end cannot erase a preview without a subsequent text delta"
+  assert list.length(ended.streams) == 2
+    as "one sample and one empty marker retain bounded presentation custody"
 }

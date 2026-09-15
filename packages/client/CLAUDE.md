@@ -1,5 +1,13 @@
 # client
 
+## Streamed response handoff
+
+Provider observation identities include the reserved response entry for
+generation and poll requests. The runtime supplies that ID from its durable
+intent; `gateway.request_identity` never mints a replacement. This lets the
+terminal distinguish provider completion from the delivery of its saved answer.
+See `protocol-change/036-stream-response-handoff.md`.
+
 ## Purpose
 
 The single daemon and ClientGateway: one listener manages independently

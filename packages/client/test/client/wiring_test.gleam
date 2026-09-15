@@ -296,6 +296,7 @@ pub fn a_generation_request_still_carries_the_head_test() {
     wiring.provider_request(
       wiring.Config(..config(), system: Some("you are an agent")),
       effects.GenerationRequest(
+        response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
         operation: operation_id,
         step_id: "turn-1",
         attempt: 1,

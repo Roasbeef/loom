@@ -1355,6 +1355,7 @@ fn start_effect(
         state.effects.hooks.context(operation, projected.messages)
       let spec =
         effects.GenerationRequest(
+          response_entry:,
           operation:,
           step_id:,
           attempt:,
@@ -1447,6 +1448,7 @@ fn start_effect(
         PollEffect(operation:, step_id:, poll:, response_entry:),
         configuration,
         effects.PollRequest(
+          response_entry:,
           operation:,
           step_id:,
           poll:,

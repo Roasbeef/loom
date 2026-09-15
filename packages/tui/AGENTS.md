@@ -1,5 +1,15 @@
 # tui
 
+## Streamed response handoff
+
+For generation and poll observations carrying a reserved response entry,
+`stream_identity` validates the entry ID. An end marker closes fragment intake
+while the already-bounded answer stays visible. The exact saved entry replaces
+it during capture adoption; unrelated records and stale idle captures do not.
+A successor request or exact operation result also retires it. Legacy and
+summary observations retain their old completion behavior. See
+`protocol-change/036-stream-response-handoff.md`.
+
 ## Purpose
 
 The shipped native terminal client. It authenticates one daemon control

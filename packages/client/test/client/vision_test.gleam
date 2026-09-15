@@ -276,6 +276,7 @@ fn generation(context: List(message.AgentMessage)) -> effects.RequestSpec {
   let #(operation_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   effects.GenerationRequest(
+    response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
     operation: operation_id,
     step_id: "turn-1",
     attempt: 1,
@@ -455,6 +456,7 @@ pub fn vision_capable_model_keeps_images_test() {
     wiring.provider_request(
       config_with(vision_gateway()),
       effects.GenerationRequest(
+        response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
         operation: operation_id,
         step_id: "turn-1",
         attempt: 1,

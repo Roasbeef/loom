@@ -248,6 +248,7 @@ pub fn every_strand_is_handed_the_same_bytes_test() {
     wiring.provider_request(
       config,
       effects.GenerationRequest(
+        response_entry: ids.mint_entry(ids.generator(clock.fixed(0), 991)).0,
         operation: op_id(),
         step_id: "step-1",
         attempt: 1,
