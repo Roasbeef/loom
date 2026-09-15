@@ -225,7 +225,9 @@ fn wrap_code_row(line: span.Line, width: Int) -> List(span.Line) {
   let #(prefix, source) = split_at_code_gutter(line.spans)
   let budget = width - spans_width(prefix)
   case budget <= 0 {
-    True -> [line]
+    // At very narrow widths the gutter would hide every source cell. Drop
+    // the whole prefix rather than clipping a line number into a false one.
+    True -> code_rows(source, [], width, [])
     False -> code_rows(source, prefix, budget, [])
   }
 }
@@ -512,15 +514,100 @@ fn diff_span(line: String) -> span.Span {
 /// let rows = markdown.diff("-old\n+new")
 /// ```
 pub fn diff(patch: String) -> List(span.Line) {
-  patch
-  |> text_hygiene.multiline
-  |> string.split("\n")
-  |> list.map(fn(line) {
-    span.line_new([
-      span.span_styled(code_gutter, theme.signal_bold()),
-      diff_span(line),
-    ])
+  let #(_, rows) =
+    patch
+    |> text_hygiene.multiline
+    |> string.split("\n")
+    |> list.map_fold(None, numbered_diff_row)
+  let width =
+    list.fold(rows, 0, fn(width, row) { int.max(width, string.length(row.0)) })
+
+  // Numbers precede the code gutter so hard wraps retain the source line's
+  // coordinate, including when the patch is nested in a transcript prefix.
+  list.map(rows, fn(row) {
+    let prefix = case width {
+      0 -> []
+      _ -> [
+        span.span_styled(
+          string.pad_start(row.0, width, " ") <> " ",
+          theme.quiet_text(),
+        ),
+      ]
+    }
+    span.line_new(
+      list.append(prefix, [
+        span.span_styled(code_gutter, theme.signal_bold()),
+        row.1,
+      ]),
+    )
   })
+}
+
+// Hunk counts bound coordinate assignment. Metadata, truncated patches and
+// unfamiliar formats remain visible without inventing file line numbers.
+type DiffHunk {
+  DiffHunk(old: Int, new: Int, old_left: Int, new_left: Int)
+}
+
+fn numbered_diff_row(
+  hunk: Option(DiffHunk),
+  line: String,
+) -> #(Option(DiffHunk), #(String, span.Span)) {
+  case diff_hunk(line) {
+    Some(next) -> #(Some(next), #("", diff_span(line)))
+    None -> numbered_diff_body(hunk, line)
+  }
+}
+
+fn numbered_diff_body(
+  hunk: Option(DiffHunk),
+  line: String,
+) -> #(Option(DiffHunk), #(String, span.Span)) {
+  case hunk, line {
+    Some(h), "-" <> _ if h.old_left > 0 -> #(
+      Some(DiffHunk(..h, old: h.old + 1, old_left: h.old_left - 1)),
+      #(int.to_string(h.old), code_span(CodePart(line, CodeRemoved))),
+    )
+    Some(h), "+" <> _ if h.new_left > 0 -> #(
+      Some(DiffHunk(..h, new: h.new + 1, new_left: h.new_left - 1)),
+      #(int.to_string(h.new), code_span(CodePart(line, CodeAdded))),
+    )
+    Some(h), " " <> _ if h.old_left > 0 && h.new_left > 0 -> #(
+      Some(DiffHunk(h.old + 1, h.new + 1, h.old_left - 1, h.new_left - 1)),
+      #(int.to_string(h.new), code_span(CodePart(line, CodePlain))),
+    )
+
+    // This marker describes the preceding source row and consumes neither
+    // file's coordinate, even between a removal and its replacement.
+    _, "\\ No newline at end of file" -> #(hunk, #("", diff_span(line)))
+    _, _ -> #(None, #("", diff_span(line)))
+  }
+}
+
+fn diff_hunk(line: String) -> Option(DiffHunk) {
+  case string.split(line, " ") {
+    ["@@", "-" <> old, "+" <> new, "@@", ..] -> {
+      use old <- option.then(diff_range(old))
+      use new <- option.then(diff_range(new))
+      Some(DiffHunk(old.0, new.0, old.1, new.1))
+    }
+    _ -> None
+  }
+}
+
+fn diff_range(value: String) -> Option(#(Int, Int)) {
+  let parts = case string.split(value, ",") {
+    [start] -> Some(#(start, "1"))
+    [start, count] -> Some(#(start, count))
+    _ -> None
+  }
+  use parts <- option.then(parts)
+  use start <- option.then(int.parse(parts.0) |> option.from_result)
+  use count <- option.then(int.parse(parts.1) |> option.from_result)
+  case start >= 0 && count >= 0 && { start > 0 || count == 0 } {
+    True -> Some(#(start, count))
+    False -> None
+  }
 }
 
 fn gleam_parts(

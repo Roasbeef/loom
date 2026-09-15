@@ -156,6 +156,10 @@ pub type Line {
 @internal
 pub const live_stream_limit = 24_576
 
+// Compact patches show enough surrounding edits to review ordinary changes
+// while retaining a fixed bound; Ctrl+G exposes the complete stored patch.
+const patch_preview_lines = 60
+
 /// The undurable fragments of one strand-and-kind generation.
 ///
 /// A request owns its text, thinking and tool-call fragments. Operation IDs
@@ -7659,7 +7663,7 @@ fn patch_program(
         Some(patch) -> {
           let source = case details_expanded {
             True -> patch
-            False -> program_preview(patch, 24)
+            False -> program_preview(patch, patch_preview_lines)
           }
           Some("```diff\n" <> source <> "\n```")
         }
@@ -7958,7 +7962,7 @@ fn edit_patch_lines(
     Some(diff) -> {
       let shown = case details_expanded {
         True -> diff
-        False -> program_preview(diff, 24)
+        False -> program_preview(diff, patch_preview_lines)
       }
       [Line(ToolPatch, shown)]
     }

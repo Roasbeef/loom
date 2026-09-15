@@ -514,3 +514,73 @@ pub fn a_table_nested_in_quotes_narrows_instead_of_overrunning_test() {
     assert text.cell_width(line_text(row)) <= 4
   })
 }
+
+pub fn unified_diff_numbers_follow_each_file_and_hunk_test() {
+  let patch =
+    "--- a/file\n+++ b/file\n@@ -98,3 +198,4 @@ function\n same\n-old\n+new\n+extra\n tail\n@@ -500 +601 @@\n-before\n+after"
+  let rows = markdown.diff(patch) |> list.map(line_text)
+  assert list.contains(rows, "198 ▎  same")
+  assert list.contains(rows, " 99 ▎ -old")
+  assert list.contains(rows, "199 ▎ +new")
+  assert list.contains(rows, "200 ▎ +extra")
+  assert list.contains(rows, "201 ▎  tail")
+  assert list.contains(rows, "500 ▎ -before")
+  assert list.contains(rows, "601 ▎ +after")
+  assert list.contains(rows, "    ▎ +++ b/file")
+}
+
+pub fn diff_zero_ranges_and_no_newline_markers_preserve_coordinates_test() {
+  let patch =
+    "@@ -0,0 +1,2 @@\n+first\n+second\n@@ -9 +10 @@\n-old\n\\ No newline at end of file\n+new\n@@ -5,2 +0,0 @@\n-gone\n-also gone"
+  let rows = markdown.diff(patch) |> list.map(line_text)
+  assert list.contains(rows, " 1 ▎ +first")
+  assert list.contains(rows, " 2 ▎ +second")
+  assert list.contains(rows, " 9 ▎ -old")
+  assert list.contains(rows, "10 ▎ +new")
+  assert list.contains(rows, " 5 ▎ -gone")
+  assert list.contains(rows, " 6 ▎ -also gone")
+  assert list.contains(rows, "   ▎ \\ No newline at end of file")
+}
+
+pub fn diff_source_that_looks_like_metadata_keeps_change_styles_test() {
+  let rows = markdown.diff("@@ -4 +4 @@\n--- old\n+++ new")
+  let parts = list.flat_map(rows, fn(row) { row.spans })
+  let assert Ok(removed) =
+    list.find(parts, fn(part) { part.content == "--- old" })
+    as "removed source is not a filename header"
+  let assert Ok(added) =
+    list.find(parts, fn(part) { part.content == "+++ new" })
+    as "added source is not a filename header"
+  assert removed.style == theme.diff_removed()
+  assert added.style == theme.diff_added()
+}
+
+pub fn malformed_or_exhausted_hunks_do_not_invent_coordinates_test() {
+  let rows =
+    markdown.diff(
+      "@@ -1 +1 @@\n-old\n+new\n+outside\n@@ -bad +5 @@\n+unknown\n@@ -0 +4 @@\n+invalid",
+    )
+    |> list.map(line_text)
+  assert list.contains(rows, "1 ▎ +new")
+  assert list.contains(rows, "  ▎ +outside")
+  assert list.contains(rows, "  ▎ +unknown")
+  assert list.contains(rows, "  ▎ +invalid")
+}
+
+pub fn numbered_patch_wraps_at_cells_and_retains_source_coordinate_test() {
+  let rows =
+    markdown.diff("@@ -0,0 +12 @@\n+界界界界界界")
+    |> markdown.wrap_lines(12)
+  assert list.all(rows, fn(row) { span.line_width(row) <= 12 })
+  assert rows |> list.map(line_text) |> list.contains("12 ▎ +界界界")
+  assert rows |> list.map(line_text) |> list.contains("12 ▎ 界界界")
+}
+
+pub fn a_number_gutter_cannot_hide_source_in_a_narrow_pane_test() {
+  let rows =
+    markdown.diff("@@ -100 +100 @@\n-old\n+new")
+    |> markdown.wrap_lines(6)
+  assert list.all(rows, fn(row) { span.line_width(row) <= 6 })
+  assert rows |> list.map(line_text) |> list.contains("-old")
+  assert rows |> list.map(line_text) |> list.contains("+new")
+}

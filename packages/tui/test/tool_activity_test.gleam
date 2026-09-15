@@ -530,14 +530,18 @@ pub fn successful_edits_show_inline_patches_in_compact_history_test() {
 }
 
 pub fn compact_inline_patch_is_bounded_and_expansion_reveals_the_rest_test() {
-  let patch = string.repeat("+preview row\n", 25) <> "+FULL_PATCH_END"
+  let patch =
+    string.repeat("+preview row\n", 40)
+    <> "+MORE_CONTEXT\n"
+    <> string.repeat("+preview row\n", 20)
+    <> "+FULL_PATCH_END"
   let details = Some(json.Object([#("diff", json.String(patch))]))
   let #(compact, visible) =
     model()
     |> received(call(1, "edit", "fs_edit", args()))
     |> received(outcome(2, "edit", False, details))
     |> painted
-  assert string.contains(visible, "+preview row")
+  assert string.contains(visible, "+MORE_CONTEXT")
   assert !string.contains(visible, "FULL_PATCH_END")
   let #(_, expanded) =
     compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
