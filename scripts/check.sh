@@ -11,6 +11,9 @@ if [ $# -eq 0 ]; then
   # Exercise deadlines and visible skip reporting before trusting package gates.
   python3 scripts/with_timeout.py 20 -- \
     python3 -m unittest discover -s scripts -p 'test_*.py'
+  # Release integration tests compile the native client and open private TLS
+  # and signing fixtures, so they have the same budget as a package test run.
+  python3 scripts/with_timeout.py 1200 -- bash scripts/check-release-update.sh
 fi
 
 # The `code_mode` description carries the capability prelude's public
