@@ -30,6 +30,14 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- Daemon archive and restore requests enter `manager.set_visibility`, whose
+  serialized dispatch reauthenticates the owner, checks the daemon epoch, and
+  refuses any live runtime slot before changing catalogue visibility. Archive
+  listing is owner-only. Admission checks visibility before domain acquisition
+  or runtime assembly, including retries with an existing creation key. Restore
+  returns saved metadata without opening a runtime. The existing permanent
+  deletion command retains its file-removal contract.
+
 - `client/session_git.prepare` writes the reserved `session/git-start` record
   before the runtime writer starts. First activation probes HEAD through the
   read-only worktree broker; restarts reuse the session/workspace-bound record.
