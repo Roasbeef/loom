@@ -26,7 +26,7 @@ builds must agree byte for byte before CI uploads the archives, manifests,
 checksums and comparison record to a draft GitHub release. Publishing the draft
 remains an operator action. Linux arm64 has no hosted release lane.
 
-See [updating](updating.md) for installation and restart options, and
-[distribution](distribution.md#tagging-and-uploading-a-release) for the release
+See [updating](https://github.com/Roasbeef/loom/blob/main/docs/updating.md) for installation and restart options, and
+[distribution](https://github.com/Roasbeef/loom/blob/main/docs/distribution.md#tagging-and-uploading-a-release) for the release
 procedure and validation requirements. Before tagging, update these notes for
 the intended release; CI prepends them to GitHub's generated change list.
