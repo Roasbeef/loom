@@ -219,6 +219,10 @@ pub type Event {
 
   /// One usage-ledger append to add to the snapshot baseline.
   UsageChanged(
+    /// The strand whose request the row bills. The totals are a session
+    /// figure, but a per-strand reading of consecutive rows — the
+    /// prompt-cache detector — needs to know which conversation moved.
+    strand: String,
     /// The server-authoritative provider usage row.
     usage: Usage,
   )
@@ -562,7 +566,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | Committed(..)
     | MetadataChanged
     | OperationChanged(..)
-    | UsageChanged(_)
+    | UsageChanged(..)
     | EscalationPending(..)
     | HeldInputReturned(..)
     | Ignored(_) -> Error("unexpected live presentation response")
@@ -867,12 +871,13 @@ fn decode_operation(body: JsonValue) -> Result(Event, String) {
 
 fn decode_usage(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "usage body"))
+  use strand <- result.try(required_string(fields, "strand"))
   use value <- result.try(required_value(fields, "usage"))
   use usage <- result.try(
     codec.decode_usage(value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(UsageChanged(usage:))
+  Ok(UsageChanged(strand:, usage:))
 }
 
 fn decode_escalation(body: JsonValue) -> Result(Event, String) {
