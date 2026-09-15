@@ -92,6 +92,30 @@ that is the same tolerance every optional field in this envelope already
 has. Conversation databases and the frozen conversation protocol do not
 change.
 
+### What inherit means across a flip
+
+An explicit roster survives a restart byte for byte: the word is stored
+on the registration and `serve.resolve_managed` applies it over the
+daemon's configuration on every rebuild. An inherited roster does not.
+A registration whose stored word is empty, which is every session
+created without `--tools` and every session created before this change,
+follows the daemon's `[tools] roster` at each boot. The rest of the
+session does not follow it. The system prompt is pinned once and keyed
+only on the enforcement demand, and `strand.config`'s
+`active_tool_names` is seeded once at the session's first boot, so
+neither re-renders when the configuration moves. An operator who flips
+the daemon's default and restarts should therefore expect an existing
+inherit session to rebuild a different registry than its pinned prompt
+describes: the prompt's available-tools index names tools that are no
+longer on the wire, `wiring.tool_specs` drops the unregistered names
+when it renders, and `wiring.clear` refuses a call on one. The session
+recovers by being replaced; a new session renders its prompt from the
+registry it actually got. This is the same class of behaviour
+`LOOM_DISABLE_TOOLS` has today. If it ever matters, the fix is to bind
+the resolved roster into the prompt pin's identity alongside the
+enforcement demand, so a flip re-renders the prompt rather than leaving
+it stale.
+
 ## Decision
 
 **Accepted.** Per `docs/execution.md` §7 protocol acceptance for this work

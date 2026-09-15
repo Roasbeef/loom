@@ -133,6 +133,18 @@ history and writes notes. It writes a program to do it, and the program
 is checked by exactly the same vetting policy and reaches exactly the
 same seams a wire call would have reached.
 
+That claim only holds if the seams are actually served, and one of them
+is not served by default. `cap/strand` lives on the orchestration seam,
+which a shipped server offers only when `--codemode-seams` names
+`orchestration` or `both`; the flag's own default is the workspace seam
+alone. So `Minimal` makes the orchestration seam part of the roster
+rather than a separate choice: when the roster is `Minimal` and
+`--codemode-seams` was not named, the server serves both seams, because
+a session with no `agent_*` tools and no orchestration seam could not
+spawn an agent at all. An operator who names `--codemode-seams`
+explicitly keeps exactly what they named, `Minimal` included, and a
+session on that server reaches whatever those seams admit.
+
 Three of those doors already existed: `cap/strand` is the orchestration
 seam's spawn, join and address surface, `cap/job` is the background-job
 surface, and `cap/schedule` writes heartbeats. Two are new on this
@@ -240,6 +252,23 @@ decision to move it is a measurement rather than an opinion: drive the
 same tasks on both rosters against GLM and Kimi via Baseten, and against
 Anthropic, and compare wall-clock and drive quality. Until that says
 otherwise a session registers what it has always registered.
+
+**What inherit means across a flip.** A session created with `--tools`
+stores that word and gets the same registry back on every rebuild. A
+session created without one stores nothing and follows the daemon's
+`[tools] roster` at each boot, and the rest of the session does not
+follow with it: the system prompt is pinned once and keyed only on the
+enforcement demand, and `strand.config`'s `active_tool_names` is seeded
+once at the first boot. So an operator who flips the daemon's default
+and restarts should expect existing inherit sessions to rebuild a
+different registry than their pinned prompt describes, with the prompt's
+available-tools index naming tools that are no longer on the wire,
+`wiring.tool_specs` dropping them at render and `wiring.clear` refusing
+a call on one, until each such session is replaced by a new one. This is
+the same class of behaviour `LOOM_DISABLE_TOOLS` has today, and it is
+documented rather than mechanised. Binding the resolved roster into the
+prompt pin's identity alongside the enforcement demand is the fix if it
+ever matters.
 
 **`cap/context` on the orchestration seam.** It is on the workspace seam
 only. Whether an orchestration program should be able to read its own

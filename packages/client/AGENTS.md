@@ -1659,6 +1659,11 @@ catalogue without opening runtimes. Explicit admission invokes
   tool is reachable from a code-mode program through the capability
   prelude, so the roster narrows the door rather than the ability, and
   the program is checked by the same policy and reaches the same seams.
+  That reachability is why `Minimal` also moves the seams: `cap/strand`
+  is on the orchestration seam, which the shipped server offers only
+  when `--codemode-seams` names it, so a `Minimal` server whose operator
+  did not name the flag serves both seams rather than the workspace seam
+  alone, and one who named it keeps exactly what they named.
   `bash` takes the jobs door under both rosters, since the door is what
   makes `mode: "background"` answerable rather than a definition in the
   prefix. `built_in(..)` remains as `built_in_for(catalog.Full, ..)`

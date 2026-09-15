@@ -669,8 +669,14 @@ present. Nothing is taken away from the session by that: each dropped
 tool is reachable from a code-mode program through the capability
 prelude, so the roster narrows the door rather than the ability, and the
 program is checked by the same vetting policy and reaches the same seams
-the wire call would have. `bash` keeps its jobs door under both rosters,
-because the door is what makes `mode: "background"` answerable.
+the wire call would have. That reachability is why `Minimal` also moves
+the seams: `cap/strand` lives on the orchestration seam, which the
+shipped server offers only when `--codemode-seams` names it, so a
+`Minimal` server whose operator did not name the flag serves both seams
+rather than the workspace seam alone. An operator who names
+`--codemode-seams` explicitly keeps exactly what they named. `bash` keeps
+its jobs door under both rosters, because the door is what makes
+`mode: "background"` answerable.
 `contributions.built_in` remains as `built_in_for(catalog.Full, ..)`
 under its historical name, which is what every test and fixture wants.
 
@@ -685,7 +691,12 @@ session overrides it: `loom --tools minimal|full` travels as an optional
 every rebuild and applies it over the daemon's default, so a restarted
 daemon serves the same registry to the same session rather than whatever
 its configuration file names at recovery time. A stored word this build
-cannot mean refuses the boot instead of defaulting.
+cannot mean refuses the boot instead of defaulting. A session that stored
+no word follows the daemon's configured roster at every boot while its
+pinned prompt and its seeded `active_tool_names` do not re-render, so an
+operator who flips the daemon's default should expect such a session to
+carry a prompt index naming tools that are no longer registered until a
+new session is created.
 
 Because the prompt is rendered from the registry and then pinned, the
 roster changes the prompt too, and only through whole fragments rather
