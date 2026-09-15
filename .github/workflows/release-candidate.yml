@@ -56,7 +56,8 @@ jobs:
             -e "LOOM_RELEASE_TAG=${RELEASE_TAG:-commit-$SOURCE_COMMIT}" \
             "$BUILDER_IMAGE" -c '
               set -euo pipefail
-              git -c safe.directory=/source clone --no-hardlinks /source /work/loom
+              git config --global --add safe.directory /source/.git
+              git clone --no-hardlinks /source /work/loom
               cd /work/loom
               scripts/release-build.sh
               cp dist/* /out/
