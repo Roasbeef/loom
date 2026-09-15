@@ -20,6 +20,10 @@ make install INSTALL_CLIENT=slim
 launchers and release trees. A separate prefix still uses the default daemon
 state root unless you select another with `--state-dir`.
 
+Before updating an existing installation, record the targets of its `server`
+and `client` (or `tui`) links if you want to identify the rollback pair later.
+`readlink "$HOME/.local/lib/loom/server"` prints the selected server path.
+
 The installer copies complete builds into fresh directories, then atomically
 switches the `server` and selected client links. An example layout is:
 

@@ -1,6 +1,6 @@
 # protocol-change/038 — held-input custody return on drain
 
-**Status**: PROPOSED 2026-09-14 · **Affects**: the session-protocol v2 event
+**Status**: ACCEPTED 2026-09-15 · **Affects**: the session-protocol v2 event
 vocabulary (Part 1.6), adding one pushed event and no command ·
 **Implemented**: `client/protocol`, `client/gateway`, `client/daemon`,
 `client/serve`, `runtime/api`
@@ -143,3 +143,13 @@ operator's draft to another.
 **Refuse new submissions during the drain instead.** Rejected as
 insufficient: the prompts already held when the drain begins are exactly
 the ones at risk, and refusing later ones does nothing for them.
+
+## Review disposition
+
+The production drain review is resolved. Callback execution occurs outside the
+registry and root receive loops; the gateway fences mutations before returning
+held input; socket flush confirmation precedes teardown; original lifetime
+witnesses still control retirement. Barrier, late-mutation, abort-successor,
+and real-socket regressions passed, along with all 1,807 client tests. The
+independent pass found no remaining actionable drain defect. See
+[the takeover record](../docs/review/update-takeover.md).

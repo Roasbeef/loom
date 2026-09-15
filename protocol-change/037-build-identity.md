@@ -1,6 +1,6 @@
 # protocol-change/037 — build identity on the control wire
 
-**Status**: PROPOSED 2026-09-14 · **Affects**: the control-plane `hello`
+**Status**: ACCEPTED 2026-09-15 · **Affects**: the control-plane `hello`
 body and the private daemon endpoint record (Part 1.6 client protocol, as
 frozen by [015](015-daemon-control-and-session-attachments.md)) ·
 **Implemented**: `host/build_identity`, `host/endpoint`, `client/daemon`,
@@ -119,3 +119,14 @@ refuse shape: it is the only one under which a mismatch is visible at all.
 The version comparison is a diagnostic, not a gate, and the compatibility
 direction it fixes — new client, old daemon, reported — is the one an
 update actually produces.
+
+## Review disposition
+
+Independent review of the update path found that initial attachment erased
+its mismatch notice, a server shipment inherited client identity, and the
+rollback instructions understated endpoint schema recovery. The implementation
+now projects the notice on each coherent capture, stamps server shipment
+launchers, and records the offline recovery prerequisite. The real lifecycle
+fixture exercises conflicting client/server identities, adoption, and a later
+capture. Missing identity remains silent. See
+[the takeover record](../docs/review/update-takeover.md).

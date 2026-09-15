@@ -5,8 +5,8 @@ acceptance. Detailed measurements and review findings belong in their own
 records.
 
 This edition is based on main `fe3cfbf2` and the local #404 takeover commit
-`dde20ee8`, checked September 14, 2026 (September 15 UTC). GitHub still has
-#404 at `3b2dafb9`; the takeover commits have not been pushed. The broader
+`76030114`, checked September 15, 2026 UTC. The implementation has completed
+independent review; shipment and final-head CI acceptance remain separate. The broader
 feature, issue, and memory audit from the previous edition was not repeated.
 Its historical detail remains available at `6f598fc0:docs/next.md`.
 
@@ -18,11 +18,12 @@ Its historical detail remains available at `6f598fc0:docs/next.md`.
 | Session archive | #418 merged as `9a00da99` after hosted CI and Linux signoff passed at its final head. Protocol 035 owns archive/restore. |
 | Provider completion cleanup | #420 merged as `991a2c31` after hosted CI and Linux signoff passed at its final head. |
 | Numbered diff previews | #421 merged as `fe3cfbf2` after hosted CI and Linux signoff passed at its final head. Its macOS test failure passed one bounded rerun after a clean-HOME local module run passed. |
-| Updating a running daemon | #404 remains open. The local takeover integrates all four merges and fixes drain ordering in `dde20ee8`. All 1,807 client tests passed; independent drain review found no actionable defects. Installer repair and final shipment validation remain outstanding. See [the takeover record](review/update-takeover.md). |
+| Updating a running daemon | #404 remains open. The takeover integrates all four merges and fixes drain ordering, immutable installation, build identity, and reconnect. Independent review is resolved through `76030114`; the full local gate passed, while release and final-head CI validation remain required. See [the takeover record](review/update-takeover.md). |
 
-The latest main CI run, `34923050531`, was still in progress at this check.
-The preceding main run at `991a2c31` succeeded. The PR-head gates above do not
-establish the outcome of that later main run.
+Main CI run `34923050531` completed successfully at `fe3cfbf2`. On the #404
+implementation at `76030114`, the full local `make check` gate passed, including
+1,807 client and 510 TUI tests. Final release and pushed-head checks still own
+shipment acceptance.
 
 ### Corrections to the previous edition
 
@@ -30,7 +31,7 @@ The previous edition called #417, the archive branch, and the provider cleanup
 fix unfinished. All three are merged, along with #421. Its update row also
 claimed versioned installation never mutates a live daemon's tree. That claim
 was false: replacement, legacy migration, and pruning still lack sufficient
-live-process ownership evidence. The installer has not yet been repaired.
+live-process ownership evidence. The takeover now gives each install a fresh directory and performs no pruning.
 
 The original drain fixtures missed the authenticated production path, which
 re-enters the registry during delivery. Running callbacks inside the registry
@@ -41,15 +42,13 @@ not replace the original lifetime witness.
 
 ## What to do next
 
-1. Finish **#404**, addressing **#392**. The pending installer preference is
-   whether each installation may use a fresh immutable directory and retain old
-   trees for manual cleanup. Automatic cleanup requires a separate ownership
-   design; retaining only the current and previous release cannot identify
-   every live process. **Exit:** settle that preference, implement and test the
-   installer, finish review of the remaining update path, run the full gate and
-   release checks, push to the existing PR, and obtain hosted CI plus Linux
-   signoff on the final head before normal merge. Do not restart the user's
-   daemon as part of verification. Protocols 037 and 038 remain proposed.
+1. Validate and present **#404**, addressing **#392**, for the owner's final
+   merge decision. The installer uses fresh immutable directories and retains
+   old trees for manual cleanup; legacy layouts require offline migration.
+   **Exit:** full gate, release checks, hosted CI, and Linux signoff on the
+   pushed head, followed by the owner's merge decision. Do not restart the
+   user's daemon for verification. Protocols 037 and 038 are accepted with
+   their review corrections recorded.
 2. Verify the paired client/server release after the update path lands.
    **Exit:** release smoke and update/reconnect evidence from the actual bundle,
    with its build identity recorded. Local client tests alone do not establish
@@ -103,8 +102,8 @@ None of these is unfinished work somebody forgot.
 
 - A durable restart-specific cancellation reason remains a separate protocol
   decision; protocol 038 preserves the existing generic abort diagnostic.
-- Installer cleanup policy is undecided. The proposed immutable-directory
-  repair has not been implemented while that preference is pending.
+- Automatic installer pruning is deliberately absent. Manual cleanup must
+  account for every live client and daemon, not just the latest symlink pair.
 - Earlier memory footprint observations, startup timing, jailed CLI credential
   setup, advisor deferrals, and the wider issue inventory were not re-audited.
   Consult their owning records before treating them as current defects.
