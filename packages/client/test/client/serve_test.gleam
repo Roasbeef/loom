@@ -41,6 +41,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap as native
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
@@ -52,6 +53,8 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import storage/catalogue
+import storage/domain
 import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
@@ -918,6 +921,126 @@ pub fn orchestration_only_seams_cannot_reach_an_mcp_server_test() {
   // is a gate on reachability rather than on MCP.
   assert serve.mcp_reachable(codemode.WorkspaceOnly)
   assert serve.mcp_reachable(codemode.BothSeams)
+}
+
+// --- which seams a roster implies -------------------------------------------
+
+/// `Minimal` registers no `agent_*` tool, so a code-mode program is the
+/// only way it reaches another strand — and `cap/strand` is admitted on
+/// the orchestration seam, which the shipped default does not serve. An
+/// unflagged `Minimal` therefore serves both seams; anything else would
+/// make the roster remove the ability rather than the door.
+pub fn a_minimal_roster_with_no_flag_serves_both_seams_test() {
+  assert serve.seams_for(None, catalog.Minimal) == Ok(codemode.BothSeams)
+}
+
+/// The shipped default is unchanged for the roster every session has had
+/// until now: the flag's absence still means the workspace seam alone.
+pub fn a_full_roster_with_no_flag_keeps_the_shipped_default_test() {
+  assert serve.seams_for(None, catalog.Full) == Ok(codemode.WorkspaceOnly)
+}
+
+/// An operator who names a seam has stated a posture, and it stands under
+/// either roster. Widening a flag somebody typed would be worse than
+/// refusing it.
+pub fn an_explicit_seam_outranks_the_roster_test() {
+  assert serve.seams_for(Some("workspace"), catalog.Minimal)
+    == Ok(codemode.WorkspaceOnly)
+  assert serve.seams_for(Some("orchestration"), catalog.Full)
+    == Ok(codemode.OrchestrationOnly)
+  assert serve.seams_for(Some("both"), catalog.Full) == Ok(codemode.BothSeams)
+
+  // And a typo is still a usage error rather than a roster default.
+  assert result.is_error(serve.seams_for(Some("orchstration"), catalog.Minimal))
+}
+
+/// The recovery chain end to end: a registration created with `--tools
+/// minimal` on a daemon whose configuration says nothing at all resolves
+/// to the minimal roster *and* to both seams. The seams are recomputed
+/// after the registration's roster has been applied, so a daemon
+/// configured `full` cannot leave such a session on the workspace seam.
+pub fn a_stored_minimal_roster_reaches_the_orchestration_seam_test() {
+  let root = roster_state_root()
+  let settings = resolved_with_roster(root, "minimal")
+  assert settings.tools.roster == catalog.Minimal
+  assert settings.codemode_seams == codemode.BothSeams
+
+  // The same path with the daemon's own default roster is the shipped
+  // posture, which is what makes the assertion above about the roster
+  // rather than about `resolve_managed`.
+  let inherited = resolved_with_roster(root, "")
+  assert inherited.tools.roster == catalog.Full
+  assert inherited.codemode_seams == codemode.WorkspaceOnly
+}
+
+// A state root with a catalogue beside it, which is all `resolve_managed`
+// reads: nothing here opens a database, because what is under test is
+// which roster and which seams one registration resolves to.
+fn roster_state_root() -> String {
+  let root =
+    "build/serve-test-roster-"
+    <> int.to_string(native.current_process_id())
+    <> "-"
+    <> int.to_string(native.system_time_ms())
+  let assert Ok(Nil) = native.ensure_private_directory(root)
+    as "the fixture owns a private state root"
+  let assert Ok(root) = native.canonical_directory(root)
+    as "every policy path is absolute"
+  let assert Ok(Nil) = simplifile.write(root <> "/loom.toml", roster_catalogue)
+    as "the fixture's state root carries an operator catalogue"
+  root
+}
+
+const roster_catalogue = "
+[models.acme]
+dialect = \"anthropic\"
+api_key_env = \"UNUSED_TEST_KEY\"
+model_id = \"acme-1\"
+context_window = 100000
+max_output_tokens = 4096
+
+[roles]
+main = [\"acme\"]
+"
+
+// One registration resolved through the daemon's own path, carrying the
+// roster word storage would have handed back.
+fn resolved_with_roster(root: String, roster: String) -> serve.Settings {
+  let #(id, _) = ids.mint_session(ids.generator(clock.fixed(1), 707))
+  let id = ids.session_id_to_string(id)
+  let workspace = root <> "/work"
+  let assert Ok(Nil) = native.ensure_private_directory(workspace)
+    as "the fixture owns its workspace"
+  let record =
+    catalogue.Registration(
+      id,
+      root <> "/sessions/" <> id <> ".db",
+      workspace,
+      "Roster",
+      root <> "/loom.toml",
+      1,
+      "roster-" <> roster,
+      catalogue.Saved,
+      roster,
+    )
+  let selected =
+    domain.Domain(
+      domain.key(domain.SessionOnly, workspace, id),
+      domain.SessionOnly,
+      workspace,
+      "",
+      root <> "/domains/" <> id <> "/loom-memory.db",
+      root <> "/domains/" <> id <> "/loom-search.db",
+    )
+  let assert Ok(settings) =
+    serve.resolve_managed(
+      ["--helper", absolute("../sandbox/loom-exec")],
+      record,
+      selected,
+      root,
+    )
+    as "the daemon resolves a session carrying a stored roster"
+  settings
 }
 
 // --- the pinned system prompt ----------------------------------------------

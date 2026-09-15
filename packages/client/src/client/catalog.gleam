@@ -237,6 +237,15 @@ pub type Roster {
   /// ability: a session still spawns agents, starts background jobs,
   /// writes schedules and searches history — it does so by writing a
   /// program instead of by calling a wire tool.
+  ///
+  /// That is also why this roster implies **both** code-mode seams
+  /// unless `--codemode-seams` names one. `cap/strand` is admitted on
+  /// the orchestration seam only, and the shipped default serves the
+  /// workspace seam; a `Minimal` session on that default would have no
+  /// `agent_*` tool and no seam that could stand in for one, so the
+  /// roster would have removed the ability rather than the door. An
+  /// operator who names a seam outranks this: `--codemode-seams
+  /// workspace` beside `--tools minimal` is a stated posture and stands.
   Minimal
 
   /// Every plane the host opened contributes its tools, which is the

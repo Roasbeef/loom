@@ -818,10 +818,21 @@ pub fn resolve_managed(
   // definitions to the same session (protocol-change/039). A stored word
   // the decoder does not know refuses the boot, never defaults.
   use roster <- result.try(daemon_protocol.roster_request(registration.roster))
+  let session_tools = roster_for_session(settings.tools, roster)
+
+  // `resolve` above answered the seams question against the daemon's own
+  // `[tools] roster`; the registration may have just overridden it. The
+  // seams follow the roster this session actually got, so `--tools
+  // minimal` on a daemon configured `full` still reaches `cap/strand`.
+  use codemode_seams <- result.try(seams_for(
+    flags.codemode_seams,
+    session_tools.roster,
+  ))
   Ok(
     Settings(
       ..settings,
-      tools: roster_for_session(settings.tools, roster),
+      tools: session_tools,
+      codemode_seams:,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
       // The daemon's secrets, not the daemon's directory. Masking the
@@ -1102,7 +1113,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     catalog.main_model(catalogue)
     |> result.replace_error("the catalogue routes no usable main model"),
   )
-  use codemode_seams <- result.try(parse_codemode_seams(flags.codemode_seams))
+  use codemode_seams <- result.try(seams_for(flags.codemode_seams, tools.roster))
 
   // Every `[secrets]` entry run here, because the gateway built a few
   // lines down closes over the store and every later reader of a
@@ -1252,6 +1263,40 @@ fn named_tools(value: String) -> List(String) {
   string.split(value, on: ",")
   |> list.map(string.trim)
   |> list.filter(fn(name) { name != "" })
+}
+
+/// The seams this session serves: the operator's word when there is one,
+/// and otherwise the seams the roster implies.
+///
+/// `Minimal` registers no `agent_*` tool, so a code-mode program is the
+/// only way that session reaches the orchestration plane at all — and
+/// `cap/strand` lives on the orchestration seam, which the shipped
+/// default does not serve. A roster chosen to narrow the *door* would
+/// then have silently removed the ability behind it, which is the
+/// opposite of what `Minimal` is for. So an unflagged `Minimal` serves
+/// both seams.
+///
+/// An explicit word outranks the roster in either direction: an operator
+/// who writes `--codemode-seams workspace` beside `--tools minimal` has
+/// stated a posture, and a flag the server quietly widened would be
+/// worse than one it refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.seams_for(None, catalog.Minimal)
+/// ```
+@internal
+pub fn seams_for(
+  named: Option(String),
+  roster: catalog.Roster,
+) -> Result(codemode_wiring.Seams, String) {
+  case named, roster {
+    None, catalog.Minimal -> Ok(codemode_wiring.BothSeams)
+    None, catalog.Full -> Ok(codemode_wiring.WorkspaceOnly)
+    Some(word), catalog.Minimal | Some(word), catalog.Full ->
+      parse_codemode_seams(Some(word))
+  }
 }
 
 // The `--codemode-seams` value, or the default. An unrecognised name is a
