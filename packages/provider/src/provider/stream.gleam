@@ -1426,6 +1426,11 @@ fn run_loop(
 // decisions remain visible: enforce the whole-response budget, ask the pure
 // adapter to fold the chunk, then either drain on terminal or retain the same
 // deadline while waiting for more input.
+//
+// A terminal the adapter folds from a complete protocol record still needs to
+// ask native transport work to retire, because no `ResponseEnd` has arrived.
+// Its existing monitor remains the drain proof, though, so the valid terminal
+// must wait for that owner instead of entering the bounded cancellation path.
 fn run_chunk(
   selector: Selector(AttemptEvent),
   running: http.RunningRequest,
@@ -1456,7 +1461,13 @@ fn run_chunk(
         Some(terminal) ->
           finish_outcome(
             deadline_timer,
-            case stop_attempt(running, consumer_monitor, transport_monitor) {
+            case
+              finish_chunk_terminal(
+                running,
+                consumer_monitor,
+                transport_monitor,
+              )
+            {
               Drained -> AttemptTerminal(contextual_event(terminal, context))
               TimedOut -> AttemptCancellationUnconfirmed(context)
               ProofLost -> AttemptDrainProofLost(context)
@@ -1514,6 +1525,18 @@ fn stop_attempt(
     |> result.unwrap(TimedOut)
   release_attempt_monitors(consumer_monitor, transport_monitor)
   outcome
+}
+
+// A parsed terminal ends the provider protocol before native HTTP ownership
+// necessarily exits. Ask that owner to retire, then retain its positive proof
+// without allowing the cancellation grace to replace the terminal result.
+fn finish_chunk_terminal(
+  running: http.RunningRequest,
+  consumer_monitor: Monitor,
+  transport_monitor: Monitor,
+) -> DrainOutcome {
+  http.cancel(running)
+  finish_attempt(consumer_monitor, transport_monitor)
 }
 
 // A transport terminal is a message, not proof its owner stopped. Unlike an
