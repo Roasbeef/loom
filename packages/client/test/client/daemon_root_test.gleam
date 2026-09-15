@@ -75,6 +75,7 @@ fn saved(path: String) {
       created_at: 0,
       request_key: "saved",
       state: catalogue.Reserved,
+      roster: "",
     )
   // Explicit opens require the same durable domain mapping as production
   // creation, even though this fixture's domain owns no native resources.

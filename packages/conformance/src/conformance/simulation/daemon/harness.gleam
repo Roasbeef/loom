@@ -42,6 +42,7 @@
 
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/internal/instance_owner as custody
 import conformance/simulation/daemon/daemon_fault.{
@@ -403,7 +404,14 @@ pub fn reserve(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
-  let request = manager.Creation(key, workspace, name, "")
+  let request =
+    manager.Creation(
+      key,
+      workspace,
+      name,
+      "",
+      roster: daemon_protocol.InheritRoster,
+    )
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   manager.create(
     harness.ready.registry,
@@ -773,7 +781,14 @@ pub fn create_isolated(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
-  let request = manager.Creation(key, workspace, name, "")
+  let request =
+    manager.Creation(
+      key,
+      workspace,
+      name,
+      "",
+      roster: daemon_protocol.InheritRoster,
+    )
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   let outcome =
     manager.create_scoped(

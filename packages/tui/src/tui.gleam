@@ -1269,7 +1269,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
           }
         Ok(_), Error(_) -> Invalid(launch_usage())
         Error(_), selection ->
-          case parse_local_options(arguments, default_bootstrap_options()) {
+          case local_options(arguments) {
             Ok(options) -> Local(options, result.unwrap(selection, ""))
             Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
           }
@@ -1295,7 +1295,7 @@ fn parse_sessions(arguments: List(String)) -> Launch {
 }
 
 fn sessions_launch(flags: List(String), command: SessionsCommand) -> Launch {
-  case parse_local_options(flags, default_bootstrap_options()) {
+  case local_options(flags) {
     Ok(options) -> Sessions(options:, command:)
     Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
   }
@@ -1455,7 +1455,27 @@ fn asked(session_id: String) -> Result(Nil, String) {
 }
 
 fn default_bootstrap_options() -> bootstrap.Options {
-  bootstrap.Options("", "", "", "", "")
+  bootstrap.Options("", "", "", "", "", None)
+}
+
+/// Reads the launcher's own flags, leaving the daemon's arguments alone.
+///
+/// Published `@internal` because the flag table is the launcher's contract
+/// with the operator and a test must be able to read it without driving a
+/// terminal. Every flag here selects launcher state or, for `--tools`, the
+/// roster recorded on every session this launcher creates; none of them is
+/// forwarded to a daemon this launcher may be sharing with other terminals.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.local_options(["--tools", "minimal"])
+/// ```
+@internal
+pub fn local_options(
+  arguments: List(String),
+) -> Result(bootstrap.Options, String) {
+  parse_local_options(arguments, default_bootstrap_options())
 }
 
 fn parse_local_options(
@@ -1482,6 +1502,31 @@ fn parse_local_options(
           )
         "--config" ->
           parse_local_options(rest, bootstrap.Options(..options, config: value))
+
+        // The roster is the one launch option that never reaches the daemon's
+        // own argument list: it is per-session creation metadata, so an
+        // unknown word has to fail here rather than travel to a server that
+        // would have to guess what the operator meant.
+        "--tools" ->
+          case value {
+            "minimal" ->
+              parse_local_options(
+                rest,
+                bootstrap.Options(
+                  ..options,
+                  roster: Some(control_protocol.Minimal),
+                ),
+              )
+            "full" ->
+              parse_local_options(
+                rest,
+                bootstrap.Options(
+                  ..options,
+                  roster: Some(control_protocol.Full),
+                ),
+              )
+            _unknown -> Error("--tools takes minimal or full, not " <> value)
+          }
         _ -> Error("unknown local launch option " <> flag)
       }
   }
@@ -1502,6 +1547,7 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
+  <> "       loom [--tools <minimal|full>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -1510,6 +1556,8 @@ fn launch_usage() -> String {
   <> "  sessions list|rm    List or remove saved sessions.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
+  <> "  --tools picks this session's tool roster; absent inherits the "
+  <> "daemon's own default\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"
@@ -2441,13 +2489,24 @@ fn create_session(model: Model) -> Model {
     Some(options) -> bootstrap.session_configuration(options)
     None -> Ok("")
   }
+
+  // The roster needs no resolution: it was validated by the flag parser and
+  // names no host path, so it cannot fail between here and the request.
+  let roster = case model.local_options {
+    Some(options) -> options.roster
+    None -> None
+  }
   case configuration {
     Error(reason) -> append_error(model, reason)
-    Ok(config) -> create_session_configured(model, config)
+    Ok(config) -> create_session_configured(model, config, roster)
   }
 }
 
-fn create_session_configured(model: Model, config: String) -> Model {
+fn create_session_configured(
+  model: Model,
+  config: String,
+  roster: Option(control_protocol.Roster),
+) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
   case model.creation_key, model.daemon_host, attachment.busy(model.candidate) {
     Some(key), _, _ ->
@@ -2484,7 +2543,14 @@ fn create_session_configured(model: Model, config: String) -> Model {
         candidate: attachment.start_recorded(
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            daemon_selection.create_named(host, key, workspace, name, config)
+            daemon_selection.create_named(
+              host,
+              key,
+              workspace,
+              name,
+              config,
+              roster,
+            )
           },
           90_000,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),

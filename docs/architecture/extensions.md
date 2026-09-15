@@ -526,7 +526,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1928`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:2019`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:3265`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:3346`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -708,7 +708,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1928`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:2019`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -1034,7 +1034,7 @@ approving, and read back what it was never shown.
 **Two contributions may not claim one tool name.** Within a contribution
 a repeated name is the author overriding themselves and the later one
 wins; *between* contributions it takes the boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:267`). An
+(`contributions.registry` at `client/contributions.gleam:189`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
@@ -1330,7 +1330,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1931`) with `start`, `invoke` (`codemode/satellite.gleam:2122`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:605`) and `extension_stdlib_modules` (`vet/policy.gleam:633`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:635`) and `extension_stdlib_modules` (`vet/policy.gleam:663`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
@@ -1346,8 +1346,8 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` — the one composition of `ext/<name>/<key>` — `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:676`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:877`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1928`), the two refusals it logs, and the contribution it appends. |
-| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:267`) and the collision that refuses a boot. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2019`), the two refusals it logs, and the contribution it appends. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:189`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:776`. |

@@ -508,20 +508,30 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `name` | string | required | Display name, at most 256 bytes. Never becomes a filename. |
 | `configuration` | string | required | Configuration file path, at most 4096 bytes. Canonicalized by the server. |
 | `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. |
+| `roster` | string | optional | `minimal` or `full`. Absent means the session inherits the daemon's own `[tools] roster`. |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
 (`client/daemon/protocol.gleam:256-263`).
 
 ```json
-{"v":2,"id":5,"cmd":"sessions.create","body":{"request_key":"tui-9c1","workspace":"/src/loom","name":"retry work","configuration":"/src/loom/loom.toml","domain_scope":"session_only"}}
+{"v":2,"id":5,"cmd":"sessions.create","body":{"request_key":"tui-9c1","workspace":"/src/loom","name":"retry work","configuration":"/src/loom/loom.toml","domain_scope":"session_only","roster":"minimal"}}
 ```
+
+The roster is creation metadata, not a view setting: it is persisted with
+the registration, so a restarted daemon rebuilds the registry the session
+was created with. Absence is the field's absence rather than an empty
+string, so a body from a client predating this field is a request to
+inherit. A value other than the two words is a `bad_request` refusal; the
+server does not narrow a registry the operator did not ask to narrow.
+[protocol-change/039](../protocol-change/039-session-tool-roster.md)
+defines the field.
 
 The reply body is a session record.
 Source: (`client/daemon/server.gleam:631-651`).
 
 Errors: `forbidden`; `invalid_workspace` and `invalid_configuration`
 when a path cannot be canonicalized; `conflict` when the key was reused
-with different metadata; `unavailable`.
+with different metadata, the roster included; `unavailable`.
 Source: (`client/daemon/server.gleam:634-641`).
 
 The server assigns the database path beneath its own private session
@@ -2793,7 +2803,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:228-212`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:290-212`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

@@ -218,6 +218,17 @@ further but never widen: a requested name the parent does not hold is a
 is worth more than the numeric check, because a tool the model cannot see
 is a tool it never tries.
 
+Under the `minimal` roster the whole registry is already the five core
+tools plus `code_mode`, so `agent_spawn` is not registered for anyone and
+the worker default has nothing left to remove. Delegation on that roster
+runs through `cap/strand` from a code-mode program judged against the
+orchestration seam, which is where the depth and fan-out caps are
+enforced as well: `cap/strand`'s calls are serviced by the same
+`client/agency` closures the `agent_*` tools call, against the same
+`Caller`, with an added hard ceiling on spawn admissions per execution.
+The structural argument above is about which tools a child holds, so it
+is worth re-reading against that seam rather than assumed to carry over.
+
 ### `agent_wait`
 
 ```json

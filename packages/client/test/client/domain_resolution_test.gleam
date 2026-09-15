@@ -44,6 +44,7 @@ main = [\"session_b\"]
       1,
       "resolution",
       catalogue.Saved,
+      "",
     )
   let selected =
     domain.Domain(

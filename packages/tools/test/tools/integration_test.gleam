@@ -135,7 +135,7 @@ fn run_echo(
       raise_refusal: tool.no_raise(),
       observe_output: tool.ignore_output(),
     )
-  bash.tool(job.unavailable()).run(
+  bash.tool(job.unavailable(), bash.ViaPollTool).run(
     ctx,
     json.Object([
       #("command", json.String("echo hello")),

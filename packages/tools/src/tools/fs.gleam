@@ -23,6 +23,27 @@
 //// `.git/hooks/post-checkout` is arbitrary code execution outside the
 //// jail on the next checkout.
 ////
+//// ## The scheme resolver
+////
+//// `fs_read` reads one more thing than a file: a `path` carrying a
+//// `://` is a reference to one of Loom's own objects rather than a
+//// path, resolved by whichever `Scheme` the host registered under that
+//// name (`read_tool_with`). `cap://fs` is the documentation of a
+//// code-mode prelude module; `job://<id>` is a background job's state.
+////
+//// It lives here rather than in a tool of its own because a tool
+//// definition is not free: every registered tool's name, description
+//// and schema ride in the provider's cached prefix on every request of
+//// every strand, called or not. A scheme costs one sentence on a tool
+//// the model already reaches for. The routing is decided before any
+//// path discipline runs and is never retried as a path, so the
+//// containment argument above is untouched: a reference either names a
+//// registered scheme or is refused by name.
+////
+//// A scheme read renders plain — no digest line, no `line:anchor|`
+//// prefixes — because nothing edits it. `offset`/`limit` still window
+//// it by line, and the same inline byte ceiling applies.
+////
 //// ## Replay safety
 ////
 //// All three tools declare `replay: Safe`:
@@ -548,18 +569,89 @@ fn covers_target(
 
 // --- fs_read -------------------------------------------------------------
 
-/// The `fs_read` tool: hashline-anchored windowed reads.
+/// A non-file object `fs_read` can resolve, named by a URL-style scheme.
+///
+/// Loom holds objects a model has every reason to read and no cheap way
+/// to reach: the documentation of a code-mode prelude module, a
+/// background job's live state. The expensive doors are a compile and a
+/// registered tool, and a registered tool is the dearer of the two — a
+/// tool definition is paid for in the provider's cached prefix on every
+/// request of every strand, whether or not the model ever calls it,
+/// whereas a scheme costs one sentence on a tool that is already there.
+/// So the resolver lives inside `fs_read`, the one read tool a model
+/// already reaches for, rather than beside it.
+///
+/// Constructor invariants: `name` is the scheme without the `://`
+/// (`"cap"`, `"job"`), so it is what a path's prefix is compared
+/// against; `summary` is one sentence, rendered verbatim into the tool
+/// description and therefore into the cached prefix; `read` is total —
+/// it answers a `SchemeRefusal` rather than crashing — and it receives
+/// everything after the `://`, empty string included, which is how a
+/// scheme offers an index of what it can resolve.
+pub type Scheme {
+  Scheme(
+    name: String,
+    summary: String,
+    read: fn(Ctx, String) -> Result(String, SchemeRefusal),
+  )
+}
+
+/// Why a scheme could not answer.
+///
+/// A closed vocabulary rather than a string, so the three questions a
+/// model actually has to distinguish — did I name something that does
+/// not exist, is this host unable to answer at all, or did I write the
+/// reference wrongly — each get their own in-band code.
+pub type SchemeRefusal {
+  /// The reference was well formed and named nothing this host holds.
+  /// `what` is the thing that was not found, in the scheme's own words.
+  NotFound(what: String)
+
+  /// The scheme exists but cannot answer here: no jobs plane, a seam
+  /// that is not served, a subsystem that is down.
+  Unavailable(reason: String)
+
+  /// The text after the `://` is not a reference this scheme can parse.
+  Malformed(reason: String)
+}
+
+/// The `fs_read` tool with no schemes registered: a file reader, exactly
+/// as it has always been.
+///
+/// Kept as its own function because the overwhelming majority of call
+/// sites — every test, every rig, every host that wires no scheme — want
+/// precisely this, and a scheme-less `read_tool_with([])` renders a
+/// description byte-identical to the one they have always rendered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.read_tool().name == "fs_read"
+/// ```
+///
 pub fn read_tool() -> tool.Tool {
+  read_tool_with([])
+}
+
+/// The `fs_read` tool with a scheme resolver over `schemes`.
+///
+/// The schemes are rendered into the description and the prompt snippet
+/// in registration order, one sentence each, so the same list always
+/// produces the same bytes: this text sits in the provider's cached
+/// prefix, and a description that reordered itself between requests
+/// would invalidate the cache for nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_tool_with([codemode.cap_scheme(mode), job.scheme(jobs)])
+/// ```
+///
+pub fn read_tool_with(schemes: List(Scheme)) -> tool.Tool {
   tool.Tool(
     name: "fs_read",
-    description: "Read a text file as anchored lines (line:anchor|text). "
-      <> "Use offset/limit to window large files; anchors are what fs_edit "
-      <> "hunks must reference, and the result text carries the file digest "
-      <> "fs_edit requires.",
-    prompt_snippet: Some(
-      "`fs_read` reads a text file as anchored lines, which is where an "
-      <> "edit's anchors come from.",
-    ),
+    description: read_description(schemes),
+    prompt_snippet: Some(read_snippet(schemes)),
     schema: tool.object_schema(
       [
         #("path", tool.string_property("file path under the workspace root")),
@@ -578,14 +670,46 @@ pub fn read_tool() -> tool.Tool {
       ],
       ["path"],
     ),
+    // A scheme read stays `Safe` even where the tool the scheme stands in
+    // for is not. `job_poll` declares `replay: Never` because a replayed
+    // poll would move a cursor past output the model never saw; a scheme
+    // read carries no cursor and waits for nothing, so it advances no
+    // state and a replay re-reads the same retained tail. What a replay
+    // may legitimately return here is a *different* answer — a job that
+    // has since exited — and that is not what `Never` guards against.
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: read_only_requirements,
-    run: run_read,
+    run: fn(ctx, args) { run_read(schemes, ctx, args) },
   )
 }
 
-fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+// The base sentence, then one appended sentence per registered scheme.
+//
+// Split from the tool so the zero-scheme case is provably the text that
+// shipped before: `scheme_sentences([])` is the empty string, and no
+// branch decides that.
+fn read_description(schemes: List(Scheme)) -> String {
+  "Read a text file as anchored lines (line:anchor|text). "
+  <> "Use offset/limit to window large files; anchors are what fs_edit "
+  <> "hunks must reference, and the result text carries the file digest "
+  <> "fs_edit requires."
+  <> scheme_sentences(schemes)
+}
+
+fn read_snippet(schemes: List(Scheme)) -> String {
+  "`fs_read` reads a text file as anchored lines, which is where an "
+  <> "edit's anchors come from."
+  <> scheme_sentences(schemes)
+}
+
+fn scheme_sentences(schemes: List(Scheme)) -> String {
+  schemes
+  |> list.map(fn(scheme) { " " <> scheme.summary })
+  |> string.concat
+}
+
+fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use offset <- tool.with_arg(tool.optional_int(args, "offset"))
   use limit <- tool.with_arg(tool.optional_int(args, "limit"))
@@ -595,12 +719,156 @@ fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     when: offset < 1 || limit < 1,
     return: tool.failure("invalid arguments: offset and limit must be >= 1"),
   )
+
+  // `://` is the whole of the routing rule, and it is decided before any
+  // path discipline runs. A reference is never *also* tried as a file:
+  // an unregistered scheme has to be refused by name, because falling
+  // through to `resolve_real` would answer "no such file" to a model
+  // that asked a structural question, and it would be the one path on
+  // which a crafted argument reaches the filesystem resolver wearing a
+  // scheme's clothes.
+  case string.split_once(path, on: "://") {
+    Ok(#(name, reference)) ->
+      scheme_outcome(schemes, ctx, name, reference, offset, limit)
+    Error(Nil) -> file_outcome(ctx, path, offset, limit)
+  }
+}
+
+// The read this tool has always done: resolve against the real
+// filesystem, decode, and render anchored.
+fn file_outcome(
+  ctx: Ctx,
+  path: String,
+  offset: Int,
+  limit: Int,
+) -> ToolOutcome {
   use resolved <- tool.or_outcome(
     resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:),
     path_outcome,
   )
   use content <- tool.or_outcome(read_text(ctx, resolved), identity_outcome)
   read_outcome(path, content, offset, limit)
+}
+
+// One scheme read: find the registration, ask it, window what it said.
+fn scheme_outcome(
+  schemes: List(Scheme),
+  ctx: Ctx,
+  name: String,
+  reference: String,
+  offset: Int,
+  limit: Int,
+) -> ToolOutcome {
+  use scheme <- tool.or_outcome(
+    list.find(schemes, fn(scheme) { scheme.name == name }),
+    fn(_missing) { unknown_scheme_outcome(schemes, name) },
+  )
+  use text <- tool.or_outcome(
+    scheme.read(ctx, reference),
+    scheme_refusal_outcome,
+  )
+  scheme_read_outcome(scheme.name, text, offset, limit)
+}
+
+// A scheme this host does not serve, answered with the ones it does.
+//
+// Not a `SchemeRefusal`: that type is what a scheme says, and there is
+// no scheme here to have said anything. Naming the served set is the
+// point of the refusal — a model that guessed `history://` learns what
+// it may ask for instead, in the one round trip it already spent.
+fn unknown_scheme_outcome(schemes: List(Scheme), name: String) -> ToolOutcome {
+  let served = case schemes {
+    [] -> "this host serves no schemes, only file paths"
+    _registered ->
+      "this host serves "
+      <> string.join(
+        list.map(schemes, fn(scheme) { scheme.name <> "://" }),
+        ", ",
+      )
+  }
+  tool.failure("unknown scheme `" <> name <> "://`; " <> served)
+  |> tool.with_details(
+    json.Object([
+      #("error", json.String("unknown_scheme")),
+      #("scheme", json.String(name)),
+      #(
+        "schemes",
+        json.Array(list.map(schemes, fn(scheme) { json.String(scheme.name) })),
+      ),
+    ]),
+  )
+}
+
+fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
+  tool.failure(scheme_refusal_reason(refusal))
+  |> tool.with_details(
+    json.Object([
+      #("error", json.String(scheme_refusal_code(refusal))),
+      #("reason", json.String(scheme_refusal_reason(refusal))),
+    ]),
+  )
+}
+
+fn scheme_refusal_code(refusal: SchemeRefusal) -> String {
+  case refusal {
+    NotFound(..) -> "scheme_not_found"
+    Unavailable(..) -> "scheme_unavailable"
+    Malformed(..) -> "scheme_malformed"
+  }
+}
+
+fn scheme_refusal_reason(refusal: SchemeRefusal) -> String {
+  case refusal {
+    NotFound(what:) -> "no such " <> what
+    Unavailable(reason:) -> reason
+    Malformed(reason:) -> "malformed reference: " <> reason
+  }
+}
+
+// What a scheme said, windowed by line and rendered bare.
+//
+// No digest and no anchors, because nothing edits this: anchors exist so
+// an `fs_edit` hunk can name a line that has not moved, and there is no
+// edit path onto a prelude module's documentation or a job's state. The
+// windowing is still the file reader's own, so `offset`/`limit` mean the
+// same thing on both sides of the routing decision — a model that learns
+// to page one has learned to page the other.
+fn scheme_read_outcome(
+  scheme: String,
+  text: String,
+  offset: Int,
+  limit: Int,
+) -> ToolOutcome {
+  let window = hashline.window(text, offset:, limit:)
+  let body = case window.lines {
+    [] -> empty_window_text("answer", window.total_lines, offset)
+    lines -> string.join(list.map(lines, fn(line) { line.text }), "\n")
+  }
+
+  // The same inline ceiling a file read is held to, and refused for the
+  // same reason rather than spilled to a blob: a spill costs a second
+  // round trip to read back, and the window the model asked for is the
+  // knob that makes the answer fit.
+  use <- bool.lazy_guard(
+    when: bit_array.byte_size(<<body:utf8>>) > blob.overflow_threshold_bytes,
+    return: fn() {
+      tool.failure(
+        "the requested window renders larger than "
+        <> int.to_string(blob.overflow_threshold_bytes)
+        <> " bytes; read a smaller window (lower `limit`)",
+      )
+    },
+  )
+  tool.success(body)
+  |> tool.with_details(
+    json.Object([
+      #("scheme", json.String(scheme)),
+      #("offset", json.Int(window.offset)),
+      #("limit", json.Int(limit)),
+      #("total_lines", json.Int(window.total_lines)),
+      #("has_more", json.Bool(window.has_more)),
+    ]),
+  )
 }
 
 fn read_outcome(
@@ -612,7 +880,7 @@ fn read_outcome(
   let window = hashline.window(content, offset:, limit:)
   let digest = hashline.digest(content)
   let lines = case window.lines {
-    [] -> empty_window_text(window.total_lines, offset)
+    [] -> empty_window_text("file", window.total_lines, offset)
     _ -> hashline.render(window)
   }
 
@@ -650,13 +918,19 @@ fn read_outcome(
 
 // The message for a window with no lines in it: an empty file reads
 // differently from an offset past the end of a non-empty one.
-fn empty_window_text(total_lines: Int, offset: Int) -> String {
+//
+// `what` names the thing that was windowed — "file" for a path, and the
+// scheme reader's own noun otherwise — so the two readers share the
+// distinction without a scheme claiming to have read a file.
+fn empty_window_text(what: String, total_lines: Int, offset: Int) -> String {
   case total_lines {
-    0 -> "(empty file)"
+    0 -> "(empty " <> what <> ")"
     total ->
       "(no lines at offset "
       <> int.to_string(offset)
-      <> "; the file has "
+      <> "; the "
+      <> what
+      <> " has "
       <> int.to_string(total)
       <> " lines)"
   }

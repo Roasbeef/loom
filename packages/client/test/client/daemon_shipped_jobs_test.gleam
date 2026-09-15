@@ -995,7 +995,7 @@ fn connect(
   let config = config_of(directory)
   let assert Ok(connected) =
     bootstrap.resolve_daemon(
-      bootstrap.Options(workspace, "", server, paths.root, config),
+      bootstrap.Options(workspace, "", server, paths.root, config, None),
       process.self(),
       40_000,
     )
@@ -1076,6 +1076,7 @@ fn attach(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       config,
+      None,
     )
     as "the session is explicitly created"
   bind(connected, created.expected.session)

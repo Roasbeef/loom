@@ -173,7 +173,7 @@ fn quoted(path: String) -> String {
 }
 
 fn run(ctx: tool.Ctx, command: String) -> tool.ToolOutcome {
-  bash.tool(job.unavailable()).run(
+  bash.tool(job.unavailable(), bash.ViaPollTool).run(
     ctx,
     json.Object([
       #("command", json.String(command)),

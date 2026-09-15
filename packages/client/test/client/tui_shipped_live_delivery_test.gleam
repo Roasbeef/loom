@@ -243,6 +243,7 @@ fn exercise(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      None,
     )
     as "explicit creation opens the fixture session"
   let id = target.expected.session
@@ -309,7 +310,7 @@ fn open_daemon(
     )
     as "normal provider configuration selects the loopback peer with maintenance off"
   let options =
-    bootstrap.Options(workspace, "", server, paths.root, configuration)
+    bootstrap.Options(workspace, "", server, paths.root, configuration, None)
   let assert Ok(connected) =
     bootstrap.resolve_daemon(options, process.self(), 40_000)
     as "the supplied shipped executable authenticates through native bootstrap"

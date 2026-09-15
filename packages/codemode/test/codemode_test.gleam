@@ -509,6 +509,39 @@ pub fn the_seams_share_only_the_report_capability_test() {
   assert list.all(orchestration, policy.contains(policy.orchestration(), _))
 }
 
+/// The three recall doors are workspace capabilities and nothing else's.
+///
+/// The intersection test above already forbids them on both seams at
+/// once, but it would pass just as well if they had landed on the
+/// orchestration seam *instead*, which is the mistake worth naming: an
+/// orchestration program holding `cap/history` could read the
+/// transcripts of agents it never ran, and one holding `cap/memory`
+/// could mint a note that reaches every later session on the
+/// repository. Neither meets the bar `cap/report` meets.
+///
+/// `cap/context` is here on a weaker argument and is pinned all the
+/// same. A context read mints nothing and reaches no other strand, so it
+/// would arguably clear that bar — but admitting it would widen the two
+/// seams' intersection past `cap/report`, which is a ruling with its own
+/// record to write. Until somebody writes it, the seam it is on is a
+/// decision this test holds rather than a coincidence of where it was
+/// first wired.
+pub fn the_recall_capabilities_are_workspace_only_test() {
+  let recall = ["cap/history", "cap/memory", "cap/context"]
+  assert list.all(recall, fn(name) {
+    list.contains(policy.default_cap_modules(), name)
+    && policy.contains(policy.default(), name)
+  })
+  assert list.all(recall, fn(name) {
+    !list.contains(policy.orchestration_cap_modules(), name)
+    && !policy.contains(policy.orchestration(), name)
+  })
+  assert list.all(recall, fn(name) {
+    !list.contains(policy.harness_only_cap_modules(), name)
+    && !policy.contains(policy.resident(), name)
+  })
+}
+
 /// The shared standard-library list holds no capability module.
 ///
 /// `default()` and `orchestration()` both append `default_stdlib_modules`,

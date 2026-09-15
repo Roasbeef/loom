@@ -33,6 +33,7 @@ import codemode/compile
 import codemode/identity
 import codemode/launch
 import codemode/orchestration
+import codemode/recall as recall_router
 import codemode/satellite
 import codemode/search as search_router
 import codemode/vet
@@ -58,7 +59,10 @@ import support/addresses
 import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
+import tools/context as context_tool
 import tools/fs
+import tools/history as history_tool
+import tools/remember
 import tools/search
 import tools/tool
 import weft/actor
@@ -1660,4 +1664,270 @@ pub fn a_glob_renders_its_entries_workspace_relative_test() {
     as "a walk of a contained root must succeed"
   assert list.map(listing.entries, fn(entry) { entry.path })
     == ["src/app.gleam"]
+}
+
+// --- the recall bridge ---------------------------------------------------------
+
+// A recall index whose search answers one fixed hit, recording the query
+// it was asked, and whose read answers one fixed entry. The point of the
+// recording is that the router stack really reaches *this* closure: a
+// fixed answer alone would be produced just as well by an arm that never
+// called anything.
+fn fake_index(seen: Subject(String)) -> history_tool.History {
+  history_tool.History(
+    search: fn(query, _limit, _scope) {
+      process.send(seen, query)
+      Ok([
+        history_tool.Hit(
+          session: "s-1",
+          entry: "e-1",
+          snippet: "a [timeout] here",
+        ),
+      ])
+    },
+    read: fn(_session, _entry) { Ok(json.Object([])) },
+  )
+}
+
+fn fake_store() -> remember.Memory {
+  remember.Memory(remember: fn(_note) { Ok(Nil) })
+}
+
+// A context seam answering a fixed report about whichever strand it is
+// asked, and recording the name, because the strand is the one thing
+// about this capability that is per execution rather than per host.
+fn fake_context(seen: Subject(String)) -> context_tool.Context {
+  context_tool.Context(report: fn(strand) {
+    process.send(seen, strand)
+    Ok(context_tool.Report(
+      strand:,
+      window: 2,
+      context_window: 200_000,
+      used_tokens: 140_000,
+      boundary: context_tool.CheckpointAt(
+        tokens: 160_000,
+        keep_recent_tokens: 40_000,
+      ),
+      notes: 3,
+    ))
+  })
+}
+
+// The workspace seam's whole router stack for one request, which is what
+// a satellite's capability calls actually meet.
+fn workspace_router_for(config: codemode.Config) -> satellite.CapRouter {
+  let built =
+    codemode.exec_config(
+      config,
+      request_for("turn-1:tools"),
+      "/work/x",
+      9000,
+      widened_by: [],
+    )
+  built.satellite.router
+}
+
+// The same stack for a request dispatched by a named strand, which is
+// what `context.report` is answered about.
+fn router_for_strand(
+  config: codemode.Config,
+  strand: String,
+) -> satellite.CapRouter {
+  let request = request_for("turn-1:tools")
+  let built =
+    codemode.exec_config(
+      config,
+      codemode_tool.Request(..request, strand:),
+      "/work/x",
+      9000,
+      widened_by: [],
+    )
+  built.satellite.router
+}
+
+fn cap_request(
+  cap: String,
+  args: msgpack.MsgPackValue,
+) -> satellite.CapRequest {
+  satellite.CapRequest(
+    cap:,
+    args:,
+    identity: identity.run_phase(identity.for_execution(
+      op_id: an_op(11),
+      step_id: "turn-1:tools",
+      budget: budget.Budget(max_outstanding: 8, deadline_ms: 9000),
+    )),
+    base_policy: policy.workspace_default("/work"),
+    demand: exec.BestEffort,
+    env: [#("PATH", "/usr/bin")],
+    cwd: "/work",
+    ordinal: 0,
+  )
+}
+
+fn msgpack_map(
+  fields: List(#(String, msgpack.MsgPackValue)),
+) -> msgpack.MsgPackValue {
+  msgpack.MapValue(
+    list.map(fields, fn(field) { #(msgpack.StringValue(field.0), field.1) }),
+  )
+}
+
+pub fn the_workspace_seam_advertises_recall_only_where_it_is_wired_test() {
+  // The description a model reads names what the router answers, and a
+  // recall plane is per host: a probe that failed leaves the
+  // capabilities unrouted, so advertising them would promise a door that
+  // is not there. This is the `mcp.<server>` arrangement, which is why
+  // the names live in `seam_caps_on` and not in the static `seam_caps`.
+  let broker_actor = idle_broker()
+  let bare = config_for(broker_actor)
+  list.each(recall_router.serviced_caps, fn(cap) {
+    assert !list.contains(codemode.seam_caps(vet_policy.WorkspaceSeam), cap)
+    assert !list.contains(
+      codemode.seam_caps_on(bare, vet_policy.WorkspaceSeam),
+      cap,
+    )
+  })
+
+  let seen = process.new_subject()
+  let wired =
+    codemode.over_recall(
+      bare,
+      index: Some(fake_index(seen)),
+      store: Some(fake_store()),
+      context: Some(fake_context(process.new_subject())),
+    )
+  list.each(recall_router.serviced_caps, fn(cap) {
+    assert list.contains(
+      codemode.seam_caps_on(wired, vet_policy.WorkspaceSeam),
+      cap,
+    )
+    // And the orchestration seam gains none of them, on this host or any
+    // other: reading every session the repository has ever had is not
+    // what an orchestration program is for.
+    assert !list.contains(
+      codemode.seam_caps_on(wired, vet_policy.OrchestrationSeam),
+      cap,
+    )
+  })
+  broker.stop(broker_actor)
+}
+
+pub fn one_half_of_the_recall_plane_advertises_only_its_own_test() {
+  // The two planes are probed separately at boot, so a host may have one
+  // and not the other. Advertising them as a unit would claim the half
+  // that did not open.
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let index_only =
+    codemode.over_recall(
+      config_for(broker_actor),
+      index: Some(fake_index(seen)),
+      store: None,
+      context: None,
+    )
+  let advertised = codemode.seam_caps_on(index_only, vet_policy.WorkspaceSeam)
+  assert list.contains(advertised, recall_router.search_cap)
+  assert list.contains(advertised, recall_router.read_cap)
+  assert !list.contains(advertised, recall_router.remember_cap)
+  assert !list.contains(advertised, recall_router.report_cap)
+  broker.stop(broker_actor)
+}
+
+pub fn the_workspace_router_serves_a_context_report_test() {
+  // End to end through the same stack, and the one capability whose
+  // answer depends on a value the *request* carries: the report is about
+  // the strand whose driver dispatched the call, and a program that
+  // named one in its arguments would not be believed.
+  let broker_actor = idle_broker()
+  let asked = process.new_subject()
+  let config =
+    codemode.over_recall(
+      config_for(broker_actor),
+      index: None,
+      store: None,
+      context: Some(fake_context(asked)),
+    )
+  let assert Ok(satellite.ServedHere(serve:)) =
+    router_for_strand(config, "sub:main/scan-0123456789abcdef")(cap_request(
+      "context.report",
+      msgpack_map([#("strand", msgpack.StringValue("main"))]),
+    ))
+    as "the workspace router must service context.report"
+  let assert framing.CapOk(value:) = serve() as "the fake seam must answer"
+
+  // The dispatching strand, not the one the program wrote.
+  assert process.receive(asked, 100) == Ok("sub:main/scan-0123456789abcdef")
+  assert value
+    == msgpack_map([
+      #("strand", msgpack.StringValue("sub:main/scan-0123456789abcdef")),
+      #("window", msgpack.IntValue(2)),
+      #("context_window", msgpack.IntValue(200_000)),
+      #("used_tokens", msgpack.IntValue(140_000)),
+      #("notes", msgpack.IntValue(3)),
+      #("boundary", msgpack.StringValue("checkpoint")),
+      #("checkpoint_tokens", msgpack.IntValue(160_000)),
+      #("keep_recent_tokens", msgpack.IntValue(40_000)),
+    ])
+  broker.stop(broker_actor)
+}
+
+pub fn the_workspace_router_serves_a_history_search_test() {
+  // End to end through the stack a satellite meets: the `fs.*` arm, the
+  // search arm, this one, the MCP arm and the default router. A
+  // capability reaching the wrong arm is the failure worth catching, and
+  // it is invisible to a test that calls `recall.routing` directly.
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let config =
+    codemode.over_recall(
+      config_for(broker_actor),
+      index: Some(fake_index(seen)),
+      store: Some(fake_store()),
+      context: Some(fake_context(process.new_subject())),
+    )
+  let router = workspace_router_for(config)
+  let assert Ok(satellite.ServedHere(serve:)) =
+    router(cap_request(
+      "history.search",
+      msgpack_map([
+        #("query", msgpack.StringValue("  timeout retry  ")),
+        #("limit", msgpack.IntValue(5)),
+        #("scope", msgpack.StringValue("repository")),
+      ]),
+    ))
+    as "the workspace router must service history.search"
+  let assert framing.CapOk(value:) = serve() as "the fake index must answer"
+  assert value
+    == msgpack_map([
+      #(
+        "hits",
+        msgpack.ArrayValue([
+          msgpack_map([
+            #("session", msgpack.StringValue("s-1")),
+            #("entry", msgpack.StringValue("e-1")),
+            #("snippet", msgpack.StringValue("a [timeout] here")),
+          ]),
+        ]),
+      ),
+      #("limit", msgpack.IntValue(5)),
+    ])
+  // The index really was reached, and with the trimmed query its own
+  // constructor contract promises.
+  assert process.receive(seen, 100) == Ok("timeout retry")
+  broker.stop(broker_actor)
+}
+
+pub fn the_workspace_router_leaves_an_unwired_recall_unrouted_test() {
+  // A host that opened neither plane must answer the ordinary
+  // unknown-capability denial rather than a door that always refuses —
+  // the `cap/schedule` posture, and the opposite of `cap/job`'s.
+  let broker_actor = idle_broker()
+  let router = workspace_router_for(config_for(broker_actor))
+  list.each(recall_router.serviced_caps, fn(cap) {
+    let assert Error(denial) = router(cap_request(cap, msgpack_map([])))
+      as "an unwired recall capability must be refused"
+    assert denial.code == "unsupported_cap"
+  })
+  broker.stop(broker_actor)
 }

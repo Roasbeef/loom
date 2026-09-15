@@ -4,6 +4,7 @@
 
 import client/daemon/main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/internal/ffi_os
 import client/owned_assembly_test
@@ -58,7 +59,13 @@ pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test(
   let created =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("missing-helper", workspace, "Fixture", configuration),
+      manager.Creation(
+        "missing-helper",
+        workspace,
+        "Fixture",
+        configuration,
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 992),
       scope: domain.WorkspacePrivate,
@@ -178,6 +185,7 @@ pub fn daemon_start_diagnostic_classifies_rejected_domain_configuration_test() {
         workspace,
         "Fixture",
         configuration,
+        roster: daemon_protocol.InheritRoster,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 993),

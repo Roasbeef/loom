@@ -38,7 +38,7 @@ pub fn unicode_names_fit_the_create_wire_limit_test() {
       let assert Ok(_) =
         protocol.encode(
           1,
-          protocol.CreateSession("key", "/work", name, ""),
+          protocol.CreateSession("key", "/work", name, "", None),
           protocol.Epoch("epoch"),
         )
         as "a generated name must be admitted by the production control codec"

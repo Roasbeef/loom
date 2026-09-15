@@ -103,6 +103,21 @@ run_failure loom --version --profile
 run_failure loom version --record "$scratch/version-recording.jsonl"
 [ ! -e "$scratch/version-recording.jsonl" ]
 
+# The launcher's own flags, which are not the daemon's. `--tools` in
+# particular chooses one session's tool roster and never reaches a daemon's
+# argument list, so it must be documented by `loom` and by nothing else.
+for flag in --workspace --session --server --state-dir --config --tools
+do
+  if ! grep -Fq -- "$flag" "$scratch/loom.stdout"; then
+    echo "cli_help_test: loom help does not list $flag" >&2
+    exit 1
+  fi
+done
+if grep -Fq -- "--tools" "$scratch/loomd.stdout"; then
+  echo "cli_help_test: loomd help lists the per-session --tools flag" >&2
+  exit 1
+fi
+
 run_help loom "usage: loom replay" replay --help
 run_help loom "usage: loom replay" replay -h
 run_help loom "usage: loom replay" help replay

@@ -30,6 +30,24 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- `client/daemon/protocol.{RosterRequest, roster_word, roster_request}` —
+  which tool roster a `sessions.create` asks for: `InheritRoster`,
+  `MinimalRoster` or `FullRoster`. The choice is made once, at creation,
+  and travels with the *registration* rather than with a connection, so a
+  restarted daemon rebuilds the registry the operator asked for instead
+  of the one its configuration file names today. There is no fourth
+  variant for changing one's mind; that would be a new session.
+  `roster_word` is the durable word storage holds, the empty word being
+  inherit and also what every registration written before the column
+  reads as, and `roster_request` reads it back totally: a word this build
+  cannot mean refuses the boot rather than silently inheriting, because a
+  session started with a registry it was not created for is a change the
+  operator has no way to see. The field joins the creation-retry equality
+  in `manager.Creation`, so a retry under the same request key that names
+  a different roster is a `conflict`. `serve.resolve_managed` applies the
+  stored choice over the daemon's own `[tools] roster` on every rebuild
+  (`roster_for_session`). See
+  [protocol-change/039](../../protocol-change/039-session-tool-roster.md).
 - Daemon archive and restore requests enter `manager.set_visibility`, whose
   serialized dispatch reauthenticates the owner, checks the daemon epoch, and
   refuses any live runtime slot before changing catalogue visibility. Archive
@@ -394,6 +412,19 @@ catalogue without opening runtimes. Explicit admission invokes
   listing and resolves `set_config`'s `model_name` against it; `serve`
   loads it from `--config` or shapes a one-entry catalogue from the
   `LOOM_*` environment.
+- `client/catalog.{ToolsConfig, ToolNetwork, Roster, default_tools,
+  parse_tools, parse_roster}` — the `[tools]` table of the same file.
+  `Roster` is `Minimal` or `Full` and answers which built-in tools a
+  session puts on the wire. It lives here beside `network` because it is
+  an operator decision rather than a host fact, and the arithmetic behind
+  it is the cached prefix: the wire tool array renders ahead of the
+  system prompt, so every definition is paid for on every request of
+  every strand for the life of the session whether it is called or not.
+  Two named rosters and no per-tool list, because a list would let an
+  operator state a set nobody measured. The default is `Full` and is
+  stated once, in `default_tools`, so an omitted key and an absent
+  `[tools]` table cannot drift apart; `parse_roster` is total and an
+  unrecognized word is a worded refusal rather than a silent default.
 - `client/secrets.{Source, Entry, Failure, Capture, Runner, parse,
   resolve, store, host_runner}` — the `[secrets]` table of the same
   `loom.toml`: how the daemon *obtains* a named credential the operator's
@@ -608,6 +639,21 @@ catalogue without opening runtimes. Explicit admission invokes
   calls (issue #365), composed under `workspace.routing` on both the
   code-mode and the extension path, and it takes the workspace and
   nothing else — a search reaches no store, no schedule and no job.
+- `client/codemode.{Recall, over_recall}` — the recall arm of the same
+  bridge. `over_recall(config, index:, store:, context:)` sets one
+  `Config.recall` field holding the very seams the `history_search`,
+  `remember` and `context_remaining` tools are built over, so a query a
+  program runs is the query a tool call runs, a note a program writes is
+  the same `memory/note` entry, and a program's context report is the
+  tool's. One field for all three for the reason `mcp` is one field: they
+  are one decision from the host's side, probed together at boot. A host that never calls it, or that
+  passes `None` for a plane whose probe failed, leaves those capabilities
+  unrouted and advertises none of them. The arm is stacked in
+  `workspace_router` beneath the search arm and above the MCP one, and
+  `seam_recall` gives it to the **workspace seam only**: the
+  orchestration and extension seams see none of it, ever, which is the
+  same ruling `vet/policy.default_cap_modules` states on the allowlist
+  side and the intersection test pins.
   Its four closures differ only in which path they put through
   `resolve_real`: `glob` and `grep` resolve the query's root and let
   `tools/search` keep containment by never following a symlink,
@@ -1592,18 +1638,42 @@ catalogue without opening runtimes. Explicit admission invokes
   ordered tool list, and the refusal when two contributions claim one
   name. `code_mode` is `BuiltIn` and gated on its plane, exactly as
   `history_search`, `remember` and the `schedule_*` tools are.
-- `client/contributions.built_in(Option(Agency), Option(CodeMode),
-  Option(History), Option(Memory), Option(Schedules), Option(Context))`
-  — the host's own single contribution: five core tools, plus the six
-  `agent_*` tools only when a messaging plane exists, plus `code_mode`
-  only when this host wired a code-mode pipeline, plus `history_search`
-  only when its search index opened, plus `remember` only when the
-  memory session beside the session file opened, plus the three
-  `schedule_*` tools only when the schedule store did, plus
-  `context_remaining` over `client/checkpoint.remaining_seam` — the one
-  seam every served session has, so its `Option` is for a registry built
-  with no session behind it. A plane that is absent contributes nothing
-  at all.
+- `client/contributions.built_in_for(catalog.Roster, Option(Agency),
+  Option(CodeMode), Option(History), Option(Memory), Option(Schedules),
+  Option(Context), Option(Jobs))` — the host's own single contribution.
+  Under `catalog.Full` it is the five core tools, plus the six `agent_*`
+  tools only when a messaging plane exists, plus `code_mode` only when
+  this host wired a code-mode pipeline, plus `history_search` only when
+  its search index opened, plus `remember` only when the memory session
+  beside the session file opened, plus the three `schedule_*` tools only
+  when the schedule store did, plus `context_remaining` over
+  `client/checkpoint.remaining_seam` — the one seam every served session
+  has, so its `Option` is for a registry built with no session behind it
+  — plus the three `job_*` tools only when the jobs plane exists. A plane
+  that is absent contributes nothing at all, because a permanently
+  refusing definition would still be paid for in the cached prefix of
+  every request.
+  Under `catalog.Minimal` it is the five core tools and `code_mode`
+  alone, and every other plane is ignored **even when it is present**.
+  That costs the session nothing but the wire definitions: each dropped
+  tool is reachable from a code-mode program through the capability
+  prelude, so the roster narrows the door rather than the ability, and
+  the program is checked by the same policy and reaches the same seams.
+  That reachability is why `Minimal` also moves the seams: `cap/strand`
+  is on the orchestration seam, which the shipped server offers only
+  when `--codemode-seams` names it, so a `Minimal` server whose operator
+  did not name the flag serves both seams rather than the workspace seam
+  alone, and one who named it keeps exactly what they named.
+  `bash` takes the jobs door under both rosters, since the door is what
+  makes `mode: "background"` answerable rather than a definition in the
+  prefix. `built_in(..)` remains as `built_in_for(catalog.Full, ..)`
+  under its historical name and signature, which is what every test and
+  fixture wants.
+  The list of `fs.Scheme` registrations `fs_read` is built with follows
+  the planes the same way: `codemode.cap_scheme` where code mode exists,
+  `job.scheme` where the jobs plane does. `cap://` only means something
+  beside `code_mode`, and `job://` is the read that lets `Minimal` drop
+  `job_poll`.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -2771,6 +2841,17 @@ across one operation a `Stop` block holds open.
   Neither moves the authorization line: `wiring.clear` admits a call by
   `list.contains` on this same list, and set membership is blind to
   order and multiplicity.
+- **The roster is settled before the first turn, and nothing narrows a
+  registry afterwards.** The registry is built during assembly, the
+  prompt's available-tools index is rendered from it and pinned, and
+  `active_tool_names` is seeded from it at the same moment, so a roster
+  arriving later would be narrowing something already built and paid for.
+  That is why the choice is creation metadata on `sessions.create` rather
+  than a `set_config` change, and why it is persisted: the registry is
+  not journaled, so the stored word is the only way a restarted daemon
+  serves the same six or twenty-one definitions to the same session. A
+  stored word the decoder does not know refuses the boot; it never
+  defaults.
 - **The system prompt is assembled at a session's first open and pinned
   with its enforcement demand.** Every later boot at the same demand sends
   the pinned bytes rather than deriving them again — the agent may have

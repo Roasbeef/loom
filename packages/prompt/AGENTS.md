@@ -104,11 +104,25 @@ sessions.
 The default system pack carries the canonical sections — `identity`,
 `tool_discipline`, `available_tools`, `delegation`, `conduct`,
 `environment`, `sandbox`, `repository_guidance` — plus the fragments
-three of them select between. `available_tools` renders the host's tool
+five of them select between. `available_tools` renders the host's tool
 index through the `_available_tools` fragment and disappears entirely on
 a host whose registry offered no snippets.
 `pack.canonical_sections` is the list, in render order, and the shipped
-pack is held against it.
+pack is held against it. The shipped version is `loom-default-8`.
+
+Two of those selections follow the **tool roster**, and both choose a
+whole fragment rather than splicing a host value in. `delegation` selects
+`_delegation` where `agent_spawn` is registered, `_delegation_via_code_mode`
+where only `code_mode` is, and nothing where neither is: the two wordings
+instruct against different machinery, and a wording a host cannot act on
+is worse than silence, because an instruction naming tools the model was
+never given is an invitation to call them and read a refusal.
+`tool_discipline` gains `_code_mode_discovery`, the sentence telling an
+agent to read `cap://<module>` before writing against it, wherever
+`code_mode` is registered. Both read `Environment.tools`, the registry's
+own names, so the prompt cannot disagree with the schemas on the wire,
+and both are fixed for the life of a session, so every strand still
+shares one cached prefix.
 
 ## Relationships
 
@@ -245,7 +259,17 @@ written by whoever calls `render`, not here.
   report, so a brief must ask for a self-contained final answer. Each
   sentence is checked against `tools/agent` and `client/agency` by a
   test in `default_test`; if one of those changes, the sentence is
-  wrong, not merely stale.
+  wrong, not merely stale. The code-mode wording is held to the same
+  standard against `cap/strand`, `cap/job`, `cap/schedule`, `cap/memory`
+  and `cap/history`.
+- **A build-constant section may select a fragment; it may never splice a
+  value.** `identity`, `tool_discipline`, `delegation` and `conduct` are
+  identical for every session and every strand on a given build, and
+  `build_constant_sections_vary_only_with_the_tool_roster_test` holds
+  them that way. The two placeholders they now carry choose between whole
+  fragments from the registered tool names, and the fragments they reach
+  are themselves placeholder-free, so nothing host-specific can enter
+  through them.
 
 ## Deep Docs
 

@@ -220,6 +220,39 @@ pub type ToolNetwork {
   ToolNetworkFull
 }
 
+/// Which built-in tools a session puts on the wire.
+///
+/// This is an operator decision rather than a host fact, which is why it
+/// lives in the catalogue beside `network` and not in the plane gating
+/// `client/contributions` already does. The arithmetic behind it is the
+/// cached prefix: the wire tool array renders ahead of the system prompt
+/// and is the byte prefix of the provider's cached region, so every tool
+/// definition is paid for on every request of every strand for the life
+/// of the session. A roster is the operator saying how much of that
+/// prefix this deployment wants to buy.
+pub type Roster {
+  /// The five core tools and `code_mode`, and nothing else. Every tool
+  /// dropped here is reachable from a code-mode program through the
+  /// capability prelude, so `Minimal` narrows the *door* rather than the
+  /// ability: a session still spawns agents, starts background jobs,
+  /// writes schedules and searches history — it does so by writing a
+  /// program instead of by calling a wire tool.
+  ///
+  /// That is also why this roster implies **both** code-mode seams
+  /// unless `--codemode-seams` names one. `cap/strand` is admitted on
+  /// the orchestration seam only, and the shipped default serves the
+  /// workspace seam; a `Minimal` session on that default would have no
+  /// `agent_*` tool and no seam that could stand in for one, so the
+  /// roster would have removed the ability rather than the door. An
+  /// operator who names a seam outranks this: `--codemode-seams
+  /// workspace` beside `--tools minimal` is a stated posture and stands.
+  Minimal
+
+  /// Every plane the host opened contributes its tools, which is the
+  /// roster Loom has always registered.
+  Full
+}
+
 /// The `[tools]` table: what this session's jailed tool shells may
 /// reach, and what they carry in their environment.
 ///
@@ -235,6 +268,8 @@ pub type ToolsConfig {
   ToolsConfig(
     /// Whether jailed tool shells get network egress.
     network: ToolNetwork,
+    /// Which built-in tools this session registers on the wire.
+    roster: Roster,
     /// Host environment variable *names*, passed through to every jailed
     /// tool shell. The values are read from the server's own environment
     /// at boot and never live in this file, the same discipline
@@ -1009,14 +1044,31 @@ fn positive_int(
 /// The default development posture permits ordinary network access without
 /// inheriting secret environment values. `network = "off"` narrows egress.
 ///
+/// The roster default is `Full`, and it is stated here rather than in the
+/// parser so there is exactly one line to move when it changes. Which
+/// roster a fresh deployment should get is a question about wall-clock
+/// time and drive quality, not about this module: the measurement that
+/// decides it is recorded in the pull request, and until it says
+/// otherwise a session registers what it has always registered.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// assert catalog.default_tools().network == catalog.ToolNetworkFull
 /// ```
 ///
+/// ```gleam
+/// assert catalog.default_tools().roster == catalog.Full
+/// ```
+///
 pub fn default_tools() -> ToolsConfig {
-  ToolsConfig(network: ToolNetworkFull, env: [], set: [], path: [])
+  ToolsConfig(
+    network: ToolNetworkFull,
+    roster: Full,
+    env: [],
+    set: [],
+    path: [],
+  )
 }
 
 /// One `[workspace] mounts` entry: a host region an operator states the
@@ -1260,12 +1312,22 @@ pub fn parse_tools(text: String) -> Result(ToolsConfig, String) {
 fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["network", "env", "set", "path"],
+    ["network", "roster", "env", "set", "path"],
     "[tools]",
   ))
   use network <- result.try(case optional_string(fields, "tools", "network") {
     Ok(Ok(word)) -> parse_tool_network(word)
     Ok(Error(Nil)) -> Ok(ToolNetworkFull)
+    Error(message) -> Error(message)
+  })
+
+  // An absent key takes the default from `default_tools` rather than
+  // naming a variant here, so the two places an operator can land on the
+  // default — no `[tools]` table at all, and a table that omits the key
+  // — cannot drift apart.
+  use roster <- result.try(case optional_string(fields, "tools", "roster") {
+    Ok(Ok(word)) -> parse_roster(word)
+    Ok(Error(Nil)) -> Ok(default_tools().roster)
     Error(message) -> Error(message)
   })
   use env <- result.try(tool_env_names(fields))
@@ -1289,7 +1351,7 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
       }
     }),
   )
-  Ok(ToolsConfig(network:, env:, set:, path:))
+  Ok(ToolsConfig(network:, roster:, env:, set:, path:))
 }
 
 // Exactly two words, because the third one the wire vocabulary has —
@@ -1310,6 +1372,37 @@ pub fn parse_tool_network(word: String) -> Result(ToolNetwork, String) {
     other ->
       Error(
         "tools.network must be \"off\" or \"full\", got \"" <> other <> "\"",
+      )
+  }
+}
+
+// Two named rosters and no per-tool list. A list would let an operator
+// state a set the harness has to answer for — a `job_*` tool without
+// `bash`'s door, an `agent_*` family with no messaging plane — and every
+// such set is a configuration nobody measured. Two words are two
+// postures, and both of them are postures the tree tests.
+/// Decodes the `[tools] roster` word.
+///
+/// Total, like every other word in this file: an unrecognized value is a
+/// worded refusal naming what was written, never a silent fall back to
+/// the default. An operator who typed `minimum` meant something, and a
+/// boot that quietly gave them `full` would hide it for the life of the
+/// deployment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_roster("minimal") == Ok(catalog.Minimal)
+/// ```
+///
+@internal
+pub fn parse_roster(word: String) -> Result(Roster, String) {
+  case word {
+    "minimal" -> Ok(Minimal)
+    "full" -> Ok(Full)
+    other ->
+      Error(
+        "tools.roster must be \"minimal\" or \"full\", got \"" <> other <> "\"",
       )
   }
 }

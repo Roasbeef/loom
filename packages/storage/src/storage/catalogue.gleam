@@ -20,6 +20,7 @@ import parrot/dev
 import sqlight
 import storage/catalogue_archives_schema
 import storage/catalogue_names_schema
+import storage/catalogue_rosters_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite_policy
@@ -61,6 +62,11 @@ pub type Registration {
     request_key: String,
     /// Whether database initialization has been confirmed.
     state: State,
+    /// The tool roster the creation request named, or `""` to inherit the
+    /// daemon's own default. This layer does not know the roster vocabulary;
+    /// it stores the word the client chose and hands it back unchanged, and
+    /// the column's own constraint is what keeps a third word out.
+    roster: String,
   )
 }
 
@@ -142,23 +148,34 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
   case found, version {
-    1_281_253_197, 3 -> {
+    1_281_253_197, 4 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       Ok(Nil)
     }
-    1_281_253_197, 1 | 1_281_253_197, 2 -> {
+
+    // Each older version replays exactly the steps it has not seen. The
+    // revision read first is the proof that this really is a catalogue and
+    // not a same-application-id file with an unreadable meta table, so a
+    // migration never writes into a database it could not read.
+    1_281_253_197, 1 | 1_281_253_197, 2 | 1_281_253_197, 3 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       transaction(connection, fn() {
         use Nil <- result.try(case version {
           1 -> execute(connection, catalogue_names_schema.schema)
-          2 -> Ok(Nil)
-          _ -> Error(Unsupported)
+          _already_named -> Ok(Nil)
         })
+        use Nil <- result.try(case version {
+          1 | 2 -> execute(connection, catalogue_archives_schema.schema)
+          _already_archiving -> Ok(Nil)
+        })
+
+        // Every version below four lacks the roster column, so this step has
+        // no predecessor to skip.
         use Nil <- result.try(execute(
           connection,
-          catalogue_archives_schema.schema,
+          catalogue_rosters_schema.schema,
         ))
-        execute(connection, "PRAGMA user_version=3")
+        execute(connection, "PRAGMA user_version=4")
       })
     }
     0, 0 -> {
@@ -179,9 +196,12 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
               Catalogue(connection),
               sql.initialize_catalogue_revision(),
             ))
+
+            // A fresh file gets the roster column from `schema.sql` itself,
+            // so the v4 migration is deliberately not replayed here.
             execute(
               connection,
-              "PRAGMA application_id=1281253197; PRAGMA user_version=3",
+              "PRAGMA application_id=1281253197; PRAGMA user_version=4",
             )
           })
         _ -> Error(Unsupported)
@@ -270,6 +290,7 @@ fn insert(
       configuration: record.configuration,
       created_at: record.created_at,
       request_key: record.request_key,
+      roster: record.roster,
     ),
   ))
   use Nil <- result.try(statement(catalogue, sql.increment_catalogue_revision()))
@@ -665,6 +686,7 @@ fn page_for(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            roster: row.roster,
           ),
           row.state,
         )
@@ -718,6 +740,7 @@ pub fn member_page(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            roster: row.roster,
           ),
           row.state,
         )
@@ -756,6 +779,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         created_at: row.created_at,
         request_key: row.request_key,
         state: Reserved,
+        roster: row.roster,
       ),
       row.state,
     )

@@ -54,6 +54,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "name",
         "",
         domain.WorkspacePrivate,
+        protocol.InheritRoster,
       ),
     ))
   let assert Error(_) = protocol.decode(envelope(1, "sessions.create", fields))
@@ -164,6 +165,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "name",
         "/config",
         domain.WorkspacePrivate,
+        protocol.InheritRoster,
       ),
     ),
     #("sessions.open", [session, epoch], protocol.OpenSession(id, "epoch")),
@@ -308,4 +310,80 @@ pub fn encoded_events_preserve_version_and_correlation_within_bound_test() {
     "status",
     json.String(string.repeat("x", protocol.max_bytes)),
   ))
+}
+
+pub fn stored_roster_words_decode_totally_and_refuse_the_unknown_test() {
+  // The durable word and its reader are one pair, so a session written by
+  // this build reads back as the roster it was created with.
+  assert protocol.roster_word(protocol.InheritRoster) == ""
+  assert protocol.roster_word(protocol.MinimalRoster) == "minimal"
+  assert protocol.roster_word(protocol.FullRoster) == "full"
+  assert protocol.roster_request("") == Ok(protocol.InheritRoster)
+  assert protocol.roster_request("minimal") == Ok(protocol.MinimalRoster)
+  assert protocol.roster_request("full") == Ok(protocol.FullRoster)
+
+  // A word a newer daemon wrote is refused rather than read as inherit.
+  // Answering "default" for a roster somebody explicitly chose would start
+  // the session with a registry it was not created for, invisibly.
+  assert protocol.roster_request("everything")
+    == Error("unknown stored session roster everything")
+  assert protocol.roster_request("Minimal")
+    == Error("unknown stored session roster Minimal")
+}
+
+pub fn a_creation_body_names_one_of_two_rosters_or_is_refused_test() {
+  let body = fn(fields) {
+    protocol.decode(envelope(1, "sessions.create", fields))
+  }
+  let base = [
+    #("request_key", json.String("key")),
+    #("workspace", json.String("/workspace")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+
+  // Absence is the inherit request, and it is the field's absence: a body
+  // written before this field existed decodes to exactly the same command.
+  let assert Ok(protocol.Request(_, inherited)) = body(base)
+    as "a body with no roster is a complete creation request"
+  assert inherited
+    == protocol.CreateSession(
+      "key",
+      "/workspace",
+      "name",
+      "",
+      domain.WorkspacePrivate,
+      protocol.InheritRoster,
+    )
+
+  let assert Ok(protocol.Request(_, minimal)) =
+    body([#("roster", json.String("minimal")), ..base])
+    as "a named roster decodes"
+  assert minimal
+    == protocol.CreateSession(
+      "key",
+      "/workspace",
+      "name",
+      "",
+      domain.WorkspacePrivate,
+      protocol.MinimalRoster,
+    )
+
+  let assert Ok(protocol.Request(_, full)) =
+    body([#("roster", json.String("full")), ..base])
+    as "the other roster decodes"
+  assert full
+    == protocol.CreateSession(
+      "key",
+      "/workspace",
+      "name",
+      "",
+      domain.WorkspacePrivate,
+      protocol.FullRoster,
+    )
+
+  let assert Error(_) = body([#("roster", json.String("everything")), ..base])
+    as "a third word is refused rather than narrowed"
+  let assert Error(_) = body([#("roster", json.Int(1)), ..base])
+    as "a roster is a word, never another JSON shape"
 }
