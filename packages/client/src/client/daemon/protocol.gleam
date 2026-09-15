@@ -60,6 +60,15 @@ pub type Command {
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
 
+  /// Lists the owner's archived metadata without admitting execution.
+  ListArchivedSessions(after: String, revision: Option(Int))
+
+  /// Preserves a stopped session outside ordinary listings.
+  ArchiveSession(session_id: String, epoch: String)
+
+  /// Makes a stopped archived session eligible for explicit admission again.
+  RestoreSession(session_id: String, epoch: String)
+
   /// Reads one authorized registration without opening its conversation.
   GetSession(session_id: String)
 
@@ -178,6 +187,16 @@ fn decode_fields(
       use epoch <- result.map(text_field(fields, "epoch", 256))
       RenameSession(id, name, epoch)
     }
+    "sessions.archive" -> {
+      use id <- result.try(session_id(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      ArchiveSession(id, epoch)
+    }
+    "sessions.restore" -> {
+      use id <- result.try(session_id(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      RestoreSession(id, epoch)
+    }
     "sessions.isolate" -> {
       use id <- result.try(session_id(fields))
       use transcript <- result.try(text_field(fields, "transcript", 32))
@@ -227,6 +246,11 @@ fn decode_fields(
       use after <- result.try(cursor(fields))
       use revision <- result.try(optional_revision(fields))
       Ok(ListSessions(after, revision))
+    }
+    "sessions.archived" -> {
+      use after <- result.try(cursor(fields))
+      use revision <- result.try(optional_revision(fields))
+      Ok(ListArchivedSessions(after, revision))
     }
     "sessions.get" -> result.map(session_id(fields), GetSession)
     "sessions.default" ->

@@ -411,6 +411,9 @@ fn control(
             protocol.Shutdown(_) -> DrainDaemon
             protocol.Status
             | protocol.ListSessions(..)
+            | protocol.ListArchivedSessions(..)
+            | protocol.ArchiveSession(..)
+            | protocol.RestoreSession(..)
             | protocol.GetSession(_)
             | protocol.WorkspaceDefault(_)
             | protocol.GetOperation(..)
@@ -444,10 +447,13 @@ fn control_use(command: protocol.Command) {
   case command {
     protocol.Status
     | protocol.ListSessions(..)
+    | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.SetDefault(..)
+    | protocol.ArchiveSession(..)
+    | protocol.RestoreSession(..)
     | protocol.RenameSession(..)
     | protocol.IsolateSession(..)
     | protocol.Invite(..)
@@ -508,6 +514,37 @@ fn dispatch(
       manager.rename(state.registry, digest, supplied, id, name)
       |> result.map_error(admin_error_code)
       |> result.map(fn(view) { #("sessions.rename", view_json(view)) })
+    }
+    protocol.ArchiveSession(id, supplied) -> {
+      manager.set_visibility(
+        state.registry,
+        digest,
+        supplied,
+        id,
+        catalogue.Archived,
+      )
+      |> result.map_error(admin_error_code)
+      |> result.map(fn(view) { #("sessions.archive", view_json(view)) })
+    }
+    protocol.RestoreSession(id, supplied) -> {
+      manager.set_visibility(
+        state.registry,
+        digest,
+        supplied,
+        id,
+        catalogue.Active,
+      )
+      |> result.map_error(admin_error_code)
+      |> result.map(fn(view) { #("sessions.restore", view_json(view)) })
+    }
+    protocol.ListArchivedSessions(after, revision) -> {
+      use #(current, views) <- result.try(
+        manager.archived_page(state.registry, digest, after:)
+        |> result.map_error(admin_error_code),
+      )
+      use Nil <- result.try(check_revision(revision, current))
+      use bounded <- result.try(page_prefix(views, 60_000, []))
+      Ok(#("sessions.archived", page_body(bounded, current)))
     }
     protocol.IsolateSession(id, supplied) -> {
       use selected <- result.try(
@@ -886,6 +923,7 @@ fn error_code(error) {
     manager.StaleOperation -> "stale_operation"
     manager.StartFailed -> "start_failed"
     manager.Capacity -> "capacity"
+    manager.SessionArchived -> "session_archived"
     manager.NotInitialized -> "not_initialized"
     manager.Unavailable | manager.Preparation(_) -> "unavailable"
     manager.Catalogue(catalogue.Missing) -> "not_found"

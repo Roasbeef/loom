@@ -88,6 +88,96 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+pub fn archive_requires_owner_and_stopped_custody_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 890)
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(member) = access.credential_digest(string.repeat("b", 64))
+    as "member digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+    as "owner exists"
+  let assert Ok(_) = access.create_member(store, "member", "Member", member)
+    as "member exists"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  assert manager.set_visibility(
+      registry,
+      owner,
+      "stale",
+      record.id,
+      catalogue.Archived,
+    )
+    == Error(manager.AdminStaleEpoch)
+  assert manager.set_visibility(
+      registry,
+      member,
+      "daemon-test",
+      record.id,
+      catalogue.Archived,
+    )
+    == Error(manager.AdminForbidden)
+  let assert Ok(archived) =
+    manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      record.id,
+      catalogue.Archived,
+    )
+    as "the owner archives saved metadata without opening a slot"
+  assert archived.registration == record
+  assert archived.status == manager.Saved
+  let assert Ok(#(_, active)) = manager.page(registry, after: "")
+    as "active page loads"
+  assert active == []
+  assert manager.archived_page(registry, member, after: "")
+    == Error(manager.AdminForbidden)
+  let assert Ok(#(_, hidden)) =
+    manager.archived_page(registry, owner, after: "")
+    as "the owner's archive page loads"
+  assert list.map(hidden, fn(view) { view.registration.id }) == [record.id]
+  assert manager.open(registry, record.id) == Error(manager.SessionArchived)
+  assert manager.create_scoped(
+      registry,
+      manager.Creation(
+        record.request_key,
+        record.workspace,
+        record.name,
+        record.configuration,
+      ),
+      directory: "/unused-creation-retry",
+      generator: ids.generator(clock.fixed(1), 1),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    == Error(manager.SessionArchived)
+  assert catalogue.by_request_key(store, record.request_key) == Ok(record)
+  let assert Ok(restored) =
+    manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      record.id,
+      catalogue.Active,
+    )
+    as "restoring preserves saved state without opening"
+  assert restored.status == manager.Saved
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, record.id)
+    as "explicit opening after restoration still works"
+  await_status(registry, record.id, manager.Resident(operation))
+  assert manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      record.id,
+      catalogue.Archived,
+    )
+    == Error(manager.AdminBusy)
+  assert catalogue.visibility(store, record.id) == Ok(catalogue.Active)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 fn saved(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
   let record = raw_saved(store, seed)
   let selected =
