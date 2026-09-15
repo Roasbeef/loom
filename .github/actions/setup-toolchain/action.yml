@@ -44,9 +44,9 @@ inputs:
       Space-separated list of full 40-character commit SHAs on
       github.com/gleam-lang/gleam, each cherry-picked onto the
       `v${gleam-version}` tag, in order, before the compiler is built
-      from source. Empty (the default) installs the `gleam-version`
-      release exactly as before; see ci.yml's `GLEAM_PATCHES` for why
-      the tree currently sets this.
+      from source. Repository patches in scripts/toolchain/gleam are
+      applied afterward. With neither upstream nor repository patches,
+      the released binary is installed. See ci.yml for the upstream pin.
     required: false
     default: ""
   otp-version:
@@ -93,7 +93,7 @@ runs:
       uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
       with:
         otp-version: ${{ inputs.otp-version }}
-        gleam-version: ${{ inputs.gleam-patches == '' && inputs.gleam-version || '' }}
+        gleam-version: ${{ inputs.gleam-patches == '' && hashFiles('scripts/toolchain/gleam/*.patch') == '' && inputs.gleam-version || '' }}
         rebar3-version: ${{ inputs.rebar3-version }}
         version-type: strict
 
@@ -103,7 +103,7 @@ runs:
     # rebuilding the compiler. A cache miss is the only path that
     # touches Rust or gleam-lang/gleam's source at all.
     - name: Cache Gleam ${{ inputs.gleam-version }} + patches
-      if: inputs.gleam-patches != ''
+      if: inputs.gleam-patches != '' || hashFiles('scripts/toolchain/gleam/*.patch') != ''
       id: gleam-patches-cache
       # actions/cache v6.1.0
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -111,10 +111,11 @@ runs:
         path: ${{ runner.temp }}/gleam-from-source/gleam
         key: >-
           gleam-patches-${{ runner.os }}-${{ runner.arch }}-${{
-          inputs.gleam-version }}-${{ inputs.gleam-patches }}
+          inputs.gleam-version }}-${{ inputs.gleam-patches }}-${{
+          hashFiles('scripts/toolchain/gleam/*.patch') }}
 
     - name: Install a Rust toolchain to build Gleam from source
-      if: inputs.gleam-patches != '' && steps.gleam-patches-cache.outputs.cache-hit != 'true'
+      if: (inputs.gleam-patches != '' || hashFiles('scripts/toolchain/gleam/*.patch') != '') && steps.gleam-patches-cache.outputs.cache-hit != 'true'
       # dtolnay/rust-toolchain, stable channel, pinned to a commit as the
       # other third-party actions in this file are.
       uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
@@ -151,7 +152,7 @@ runs:
     # `target/` at the clone root, which is where the copy step below
     # reads from.
     - name: Build Gleam ${{ inputs.gleam-version }} + patches from source
-      if: inputs.gleam-patches != '' && steps.gleam-patches-cache.outputs.cache-hit != 'true'
+      if: (inputs.gleam-patches != '' || hashFiles('scripts/toolchain/gleam/*.patch') != '') && steps.gleam-patches-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -167,7 +168,12 @@ runs:
           git -C "$src" -c user.name=ci -c user.email=ci@localhost \
             cherry-pick -X ours "$patch"
         done
-        (cd "$src/gleam-bin" && cargo build --release)
+        # Local patches are release inputs, applied strictly after upstream fixes.
+        for patch in "$GITHUB_WORKSPACE"/scripts/toolchain/gleam/*.patch; do
+          [ -f "$patch" ] || continue
+          git -C "$src" apply "$patch"
+        done
+        (cd "$src/gleam-bin" && cargo build --locked --release)
         mkdir -p "${{ runner.temp }}/gleam-from-source"
         cp "$src/target/release/gleam" "${{ runner.temp }}/gleam-from-source/gleam"
 
@@ -178,13 +184,19 @@ runs:
     # below, means a log that fails before the census step still says
     # which compiler was live.
     - name: Put the source-built Gleam on PATH
-      if: inputs.gleam-patches != ''
+      if: inputs.gleam-patches != '' || hashFiles('scripts/toolchain/gleam/*.patch') != ''
       shell: bash
       run: |
         set -euo pipefail
         chmod +x "${{ runner.temp }}/gleam-from-source/gleam"
         echo "${{ runner.temp }}/gleam-from-source" >> "$GITHUB_PATH"
         "${{ runner.temp }}/gleam-from-source/gleam" --version
+
+    # A cache hit must satisfy the same compiler property as a fresh build.
+    - name: Verify reproducible compiler caches
+      if: hashFiles('scripts/toolchain/gleam/*.patch') != ''
+      shell: bash
+      run: python3 scripts/toolchain/gleam/check_cache.py --runs 4
 
     - name: Install Go
       # actions/setup-go v7.0.0
@@ -235,13 +247,15 @@ runs:
         path: packages/*/build
         key: >-
           gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
-          }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-o${{
+          }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-l${{
+          hashFiles('scripts/toolchain/gleam/*.patch') }}-o${{
           inputs.otp-version }}-e${{ inputs.cache-epoch }}-${{
           hashFiles('packages/*/manifest.toml', 'packages/*/gleam.toml',
           'packages/*/src/**', 'packages/*/test/**') }}
         restore-keys: >-
           gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
-          }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-o${{
+          }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-l${{
+          hashFiles('scripts/toolchain/gleam/*.patch') }}-o${{
           inputs.otp-version }}-e${{ inputs.cache-epoch }}-
 
     # Ground truth in every log: what actually ran, not what was asked
@@ -256,6 +270,7 @@ runs:
           echo '```'
           echo "runner       ${RUNNER_OS} ${RUNNER_ARCH} (${ImageOS:-unknown image})"
           echo "gleam        $(gleam --version) (${{ inputs.gleam-patches != '' && format('v{0} + patches {1}', inputs.gleam-version, inputs.gleam-patches) || 'release' }})"
+          echo "local patches ${{ hashFiles('scripts/toolchain/gleam/*.patch') }}"
           echo "erl          OTP $(erl -noshell -eval \
             'io:format("~s / ERTS ~s",[erlang:system_info(otp_release), erlang:system_info(version)]), halt().')"
           echo "rebar3       $(rebar3 --version | head -1)"

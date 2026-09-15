@@ -3,11 +3,12 @@
 Read this first for the current work, settled boundaries and remaining
 acceptance. Detailed verification belongs in the linked review records.
 
-This edition is based on merged #404 at
-`cc797e4182ab37d79f10b851bf4262d36be1832a` and the release-updater change set,
-checked September 15, 2026. Git ancestry, current implementation and local gate
-results were checked. Hosted candidate builds and independent artifact
-comparison have not been run for this change.
+This edition is based on compiler-pin commit `a4a5445b`, stacked on release
+updater #423 at `21da91d8992cdc02e50ec6d6631beee88b47d236`, checked September
+15, 2026. The merged baseline remains #404 at
+`cc797e4182ab37d79f10b851bf4262d36be1832a`. Implementation, ancestry, local
+results and live PR status were checked. The compiler-pin head still needs
+hosted CI, Linux signoff and independent hosted artifact comparison.
 
 ## Where the tree is
 
@@ -17,17 +18,29 @@ comparison have not been run for this change.
 | Updating a running daemon | #404 is merged at the baseline. It supplies immutable installation, graceful drain, build identity and reconnect. |
 | Broad closure captures | #414 is merged and included in the baseline. R12 warns about retained outer records used only through direct field access; no duplicate implementation issue is needed. |
 | Native release updater | `loom update` resolves manifests, optionally verifies local-keyring signatures, downloads through Gun, stages checked archives, publishes complete trees and gracefully restarts the shared daemon. Installed bundled and slim transitions passed on macOS arm64. |
-| Release reproduction | Canonical archives, complete manifests, a committed seed lock, toolchain inventory and a two-runner Linux x86_64 candidate workflow are implemented. No independent complete rebuild comparison or Linux candidate execution has passed yet. |
+| Release reproduction | Canonical archives, complete manifests, a committed seed lock, toolchain inventory and a two-runner Linux x86_64 candidate workflow are implemented. Two clean Linux containers on one host produced identical complete artifacts with the patched compiler. Independent hosted comparison remains pending. |
+| Compiler pin and version reporting | The maintained Gleam patch is applied in CI and both Docker recipes, with cache-key separation and a cold-build fixture. `loom version` and `loom --version` report the invoked client build without starting a daemon. |
 | Broader Gun adoption | [#422](https://github.com/Roasbeef/loom/issues/422) owns the transport assessment. It is an inventory and requirements comparison, not a blanket migration. |
 
-[Release updater verification](review/release-updater.md) records the independent
-review, corrections and completed gates. The full `make check` gate completed with exit status 0, including the updater
-fixtures and house lint. `make doc-check` also completed with exit status 0.
-Neither result substitutes for hosted candidate or independent rebuild evidence.
+[Release updater verification](review/release-updater.md) records the updater's
+review and gates. PR #423 at `21da91d8` has successful CI run
+[34953017891](https://github.com/Roasbeef/loom/actions/runs/34953017891) and
+`signoff/linux`. The compiler-pin changes passed 513 TUI tests, TUI lint,
+17 Python script tests, the compiler cache fixture, launcher regressions,
+bundled-client smoke and documentation checks; warnings remain in the existing
+lint and documentation censuses. [Compiler evidence](review/compiler-cache.md)
+separates these checks from the pending hosted comparison.
+
+Main's regular CI at `cc797e41` passed run
+[34935852229](https://github.com/Roasbeef/loom/actions/runs/34935852229).
+Its later scheduled Nightly run
+[34968828045](https://github.com/Roasbeef/loom/actions/runs/34968828045)
+failed the cold gate and seeds 1001 onward soak job. Their causes have not been
+classified here; the successful regular run does not make that nightly green.
 
 ### Corrections to the previous edition
 
-The previous handoff said #404 remained open. It is now merged. Its deliberate
+The earlier handoff said #404 remained open; it is merged. Its deliberate
 manual restart procedure remains valid for `make install` and
 `loom update --install-only`; the new default `loom update` performs an
 authenticated graceful restart after publication.
@@ -35,7 +48,10 @@ authenticated graceful restart after publication.
 Canonical packaging alone does not establish reproducibility of a release that
 also carries OTP, native libraries and compiler caches. The new recipe fixes
 the source prefix, records the toolchain and locks the seed's complete dependency
-graph. Its complete outputs still need independent comparison per platform.
+graph. The previous edition had no successful Linux comparison. The patched
+compiler now gives same-host repeatability across all five release files; the
+remaining claim is comparison across independent hosts, then other platforms.
+The compiler pin is maintained locally and has not been accepted upstream.
 
 A portable slim client cannot use its builder's platform as its update target.
 Its launcher now detects the execution host. The archive reader also admits
@@ -44,14 +60,13 @@ Both corrections are covered by the installed-release smoke.
 
 ## What to do next
 
-1. Complete the release-candidate execution environment and independent builds.
+1. Run the compiler-pin head through the hosted candidate workflow.
    **Exit:** two clean builders using the same recorded inputs produce identical
    complete files, with successful bundle smoke checks. Linux candidate smoke
-   needs an approved environment capable of the nested sandbox namespaces.
+   uses the committed toolchain image and nested sandbox namespace settings.
    Add equivalent, separately verified builders for the other supported
    platforms before claiming coverage there.
-2. Present the release updater with its local verification and remaining hosted
-   evidence kept explicit. **Exit:** full repository gate, final branch review,
+2. Finish the updater and compiler-pin PR review and merge sequence. **Exit:** full repository gate, final branch review,
    hosted CI and applicable Linux signoff at the proposed head. Do not use the
    operator's live daemon or installed prefix as a fixture.
 3. Establish production release keys when signing is enabled. **Exit:** approved
@@ -110,8 +125,8 @@ must retire and the accepting daemon must report the expected full commit.
 ## Deliberately open
 
 - Production signing and default embedded release trust roots are not enabled.
-- Independent full-artifact reproduction is unverified on every platform; the
-  initial hosted recipe covers Linux x86_64 provisioning only.
+- Independent-host full-artifact reproduction is pending. Same-host Linux
+  repeatability passed; other supported platforms remain unverified.
 - Old immutable release trees require coordinated manual cleanup. Neither the
   installer nor updater infers that every process has stopped using them.
 - Broader transport adoption belongs to #422. R12 closure-capture lint is already

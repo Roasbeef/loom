@@ -2,6 +2,17 @@
 # Two separate runners use one content-addressed Linux toolchain image.
 name: Reproduce release candidate
 on:
+  workflow_call:
+    inputs:
+      source_commit:
+        type: string
+        required: true
+      builder_image:
+        type: string
+        required: true
+      release_tag:
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       source_commit:
@@ -18,6 +29,7 @@ on:
         default: ''
 permissions:
   contents: read
+  packages: read
 jobs:
   build:
     strategy:
@@ -32,6 +44,13 @@ jobs:
           ref: ${{ inputs.source_commit }}
           path: source-${{ matrix.builder }}
           persist-credentials: false
+      # GHCR may keep a newly created builder package private. Authenticate on
+      # the runner only; its Docker configuration is never mounted in the build.
+      - name: Authenticate the toolchain pull
+        if: startsWith(inputs.builder_image, 'ghcr.io/')
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - name: Build inside the pinned toolchain
         env:
           BUILDER_IMAGE: ${{ inputs.builder_image }}

@@ -108,6 +108,14 @@ loom_profile_consume client ext profile --profile
 [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "ext profile --profile" ]]
 
+# Version arguments reach application validation without creating credentials.
+for command in version --version; do
+  HOME="$state/version-home" loom_profile_consume client "$command" --profile
+  [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+  [[ "${LOOM_PROFILE_ARGS[*]}" == "$command --profile" ]]
+  [[ ! -e "$state/version-home" ]]
+done
+
 mkdir -p "$state/bin"
 
 cat > "$state/bin/erl" <<'EOF'

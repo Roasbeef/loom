@@ -257,7 +257,7 @@ ENTRYPOINT
 chmod +x "$work/build/.ci-container-entrypoint.sh"
 
 echo "== building loom-signoff:$short (scripts/signoff/Dockerfile at $LOOM_SHA)"
-docker build --quiet -f scripts/signoff/Dockerfile -t "loom-signoff:$short" scripts/signoff >"$logs/image-build.log"
+docker build --quiet -f scripts/signoff/Dockerfile -t "loom-signoff:$short" . >"$logs/image-build.log"
 
 started=$(date +%s)
 set +e

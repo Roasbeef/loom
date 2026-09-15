@@ -21,12 +21,14 @@ on:
     branches: [main]
     paths:
       - Dockerfile
+      - scripts/toolchain/gleam/**
       - .dockerignore
       - scripts/docker_smoke.sh
       - .github/workflows/docker.yml
   pull_request:
     paths:
       - Dockerfile
+      - scripts/toolchain/gleam/**
       - .dockerignore
       - scripts/docker_smoke.sh
       - .github/workflows/docker.yml

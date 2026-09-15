@@ -121,6 +121,7 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
 # or rustc being on PATH.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
+COPY scripts/toolchain/gleam/ /opt/loom-gleam-patches/
 RUN set -eux; \
 	src=/tmp/gleam-src; \
 	rm -rf "$src"; mkdir -p "$src"; \
@@ -133,11 +134,15 @@ RUN set -eux; \
 		git -C "$src" -c user.name=signoff-image -c user.email=signoff-image@localhost \
 			cherry-pick -X ours "$patch"; \
 	done; \
-	(cd "$src/gleam-bin" && cargo build --release); \
+	for patch in /opt/loom-gleam-patches/*.patch; do \
+		git -C "$src" apply "$patch"; \
+	done; \
+	(cd "$src/gleam-bin" && cargo build --locked --release); \
 	cp "$src/target/release/gleam" /usr/local/bin/gleam; \
 	chmod +x /usr/local/bin/gleam; \
 	rm -rf "$src" /root/.cargo/registry /root/.cargo/git; \
-	gleam --version
+	gleam --version; \
+	python3 /opt/loom-gleam-patches/check_cache.py --runs 4
 
 # --- Go ------------------------------------------------------------------
 RUN curl -fsSL -o /tmp/go.tar.gz \

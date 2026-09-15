@@ -124,6 +124,11 @@ process has stopped merely because a daemon endpoint record is absent.
 
 ## Check the build and restart deliberately
 
+Run `loom version` (or `loom --version`) to print the invoked client's
+version, full build commit and platform without starting a terminal or daemon.
+This identifies the client executable selected by PATH, not an already-running
+daemon or the current checkout.
+
 The release and shipment launchers export `LOOM_BUILD_VERSION` and
 `LOOM_BUILD_COMMIT`, captured when the artifacts are built. Installing an older
 artifact does not relabel it with the installer's current git revision.
