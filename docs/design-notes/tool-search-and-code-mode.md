@@ -23,6 +23,20 @@ are unchanged, and the signature-oracle gap the note names has since been
 closed by rendering the prelude's surface into the `code_mode`
 description. Nothing in the body below has been rewritten.
 
+**Status, 2026-09-15: the tool-search half is now superseded too.** The
+verdict below, that Loom needs no tool search because the module
+namespace is the index and the compiler is the oracle, has been overtaken
+by a third thing: `cap://` on `fs_read`. The `code_mode` description now
+carries an index and the `pub type` declarations only, and a module's
+function signatures are read on demand through `cap://<module>`, with
+`cap://` alone as the list. That is tool search's own arrangement, a
+small resident surface plus a fetch, arrived at through a scheme on a
+tool that was already registered rather than through a server-side
+mechanism, and it halved a workspace host's `code_mode` entry. Read
+`docs/design-notes/tool-roster-and-dyn.md` for the measurements and the
+decisions; read this note only for how the question was arrived at.
+Nothing in the body below has been rewritten.
+
 External claims are sourced. Where I could not verify something, it is
 marked, and the estimates are labelled as estimates rather than dressed
 up as measurements.

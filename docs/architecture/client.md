@@ -655,6 +655,49 @@ fixed at session creation: the prompt is rendered once and pinned, and
 so installing an extension changes what the *next* session sees rather
 than growing the one already running.
 
+**Which built-ins are registered is an operator choice.**
+`contributions.built_in_for` takes a `catalog.Roster` alongside the
+per-plane `Option`s. The two questions are different: the `Option`
+answers whether this host *has* a plane, while the roster answers whether
+this deployment wants to *pay* for it, and the price is the cached prefix
+of every request of every strand rather than anything the call itself
+costs. `Full` is the registry Loom has always built, twenty-one
+definitions where every plane is open. `Minimal` registers `bash`,
+`grep`, `fs_read`, `fs_write`, `fs_edit` and, where the host opened the
+plane, `code_mode`, and ignores every other plane even when it is
+present. Nothing is taken away from the session by that: each dropped
+tool is reachable from a code-mode program through the capability
+prelude, so the roster narrows the door rather than the ability, and the
+program is checked by the same vetting policy and reaches the same seams
+the wire call would have. `bash` keeps its jobs door under both rosters,
+because the door is what makes `mode: "background"` answerable.
+`contributions.built_in` remains as `built_in_for(catalog.Full, ..)`
+under its historical name, which is what every test and fixture wants.
+
+The setting is `[tools] roster = "minimal" | "full"` in the daemon's own
+`loom.toml`, defaulting to `Full` in `catalog.default_tools`. A single
+session overrides it: `loom --tools minimal|full` travels as an optional
+`roster` field on `sessions.create`
+(`protocol-change/039-session-tool-roster.md`), is decoded into
+`daemon/protocol.RosterRequest`, joins the creation-retry equality in
+`daemon/manager`, and persists as the `roster` column on
+`catalogue_sessions`. `serve.resolve_managed` reads that word back on
+every rebuild and applies it over the daemon's default, so a restarted
+daemon serves the same registry to the same session rather than whatever
+its configuration file names at recovery time. A stored word this build
+cannot mean refuses the boot instead of defaulting.
+
+Because the prompt is rendered from the registry and then pinned, the
+roster changes the prompt too, and only through whole fragments rather
+than spliced values. `prompt/default`'s `delegation` section selects
+`_delegation` where `agent_spawn` is registered, `_delegation_via_code_mode`
+where only `code_mode` is, and nothing where neither is; `tool_discipline`
+gains `_code_mode_discovery`, the sentence telling an agent to read
+`cap://<module>` before writing against it, wherever `code_mode` is
+registered. Both selections read the registered tool names, which are
+fixed for the life of a session, so every strand still shares one prefix.
+The pack version is `loom-default-8`.
+
 Error codes are `bad_request`, `unknown_session`, `unknown_strand`,
 `unknown_escalation`, `not_pending`, `conflict`, `unsupported`, and
 `internal`. The set is open and clients display unknown codes verbatim,

@@ -371,6 +371,16 @@ read_scope = "host"
 # [tools.set] carries literal variables, for pointing a tool at
 # configuration outside the workspace (gh's login store, say).
 #
+# `roster` picks how many built-in tools a session registers. "full", the
+# default, registers every tool whose plane this host opened. "minimal"
+# registers bash, grep, fs_read, fs_write, fs_edit and code_mode, and
+# nothing else. Nothing is lost by the narrow one: every dropped tool is
+# reachable from a code-mode program through the capability prelude, so
+# the roster narrows the door rather than the ability. What it buys is the
+# provider's cached prefix, which carries every tool definition on every
+# request of every strand for the life of the session. One terminal can
+# override this for the session it creates with `loom --tools minimal`.
+#
 # PATH, HOME and TMPDIR may not appear in either list. The server derives
 # all three from the workspace and the toolchain code mode found, and a
 # shell that took one from this file would resolve a different `gleam`
@@ -378,6 +388,7 @@ read_scope = "host"
 # jail.
 [tools]
 network = "full"
+roster = "full"
 # env = ["GH_TOKEN"]
 # Directories appended to the shell's PATH after the server's own, which
 # stay in front so the shell resolves the same gleam the compiler does.

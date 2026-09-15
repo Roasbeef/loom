@@ -199,11 +199,15 @@ deferred hardening.
 
 The **cap prelude** is the set of modules a code-mode program may import:
 `cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/lsp`, `cap/task`,
-`cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, `cap/job`, and
+`cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, `cap/job`,
 `cap/search` — read-only navigation and search over the workspace, so a
 program that needs to find its way around a tree can import it instead of
-`cap/fs` and say in its imports that it will not write. Each
-is an ordinary typed Gleam
+`cap/fs` and say in its imports that it will not write, and the three
+recall modules: `cap/history`, ranked full-text search over the durable
+history of every session in this repository, `cap/memory`, which writes
+one durable note and reads nothing, and `cap/context`, which reports the
+window, the tokens used, the compaction boundary and the note count.
+Each is an ordinary typed Gleam
 module whose functions look like local calls but whose bodies are stubs: a
 call marshals its arguments and sends them as a `cap_call` over the framed
 channel to the satellite host, carrying the execution's capability token,
@@ -230,8 +234,11 @@ tools, `codemode/search.routing` serves `search.glob`, `search.grep`,
 `search.stat` and `search.read_lines` over `tools/search`'s walk — its own
 module rather than four more arms on the workspace one, because the module
 a program imports is the unit of authorization and `cap/search` grants
-strictly less than `cap/fs` — `client/mcp.routing` serves the generated
-per-server modules, and for an
+strictly less than `cap/fs` — `codemode/recall.routing` serves
+`history.search`, `history.read`, `memory.remember` and `context.report`
+over the very seams the `history_search`, `remember` and
+`context_remaining` tools are built on, `client/mcp.routing` serves the
+generated per-server modules, and for an
 installed extension `client/extension/seam.routing` serves `net.request`
 and nothing else. What no layer in a given stack answers comes back
 refused in band as `unsupported_cap` — `lsp.*` is the one still owed
@@ -309,7 +316,7 @@ timeout. The refusals a program reads are `mcp_unavailable`,
 There is not one prelude but three, and a submission is vetted against
 exactly one of them (`codemode/vet/policy.Seam`).
 
-The **workspace seam** is the ten modules above: a program that
+The **workspace seam** is the modules above: a program that
 orchestrates *effects*. The **orchestration seam** is `cap/strand` and
 `cap/report`, and nothing else: a program that orchestrates *agents*.
 `cap/strand` gives `spawn`, `wait` — a list of handles against one shared
@@ -329,6 +336,29 @@ That holds only while the two capability sets stay disjoint, which is why
 they share no module but `cap/report` — which carries no authority of its
 own — and why a test pins the disjointness rather than trusting the two
 lists to stay apart.
+
+The three recall modules are the most recent application of that rule.
+`cap/history`, `cap/memory` and `cap/context` are on
+`policy.default_cap_modules` and on no other seam's list. Recall reads
+every session this repository has ever had, so an orchestration program
+holding it could read the transcripts of agents it never ran; memory
+mints a durable note that reaches every later session as quoted context,
+which is `cap/schedule`'s fault exactly, the ability to affect an
+execution nobody present asked for. They are workspace capabilities on
+the plain argument that a workspace program is the one reading and
+writing this repository's own record. Whether `cap/context` belongs on
+the orchestration seam as well is open; it is not there today.
+
+Their host arm is `codemode/recall`, one `Recall` record holding the
+recall index and the memory session the `history_search` and `remember`
+tools are built over, stacked into `client/codemode.workspace_router`
+and advertised through `seam_caps_on` only where the host's boot probe
+opened the store behind it. A host that opened neither leaves the
+capabilities **unrouted** rather than routed to a closure that can only
+refuse, so a program meets the ordinary `unsupported_cap` denial. That is
+`cap/schedule`'s posture and deliberately not `cap/job`'s: recall and
+memory hold authority over nothing, so a program that cannot reach them
+carries on.
 
 Why a capability rather than an interpreter: Rule Zero. A trusted
 orchestration interpreter living in the harness VM *is* model-influenced
@@ -355,7 +385,7 @@ caller may mint, so the tally is keyed to that identity by construction.
 
 The **extension seam** is the workspace seam widened, and its relation to
 the other two is deliberately not disjointness. It is
-`extension_cap_modules` — the ten workspace capabilities plus `ext` —
+`extension_cap_modules` — every workspace capability plus `ext` —
 over `extension_stdlib_modules`, the shared pure subset plus
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
 and `gleam/json`.
@@ -387,6 +417,19 @@ five extra standard-library modules are on a list of their own rather
 than in `default_stdlib_modules`, so widening them widens exactly one
 seam — the door the shared list leaves open, and the reason a test
 asserts the shared list holds no capability at all.
+
+The coupling has one visible consequence today. `cap/history`,
+`cap/memory` and `cap/context` reach the extension allowlist by
+construction, but the bridge an extension dispatch builds
+(`client/extension/dispatch`) composes no recall arm, so an extension
+program may import them, is admitted by vetting, and meets
+`unsupported_cap` at the call. Admissible and unrouted is the same
+posture a code-mode program meets on a host whose probes failed. The
+asymmetry is deliberate: an extension's reach is fixed at install rather
+than by a per-host probe, so a session's index and memory store are not
+its to read, and widening the bridge is a decision with its own record to
+write. `packages/client/test/client/extension/freeze_test.gleam` pins the
+allowlist and states the reasoning beside it.
 
 Two consequences worth stating. **The extension seam sees no generated
 MCP façades**: an extension's allowlist is fixed at install and recorded,
@@ -534,13 +577,23 @@ namespace is the discovery index, the compiler is the schema oracle, and
 the index is listed for free while the oracle is reachable only by being
 wrong first.
 
-The description now carries the oracle. Every module a seam admits is
-rendered into it in full — `pub type` declarations with their
-constructors and fields, `pub const`, and `pub fn` signatures, each under
-the prelude's own `///` documentation — so the model reads the contract
-before it writes rather than after it is refused.
+The description now carries an index and the types. For every module a
+seam admits it renders the `### cap/<name>` heading, the module's purpose
+line, and its `pub type` declarations with their constructors and fields,
+each under the prelude's own `///` documentation. Function signatures,
+constants and their docs are **not** there, and the legend says so in one
+sentence naming where they are: `fs_read` of `cap://<module>` returns one
+module's whole surface, and `cap://` on its own lists the modules.
 
-Four things about the shape of that, each of which was a decision:
+That split is the second cut of this decision rather than the first. The
+description originally carried every admitted module in full, and that
+cost more than the tool it described: a workspace-only host's `code_mode`
+entry was 52,162 bytes on the wire, which on a full roster is most of the
+whole tool array. `cap://` is what changed the trade, because the read
+lands in the conversation tail and is paid for by the turn that asked
+rather than by the cached prefix of every request.
+
+Five things about the shape of that, each of which was a decision:
 
 **It is static, not a tool.** A `code_mode_signatures(module)` tool was
 the original proposal and was rejected on the cache arithmetic. Tool
@@ -549,9 +602,27 @@ provider's one-hour cached region: a static rendering is written once per
 cache lifetime and read at about a tenth of base input on every request
 thereafter, while a tool costs a round trip *every* time the model wants
 a signature — a request/response cycle, output tokens, latency, and the
-model having to know to ask before writing. Nothing is added to the tool
-array and nothing varies between turns, so the arithmetic that note
-prices is untouched.
+model having to know to ask before writing. What is read on demand is
+therefore a **scheme on a tool that is already registered**, not a tool
+of its own: `cap://` costs one sentence on `fs_read`'s description and
+adds nothing to the tool array. The arithmetic that note prices is
+untouched either way.
+
+**The types stay and the signatures go.** `scripts/gen-prelude.py` emits
+two constants over the same modules in the same order. `prelude.surfaces`
+is the whole public surface, which `cap://<module>` reads out.
+`prelude.type_surfaces` is that block cut after the `pub type`
+declarations, character for character a prefix of its counterpart, and it
+is what the description carries. The cut is where it is because the two
+halves fail differently: a signature a program needs can be read when it
+is needed, while `proc.run` returns a `proc.Output` and a program that
+cannot name the `stdout` field cannot read the output it just paid for.
+A model that skips the read and guesses a field name pays a compile
+round trip either way, so the declarations stay where they cannot be
+missed. A host-generated `cap/mcp/<server>` façade is the one thing
+indexed rather than rendered: it is one server's tools under that
+server's own description text and carries no separable type section, so
+its index line points at `cap://mcp/<server>`, which reads it whole.
 
 **It is generated at build time, and drift is a build failure.**
 `make gen-prelude` runs `gleam export package-interface` over
@@ -566,34 +637,51 @@ costs nothing to run constantly; regeneration is the step that needs
 `gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
 
 **It is filtered through the allowlist, not through the package.**
-`package-interface` reports fourteen modules, and the three seams admit
-twelve between them: `cap/runtime`, the satellite's trusted boot runtime,
-and `cap/mcp`, the types-only vocabulary a generated façade imports, are
-on none of them. `tools/codemode` selects from the artifact using each
-`SeamOffer`'s own `allowed_imports` — the same list vetting judges
-against — so a module vetting will reject can never be advertised.
+`package-interface` reports every module of `packages/cap`, and the three
+seams admit all but two of them: `cap/runtime`, the satellite's trusted
+boot runtime, and `cap/mcp`, the types-only vocabulary a generated façade
+imports, are on none of them. `tools/codemode` selects from the artifact
+using each `SeamOffer`'s own `allowed_imports` — the same list vetting
+judges against — so a module vetting will reject can never be advertised.
 Advertising one would be the same class of lie as classifying a
 submission by reading its imports: the model would write against
 something it cannot import and read a refusal it has no way to
 understand.
 
-**Each seam pays only for what it adds.** The signatures follow the split
-the import lists already take: modules on every offered seam are rendered
+**`cap://` is held to the same filter, and for the same reason.** The
+scheme reads out exactly what the description would have rendered: a
+module is readable only where some seam this host *offers* admits it, or
+where it is one of that seam's host-generated extra surfaces. `cap/runtime`
+is therefore unreadable, and `cap://` on a host that offers only the
+orchestration seam lists `cap/strand` and `cap/report` and nothing else.
+A door onto the documentation must not be wider than the door onto the
+thing it documents.
+
+**Each seam pays only for what it adds.** The index follows the split the
+import lists already take: modules on every offered seam are rendered
 once under a shared heading, and each seam renders only its own. An
 orchestration-only host pays for `cap/strand` and `cap/report` and for
 none of the others.
 
-The price is real and is written down where it can be checked: against
-the shipped allowlists a workspace-only host's whole description is
-17,678 bytes, an orchestration-only host's 15,205, and a host serving
-both 28,818 — roughly 4,400, 3,800 and 7,200 tokens. About half of that
-is the `pub type` declarations, which the estimate this work was scoped
-against did not include and which are not optional: `proc.run` returns a
-`proc.Output`, and a program that cannot name the `stdout` field cannot
-read the output it just paid for. What was deliberately left out — the
-`## Examples` doctests, and all but the first sentence of each module's
-own doc — is argued in `scripts/gen-prelude.py`, with the bytes each
-omission saves.
+The price is real and is written down where it can be checked. Measured
+on the wire as name plus description plus schema, against the shipped
+allowlists, the `code_mode` entry before and after the signatures moved
+behind `cap://`:
+
+| Host | Before | After |
+| --- | --- | --- |
+| Workspace seam only | 52,162 | 25,690 |
+| Orchestration seam only | 17,753 | 10,698 |
+| Both seams | 64,842 | 33,472 |
+
+`the_workspace_description_stays_under_its_bound_test` in
+`packages/tools/test/tools/codemode_test.gleam` pins the first of those
+under 28,000 bytes, which is the measurement with about a tenth of
+headroom, so the next increase is a decision somebody took rather than a
+drift nobody noticed. What is left out of the generated blocks entirely,
+the `## Examples` doctests and all but the first sentence of each
+module's own doc, is argued in `scripts/gen-prelude.py` with the bytes
+each omission saves.
 
 `docs/examples/fan_out_review.gleam` is the worked sample, run verbatim by
 `packages/codemode/test/codemode/orchestration_sample_test.gleam`, and
@@ -1244,9 +1332,12 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
 | `cap/strand.gleam` | The orchestration seam: spawn, join, address, blackboard, roster. |
 | `codemode/orchestration.gleam` | The harness end of that seam — `strand.*` onto the Agency closures. |
+| `cap/history.gleam`, `cap/memory.gleam`, `cap/context.gleam` | The recall modules: ranked search and read over past sessions, one write-only durable note, and the context report. |
+| `codemode/recall.gleam` | The harness end of those three: `history.*`, `memory.remember` and `context.report` onto the tools' own seams, unrouted where a host's probe found nothing. |
 | `client/mcp.gleam` | The MCP layer: a client per configured server, the generated modules, and the `mcp.<server>` router arm. |
 | `mcp/{client,transport,codegen,interchange}.gleam` | The protocol, the stdio client, the façade generator, and the msgpack ↔ JSON translation. |
-| `tools/prelude.gleam` | Generated: the capability prelude's public surface, per module, as the `code_mode` description renders it. |
+| `tools/prelude.gleam` | Generated, twice over the same modules: `surfaces` is the whole public surface that `cap://<module>` reads out, and `type_surfaces` is its heading-and-types prefix that the `code_mode` description renders. |
+| `tools/codemode.cap_scheme`, `tools/job.scheme` | The two `fs_read` schemes: one prelude module's surface, and a background job read without waiting. |
 | `scripts/gen-prelude.sh`, `scripts/gen-prelude.py` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |

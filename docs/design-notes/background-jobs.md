@@ -299,8 +299,16 @@ stream the runner already folds.
 Tool-surface cost is arithmetic (`client/contributions.gleam:145-152`):
 every permanent definition is the byte prefix of the provider's cached
 region and is paid on every request of every strand for the session. The
-roster is eighteen fully wired. So the surface is one flag and three
-tools, not five.
+roster was eighteen fully wired when this was written. So the surface is
+one flag and three tools, not five.
+
+Since then the roster has become an operator setting
+(`docs/design-notes/tool-roster-and-dyn.md`). Under `full` the three job
+tools are registered as described here and the count is twenty-one. Under
+`minimal` none of them is: `bash` keeps its jobs door, so `mode:
+"background"` still admits a job, and a job is read back through
+`job://<id>` on `fs_read` or reached in full from a program through
+`cap/job`.
 
 `bash` gains `mode`, a two-value enum (`"foreground"`, the default, or
 `"background"`), modelled on the Gleam side as a two-variant type rather
