@@ -134,6 +134,7 @@ pub fn observe(
 /// reads_context(row_that_read_a_prefix)
 /// // -> True
 /// ```
+@internal
 pub fn reads_context(usage: Usage) -> Bool {
   usage.input + usage.cache_read + usage.cache_write > 0
 }
@@ -237,13 +238,15 @@ fn estimate(previous: Usage, current: Usage, tokens: Int) -> Option(Float) {
   Some(float.max(0.0, int.to_float(tokens) *. { input_rate -. cached_rate }))
 }
 
-// The rate the re-read was billed at. A provider that returns the prefix as
-// a fresh cache write bills it in that bucket and leaves input near zero, so
-// the bucket that actually carried the tokens is the one to divide.
+// The rate the re-read was billed at. A real miss carries a handful of
+// uncached input tokens alongside the whole re-read, which a provider bills
+// as a fresh cache write, so picking the bucket with the larger count is
+// what selects the one that actually carried the re-read rather than the
+// input trickle that rides along with it.
 fn uncached_rate(current: Usage) -> Option(Float) {
-  case current.input > 0 {
-    True -> rate(current.cost.input, current.input)
-    False -> rate(current.cost.cache_write, current.cache_write)
+  case current.cache_write > current.input {
+    True -> rate(current.cost.cache_write, current.cache_write)
+    False -> rate(current.cost.input, current.input)
   }
 }
 
