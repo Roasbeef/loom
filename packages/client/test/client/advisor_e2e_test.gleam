@@ -33,11 +33,14 @@
 ////    open, as a fresh run if it is idle. Either way it is in a primary
 ////    request body, which is the only place a message that was never sent
 ////    could not appear;
-//// 2. the second turn ends and the advisor answers `nudge`, which is
-////    queued rather than sent. It is folded into the next run start on
-////    `main` as one fenced `advisor-nudges` message;
+//// 2. the second turn ends and the advisor answers `nudge`, which
+////    reaches `main` as one fenced `advisor-nudges` message the moment
+////    the primary stops: a run of its own if the primary is already
+////    idle, a born-placed follow-up on the run that is ending
+////    otherwise. Either costs `main` exactly one more request, which is
+////    why the count below is fixed even though the door is not;
 //// 3. the third turn ends and the advisor answers `quiet`, which emits
-////    nothing at all — the assertion for which is that no fifth primary
+////    nothing at all — the assertion for which is that no sixth primary
 ////    request appears.
 ////
 //// ## Why the advisor's lane is scripted by position and not by count
@@ -189,30 +192,34 @@ pub fn a_second_model_reviews_the_primary_and_reaches_it_test_() -> EunitTest {
     await_advised(script, 2)
     complete(instance, "confirm it passes")
 
-    // One nudge, folded in once. The newest request carrying the fence
-    // holds the whole conversation, so a nudge re-queued at every run start
-    // would show up in it more than once.
+    // One nudge, delivered once. The newest request carrying the fence
+    // holds the whole conversation, so a nudge re-queued at every run
+    // boundary would show up in it more than once.
     let nudged = await_primary(script, fence_open())
     assert string.contains(nudged, nudge_text)
     assert occurrences(nudged, fence_open()) == 1
-      as "the queued nudge must be drained into exactly one run start"
+      as "the queued nudge must be delivered exactly once"
 
-    // The quiet verdict costs nothing. Three operator turns and the one
-    // run the delivered block started are four requests, and nothing left
-    // can add a fifth: the only verdict that starts a run on the primary
-    // is a block, the script raises exactly one, and every later verdict is
-    // quiet. The bound is therefore watching for a request that is merely
-    // late, and a scripted transport answers in microseconds.
+    // The quiet verdict costs nothing. Three operator turns, the one run
+    // the delivered block started and the one request the nudge cost are
+    // five, and nothing left can add a sixth: the two verdicts that reach
+    // the primary are a block and a nudge, the script raises one of each,
+    // and every later verdict is quiet. The nudge's own request is fixed
+    // whichever door it went through — a fresh run on an idle primary, or
+    // a follow-up continuing the run that was ending — because both are
+    // one more provider request on `main`. The bound is therefore watching
+    // for a request that is merely late, and a scripted transport answers
+    // in microseconds.
     let settled: poll.Outcome(Nil, Nil) =
       poll.until(within: settle_ms, every: 100, attempt: fn() {
-        case list.length(seen(script).primary) > 4 {
+        case list.length(seen(script).primary) > 5 {
           True -> poll.Done(Nil)
           False -> poll.Retry
         }
       })
     assert settled == poll.Expired
       as "a quiet verdict must not reach the primary at all"
-    assert list.length(seen(script).primary) == 4
+    assert list.length(seen(script).primary) == 5
 
     // The two cells, read before the instance is closed because reading
     // one goes through the writer this close is about to stop.
