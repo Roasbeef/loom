@@ -25,6 +25,7 @@
 //// names the file that moved:
 ////
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
+////   64d254495f7295103ce06da17ec8a9b049b714ed4d397e4e350472fc52858ee4  packages/cap/src/cap/context.gleam
 ////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   e56893644449905feda95679fa3bfc38881649204a0c6d5da112514671ce54d3  packages/cap/src/cap/history.gleam
@@ -43,7 +44,7 @@
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   9691d64888f960ed3652637c63d6f7d79580979477fbd3984ed2f9fc9afe592a  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 25a0405dbf7d9abc30287c4135d07b5b9b7193443042c25b05754a2883969561
+//// Body digest (every line after the marker): c285b25bce0de9c30af8c4071e6152fc28c50d1644bd84137a4281a296fe69f9
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -121,6 +122,65 @@ pub fn spawn(a, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 pub fn spawn_bounded(a, Int, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 /// Stop the actor after this message.
 pub fn stop() -> Next(a)
+",
+  ),
+  #(
+    "cap/context",
+    "### cap/context
+`cap/context` — how full the calling strand's context window is, asked by
+a program rather than by the model.
+
+/// Where the strand's window ends, as its compaction settings put it.
+///
+/// The two variants are the two regimes a program plans differently
+/// against: under `CheckpointAt` the older part of the context is
+/// replaced by the strand's own notes and work continues, while under
+/// `NoCheckpoint` nothing is cut and a request that outgrows the window
+/// is refused by the provider outright.
+pub type Boundary {
+  /// Compaction is on: the threshold compacts once the context passes
+  /// `tokens`, keeping the newest `keep_recent_tokens` verbatim.
+  CheckpointAt(tokens: Int, keep_recent_tokens: Int)
+  /// Compaction is off on this host. Nothing is cut, and the window
+  /// itself is the only ceiling.
+  NoCheckpoint
+}
+/// Why a context report could not be read.
+///
+/// Both variants are `carry on` rather than `repair the call`: there is
+/// no argument to get wrong, so nothing a program could send differently
+/// would change the answer.
+pub type ContextError {
+  /// The report could not be built: the strand's branch or its notes
+  /// would not read, the capability channel could not carry the call, or
+  /// the answer was not the shape this module decodes. One variant for
+  /// all of them because a program can do nothing different about any.
+  ContextUnavailable(reason: String)
+  /// Any other in-band refusal, code preserved. A host that wired no
+  /// context seam at all answers here, under `unsupported_cap`.
+  ContextRefused(code: String, message: String)
+}
+/// One answer: the calling strand's window as the harness measures it.
+///
+/// Constructor invariants, restated from the harness that fills them:
+/// `window` is the one-based ordinal of the window the strand is in, so a
+/// strand that has never compacted is in window one; `used_tokens` is the
+/// threshold's own estimate of the current context; `notes` counts the
+/// strand's blackboard cells, which is what survives a checkpoint.
+pub type Report {
+  Report(strand: String, window: Int, context_window: Int, used_tokens: Int, boundary: Boundary, notes: Int)
+}
+/// Reads the calling strand's context report.
+///
+/// Takes no arguments, because the only thing it could take is the
+/// identity of somebody else. Use it to decide *where* work happens
+/// rather than whether it happens: a program that finds little room left
+/// should delegate the reading of a large result to a subagent, or
+/// summarise rather than return, and one that finds plenty should get on
+/// with it.
+///
+/// Capability: `context.report`.
+pub fn report() -> Result(Report, ContextError)
 ",
   ),
   #(
@@ -1700,6 +1760,54 @@ pub type Next(a) {
 /// The handler answers it with `reply`; the program never sees a raw
 /// `Subject`.
 pub type Reply(a)
+",
+  ),
+  #(
+    "cap/context",
+    "### cap/context
+`cap/context` — how full the calling strand's context window is, asked by
+a program rather than by the model.
+
+/// Where the strand's window ends, as its compaction settings put it.
+///
+/// The two variants are the two regimes a program plans differently
+/// against: under `CheckpointAt` the older part of the context is
+/// replaced by the strand's own notes and work continues, while under
+/// `NoCheckpoint` nothing is cut and a request that outgrows the window
+/// is refused by the provider outright.
+pub type Boundary {
+  /// Compaction is on: the threshold compacts once the context passes
+  /// `tokens`, keeping the newest `keep_recent_tokens` verbatim.
+  CheckpointAt(tokens: Int, keep_recent_tokens: Int)
+  /// Compaction is off on this host. Nothing is cut, and the window
+  /// itself is the only ceiling.
+  NoCheckpoint
+}
+/// Why a context report could not be read.
+///
+/// Both variants are `carry on` rather than `repair the call`: there is
+/// no argument to get wrong, so nothing a program could send differently
+/// would change the answer.
+pub type ContextError {
+  /// The report could not be built: the strand's branch or its notes
+  /// would not read, the capability channel could not carry the call, or
+  /// the answer was not the shape this module decodes. One variant for
+  /// all of them because a program can do nothing different about any.
+  ContextUnavailable(reason: String)
+  /// Any other in-band refusal, code preserved. A host that wired no
+  /// context seam at all answers here, under `unsupported_cap`.
+  ContextRefused(code: String, message: String)
+}
+/// One answer: the calling strand's window as the harness measures it.
+///
+/// Constructor invariants, restated from the harness that fills them:
+/// `window` is the one-based ordinal of the window the strand is in, so a
+/// strand that has never compacted is in window one; `used_tokens` is the
+/// threshold's own estimate of the current context; `notes` counts the
+/// strand's blackboard cells, which is what survives a checkpoint.
+pub type Report {
+  Report(strand: String, window: Int, context_window: Int, used_tokens: Int, boundary: Boundary, notes: Int)
+}
 ",
   ),
   #(
