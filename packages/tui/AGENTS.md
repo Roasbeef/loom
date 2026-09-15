@@ -458,6 +458,19 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   descriptor opens and reads to one second, and its cancellation kills and
   joins the worker before the caller sees the timeout. It performs no path
   expansion or shell evaluation.
+- `tui/advisor_pending.{Board, decode, lines, primary_strand,
+  advisor_strand, visible_nudges}` draws the advisor's undelivered nudge
+  queue beside the composer. `decode` is a total decoder over a board this
+  terminal did not write — own row and byte caps rather than a trust of
+  the server's — and `lines` renders it in the advisor's voice: nothing at
+  all for an empty queue, since the band is taken from the conversation
+  and costs nothing when there is nothing to say; otherwise a heading
+  naming the total and the strand, up to `visible_nudges` (3) sanitized
+  bullets, and a `+N more waiting` line for the remainder. `primary_strand`
+  and `advisor_strand` are copies of `client/advisor`'s constants, not
+  imports — the terminal links no server package — and `gateway_test`
+  pins both pairs against each other so a rename on either side fails a
+  test rather than quietly disarming the panel's read triggers.
 
 ## Relationships
 
@@ -608,6 +621,36 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   Context and worktree reads wait for each other's final push before borrowing
   the same server worker slot. An unsupported optional command stays unavailable
   until attachment replacement. Escape returns without discarding the composer.
+- **Advisor pending-nudge panel**: `tui.sync_advisor_nudges` issues an
+  `advisor_pending` read itself, with no operator keystroke, on exactly
+  three transitions — `tui.advisor_nudges_action` names them `ReadNudges`:
+  the primary's own operation settling, a review settling while the
+  primary is already idle (a review ending is where a nudge is queued),
+  and the primary first appearing in the roster (the attach edge, where
+  idleness is otherwise unknown until the first snapshot). Every other
+  transition, a phase change on an unrelated strand included, is
+  `HoldNudges`: the queue cannot have grown without one of the three
+  edges above. The primary starting a run is `DropNudges` — a local
+  submission counts, so the operator's own send clears the panel before
+  the server confirms the phase — because that run start is what drains
+  the queue into the prompt; the panel is drawn beside the composer as
+  context for the prompt about to be written, never as a transcript row,
+  since a transcript row would claim the model had already read advice it
+  has not. It never enters model context.
+- **A new observation command must be taught to every command-name table
+  by hand — the compiler checks none of them.** `advisor_pending` needed
+  three, and missing one is not cosmetic: `tui/session_channel`'s
+  `matching_presentation` and `outbound` both switch on the literal
+  command string, and an unlisted name in `outbound` defaults to the
+  `Mutation` lane — which held the composer lane forever and hung every
+  attachment, since an observation's own reply never arrives to release
+  it — while `tui/attempt`'s `decode_selection` rejects an unlisted kind
+  outright, which fails the recording replayer on any log carrying that
+  command. Both have regression tests now
+  (`the_observation_takes_the_read_lane_and_its_reply_settles_it_test`,
+  `auxiliary_and_queued_edit_descriptors_round_trip_without_command_bodies_test`),
+  but the tables themselves stay three separate lists a new read command
+  must be added to, not one the type system enforces.
 - **Current notes**: `/notes` requests a separate bounded `notes` observation.
   `tui/notes_view` validates values, last-write revisions, capture revision,
   excerpt markers and omitted counts. `r` refreshes the panel without a new

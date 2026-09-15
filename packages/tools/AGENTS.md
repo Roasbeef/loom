@@ -225,14 +225,22 @@ was asked.
   a seam the host fills, exactly as `remember` and `schedule` are.
   `Verdict` is the three-point vocabulary — `Quiet`, `Nudge(text)`,
   `Block(text)` — ordered by what it costs the primary: nothing, a
-  paragraph at its next prompt, an interruption now. `Ack` is what the
-  harness decided to do with one (`Delivered(how)` | `Queued` |
-  `Downgraded(reason)` | `Dropped(reason)` | `Acknowledged`), and it is
-  the reason the call answers with an outcome rather than an
-  acknowledgement: an emission guard downgrades a block raised inside its
-  cooldown and drops advice the primary has already been given, and an
-  advisor reading a downgrade as a delivery would believe it had stopped
-  the primary when it had not.
+  paragraph delivered the moment the primary stops, an interruption now.
+  `Ack` is what the harness decided to do with one (`Delivered(how)` |
+  `Queued` | `Woke(how)` | `Downgraded(reason)` | `Dropped(reason)` |
+  `Acknowledged`), and it is the reason the call answers with an outcome
+  rather than an acknowledgement: an emission guard downgrades a block
+  raised inside its cooldown and drops advice the primary has already
+  been given, and an advisor reading a downgrade as a delivery would
+  believe it had stopped the primary when it had not. `Woke(how)` is the
+  nudge channel's own unsolicited delivery — the queue drained onto an
+  idle primary at once, through the same door a block uses, rather than
+  left to wait for its next run start — and `how` names the door and how
+  many nudges rode it, since the queue drains whole. A downgraded block
+  keeps `Downgraded` even when the queue it joined went out this way,
+  because a downgrade's whole meaning is that the primary was *not*
+  stopped for it, and `Woke` or `Delivered` would each claim the
+  opposite; the wake is appended to the downgrade's own reason instead.
   `Advice.judge` is handed `Ctx.strand` — the driver's own durable name,
   never an argument — so a verdict cannot be attributed to a strand that
   did not produce it. `decode_verdict` is total and public because both

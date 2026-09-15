@@ -18,6 +18,7 @@ Its historical detail remains available at `6f598fc0:docs/next.md`.
 | Session archive | #418 merged as `9a00da99` after hosted CI and Linux signoff passed at its final head. Protocol 035 owns archive/restore. |
 | Provider completion cleanup | #420 merged as `991a2c31` after hosted CI and Linux signoff passed at its final head. |
 | Numbered diff previews | #421 merged as `fe3cfbf2` after hosted CI and Linux signoff passed at its final head. Its macOS test failure passed one bounded rerun after a clean-HOME local module run passed. |
+| Advisor nudge priority | Landed on `advisor/nudge-priority`: a nudge now delivers at the primary's run end or at once on an idle primary, rather than waiting only for its next run start, bounded by one unsolicited delivery per operator turn; a new `advisor_pending` observation lets the terminal show the undelivered queue beside the composer. See [the design doc](architecture/advisor.md) and issue #425 for what is still open — the pending panel's three-row cap has no way to expand. |
 | Updating a running daemon | #404 remains open. The takeover integrates all four merges and fixes drain ordering, immutable installation, build identity, and reconnect. Independent review is resolved through `76030114`; the full local gate passed, while release and final-head CI validation remain required. See [the takeover record](review/update-takeover.md). |
 
 Main CI run `34923050531` completed successfully at `fe3cfbf2`. On the #404
