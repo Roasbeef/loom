@@ -360,38 +360,29 @@ them out under `PREFIX`, `~/.local` by default:
 
 | path | what |
 |---|---|
-| `$PREFIX/lib/loom/server-<version>` | the release tree, copied whole: `bin/loomd`, `bin/loom-exec`, `bin/gleam`, `share/codemode-seed`, the bundled ERTS |
-| `$PREFIX/lib/loom/server` | a symlink to `server-<version>` |
-| `$PREFIX/lib/loom/client-<version>` | the client release, whole, with its own ERTS (`INSTALL_CLIENT=bundled`, the default) |
-| `$PREFIX/lib/loom/client` | a symlink to `client-<version>` |
-| `$PREFIX/lib/loom/tui-<version>` | the client shipment: compiled BEAM files, no runtime (`INSTALL_CLIENT=slim`) |
-| `$PREFIX/lib/loom/tui` | a symlink to `tui-<version>` |
-| `$PREFIX/bin/loom` | the client launcher, generated to name whichever client was installed |
-| `$PREFIX/bin/loomd` | a wrapper that execs the release's own `bin/loomd` through the `server` symlink |
+| `$PREFIX/lib/loom/server.<suffix>` | a complete server release: helper, compiler, code-mode seed, and bundled ERTS |
+| `$PREFIX/lib/loom/server` | a symlink selecting the installed server tree |
+| `$PREFIX/lib/loom/client.<suffix>` | the complete client release with ERTS (`INSTALL_CLIENT=bundled`, the default) |
+| `$PREFIX/lib/loom/client` | a symlink selecting the bundled client tree |
+| `$PREFIX/lib/loom/tui.<suffix>` | the compiled shipment and profiling launcher, without ERTS (`INSTALL_CLIENT=slim`) |
+| `$PREFIX/lib/loom/tui` | a symlink selecting the slim client tree |
+| `$PREFIX/bin/loom` | the launcher for the selected client shape |
+| `$PREFIX/bin/loomd` | the daemon launcher |
+| `$PREFIX/bin/loom-profile` | the selected client's profiling census launcher |
 
-Two shapes are deliberate. The release tree is copied whole because the
-server finds its helper, compiler and seed through `code:root_dir()`, the
-release root, and a tree with pieces moved out of it would find nothing.
-And `loomd` on `PATH` is a wrapper rather than a symlink because the
-release's own launcher resolves the root from its own location with
-`pwd -P`, so a symlink to the wrapper would resolve it to `$PREFIX`. The
-two launchers share a directory because the client looks for the server
-beside itself before it asks `PATH`.
+Every installation gets fresh physical directories, even for an unchanged
+version. Copies finish before their links are published. The launchers resolve
+those links to physical paths before executing, so a running process retains
+its original modules and bundled tools across later installations. The slim
+shipment carries its own build identity and profiling launcher, just as the
+bundled release does. The client wrapper preserves its installed location for
+sibling daemon discovery.
 
-**A release lands in a versioned directory and a symlink is switched to
-it, never into a tree a running daemon may be reading.** The release
-launcher resolves its root with `pwd -P`, which follows the `server`
-symlink to the physical `server-<version>` directory, so a daemon
-started before an update stays pinned to the tree it started from and
-the next tool call or code-mode build after the update still finds the
-helper, compiler and seed that daemon was built with. The symlink is
-switched by an atomic rename, and an old version directory is pruned
-only when it is neither the current nor the immediately-previous target
-and no live daemon is recorded — a stale directory costs disk, and
-deleting a live tree is the failure the layout exists to prevent. Each
-launcher also exports `LOOM_BUILD_VERSION` and `LOOM_BUILD_COMMIT`, so
-the running binary can report which build it is; see
-[updating.md](updating.md).
+Links and complete wrapper files are renamed individually; installation is not
+a transaction across the whole client/server pair. Old trees and alternate
+client-shape links are retained for manual cleanup. Existing legacy directories
+at `server`, `client`, or `tui` require an offline migration or a fresh prefix.
+See [updating](updating.md) for restart, rollback, and cleanup procedures.
 
 ## Installing for live profiling
 
