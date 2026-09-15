@@ -1,11 +1,11 @@
 -module(tui_ffi).
 
-%% The terminal's own four actions. Bounded file reads, locks, process
+%% The terminal's own actions. Bounded file reads, locks, process
 %% identity and launch are shared with the daemon and live in
 %% `host_bootstrap_ffi`, which `host/bootstrap` declares directly; nothing
 %% here forwards to it.
 -export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1,
-    herdr_exchange/3]).
+    herdr_exchange/3, require_terminal/0]).
 
 silence_logger() ->
     ok = logger:set_primary_config(level, none),
@@ -63,6 +63,19 @@ read_console_reply(PromptBinary) ->
             end;
         _ ->
             {error, <<"standard input is not a terminal">>}
+    end.
+
+%% Reject pipelines before any interactive launch effects. OTP's documented
+%% options cover both ends; input alone would accept redirected screen output.
+require_terminal() ->
+    case io:getopts(standard_io) of
+        Options when is_list(Options) ->
+            case {proplists:get_value(stdin, Options, false),
+                  proplists:get_value(stdout, Options, false)} of
+                {true, true} -> {ok, nil};
+                _ -> {error, <<"interactive mode requires terminal input and output">>}
+            end;
+        _ -> {error, <<"cannot inspect terminal input and output">>}
     end.
 
 describe(Reason) ->

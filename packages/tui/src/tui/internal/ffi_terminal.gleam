@@ -1,4 +1,4 @@
-//// The four operating-system actions that belong to the terminal itself.
+//// The operating-system actions that belong to the terminal itself.
 ////
 //// Everything else the launcher needs from the operating system — private
 //// files, locks, process identity and launch, clocks, digests — is shared
@@ -7,7 +7,7 @@
 //// otherwise write over the alternate screen, running a child whose output
 //// *is* this program's output, asking the person in front of it a question,
 //// and exiting the VM with that child's status.
-//// None of the four has an expression in `gleam_stdlib`, `gleam_erlang`,
+//// None has an expression in `gleam_stdlib`, `gleam_erlang`,
 //// `gleam_otp` or weft, which is why they are `@external` at all.
 
 /// Stops every OTP logger handler from writing to the terminal.
@@ -53,3 +53,15 @@ pub fn read_console_reply(prompt: String) -> Result(String, String)
 /// interactive launcher returns from `main` so the terminal is restored.
 @external(erlang, "tui_ffi", "halt")
 pub fn halt(code: Int) -> anything
+
+/// Requires terminal input and output before an interactive launch.
+///
+/// OTP exposes this through `io:getopts/1`; stdlib, gleam_erlang, gleam_otp,
+/// and weft provide no equivalent, so the check stays at the terminal FFI.
+///
+/// ## Examples
+///
+/// An interactive launch proceeds on `Ok(Nil)` and reports `Error(reason)`
+/// before creating a daemon or entering the alternate screen.
+@external(erlang, "tui_ffi", "require_terminal")
+pub fn require_terminal() -> Result(Nil, String)
