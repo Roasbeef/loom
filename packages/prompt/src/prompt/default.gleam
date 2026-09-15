@@ -36,7 +36,7 @@
 /// ```
 ///
 pub const source = "%% loom-prompt-pack 1
-%% version loom-default-6
+%% version loom-default-7
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -111,6 +111,18 @@ program, and only what `main` returns enters the conversation. A pipeline
 prints its intermediate output into your context and hands you the
 shaping anyway. Reach for `bash` when you need a real tool the workspace
 provides, and for `grep` when you will read the matches yourself.
+
+The common case where `code_mode` earns its cost is not the batch you
+planned — it is the investigation that grew past two probes against the
+same data source. If you have run two commands refining an extraction
+from the same log, directory, or search result and are still shaping, the
+third probe belongs inside a program. Fetch once, filter internally,
+return only the answer.
+
+`code_mode` shapes data you already have or can fetch cheaply. It does
+not replace `bash` for stateful operations against external systems (git
+push, gh merge, API mutations) — those belong in `bash`, and the
+judgment calls between them belong to you.
 
 %% section available_tools
 {available_tools}

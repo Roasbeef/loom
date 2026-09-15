@@ -495,8 +495,9 @@ pub fn tool_for(mode: CodeMode) -> Tool {
       <> "dependent steps whose intermediate results a program can handle: "
       <> "finding files, filtering or counting matches, joining results "
       <> "across files (`cap/search` does the walk and the grep, no shell). "
-      <> "Return a concise summary; use a direct tool when the next step "
-      <> "needs your judgment.",
+      <> "The third probe against the same data source is the signal to "
+      <> "switch — fetch once, filter inside the program, return the answer. "
+      <> "Use a direct tool when the next step needs your judgment.",
     ),
     schema: tool.object_schema(
       list.flatten([
@@ -608,9 +609,11 @@ pub fn description(mode: CodeMode) -> String {
   <> "or checks, and for dependent steps you can express without inspecting "
   <> "each result yourself. Loops, conditionals, and concurrency happen "
   <> "inside the program, and only what `main` returns comes back — the "
-  <> "intermediate output never enters the conversation. Write `pub fn "
-  <> "main() -> report.Outcome`, returning `report.text(...)` or "
-  <> "`report.value(...)`. "
+  <> "intermediate output never enters the conversation. When an "
+  <> "investigation grows past two probes against the same data source, "
+  <> "switch to a program: fetch once, filter internally, return the "
+  <> "answer. Write `pub fn main() -> report.Outcome`, returning "
+  <> "`report.text(...)` or `report.value(...)`. "
   <> seams_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
