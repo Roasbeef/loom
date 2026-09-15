@@ -31,6 +31,31 @@ loom_profile_consume daemon --bind 127.0.0.1:0 --profile --state-dir "$state/dae
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--bind 127.0.0.1:0 --state-dir $state/daemon" ]]
 
+profile_config="$state/daemon-profile.toml"
+cat > "$profile_config" <<'EOF'
+[daemon]
+profile = true
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/configured"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "${LOOM_PROFILE_ARGS[*]}" == "--config $profile_config --state-dir $state/configured" ]]
+
+cat > "$profile_config" <<'EOF'
+[daemon]
+profile = false
+EOF
+loom_profile_consume daemon --config "$profile_config" --state-dir "$state/not-configured"
+[[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+
+mkdir -p "$state/default-config"
+cat > "$state/default-config/loom.toml" <<'EOF'
+[daemon]
+profile = true
+EOF
+loom_profile_consume daemon --state-dir "$state/default-config"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "${LOOM_PROFILE_ARGS[*]}" == "--state-dir $state/default-config" ]]
+
 loom_profile_consume daemon --config --profile
 [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--config --profile" ]]

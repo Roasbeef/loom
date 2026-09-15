@@ -347,10 +347,11 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
-      "tools", "jobs", "secrets", "workspace", "advisor",
+      "tools", "jobs", "secrets", "workspace", "advisor", "daemon",
     ],
     "the top level",
   ))
+  use Nil <- result.try(validate_daemon(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -365,6 +366,30 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use roles <- result.try(parse_roles(role_table, models))
   use mcp_servers <- result.try(parse_mcp_servers(document))
   Ok(Catalog(models:, roles:, mcp_servers:))
+}
+
+// Distribution is selected by the launcher before the daemon's VM exists.
+// This parser still owns the operator-facing TOML contract: accepting an
+// unknown `[daemon]` key here would leave the shell and server disagreeing
+// about whether the requested isolation boundary was active.
+fn validate_daemon(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  case dict.get(document, "daemon") {
+    Error(Nil) -> Ok(Nil)
+    Ok(tom.Table(fields)) -> {
+      use Nil <- result.try(known_keys(
+        dict.keys(fields),
+        ["profile"],
+        "[daemon]",
+      ))
+
+      case dict.get(fields, "profile") {
+        Ok(tom.Bool(_enabled)) -> Ok(Nil)
+        Ok(_other) -> Error("daemon.profile must be true or false")
+        Error(Nil) -> Error("daemon.profile is required")
+      }
+    }
+    Ok(_other) -> Error("daemon must be a [daemon] table")
+  }
 }
 
 // tom renders a TOML parse failure as a structured value; the server

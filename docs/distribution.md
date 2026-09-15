@@ -403,6 +403,20 @@ loomd --profile --state-dir /private/loom-profile
 loom --profile --state-dir /private/loom-profile
 ```
 
+For a daemon that an operator starts regularly, the same restart-only choice
+can live in its existing catalogue file:
+
+```toml
+[daemon]
+profile = true
+```
+
+`loomd` reads that setting from `--config <loom.toml>`, or from
+`<state-dir>/loom.toml` when no config path is supplied. It is deliberately a
+daemon-only setting: distribution is chosen before the VM starts, so changing
+the file affects the next daemon start and cannot expose an already-running
+node. `false`, a missing table, and every client launch leave distribution off.
+
 Each launch prints the exact `loom-profile` command for its generated node. Run
 that command in another terminal to take an observational memory census. The
 helper uses the bundled `mem_report` module and exits after reporting process
