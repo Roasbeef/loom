@@ -32,6 +32,7 @@ test_sh="$root/scripts/test.sh"
 # terminal or daemon path. Exercise it before this fixture starts either.
 "$root/scripts/cli_help_test.sh"
 
+LOOM_BUILD_VERSION=fixture-client LOOM_BUILD_COMMIT=fixture-client \
 LOOM_BOOTSTRAP_E2E_SERVER="$server" \
 	bash "$test_sh" tui --match bootstrap_real_server_lifecycle_test
 env 'BASH_FUNC_read%%=() { return 0; }' \
