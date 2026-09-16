@@ -44,6 +44,12 @@ thinking = "unsupported"
 # Unknown model identifiers retain the legacy true default, so declare false
 # for other text-only endpoints. Image-bearing runs from a text-only entry
 # use the vision role, or are refused when no usable vision route exists.
+# max_images = 8
+# Optional positive total-image limit per provider request, including history.
+# Default eight is conservative, not capability discovery; set the actual
+# endpoint limit here. Oldest historical images become placeholders as needed.
+# Current-run images stay intact or produce a local error if they exceed it.
+# Each fallback uses its own limit. Stored images are never deleted.
 
 # A second Baseten entry, this one priced. The optional
 # [models.<name>.pricing] table is what turns the usage ledger's cost

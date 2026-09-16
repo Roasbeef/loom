@@ -991,6 +991,7 @@ fn scripted_catalog() -> catalog.Catalog {
         thinking: model.ThinkingOff,
         pricing: None,
         vision: catalog.TextOnly,
+        max_images: 8,
       ),
     ],
     roles: [#(model.Main, ["acme"])],

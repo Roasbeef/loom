@@ -39,6 +39,7 @@ import provider/adapter/gemini
 import provider/adapter/openai
 import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
+import provider/image_budget
 import provider/internal/diagnostic
 import provider/model.{
   type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
@@ -135,13 +136,17 @@ pub opaque type Gateway {
   /// name shadow earlier ones via first-match lookup order); `routes`
   /// map each role to its ordered fallback chain, best target first;
   /// `prices` carries at most one rate card per provider name and a
-  /// provider absent from it is unpriced, which costs zero;
+  /// provider absent from it is unpriced, which costs zero. `image_limits`
+  /// holds explicit endpoint/model limits; absent entries use eight images.
+  /// `protected_images` belongs to a request-scoped copy, never shared state.
   /// `attempt_timeout_ms` is positive and bounds one attempt from transport
   /// start through settlement. Response activity does not renew the deadline.
   Gateway(
     providers: List(ProviderConfig),
     routes: List(#(Role, List(ResolvedModel))),
     prices: List(#(String, Pricing)),
+    image_limits: List(#(#(String, String), Int)),
+    protected_images: Int,
     transport: Transport,
     secrets: SecretStore,
     clock: Clock,
@@ -171,6 +176,8 @@ pub fn new(
     providers: [],
     routes: [],
     prices: [],
+    image_limits: [],
+    protected_images: 0,
     transport:,
     secrets:,
     clock:,
@@ -194,6 +201,44 @@ pub fn new(
 pub fn add_provider(gateway: Gateway, config: ProviderConfig) -> Gateway {
   let providers = list.append(gateway.providers, [config])
   Gateway(..gateway, providers:)
+}
+
+/// Sets the image count limit for one endpoint and model identity.
+///
+/// Non-positive values fail locally at dispatch. Catalogue callers validate
+/// them at load time, so malformed configuration never reaches a transport.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway |> gateway.with_image_limit("eyes", "vision-model", 8)
+/// ```
+pub fn with_image_limit(
+  gateway: Gateway,
+  provider: String,
+  model_id: String,
+  limit: Int,
+) -> Gateway {
+  let key = #(provider, model_id)
+  Gateway(..gateway, image_limits: [
+    #(key, limit),
+    ..list.filter(gateway.image_limits, fn(entry) { entry.0 != key })
+  ])
+}
+
+/// Makes a request-scoped registry copy that protects the active run's images.
+///
+/// Use this for held prompt batches whose first image precedes the newest
+/// attributed prompt. Each fallback still applies its own endpoint limit.
+/// The shared registry and durable request remain unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.prepare(gateway.with_protected_images(gw, 4), request)
+/// ```
+pub fn with_protected_images(gateway: Gateway, count: Int) -> Gateway {
+  Gateway(..gateway, protected_images: count)
 }
 
 /// Sets a role's ordered fallback chain, best target first, replacing
@@ -1704,6 +1749,21 @@ fn attempt_one(
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> AttemptOutcome {
+  let limit =
+    list.key_find(gateway.image_limits, #(target.provider, target.model_id))
+    |> result.unwrap(image_budget.default_max_images)
+  use messages <- or_image_failure(
+    image_budget.project(request.messages, limit, gateway.protected_images),
+    fn(reason) {
+      AttemptTerminal(
+        Failed(stream.StreamError(
+          api_error_type: "image_limit",
+          message: target.provider <> "/" <> target.model_id <> ": " <> reason,
+        )),
+      )
+    },
+  )
+  let request = model.ProviderRequest(..request, messages:)
   let deliver = fn(delta) { process.send(events, Delta(delta:)) }
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
     AttemptTerminal(Failed(UnknownProvider(provider: target.provider)))
@@ -1943,5 +2003,18 @@ fn or_failure(
   case result {
     Error(Nil) -> on_error()
     Ok(value) -> then(value)
+  }
+}
+
+// An image-budget rejection is terminal before secret lookup or transport
+// registration. Keeping its reason preserves the corrective action for users.
+fn or_image_failure(
+  result: Result(a, String),
+  failure: fn(String) -> AttemptOutcome,
+  next: fn(a) -> AttemptOutcome,
+) -> AttemptOutcome {
+  case result {
+    Ok(value) -> next(value)
+    Error(reason) -> failure(reason)
   }
 }

@@ -661,6 +661,7 @@ fn entry(
     max_output_tokens: 4096,
     thinking: model.ThinkingOff,
     vision: catalog.TextOnly,
+    max_images: 8,
     pricing: None,
   )
 }

@@ -385,7 +385,8 @@ catalogue without opening runtimes. Explicit admission invokes
   worked example) and the builder that turns a catalogue into the
   provider gateway's registry — one provider per entry, named by the
   entry (so durable identities store `{catalogue-name, model_id}`),
-  one route per `[roles]` row, and one rate card per entry that carries
+  one route per `[roles]` row, a positive per-model `max_images` limit
+  (default eight), and one rate card per entry that carries
   an optional `[models.<name>.pricing]` table (US dollars per million
   tokens; `input` and `output` required, the two cache rates defaulting
   to `input` so the default over-reports rather than hiding spend). An
@@ -1564,6 +1565,13 @@ catalogue without opening runtimes. Explicit admission invokes
   through tool and run-end continuations, so a held image followed by a text
   instruction cannot be silently placeholdered. A new text-only run does not
   inherit the previous run's image requirement. Explicit `vision` declarations override the built-in capability.
+  Before preparing dispatch, wiring counts the original user and tool-result
+  images after the operation's source leaf and gives the gateway a request-local
+  protected count. The scan crosses compactions through their preserved parent
+  links, ignores copied retained tails and stops at the immutable run boundary.
+  The gateway budgets historical images independently for every fallback model
+  and refuses an oversized active turn locally. A successor run excludes old
+  images from protection; compaction cannot reclassify retained history as new.
   GLM-5.3 (with or without the `zai-org/` prefix) defaults to text-only;
   GLM-5.3-Flash remains distinct. Unknown identifiers retain the legacy
   image-capable default. A following attributed text prompt can recover from a failed image request

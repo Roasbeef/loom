@@ -156,6 +156,7 @@ import machine/strand.{
   type ModelIdentity, type StrandConfiguration, ModelIdentity,
 }
 import provider/gateway.{type Gateway}
+import provider/image_budget
 import provider/model.{
   type ProviderRequest, type RequestTarget, type ResolvedModel, type Role,
   type ToolSpec, ForResolved, ForRole, ProviderRequest, ResolvedModel, ToolSpec,
@@ -522,8 +523,15 @@ fn prepare_dispatch(
   spec: effects.RequestSpec,
 ) -> stream.PreparedStream {
   case spec {
-    effects.GenerationRequest(..) ->
-      gateway.prepare(config.gateway, provider_request(config, spec))
+    effects.GenerationRequest(operation:, ..) -> {
+      let request = provider_request(config, spec)
+      let protected = case image_budget.count(request.messages) {
+        0 -> 0
+        _ -> active_run_images(config.session, operation) |> result.unwrap(0)
+      }
+      let scoped = gateway.with_protected_images(config.gateway, protected)
+      gateway.prepare(scoped, request)
+    }
     effects.PollRequest(..) ->
       prepared_unsupported(
         "deferred polls are not wired to a provider surface yet",
@@ -790,6 +798,48 @@ fn image_bearing(config: Config, operation: OpId) -> Bool {
         hooks.project(config.session, strand).messages,
       )
   }
+}
+
+// A held batch and its tool continuations belong to one admitted run, even
+// when its newest attributed prompt contains no images. Protect every image
+// since the immutable source leaf. Compaction preserves parent links, so walk
+// through it and count original messages once, never the copied retained tail.
+// Retained tails are contiguous suffixes: if compaction removed current-run
+// images, it also removed all older history. The gateway's cap to the actual
+// projected count then protects exactly the surviving current-run images.
+fn active_run_images(opened: Session, operation: OpId) -> Result(Int, Nil) {
+  use cell <- result.try(
+    session.op_meta(opened, operation) |> result.replace_error(Nil),
+  )
+  use cell <- result.try(option.to_result(cell, Nil))
+  let meta = cell.value
+  use leaf_cell <- result.try(
+    session.strand_leaf(opened, meta.strand) |> result.replace_error(Nil),
+  )
+  use leaf_cell <- result.try(option.to_result(leaf_cell, Nil))
+  use leaf <- result.try(option.to_result(leaf_cell.value, Nil))
+
+  let scan = storage.branch_scan(leaf)
+  let scan = case meta.source_leaf {
+    None -> scan
+    Some(source) -> storage.branch_stop_at_id(scan, source)
+  }
+  use entries <- result.try(
+    storage.scan_branch(opened.store, scan) |> result.replace_error(Nil),
+  )
+  entries
+  |> list.filter_map(fn(item) {
+    case item {
+      entry.MessageEntry(id:, message:, ..) if Some(id) != meta.source_leaf ->
+        Ok(message)
+      entry.MessageEntry(..)
+      | entry.CompactionEntry(..)
+      | entry.BranchSummaryEntry(..)
+      | entry.CustomEntry(..) -> Error(Nil)
+    }
+  })
+  |> image_budget.count
+  |> Ok
 }
 
 // The admitted prompt batch is immutable for the operation. It can contain

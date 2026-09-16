@@ -29,6 +29,7 @@
 //// max_output_tokens = 32000
 //// thinking = "off"                   # off|low|medium|high|unsupported
 //// vision = false                     # optional override; GLM-5.3 defaults to false
+//// max_images = 8                     # positive request-wide image limit
 ////
 //// [models.<name>.pricing]            # optional; US dollars per million
 //// input = 3.00                       # tokens, the unit providers publish
@@ -104,6 +105,7 @@ import gleam/result
 import gleam/string
 import provider/gateway as provider_gateway
 import provider/http.{type Transport}
+import provider/image_budget
 import provider/model
 import provider/pricing
 import provider/secret.{type SecretStore}
@@ -157,6 +159,8 @@ pub type CatalogModel {
     /// Whether the endpoint reads image blocks (`vision` in the
     /// catalogue; known model defaults apply before the legacy `ReadsImages`).
     vision: ImageReading,
+    /// Maximum image blocks per request, including retained history.
+    max_images: Int,
   )
 }
 
@@ -448,7 +452,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking", "pricing", "vision",
+      "max_output_tokens", "thinking", "pricing", "vision", "max_images",
     ],
     place,
   ))
@@ -494,6 +498,10 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     Ok(_other) -> Error(place <> ".vision must be true or false")
     Error(Nil) -> Ok(default_image_reading(model_id))
   })
+  use max_images <- result.try(case dict.has_key(fields, "max_images") {
+    True -> positive_int(fields, place, "max_images")
+    False -> Ok(image_budget.default_max_images)
+  })
   Ok(CatalogModel(
     name:,
     dialect:,
@@ -505,6 +513,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     thinking:,
     pricing:,
     vision:,
+    max_images:,
   ))
 }
 
@@ -1748,6 +1757,11 @@ pub fn gateway(
       fn(gateway, entry) {
         provider_gateway.add_provider(gateway, provider_config(entry))
         |> priced(entry)
+        |> provider_gateway.with_image_limit(
+          entry.name,
+          entry.model_id,
+          entry.max_images,
+        )
       },
     )
   list.fold(catalog.roles, registered, fn(gateway, route) {

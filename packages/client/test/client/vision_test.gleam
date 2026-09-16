@@ -26,6 +26,7 @@ import core/message
 import core/register
 import core/tx.{Expect, InsertEntry, SetRegister, Tx}
 import gleam/bit_array
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -41,6 +42,7 @@ import provider/gateway
 import provider/http
 import provider/model
 import provider/secret
+import provider/stream
 import runtime/effects
 import session/session
 import simplifile
@@ -57,8 +59,12 @@ fn dead_transport() -> http.Transport {
 // One provider, two entries: the text-only head the strand is pinned to
 // and the vision model the image request should borrow.
 fn vision_gateway() -> gateway.Gateway {
+  vision_gateway_transport(dead_transport())
+}
+
+fn vision_gateway_transport(transport: http.Transport) -> gateway.Gateway {
   gateway.new(
-    transport: dead_transport(),
+    transport:,
     secrets: secret.from_list([#("ACME_KEY", "unit-test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -1192,4 +1198,211 @@ pub fn historical_tool_image_placeholder_preserves_result_metadata_test() {
     original,
   ])
   assert !client_vision.image_bearing([original, assistant_answer()])
+}
+
+// The gateway protects a whole admitted batch, then releases that protection
+// at the next operation's source leaf. This is the recovery path for held
+// images followed by a text instruction and a subsequent smaller image turn.
+pub fn image_budget_protects_held_batch_and_recovers_next_run_test() {
+  let opened = memory_session()
+  let assert Ok(_) =
+    session.ensure_strand(opened, "main", text_only_configuration())
+    as "the image-budget fixture needs a strand"
+  let nine =
+    owner_prompt(list.repeat(message.UserImage("YQ==", "image/png"), 9))
+  let first = budget_append(opened, None, 700, nine)
+  let instruction =
+    owner_prompt([message.UserText("compare all of those", None)])
+  let last = budget_append(opened, Some(first), 701, instruction)
+  let op = budget_operation(opened, None, [first, last], 702)
+  let sent = process.new_subject()
+  let transport =
+    provider_test.transport(fn(request, events) {
+      process.send(sent, request.body)
+      process.send(events, http.ResponseStatus(400, []))
+      process.send(
+        events,
+        http.ResponseChunk(<<
+          "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture stop\"}}":utf8,
+        >>),
+      )
+      process.send(events, http.ResponseEnd)
+    })
+  let config = config_on(vision_gateway_transport(transport), opened)
+  let assert effects.GenerationRequest(..) as spec =
+    generation([nine, instruction])
+    as "the fixture makes a generation request"
+  let surface = wiring.build_effects(config).provider
+  let handle = surface.request(effects.GenerationRequest(..spec, operation: op))
+  let assert Ok(#([], stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the held batch must fail locally instead of losing one current image"
+  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+    stream.underlying_error(error)
+    as "the refusal must come from the image budget"
+  assert string.contains(message, "current turn contains 9 images")
+  assert process.receive(sent, within: 0) == Error(Nil)
+
+  let newest = owner_prompt([message.UserImage("Yg==", "image/png")])
+  let newest_id = budget_append(opened, Some(last), 703, newest)
+  let next_op = budget_operation(opened, Some(last), [newest_id], 704)
+  let context = [nine, instruction, newest]
+  let handle =
+    surface.request(
+      effects.GenerationRequest(..spec, operation: next_op, context:),
+    )
+  let assert Ok(#(_, stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the fixture transport deliberately returns an HTTP error"
+  let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
+    as "the next run must reach transport instead of inheriting old protection"
+  let assert Ok(body) = process.receive(sent, within: 0)
+    as "the next request body must be observable"
+  assert list.length(string.split(body, "\"type\":\"image\"")) - 1 == 8
+  assert string.contains(body, "Yg==")
+  assert string.contains(body, "omitted from this request")
+  assert session.project_context(opened, Some(newest_id)) == Ok(context)
+}
+
+fn budget_append(
+  opened: session.Session,
+  parent: option.Option(ids.EntryId),
+  seed: Int,
+  content: message.AgentMessage,
+) -> ids.EntryId {
+  let id = ids.mint_entry(ids.generator(clock.fixed(0), seed)).0
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(MessageEntry(
+            id:,
+            parent:,
+            seq: 0,
+            ts: 0,
+            message: content,
+            terminate: False,
+          )),
+          SetRegister(
+            register.StrandLeaf,
+            "main",
+            register.leaf_value(Some(id)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the budget fixture message must commit"
+  id
+}
+
+fn budget_operation(
+  opened: session.Session,
+  source: option.Option(ids.EntryId),
+  prompts: List(ids.EntryId),
+  seed: Int,
+) -> ids.OpId {
+  let id = ids.mint_op(ids.generator(clock.fixed(0), seed)).0
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          SetRegister(
+            register.OpMeta,
+            ids.op_id_to_string(id),
+            register.RegisterValue(
+              machine_codec.encode_operation(operation.Operation(
+                id:,
+                strand: "main",
+                source_leaf: source,
+                started_at: 0,
+                intent: operation.RunIntent(prompts),
+              )),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the budget fixture operation must commit"
+  id
+}
+
+// Automatic compaction can retain old exchanges together with the current
+// prompt. Its copied tail must not turn those historical images into new ones.
+pub fn image_budget_after_compaction_keeps_the_operation_boundary_test() {
+  let opened = memory_session()
+  let assert Ok(_) =
+    session.ensure_strand(opened, "main", text_only_configuration())
+    as "the compaction fixture needs a strand"
+  let historical =
+    owner_prompt(list.repeat(message.UserImage("YQ==", "image/png"), 8))
+  let old_id = budget_append(opened, None, 801, historical)
+  let answered = assistant_answer()
+  let source = budget_append(opened, Some(old_id), 802, answered)
+  let current = owner_prompt([message.UserImage("Yg==", "image/png")])
+  let current_id = budget_append(opened, Some(source), 803, current)
+  let op = budget_operation(opened, Some(source), [current_id], 804)
+  let compacted = ids.mint_entry(ids.generator(clock.fixed(0), 805)).0
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(entry.CompactionEntry(
+            id: compacted,
+            parent: Some(current_id),
+            seq: 0,
+            ts: 0,
+            summary: "Earlier context",
+            retained_tail: [historical, answered, current],
+            tokens_before: 10_000,
+            from_hook: True,
+            usage: None,
+          )),
+          SetRegister(
+            register.StrandLeaf,
+            "main",
+            register.leaf_value(Some(compacted)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "same-run compaction must commit with the original parent chain"
+  let assert Ok(context) = session.project_context(opened, Some(compacted))
+    as "the projection must include the retained historical images"
+  let sent = process.new_subject()
+  let transport =
+    provider_test.transport(fn(request, events) {
+      process.send(sent, request.body)
+      process.send(events, http.ResponseStatus(400, []))
+      process.send(
+        events,
+        http.ResponseChunk(<<
+          "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture stop\"}}":utf8,
+        >>),
+      )
+      process.send(events, http.ResponseEnd)
+    })
+  let config = config_on(vision_gateway_transport(transport), opened)
+  let assert effects.GenerationRequest(..) as spec = generation(context)
+    as "the fixture makes a generation request"
+  let handle =
+    wiring.build_effects(config).provider.request(
+      effects.GenerationRequest(..spec, operation: op),
+    )
+  let assert Ok(#(_, stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the fixture transport must complete"
+  let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
+    as "historical images carried through compaction must not cause a local refusal"
+  let assert Ok(body) = process.receive(sent, within: 0)
+    as "the budgeted request must reach transport"
+  assert list.length(string.split(body, "\"type\":\"image\"")) - 1 == 8
+  assert string.contains(body, "Yg==")
+  assert string.contains(body, "omitted from this request")
+  assert session.project_context(opened, Some(compacted)) == Ok(context)
 }

@@ -52,6 +52,30 @@ Optional code-mode seed, Linux-only and shipped-release fixtures reported skips;
 live provider calls and an installed daemon remain untested. The follow-up is
 local on the same branch, not merged or installed.
 
+The request-budget follow-up keeps the same conversation context for vision
+routing and adds a positive per-model `max_images` setting, default eight.
+Every actual provider attempt bounds attached and tool-result images against
+its own limit. The oldest historical images become explicit placeholders;
+current-run images remain intact or cause a local terminal refusal before HTTP.
+Text, answers, tool metadata and stored image bytes remain unchanged. Fallbacks
+start from the original request, so a larger fallback retains its full allowance.
+This does not identify or deduplicate versions of the same image.
+
+Held prompt batches use the operation's immutable source leaf to protect all
+current images even when the last prompt is text. Review caught a compaction
+case that counted copied historical images as current. A regression reproduced
+the false refusal with eight historical images and one current image, then
+passed after counting original message entries through the preserved parent
+chain. The reviewer verified that correction. A later operation starts a new
+protection boundary and can recover after an oversized image request.
+
+The request-budget gates passed 222 provider tests and, after the compaction
+correction, 1,834 client tests. Provider/client lint and documentation checks
+have zero errors with existing warnings retained. Optional seed-dependent,
+Linux-only and shipped-server fixtures reported skips. Live provider calls and
+installed-daemon behavior remain untested. The changes are local on
+`fix/image-routing-preview`, not merged or installed.
+
 Related work remains separate: parse diagnostics are PR #434, the 60-line
 compact code-mode preview is local commit `d9465cc2`, and execution of reusable
 programs from files or named notes is tracked in issue #435.

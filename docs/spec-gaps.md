@@ -604,6 +604,12 @@ the other side.
     intent early costs nothing and the rows become live the day a caller
     exists. Stated here as an as-built fact, not as pending work.
 
+    **Update:** `vision` now has a caller in `client/wiring`: image-bearing
+    requests from text-only models use the vision chain with the existing
+    conversation context. `provider/image_budget` bounds attached and tool-result
+    images per actual dispatch target. The earlier claim that neither role has
+    a caller is stale for vision; `plan` remains reserved.
+
 13. **A catalogue entry's `thinking` seeds a strand rather than reaching
     the wire (closed).** The field is not an override at dispatch — the
     per-turn level is absolute there, because a turn that raised its

@@ -1631,6 +1631,7 @@ fn env_catalog() -> catalog.Catalog {
         // reads images; a catalogue entry gets its say from its own
         // `vision` key.
         vision: catalog.ReadsImages,
+        max_images: 8,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],
