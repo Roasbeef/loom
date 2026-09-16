@@ -6,6 +6,7 @@ import broker/escalation as broker_escalation
 import broker/policy
 import client/grants
 import client/protocol
+import core/json
 import core/message
 import core/register
 import gleam/int
@@ -111,4 +112,52 @@ pub fn tui_approval_resolved_summaries_are_bounded_and_do_not_replace_newer_ques
     )
     == [reopened]
   assert approval.project(summaries, [reopened]) |> list.contains(reopened)
+}
+
+pub fn tui_session_approval_echoes_exact_authority_and_scope_test() {
+  let captured =
+    approval.Review(
+      ..review("persistent", 77),
+      permission: approval.Exact("file-action", [
+        protocol.encode_grant(policy.GrantWritableRoot("/shared/output")),
+      ]),
+    )
+  let assert Ok(wire) = approval.approve_for_session(81, captured)
+    as "explicit session approval must encode"
+  let assert Ok(envelope) = protocol.decode_command(wire)
+    as "the gateway decodes the TUI's actual session approval"
+  assert envelope.command
+    == protocol.ApproveForSession(
+      "persistent",
+      [policy.GrantWritableRoot("/shared/output")],
+      "file-action",
+      77,
+    )
+  assert protocol.decode_command(protocol.encode_command(envelope))
+    == Ok(envelope)
+  assert approval.rememberable(review("limits", 78)) != Ok(Nil)
+    as "resource-limit approval cannot silently become permanent"
+  let invalid_scope =
+    json.to_string(
+      json.Object([
+        #("v", json.Int(2)),
+        #("id", json.Int(82)),
+        #("cmd", json.String("approve")),
+        #(
+          "body",
+          json.Object([
+            #("escalation_id", json.String("persistent")),
+            #("grants", json.Array([])),
+            #("action", json.String("file-action")),
+            #("expected_seq", json.Int(77)),
+            #("scope", json.String("forever")),
+          ]),
+        ),
+      ]),
+    )
+  let assert Error(protocol.BadBody(
+    reason: "approval scope must be once or session",
+    ..,
+  )) = protocol.decode_command(invalid_scope)
+    as "an unsupported lifetime must not fall back to one-call consent"
 }

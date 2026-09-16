@@ -27,12 +27,15 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/grants
+import client/permissions
+import client/protocol
 import client/wiring
 import core/clock.{type Clock}
 import core/ids
 import core/json
 import core/message
 import core/msgpack
+import core/register
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -55,6 +58,8 @@ import support/addresses
 import support/provider as provider_test
 import support/tool_registry
 import tools/codemode as codemode_tool
+import tui/approval
+import tui/snapshot_view
 import weft/actor
 
 // --- the harness -----------------------------------------------------------
@@ -1682,4 +1687,82 @@ pub fn a_session_without_the_plane_raises_nothing_from_code_mode_test() {
   assert string.contains(text, "the code-mode execution could not start")
   assert api.escalations(harness.runtime) == Ok([])
   assert drained(executions, []) == [a_program()]
+}
+
+pub fn session_dialog_approval_resumes_native_write_and_remembers_the_exact_file_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  let path = harness.config.workspace <> "-remembered/output"
+  let answers = process.new_subject()
+  approve_when_pending(harness.runtime, fn(id) {
+    let assert Ok(cell) = api.escalation_cell(harness.runtime, id)
+      as "the pending question is captured for the dialog"
+    let assert Ok(review) =
+      approval.decode(snapshot_view.Cell(
+        register.FactCustom,
+        escalation.register_key(id),
+        cell.seq,
+        escalation.encode(cell.record),
+      ))
+      as "the TUI decodes the exact durable request"
+    let assert Ok(frame) = approval.approve_for_session(1, review)
+      as "the dialog's session option encodes its captured authority"
+    let assert Ok(protocol.CommandEnvelope(
+      command: protocol.ApproveForSession(
+        escalation_id: returned_id,
+        grants: echoed,
+        action: digest,
+        expected_seq: seq,
+      ),
+      ..,
+    )) = protocol.decode_command(frame)
+      as "the gateway's protocol accepts the TUI decision"
+    assert returned_id == id
+    assert seq == cell.seq
+    assert Some(digest) == cell.record.action
+    let assert Ok(change) =
+      permissions.remembering(harness.runtime, echoed, None)
+      as "the displayed grants are eligible for session persistence"
+    let assert Ok(_) =
+      api.approve_escalation_with_fact_at(
+        harness.runtime,
+        cell,
+        list.map(echoed, grants.encode),
+        None,
+        change,
+      )
+      as "the exact decision and permission union commit atomically"
+    process.send(answers, Nil)
+  })
+  let args =
+    json.Object([
+      #("path", json.String(path)),
+      #("content", json.String("approved")),
+    ])
+  let initial = bash_run("permission-write")
+  let run =
+    effects.ToolRun(
+      ..initial,
+      call: message.ToolCall(..initial.call, name: "fs_write", arguments: args),
+      arguments: args,
+    )
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: False, ..),
+    ..,
+  ) = wiring.run_tool(harness.config, run)
+    as "the paused native write resumes after the dialog's approval"
+  let assert Ok(Nil) = process.receive(answers, 1000)
+    as "the decision callback must complete"
+  assert simplifile.read(path) == Ok("approved")
+  let assert Ok([decided]) = api.escalations(harness.runtime)
+    as "the first write asked exactly one question"
+  assert decided.status == escalation.Consumed
+  let again =
+    effects.ToolRun(..run, call: message.ToolCall(..run.call, id: "next-write"))
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: False, ..),
+    ..,
+  ) = wiring.run_tool(harness.config, again)
+    as "another invocation uses the saved permission without asking again"
+  assert api.escalations(harness.runtime) == Ok([decided])
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
 }

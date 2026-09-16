@@ -471,11 +471,11 @@ fn exercise(
           list.any(sample.model.approvals, fn(record) {
             record.id == pending.id && record.origin == Some(author)
           })
-          && string.contains(sample.frame, "EXACT APPROVAL")
+          && string.contains(sample.frame, "PERMISSION REQUEST")
         _ -> False
       }
     })
-  assert string.contains(inspected.frame, "EXACT APPROVAL")
+  assert string.contains(inspected.frame, "PERMISSION REQUEST")
     as "the inspector the fixture is about to close is actually painted"
 
   // Exact-action inspection is modal and covers the transcript summaries.

@@ -135,6 +135,7 @@ import client/directories
 import client/escalate.{type Escalations}
 import client/grants
 import client/notes
+import client/permissions
 import client/vision
 import core/clock.{type Clock}
 import core/entry
@@ -1284,15 +1285,18 @@ pub fn clear(
 ///
 pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
   let ctx = tool_context(config, run)
-  let outcome = case directories.read(config.session) {
+  let authority = {
+    use access <- result.try(directories.read(config.session))
+    use standing <- result.try(permissions.read(config.session))
+    Ok(#(access, standing))
+  }
+  let outcome = case authority {
     Error(reason) -> tool.failure(reason)
-    Ok(access) -> {
-      let ctx =
-        tool.Ctx(
-          ..ctx,
-          directory_access: access,
-          base_policy: directory_access.widen(ctx.base_policy, access),
-        )
+    Ok(#(access, standing)) -> {
+      let access = directory_access.approved(access, standing)
+      let base = directory_access.widen(ctx.base_policy, access)
+      let base = policy.compose(base, base, standing).0
+      let ctx = tool.Ctx(..ctx, directory_access: access, base_policy: base)
       tool.dispatch(config.registry, ctx, run.call.name, run.arguments)
     }
   }

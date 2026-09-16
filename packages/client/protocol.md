@@ -468,3 +468,19 @@ document does not yet decide.
 7. **`escalation` `consumed`** — assumed broadcast after the single
    re-execution begins; confirm timing against the broker's durable
    event order.
+
+
+## Remembering an approval
+
+The `approve` body accepts optional `scope: "once" | "session"`. Omission
+preserves once-only approval. Session scope retains the required `action`,
+`grants`, `escalation_id` and `expected_seq` echoes. Unknown scopes are rejected.
+Only owner/operator connections may submit a decision.
+
+Session approval requires every echoed grant to be a canonical readable or
+writable path, or full network access. Env, limits, scratch and other network
+modes are refused for this scope. The validated echoed subset is merged into
+reserved `fact.custom/client/permission_grants` atomically with the approval,
+under expectations for both records. A conflict saves no authority and approves
+nothing. Later tool dispatches capture these grants; session reopen preserves
+them. Exact file grants do not become directory grants. See protocol 041.

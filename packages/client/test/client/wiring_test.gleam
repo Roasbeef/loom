@@ -23,6 +23,7 @@ import client/directories
 import client/escalate
 import client/gateway as client_gateway
 import client/grants
+import client/permissions
 import client/wiring
 import core/clock
 import core/ids
@@ -44,6 +45,7 @@ import provider/gateway
 import provider/http
 import provider/model
 import provider/secret
+import runtime/api
 import runtime/effects
 import session/session
 import simplifile
@@ -518,4 +520,141 @@ pub fn dispatch_reads_session_directory_authority_before_native_io_test() {
     ..,
   ) = wiring.run_tool(other, run)
     as "another session must not inherit the addition"
+}
+
+pub fn remembered_file_and_network_permissions_survive_restart_without_widening_neighbors_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture directory must be known"
+  let root = here <> "/build/remembered-permission-restart"
+  let shared = root <> "/outside"
+  let _cleared = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/workspace")
+    as "the workspace must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the external parent must exist"
+  let path = root <> "/session.db"
+  let time = clock.fixed(at: 1000)
+  let assert Ok(opened) = session.open_sqlite(path, "first", 30_000, time)
+    as "the saved session must open"
+  let configured =
+    wiring.Config(
+      ..config(),
+      session: opened,
+      workspace: root <> "/workspace",
+      blob_root: root <> "/workspace/.blobs",
+      base_policy: policy.workspace_default(root <> "/workspace"),
+    )
+  let assert Ok(live) =
+    api.open(
+      opened,
+      wiring.build_effects(configured),
+      api.default_options(configuration_with(["fs_write"])),
+    )
+    as "the runtime owns the durable approval transaction"
+  let allowed = [
+    policy.GrantWritableRoot(shared <> "/output"),
+    policy.GrantNetwork(policy.NetworkFull),
+  ]
+  let assert Ok(Nil) =
+    api.raise_escalation(live, "remember-exact-file", json.Object([]))
+    as "the pending record must exist"
+  let assert Ok(cell) = api.escalation_cell(live, "remember-exact-file")
+    as "the exact question is captured"
+  let assert Ok(change) = permissions.remembering(live, allowed, None)
+    as "a missing writable file is a valid remembered target"
+  let assert Ok(_) =
+    api.approve_escalation_with_fact_at(
+      live,
+      cell,
+      list.map(allowed, grants.encode),
+      None,
+      change,
+    )
+    as "approval and standing authority commit together"
+  let assert Ok(_) = api.consume_escalation(live, "remember-exact-file")
+    as "consuming the call approval does not consume session authority"
+  let assert Ok(Nil) = api.close(live) as "the runtime and database must close"
+  let assert Ok(reopened) = session.open_sqlite(path, "second", 30_000, time)
+    as "the saved session must reopen"
+  assert permissions.read(reopened) == Ok(allowed)
+  let configured = wiring.Config(..configured, session: reopened)
+  let args =
+    json.Object([
+      #("path", json.String(shared <> "/output")),
+      #("content", json.String("remembered")),
+    ])
+  let original = tool_run([])
+  let run =
+    effects.ToolRun(
+      ..original,
+      call: message.ToolCall(..original.call, name: "fs_write", arguments: args),
+      arguments: args,
+    )
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: False, ..),
+    ..,
+  ) = wiring.run_tool(configured, run)
+    as "the remembered exact file succeeds without another approval"
+  assert simplifile.read(shared <> "/output") == Ok("remembered")
+  let neighbor =
+    json.Object([
+      #("path", json.String(shared <> "/neighbor")),
+      #("content", json.String("denied")),
+    ])
+  let neighboring =
+    effects.ToolRun(
+      ..run,
+      call: message.ToolCall(..run.call, arguments: neighbor),
+      arguments: neighbor,
+    )
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: True, ..),
+    ..,
+  ) = wiring.run_tool(configured, neighboring)
+    as "remembering a file must not authorize its parent directory"
+  assert simplifile.read(shared <> "/neighbor") != Ok("denied")
+
+  // The same snapshot must reach the jail policy without adding host-native paths.
+  let observer =
+    tool.Tool(..terminating_tool(tool.ContinueRun), run: fn(ctx: tool.Ctx, _) {
+      assert ctx.base_policy.network == policy.NetworkFull
+      assert ctx.directory_access.writable == [shared <> "/output"]
+      tool.success("captured")
+    })
+  let observed =
+    wiring.Config(..configured, registry: tool.registry([observer]))
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: False, ..),
+    ..,
+  ) =
+    wiring.run_tool(
+      observed,
+      effects.ToolRun(
+        ..original,
+        call: message.ToolCall(..original.call, name: "halt"),
+      ),
+    )
+    as "standing network authority must reach the next invocation's policy"
+  let assert Ok(_) =
+    storage.commit(
+      reopened.store,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.FactCustom,
+            permissions.key,
+            register.value(json.Object([])),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the corruption fixture must commit"
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: True, ..),
+    ..,
+  ) = wiring.run_tool(configured, run)
+    as "malformed standing authority must refuse dispatch"
+  let assert Ok(Nil) = session.close(reopened)
+    as "the reopened store must close"
 }

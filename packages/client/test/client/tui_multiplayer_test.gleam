@@ -6,6 +6,7 @@ import broker/escalation as broker_escalation
 import broker/policy
 import client/daemon/admin
 import client/grants
+import client/permissions
 import client/session_socket_test
 import client/tui_v2_test
 import core/json
@@ -18,6 +19,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import runtime/api
 import runtime/escalation
 import runtime/writer
 import support/tui_driver
@@ -160,13 +162,22 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
       as "Bob captured the same question"
     assert a_question == b_question
     list.each([alice.data, bob.data, observer.data], fn(driver) {
-      let _ = tui_driver.play(driver, [backend.Resize(110, 30)])
-      let _ = send(driver, "/approvals ui-approval")
+      let resized = tui_driver.play(driver, [backend.Resize(110, 30)])
+
+      // Operators receive the pending question automatically. The read-only
+      // observer opens the same exact record through an explicit lookup.
+      case resized.model.overlay {
+        tui.ApprovalInspector(_) -> Nil
+        _ -> {
+          let _ = send(driver, "/approvals ui-approval")
+          Nil
+        }
+      }
       let inspected =
         tui_v2_test.await(driver, fn(sample) {
           case sample.model.overlay {
             tui.ApprovalInspector(_) ->
-              string.contains(sample.frame, "EXACT APPROVAL")
+              string.contains(sample.frame, "PERMISSION REQUEST")
             _ -> False
           }
         })
@@ -248,6 +259,76 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
     tui_driver.stop(observer.data)
     tui_driver.stop(bob.data)
     tui_driver.stop(alice.data)
+    Nil
+  })
+}
+
+pub fn tui_session_dialog_commits_the_displayed_permissions_test() {
+  session_socket_test.fixture(fn(port, owner, session, _, harness) {
+    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+    let assert Ok(terminal) = tui_driver.start(address, owner, session)
+      as "the owner attaches through the real terminal and socket"
+    let _ = tui_v2_test.await(terminal.data, writable)
+    let pending =
+      escalation.raised(
+        "remember-through-dialog",
+        grants.encode_denial(
+          "network access requires consent",
+          broker_escalation.PolicyDenial,
+          [policy.GrantNetwork(policy.NetworkFull)],
+        ),
+        action: Some(escalation.Action("bash", "network-action", "fetch data")),
+        scope: None,
+      )
+    let assert Ok(_) =
+      writer.commit(
+        harness.runtime.tree.writer,
+        tx.Tx(
+          [
+            tx.SetRegister(
+              register.FactCustom,
+              escalation.register_key(pending.id),
+              register.value(escalation.encode(pending)),
+            ),
+          ],
+          [],
+        ),
+      )
+      as "the fixture raises only the pending request"
+    let opened =
+      tui_v2_test.await(terminal.data, fn(sample) {
+        case sample.model.overlay {
+          tui.ApprovalInspector(_) ->
+            string.contains(sample.frame, "Allow for session")
+          _ -> False
+        }
+      })
+    let assert Ok(question) = decision(opened, pending.id)
+      as "the automatically painted dialog carries the pending question"
+    assert api.fact_cell(harness.runtime, permissions.key) == Ok(None)
+
+    // The actual terminal reducer encodes the session choice and sends it
+    // through the authenticated socket. No test helper writes the answer.
+    let _ =
+      tui_driver.play(terminal.data, [
+        backend.KeyPress("right"),
+        backend.KeyPress("right"),
+        backend.KeyPress("enter"),
+      ])
+    let answered =
+      tui_v2_test.await(terminal.data, fn(sample) {
+        resolved(sample, pending.id)
+      })
+    let assert Ok(approved) = decision(answered, pending.id)
+      as "the daemon's committed answer returns to the terminal"
+    assert approved.status == approval.Approved
+    assert approved.seq > question.seq
+    let assert Ok(Some(saved)) = api.fact_cell(harness.runtime, permissions.key)
+      as "the same gateway decision stores standing session authority"
+    assert permissions.decode(saved.value)
+      == Ok([policy.GrantNetwork(policy.NetworkFull)])
+    assert answered.model.overlay == tui.NoOverlay
+    tui_driver.stop(terminal.data)
     Nil
   })
 }

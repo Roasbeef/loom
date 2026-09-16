@@ -142,6 +142,7 @@ import client/daemon/transfer
 import client/directories
 import client/grants
 import client/notes_view
+import client/permissions
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
@@ -1808,6 +1809,7 @@ fn network_command(
     | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
+    | protocol.ApproveForSession(..)
     | protocol.Deny(..)
     | protocol.Fork(..)
     | protocol.Navigate(..)
@@ -2557,6 +2559,7 @@ fn read_only(command: Command) {
     | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
+    | protocol.ApproveForSession(..)
     | protocol.Deny(..)
     | protocol.Fork(..)
     | protocol.Navigate(..)
@@ -3901,6 +3904,20 @@ fn run_command(
         grants,
         action,
         expected_seq,
+        Once,
+      )
+    protocol.ApproveForSession(escalation_id:, grants:, action:, expected_seq:),
+      Subscribed
+    ->
+      approve(
+        state,
+        connection,
+        id,
+        escalation_id,
+        grants,
+        action,
+        expected_seq,
+        ForSession,
       )
     protocol.Deny(escalation_id:, expected_seq:), Subscribed ->
       deny(state, connection, id, escalation_id, expected_seq)
@@ -5219,6 +5236,12 @@ fn sweep_effects(state: State, op: OpId) -> Nil {
 
 // --- escalations -----------------------------------------------------------
 
+// Remembering authority is a separate explicit decision from allowing one call.
+type ApprovalLifetime {
+  Once
+  ForSession
+}
+
 // One approval, decided against one read.
 //
 // An approval used to be a statement about a record id: `grants: None`
@@ -5246,6 +5269,7 @@ fn approve(
   echoed: List(Grant),
   action: String,
   expected_seq: Int,
+  lifetime: ApprovalLifetime,
 ) -> State {
   use cell <- or_refuse(
     pending_escalation_cell(state, escalation_id, expected_seq),
@@ -5262,7 +5286,7 @@ fn approve(
     id,
   )
   use Nil <- or_refuse(
-    commit_approval(state, connection, cell, echoed),
+    commit_approval(state, connection, cell, echoed, lifetime),
     state,
     connection,
     id,
@@ -5375,15 +5399,36 @@ fn commit_approval(
   connection: Int,
   cell: api.EscalationCell,
   echoed: List(Grant),
+  lifetime: ApprovalLifetime,
 ) -> Result(Nil, WireEvent) {
-  case
-    api.approve_escalation_at(
-      state.runtime,
-      cell,
-      list.map(echoed, grants.encode),
-      connection_origin(state, connection),
-    )
-  {
+  let author = connection_origin(state, connection)
+  use change <- result.try(case lifetime {
+    Once -> Ok(None)
+    ForSession ->
+      permissions.remembering(state.runtime, echoed, author)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) {
+        refusal(protocol.code_bad_request, reason)
+      })
+  })
+  let committed = case change {
+    None ->
+      api.approve_escalation_at(
+        state.runtime,
+        cell,
+        list.map(echoed, grants.encode),
+        author,
+      )
+    Some(change) ->
+      api.approve_escalation_with_fact_at(
+        state.runtime,
+        cell,
+        list.map(echoed, grants.encode),
+        author,
+        change,
+      )
+  }
+  case committed {
     Ok(_) -> Ok(Nil)
     Error(api.RaceLost) -> Error(moved_under_the_answer(state, cell.record.id))
     Error(error) -> {

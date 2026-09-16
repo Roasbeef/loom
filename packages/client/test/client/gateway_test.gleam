@@ -11,6 +11,7 @@ import client/catalog
 import client/directories
 import client/gateway
 import client/grants
+import client/permissions
 import client/protocol
 import client/provider_relay
 import client/schedule
@@ -4827,4 +4828,117 @@ pub fn add_directory_allows_read_only_access_to_write_protected_directory_test()
     as "write protection must not reject an operator's read-only addition"
   assert directories.read(harness.runtime.session)
     == Ok(directory_access.Access([protected], []))
+}
+
+pub fn session_approval_remembers_only_the_echoed_grants_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let wanted = [policy.GrantNetwork(policy.NetworkFull), wall(60)]
+  claim(
+    harness,
+    "remember",
+    scope_on("main", op_id(601)),
+    durable.Action("bash", "remember-action", "network request"),
+    wanted,
+  )
+  let _displayed = next_escalation(harness)
+  let seq = current_question_seq(harness, "remember")
+  send(
+    harness,
+    931,
+    protocol.ApproveForSession(
+      "remember",
+      [policy.GrantNetwork(policy.NetworkFull)],
+      "remember-action",
+      seq,
+    ),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 931, 20).event
+    as "the remembered approval is acknowledged after commit"
+  assert record.status == "approved"
+  assert permissions.read(harness.runtime.session)
+    == Ok([policy.GrantNetwork(policy.NetworkFull)])
+  assert api.put_fact(harness.runtime, permissions.key, json.Object([]))
+    != Ok(Nil)
+    as "the model cannot write standing authority"
+}
+
+pub fn session_approval_rejects_stale_or_unsupported_grants_without_persistence_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "remember-stale",
+    scope_on("main", op_id(602)),
+    durable.Action("bash", "remember-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  let seq = current_question_seq(harness, "remember-stale")
+  send(
+    harness,
+    932,
+    protocol.ApproveForSession(
+      "remember-stale",
+      [policy.GrantNetwork(policy.NetworkFull)],
+      "other-action",
+      seq,
+    ),
+  )
+  let assert protocol.ErrorEvent(code: "stale_approval", ..) =
+    next_reply(harness, 932, 20).event
+    as "unseen replacement authority cannot be remembered"
+  assert permissions.read(harness.runtime.session) == Ok([])
+  claim(
+    harness,
+    "remember-limit",
+    scope_on("main", op_id(603)),
+    durable.Action("bash", "limit-action", "long command"),
+    [wall(60)],
+  )
+  let _displayed = next_escalation(harness)
+  send(
+    harness,
+    933,
+    protocol.ApproveForSession(
+      "remember-limit",
+      [wall(60)],
+      "limit-action",
+      current_question_seq(harness, "remember-limit"),
+    ),
+  )
+  let assert protocol.ErrorEvent(code: "bad_request", ..) =
+    next_reply(harness, 933, 20).event
+    as "resource limits cannot become session permissions"
+  assert permissions.read(harness.runtime.session) == Ok([])
+  assert stored(harness, "remember-limit").status == durable.Pending
+}
+
+pub fn once_approval_leaves_session_permissions_absent_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "allow-once",
+    scope_on("main", op_id(604)),
+    durable.Action("bash", "once-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  send(
+    harness,
+    934,
+    protocol.Approve(
+      "allow-once",
+      [policy.GrantNetwork(policy.NetworkFull)],
+      "once-action",
+      0,
+    ),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 934, 20).event
+    as "legacy once-only approval still succeeds"
+  assert record.status == "approved"
+  assert api.fact_cell(harness.runtime, permissions.key) == Ok(None)
 }
