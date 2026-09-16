@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:910`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:921`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1344,7 +1344,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5349-5158`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5273-5279`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).

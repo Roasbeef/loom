@@ -307,6 +307,7 @@ fn decode_selection(kind, fields) {
     | "context"
     | "worktree_diff"
     | "live_jobs"
+    | "advisor_pending"
     | "schedules"
     | "schedule_cancel"
     | "prompt"

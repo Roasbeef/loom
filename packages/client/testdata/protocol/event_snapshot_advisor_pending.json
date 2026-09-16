@@ -1,0 +1,1 @@
+{"v":2,"reply_to":53,"event":"snapshot","body":{"mode":"advisor_pending","board":{"strand":"main","observed_at_ms":1000,"pending":["the migration has no down step","two of the new tests assert nothing"],"total":2}}}

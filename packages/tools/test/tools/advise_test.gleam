@@ -219,7 +219,11 @@ pub fn each_acknowledgement_renders_its_own_line_test() {
   assert text_of(run(answering(delivered), "advisor", arguments))
     == "block delivered: steered the primary's current run"
   assert text_of(run(answering(advise.Queued), "advisor", arguments))
-    == "nudge queued for the primary's next run start"
+    == "nudge queued for the primary's run end or its next run start"
+
+  let woke = advise.Woke(how: "started a run on the idle primary")
+  assert text_of(run(answering(woke), "advisor", arguments))
+    == "nudges delivered now: started a run on the idle primary"
 
   let downgraded = advise.Downgraded(reason: "in cooldown")
   assert text_of(run(answering(downgraded), "advisor", arguments))

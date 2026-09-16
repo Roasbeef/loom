@@ -1188,6 +1188,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
 pub fn auxiliary_and_queued_edit_descriptors_round_trip_without_command_bodies_test() {
   let kinds = [
     "queued_input", "edit_queued_input", "worktree_diff", "live_jobs", "notes",
+    "advisor_pending",
   ]
   list.each(kinds, fn(kind) {
     let request =
@@ -1223,6 +1224,7 @@ pub fn auxiliary_and_queued_edit_descriptors_round_trip_without_command_bodies_t
 pub fn recorded_auxiliary_refusals_replay_in_their_original_command_slots_test() {
   let kinds = [
     "queued_input", "edit_queued_input", "worktree_diff", "live_jobs", "notes",
+    "advisor_pending",
   ]
   let commands =
     list.index_map(kinds, fn(kind, index) {

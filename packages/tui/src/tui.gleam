@@ -43,6 +43,7 @@ import host/build_identity
 import host/endpoint
 import machine/strand as machine_strand
 import simplifile
+import tui/advisor_pending
 import tui/agents
 import tui/approval
 import tui/approval_panel
@@ -50,6 +51,7 @@ import tui/attachment
 import tui/attempt
 import tui/attempt_replay
 import tui/bootstrap
+import tui/cache_miss
 import tui/command
 import tui/completion_summary
 import tui/composer
@@ -489,6 +491,26 @@ pub type FrameCache {
   )
 }
 
+/// A prompt-cache miss already rendered as its transcript row.
+///
+/// The row belongs inside the transcript rather than at the end of it, so
+/// the notice names the entry it follows. A usage event arrives after the
+/// entry whose request it bills, which is what puts the row under the turn
+/// that missed; naming the entry rather than a position is what survives the
+/// compact projection, which joins a call to a result several entries later
+/// and must not be cut between them.
+@internal
+pub type CacheNotice {
+  CacheNotice(
+    /// The strand whose transcript shows the row.
+    strand: String,
+    /// The last entry that strand held when the row was raised.
+    after_entry: ids.EntryId,
+    /// The operator-facing line, already formatted.
+    text: String,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -526,6 +548,16 @@ pub type Model {
     awaiting_outcome: Option(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
+    /// The last provider usage row each strand billed, with the instant it
+    /// arrived, which is all the prompt-cache detector remembers. Keyed by
+    /// strand because a sub-agent's request says nothing about whether the
+    /// primary's cached prefix survived the operator's pause.
+    cache_watch: Dict(String, cache_miss.Watch),
+    /// Cache-miss notices raised on this connection, oldest first. They are
+    /// transient by design: a reattach rebuilds the durable transcript and
+    /// these do not come back, which is acceptable for a notice about the
+    /// moment it happened, and is what keeps them out of the store.
+    cache_notices: List(CacheNotice),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
     /// Retained scrollback of every strand other than the active one, keyed
@@ -568,6 +600,16 @@ pub type Model {
     jobs_request: Option(Int),
     /// Missing observations are unavailable, never a zero-job assertion.
     jobs_notice: String,
+    /// The advisor's undelivered nudge queue, observed while the primary is
+    /// idle. `None` is "nothing observed", never "the queue is empty".
+    nudges: Option(advisor_pending.Board),
+    /// One pending-nudge read waiting for a free command lane.
+    nudges_refresh: worktree_view.Refresh,
+    /// Attachment which owns the one issued nudge read; a board answering an
+    /// attachment that has gone describes a session nobody is watching.
+    nudges_awaiting: Option(String),
+    /// Actual lane request ID, so an unrelated refusal cannot settle it.
+    nudges_request: Option(Int),
     help_open: Bool,
     notes_open: Bool,
     /// A dedicated view of captured edit diffs, without tool retries.
@@ -1014,6 +1056,8 @@ pub fn new_model_with_clock(
       ),
     ],
     records: [],
+    cache_watch: dict.new(),
+    cache_notices: [],
     scrollback: history_view.empty(),
     parked_scrollback: dict.new(),
     notice: "interactive design preview",
@@ -1030,6 +1074,10 @@ pub fn new_model_with_clock(
     jobs_awaiting: None,
     jobs_request: None,
     jobs_notice: "Live jobs unavailable; /summary requests a current observation",
+    nudges: None,
+    nudges_refresh: worktree_view.Settled,
+    nudges_awaiting: None,
+    nudges_request: None,
     help_open: False,
     notes_open: False,
     diff_view: DiffAutomatic,
@@ -3780,9 +3828,18 @@ fn composer_status_lines(model: Model) -> List(String) {
     None -> []
     Some(text) -> [text]
   }
+
+  // The nudge panel sits under the reviewer roster and above the send state:
+  // it is context for the prompt about to be written, not a report on one
+  // already sent. An empty queue renders nothing, so the band keeps its
+  // height when the advisor has nothing waiting.
+  let nudges = case model.nudges {
+    None -> []
+    Some(board) -> advisor_pending.lines(board)
+  }
   list.append(
     reviewer_status.lines(model.reviewer_rows, model.active_strand),
-    pending,
+    list.append(nudges, pending),
   )
 }
 
@@ -4177,6 +4234,7 @@ fn settle_update(
     False -> updated
   }
   let updated = sync_context(model, updated)
+  let updated = sync_advisor_nudges(model, updated)
   let published = publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
@@ -4286,8 +4344,10 @@ fn update_tick(model: Model) -> Model {
   let drained = drain_connection(switched, 64)
   let drained =
     tick_channel(
-      service_context_read(
-        service_jobs_read(service_worktree_read(service_queue_read(drained))),
+      service_advisor_nudges_read(
+        service_context_read(
+          service_jobs_read(service_worktree_read(service_queue_read(drained))),
+        ),
       ),
     )
   let quiet_for_ms =
@@ -4801,7 +4861,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         False -> dict.new()
       }
       let #(lines, compact_call_cache, compact_entry_cache) =
-        record_lines(model.records, model)
+        record_lines(model.records, model, active_notices(model))
       let #(record_rows, record_line_cache) =
         model.transcript
         |> list.append(lines)
@@ -4821,7 +4881,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     }
     True, [] -> model
     True, pending -> {
-      let #(lines, calls, narratives) = record_lines(pending, model)
+      let #(lines, calls, narratives) = record_lines(pending, model, [])
       let #(newest_rows, appended) =
         lines
         |> separated_from_screen(model)
@@ -4895,11 +4955,8 @@ fn record_anchors_for(
   model: Model,
   width: Int,
 ) -> List(Option(transcript_anchor.Row)) {
-  let entries =
-    model.records
-    |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
-    |> list.map(fn(record) { record.entry })
+  let entries = strand_entries(model.records, model.active_strand)
+  let notices = active_notices(model)
   let blocks = case model.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -4937,21 +4994,30 @@ fn record_anchors_for(
       // response `anchored_entry_blocks` has already placed every spacer a
       // wider rule would ask for, and a spacer's own last row is blank, so a
       // second pass can only decline.
-      list.flat_map(entries, fn(value) {
-        anchored_entry_blocks(value, model)
-        |> list.map(fn(block) {
-          #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
-        })
+      entries
+      |> splice_notices(notices, entry_holds)
+      |> list.flat_map(fn(spliced) {
+        case spliced {
+          Transient(text) -> [#("", [Line(System, text)])]
+          Projected(value) ->
+            anchored_entry_blocks(value, model)
+            |> list.map(fn(block) {
+              #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
+            })
+        }
       })
       |> separated_tool_blocks(BetweenEntries)
     }
     False ->
       entries
       |> tool_activity.project
-      |> list.flat_map(fn(item) {
-        case item {
-          tool_activity.Narrative(value) -> anchored_entry_blocks(value, model)
-          tool_activity.Tools(calls) -> {
+      |> splice_notices(notices, item_holds)
+      |> list.flat_map(fn(spliced) {
+        case spliced {
+          Transient(text) -> [#("", [Line(System, text)])]
+          Projected(tool_activity.Narrative(value)) ->
+            anchored_entry_blocks(value, model)
+          Projected(tool_activity.Tools(calls)) -> {
             let heading = [activity_heading(calls)]
             let called =
               list.map(calls, fn(call) {
@@ -5246,6 +5312,13 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           skills: [],
           next_id: 1,
           record_cache_valid: False,
+          // Every session's primary strand is named `main`, so a watch or a
+          // notice carried over from the old session would be judged
+          // against the wrong baseline: the new session's first usage row
+          // would be compared to the old session's last one and drawn as a
+          // miss that never happened.
+          cache_watch: dict.new(),
+          cache_notices: [],
           scroll_offset: case model.scrollback.mode {
             history_view.Reading -> model.scroll_offset
             history_view.Live -> 0
@@ -5461,6 +5534,10 @@ pub fn apply_channel_update(
           jobs_refresh: worktree_view.Settled,
           jobs_awaiting: None,
           jobs_notice: "Live jobs unavailable: conversation disconnected",
+          nudges: None,
+          nudges_refresh: worktree_view.Settled,
+          nudges_awaiting: None,
+          nudges_request: None,
           worktree: case model.worktree.awaiting {
             Some(id) ->
               worktree_view.receive(
@@ -6170,6 +6247,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         None -> model
       }
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
+    protocol.AdvisorPendingSnapshot(board) ->
+      receive_advisor_nudges(model, board)
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
@@ -6331,34 +6410,9 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.UsageChanged(usage: settled) -> {
-      // Usage arrives once per settled generation, so this is the moment
-      // the rate is known: the settlement's own output count over the
-      // time since the request went out. A settlement whose clock never
-      // started (a refusal, an empty turn) leaves the last rate standing.
-      let output_rate_tps = case model.peer, model.generation_started_ms {
-        // The window is this client's own clock from the request going
-        // out to the settlement, and a replay spends that window playing
-        // a file rather than waiting on a provider. `output_rate_min_ms`
-        // already discards the short ones, so a brief replay would report
-        // nothing anyway; a long one would report how fast the replay
-        // ran. Declining outright is the same rule that stops a replay
-        // echoing a prompt.
-        Replaying, _ | Disconnected, _ -> model.output_rate_tps
+    protocol.UsageChanged(strand:, usage: settled) ->
+      receive_usage(model, strand, settled)
 
-        Attached(..), Some(started) | Preview, Some(started) ->
-          output_rate(settled.output, model.monotonic_time_ms() - started)
-        Attached(..), None | Preview, None -> model.output_rate_tps
-      }
-      let usage = add_usage(model.usage, settled)
-      Model(
-        ..model,
-        usage:,
-        generation_started_ms: None,
-        output_rate_tps:,
-        notice: tokens(usage.total_tokens) <> " tokens",
-      )
-    }
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
 
@@ -6408,6 +6462,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.ContextSnapshot(..)
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
+    | protocol.AdvisorPendingSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -7124,19 +7179,92 @@ pub fn live_tool_call_summary(name: String) -> String {
   text_hygiene.single_line(name) <> " · preparing arguments…"
 }
 
+/// One place in a strand's transcript, once the transient rows are in it.
+///
+/// A transcript is durable projection with the occasional local notice
+/// spliced between its items. Naming that shape lets both projections — the
+/// drawn rows and the scroll anchors — walk the same sequence, so a notice
+/// cannot shift one of them without shifting the other.
+type Spliced(a) {
+  /// One item of the durable projection: an entry, or a projected group.
+  Projected(a)
+
+  /// A transient system-voice row that follows the item before it.
+  Transient(String)
+}
+
+// Places each notice after the projected item that holds the entry it was
+// anchored to.
+//
+// Anchoring by entry rather than by position is what keeps a notice from
+// landing inside a tool group: the compact projection joins a call to a
+// result that arrives several entries later, and cutting between them would
+// leave the call pending forever and the result orphaned. The item that
+// holds the anchor is followed by the row, whole. A notice whose anchor has
+// since left the retained window is held by nothing and is dropped, which is
+// the right end for a row that was never durable.
+fn splice_notices(
+  items: List(a),
+  notices: List(CacheNotice),
+  holds: fn(a, CacheNotice) -> Bool,
+) -> List(Spliced(a)) {
+  list.flat_map(items, fn(item) {
+    let rows =
+      notices
+      |> list.filter(holds(item, _))
+      |> list.map(fn(notice) { Transient(notice.text) })
+    [Projected(item), ..rows]
+  })
+}
+
+// Whether an expanded-history entry is the one a notice was anchored to.
+fn entry_holds(value: entry.Entry, notice: CacheNotice) -> Bool {
+  value.id == notice.after_entry
+}
+
+// Whether a compact projection item covers the entry a notice was anchored
+// to. A tool group covers every call's own entry and every result entry it
+// has joined, so a notice raised in the middle of a group follows the whole
+// group.
+fn item_holds(item: tool_activity.Item, notice: CacheNotice) -> Bool {
+  case item {
+    tool_activity.Narrative(value) -> value.id == notice.after_entry
+    tool_activity.Tools(calls) ->
+      list.any(calls, fn(call) {
+        call.source == notice.after_entry
+        || call.result_source == Some(notice.after_entry)
+      })
+  }
+}
+
+// The entries of one strand, oldest first.
+fn strand_entries(
+  records: List(protocol.EntryRecord),
+  strand: String,
+) -> List(entry.Entry) {
+  records
+  |> list.reverse
+  |> list.filter(fn(record) { record.strand == strand })
+  |> list.map(fn(record) { record.entry })
+}
+
+// The notices raised on the active strand, oldest first.
+fn active_notices(model: Model) -> List(CacheNotice) {
+  list.filter(model.cache_notices, fn(notice) {
+    notice.strand == model.active_strand
+  })
+}
+
 fn record_lines(
   records: List(protocol.EntryRecord),
   model: Model,
+  notices: List(CacheNotice),
 ) -> #(
   List(Line),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
-  let entries =
-    records
-    |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
-    |> list.map(fn(record) { record.entry })
+  let entries = strand_entries(records, model.active_strand)
   let owner = solo_owner(model.captured)
   case model.details_expanded {
     // Expanded history alternates a response carrying a call with the entry
@@ -7146,7 +7274,8 @@ fn record_lines(
     // one response at a time.
     True -> #(
       entries
-        |> list.map(entry_lines(_, True, owner))
+        |> splice_notices(notices, entry_holds)
+        |> list.map(expanded_lines(_, owner))
         |> separated_tool_groups(BetweenEntries),
       dict.new(),
       dict.new(),
@@ -7155,31 +7284,68 @@ fn record_lines(
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project
-        |> list.fold(#([], dict.new(), dict.new()), fn(acc, item) {
-          case item {
-            tool_activity.Narrative(value) -> {
-              let key = #(value, owner)
-              let lines =
-                dict.get(model.compact_entry_cache, key)
-                |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
-              #(
-                list.append(list.reverse(lines), acc.0),
-                acc.1,
-                dict.insert(acc.2, key, lines),
-              )
-            }
-            tool_activity.Tools(calls) -> {
-              let #(lines, cached) =
-                cached_activity_lines(calls, model.compact_call_cache)
-              #(
-                list.append(list.reverse(lines), acc.0),
-                dict.merge(acc.1, cached),
-                acc.2,
-              )
-            }
+        |> splice_notices(notices, item_holds)
+        |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
+          case spliced {
+            Transient(text) -> #([Line(System, text), ..acc.0], acc.1, acc.2)
+            Projected(item) -> compact_item_lines(acc, item, model, owner)
           }
         })
       #(list.reverse(reversed), calls, narratives)
+    }
+  }
+}
+
+// Expanded history renders every entry in full, so a spliced place is
+// either the entry itself or the transient row standing after it.
+fn expanded_lines(
+  spliced: Spliced(entry.Entry),
+  owner: Option(message.Origin),
+) -> List(Line) {
+  case spliced {
+    Transient(text) -> [Line(System, text)]
+    Projected(value) -> entry_lines(value, True, owner)
+  }
+}
+
+// One projected item folded into the compact accumulator: reversed rows, the
+// call cache and the narrative cache. Lifted out of the fold so the caches
+// it reads are parameters rather than a closure over the model, which is
+// what lets the notice fold share the same accumulator shape.
+fn compact_item_lines(
+  acc: #(
+    List(Line),
+    Dict(tool_activity.Call, List(Line)),
+    Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+  ),
+  item: tool_activity.Item,
+  model: Model,
+  owner: Option(message.Origin),
+) -> #(
+  List(Line),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+) {
+  case item {
+    tool_activity.Narrative(value) -> {
+      let key = #(value, owner)
+      let lines =
+        dict.get(model.compact_entry_cache, key)
+        |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
+      #(
+        list.append(list.reverse(lines), acc.0),
+        acc.1,
+        dict.insert(acc.2, key, lines),
+      )
+    }
+    tool_activity.Tools(calls) -> {
+      let #(lines, cached) =
+        cached_activity_lines(calls, model.compact_call_cache)
+      #(
+        list.append(list.reverse(lines), acc.0),
+        dict.merge(acc.1, cached),
+        acc.2,
+      )
     }
   }
 }
@@ -8431,6 +8597,151 @@ fn zero_usage() -> message.Usage {
       total: 0.0,
     ),
   )
+}
+
+// Everything one usage row changes about the model.
+//
+// The row arrives once per settled generation, so this is both the moment
+// the output rate is known and the moment the prompt cache can be judged.
+// Both readings are per event rather than cumulative, which is why they sit
+// here rather than in the status-line arithmetic over `model.usage`.
+fn receive_usage(
+  model: Model,
+  strand: String,
+  settled: message.Usage,
+) -> Model {
+  // The settlement's own output count over the time since the request went
+  // out. A settlement whose clock never started (a refusal, an empty turn)
+  // leaves the last rate standing. `generation_clock` starts the clock only
+  // for the active strand's own row, so only that strand's settlement may
+  // read it or clear it — a sub-agent's row arriving mid-generation must
+  // not report its own output over the primary's window, and must not stop
+  // the primary's clock out from under it.
+  let #(output_rate_tps, generation_started_ms) = case
+    strand == model.active_strand,
+    model.peer,
+    model.generation_started_ms
+  {
+    False, _, _ -> #(model.output_rate_tps, model.generation_started_ms)
+
+    // The window is this client's own clock from the request going out to
+    // the settlement, and a replay spends that window playing a file rather
+    // than waiting on a provider. `output_rate_min_ms` already discards the
+    // short ones, so a brief replay would report nothing anyway; a long one
+    // would report how fast the replay ran. Declining outright is the same
+    // rule that stops a replay echoing a prompt.
+    True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
+
+    True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
+      output_rate(settled.output, model.monotonic_time_ms() - started),
+      None,
+    )
+    True, Attached(..), None | True, Preview, None -> #(
+      model.output_rate_tps,
+      None,
+    )
+  }
+  let usage = add_usage(model.usage, settled)
+  let settled_model =
+    Model(
+      ..model,
+      usage:,
+      generation_started_ms:,
+      output_rate_tps:,
+      notice: tokens(usage.total_tokens) <> " tokens",
+    )
+  watch_cache(settled_model, strand, settled)
+}
+
+// Folds one row into its strand's cache watch and raises any notice it
+// reveals.
+//
+// The clock is the terminal's own, the same one the frame pacing and the
+// throughput reading use, because the gap being measured is wall time the
+// operator spent away and no server field reports it. A replay plays its
+// file far faster than the session originally ran, so the gaps it would
+// measure are not the gaps that happened; it observes nothing.
+fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
+  use <- bool.lazy_guard(when: replaying(model), return: fn() { model })
+
+  let now = model.monotonic_time_ms()
+  let held = dict.get(model.cache_watch, strand) |> option.from_result
+  let #(miss, watch) = cache_miss.observe(held, settled, now)
+  let watched =
+    Model(..model, cache_watch: case watch {
+      None -> model.cache_watch
+      Some(value) -> dict.insert(model.cache_watch, strand, value)
+    })
+  case miss {
+    None -> watched
+    Some(value) -> note_cache_miss(watched, strand, value)
+  }
+}
+
+// A replay has no idle time of its own to report.
+fn replaying(model: Model) -> Bool {
+  case model.peer {
+    Replaying -> True
+    Attached(..) | Preview | Disconnected -> False
+  }
+}
+
+// Files one cache-miss row against the strand's transcript.
+//
+// The row is anchored to the records the strand already holds rather than
+// appended to the local notice block, so it stays under the turn it
+// explains as later entries arrive. A new row changes the projection, so
+// the record cache is dropped whether or not the strand is the visible one:
+// switching to it later must find the row in place.
+fn note_cache_miss(
+  model: Model,
+  strand: String,
+  miss: cache_miss.CacheMiss,
+) -> Model {
+  // A strand holding no record has nowhere to put the row: a window that
+  // retained nothing, or a strand whose history this connection never
+  // fetched. A notice anchored to no entry would never be drawn, so it is
+  // not raised at all.
+  case newest_record(model, strand) {
+    None -> model
+    Some(after_entry) ->
+      Model(
+        ..model,
+        cache_notices: list.append(model.cache_notices, [
+          CacheNotice(strand:, after_entry:, text: cache_miss_row(miss)),
+        ]),
+        record_cache_valid: False,
+      )
+      |> invalidate_transcript
+      |> invalidate_frame
+  }
+}
+
+// The newest retained entry of one strand. Records are held newest first,
+// so the head of the filtered list is the turn a row raised now follows.
+fn newest_record(model: Model, strand: String) -> Option(ids.EntryId) {
+  model.records
+  |> list.find(fn(record) { record.strand == strand })
+  |> result.map(fn(record) { record.entry.id })
+  |> option.from_result
+}
+
+// The notice as the operator reads it.
+//
+// Token counts use the status line's own abbreviation so the two figures
+// can be compared without unit arithmetic, and the money is omitted rather
+// than shown as zero when the model is unpriced: a confident "$0.00" would
+// claim the pause was free.
+fn cache_miss_row(miss: cache_miss.CacheMiss) -> String {
+  "Cache miss after "
+  <> cache_miss.idle_label(miss.idle_ms)
+  <> " idle: "
+  <> tokens(miss.tokens)
+  <> " tokens re-billed"
+  <> case miss.estimate {
+    None -> ""
+    Some(amount) -> " (~$" <> money(amount) <> ")"
+  }
 }
 
 fn add_usage(left: message.Usage, right: message.Usage) -> message.Usage {
@@ -10392,6 +10703,7 @@ fn apply_submission(
         "context" ->
           Model(..model, context: context_view.sent(model.context, request_id))
         "live_jobs" -> Model(..model, jobs_request: Some(request_id))
+        "advisor_pending" -> Model(..model, nudges_request: Some(request_id))
         "worktree_diff" ->
           Model(
             ..model,
@@ -11357,6 +11669,166 @@ fn service_jobs_read(model: Model) -> Model {
   }
 }
 
+// --- the advisor's pending nudges -------------------------------------------
+
+/// What one model transition asks of the pending-nudge panel.
+///
+/// Named rather than answered with a pair of booleans, because the three
+/// cases are genuinely different events and a caller reading `False, True`
+/// would have to remember which question each half asked.
+pub type NudgeAction {
+  /// The primary is running. Anything the panel holds is no longer a
+  /// pending queue, because a run start drains it into that run.
+  DropNudges
+
+  /// The primary is idle at a boundary worth exactly one observation.
+  ReadNudges
+
+  /// Nothing the panel depends on moved.
+  HoldNudges
+}
+
+/// Whether this transition is worth a pending-nudge read, a clear, or
+/// neither.
+///
+/// Three edges are worth a read and no others: the primary's own operation
+/// settling, a review settling while the primary waits — which is where a
+/// nudge is queued in the first place — and the primary appearing in the
+/// roster at all, which is the first snapshot after an attachment or a
+/// session switch. Everything else holds, a phase change on an unrelated
+/// strand included, because the queue cannot have grown without the advisor
+/// finishing a review.
+///
+/// Whether there is an attachment to ask is deliberately not asked here.
+/// `service_advisor_nudges_read` refuses to send without one and a closed
+/// conversation clears the board outright, so this function answers only
+/// about the conversation's own edges.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.advisor_nudges_action(before, after)
+/// ```
+@internal
+pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
+  case strand_running(after, advisor_pending.primary_strand) {
+    // A run on the primary folds the whole queue into its first message, so
+    // what the panel was showing has been delivered rather than discarded.
+    // The local submit flag counts: it is the edge the operator sees, and
+    // waiting for the server's phase would leave delivered advice on screen.
+    True -> DropNudges
+
+    False -> idle_boundary(before, after)
+  }
+}
+
+// The primary is idle in `after`, so a primary that was running in `before`
+// is one that just settled. The advisor needs both halves of its own edge,
+// because it can still be mid-review and only a review's end adds to the
+// queue.
+fn idle_boundary(before: Model, after: Model) -> NudgeAction {
+  let primary_settled = strand_running(before, advisor_pending.primary_strand)
+  let review_settled =
+    strand_running(before, advisor_pending.advisor_strand)
+    && !strand_running(after, advisor_pending.advisor_strand)
+  let newly_listed =
+    !strand_listed(before, advisor_pending.primary_strand)
+    && strand_listed(after, advisor_pending.primary_strand)
+
+  case primary_settled || review_settled || newly_listed {
+    True -> ReadNudges
+    False -> HoldNudges
+  }
+}
+
+// Whether one named strand has work in flight. Unlike `active_strand_phase`
+// this asks about a strand the operator may not be looking at, and it counts
+// a local submission the server has not yet reported a phase for.
+fn strand_running(model: Model, target: String) -> Bool {
+  model.submitting == Some(target)
+  || list.any(model.strands, fn(strand) {
+    let Strand(id:, live_phase:, ..) = strand
+    id == target && live_phase != None
+  })
+}
+
+// Whether the roster names this strand at all. A terminal that has just
+// attached holds no roster, so the primary's first appearance in one is the
+// edge that says there is a session here to ask about.
+fn strand_listed(model: Model, target: String) -> Bool {
+  list.any(model.strands, fn(strand) {
+    let Strand(id:, ..) = strand
+    id == target
+  })
+}
+
+fn sync_advisor_nudges(before: Model, after: Model) -> Model {
+  case advisor_nudges_action(before, after) {
+    HoldNudges -> after
+
+    DropNudges ->
+      Model(
+        ..after,
+        nudges: None,
+        nudges_refresh: worktree_view.Settled,
+        nudges_awaiting: None,
+        nudges_request: None,
+      )
+
+    ReadNudges -> Model(..after, nudges_refresh: worktree_view.Requested)
+  }
+}
+
+// The read waits for a free command lane like every other observation, so a
+// queued prompt is never held up behind an advisory panel.
+fn service_advisor_nudges_read(model: Model) -> Model {
+  case model.channel, model.nudges_refresh, model.peer {
+    Some(channel), worktree_view.Requested, Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_frame(
+            Model(
+              ..model,
+              nudges_refresh: worktree_view.Settled,
+              nudges_awaiting: Some(queue_owner(model)),
+            ),
+            protocol.advisor_pending(model.next_id),
+          )
+        False -> model
+      }
+
+    // A request that cannot be sent is dropped rather than left standing:
+    // the next attachment reaches an idle primary and raises it again.
+    _, worktree_view.Requested, _ ->
+      Model(..model, nudges_refresh: worktree_view.Settled)
+
+    _, worktree_view.Settled, _ -> model
+  }
+}
+
+// Only the attachment that asked may be answered. Request ids restart with an
+// attachment, so the owner is what tells a fresh board from a stale one.
+fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
+  let current = queue_owner(model)
+  case model.nudges_awaiting {
+    Some(owner) ->
+      case owner == current {
+        True ->
+          Model(
+            ..model,
+            nudges: Some(board),
+            nudges_awaiting: None,
+            nudges_request: None,
+          )
+          |> invalidate_frame
+
+        False -> model
+      }
+
+    None -> model
+  }
+}
+
 fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
@@ -11610,6 +12082,22 @@ fn apply_request_refused(
             jobs_request: None,
             jobs_awaiting: None,
             jobs_notice: "Live jobs unavailable: " <> reason,
+          )
+        False -> model
+      }
+
+    // A refused observation draws nothing. The panel is unobtrusive context
+    // beside the composer, and an error line there would cost a row of the
+    // conversation to report a read the operator never asked for; an older
+    // daemon that does not know the command refuses every one of them.
+    "advisor_pending" ->
+      case model.nudges_request == Some(request_id) {
+        True ->
+          Model(
+            ..model,
+            nudges: None,
+            nudges_request: None,
+            nudges_awaiting: None,
           )
         False -> model
       }
