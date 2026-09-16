@@ -149,6 +149,8 @@ pub type Event {
   ConfigSnapshot(
     /// The selected catalogue name, when one is configured.
     model_name: Option(String),
+    /// Canonical additions confirmed by the server.
+    directories: Option(JsonValue),
   )
 
   /// A newly durable entry that supersedes matching transient fragments.
@@ -451,6 +453,30 @@ pub fn config(id: Int, strand: String) -> String {
   ])
 }
 
+/// Adds one directory to the authenticated session's explicit access.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.add_directory(6, "/work/shared", "read")
+/// ```
+pub fn add_directory(id: Int, path: String, access: String) -> String {
+  command(id, "set_config", [
+    #(
+      "config",
+      json.Object([
+        #(
+          "add_directory",
+          json.Object([
+            #("path", json.String(path)),
+            #("access", json.String(access)),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+}
+
 /// Encodes a by-name model switch for one strand.
 ///
 /// ## Examples
@@ -565,7 +591,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ServerError(..) -> Ok(event)
     FullSnapshot(..)
     | StrandsSnapshot(_)
-    | ConfigSnapshot(_)
+    | ConfigSnapshot(..)
     | EntryAdded(_)
     | StreamDelta(..)
     | ToolOutput(..)
@@ -722,7 +748,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "config" -> {
       use config <- result.try(required_object(fields, "config"))
       use model_name <- result.try(optional_string(config, "model_name"))
-      Ok(ConfigSnapshot(model_name:))
+      Ok(ConfigSnapshot(
+        model_name:,
+        directories: list.key_find(config, "directories") |> option.from_result,
+      ))
     }
     "resume" -> {
       use next_seq <- result.try(required_int(fields, "next_seq"))

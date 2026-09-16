@@ -6236,12 +6236,21 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       |> send_frame(protocol.skills(model.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
-    protocol.ConfigSnapshot(model_name:) ->
-      case model_name {
+    protocol.ConfigSnapshot(model_name:, directories:) -> {
+      let model = case model_name {
         Some(name) ->
           Model(..model, current_model: name, notice: "model: " <> name)
         None -> model
       }
+      case directories {
+        None -> model
+        Some(value) ->
+          Model(
+            ..model,
+            notice: "Session directory access: " <> json.to_string(value),
+          )
+      }
+    }
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
     protocol.AdvisorPendingSnapshot(board) ->
       receive_advisor_nudges(model, board)
@@ -9729,7 +9738,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Abort
     | command.Steer(_)
     | command.Queue(_) -> True
-    command.Approve(_) | command.Deny(_) -> True
+    command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
     command.Empty -> model.attachments != []
     command.Help
     | command.Models
@@ -9959,6 +9968,8 @@ fn submit_text(model: Model) -> Model {
       })
     command.Approvals(Some(id)) ->
       request_decisions(Model(..cleared, inspecting_approval: Some(id)), [id])
+    command.AddDirectory(path, access) ->
+      send_frame(cleared, protocol.add_directory(cleared.next_id, path, access))
     command.Approve(id) -> decide(cleared, id, approval.approve)
     command.Deny(id) -> decide(cleared, id, approval.deny)
     command.Notes ->
@@ -10053,6 +10064,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.Sessions
     | command.Rename(_)
     | command.Approvals(_)
+    | command.AddDirectory(..)
     | command.Approve(_)
     | command.Deny(_)
     | command.Notes

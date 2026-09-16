@@ -1,5 +1,15 @@
 # tui
 
+## Session directory access
+
+`/add-dir PATH` adds read access; `/add-write-dir PATH` (also `/add-dir --write PATH`) adds read and write
+access. The parser preserves spaces in the remaining path. Both use the
+session-scoped `set_config.add_directory` command, subject to the same mutable
+attachment gate as approvals. The terminal displays canonical additions from
+the server's committed config snapshot. Grants belong to the saved session
+and survive reconnect or reopening; they affect subsequent invocations.
+
+
 ## Streamed response handoff
 
 For generation and poll observations carrying a reserved response entry,
