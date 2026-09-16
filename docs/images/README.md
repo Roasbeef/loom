@@ -1,4 +1,17 @@
-# README terminal capture
+# README assets
+
+## Logo
+
+The open-weave logo is reconstructed from the selected project artwork as
+font-independent SVG geometry. `loom-logo-light.svg` is the horizontal lockup
+for light backgrounds; `loom-logo-dark.svg` uses an ivory wordmark and crossbars
+for dark backgrounds. The README selects between them using a `picture` element.
+
+`loom-mark.svg` is the standalone amber-and-charcoal symbol.
+`loom-mark-white.svg` is its monochrome counterpart for dark backgrounds.
+Crossing gaps remain transparent in every version.
+
+## Terminal capture
 
 `code-mode.png` shows the native terminal at commit `4807bcb1`, connected to an
 isolated local daemon. A scripted Anthropic-compatible provider supplied the

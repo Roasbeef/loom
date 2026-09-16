@@ -94,6 +94,8 @@ with diagrams and a real code-mode terminal capture using a scripted local
 provider. The former launch reference is preserved in [Running Loom](running.md).
 Documentation checks, local links, rendered diagrams and the capture were
 verified; the public-facing claims received an independent source review.
+The selected woven logo is included as font-independent SVG assets, with
+light and dark README variants and separate color and monochrome marks.
 
 ## Where the tree is
 
