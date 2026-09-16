@@ -82,6 +82,21 @@ pub type FactCell {
   FactCell(value: JsonValue, seq: Seq)
 }
 
+/// One harness-owned fact update guarded by the sequence its caller read.
+///
+/// The escalation approval door commits this update with the decision, so
+/// neither durable permission nor approval can survive without the other.
+pub type ReservedFactChange {
+  ReservedFactChange(
+    /// Reserved fact key owned by the authenticated harness component.
+    key: String,
+    /// Complete replacement payload constructed from the observed fact.
+    value: JsonValue,
+    /// Observed sequence, or absence when no earlier value existed.
+    expected: Option(Seq),
+  )
+}
+
 /// One durable escalation record as a compare-and-set caller sees it:
 /// the decoded record and the seq of the write that put it there, which
 /// is what `consume_escalation_at` asserts against.
@@ -2431,6 +2446,41 @@ pub fn approve_escalation_at(
   )
 }
 
+/// Approves the captured request and updates a reserved fact atomically.
+///
+/// Both observed sequences are checked by the same writer transaction. A
+/// competing answer or fact update writes neither value and returns RaceLost.
+/// The harness validates the meaning of the opaque fact and approved grants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.approve_escalation_with_fact_at(runtime, cell, grants, origin, change)
+/// ```
+pub fn approve_escalation_with_fact_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  grants: List(JsonValue),
+  origin: Option(Origin),
+  change: ReservedFactChange,
+) -> Result(Escalation, ApiError) {
+  use <- bool.guard(
+    !reserved_fact_key(change.key),
+    Error(UnreservedFactKey(change.key)),
+  )
+  use <- bool.guard(
+    change.key == escalation.register_key(cell.record.id),
+    Error(FactConflict(change.key)),
+  )
+  decide_escalation_with_fact_at(
+    runtime,
+    cell,
+    escalation.Approved,
+    escalation.approve(cell.record, grants, origin),
+    Some(change),
+  )
+}
+
 /// Rejects exactly the pending question the caller observed, once.
 ///
 /// A presentation layer may reread after a conflict to show the winning record,
@@ -2465,6 +2515,18 @@ fn decide_escalation_at(
   to: escalation.Status,
   next: Escalation,
 ) -> Result(Escalation, ApiError) {
+  decide_escalation_with_fact_at(runtime, cell, to, next, None)
+}
+
+// The optional fact shares the decision's commit and both compare-and-set
+// guards. There is no intermediate state for a restarted runtime to repair.
+fn decide_escalation_with_fact_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  to: escalation.Status,
+  next: Escalation,
+  change: Option(ReservedFactChange),
+) -> Result(Escalation, ApiError) {
   let record = cell.record
   use <- bool.guard(
     when: !escalation.may_become(record.status, to),
@@ -2482,6 +2544,25 @@ fn decide_escalation_at(
       ],
       expected: [tx.Expect(register.FactCustom, key, Some(cell.seq))],
     )
+
+  let plan = case change {
+    None -> plan
+    Some(change) ->
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            register.FactCustom,
+            change.key,
+            register.value(change.value),
+          ),
+          ..plan.writes
+        ],
+        expected: [
+          tx.Expect(register.FactCustom, change.key, change.expected),
+          ..plan.expected
+        ],
+      )
+  }
 
   // This sequence is the question the human answered, not a retry hint.
   case writer.commit(writer_subject(runtime), plan) {

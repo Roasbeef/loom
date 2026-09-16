@@ -1,5 +1,16 @@
 # runtime
 
+## Atomic remembered approvals
+
+`api.approve_escalation_with_fact_at` commits a captured approval and one
+`ReservedFactChange` through the same writer transaction. Both the escalation
+sequence and prior fact sequence are expectations; either conflict writes
+neither value and returns `RaceLost`. The helper accepts only a reserved fact
+key distinct from the decision key. Runtime treats grants and the fact payload
+as opaque JSON; client policy validation owns their meaning. The existing
+`approve_escalation_at` remains the one-call door. See protocol 041.
+
+
 ## Streamed response handoff
 
 Generation and poll `RequestSpec` values carry the response entry already
