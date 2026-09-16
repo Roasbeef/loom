@@ -86,6 +86,41 @@ at 28,000 bytes, which is the measurement with about a tenth of headroom.
 The bound exists so the next increase is a decision somebody took and
 wrote down rather than a drift nobody noticed.
 
+### Complete-roster remeasurement, September 16
+
+The earlier table is historical. `client/contributions_test` now builds all
+built-ins using shipped allowlists and actual seam capability names, with all
+recall services enabled on workspace and none on orchestration. MCP servers,
+extensions and discovered skills are excluded from both rows. Reproduce with
+`scripts/test.sh client --match complete_roster_costs_test`; its printed
+`ROSTER_COST` records also separate the prompt from the tool array. After
+compiling the test, print the records directly with:
+
+```sh
+erl -noshell -pa packages/client/build/dev/erlang/*/ebin \
+  -eval "'client@contributions_test':complete_roster_costs_test(),halt()."
+```
+
+| Roster | Seams | Tools | Name + description + schema bytes | OpenAI tools-array bytes | Prompt bytes |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Full | Workspace | 21 | 49,647 | 51,885 | 11,347 |
+| Minimal | Workspace | 6 | 32,907 | 34,001 | 10,866 |
+| Full | Both | 21 | 57,500 | 59,922 | 11,347 |
+| Minimal | Both | 6 | 40,760 | 42,038 | 10,866 |
+
+With equivalent both-seam capability, minimal's serialized tool array is
+29.8% smaller. Comparing defaults (full/workspace to minimal/both) yields
+19.0%. These are UTF-8 JSON byte counts, not token counts, and the prompt
+uses a fixed `/work`, Linux, blocked-network environment without repository
+instructions. The complete-array test bounds field bytes below 65,000;
+it complements the older workspace-only description bound.
+
+A real Kimi-K3 smoke comparison is recorded in
+[the gap-fix review](../review/pr433-gap-fixes.md). Both rosters completed the
+file aggregation and delegated audit twice. Minimal required more calls and
+recovered from three failures in the first run and four in the second. The default remains full; this one matched task does
+not establish a general performance or quality result.
+
 ## The decisions
 
 ### The roster is an operator setting, and a per-session one
@@ -254,22 +289,12 @@ same tasks on both rosters against GLM and Kimi via Baseten, and against
 Anthropic, and compare wall-clock and drive quality. Until that says
 otherwise, a session registers what it has always registered.
 
-**What inherit means across a flip.** A session created with `--tools`
-stores that word and gets the same registry back on every rebuild. A
-session created without one stores nothing and follows the daemon's
-`[tools] roster` at each boot. The rest of the session does not follow
-along: the system prompt is pinned once and keyed only on the
-enforcement demand, and `strand.config`'s `active_tool_names` is seeded
-once at the first boot. So an operator who flips the daemon's default
-and restarts should expect existing inherit sessions to rebuild a
-different registry than their pinned prompt describes. The prompt's
-available-tools index keeps naming tools that are no longer on the wire.
-`wiring.tool_specs` drops them at render, and `wiring.clear` refuses
-a call on one, until each such session is replaced by a new one. This is
-the same class of behaviour `LOOM_DISABLE_TOOLS` has today, and it is
-documented rather than mechanised. Binding the resolved roster into the
-prompt pin's identity alongside the enforcement demand is the fix if it
-ever matters.
+**What inherit means across a flip.** The original request remains in the
+catalogue for retry equality. The resolved roster and code-mode seams are
+recorded before first activation in `session/tool-roster`, then reused on
+restart. A new daemon default affects new sessions. It does not rewrite a
+session's prompt or any strand's active tool list. See protocol 039's addendum
+for the legacy full-roster migration.
 
 **`cap/context` on the orchestration seam.** It is on the workspace seam
 only. Whether an orchestration program should be able to read its own

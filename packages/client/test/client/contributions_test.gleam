@@ -12,15 +12,21 @@ import broker/broker
 import broker/exec
 import broker/policy
 import client/catalog
+import client/codemode as host_codemode
 import client/contributions
+import codemode/recall
+import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
 import core/json
 import core/message
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import prompt/default as prompt_default
+import prompt/pack
 import tools/agent
 import tools/codemode
 import tools/context
@@ -567,4 +573,118 @@ fn unused_schedules() -> schedule.Schedules {
 
 fn unused_context() -> context.Context {
   context.Context(report: fn(_strand) { Error(unused_refusal()) })
+}
+
+// Compare complete registries with identical capability availability. The two
+// default configurations are also printed: full serves workspace, minimal both.
+// Run with scripts/test.sh client --match complete_roster_costs_test.
+pub fn complete_roster_costs_test() {
+  let workspace =
+    shipped_offer(vet_policy.WorkspaceSeam, codemode.WorkspaceSeam)
+  let orchestration =
+    shipped_offer(vet_policy.OrchestrationSeam, codemode.OrchestrationSeam)
+  list.each(
+    [
+      #("workspace", codemode.one_seam(workspace)),
+      #("both", codemode.Seams(default: workspace, alternates: [orchestration])),
+    ],
+    fn(pair) {
+      let #(seams_name, seams) = pair
+      list.each([catalog.Full, catalog.Minimal], fn(roster) {
+        let #(agency, _, history, memory, schedules, context, jobs) =
+          every_plane()
+        let code_mode = codemode.CodeMode(..unused_code_mode(), seams:)
+        let assert Ok(registry) =
+          contributions.registry(contributions.built_in_for(
+            roster,
+            agency,
+            Some(code_mode),
+            history,
+            memory,
+            schedules,
+            context,
+            jobs,
+          ))
+        let definitions = tool.registered(registry)
+        let field_bytes =
+          list.fold(definitions, 0, fn(total, item) {
+            total
+            + string.byte_size(item.name)
+            + string.byte_size(item.description)
+            + string.byte_size(json.to_string(item.schema))
+          })
+        let wire =
+          json.Array(
+            list.map(definitions, fn(item) {
+              json.Object([
+                #("type", json.String("function")),
+                #(
+                  "function",
+                  json.Object([
+                    #("name", json.String(item.name)),
+                    #("description", json.String(item.description)),
+                    #("parameters", item.schema),
+                  ]),
+                ),
+              ])
+            }),
+          )
+        let assert Ok(pack) = pack.decode(prompt_default.source)
+        let prompt =
+          pack.render(
+            pack,
+            pack.environment(
+              workspace: "/work",
+              platform: "linux/x86_64",
+              shell: "/bin/bash",
+              tools: tool.names(registry),
+              available_tools: tool.snippets(registry),
+              enforcement: pack.FullyEnforced,
+              network: pack.NetworkBlocked,
+              protected_paths: [],
+              repository_guidance: None,
+            ),
+          )
+        io.println(
+          "ROSTER_COST "
+          <> json.to_string(
+            json.Object([
+              #(
+                "roster",
+                json.String(case roster {
+                  catalog.Full -> "full"
+                  catalog.Minimal -> "minimal"
+                }),
+              ),
+              #("seams", json.String(seams_name)),
+              #("tools", json.Int(list.length(definitions))),
+              #("fields_bytes", json.Int(field_bytes)),
+              #(
+                "openai_tools_array_bytes",
+                json.Int(string.byte_size(json.to_string(wire))),
+              ),
+              #("prompt_bytes", json.Int(string.byte_size(prompt))),
+            ]),
+          ),
+        )
+        // A whole-roster ceiling catches growth outside code_mode as well.
+        assert field_bytes < 65_000
+        assert string.byte_size(prompt) < 20_000
+      })
+    },
+  )
+}
+
+fn shipped_offer(vet, seam) {
+  codemode.SeamOffer(
+    seam:,
+    allowed_imports: vet_policy.allowed_imports(vet_policy.for_seam(vet)),
+    serviced_caps: list.append(host_codemode.seam_caps(vet), case vet {
+      vet_policy.WorkspaceSeam -> recall.serviced_caps
+      vet_policy.OrchestrationSeam
+      | vet_policy.ExtensionSeam
+      | vet_policy.ResidentSeam -> []
+    }),
+    extra_surfaces: [],
+  )
 }
