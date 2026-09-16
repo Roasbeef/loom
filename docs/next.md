@@ -10,9 +10,10 @@ merge. The new tag workflow has passed local script tests and workflow lint;
 its native macOS reproduction and GitHub draft upload remain unverified until
 hosted execution. No release was tagged or published by this work.
 
-## Image attachments and routing (local follow-up)
+## Code-mode and image fixes (PR #434)
 
-The local `fix/image-routing-preview` branch addresses the September 15
+PR #434 on `fix/codemode-diagnostics` combines the September 15 code-mode
+diagnostics, compact source preview, and image-handling fixes. It addresses the
 attachment reports. The composer shows a count and one row per accepted image;
 the existing four-image/20-MiB limit remains, with a named rejection for a fifth
 file. GLM-5.3 defaults to text-only without a configuration migration, while
@@ -50,7 +51,7 @@ errors, with existing warning censuses retained. Documentation checks pass
 with existing warnings. The independent review found no actionable issues.
 Optional code-mode seed, Linux-only and shipped-release fixtures reported skips;
 live provider calls and an installed daemon remain untested. The follow-up is
-local on the same branch, not merged or installed.
+included in PR #434, not merged or installed.
 
 The request-budget follow-up keeps the same conversation context for vision
 routing and adds a positive per-model `max_images` setting, default eight.
@@ -73,12 +74,20 @@ The request-budget gates passed 222 provider tests and, after the compaction
 correction, 1,834 client tests. Provider/client lint and documentation checks
 have zero errors with existing warnings retained. Optional seed-dependent,
 Linux-only and shipped-server fixtures reported skips. Live provider calls and
-installed-daemon behavior remain untested. The changes are local on
-`fix/image-routing-preview`, not merged or installed.
+installed-daemon behavior remain untested. The changes are included in
+PR #434, not merged or installed.
 
-Related work remains separate: parse diagnostics are PR #434, the 60-line
-compact code-mode preview is local commit `d9465cc2`, and execution of reusable
-programs from files or named notes is tracked in issue #435.
+The integrated branch retains the original parse diagnostics and the 60-line
+compact code-mode preview alongside these image fixes. Execution of reusable
+programs from files or named notes remains separate in issue #435.
+
+The integrated gate passed 459 tools, 222 provider, 304 code-mode, 1,834 client,
+and 553 TUI tests, including the seeded code-mode fixture. The gate exited zero;
+package lint and the documentation gate also passed with existing warnings.
+The integration review found no actionable issues. The client suite reported
+Linux-only and shipped-release fixture skips; live provider requests and an
+installed daemon remain untested. Check the updated PR head's hosted CI before
+merge. Nothing was merged or installed by this integration.
 
 ## Where the tree is
 
