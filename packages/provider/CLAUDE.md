@@ -10,6 +10,13 @@ classification, and the secret-injection seam. SSE parsing and adapter folds
 are pure Gleam; the gateway custodian and native transport owner are the small
 processful shell around that sans-io core. WP-F.
 
+Tool-result images survive all three adapters. Anthropic retains image blocks
+inside tool results; Gemini and OpenAI emit a user image turn after the complete
+tool-result batch. OpenAI keeps the text tool messages and their call IDs before
+that image turn, so parallel calls are all answered before a user message is
+inserted. Captions identify each producing call; custom transcript entries do
+not split the batch. These are transient wire projections.
+
 ## Key Types
 
 - A terminal parsed from an HTTP chunk, including OpenAI `[DONE]`, requests

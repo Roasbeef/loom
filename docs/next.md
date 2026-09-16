@@ -33,6 +33,25 @@ status checked. Optional seed-dependent and shipped-server fixtures reported
 skips; live provider requests and installed-release behavior were not tested. No daemon was restarted and no
 installed configuration was edited. These changes are not merged or installed.
 
+The disk-read follow-up extends `fs_read` to PNG, JPEG, GIF, and WebP files.
+It returns the existing durable image block, uses file signatures rather than
+extensions, and retains the workspace checks and 8 MiB file limit. A tool-result
+image now routes admission and dispatch through vision when the primary model
+is text-only. Following text prompts placeholder old tool images without
+altering durable history. OpenAI serialization now preserves these images in a
+user turn after the complete tool-result batch, with captions naming each call;
+Anthropic and Gemini already supported tool-result images. `cap/fs.read`
+continues to return text.
+
+The disk-read package gate passed 454 tools, 214 provider, and 1,830 client tests,
+including a real PNG read through production tool dispatch, durable history,
+vision admission and OpenAI serialization. All three package lints have zero
+errors, with existing warning censuses retained. Documentation checks pass
+with existing warnings. The independent review found no actionable issues.
+Optional code-mode seed, Linux-only and shipped-release fixtures reported skips;
+live provider calls and an installed daemon remain untested. The follow-up is
+local on the same branch, not merged or installed.
+
 Related work remains separate: parse diagnostics are PR #434, the 60-line
 compact code-mode preview is local commit `d9465cc2`, and execution of reusable
 programs from files or named notes is tracked in issue #435.

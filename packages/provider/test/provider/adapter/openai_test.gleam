@@ -633,3 +633,69 @@ pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
   assert raw == "{\"city\": \"Paris\""
   assert string.contains(reason, "core/json.parse")
 }
+
+// Images cannot interrupt the tool replies required by one assistant turn.
+// Ignored custom entries do not divide a batch on the provider wire.
+pub fn tool_images_follow_the_complete_parallel_batch_test() {
+  let first = image_result("call_1", "YQ==", "image/png")
+  let second = image_result("call_2", "Yg==", "image/jpeg")
+  let following = message.UserMessage([message.UserText("next", None)], 3, None)
+  list.each([[], [following]], fn(suffix) {
+    let request =
+      model.ProviderRequest(
+        ..fixture.request_for(resolved()),
+        system: None,
+        messages: list.append(
+          [
+            first,
+            message.CustomMessage("fixture", json.Null),
+            second,
+          ],
+          suffix,
+        ),
+      )
+    let built =
+      openai.build_request("https://example.test", "k", resolved(), request)
+    let assert Ok([one, two, images, ..rest]) =
+      wire.array_field(parsed(built.body), "messages")
+      as "both tool results must precede the image user message"
+    assert wire.string_field(one, "role") == Ok("tool")
+    assert wire.string_field(one, "tool_call_id") == Ok("call_1")
+    assert wire.string_field(one, "content") == Ok("read call_1")
+    assert wire.string_field(two, "role") == Ok("tool")
+    assert wire.string_field(two, "tool_call_id") == Ok("call_2")
+    assert wire.string_field(images, "role") == Ok("user")
+    let assert Ok([caption_one, image_one, caption_two, image_two]) =
+      wire.array_field(images, "content")
+      as "captions and pixels retain their original tool and block order"
+    assert wire.string_field(caption_one, "text")
+      == Ok("Images from tool call call_1:")
+    assert wire.string_field(caption_two, "text")
+      == Ok("Images from tool call call_2:")
+    assert wire.field(image_one, "image_url")
+      == Ok(json.Object([#("url", json.String("data:image/png;base64,YQ=="))]))
+    assert wire.field(image_two, "image_url")
+      == Ok(json.Object([#("url", json.String("data:image/jpeg;base64,Yg=="))]))
+    assert list.length(rest) == list.length(suffix)
+  })
+}
+
+fn image_result(
+  id: String,
+  data: String,
+  mime: String,
+) -> message.AgentMessage {
+  message.ToolResultMessage(
+    tool_call_id: id,
+    tool_name: "fs_read",
+    content: [
+      message.ToolResultText("read " <> id, None),
+      message.ToolResultImage(data, mime),
+    ],
+    details: None,
+    usage: None,
+    added_tool_names: None,
+    is_error: False,
+    timestamp: 2,
+  )
+}

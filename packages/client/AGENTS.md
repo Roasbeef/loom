@@ -1544,18 +1544,19 @@ catalogue without opening runtimes. Explicit admission invokes
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
 - `client/vision` — the vision routing rule (issue #358): a request
-  whose current turn carries an image, on a strand whose catalogue
+  whose current turn carries an attached or tool-result image, on a strand whose catalogue
   entry is text-only, dispatches through the routed
   `vision` chain (`ForRole(Vision)`, admitted and accounted against
   the vision head's own facts) or is refused in band at admission with
   a worded reason — `image_unsupported` when no chain resolves,
   `vision_misconfigured` when the routed head is itself declared
   `TextOnly`. Every other request to a text-only identity carries its
-  `UserImage` blocks replaced with a text placeholder, in the transient
+  `UserImage` and `ToolResultImage` blocks replaced with text placeholders, in the transient
   projection only; the durable transcript keeps the images. The
   classifier walks the current turn from the latest attributed human
   prompt or settled assistant boundary. Digests have no origin and tool
-  steps do not close a turn, so neither changes the image route.
+  steps do not close a turn. A disk image returned by `fs_read` switches the
+  next request to vision and subsequent tool steps retain that route.
   Human attribution also survives projection of failed assistant responses,
   allowing the next text prompt to end a rejected image turn. The immutable
   operation admission batch is checked as well, including captured inputs

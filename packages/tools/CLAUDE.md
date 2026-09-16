@@ -5,7 +5,11 @@
 The core tool set and the behaviour every tool implements: `bash` and
 `grep` through the broker's jailed executor, `fs_read` / `fs_write` /
 `fs_edit` harness-side with hashline anchoring and workspace path
-discipline, plus content-addressed blob overflow for large output. WP-I.
+discipline, plus content-addressed blob overflow for large output. `fs_read`
+returns PNG, JPEG, GIF, and WebP bytes as `ToolResultImage` blocks, with a
+text caption naming the file. MIME detection uses file signatures, and image
+reads share the workspace checks and 8 MiB file bound with text reads. Only
+text reads use offset/limit and hashline anchors; `cap/fs.read` remains text. WP-I.
 Tool failures are data, never crashes.
 
 Also the `agent_*` family — `agent_spawn`, `agent_wait`, `agent_send`,
@@ -543,9 +547,10 @@ was asked.
   or re-running an identical command never duplicates storage. Output past
   `overflow_threshold_bytes` (64 KiB) carries `{ref, size, head_excerpt,
   tail_excerpt}` at `excerpt_bytes` (2 KiB) each.
-- **`fs_read` is exempt from blob overflow.** Windowed reads are its
+- **`fs_read` is exempt from blob overflow.** Text windowed reads are its
   bounding mechanism, and anchors inside an elided blob would defeat
-  hashline editing. Bash and grep output do overflow.
+  hashline editing. Image blocks are bounded by the 8 MiB file limit and
+  remain inline for vision providers. Bash and grep output do overflow.
 - **Environments are allowlist-constructed, never inherited.** `Ctx.env`
   carries what the caller built; the helper drops anything absent from the
   policy's `env_allow` even if the broker sent it.

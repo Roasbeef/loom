@@ -32,7 +32,7 @@
 ////   per-turn thinking budget rides along as on every other dispatch.
 //// - **Placeholders** (`placeholdered`). A request dispatched to an
 ////   identity that cannot read images — any request that was not
-////   re-routed — has every `UserImage` block in its projection
+////   re-routed — has every user or tool-result image block in its projection
 ////   replaced with a text placeholder naming the mime type. The
 ////   transform is transient: it is applied to the projection the driver
 ////   just read, never written down, so the durable transcript keeps the
@@ -51,7 +51,8 @@
 
 import core/message.{
   type AgentMessage, type UserBlock, AssistantMessage, CustomMessage,
-  ToolResultMessage, ToolUse, UserImage, UserMessage, UserText,
+  ToolResultImage, ToolResultMessage, ToolResultText, ToolUse, UserImage,
+  UserMessage, UserText,
 }
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -104,7 +105,14 @@ pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
   |> list.any(fn(entry) {
     case entry {
       UserMessage(content:, ..) -> list.any(content, is_image)
-      AssistantMessage(..) | ToolResultMessage(..) | CustomMessage(..) -> False
+      ToolResultMessage(content:, ..) ->
+        list.any(content, fn(block) {
+          case block {
+            ToolResultImage(..) -> True
+            ToolResultText(..) -> False
+          }
+        })
+      AssistantMessage(..) | CustomMessage(..) -> False
     }
   })
 }
@@ -196,7 +204,7 @@ pub fn routed_target(
   model.ForRole(role: Vision, thinking:)
 }
 
-/// Replaces every `UserImage` block in a projection with the
+/// Replaces every user or tool-result image block in a projection with the
 /// placeholder, for a request dispatched to an identity that cannot read
 /// images.
 ///
@@ -221,7 +229,23 @@ pub fn placeholdered(messages: List(AgentMessage)) -> List(AgentMessage) {
           timestamp:,
           origin:,
         )
-      AssistantMessage(..) | ToolResultMessage(..) | CustomMessage(..) -> entry
+      ToolResultMessage(content:, ..) as result ->
+        ToolResultMessage(
+          ..result,
+          content: list.map(content, fn(block) {
+            case block {
+              ToolResultImage(_, mime_type) ->
+                ToolResultText(
+                  "[image: "
+                    <> mime_type
+                    <> ", described earlier in this conversation]",
+                  None,
+                )
+              ToolResultText(..) -> block
+            }
+          }),
+        )
+      AssistantMessage(..) | CustomMessage(..) -> entry
     }
   })
 }

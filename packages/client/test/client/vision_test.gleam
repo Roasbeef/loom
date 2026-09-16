@@ -25,6 +25,7 @@ import core/json
 import core/message
 import core/register
 import core/tx.{Expect, InsertEntry, SetRegister, Tx}
+import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -35,12 +36,14 @@ import machine/strand.{
   type ModelIdentity, type StrandConfiguration, ModelIdentity,
   StrandConfiguration,
 }
+import provider/adapter/openai
 import provider/gateway
 import provider/http
 import provider/model
 import provider/secret
 import runtime/effects
 import session/session
+import simplifile
 import storage/storage
 import support/provider as provider_test
 import support/tool_registry
@@ -1011,4 +1014,182 @@ pub fn held_image_and_text_batch_routes_admission_and_dispatch_test() {
   assert recovered.target == model.ForRole(model.Main, Some(model.ThinkingOff))
   assert recovered.messages
     == client_vision.placeholdered([image_user(), text, next_prompt])
+}
+
+// This exercises the production disk seam and tool-result conversion before
+// routing and serialization, rather than manufacturing only a user image.
+pub fn disk_image_read_routes_to_vision_and_preserves_pixels_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  let workspace = here <> "/build/vision-disk-image"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+    as "the image workspace must exist"
+  let data =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aoykAAAAASUVORK5CYII="
+  let assert Ok(bytes) = bit_array.base64_decode(data)
+    as "the fixture is a one-pixel PNG"
+  let assert Ok(Nil) = simplifile.write_bits(workspace <> "/pixel.png", bytes)
+    as "the image must exist on disk"
+  let config =
+    wiring.Config(
+      ..config_with(vision_gateway()),
+      workspace:,
+      base_policy: policy.workspace_default(workspace),
+    )
+  let assert message.AssistantMessage(
+    content: [message.AssistantToolCall(call:)],
+    ..,
+  ) as assistant = assistant_tool_call()
+    as "the fixture assistant requests one read"
+  let arguments = json.Object([#("path", json.String("pixel.png"))])
+  let call = message.ToolCall(..call, arguments:)
+  let operation_id = image_operation(config.session)
+  let assert effects.ToolCompleted(result:, terminate: False) =
+    wiring.run_tool(
+      config,
+      effects.ToolRun(
+        operation: operation_id,
+        step_id: "read-image",
+        source_index: 0,
+        strand: "main",
+        call:,
+        arguments:,
+        replay: operation.ReplaySafe,
+        grants: [],
+      ),
+    )
+    as "the production read must complete"
+  let assert message.ToolResultMessage(is_error: False, content: [_, image], ..) =
+    result
+    as "disk image bytes must survive conversion to the durable message type"
+  assert image == message.ToolResultImage(data, "image/png")
+  let context = [
+    owner_prompt([message.UserText("look at pixel.png", None)]),
+    message.AssistantMessage(..assistant, content: [
+      message.AssistantToolCall(call),
+    ]),
+    result,
+  ]
+  // Admission reads durable history before dispatch builds its request. Both
+  // must resolve the vision head, including its smaller context allowance.
+  let assert Ok(_) =
+    session.ensure_strand(config.session, "main", text_only_configuration())
+    as "the disk-read strand must exist"
+  let entry_id = fn(index) {
+    ids.mint_entry(ids.generator(clock.fixed(0), 500 + index)).0
+  }
+  let writes =
+    list.index_map(context, fn(entry, index) {
+      InsertEntry(MessageEntry(
+        id: entry_id(index),
+        parent: case index {
+          0 -> None
+          _ -> Some(entry_id(index - 1))
+        },
+        seq: 0,
+        ts: 0,
+        message: entry,
+        terminate: False,
+      ))
+    })
+  let assert Ok(_) =
+    storage.commit(
+      config.session.store,
+      Tx(
+        writes: list.append(writes, [
+          SetRegister(
+            register.StrandLeaf,
+            "main",
+            register.leaf_value(Some(entry_id(2))),
+          ),
+        ]),
+        expected: [],
+      ),
+    )
+    as "the read transcript must commit"
+  let query =
+    effects.AdmissionQuery(
+      operation: operation_id,
+      step_id: "after-read",
+      attempt: 1,
+      configuration: text_only_configuration(),
+      stream_options: json.Object([]),
+    )
+  let assert planner.Admitted(context_window: 64_000, ..) =
+    wiring.compaction_hooks(config).admission(query)
+    as "a disk image must use the vision head's admission facts"
+  let unrouted = wiring.Config(..config, gateway: blind_gateway())
+  let assert planner.AdmissionUnavailable(error:) =
+    wiring.compaction_hooks(unrouted).admission(query)
+    as "a disk image without a vision route must be refused before dispatch"
+  assert error.code == "image_unsupported"
+
+  let request = wiring.provider_request(config, generation(context))
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == context
+  let wire =
+    openai.build_request(
+      "https://example.test",
+      "k",
+      resolved("loom-eyes", 64_000),
+      request,
+    )
+  assert string.contains(wire.body, "data:image/png;base64," <> data)
+
+  // Further tool steps stay on vision; a later human text prompt can recover
+  // even if projection has removed a failed provider response.
+  let continued = list.append(context, [assistant_tool_call(), tool_result()])
+  assert wiring.provider_request(config, generation(continued)).target
+    == request.target
+  let next_context =
+    list.append(continued, [
+      owner_prompt([message.UserText("continue in text", None)]),
+    ])
+  let next = wiring.provider_request(config, generation(next_context))
+  assert next.target == model.ForRole(model.Main, Some(model.ThinkingOff))
+  assert next.messages == client_vision.placeholdered(next_context)
+  let text_wire =
+    openai.build_request(
+      "https://example.test",
+      "k",
+      resolved("loom-text", 200_000),
+      next,
+    )
+  assert !string.contains(text_wire.body, data)
+  assert string.contains(
+    text_wire.body,
+    "described earlier in this conversation",
+  )
+}
+
+pub fn historical_tool_image_placeholder_preserves_result_metadata_test() {
+  let original =
+    message.ToolResultMessage(
+      tool_call_id: "read-photo",
+      tool_name: "fs_read",
+      content: [
+        message.ToolResultText("photo.png", None),
+        message.ToolResultImage("YQ==", "image/png"),
+      ],
+      details: Some(json.Object([#("path", json.String("photo.png"))])),
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 42,
+    )
+  let expected =
+    message.ToolResultMessage(..original, content: [
+      message.ToolResultText("photo.png", None),
+      message.ToolResultText(
+        "[image: image/png, described earlier in this conversation]",
+        None,
+      ),
+    ])
+  assert client_vision.placeholdered([original]) == [expected]
+  assert client_vision.image_bearing([
+    text_user("look"),
+    assistant_tool_call(),
+    original,
+  ])
+  assert !client_vision.image_bearing([original, assistant_answer()])
 }
