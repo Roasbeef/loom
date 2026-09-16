@@ -195,7 +195,8 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
   // is what the refusal test turns on.
   let base =
     policy.SandboxPolicy(..base, env_allow: [
-      "PATH", "HOME", "TMPDIR", "CLAUDE_PROJECT_DIR", "HOOK_MARKER",
+      "PATH", "HOME", "TMPDIR", "LOOM_SCRATCH_DIR", "CLAUDE_PROJECT_DIR",
+      "HOOK_MARKER",
     ])
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(

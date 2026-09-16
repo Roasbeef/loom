@@ -221,6 +221,7 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
       #("PATH", "/usr/local/bin:/usr/bin:/bin"),
       #("HOME", "/work/.codemode/home"),
       #("TMPDIR", "/work/.codemode/tmp"),
+      #("LOOM_SCRATCH_DIR", ""),
     ]
   let toolchain = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
   let assert Ok(path) =
@@ -1612,6 +1613,7 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
       #("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"),
       #("HOME", "/work/.codemode/home"),
       #("TMPDIR", "/work/.codemode/tmp"),
+      #("LOOM_SCRATCH_DIR", ""),
       #("GH_TOKEN", "gho_secret"),
       #("GH_CONFIG_DIR", "/home/me/.config/gh"),
     ]
@@ -1675,6 +1677,7 @@ pub fn host_path_discovery_needs_no_per_tool_directory_list_test() {
     )
   assert list.key_find(environment, "HOME") == Ok("/work/.codemode/home")
   assert list.key_find(environment, "TMPDIR") == Ok("/work/.codemode/tmp")
+  assert list.key_find(environment, "LOOM_SCRATCH_DIR") == Ok("")
   assert unset == []
 }
 
@@ -1725,7 +1728,7 @@ pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
     )
 
   // The names `with_imported_hooks` puts in the runner's environment:
-  // the session's own three, plus the contract's project directory.
+  // the session's own four, plus the contract's project directory.
   let asked =
     list.append(
       list.map(serve.session_environment(settings.workspace, None), fn(pair) {
@@ -1735,6 +1738,7 @@ pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
     )
 
   assert list.contains(base.env_allow, "CLAUDE_PROJECT_DIR")
+  assert list.contains(base.env_allow, "LOOM_SCRATCH_DIR")
   assert list.all(asked, fn(name) { list.contains(base.env_allow, name) })
 }
 

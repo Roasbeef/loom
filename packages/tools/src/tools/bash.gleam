@@ -110,7 +110,11 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
       <> "command runs as `bash -o pipefail -c` in the workspace using "
       <> "the session's PATH and network policy. A failed command before "
       <> "a pipe remains a failed pipeline; inspect its output before "
-      <> "claiming tests passed. With `mode: \"background\"` the "
+      <> "claiming tests passed. For scratch files use "
+      <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}`, not a literal `/tmp`: macOS "
+      <> "exposes private scratch at a different path. Private scratch "
+      <> "lasts for this command or background job; keep files needed "
+      <> "by later calls in the workspace. With `mode: \"background\"` the "
       <> "command is started as a background job instead: the call returns "
       <> "a job id straight away and the command keeps running after it, so "
       <> "use it for a long build or something you want to watch. Read a "
@@ -126,7 +130,9 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     // into (`client/serve_test`), and a quote is escaped there.
     prompt_snippet: option.Some(
       "`bash` runs a shell command in the workspace, jailed and offline; "
-      <> "`mode: background` starts it as a job instead. A pipeline that "
+      <> "`mode: background` starts it as a job instead. Use "
+      <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}` for scratch, not literal `/tmp`. "
+      <> "A pipeline that "
       <> "exists to find, filter, or count across files belongs in "
       <> "`code_mode` with `cap/search`, which answers structured.",
     ),
