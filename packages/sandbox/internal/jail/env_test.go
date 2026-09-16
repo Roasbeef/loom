@@ -10,6 +10,26 @@ import (
 	"github.com/roasbeef/loom/sandbox/internal/policy"
 )
 
+func TestExecutionScratch(t *testing.T) {
+	for _, tc := range []struct {
+		name, goos, policyScratch, bwrap, privateDir, want string
+	}{
+		{"mac private directory", "darwin", "tmpfs", "", "/private/tmp/own", "/private/tmp/own"},
+		{"linux mounted tmpfs", "linux", "tmpfs", "/usr/bin/bwrap", "", "/tmp"},
+		{"linux without mount", "linux", "tmpfs", "", "", ""},
+		{"mac host path", "darwin", "/work/scratch", "", "", "/work/scratch"},
+		{"linux host path without mount", "linux", "/work/scratch", "", "", "/work/scratch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pol := policy.Policy{Scratch: tc.policyScratch}
+			feat := Features{Platform: PlatformFor(tc.goos), BwrapPath: tc.bwrap}
+			if got := executionScratch(pol, feat, tc.privateDir); got != tc.want {
+				t.Fatalf("scratch = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFilterEnv(t *testing.T) {
 	cases := []struct {
 		name      string

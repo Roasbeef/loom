@@ -9,6 +9,27 @@ import (
 	"github.com/roasbeef/loom/sandbox/internal/policy"
 )
 
+// scratchEnv names the helper-owned directory visible to this execution.
+// TMPDIR remains caller-owned: the compiler pins it to its build root, and
+// shells retain a writable fallback when Linux cannot mount private scratch.
+const scratchEnv = "LOOM_SCRATCH_DIR"
+
+// executionScratch returns the path the selected jail actually supplies.
+// A degraded Linux execution has no tmpfs, so advertising the host's /tmp
+// there would claim a grant the helper deliberately did not make.
+func executionScratch(pol policy.Policy, feat Features, privateDir string) string {
+	if !pol.ScratchIsTmpfs() {
+		return pol.Scratch
+	}
+	if feat.Platform.GOOS == "darwin" {
+		return privateDir
+	}
+	if feat.Platform.GOOS == "linux" && feat.BwrapPath != "" {
+		return ScratchMount
+	}
+	return ""
+}
+
 // FilterEnv builds the jailed process's environment from the broker's
 // requested env and the policy's allowlist. The environment is
 // *constructed*, never inherited (design §5.2: secrets live only in
