@@ -45,8 +45,8 @@
 //// have is *refused with an explanation* rather than run. That is only
 //// worth anything if the explanation reaches the model: every rejection
 //// comes back naming the rule it broke, the offending import or
-//// attribute, and the byte offset where one is available, together with
-//// the allowlist it was judged against — everything needed to fix the
+//// attribute, and a bounded source excerpt beside its byte offset, with the
+//// allowlist it was judged against — everything needed to fix the
 //// program and resubmit without a human in the loop. A compile error gets
 //// the same treatment for the same reason, and it is the cheap signal:
 //// Gleam's type checker doubles as the capability-argument validator, so
@@ -904,7 +904,7 @@ fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     "" -> tool.failure("invalid arguments: `program` must not be empty")
     _ -> {
       let asked = request(mode, ctx, program, within_ms, on: offer.seam)
-      render(ctx, offer, once_more_if_approved(mode, ctx, asked))
+      render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
     }
   }
 }
@@ -1026,9 +1026,14 @@ pub fn request(
 // synchronous pipeline with one settlement, and the point of code mode is
 // that the steps inside it stay inside it — a stream of intermediates
 // would put back exactly the context traffic the feature removes.
-fn render(ctx: Ctx, offer: SeamOffer, execution: Execution) -> ToolOutcome {
+fn render(
+  ctx: Ctx,
+  offer: SeamOffer,
+  source: String,
+  execution: Execution,
+) -> ToolOutcome {
   case execution.result {
-    VetRejected(rejections:) -> vet_outcome(offer, rejections)
+    VetRejected(rejections:) -> vet_outcome(offer, source, rejections)
     CompileFailed(failure:) -> compile_outcome(ctx, execution, failure)
     RunFailed(failure:) -> run_failed_outcome(execution, failure)
     Ran(outcome:, manifest_hash:) ->
@@ -1045,7 +1050,11 @@ fn render(ctx: Ctx, offer: SeamOffer, execution: Execution) -> ToolOutcome {
 // have come from either has no way to tell a program it must repair from
 // a submission it must re-aim. Thirty bytes, on a path that is already a
 // failure, buys that.
-fn vet_outcome(offer: SeamOffer, rejections: List(Rejection)) -> ToolOutcome {
+fn vet_outcome(
+  offer: SeamOffer,
+  source: String,
+  rejections: List(Rejection),
+) -> ToolOutcome {
   let judged =
     "the program was refused before it ran, judged against the `"
     <> seam_name(offer.seam)
@@ -1057,7 +1066,7 @@ fn vet_outcome(offer: SeamOffer, rejections: List(Rejection)) -> ToolOutcome {
   let body =
     [
       [heading],
-      list.map(rejections, rejection_text),
+      list.map(rejections, fn(rejection) { rejection_text(rejection, source) }),
       case list.any(rejections, is_import_rejection) {
         False -> []
         True -> [
@@ -1092,12 +1101,13 @@ fn is_import_rejection(rejection: Rejection) -> Bool {
   rejection.rule == ImportNotAllowed
 }
 
-fn rejection_text(rejection: Rejection) -> String {
+fn rejection_text(rejection: Rejection, source: String) -> String {
   "- "
   <> rule_text(rejection.rule)
   <> ": "
   <> rejection.detail
   <> location_text(rejection.location)
+  <> source_excerpt(source, rejection.location)
 }
 
 fn rule_text(rule: Rule) -> String {
@@ -1115,6 +1125,78 @@ fn location_text(location: Location) -> String {
     SourcePoint(byte_offset:) -> " [byte " <> int.to_string(byte_offset) <> "]"
     Unlocated -> ""
   }
+}
+
+// The byte offset remains the machine coordinate; the excerpt translates it
+// against the submitted text, never generated compiler scaffolding. Invalid or
+// non-UTF-8-boundary offsets retain the original diagnostic without inventing a
+// location. EOF is a valid point, including the empty line after a final newline.
+fn source_excerpt(source: String, location: Location) -> String {
+  case location {
+    SourceSpan(start:, end: _) -> point_excerpt(source, start)
+    SourcePoint(byte_offset:) -> point_excerpt(source, byte_offset)
+    Unlocated -> ""
+  }
+}
+
+fn point_excerpt(source: String, offset: Int) -> String {
+  let bytes = <<source:utf8>>
+  case bytes {
+    <<before:size(offset)-bytes, after:bytes>> ->
+      result.try(bit_array.to_string(before), fn(before) {
+        use after <- result.map(bit_array.to_string(after))
+        excerpt_line(before, after)
+      })
+      |> result.unwrap("")
+    _ -> ""
+  }
+}
+
+// Keep at most 60 graphemes before the point and 60 after it. A huge one-line
+// submission must not turn a syntax diagnostic into a second copy of the input.
+// Columns count graphemes from one; tabs expand consistently in the displayed
+// prefix and caret indentation without changing the source column or offset.
+fn excerpt_line(before: String, after: String) -> String {
+  let lines = string.split(before, "\n")
+  let prefix = list.last(lines) |> result.unwrap("")
+  let suffix = string.split(after, "\n") |> list.first |> result.unwrap("")
+  let column = string.length(prefix) + 1
+  let start = int.max(0, column - 1 - 60)
+  let leading = case start > 0 {
+    True -> "..."
+    False -> ""
+  }
+  let trailing = case string.drop_start(suffix, 60) != "" {
+    True -> "..."
+    False -> ""
+  }
+
+  let shown_prefix =
+    leading
+    <> string.slice(prefix, start, 60)
+    |> string.replace("\t", "    ")
+  let shown_suffix =
+    string.slice(suffix, 0, 60)
+    |> string.replace("\t", "    ")
+    |> string.replace("\r", "")
+  let line = int.to_string(list.length(lines))
+  let gutter = string.repeat(" ", string.length(line))
+
+  "\n  --> submitted program:"
+  <> line
+  <> ":"
+  <> int.to_string(column)
+  <> "\n  "
+  <> line
+  <> " | "
+  <> shown_prefix
+  <> shown_suffix
+  <> trailing
+  <> "\n  "
+  <> gutter
+  <> " | "
+  <> string.repeat(" ", string.length(shown_prefix))
+  <> "^"
 }
 
 fn rejection_json(rejection: Rejection) -> JsonValue {

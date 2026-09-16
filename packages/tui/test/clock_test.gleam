@@ -80,6 +80,37 @@ pub fn generation_and_usage_measure_one_injected_clock_test() {
   assert settled.generation_started_ms == None
 }
 
+pub fn a_subagent_usage_row_does_not_settle_the_primary_clock_test() {
+  let started =
+    initial(-10_000)
+    |> deliver(
+      "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}",
+    )
+  assert started.generation_started_ms == Some(-10_000)
+
+  // A sub-agent's own request settles mid-generation. `generation_clock`
+  // only ever starts the clock for the active strand's row, so only that
+  // same strand's settlement may read it or clear it: the sub-agent's row
+  // must not report its output over the primary's window, and must not
+  // stop the primary's clock out from under it.
+  let crossed =
+    started
+    |> at(-9500)
+    |> deliver(gateway.usage("sub:main/audit", 10, 300, 0.0))
+  assert crossed.generation_started_ms == Some(-10_000)
+    as "a sub-agent's settlement must not clear the primary's clock"
+  assert crossed.output_rate_tps == None
+    as "a sub-agent's settlement must not report its own output rate"
+
+  // The primary's own settlement afterward still works as before.
+  let settled =
+    crossed
+    |> at(-8000)
+    |> deliver(gateway.usage("main", 10, 300, 0.0))
+  assert settled.output_rate_tps == Some(150)
+  assert settled.generation_started_ms == None
+}
+
 pub fn stream_fallback_uses_the_injected_clock_test() {
   let other =
     initial(-10_000)

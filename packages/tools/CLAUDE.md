@@ -5,7 +5,11 @@
 The core tool set and the behaviour every tool implements: `bash` and
 `grep` through the broker's jailed executor, `fs_read` / `fs_write` /
 `fs_edit` harness-side with hashline anchoring and workspace path
-discipline, plus content-addressed blob overflow for large output. WP-I.
+discipline, plus content-addressed blob overflow for large output. `fs_read`
+returns PNG, JPEG, GIF, and WebP bytes as `ToolResultImage` blocks, with a
+text caption naming the file. MIME detection uses file signatures, and image
+reads share the workspace checks and 8 MiB file bound with text reads. Only
+text reads use offset/limit and hashline anchors; `cap/fs.read` remains text. WP-I.
 Tool failures are data, never crashes.
 
 `fs_read` also resolves **schemes**: a `path` containing `://` names one
@@ -256,14 +260,22 @@ was asked.
   a seam the host fills, exactly as `remember` and `schedule` are.
   `Verdict` is the three-point vocabulary — `Quiet`, `Nudge(text)`,
   `Block(text)` — ordered by what it costs the primary: nothing, a
-  paragraph at its next prompt, an interruption now. `Ack` is what the
-  harness decided to do with one (`Delivered(how)` | `Queued` |
-  `Downgraded(reason)` | `Dropped(reason)` | `Acknowledged`), and it is
-  the reason the call answers with an outcome rather than an
-  acknowledgement: an emission guard downgrades a block raised inside its
-  cooldown and drops advice the primary has already been given, and an
-  advisor reading a downgrade as a delivery would believe it had stopped
-  the primary when it had not.
+  paragraph delivered the moment the primary stops, an interruption now.
+  `Ack` is what the harness decided to do with one (`Delivered(how)` |
+  `Queued` | `Woke(how)` | `Downgraded(reason)` | `Dropped(reason)` |
+  `Acknowledged`), and it is the reason the call answers with an outcome
+  rather than an acknowledgement: an emission guard downgrades a block
+  raised inside its cooldown and drops advice the primary has already
+  been given, and an advisor reading a downgrade as a delivery would
+  believe it had stopped the primary when it had not. `Woke(how)` is the
+  nudge channel's own unsolicited delivery — the queue drained onto an
+  idle primary at once, through the same door a block uses, rather than
+  left to wait for its next run start — and `how` names the door and how
+  many nudges rode it, since the queue drains whole. A downgraded block
+  keeps `Downgraded` even when the queue it joined went out this way,
+  because a downgrade's whole meaning is that the primary was *not*
+  stopped for it, and `Woke` or `Delivered` would each claim the
+  opposite; the wake is appended to the downgrade's own reason instead.
   `Advice.judge` is handed `Ctx.strand` — the driver's own durable name,
   never an argument — so a verdict cannot be attributed to a strand that
   did not produce it. `decode_verdict` is total and public because both
@@ -566,10 +578,11 @@ was asked.
   or re-running an identical command never duplicates storage. Output past
   `overflow_threshold_bytes` (64 KiB) carries `{ref, size, head_excerpt,
   tail_excerpt}` at `excerpt_bytes` (2 KiB) each.
-- **`fs_read` is exempt from blob overflow.** Windowed reads are its
+- **`fs_read` is exempt from blob overflow.** Text windowed reads are its
   bounding mechanism, and anchors inside an elided blob would defeat
-  hashline editing. Bash and grep output do overflow. A scheme read is
-  held to the same inline ceiling and refuses above it rather than
+  hashline editing. Image blocks are bounded by the 8 MiB file limit and
+  remain inline for vision providers. Bash and grep output do overflow. A
+  scheme read is held to the same inline ceiling and refuses above it rather than
   spilling, because a spill costs a second round trip to read back and
   `limit` is the knob that makes the answer fit.
 - **A scheme read renders plain, and stays `replay: Safe`.** It carries no
@@ -680,9 +693,12 @@ was asked.
   span where one exists, the **seam** it was judged against and that
   seam's allowlist; compiler diagnostics cross verbatim. One round trip
   per rule is exactly what in-band repair exists to avoid. Parse failures
-  report the unexpected token and byte offset without teaching a dialect
-  workaround: the Glance floor and codemode corpus now pin the submitted
-  constructs that the shipped compiler accepts.
+  show the token in source syntax and a bounded excerpt with a one-based
+  line, grapheme column and caret, while retaining the original byte offset.
+  Positions refer to the submitted source, including EOF; unusable offsets
+  keep the refusal without fabricated coordinates. A grouping-parenthesis
+  hint teaches valid Gleam braces, without weakening vetting or adding a
+  workaround for syntax the shipped compiler already accepts.
 - **A submission is judged against exactly one seam, and it is the one
   it named.** `CodeMode.seams` is what this host serves; the shell
   resolves the call's `seam` argument against it, defaults an unnamed

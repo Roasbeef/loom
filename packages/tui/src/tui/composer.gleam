@@ -124,11 +124,51 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
             <> " tokens",
           )
         True ->
-          attachments
-          |> list.map(attachment_summary)
-          |> string.join(" · ")
-          |> Some
+          Some(
+            int.to_string(list.length(images(attachments)))
+            <> " images · "
+            <> string.join(list.map(attachments, attachment_summary), " · "),
+          )
       }
+  }
+}
+
+/// The composer lists every retained image on its own row, beneath a count.
+/// Text-only pastes keep their compact summary; their full bytes stay outside
+/// the editor. Filenames are sanitized before reaching the terminal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert preview_lines([]) == []
+/// ```
+@internal
+pub fn preview_lines(attachments: List(Attachment)) -> List(String) {
+  case images(attachments) {
+    [] ->
+      case summary(attachments) {
+        None -> []
+        Some(text) -> [text]
+      }
+    retained -> {
+      let count = list.length(retained)
+      let heading =
+        int.to_string(count)
+        <> "/"
+        <> int.to_string(max_image_attachments)
+        <> " images attached"
+      let rows =
+        list.index_map(retained, fn(image, index) {
+          int.to_string(index + 1)
+          <> ". "
+          <> attachment_summary(ImageAttachment(image))
+        })
+      let text = case text_token_total(attachments) {
+        0 -> []
+        tokens -> ["pasted ~" <> token_count(tokens) <> " tokens"]
+      }
+      list.append([heading, ..rows], text)
+    }
   }
 }
 
@@ -241,7 +281,7 @@ pub fn admit_attachment(
 ) -> Result(List(Attachment), String) {
   case attachment {
     Attachment(..) -> Ok(list.append(attachments, [attachment]))
-    ImageAttachment(image_drop.Image(byte_size:, ..)) -> {
+    ImageAttachment(image_drop.Image(byte_size:, filename:, ..)) -> {
       let current_images = images(attachments)
       let current_bytes =
         list.fold(current_images, 0, fn(total, image) {
@@ -252,7 +292,12 @@ pub fn admit_attachment(
         list.drop(current_images, max_image_attachments - 1) != [],
         current_bytes + byte_size > max_image_attachment_bytes
       {
-        True, _ -> Error("a prompt may attach at most four images")
+        True, _ ->
+          Error(
+            "not attached: "
+            <> text_hygiene.single_line(filename)
+            <> "; 4/4 images retained (per-prompt limit)",
+          )
         _, True -> Error("a prompt may attach at most 20 MiB of images")
         False, False -> Ok(list.append(attachments, [attachment]))
       }

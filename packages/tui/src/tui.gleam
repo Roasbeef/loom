@@ -43,6 +43,7 @@ import host/build_identity
 import host/endpoint
 import machine/strand as machine_strand
 import simplifile
+import tui/advisor_pending
 import tui/agents
 import tui/approval
 import tui/approval_panel
@@ -50,6 +51,7 @@ import tui/attachment
 import tui/attempt
 import tui/attempt_replay
 import tui/bootstrap
+import tui/cache_miss
 import tui/command
 import tui/completion_summary
 import tui/composer
@@ -117,6 +119,16 @@ pub type Speaker {
 
   ToolFailure
   Failure
+
+  /// One blank row, placed by the projection that knows it is needed.
+  ///
+  /// Every other block closes itself with a blank, but the tool family is
+  /// excluded from that so a call's summary can never be split from the
+  /// patch, result or note rows beneath it. The gap between one call and the
+  /// next is therefore nobody's trailing blank, and only a fold that can see
+  /// where one group ends and another begins is in a position to emit it.
+  /// This is the row it emits.
+  Spacer
 }
 
 /// Whether the transcript area is showing captured edits.
@@ -162,6 +174,9 @@ pub const live_stream_limit = 24_576
 // Compact patches show enough surrounding edits to review ordinary changes
 // while retaining a fixed bound; Ctrl+G exposes the complete stored patch.
 const patch_preview_lines = 60
+
+// Submitted code stays readable in compact mode; expansion retains every line.
+const code_preview_lines = 60
 
 /// The undurable fragments of one strand-and-kind generation.
 ///
@@ -479,6 +494,26 @@ pub type FrameCache {
   )
 }
 
+/// A prompt-cache miss already rendered as its transcript row.
+///
+/// The row belongs inside the transcript rather than at the end of it, so
+/// the notice names the entry it follows. A usage event arrives after the
+/// entry whose request it bills, which is what puts the row under the turn
+/// that missed; naming the entry rather than a position is what survives the
+/// compact projection, which joins a call to a result several entries later
+/// and must not be cut between them.
+@internal
+pub type CacheNotice {
+  CacheNotice(
+    /// The strand whose transcript shows the row.
+    strand: String,
+    /// The last entry that strand held when the row was raised.
+    after_entry: ids.EntryId,
+    /// The operator-facing line, already formatted.
+    text: String,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -516,6 +551,16 @@ pub type Model {
     awaiting_outcome: Option(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
+    /// The last provider usage row each strand billed, with the instant it
+    /// arrived, which is all the prompt-cache detector remembers. Keyed by
+    /// strand because a sub-agent's request says nothing about whether the
+    /// primary's cached prefix survived the operator's pause.
+    cache_watch: Dict(String, cache_miss.Watch),
+    /// Cache-miss notices raised on this connection, oldest first. They are
+    /// transient by design: a reattach rebuilds the durable transcript and
+    /// these do not come back, which is acceptable for a notice about the
+    /// moment it happened, and is what keeps them out of the store.
+    cache_notices: List(CacheNotice),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
     /// Retained scrollback of every strand other than the active one, keyed
@@ -558,6 +603,16 @@ pub type Model {
     jobs_request: Option(Int),
     /// Missing observations are unavailable, never a zero-job assertion.
     jobs_notice: String,
+    /// The advisor's undelivered nudge queue, observed while the primary is
+    /// idle. `None` is "nothing observed", never "the queue is empty".
+    nudges: Option(advisor_pending.Board),
+    /// One pending-nudge read waiting for a free command lane.
+    nudges_refresh: worktree_view.Refresh,
+    /// Attachment which owns the one issued nudge read; a board answering an
+    /// attachment that has gone describes a session nobody is watching.
+    nudges_awaiting: Option(String),
+    /// Actual lane request ID, so an unrelated refusal cannot settle it.
+    nudges_request: Option(Int),
     help_open: Bool,
     notes_open: Bool,
     /// A dedicated view of captured edit diffs, without tool retries.
@@ -1004,6 +1059,8 @@ pub fn new_model_with_clock(
       ),
     ],
     records: [],
+    cache_watch: dict.new(),
+    cache_notices: [],
     scrollback: history_view.empty(),
     parked_scrollback: dict.new(),
     notice: "interactive design preview",
@@ -1020,6 +1077,10 @@ pub fn new_model_with_clock(
     jobs_awaiting: None,
     jobs_request: None,
     jobs_notice: "Live jobs unavailable; /summary requests a current observation",
+    nudges: None,
+    nudges_refresh: worktree_view.Settled,
+    nudges_awaiting: None,
+    nudges_request: None,
     help_open: False,
     notes_open: False,
     diff_view: DiffAutomatic,
@@ -3012,18 +3073,52 @@ fn transcript_content(lines: List(Line), width: Int) -> span.Text {
   |> span.text_new
 }
 
+// Rows for one transcript line, wrapped to the pane and ready to paint.
+//
+// The wrapping lives here rather than at the call sites because only this
+// function knows which bodies arrive already wrapped. A Markdown body is
+// wrapped inside `marked_markdown_rows`, at the room the mark leaves rather
+// than at the full pane, which is what seats a continuation row at the
+// gutter instead of the left margin; prefixing the mark brings those rows
+// back to exactly `width`. A second pass over them would re-measure every
+// span of every row to arrive at the rows it was handed, and the live stream
+// re-renders its whole body on every delta, so that pass was paid per token.
 fn render_line(line: Line, width: Int) -> List(span.Line) {
+  case line.speaker {
+    Assistant | Reasoning -> speaker_rows(line, width)
+
+    // Every other body is laid out against the full pane and has never been
+    // measured, so it is wrapped on the way out.
+    System
+    | User
+    | ReasoningDigest
+    | ToolCall
+    | ToolResult
+    | ToolDetail
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | Spacer -> speaker_rows(line, width) |> markdown.wrap_lines(width)
+  }
+}
+
+// The rows one speaker's body occupies, before any wrapping the speaker did
+// not already do for itself. Every arm ends by handing its mark to
+// `prefix_rendered_lines` or drawing it inline, so the mark and the gutter
+// beneath it are decided in one place.
+fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
-    Assistant -> #("◆ Agent  ", theme.current_bold())
-    Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
+    Assistant -> #("◆ Agent ", theme.current_bold())
+    Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
-    Failure -> #("! error  ", theme.danger_text())
+    Failure -> #("! error ", theme.danger_text())
+    Spacer -> #("", theme.quiet_text())
   }
   case line.speaker {
     User -> {
@@ -3049,10 +3144,14 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     }
     Assistant | Reasoning -> [
       span.line_plain(""),
-      ..markdown.render(line.text, width - string.length(mark))
-      |> prefix_rendered_lines(mark, mark_style)
+      ..marked_markdown_rows(line.text, mark, mark_style, width)
     ]
     ToolPatch -> markdown.diff(line.text)
+
+    // The spacer is a row and nothing else: the fold that placed it has
+    // already decided it belongs here, so there is no mark to draw and
+    // nothing to wrap.
+    Spacer -> [span.line_plain("")]
 
     // A digest stands in for a whole reasoning block, and the one property
     // it has to keep is its height: the collapsed live row and the
@@ -3071,25 +3170,16 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
       |> list.index_map(fn(text, index) {
         let prefix = case index == 0 {
           True -> mark
-          False -> string.repeat(" ", string.length(mark))
+          False -> speaker_gutter
         }
         span.line_new([
           span.span_styled(prefix, mark_style),
           span.span_plain(text),
         ])
       })
-      |> list.append(case line.speaker {
-        ToolCall | ToolResult | ToolFailure -> []
-        System
-        | User
-        | Reasoning
-        | ReasoningDigest
-        | Failure
-        | Assistant
-        | ToolDetail
-        | ToolPatch -> [
-          span.line_plain(""),
-        ]
+      |> list.append(case closes_bare(line.speaker) {
+        True -> []
+        False -> [span.line_plain("")]
       })
   }
 }
@@ -3124,6 +3214,42 @@ fn digest_row(
   ])
 }
 
+// The cells every row of a block after its first is indented by.
+//
+// A mark like `"◆ Agent "` is a heading, not a left edge. Repeating its eight
+// cells under a message's second paragraph, list or fence left that body
+// hanging in from the margin while the first paragraph's own wrapped rows
+// fell back to column zero, so one message had two left edges and neither was
+// the glyph's. Every mark this transcript draws opens with a glyph and a
+// space, so two cells is the one column all of them can share, and a list's
+// own nesting is then measured from it.
+const speaker_gutter = "  "
+
+// Markdown is wrapped here rather than left to the caller because the wrap
+// width and the prefix are a single decision. Row zero pays for the whole
+// mark and every later row pays for `speaker_gutter`, so a body measured
+// against the bare pane would overrun row zero, and the wrapper the caller
+// runs afterwards would answer that overrun by dropping the spilled words to
+// column zero — which is the two-left-edges bug itself. Measuring every row
+// against the widest of the two prefixes is what the fix costs: a
+// continuation row stops a few cells short of the pane, in exchange for one
+// left edge shared by a wrapped paragraph, a list and a fence alike.
+fn marked_markdown_rows(
+  body: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> List(span.Line) {
+  // The mark is measured in cells rather than codepoints for the same reason
+  // `digest_row` measures it that way: a two-cell glyph counted as one would
+  // leave row zero a cell short of the room it was promised and spill.
+  let room = int.max(1, width - text.cell_width(mark))
+
+  markdown.render(body, room)
+  |> markdown.wrap_lines(room)
+  |> prefix_rendered_lines(mark, mark_style)
+}
+
 fn prefix_rendered_lines(
   lines: List(span.Line),
   mark: String,
@@ -3134,7 +3260,7 @@ fn prefix_rendered_lines(
     let span.Line(spans:, alignment:) = line
     let prefix = case index == 0 {
       True -> mark
-      False -> string.repeat(" ", string.length(mark))
+      False -> speaker_gutter
     }
     span.Line(
       spans: [span.span_styled(prefix, mark_style), ..spans],
@@ -3643,8 +3769,8 @@ fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
 /// chip summary carries a filename, a mime type and a byte count, so a side by
 /// side split gave the chip most of the panel and left the editor a column or
 /// two — the operator could no longer read the sentence they were typing. A
-/// full width editor with one row of chips above it costs a single terminal
-/// row and never depends on how long the filename is.
+/// full width editor with one row per image above it keeps every accepted
+/// attachment visible, independently of filename length.
 ///
 /// ## Examples
 ///
@@ -3659,14 +3785,19 @@ pub fn input_layout(
   area: Rect,
   attachments: List(composer.Attachment),
 ) -> #(Rect, Rect) {
-  case composer.summary(attachments) {
-    None -> #(geometry.rect_zero(), area)
+  case composer.preview_lines(attachments) {
+    [] -> #(geometry.rect_zero(), area)
 
     // A panel one row tall has nothing to give the chip row. Yielding the
     // whole area to the editor keeps the prompt usable; the chip is dropped
     // for this frame rather than the text the operator is writing.
-    Some(_) ->
-      case geometry.split_v(area, [Length(1), Fill]) {
+    rows ->
+      case
+        geometry.split_v(area, [
+          Length(int.min(list.length(rows), int.max(0, area.size.height - 1))),
+          Fill,
+        ])
+      {
         [chip_area, editor_area] -> #(chip_area, editor_area)
         [] | [_] | [_, _, _, ..] -> #(geometry.rect_zero(), area)
       }
@@ -3744,13 +3875,9 @@ fn wrapped_cursor(prefix: String, width: Int, rows: Int) -> #(Int, Int) {
 }
 
 fn input_height(model: Model) -> Int {
-  // The chip row is the height `input_layout` will take off the top of the
-  // panel. Counting it here is what stops the split from stealing a row the
-  // editor was already drawing text into.
-  let chip_rows = case model.attachments {
-    [] -> 0
-    [_, ..] -> 1
-  }
+  // Reserve the same rows that `input_layout` assigns to the attachment
+  // list, so every accepted image is visible above the editor.
+  let chip_rows = model.attachments |> composer.preview_lines |> list.length
 
   let content_rows =
     model.input
@@ -3771,9 +3898,18 @@ fn composer_status_lines(model: Model) -> List(String) {
     None -> []
     Some(text) -> [text]
   }
+
+  // The nudge panel sits under the reviewer roster and above the send state:
+  // it is context for the prompt about to be written, not a report on one
+  // already sent. An empty queue renders nothing, so the band keeps its
+  // height when the advisor has nothing waiting.
+  let nudges = case model.nudges {
+    None -> []
+    Some(board) -> advisor_pending.lines(board)
+  }
   list.append(
     reviewer_status.lines(model.reviewer_rows, model.active_strand),
-    pending,
+    list.append(nudges, pending),
   )
 }
 
@@ -3971,25 +4107,17 @@ fn render_paste_chip(
   area: Rect,
   attachments: List(composer.Attachment),
 ) -> buffer.Buffer {
-  case
-    composer.summary(attachments),
-    area.size.width > 0 && area.size.height > 0
-  {
-    Some(summary), True -> {
-      // The chip owns its whole row now, so a long summary would run off the
-      // panel instead of pushing the editor aside. Truncating to the row less
-      // its two brackets keeps the ellipsis inside the border.
-      let truncated =
-        text.truncate(summary, int.max(0, area.size.width - 2), "…")
-
-      paragraph.render_styled(buf, area, [
-        span.line_new([
-          span.span_styled("[" <> truncated <> "]", theme.signal_bold()),
-        ]),
+  let rows = composer.preview_lines(attachments)
+  let lines =
+    rows
+    |> list.take(area.size.height)
+    |> list.map(fn(row) {
+      let truncated = text.truncate(row, int.max(0, area.size.width - 2), "…")
+      span.line_new([
+        span.span_styled("[" <> truncated <> "]", theme.signal_bold()),
       ])
-    }
-    Some(_), False | None, True | None, False -> buf
-  }
+    })
+  paragraph.render_styled(buf, area, lines)
 }
 
 fn render_command_palette(
@@ -4168,6 +4296,7 @@ fn settle_update(
     False -> updated
   }
   let updated = sync_context(model, updated)
+  let updated = sync_advisor_nudges(model, updated)
   let published = publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
@@ -4277,8 +4406,10 @@ fn update_tick(model: Model) -> Model {
   let drained = drain_connection(switched, 64)
   let drained =
     tick_channel(
-      service_context_read(
-        service_jobs_read(service_worktree_read(service_queue_read(drained))),
+      service_advisor_nudges_read(
+        service_context_read(
+          service_jobs_read(service_worktree_read(service_queue_read(drained))),
+        ),
       ),
     )
   let quiet_for_ms =
@@ -4792,7 +4923,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         False -> dict.new()
       }
       let #(lines, compact_call_cache, compact_entry_cache) =
-        record_lines(model.records, model)
+        record_lines(model.records, model, active_notices(model))
       let #(record_rows, record_line_cache) =
         model.transcript
         |> list.append(lines)
@@ -4812,9 +4943,11 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     }
     True, [] -> model
     True, pending -> {
-      let #(lines, calls, narratives) = record_lines(pending, model)
+      let #(lines, calls, narratives) = record_lines(pending, model, [])
       let #(newest_rows, appended) =
-        cached_record_lines(lines, width, model.record_line_cache)
+        lines
+        |> separated_from_screen(model)
+        |> cached_record_lines(width, model.record_line_cache)
 
       // Every cache here describes the current projection, and the appended
       // records have just joined it. Merging rather than replacing keeps the
@@ -4832,6 +4965,30 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
   }
 }
 
+// The entry-level separation at the one seam the fold above cannot see.
+//
+// `record_lines` separates the entries handed to it, but the append path
+// hands it a suffix: the entry above the first new one was projected on an
+// earlier pass and is no longer in reach. The row it drew is, though, and a
+// drawn row answers the same question `closes_bare` answers about a speaker
+// — a blank row already separates whatever follows it, a drawn one does not
+// — so the seam is decided from the screen rather than from a second copy of
+// the projection. Compact history has no entry-level rule to apply, so the
+// seam belongs to the expanded view alone.
+fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
+  let drawn = case list.first(model.record_rows) {
+    Ok(row) -> span.line_width(row) > 0
+    Error(Nil) -> False
+  }
+  let wanted =
+    model.details_expanded && drawn && opens_tool_group(lines, BetweenEntries)
+
+  case wanted {
+    True -> [Line(Spacer, ""), ..lines]
+    False -> lines
+  }
+}
+
 // Each line is rendered independently, including its speaker prefix and
 // trailing blank rows. Reusing that complete result preserves wrapping and
 // styling without parsing or measuring unchanged text again. The next map is
@@ -4846,9 +5003,7 @@ fn cached_record_lines(
     let #(rows, cached) = acc
     let rendered =
       dict.get(previous, line)
-      |> result.lazy_unwrap(fn() {
-        render_line(line, width) |> markdown.wrap_lines(width)
-      })
+      |> result.lazy_unwrap(fn() { render_line(line, width) })
     #(
       list.append(list.reverse(rendered), rows),
       dict.insert(cached, line, rendered),
@@ -4862,11 +5017,8 @@ fn record_anchors_for(
   model: Model,
   width: Int,
 ) -> List(Option(transcript_anchor.Row)) {
-  let entries =
-    model.records
-    |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
-    |> list.map(fn(record) { record.entry })
+  let entries = strand_entries(model.records, model.active_strand)
+  let notices = active_notices(model)
   let blocks = case model.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -4897,24 +5049,40 @@ fn record_anchors_for(
           }
         })
         |> dict.from_list
-      list.flat_map(entries, fn(value) {
-        anchored_entry_blocks(value, model)
-        |> list.map(fn(block) {
-          #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
-        })
+
+      // The mirror of the entry-level separation `record_lines` applies in
+      // this mode. It runs over the flattened blocks rather than over whole
+      // entries, which reaches the same boundaries and no others: within a
+      // response `anchored_entry_blocks` has already placed every spacer a
+      // wider rule would ask for, and a spacer's own last row is blank, so a
+      // second pass can only decline.
+      entries
+      |> splice_notices(notices, entry_holds)
+      |> list.flat_map(fn(spliced) {
+        case spliced {
+          Transient(text) -> [#("", [Line(System, text)])]
+          Projected(value) ->
+            anchored_entry_blocks(value, model)
+            |> list.map(fn(block) {
+              #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
+            })
+        }
       })
+      |> separated_tool_blocks(BetweenEntries)
     }
     False ->
       entries
       |> tool_activity.project
-      |> list.flat_map(fn(item) {
-        case item {
-          tool_activity.Narrative(value) -> anchored_entry_blocks(value, model)
-          tool_activity.Tools(calls) -> {
+      |> splice_notices(notices, item_holds)
+      |> list.flat_map(fn(spliced) {
+        case spliced {
+          Transient(text) -> [#("", [Line(System, text)])]
+          Projected(tool_activity.Narrative(value)) ->
+            anchored_entry_blocks(value, model)
+          Projected(tool_activity.Tools(calls)) -> {
             let heading = [activity_heading(calls)]
-            [
-              #("", heading),
-              ..list.map(calls, fn(call) {
+            let called =
+              list.map(calls, fn(call) {
                 #(
                   ids.entry_id_to_string(call.source)
                     <> "/call/"
@@ -4923,7 +5091,7 @@ fn record_anchors_for(
                     |> result.lazy_unwrap(fn() { activity_call_lines(call) }),
                 )
               })
-            ]
+            [#("", heading), ..separated_tool_blocks(called, WithinResponse)]
           }
         }
       })
@@ -4935,9 +5103,7 @@ fn record_anchors_for(
     |> list.flat_map(fn(pair) {
       let rendered =
         dict.get(model.record_line_cache, pair.0)
-        |> result.lazy_unwrap(fn() {
-          render_line(pair.0, width) |> markdown.wrap_lines(width)
-        })
+        |> result.lazy_unwrap(fn() { render_line(pair.0, width) })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {
           "" -> None
@@ -4975,6 +5141,7 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
           }
           #(key, assistant_block_lines(block, details))
         })
+        |> separated_tool_blocks(WithinResponse)
       let terminal = assistant_terminal_lines(stop_reason, error_message)
       case terminal {
         [] -> blocks
@@ -4996,16 +5163,13 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
   case model.help_open, model.notes_open {
     True, _ ->
       help_content().lines |> markdown.wrap_lines(width) |> list.reverse
-    False, True ->
-      notes_content(model, width).lines
-      |> markdown.wrap_lines(width)
-      |> list.reverse
-    False, False ->
-      option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
-      |> transcript_content(width)
-      |> fn(content) { markdown.wrap_lines(content.lines, width) }
-      |> list.reverse
-      |> list.append(model.record_rows)
+    False, True -> notes_content(model, width).lines |> list.reverse
+    False, False -> {
+      let content =
+        option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
+        |> transcript_content(width)
+      content.lines |> list.reverse |> list.append(model.record_rows)
+    }
   }
 }
 
@@ -5210,6 +5374,13 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           skills: [],
           next_id: 1,
           record_cache_valid: False,
+          // Every session's primary strand is named `main`, so a watch or a
+          // notice carried over from the old session would be judged
+          // against the wrong baseline: the new session's first usage row
+          // would be compared to the old session's last one and drawn as a
+          // miss that never happened.
+          cache_watch: dict.new(),
+          cache_notices: [],
           scroll_offset: case model.scrollback.mode {
             history_view.Reading -> model.scroll_offset
             history_view.Live -> 0
@@ -5425,6 +5596,10 @@ pub fn apply_channel_update(
           jobs_refresh: worktree_view.Settled,
           jobs_awaiting: None,
           jobs_notice: "Live jobs unavailable: conversation disconnected",
+          nudges: None,
+          nudges_refresh: worktree_view.Settled,
+          nudges_awaiting: None,
+          nudges_request: None,
           worktree: case model.worktree.awaiting {
             Some(id) ->
               worktree_view.receive(
@@ -6134,6 +6309,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         None -> model
       }
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
+    protocol.AdvisorPendingSnapshot(board) ->
+      receive_advisor_nudges(model, board)
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
@@ -6295,34 +6472,9 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.UsageChanged(usage: settled) -> {
-      // Usage arrives once per settled generation, so this is the moment
-      // the rate is known: the settlement's own output count over the
-      // time since the request went out. A settlement whose clock never
-      // started (a refusal, an empty turn) leaves the last rate standing.
-      let output_rate_tps = case model.peer, model.generation_started_ms {
-        // The window is this client's own clock from the request going
-        // out to the settlement, and a replay spends that window playing
-        // a file rather than waiting on a provider. `output_rate_min_ms`
-        // already discards the short ones, so a brief replay would report
-        // nothing anyway; a long one would report how fast the replay
-        // ran. Declining outright is the same rule that stops a replay
-        // echoing a prompt.
-        Replaying, _ | Disconnected, _ -> model.output_rate_tps
+    protocol.UsageChanged(strand:, usage: settled) ->
+      receive_usage(model, strand, settled)
 
-        Attached(..), Some(started) | Preview, Some(started) ->
-          output_rate(settled.output, model.monotonic_time_ms() - started)
-        Attached(..), None | Preview, None -> model.output_rate_tps
-      }
-      let usage = add_usage(model.usage, settled)
-      Model(
-        ..model,
-        usage:,
-        generation_started_ms: None,
-        output_rate_tps:,
-        notice: tokens(usage.total_tokens) <> " tokens",
-      )
-    }
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
 
@@ -6372,6 +6524,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.ContextSnapshot(..)
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
+    | protocol.AdvisorPendingSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -7088,23 +7241,104 @@ pub fn live_tool_call_summary(name: String) -> String {
   text_hygiene.single_line(name) <> " · preparing arguments…"
 }
 
+/// One place in a strand's transcript, once the transient rows are in it.
+///
+/// A transcript is durable projection with the occasional local notice
+/// spliced between its items. Naming that shape lets both projections — the
+/// drawn rows and the scroll anchors — walk the same sequence, so a notice
+/// cannot shift one of them without shifting the other.
+type Spliced(a) {
+  /// One item of the durable projection: an entry, or a projected group.
+  Projected(a)
+
+  /// A transient system-voice row that follows the item before it.
+  Transient(String)
+}
+
+// Places each notice after the projected item that holds the entry it was
+// anchored to.
+//
+// Anchoring by entry rather than by position is what keeps a notice from
+// landing inside a tool group: the compact projection joins a call to a
+// result that arrives several entries later, and cutting between them would
+// leave the call pending forever and the result orphaned. The item that
+// holds the anchor is followed by the row, whole. A notice whose anchor has
+// since left the retained window is held by nothing and is dropped, which is
+// the right end for a row that was never durable.
+fn splice_notices(
+  items: List(a),
+  notices: List(CacheNotice),
+  holds: fn(a, CacheNotice) -> Bool,
+) -> List(Spliced(a)) {
+  list.flat_map(items, fn(item) {
+    let rows =
+      notices
+      |> list.filter(holds(item, _))
+      |> list.map(fn(notice) { Transient(notice.text) })
+    [Projected(item), ..rows]
+  })
+}
+
+// Whether an expanded-history entry is the one a notice was anchored to.
+fn entry_holds(value: entry.Entry, notice: CacheNotice) -> Bool {
+  value.id == notice.after_entry
+}
+
+// Whether a compact projection item covers the entry a notice was anchored
+// to. A tool group covers every call's own entry and every result entry it
+// has joined, so a notice raised in the middle of a group follows the whole
+// group.
+fn item_holds(item: tool_activity.Item, notice: CacheNotice) -> Bool {
+  case item {
+    tool_activity.Narrative(value) -> value.id == notice.after_entry
+    tool_activity.Tools(calls) ->
+      list.any(calls, fn(call) {
+        call.source == notice.after_entry
+        || call.result_source == Some(notice.after_entry)
+      })
+  }
+}
+
+// The entries of one strand, oldest first.
+fn strand_entries(
+  records: List(protocol.EntryRecord),
+  strand: String,
+) -> List(entry.Entry) {
+  records
+  |> list.reverse
+  |> list.filter(fn(record) { record.strand == strand })
+  |> list.map(fn(record) { record.entry })
+}
+
+// The notices raised on the active strand, oldest first.
+fn active_notices(model: Model) -> List(CacheNotice) {
+  list.filter(model.cache_notices, fn(notice) {
+    notice.strand == model.active_strand
+  })
+}
+
 fn record_lines(
   records: List(protocol.EntryRecord),
   model: Model,
+  notices: List(CacheNotice),
 ) -> #(
   List(Line),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
-  let entries =
-    records
-    |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
-    |> list.map(fn(record) { record.entry })
+  let entries = strand_entries(records, model.active_strand)
   let owner = solo_owner(model.captured)
   case model.details_expanded {
+    // Expanded history alternates a response carrying a call with the entry
+    // carrying its result, and both close bare, so without this fold a run
+    // of calls arrives as one undivided block. The entry boundary is the
+    // only place that gap can be seen: the fold inside `message_lines` sees
+    // one response at a time.
     True -> #(
-      list.flat_map(entries, entry_lines(_, True, owner)),
+      entries
+        |> splice_notices(notices, entry_holds)
+        |> list.map(expanded_lines(_, owner))
+        |> separated_tool_groups(BetweenEntries),
       dict.new(),
       dict.new(),
     )
@@ -7112,31 +7346,68 @@ fn record_lines(
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project
-        |> list.fold(#([], dict.new(), dict.new()), fn(acc, item) {
-          case item {
-            tool_activity.Narrative(value) -> {
-              let key = #(value, owner)
-              let lines =
-                dict.get(model.compact_entry_cache, key)
-                |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
-              #(
-                list.append(list.reverse(lines), acc.0),
-                acc.1,
-                dict.insert(acc.2, key, lines),
-              )
-            }
-            tool_activity.Tools(calls) -> {
-              let #(lines, cached) =
-                cached_activity_lines(calls, model.compact_call_cache)
-              #(
-                list.append(list.reverse(lines), acc.0),
-                dict.merge(acc.1, cached),
-                acc.2,
-              )
-            }
+        |> splice_notices(notices, item_holds)
+        |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
+          case spliced {
+            Transient(text) -> #([Line(System, text), ..acc.0], acc.1, acc.2)
+            Projected(item) -> compact_item_lines(acc, item, model, owner)
           }
         })
       #(list.reverse(reversed), calls, narratives)
+    }
+  }
+}
+
+// Expanded history renders every entry in full, so a spliced place is
+// either the entry itself or the transient row standing after it.
+fn expanded_lines(
+  spliced: Spliced(entry.Entry),
+  owner: Option(message.Origin),
+) -> List(Line) {
+  case spliced {
+    Transient(text) -> [Line(System, text)]
+    Projected(value) -> entry_lines(value, True, owner)
+  }
+}
+
+// One projected item folded into the compact accumulator: reversed rows, the
+// call cache and the narrative cache. Lifted out of the fold so the caches
+// it reads are parameters rather than a closure over the model, which is
+// what lets the notice fold share the same accumulator shape.
+fn compact_item_lines(
+  acc: #(
+    List(Line),
+    Dict(tool_activity.Call, List(Line)),
+    Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+  ),
+  item: tool_activity.Item,
+  model: Model,
+  owner: Option(message.Origin),
+) -> #(
+  List(Line),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+) {
+  case item {
+    tool_activity.Narrative(value) -> {
+      let key = #(value, owner)
+      let lines =
+        dict.get(model.compact_entry_cache, key)
+        |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
+      #(
+        list.append(list.reverse(lines), acc.0),
+        acc.1,
+        dict.insert(acc.2, key, lines),
+      )
+    }
+    tool_activity.Tools(calls) -> {
+      let #(lines, cached) =
+        cached_activity_lines(calls, model.compact_call_cache)
+      #(
+        list.append(list.reverse(lines), acc.0),
+        dict.merge(acc.1, cached),
+        acc.2,
+      )
     }
   }
 }
@@ -7152,12 +7423,134 @@ fn cached_activity_lines(
       let lines =
         dict.get(previous, call)
         |> result.lazy_unwrap(fn() { activity_call_lines(call) })
-      #(
-        list.append(list.reverse(lines), acc.0),
-        dict.insert(acc.1, call, lines),
-      )
+      #([lines, ..acc.0], dict.insert(acc.1, call, lines))
     })
-  #([activity_heading(calls), ..list.reverse(reversed)], cached)
+
+  // The separation is applied to the groups and not stored in the cache:
+  // whether a call needs a blank above it is a fact about its neighbours,
+  // and the cached rows belong to the call alone. The heading closes itself
+  // with a blank, so the first group is already separated from it.
+  #(
+    [
+      activity_heading(calls),
+      ..separated_tool_groups(list.reverse(reversed), WithinResponse)
+    ],
+    cached,
+  )
+}
+
+/// Which first row counts as opening a tool group, which depends on the
+/// boundary the fold is walking.
+///
+/// A `ToolFailure` row is the same speaker in two different roles. Inside one
+/// assistant response it is a failed call's own summary and therefore opens a
+/// group. Between durable entries it is the first row of the failed *result*
+/// entry answering the call in the entry above, so treating it as an opening
+/// would put a blank between a call and its own outcome.
+type GroupOpening {
+  WithinResponse
+
+  BetweenEntries
+}
+
+// A tool call owns the rows under it — its patch, its result, a note excerpt
+// — which is why `render_line` closes none of the tool family with a blank of
+// its own: a blank there would split a call from its own detail. Nothing then
+// separates one call from the next, so this is where that row is placed.
+//
+// The test is two-sided, because most of the transcript does close itself. A
+// paragraph, a note body, a rendered program and an error all end in a blank
+// already, so a spacer above the call that follows one of them would draw the
+// same gap twice. A blank goes in only where the block above ended bare and
+// the block below opens a group.
+//
+// This is also the fold `record_anchors_for` runs, block by block, to pair
+// every rendered row with the durable call it came from: a spacer added to
+// the rows has to appear there too, or each anchor below a group drifts up by
+// one row per gap. The blank belongs to no call, so it is its own idless
+// block and resolves to no anchor at all.
+fn separated_tool_blocks(
+  blocks: List(#(String, List(Line))),
+  opening: GroupOpening,
+) -> List(#(String, List(Line))) {
+  blocks
+  |> list.fold([], fn(placed, block) {
+    // `placed` is newest first, and its head is always a real block: a
+    // spacer is only ever pushed immediately beneath the block it precedes,
+    // so the row consulted here is never one this fold wrote.
+    let wanted = case placed {
+      [#(_, previous), ..] ->
+        block_closes_bare(previous) && opens_tool_group(block.1, opening)
+      [] -> False
+    }
+
+    case wanted {
+      True -> [block, #("", [Line(Spacer, "")]), ..placed]
+      False -> [block, ..placed]
+    }
+  })
+  |> list.reverse
+}
+
+// The same separation over rows that carry no anchor identity.
+//
+// Groups are wrapped as idless blocks and run through the one fold rather
+// than folded again here. Two copies of a two-sided rule drift, and the two
+// projections have to agree row for row or the anchors slide.
+fn separated_tool_groups(
+  groups: List(List(Line)),
+  opening: GroupOpening,
+) -> List(Line) {
+  groups
+  |> list.map(fn(group) { #("", group) })
+  |> separated_tool_blocks(opening)
+  |> list.flat_map(fn(block) { block.1 })
+}
+
+// Whether a block ends without a blank row of its own.
+//
+// Only the last row decides it, because that is the row the next block comes
+// to sit under. An empty block draws nothing and so closes nothing; the fold
+// treats it as already separated rather than reaching past it, which costs at
+// most a missing blank in a shape no projection currently produces.
+fn block_closes_bare(rows: List(Line)) -> Bool {
+  case list.last(rows) {
+    Ok(line) -> closes_bare(line.speaker)
+    Error(Nil) -> False
+  }
+}
+
+// The speakers `render_line` draws with no trailing blank row of their own.
+//
+// `render_line` asks this same question when it decides whether to append a
+// blank, which is why it is a function rather than a second copy of the list:
+// moving a speaker into or out of the tool family changes both the row drawn
+// and the gap the fold above owes it, and the two have to move together.
+// Everything else already ends in a blank, and a `Spacer` is a blank.
+fn closes_bare(speaker: Speaker) -> Bool {
+  case speaker {
+    ToolCall | ToolResult | ToolFailure | ToolPatch | ReasoningDigest -> True
+    System | User | Assistant | Reasoning | ToolDetail | Failure | Spacer ->
+      False
+  }
+}
+
+// A block opens a tool group when its first row is a call's own summary,
+// whether that call is pending, succeeded or failed.
+fn opens_tool_group(rows: List(Line), opening: GroupOpening) -> Bool {
+  case rows {
+    [Line(speaker: ToolCall, ..), ..] -> True
+
+    // The one row whose meaning depends on the boundary being walked; see
+    // `GroupOpening`.
+    [Line(speaker: ToolFailure, ..), ..] ->
+      case opening {
+        WithinResponse -> True
+        BetweenEntries -> False
+      }
+
+    [] | [_, ..] -> False
+  }
 }
 
 // Compact mode folds arguments and results, never invocation history. Every
@@ -7187,8 +7580,16 @@ fn activity_heading(calls: List(tool_activity.Call)) -> Line {
 }
 
 fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
-  let summary =
-    tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  // The invocation owns its source preview, so settling a result changes the
+  // status without adding or removing code rows. Reuse the expanded entry's
+  // Gleam renderer instead of displaying the transport JSON as a summary.
+  let program =
+    code_mode_program(call.invocation.name, call.invocation.arguments, False)
+  let summary = case program {
+    Some(_) -> "code_mode"
+    None ->
+      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  }
   let rows = case call.outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
@@ -7231,6 +7632,14 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     Some(message.UserMessage(..))
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+  let rows = case rows, program {
+    [heading, ..details], Some(source) -> [
+      heading,
+      Line(ToolDetail, source),
+      ..details
+    ]
+    [], Some(_) | _, None -> rows
   }
   list.append(
     rows,
@@ -7668,8 +8077,15 @@ fn message_lines(
       ),
     ]
     message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
+      // Expanded history has no activity group to fold a run of parallel
+      // calls into, so one response's own blocks are separated here. The gap
+      // between one response and the next entry is a different boundary and
+      // belongs to the fold over entries, not to this one.
       let lines =
-        list.flat_map(content, assistant_block_lines(_, details_expanded))
+        content
+        |> list.map(assistant_block_lines(_, details_expanded))
+        |> separated_tool_groups(WithinResponse)
+
       list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
@@ -7830,7 +8246,7 @@ pub fn code_mode_program(
         Ok(json.String(program)) -> {
           let source = case details_expanded {
             True -> program
-            False -> program_preview(program, 12)
+            False -> program_preview(program, code_preview_lines)
           }
           Some(fenced_gleam(source))
         }
@@ -8259,6 +8675,151 @@ fn zero_usage() -> message.Usage {
       total: 0.0,
     ),
   )
+}
+
+// Everything one usage row changes about the model.
+//
+// The row arrives once per settled generation, so this is both the moment
+// the output rate is known and the moment the prompt cache can be judged.
+// Both readings are per event rather than cumulative, which is why they sit
+// here rather than in the status-line arithmetic over `model.usage`.
+fn receive_usage(
+  model: Model,
+  strand: String,
+  settled: message.Usage,
+) -> Model {
+  // The settlement's own output count over the time since the request went
+  // out. A settlement whose clock never started (a refusal, an empty turn)
+  // leaves the last rate standing. `generation_clock` starts the clock only
+  // for the active strand's own row, so only that strand's settlement may
+  // read it or clear it — a sub-agent's row arriving mid-generation must
+  // not report its own output over the primary's window, and must not stop
+  // the primary's clock out from under it.
+  let #(output_rate_tps, generation_started_ms) = case
+    strand == model.active_strand,
+    model.peer,
+    model.generation_started_ms
+  {
+    False, _, _ -> #(model.output_rate_tps, model.generation_started_ms)
+
+    // The window is this client's own clock from the request going out to
+    // the settlement, and a replay spends that window playing a file rather
+    // than waiting on a provider. `output_rate_min_ms` already discards the
+    // short ones, so a brief replay would report nothing anyway; a long one
+    // would report how fast the replay ran. Declining outright is the same
+    // rule that stops a replay echoing a prompt.
+    True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
+
+    True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
+      output_rate(settled.output, model.monotonic_time_ms() - started),
+      None,
+    )
+    True, Attached(..), None | True, Preview, None -> #(
+      model.output_rate_tps,
+      None,
+    )
+  }
+  let usage = add_usage(model.usage, settled)
+  let settled_model =
+    Model(
+      ..model,
+      usage:,
+      generation_started_ms:,
+      output_rate_tps:,
+      notice: tokens(usage.total_tokens) <> " tokens",
+    )
+  watch_cache(settled_model, strand, settled)
+}
+
+// Folds one row into its strand's cache watch and raises any notice it
+// reveals.
+//
+// The clock is the terminal's own, the same one the frame pacing and the
+// throughput reading use, because the gap being measured is wall time the
+// operator spent away and no server field reports it. A replay plays its
+// file far faster than the session originally ran, so the gaps it would
+// measure are not the gaps that happened; it observes nothing.
+fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
+  use <- bool.lazy_guard(when: replaying(model), return: fn() { model })
+
+  let now = model.monotonic_time_ms()
+  let held = dict.get(model.cache_watch, strand) |> option.from_result
+  let #(miss, watch) = cache_miss.observe(held, settled, now)
+  let watched =
+    Model(..model, cache_watch: case watch {
+      None -> model.cache_watch
+      Some(value) -> dict.insert(model.cache_watch, strand, value)
+    })
+  case miss {
+    None -> watched
+    Some(value) -> note_cache_miss(watched, strand, value)
+  }
+}
+
+// A replay has no idle time of its own to report.
+fn replaying(model: Model) -> Bool {
+  case model.peer {
+    Replaying -> True
+    Attached(..) | Preview | Disconnected -> False
+  }
+}
+
+// Files one cache-miss row against the strand's transcript.
+//
+// The row is anchored to the records the strand already holds rather than
+// appended to the local notice block, so it stays under the turn it
+// explains as later entries arrive. A new row changes the projection, so
+// the record cache is dropped whether or not the strand is the visible one:
+// switching to it later must find the row in place.
+fn note_cache_miss(
+  model: Model,
+  strand: String,
+  miss: cache_miss.CacheMiss,
+) -> Model {
+  // A strand holding no record has nowhere to put the row: a window that
+  // retained nothing, or a strand whose history this connection never
+  // fetched. A notice anchored to no entry would never be drawn, so it is
+  // not raised at all.
+  case newest_record(model, strand) {
+    None -> model
+    Some(after_entry) ->
+      Model(
+        ..model,
+        cache_notices: list.append(model.cache_notices, [
+          CacheNotice(strand:, after_entry:, text: cache_miss_row(miss)),
+        ]),
+        record_cache_valid: False,
+      )
+      |> invalidate_transcript
+      |> invalidate_frame
+  }
+}
+
+// The newest retained entry of one strand. Records are held newest first,
+// so the head of the filtered list is the turn a row raised now follows.
+fn newest_record(model: Model, strand: String) -> Option(ids.EntryId) {
+  model.records
+  |> list.find(fn(record) { record.strand == strand })
+  |> result.map(fn(record) { record.entry.id })
+  |> option.from_result
+}
+
+// The notice as the operator reads it.
+//
+// Token counts use the status line's own abbreviation so the two figures
+// can be compared without unit arithmetic, and the money is omitted rather
+// than shown as zero when the model is unpriced: a confident "$0.00" would
+// claim the pause was free.
+fn cache_miss_row(miss: cache_miss.CacheMiss) -> String {
+  "Cache miss after "
+  <> cache_miss.idle_label(miss.idle_ms)
+  <> " idle: "
+  <> tokens(miss.tokens)
+  <> " tokens re-billed"
+  <> case miss.estimate {
+    None -> ""
+    Some(amount) -> " (~$" <> money(amount) <> ")"
+  }
 }
 
 fn add_usage(left: message.Usage, right: message.Usage) -> message.Usage {
@@ -10220,6 +10781,7 @@ fn apply_submission(
         "context" ->
           Model(..model, context: context_view.sent(model.context, request_id))
         "live_jobs" -> Model(..model, jobs_request: Some(request_id))
+        "advisor_pending" -> Model(..model, nudges_request: Some(request_id))
         "worktree_diff" ->
           Model(
             ..model,
@@ -11185,6 +11747,166 @@ fn service_jobs_read(model: Model) -> Model {
   }
 }
 
+// --- the advisor's pending nudges -------------------------------------------
+
+/// What one model transition asks of the pending-nudge panel.
+///
+/// Named rather than answered with a pair of booleans, because the three
+/// cases are genuinely different events and a caller reading `False, True`
+/// would have to remember which question each half asked.
+pub type NudgeAction {
+  /// The primary is running. Anything the panel holds is no longer a
+  /// pending queue, because a run start drains it into that run.
+  DropNudges
+
+  /// The primary is idle at a boundary worth exactly one observation.
+  ReadNudges
+
+  /// Nothing the panel depends on moved.
+  HoldNudges
+}
+
+/// Whether this transition is worth a pending-nudge read, a clear, or
+/// neither.
+///
+/// Three edges are worth a read and no others: the primary's own operation
+/// settling, a review settling while the primary waits — which is where a
+/// nudge is queued in the first place — and the primary appearing in the
+/// roster at all, which is the first snapshot after an attachment or a
+/// session switch. Everything else holds, a phase change on an unrelated
+/// strand included, because the queue cannot have grown without the advisor
+/// finishing a review.
+///
+/// Whether there is an attachment to ask is deliberately not asked here.
+/// `service_advisor_nudges_read` refuses to send without one and a closed
+/// conversation clears the board outright, so this function answers only
+/// about the conversation's own edges.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.advisor_nudges_action(before, after)
+/// ```
+@internal
+pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
+  case strand_running(after, advisor_pending.primary_strand) {
+    // A run on the primary folds the whole queue into its first message, so
+    // what the panel was showing has been delivered rather than discarded.
+    // The local submit flag counts: it is the edge the operator sees, and
+    // waiting for the server's phase would leave delivered advice on screen.
+    True -> DropNudges
+
+    False -> idle_boundary(before, after)
+  }
+}
+
+// The primary is idle in `after`, so a primary that was running in `before`
+// is one that just settled. The advisor needs both halves of its own edge,
+// because it can still be mid-review and only a review's end adds to the
+// queue.
+fn idle_boundary(before: Model, after: Model) -> NudgeAction {
+  let primary_settled = strand_running(before, advisor_pending.primary_strand)
+  let review_settled =
+    strand_running(before, advisor_pending.advisor_strand)
+    && !strand_running(after, advisor_pending.advisor_strand)
+  let newly_listed =
+    !strand_listed(before, advisor_pending.primary_strand)
+    && strand_listed(after, advisor_pending.primary_strand)
+
+  case primary_settled || review_settled || newly_listed {
+    True -> ReadNudges
+    False -> HoldNudges
+  }
+}
+
+// Whether one named strand has work in flight. Unlike `active_strand_phase`
+// this asks about a strand the operator may not be looking at, and it counts
+// a local submission the server has not yet reported a phase for.
+fn strand_running(model: Model, target: String) -> Bool {
+  model.submitting == Some(target)
+  || list.any(model.strands, fn(strand) {
+    let Strand(id:, live_phase:, ..) = strand
+    id == target && live_phase != None
+  })
+}
+
+// Whether the roster names this strand at all. A terminal that has just
+// attached holds no roster, so the primary's first appearance in one is the
+// edge that says there is a session here to ask about.
+fn strand_listed(model: Model, target: String) -> Bool {
+  list.any(model.strands, fn(strand) {
+    let Strand(id:, ..) = strand
+    id == target
+  })
+}
+
+fn sync_advisor_nudges(before: Model, after: Model) -> Model {
+  case advisor_nudges_action(before, after) {
+    HoldNudges -> after
+
+    DropNudges ->
+      Model(
+        ..after,
+        nudges: None,
+        nudges_refresh: worktree_view.Settled,
+        nudges_awaiting: None,
+        nudges_request: None,
+      )
+
+    ReadNudges -> Model(..after, nudges_refresh: worktree_view.Requested)
+  }
+}
+
+// The read waits for a free command lane like every other observation, so a
+// queued prompt is never held up behind an advisory panel.
+fn service_advisor_nudges_read(model: Model) -> Model {
+  case model.channel, model.nudges_refresh, model.peer {
+    Some(channel), worktree_view.Requested, Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_frame(
+            Model(
+              ..model,
+              nudges_refresh: worktree_view.Settled,
+              nudges_awaiting: Some(queue_owner(model)),
+            ),
+            protocol.advisor_pending(model.next_id),
+          )
+        False -> model
+      }
+
+    // A request that cannot be sent is dropped rather than left standing:
+    // the next attachment reaches an idle primary and raises it again.
+    _, worktree_view.Requested, _ ->
+      Model(..model, nudges_refresh: worktree_view.Settled)
+
+    _, worktree_view.Settled, _ -> model
+  }
+}
+
+// Only the attachment that asked may be answered. Request ids restart with an
+// attachment, so the owner is what tells a fresh board from a stale one.
+fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
+  let current = queue_owner(model)
+  case model.nudges_awaiting {
+    Some(owner) ->
+      case owner == current {
+        True ->
+          Model(
+            ..model,
+            nudges: Some(board),
+            nudges_awaiting: None,
+            nudges_request: None,
+          )
+          |> invalidate_frame
+
+        False -> model
+      }
+
+    None -> model
+  }
+}
+
 fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
@@ -11438,6 +12160,22 @@ fn apply_request_refused(
             jobs_request: None,
             jobs_awaiting: None,
             jobs_notice: "Live jobs unavailable: " <> reason,
+          )
+        False -> model
+      }
+
+    // A refused observation draws nothing. The panel is unobtrusive context
+    // beside the composer, and an error line there would cost a row of the
+    // conversation to report a read the operator never asked for; an older
+    // daemon that does not know the command refuses every one of them.
+    "advisor_pending" ->
+      case model.nudges_request == Some(request_id) {
+        True ->
+          Model(
+            ..model,
+            nudges: None,
+            nudges_request: None,
+            nudges_awaiting: None,
           )
         False -> model
       }

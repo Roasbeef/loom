@@ -55,6 +55,7 @@ pub fn settings() -> serve.Settings {
           thinking: model.ThinkingOff,
           pricing: None,
           vision: catalog.TextOnly,
+          max_images: 8,
         ),
       ],
       roles: [#(model.Main, ["test"])],

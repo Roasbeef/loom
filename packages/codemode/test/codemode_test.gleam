@@ -889,3 +889,29 @@ pub fn the_backstop_stays_silent_on_ordinary_programs_test() {
     <> "}\n"
   let assert Passed(_vetted) = vet.vet(source, policy.default())
 }
+
+// A real submission repeatedly failed at an inner grouping parenthesis. The
+// rejection must identify source syntax and its repair without accepting it.
+pub fn grouping_parentheses_report_the_gleam_syntax_test() {
+  let source =
+    "import gleam/float\npub fn main() { float.to_string((10.0 -. 5.0) /. 5.0) }"
+  let assert Rejected([rejection]) = vet.vet(source, policy())
+    as "Parenthesized grouping must still be rejected"
+  assert rejection.rule == Unparseable
+  assert string.contains(rejection.detail, "unexpected token: \"(\"")
+  assert string.contains(rejection.detail, "groups expressions with `{ ... }`")
+  assert !string.contains(rejection.detail, "LeftParen")
+  assert is_passed(vet.vet(
+    string.replace(source, "(10.0 -. 5.0)", "{ 10.0 -. 5.0 }"),
+    policy(),
+  ))
+}
+
+pub fn incomplete_source_points_to_eof_test() {
+  let source = "pub fn main() {\n"
+  let assert Rejected([rejection]) = vet.vet(source, policy())
+    as "An incomplete body must be rejected"
+  assert rejection.rule == Unparseable
+  assert rejection.location == vet.SourcePoint(16)
+  assert string.contains(rejection.detail, "ended unexpectedly")
+}

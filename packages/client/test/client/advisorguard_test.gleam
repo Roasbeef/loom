@@ -76,7 +76,7 @@ pub fn a_first_block_is_delivered_test() {
   assert decision == Deliver(text: "one")
 
   // Delivery does not queue. The primary is being woken with this text,
-  // so folding it into the next run start as well would say it twice.
+  // so leaving it on the queue as well would say it a second time.
   assert advisorguard.pending(guard) == []
 }
 
@@ -91,11 +91,11 @@ pub fn a_block_in_the_same_review_is_downgraded_test() {
       text: "two",
       reason: "a block was already delivered for this review and the cooldown "
         <> "is 2 reviews; this advice was queued as a nudge for the primary's "
-        <> "next run start",
+        <> "run end or its next run start",
     )
 
   // The downgrade is a channel change, not a refusal: the text is on the
-  // queue and the primary reads it at its next run start.
+  // queue and the primary reads it the next time it stops.
   assert advisorguard.pending(guard) == ["two"]
 }
 
@@ -109,8 +109,8 @@ pub fn a_block_one_review_into_the_cooldown_is_downgraded_test() {
     == Downgraded(
       text: "two",
       reason: "a block was delivered 1 review ago and the cooldown is 2 "
-        <> "reviews; this advice was queued as a nudge for the primary's next "
-        <> "run start",
+        <> "reviews; this advice was queued as a nudge for the primary's run "
+        <> "end or its next run start",
     )
   assert advisorguard.pending(guard) == ["two"]
 }
@@ -136,7 +136,7 @@ pub fn a_block_after_the_cooldown_is_delivered_test() {
       text: "x",
       reason: "a block was already delivered for this review and the cooldown "
         <> "is 2 reviews; this advice was queued as a nudge for the primary's "
-        <> "next run start",
+        <> "run end or its next run start",
     )
 }
 
@@ -236,7 +236,8 @@ pub fn the_queue_stops_at_its_count_cap_test() {
 
   assert decision
     == Dropped(
-      reason: "the nudge queue is full; it drains at the primary's next run start",
+      reason: "the nudge queue is full; it drains at the primary's run end or "
+      <> "its next run start",
     )
 
   // Oldest first, and the refused nudge left no trace: a full queue must
@@ -259,7 +260,8 @@ pub fn the_queue_stops_at_its_byte_cap_test() {
   let #(decision, _guard) = advisorguard.decide(guard, policy, Nudge(text: "k"))
   assert decision
     == Dropped(
-      reason: "the nudge queue is full; it drains at the primary's next run start",
+      reason: "the nudge queue is full; it drains at the primary's run end or "
+      <> "its next run start",
     )
 }
 
@@ -275,7 +277,8 @@ pub fn a_downgraded_block_meets_the_queue_cap_test() {
 
   assert decision
     == Dropped(
-      reason: "the nudge queue is full; it drains at the primary's next run start",
+      reason: "the nudge queue is full; it drains at the primary's run end or "
+      <> "its next run start",
     )
   assert after == guard
 }
@@ -333,7 +336,8 @@ pub fn a_zero_count_cap_admits_nothing_test() {
 
   assert decision
     == Dropped(
-      reason: "the nudge queue is full; it drains at the primary's next run start",
+      reason: "the nudge queue is full; it drains at the primary's run end or "
+      <> "its next run start",
     )
 }
 

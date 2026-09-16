@@ -404,7 +404,8 @@ catalogue without opening runtimes. Explicit admission invokes
   worked example) and the builder that turns a catalogue into the
   provider gateway's registry — one provider per entry, named by the
   entry (so durable identities store `{catalogue-name, model_id}`),
-  one route per `[roles]` row, and one rate card per entry that carries
+  one route per `[roles]` row, a positive per-model `max_images` limit
+  (default eight), and one rate card per entry that carries
   an optional `[models.<name>.pricing]` table (US dollars per million
   tokens; `input` and `output` required, the two cache rates defaulting
   to `input` so the default over-reports rather than hiding spend). An
@@ -764,15 +765,31 @@ catalogue without opening runtimes. Explicit admission invokes
   `api.create_idle_strand` and never through the Agency, so it carries no
   `lineage/` cell: the primary cannot address it, it can address nothing,
   and `strand.roster` does not list it. `hooks` wraps four slots —
-  `run_end` casts `PrimaryRunEnded`/`AdvisorRunEnded` and returns the inner
-  answer unchanged, `usage` casts `PrimaryStepped` for the primary's steps
-  and nobody else's, `run_start` drains the queued nudges with a bounded
-  call and folds them in after the inner injections, and `context`
-  prepends `brief` to the advisor's own requests transiently. `seam` is
-  the `advise` door, which refuses any caller whose durable strand name is
-  not `advisor`. The actor owns `cursor_key` and `guard_key`, reads them
-  lazily on its first message because the runtime it borrows may not be up
-  at start.
+  `run_end` casts `PrimaryRunEnded`/`AdvisorRunEnded`, then asks
+  `TakeAtRunEnd` and returns whatever it drained as a born-placed
+  follow-up when the inner slot placed none (so the primary reads its
+  nudges before it stops rather than after the operator next types);
+  `usage` casts `PrimaryStepped` for the primary's steps and nobody
+  else's; `run_start` asks `TakePending(operation:, reply:)`, which both
+  drains the queued nudges with a bounded call and hands back this
+  operator turn's one unsolicited-delivery budget if `operation` is not
+  the run this actor itself opened; and `context` prepends `brief` to the
+  advisor's own requests transiently. `Message` also carries `Judge`,
+  which now drains and delivers the queue itself — through the same door
+  a block uses — when the verdict is `Queued` or `Downgraded` and the
+  primary is idle with its turn unspent, so the decoupled `TakePending`/
+  `TakeAtRunEnd` drains are joined by a third, synchronous one inside
+  `decide`. `seam` is the `advise` door, which refuses any caller whose
+  durable strand name is not `advisor`. The actor owns `cursor_key` and
+  `guard_key`, reads them lazily on its first message because the runtime
+  it borrows may not be up at start. Its `Memory` carries two fields
+  beyond the durable cells, both deliberately heap-only: `Turn`
+  (`Unspent`/`Spent`) is this operator turn's one unsolicited delivery,
+  and `woke: Option(OpId)` is the newest run this actor opened on the
+  primary, read together at every run start so a run this actor itself
+  woke cannot renew its own budget — the loop the duplicate ring cannot
+  cut, since a paraphrase passes it. A restart forgetting both costs at
+  most one extra wake.
   **The step trigger is what makes a long run legible.** A run is many
   steps and nothing bounds how many, so with the run end as the only
   occasion an agentic loop could work indefinitely unreviewed.
@@ -785,6 +802,18 @@ catalogue without opening runtimes. Explicit admission invokes
   `usage` because that slot fires once per committed step, returns `Nil`,
   and lands *after* the commit — `admission` is per-step too and wrong
   twice: a decision on the critical path, and fired before the request.
+- `client/advisor_pending.{Error, read}` — the one read of the advisor's
+  undelivered nudge queue that does not go through the actor. `read`
+  takes one exact-key `fact.custom` selection for `advisor.guard_key`
+  through the bounded snapshot reader and decodes it with
+  `advisorguard`'s own decoder, never with `take_pending`: the drain
+  belongs to the primary's run-start and run-end hooks, and a read that
+  took the queue would deliver the advice to nobody. A missing cell is an
+  empty board — the positive claim that a session's advisor has nothing
+  waiting — but a cell present and rejected by the decoder is `Malformed`
+  rather than an empty board, because an unreadable cell is not evidence
+  for that claim. Backs the `advisor_pending` command; see the wire
+  section below.
 - `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
   bounding the sidecar read, which the lifecycle producer moved onto the
   strand driver's hot path: `max_sidecar_bytes` (four times the render
@@ -1563,25 +1592,37 @@ catalogue without opening runtimes. Explicit admission invokes
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
 - `client/vision` — the vision routing rule (issue #358): a request
-  whose current turn carries an image, on a strand whose catalogue
-  entry declares `vision = false`, dispatches through the routed
+  whose current turn carries an attached or tool-result image, on a strand whose catalogue
+  entry is text-only, dispatches through the routed
   `vision` chain (`ForRole(Vision)`, admitted and accounted against
   the vision head's own facts) or is refused in band at admission with
   a worded reason — `image_unsupported` when no chain resolves,
   `vision_misconfigured` when the routed head is itself declared
   `TextOnly`. Every other request to a text-only identity carries its
-  `UserImage` blocks replaced with a text placeholder, in the transient
+  `UserImage` and `ToolResultImage` blocks replaced with text placeholders, in the transient
   projection only; the durable transcript keeps the images. The
-  classifier walks the *current turn* — everything after the newest
-  assistant message that ended its turn, so a tool call and its result
-  are steps inside the turn and the second request of an image turn
-  stays on the model that saw the image — because the run-start hooks
-  inject the notes and memory digests as user messages after the
-  operator's prompt, and a newest-user-message walk would classify a
-  digest and silently placeholder the image, the exact failure the rule
-  removes. An entry that never wrote `vision` reads images: the flag is
-  a declaration learned by probing, since nothing on the wire marks the
-  capability, and the routing and the refusal act only on the negative.
+  classifier walks the current turn from the latest attributed human
+  prompt or settled assistant boundary. Digests have no origin and tool
+  steps do not close a turn. A disk image returned by `fs_read` switches the
+  next request to vision and subsequent tool steps retain that route.
+  Human attribution also survives projection of failed assistant responses,
+  allowing the next text prompt to end a rejected image turn. The immutable
+  operation admission batch is checked as well, including captured inputs
+  before its explicit prompts. An image-bearing admitted run stays on vision
+  through tool and run-end continuations, so a held image followed by a text
+  instruction cannot be silently placeholdered. A new text-only run does not
+  inherit the previous run's image requirement. Explicit `vision` declarations override the built-in capability.
+  Before preparing dispatch, wiring counts the original user and tool-result
+  images after the operation's source leaf and gives the gateway a request-local
+  protected count. The scan crosses compactions through their preserved parent
+  links, ignores copied retained tails and stops at the immutable run boundary.
+  The gateway budgets historical images independently for every fallback model
+  and refuses an oversized active turn locally. A successor run excludes old
+  images from protection; compaction cannot reclassify retained history as new.
+  GLM-5.3 (with or without the `zai-org/` prefix) defaults to text-only;
+  GLM-5.3-Flash remains distinct. Unknown identifiers retain the legacy
+  image-capable default. A following attributed text prompt can recover from a failed image request
+  with historical image placeholders, even after projection removes the error.
   The catalogue parse refuses a `vision` chain that names a
   `vision = false` entry, so a retryable walk cannot deliver an image
   to a model that cannot read it. `Config.facts` carries the entry's
@@ -2478,15 +2519,27 @@ across one operation a `Stop` block holds open.
   from the wrapped `usage` slot on the same process, one per committed
   provider request of the primary's), `Judge(strand, verdict, reply)` (a
   call, from the `advise` tool's effect process, bounded at
-  `judge_timeout_ms`), and `TakePending(reply)` (a call, from the wrapped
-  `run_start` slot, bounded at `pending_timeout_ms`). Both calls go
-  through a monitored send-and-select rather than `process.call`, so an
-  absent or wedged actor degrades to no nudges and an in-band refusal
-  instead of killing a strand driver or a live tool effect. All three
-  notifications are casts on purpose: a driver that waited on a branch
-  scan and a provider round trip would stop serving `Nudge`,
-  `RequestAbort` and `PollTick` for the length of a review. A lost step
-  cast costs a threshold reached one step later, never one not reached.
+  `judge_timeout_ms`), `TakePending(operation:, reply:)` (a call, from the
+  wrapped `run_start` slot, bounded at `pending_timeout_ms`) and
+  `TakeAtRunEnd(deadline:, reply:)` (a call, from the wrapped `run_end`
+  slot, the same bound, carrying that bound as a wall-clock instant so a
+  request served after the hook gave up answers with nothing rather than
+  spending the turn into an ended run). `TakePending` carries the operation being opened because
+  the actor reads it as well as answering: a run start whose operation is
+  not the one this actor itself last woke is where this operator turn's
+  one unsolicited-delivery budget is handed back. `TakeAtRunEnd` carries
+  no operation, because it decides nothing from one — the hook has
+  already established whose run is ending, and it is where that budget is
+  *spent* rather than renewed, and only once per turn: a second ask
+  inside the same turn answers with no nudges without touching the guard.
+  All three calls go through a monitored send-and-select rather than
+  `process.call`, so an absent or wedged actor degrades to no nudges and
+  an in-band refusal instead of killing a strand driver or a live tool
+  effect. All three notifications are casts on purpose: a driver that
+  waited on a branch scan and a provider round trip would stop serving
+  `Nudge`, `RequestAbort` and `PollTick` for the length of a review. A
+  lost step cast costs a threshold reached one step later, never one not
+  reached.
 - `history.Message` — `Pull` (a cast: a commit landed, go sync),
   `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
   limit, scope, reply)` (a call, from the tool seam), and `Stop`.
@@ -2796,6 +2849,25 @@ across one operation a `Stop` block holds open.
   retain their actual `started_by` operation, command excerpt, age, and
   deadline. A missing or unresponsive actor is unavailable, never an empty
   roster. This explicit read adds no historical jobs to ordinary captures.
+- **The advisor's pending-nudge queue is a read-only observation that
+  never drains.** `AdvisorPendingGet` (wire `advisor_pending`, empty
+  body, unscoped: a session has one advisor and one primary) answers a
+  `snapshot` in mode `advisor_pending` with
+  `{strand, observed_at_ms, pending: [string], total}` — the queue oldest
+  first, exactly as queued. `client/advisor_pending.read` takes one
+  exact-key `fact.custom` selection for `advisor.guard_key` through the
+  bounded snapshot reader and decodes it with `advisorguard`'s own
+  decoder; it never asks the advisor actor and never calls
+  `take_pending`, so a terminal fetch cannot drain what the primary's
+  run-start and run-end hooks are entitled to, and a client may call it
+  repeatedly. A missing guard cell is an empty board — a session whose
+  advisor has nothing waiting — but a store that will not answer, or a
+  cell the decoder rejects, is `unavailable`, never an empty success: an
+  empty board is the positive claim that nothing is waiting, and an
+  unreadable cell is not evidence for it. The board needs no `omitted`
+  field, since the guard admits at most `pending_cap` nudges totalling
+  `pending_bytes` and the whole queue always fits. See
+  [protocol 039](../../protocol-change/039-advisor-pending-observation.md).
 - **Provider previews have request and observer custody.** Each pushed delta
   and terminal marker carries the durable request coordinates as `generation`.
   Preview observations retain their source; releasing an old observer cannot

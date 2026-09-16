@@ -153,6 +153,8 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   once it settles — and `Ctrl+G` shows the block itself; a redacted block is
   its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
+  Code-mode calls retain a syntax-highlighted preview of up to 60 submitted
+  source lines, with an omission marker; Ctrl+G shows the complete program.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
   worktree observation.
@@ -480,6 +482,19 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   descriptor opens and reads to one second, and its cancellation kills and
   joins the worker before the caller sees the timeout. It performs no path
   expansion or shell evaluation.
+- `tui/advisor_pending.{Board, decode, lines, primary_strand,
+  advisor_strand, visible_nudges}` draws the advisor's undelivered nudge
+  queue beside the composer. `decode` is a total decoder over a board this
+  terminal did not write — own row and byte caps rather than a trust of
+  the server's — and `lines` renders it in the advisor's voice: nothing at
+  all for an empty queue, since the band is taken from the conversation
+  and costs nothing when there is nothing to say; otherwise a heading
+  naming the total and the strand, up to `visible_nudges` (3) sanitized
+  bullets, and a `+N more waiting` line for the remainder. `primary_strand`
+  and `advisor_strand` are copies of `client/advisor`'s constants, not
+  imports — the terminal links no server package — and `gateway_test`
+  pins both pairs against each other so a rename on either side fails a
+  test rather than quietly disarming the panel's read triggers.
 
 ## Relationships
 
@@ -575,9 +590,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   idle or a successor. Older recordings retain their local echo semantics.
 - **Compact tools and changes**: `tui/tool_activity` groups consecutive tool
   calls, joining results by call ID and ending a group when a later response
-  reuses an ID. Compact history shows the latest three calls and the group's
-  failure count; Ctrl+g recovers the original entries. Captured `fs_edit` diffs
-  remain the explicitly labelled fallback when a worktree observation is
+  reuses an ID. Compact history retains every call and the group's failure
+  count; Ctrl+g recovers the original entries. Code-mode source previews belong
+  to their invocation, so pending, successful and failed calls keep the same
+  bounded fenced-Gleam block instead of exposing the argument JSON. Captured
+  `fs_edit` diffs remain the explicitly labelled fallback when a worktree observation is
   unavailable. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
 - **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
@@ -630,6 +647,36 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   Context and worktree reads wait for each other's final push before borrowing
   the same server worker slot. An unsupported optional command stays unavailable
   until attachment replacement. Escape returns without discarding the composer.
+- **Advisor pending-nudge panel**: `tui.sync_advisor_nudges` issues an
+  `advisor_pending` read itself, with no operator keystroke, on exactly
+  three transitions — `tui.advisor_nudges_action` names them `ReadNudges`:
+  the primary's own operation settling, a review settling while the
+  primary is already idle (a review ending is where a nudge is queued),
+  and the primary first appearing in the roster (the attach edge, where
+  idleness is otherwise unknown until the first snapshot). Every other
+  transition, a phase change on an unrelated strand included, is
+  `HoldNudges`: the queue cannot have grown without one of the three
+  edges above. The primary starting a run is `DropNudges` — a local
+  submission counts, so the operator's own send clears the panel before
+  the server confirms the phase — because that run start is what drains
+  the queue into the prompt; the panel is drawn beside the composer as
+  context for the prompt about to be written, never as a transcript row,
+  since a transcript row would claim the model had already read advice it
+  has not. It never enters model context.
+- **A new observation command must be taught to every command-name table
+  by hand — the compiler checks none of them.** `advisor_pending` needed
+  three, and missing one is not cosmetic: `tui/session_channel`'s
+  `matching_presentation` and `outbound` both switch on the literal
+  command string, and an unlisted name in `outbound` defaults to the
+  `Mutation` lane — which held the composer lane forever and hung every
+  attachment, since an observation's own reply never arrives to release
+  it — while `tui/attempt`'s `decode_selection` rejects an unlisted kind
+  outright, which fails the recording replayer on any log carrying that
+  command. Both have regression tests now
+  (`the_observation_takes_the_read_lane_and_its_reply_settles_it_test`,
+  `auxiliary_and_queued_edit_descriptors_round_trip_without_command_bodies_test`),
+  but the tables themselves stay three separate lists a new read command
+  must be added to, not one the type system enforces.
 - **Current notes**: `/notes` requests a separate bounded `notes` observation.
   `tui/notes_view` validates values, last-write revisions, capture revision,
   excerpt markers and omitted counts. `r` refreshes the panel without a new
@@ -640,10 +687,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   when the prompt is sent. A single pasted local path becomes an image
   attachment only when it is a regular PNG/JPEG/GIF/WebP file no larger than
   20 MiB; one prompt retains at most four images and 20 MiB of raw image data
-  in aggregate. The chip shows a terminal-sanitized filename, MIME, and size,
-  on its own row above the editor: beside the editor it took its width from
-  that summary and left the editor a column or two, so the row costs one line
-  of prompt height and the editor keeps the full interior width.
+  in aggregate. A count row precedes one row per accepted image, with a
+  terminal-sanitized filename, MIME, and size. The editor keeps its full width
+  and at least one row when space is constrained. Rejecting a fifth image
+  names the rejected file and confirms that four attachments remain.
   Unsupported files and multi-token paths stay text, while read errors preserve
   the editor and show a local error. The backend enables bracketed-paste mode
   so a real terminal paste arrives as one event. Backspace on an empty editor
@@ -681,8 +728,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   the same number of wrapped rows, so a reader following the tail sees text
   change and not the transcript grow and shrink under them. The two regions
   this covers are a running tool call — whose output window is detail, drawn
-  only with details expanded — and a reasoning block, whose live and settled
-  forms are both one `ReasoningDigest` row when collapsed. A result the
+  only with details expanded, while code-mode source is already visible — and
+  a reasoning block, whose live and settled forms are both one
+  `ReasoningDigest` row when collapsed. A result the
   reader has to see still costs the rows it needs: a failure adds its result
   text under the failure summary, and `fs_edit` and `context_remaining` draw
   their own rows. What the rule removes is growth that carried no

@@ -1148,3 +1148,89 @@ fn bare_event(event) {
     _ -> event
   }
 }
+
+// Each attempt budgets the original history against its own model's limit.
+// A larger fallback must not inherit the smaller head's discarded pixels.
+pub fn fallback_attempts_apply_their_own_image_limits_test() {
+  list.each([#(3, 5), #(5, 3)], fn(limits) {
+    let bodies = process.new_subject()
+    let transport =
+      fixture.routing_transport(fn(request: http.HttpRequest) {
+        process.send(bodies, request.body)
+        case string.contains(request.url, "primary.test") {
+          True -> overloaded_response()
+          False -> fixture.ok_response(happy_transcript("From backup"))
+        }
+      })
+    let gw =
+      two_provider_gateway(transport)
+      |> gateway.with_image_limit("primary", "model-a", limits.0)
+      |> gateway.with_image_limit("backup", "model-b", limits.1)
+    let old = list.map([1, 2, 3, 4, 5, 6], fn(n) { budget_prompt([n]) })
+    let request =
+      model.ProviderRequest(
+        ..main_request(),
+        messages: list.append(old, [budget_prompt([7, 8])]),
+      )
+    let handle = gateway.request(gw, request)
+    let assert Ok(#(_, stream.Settled(..))) =
+      stream.await_terminal(handle, within: 2000)
+      as "the request must settle through fallback"
+    let assert [head, fallback] = drain(bodies, [])
+      as "both actual dispatch bodies must be inspected"
+    assert list.length(string.split(head, "\"type\":\"image\"")) - 1 == limits.0
+    assert list.length(string.split(fallback, "\"type\":\"image\"")) - 1
+      == limits.1
+    list.each([head, fallback], fn(body) {
+      assert string.contains(body, "Bwg=")
+      assert string.contains(body, "omitted from this request")
+    })
+  })
+}
+
+fn budget_prompt(images: List(Int)) -> message.AgentMessage {
+  // Two adjacent bytes form a single image in this wire fixture. The final
+  // prompt has one image, and its sentinel must survive every fallback.
+  message.UserMessage(
+    content: [
+      message.UserImage(
+        bit_array.base64_encode(
+          bit_array.concat(list.map(images, fn(n) { <<n>> })),
+          True,
+        ),
+        "image/png",
+      ),
+    ],
+    timestamp: 0,
+    origin: Some(message.Origin("owner", "Owner")),
+  )
+}
+
+pub fn oversized_active_image_turn_never_opens_transport_test() {
+  let bodies = process.new_subject()
+  let transport =
+    fixture.routing_transport(fn(request: http.HttpRequest) {
+      process.send(bodies, request.body)
+      fixture.ok_response(happy_transcript("must not run"))
+    })
+  let gw = two_provider_gateway(transport)
+  let request =
+    model.ProviderRequest(..main_request(), messages: [
+      message.UserMessage(
+        content: list.map([1, 2, 3, 4, 5, 6, 7, 8, 9], fn(n) {
+          message.UserImage(bit_array.base64_encode(<<n>>, True), "image/png")
+        }),
+        timestamp: 0,
+        origin: Some(message.Origin("owner", "Owner")),
+      ),
+    ])
+  let handle = gateway.request(gw, request)
+  let assert Ok(#([], stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the default eight-image limit must refuse nine active images locally"
+  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+    stream.underlying_error(error)
+    as "image limits are terminal local failures"
+  assert string.contains(message, "current turn contains 9 images")
+  assert process.receive(bodies, within: 0) == Error(Nil)
+}

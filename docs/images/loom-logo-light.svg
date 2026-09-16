@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="766" height="240" viewBox="0 0 766 240" role="img" aria-labelledby="title">
+  <title id="title">Loom</title>
+  <defs>
+    <mask id="warp-gaps" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240">
+      <rect width="240" height="240" fill="white"/>
+      <path d="M 99 83 H 139 V 121 H 99 Z M 49 139 H 89 V 177 H 49 Z M 149 139 H 189 V 177 H 149 Z" fill="black"/>
+    </mask>
+    <mask id="weft-gaps" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240">
+      <rect width="240" height="240" fill="white"/>
+      <path d="M 49 83 H 89 V 121 H 49 Z M 149 83 H 189 V 121 H 149 Z M 99 139 H 139 V 177 H 99 Z" fill="black"/>
+    </mask>
+  </defs>
+  <g fill="#ffbd44" mask="url(#warp-gaps)">
+    <rect x="52" y="44" width="34" height="172" rx="17"/>
+    <rect x="102" y="16" width="34" height="188" rx="17"/>
+    <rect x="152" y="44" width="34" height="172" rx="17"/>
+  </g>
+  <g fill="#1c2225" mask="url(#weft-gaps)">
+    <rect x="18" y="86" width="202" height="32" rx="16"/>
+    <rect x="18" y="142" width="202" height="32" rx="16"/>
+  </g>
+  <g fill="none" stroke="#1c2225" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -15)">
+    <path d="M 288 76 V 181 Q 288 198 306 198"/>
+    <circle cx="380" cy="158" r="40"/>
+    <circle cx="491" cy="158" r="40"/>
+    <path d="M 570 198 V 151 C 570 130 584 118 606 118 C 628 118 642 130 642 151 V 198 M 642 151 C 642 130 657 118 679 118 C 702 118 716 130 716 151 V 198"/>
+  </g>
+</svg>

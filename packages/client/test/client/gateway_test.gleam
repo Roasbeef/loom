@@ -5,6 +5,8 @@
 import broker/escalation as broker_escalation
 import broker/internal/call
 import broker/policy.{type Grant}
+import client/advisor
+import client/advisorguard
 import client/catalog
 import client/gateway
 import client/grants
@@ -44,6 +46,7 @@ import storage/storage
 import support/addresses
 import support/tool_registry
 import tools/tool
+import tui/advisor_pending as terminal_nudges
 import tui/notes_view as terminal_notes
 import weft
 import weft/actor
@@ -109,6 +112,7 @@ fn test_catalog() -> catalog.Catalog {
         thinking: model.ThinkingOff,
         pricing: None,
         vision: catalog.TextOnly,
+        max_images: 8,
       ),
       catalog.CatalogModel(
         name: "fallback",
@@ -121,6 +125,7 @@ fn test_catalog() -> catalog.Catalog {
         thinking: model.ThinkingOff,
         pricing: None,
         vision: catalog.TextOnly,
+        max_images: 8,
       ),
     ],
     roles: [#(model.Main, ["acme", "fallback"])],
@@ -1109,6 +1114,113 @@ pub fn notes_reads_current_values_and_revision_without_a_new_turn_test() {
   assert updated.as_of > board.as_of
     as "the view reports a newer durable revision"
   assert list.map(updated.notes, fn(note) { note.text }) == ["updated plan"]
+}
+
+// --- the advisor's pending nudges ------------------------------------------
+
+// Queues `nudges` through the guard's own transition, which is the only way
+// a `Guard` is built outside the actor, and renders the cell the actor would
+// have written.
+fn queued_guard(nudges: List(String)) -> json.JsonValue {
+  nudges
+  |> list.fold(advisorguard.new(), fn(guard, text) {
+    let #(_decision, recorded) =
+      advisorguard.decide(
+        guard,
+        advisorguard.default_policy,
+        advisorguard.Nudge(text:),
+      )
+    recorded
+  })
+  |> advisorguard.encode
+}
+
+fn store_guard(harness: Harness, payload: json.JsonValue) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(harness.runtime, advisor.guard_key, payload)
+    as "the advisor's own reserved door writes the guard cell"
+  Nil
+}
+
+/// The observation reports the queue the primary's next run start will fold
+/// in, and leaves it there. A read that drained would hand the operator advice
+/// the model then never sees, which is the failure this command exists to
+/// avoid rather than to risk.
+pub fn advisor_pending_reports_the_queue_without_draining_it_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  store_guard(
+    harness,
+    queued_guard(["no down step", "the test asserts nothing"]),
+  )
+  let before = api.fact(harness.runtime, advisor.guard_key)
+
+  send(harness, 860, protocol.AdvisorPendingGet)
+  let assert protocol.SnapshotEvent(protocol.AdvisorPendingSnapshot(raw)) =
+    next(harness).event
+    as "the pending queue has its own bounded observation"
+  let assert Ok(board) = terminal_nudges.decode(raw)
+    as "the independent terminal decoder accepts the board"
+  assert board.strand == advisor.primary
+    as "the board names the strand the queue drains into"
+  assert board.pending == ["no down step", "the test asserts nothing"]
+    as "nudges are reported oldest first, exactly as queued"
+  assert board.total == 2
+
+  assert api.fact(harness.runtime, advisor.guard_key) == before
+    as "observing the queue writes nothing"
+
+  send(harness, 861, protocol.AdvisorPendingGet)
+  let assert protocol.SnapshotEvent(protocol.AdvisorPendingSnapshot(again)) =
+    next(harness).event
+    as "a second read answers from the same undrained cell"
+  let assert Ok(second) = terminal_nudges.decode(again)
+
+  // The queue is compared rather than the whole board: `observed_at_ms` is
+  // the instant of the read and is expected to differ between two of them.
+  assert second.pending == board.pending
+  assert second.total == board.total
+}
+
+/// A session whose advisor never ran has no guard cell, and that is an empty
+/// queue rather than a failure: absence here is the answer, not a refusal.
+pub fn advisor_pending_without_a_guard_cell_is_an_empty_board_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 862, protocol.AdvisorPendingGet)
+  let assert protocol.SnapshotEvent(protocol.AdvisorPendingSnapshot(raw)) =
+    next(harness).event
+    as "a session with no advisor still answers the observation"
+  let assert Ok(board) = terminal_nudges.decode(raw)
+  assert board.pending == []
+  assert board.total == 0
+}
+
+/// A cell the guard's decoder rejects is `unavailable`, never an empty board.
+/// An empty board is the positive claim that the advisor has nothing waiting,
+/// and a cell nobody can read is not evidence for it.
+pub fn advisor_pending_refuses_a_malformed_guard_cell_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  store_guard(harness, json.String("not a guard"))
+  send(harness, 863, protocol.AdvisorPendingGet)
+  expect_error(harness, 863, "unavailable")
+}
+
+/// The terminal links no server package, so it copies the two strand names
+/// the panel's triggers watch. This is where the copies are pinned: a rename
+/// on either side fails here rather than quietly disarming a trigger.
+pub fn the_terminal_copies_the_advisor_strand_names_test() {
+  assert terminal_nudges.primary_strand == advisor.primary
+  assert terminal_nudges.advisor_strand == advisor.strand
+}
+
+/// The command is gated exactly like every other observation: an attachment
+/// that has not subscribed is refused before the store is touched at all.
+pub fn advisor_pending_requires_a_subscription_test() {
+  let harness = start_harness()
+  send(harness, 864, protocol.AdvisorPendingGet)
+  expect_error(harness, 864, "bad_request")
 }
 
 pub fn prompt_content_admits_one_ordered_user_message_test() {

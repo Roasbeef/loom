@@ -51,6 +51,7 @@
 
 import codemode/vet/policy.{type VetPolicy} as allowlist
 import glance.{type Attribute, type Module}
+import gleam/bit_array
 import gleam/list
 import gleam/string
 import glexer
@@ -143,7 +144,7 @@ pub type Rejection {
 ///
 pub fn vet(source: String, policy: VetPolicy) -> VetResult {
   case glance.module(source) {
-    Error(error) -> Rejected([parse_rejection(error)])
+    Error(error) -> Rejected([parse_rejection(source, error)])
     Ok(module) -> {
       let rejections =
         list.flatten([
@@ -525,20 +526,26 @@ fn import_rejections(module: Module, policy: VetPolicy) -> List(Rejection) {
 
 /// Turn a `glance` parse error into a rejection. Keeps `vet` total: a program
 /// that will not parse is a rejection value, never a crash.
-fn parse_rejection(error: glance.Error) -> Rejection {
+fn parse_rejection(source: String, error: glance.Error) -> Rejection {
   case error {
     glance.UnexpectedEndOfInput ->
       Rejection(
         Unparseable,
         "submitted source ended unexpectedly; the program is incomplete and "
           <> "cannot be vetted",
-        Unlocated,
+        SourcePoint(bit_array.byte_size(<<source:utf8>>)),
       )
-    glance.UnexpectedToken(token:, position:) ->
+    glance.UnexpectedToken(token: unexpected, position:) ->
       Rejection(
         Unparseable,
         "submitted source could not be parsed near an unexpected token: "
-          <> string.inspect(token),
+          <> string.inspect(string.slice(token.to_source(unexpected), 0, 80))
+          <> case unexpected == token.LeftParen {
+          True ->
+            "; hint: Gleam groups expressions with `{ ... }`, not parentheses; "
+            <> "tuples use `#(...)` and function calls use `name(...)`"
+          False -> ""
+        },
         // `glexer.Position` carries the offset; field access needs no import
         // of the type, and on the Erlang target this is a true byte offset.
         SourcePoint(position.byte_offset),
