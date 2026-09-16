@@ -1,4 +1,4 @@
-<h1>
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/loom-logo-dark.svg">
     <img src="docs/images/loom-logo-light.svg" alt="Loom" width="460">
