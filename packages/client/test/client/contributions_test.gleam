@@ -19,6 +19,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import tools/directory_access
 import tools/tool
 
 // A tool an extension might contribute, under whatever name the test
@@ -258,6 +259,7 @@ fn a_ctx() -> tool.Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 3))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

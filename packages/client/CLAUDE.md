@@ -1,5 +1,23 @@
 # client
 
+## Session directory authority
+
+`directories` owns the reserved `fact.custom/client/directory_access` record.
+The operator gateway accepts `set_config.add_directory`, validates the real
+existing directory against protected paths, and commits through
+`api.put_reserved_fact_expecting`. The recorded origin attributes the change.
+Observers cannot mutate it, and model fact writes cannot name the reserved
+key. Directory additions survive reopening the session; unreadable, malformed
+or retargeted state refuses tool execution.
+
+`wiring.run_tool` captures additions once and derives the jail policy and
+native `directory_access.Access` separately. Jobs receive the invocation's
+captured policy through `jobseam.Door.start` and `jobs.Request`; they do not
+change when later tools receive new access. Code-mode filesystem and search
+closures capture explicit native roots plus consumed call grants. Installed
+extensions retain their separate installation authority.
+
+
 ## Streamed response handoff
 
 Provider observation identities include the reserved response entry for

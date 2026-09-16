@@ -77,6 +77,8 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import tools/blob
+import tools/directory_access
+import tools/permissions
 import tools/prelude
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
@@ -209,6 +211,8 @@ pub type Request {
     workspace: String,
     /// The session base policy this execution is judged against.
     base_policy: SandboxPolicy,
+    /// Explicit native filesystem additions captured at tool dispatch.
+    directory_access: directory_access.Access,
     /// Enforcement strictness demanded of the jailed stages.
     demand: EnforcementDemand,
     /// The allowlist-constructed child environment.
@@ -502,6 +506,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
     schema: tool.object_schema(
       list.flatten([
         [
+          #("permissions", permissions.schema()),
           #(
             "program",
             tool.string_property(
@@ -862,6 +867,10 @@ fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   case string.trim(program) {
     "" -> tool.failure("invalid arguments: `program` must not be empty")
     _ -> {
+      use ctx <- tool.or_outcome(
+        permissions.authorize_native(ctx, args),
+        fn(outcome) { outcome },
+      )
       let asked = request(mode, ctx, program, within_ms, on: offer.seam)
       render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
     }
@@ -967,6 +976,7 @@ pub fn request(
     source_index: ctx.source_index,
     workspace: ctx.workspace,
     base_policy: ctx.base_policy,
+    directory_access: ctx.directory_access,
     demand: ctx.demand,
     env: ctx.env,
     grants: ctx.grants,

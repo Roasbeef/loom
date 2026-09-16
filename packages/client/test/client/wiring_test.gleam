@@ -19,6 +19,7 @@ import broker/exec
 import broker/policy
 import broker/token
 import client/catalog
+import client/directories
 import client/escalate
 import client/gateway as client_gateway
 import client/grants
@@ -27,6 +28,8 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import core/register
+import core/tx
 import events/bus
 import gleam/list
 import gleam/option.{None, Some}
@@ -43,9 +46,12 @@ import provider/model
 import provider/secret
 import runtime/effects
 import session/session
+import simplifile
+import storage/storage
 import support/internal/ffi_memory
 import support/provider as provider_test
 import support/tool_registry
+import tools/directory_access
 import tools/tool
 
 // --- fixtures --------------------------------------------------------------
@@ -439,4 +445,77 @@ pub fn terminates_maps_the_two_answers_test() {
   // vocabulary's polarity is written down.
   assert wiring.terminates(tool.ContinueRun) == False
   assert wiring.terminates(tool.TerminateRun)
+}
+
+pub fn dispatch_reads_session_directory_authority_before_native_io_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture directory must be known"
+  let root = here <> "/build/directory-dispatch"
+  let shared = root <> "-shared"
+  let _cleared = simplifile.delete(shared)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+    as "the workspace must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the added directory must exist"
+  let configured =
+    wiring.Config(
+      ..config(),
+      workspace: root,
+      blob_root: root <> "/.blobs",
+      base_policy: policy.workspace_default(root),
+    )
+  let args =
+    json.Object([
+      #("path", json.String(shared <> "/output")),
+      #("content", json.String("granted")),
+    ])
+  let run = tool_run([])
+  let run =
+    effects.ToolRun(
+      ..run,
+      call: message.ToolCall(..run.call, name: "fs_write", arguments: args),
+      arguments: args,
+    )
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: True, ..),
+    ..,
+  ) = wiring.run_tool(configured, run)
+    as "an ungranted directory must be refused"
+  assert simplifile.read(shared <> "/output") != Ok("granted")
+  let value =
+    json.Object([
+      #(
+        "directories",
+        directories.encode(directory_access.Access([shared], [shared])),
+      ),
+    ])
+  let assert Ok(_) =
+    storage.commit(
+      configured.session.store,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.FactCustom,
+            directories.key,
+            register.value(value),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the operator's committed directory authority must be present"
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: False, ..),
+    ..,
+  ) = wiring.run_tool(configured, run)
+    as "the committed directory must permit the write"
+  assert simplifile.read(shared <> "/output") == Ok("granted")
+
+  // A different session retains its own baseline even in the same workspace.
+  let other = wiring.Config(..configured, session: memory_session())
+  let assert effects.ToolCompleted(
+    result: message.ToolResultMessage(is_error: True, ..),
+    ..,
+  ) = wiring.run_tool(other, run)
+    as "another session must not inherit the addition"
 }

@@ -155,7 +155,15 @@ once, in seq order**.
   named strand's model, or every strand's when `strand` is absent;
   `model` (`{provider, model_id}`), `thinking_level`, and
   `active_tools` require a `strand` and set that strand's durable
-  configuration directly.
+  configuration directly. `add_directory` (`{path: string, access: "read" |
+  "write"}`) adds an existing directory to this session's filesystem access.
+  It must be the only key, with no `strand`. The gateway requires owner or
+  operator authority, resolves the canonical directory, rejects protected
+  roots, and commits the merged additions atomically. The reply and later
+  config readbacks carry `directories: [{path, access}]`; a failed readback
+  carries `directories_error` instead. Additions survive reopening the same
+  session. An existing process keeps its captured authority. See
+  [protocol 040](../../protocol-change/040-session-directory-access.md).
 - `schedules` `{}` — list every schedule this session holds; the reply
   is a `schedules` snapshot. The body is deliberately empty: there is
   nothing to scope, because an operator watching a session watches all
@@ -440,7 +448,7 @@ document does not yet decide.
    local endpoint shape.
 2. **`set_config` keys** — answered above (the "Command bodies" entry
    is normative): `queue_mode`, `tool_execution`, `model_name`,
-   `model`, `thinking_level`, `active_tools`. The set stays
+   `model`, `thinking_level`, `active_tools`, `add_directory`. The set stays
    gateway-extensible; the TUI still passes an opaque object. Still
    open within this item: per-role switching (`model_name` moves a
    strand's — or every strand's — model, not one role's chain).

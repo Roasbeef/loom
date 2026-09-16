@@ -51,6 +51,7 @@ import storage/storage
 import support/addresses
 import support/provider as provider_test
 import support/tool_registry
+import tools/directory_access
 import tools/history as history_tool
 import tools/tool
 import weft/actor
@@ -578,6 +579,7 @@ fn a_ctx() -> tool.Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 3))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

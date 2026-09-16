@@ -19,6 +19,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/string
 import tools/advise
+import tools/directory_access
 import tools/tool.{type Ctx}
 
 // --- fixtures --------------------------------------------------------------
@@ -32,6 +33,7 @@ fn an_op() -> OpId {
 fn ctx_for(strand: String) -> Ctx {
   let workspace = "/nonexistent/loom-advise-test"
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand:,
     op_id: an_op(),

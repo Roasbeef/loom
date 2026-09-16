@@ -587,3 +587,84 @@ pub fn bash_stays_offline_under_an_offline_base_test() {
     )
   assert recorded_spec(recorded).requirements.network == policy.NetworkOff
 }
+
+pub fn explicit_permissions_wait_before_launch_and_are_call_scoped_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let asked = process.new_subject()
+  let original =
+    fake_broker.ctx(
+      workspace:,
+      filesystem:,
+      now:,
+      script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      recorded:,
+    )
+  let ctx =
+    tool.Ctx(..original, raise_refusal: fn(request: tool.RaisedRefusal) {
+      assert remaining_specs(recorded) == 0
+      process.send(asked, request.denial.wanted)
+      tool.Resume(request.denial.wanted)
+    })
+  let arguments =
+    json.Object([
+      #("command", json.String("write /shared/result; fetch resource")),
+      #(
+        "permissions",
+        json.Object([
+          #("writable_roots", json.Array([json.String("/shared")])),
+          #("network", json.String("full")),
+        ]),
+      ),
+    ])
+  assert bash.tool(job.unavailable()).run(ctx, arguments).is_error == False
+  let assert Ok(wanted) = process.receive(asked, 1000)
+    as "the precise permissions must be shown before launch"
+  assert list.contains(wanted, policy.GrantWritableRoot("/shared"))
+  assert list.contains(wanted, policy.GrantNetwork(policy.NetworkFull))
+  let spec = recorded_spec(recorded)
+  assert spec.grants == wanted
+  assert remaining_specs(recorded) == 0
+  assert bash.tool(job.unavailable()).run(original, arguments).is_error == True
+  assert remaining_specs(recorded) == 0
+}
+
+pub fn kernel_denial_after_start_does_not_ask_or_replay_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let asked = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace:,
+      filesystem:,
+      now:,
+      script: [
+        fake_broker.stderr("Operation not permitted"),
+        fake_broker.exited(code: 1, stdout_bytes: 0),
+      ],
+      recorded:,
+    )
+  let ctx =
+    tool.Ctx(..ctx, raise_refusal: fn(request: tool.RaisedRefusal) {
+      process.send(asked, request.denial)
+      tool.Resume(request.denial.wanted)
+    })
+  let outcome =
+    bash.tool(job.unavailable()).run(
+      ctx,
+      command_args("write marker; access denied path"),
+    )
+  assert outcome.is_error == True
+  let _spec = recorded_spec(recorded)
+  assert remaining_specs(recorded) == 0
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+fn remaining_specs(recorded: process.Subject(fake_broker.Recorded)) -> Int {
+  case process.receive(recorded, 0) {
+    Error(Nil) -> 0
+    Ok(fake_broker.Spec(_)) -> 1 + remaining_specs(recorded)
+    Ok(fake_broker.Stdin(..)) | Ok(fake_broker.Cancelled) ->
+      remaining_specs(recorded)
+  }
+}

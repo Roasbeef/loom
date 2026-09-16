@@ -22,6 +22,7 @@ import gleam/string
 import simplifile
 import support/shell
 import tools/bash
+import tools/directory_access
 import tools/fs
 import tools/job
 import tools/tool
@@ -117,6 +118,7 @@ fn run_echo(
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   let ctx =
     tool.Ctx(
+      directory_access: directory_access.none(),
       workspace:,
       op_id:,
       step_id: "integration-1",

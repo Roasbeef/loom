@@ -14,6 +14,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import tools/context
+import tools/directory_access
 import tools/tool.{type Ctx}
 
 fn report(used: Int, boundary: context.Boundary) -> context.Report {
@@ -137,6 +138,7 @@ fn a_ctx() -> Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

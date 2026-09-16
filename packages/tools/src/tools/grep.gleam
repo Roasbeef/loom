@@ -25,6 +25,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tools/blob
+import tools/directory_access
 import tools/fs
 import tools/tool.{type Ctx, type ToolOutcome}
 
@@ -146,14 +147,19 @@ fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
   outcome
 }
 
-// Lexical resolution never inspects the real filesystem; the jailed rg
-// owns symlink containment for this tool, so `fs.resolve_path` (not
-// `resolve_real`) is enough here.
+// Search accepts the same explicit directory additions as native file tools.
+// Resolve before launch so an escaping symlink cannot change which authority
+// the argument names; the jail independently enforces the captured policy.
 fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
   case path {
     None -> Ok(ctx.workspace)
     Some(path) ->
-      fs.resolve_path(workspace: ctx.workspace, path:)
+      fs.resolve_readable(
+        ctx.filesystem,
+        ctx.workspace,
+        directory_access.approved(ctx.directory_access, ctx.grants).readable,
+        path,
+      )
       |> result.map_error(fs.path_outcome)
   }
 }

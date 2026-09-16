@@ -216,6 +216,7 @@ import simplifile
 import tools/agent.{type Agency}
 import tools/blob
 import tools/codemode as codemode_tool
+import tools/directory_access
 import tools/fs
 import tools/schedule as schedule_tool
 import tools/search
@@ -2053,7 +2054,10 @@ fn workspace_router(
   workspace.routing(
     workspace_seam(config, request),
     over: search_router.routing(
-      search_seam_for(workspace: request.workspace),
+      search_seam_with_access(
+        request.workspace,
+        directory_access.approved(request.directory_access, request.grants).readable,
+      ),
       over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
     ),
   )
@@ -2086,8 +2090,12 @@ pub fn workspace_seam(
   config: Config,
   request: codemode_tool.Request,
 ) -> workspace.Workspace {
-  workspace_seam_for(
+  workspace_seam_with_access(
     config,
+    access: directory_access.approved(request.directory_access, request.grants),
+    captured_policy: Some(
+      policy.compose(request.base_policy, request.base_policy, request.grants).0,
+    ),
     workspace: request.workspace,
     strand: request.strand,
     // The operation a job started from this program clears under, which
@@ -2126,17 +2134,44 @@ pub fn workspace_seam_for(
   operation operation: OpId,
   protected protected: List(String),
 ) -> workspace.Workspace {
+  workspace_seam_with_access(
+    config,
+    directory_access.none(),
+    None,
+    workspace_root,
+    strand,
+    operation,
+    protected,
+  )
+}
+
+/// Captures explicit filesystem additions for a whole satellite execution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.workspace_seam_with_access(config, access, policy, root, strand, op, protected)
+/// ```
+pub fn workspace_seam_with_access(
+  config: Config,
+  access access: directory_access.Access,
+  captured_policy captured_policy: Option(policy.SandboxPolicy),
+  workspace workspace_root: String,
+  strand strand: String,
+  operation operation: OpId,
+  protected protected: List(String),
+) -> workspace.Workspace {
   let filesystem = fs.real_filesystem()
   let root = workspace_root
   let request_strand = strand
   workspace.Workspace(
-    fs_read: fn(path) { read_in(filesystem, root, path) },
-    fs_list: fn(path) { list_in(filesystem, root, path) },
+    fs_read: fn(path) { read_in(filesystem, root, access.readable, path) },
+    fs_list: fn(path) { list_in(filesystem, root, access.readable, path) },
     fs_write: fn(path, contents) {
-      write_in(filesystem, root, protected, path, contents)
+      write_in(filesystem, root, access.writable, protected, path, contents)
     },
     fs_edit: fn(path, edits) {
-      edit_in(filesystem, root, protected, path, edits)
+      edit_in(filesystem, root, access.writable, protected, path, edits)
     },
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
@@ -2157,7 +2192,12 @@ pub fn workspace_seam_for(
     // Bound to the same strand and to the caller's real operation, and
     // to nothing a program can write: ownership of a job is the strand,
     // and the operation is what an operator's abort addresses.
-    jobs: jobs_in(config.jobs, strand: request_strand, operation:),
+    jobs: jobs_in(
+      config.jobs,
+      strand: request_strand,
+      operation:,
+      captured_policy:,
+    ),
     emit: emitting(filesystem, config.blob_root, config.entropy),
     emit_ceiling: artifact.default_emit_ceiling,
   )
@@ -2170,10 +2210,17 @@ fn jobs_in(
   door: Option(jobseam.Door),
   strand strand: String,
   operation operation: OpId,
+  captured_policy captured_policy: Option(policy.SandboxPolicy),
 ) -> workspace.JobDoor {
   case door {
     None -> workspace.no_jobs()
-    Some(door) -> jobtools.capability_door(door, strand:, operation:)
+    Some(door) ->
+      jobtools.capability_door_with_policy(
+        door,
+        strand,
+        operation,
+        captured_policy,
+      )
   }
 }
 
@@ -2214,14 +2261,28 @@ fn jobs_in(
 pub fn search_seam_for(
   workspace workspace_root: String,
 ) -> search_router.Search {
+  search_seam_with_access(workspace_root, [])
+}
+
+/// Captures additional readable directories for structured search capabilities.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.search_seam_with_access("/work", ["/shared"])
+/// ```
+pub fn search_seam_with_access(
+  workspace_root: String,
+  roots: List(String),
+) -> search_router.Search {
   let filesystem = fs.real_filesystem()
   let root = workspace_root
   search_router.Search(
-    glob: fn(under, query) { glob_in(filesystem, root, under, query) },
-    grep: fn(under, query) { grep_in(filesystem, root, under, query) },
-    stat: fn(path) { stat_in(filesystem, root, path) },
+    glob: fn(under, query) { glob_in(filesystem, root, roots, under, query) },
+    grep: fn(under, query) { grep_in(filesystem, root, roots, under, query) },
+    stat: fn(path) { stat_in(filesystem, root, roots, path) },
     read_lines: fn(path, first, last) {
-      read_lines_in(filesystem, root, path, first, last)
+      read_lines_in(filesystem, root, roots, path, first, last)
     },
   )
 }
@@ -2245,6 +2306,7 @@ fn resolved_workspace(
 fn glob_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   under: String,
   query: search.GlobQuery,
 ) -> Result(search.Listing, search_router.SearchRefusal) {
@@ -2253,7 +2315,7 @@ fn glob_in(
     |> result.map_error(search_router.PathRefused),
   )
   use resolved <- result.try(
-    fs.resolve_real(filesystem:, workspace: root, path: under)
+    fs.resolve_readable(filesystem, root, roots, under)
     |> result.map_error(search_router.PathRefused),
   )
   search.glob(workspace: workspace_root, root: resolved, query:)
@@ -2264,6 +2326,7 @@ fn glob_in(
 fn grep_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   under: String,
   query: search.GrepQuery,
 ) -> Result(search.Found, search_router.SearchRefusal) {
@@ -2272,7 +2335,7 @@ fn grep_in(
     |> result.map_error(search_router.PathRefused),
   )
   use resolved <- result.try(
-    fs.resolve_real(filesystem:, workspace: root, path: under)
+    fs.resolve_readable(filesystem, root, roots, under)
     |> result.map_error(search_router.PathRefused),
   )
   search.grep(workspace: workspace_root, root: resolved, query:)
@@ -2289,6 +2352,7 @@ fn grep_in(
 fn stat_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   path: String,
 ) -> Result(search.Entry, search_router.SearchRefusal) {
   use workspace_root <- result.try(
@@ -2296,7 +2360,7 @@ fn stat_in(
     |> result.map_error(search_router.PathRefused),
   )
   use absolute <- result.try(
-    resolved_leaf(filesystem, root, path)
+    resolved_leaf(filesystem, root, roots, path)
     |> result.map_error(search_router.PathRefused),
   )
   search.stat(path: absolute, display: relative_to(workspace_root, absolute))
@@ -2309,12 +2373,13 @@ fn stat_in(
 fn read_lines_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   path: String,
   first: Int,
   last: Int,
 ) -> Result(search.Lines, search_router.SearchRefusal) {
   use resolved <- result.try(
-    fs.resolve_real(filesystem:, workspace: root, path:)
+    fs.resolve_readable(filesystem, root, roots, path)
     |> result.map_error(search_router.PathRefused),
   )
   search.read_lines(path: resolved, from: first, to: last)
@@ -2367,16 +2432,18 @@ fn parent_of(segments: List(String)) -> String {
 fn resolved_leaf(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   path: String,
 ) -> Result(String, fs.PathError) {
   case leaf_of(path) {
-    NoLeaf -> fs.resolve_real(filesystem:, workspace: root, path:)
+    NoLeaf -> fs.resolve_readable(filesystem, root, roots, path)
 
     Leaf(parent:, name:) -> {
-      use directory <- result.try(fs.resolve_real(
-        filesystem:,
-        workspace: root,
-        path: parent,
+      use directory <- result.try(fs.resolve_readable(
+        filesystem,
+        root,
+        roots,
+        parent,
       ))
       Ok(directory <> "/" <> name)
     }
@@ -2555,10 +2622,11 @@ fn schedule_refusal(
 fn read_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   path: String,
 ) -> Result(String, workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_real(filesystem:, workspace: root, path:)
+    fs.resolve_readable(filesystem, root, roots, path)
     |> result.map_error(workspace.PathRefused),
   )
   fs.read_text_file(filesystem:, resolved:)
@@ -2583,12 +2651,13 @@ fn read_in(
 fn write_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   protected: List(String),
   path: String,
   contents: String,
 ) -> Result(Nil, workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_writable(filesystem:, workspace: root, protected:, path:)
+    fs.resolve_writable_roots(filesystem, root, roots, protected, path)
     |> result.map_error(workspace.PathRefused),
   )
   fs.write_whole(filesystem:, resolved:, bytes: <<contents:utf8>>)
@@ -2605,12 +2674,13 @@ fn write_in(
 fn edit_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   protected: List(String),
   path: String,
   edits: List(workspace.Replacement),
 ) -> Result(Nil, workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_writable(filesystem:, workspace: root, protected:, path:)
+    fs.resolve_writable_roots(filesystem, root, roots, protected, path)
     |> result.map_error(workspace.PathRefused),
   )
   use text <- result.try(
@@ -2643,10 +2713,11 @@ fn edit_in(
 fn list_in(
   filesystem: tool.FileSystem,
   root: String,
+  roots: List(String),
   path: String,
 ) -> Result(List(workspace.DirEntry), workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_real(filesystem:, workspace: root, path:)
+    fs.resolve_readable(filesystem, root, roots, path)
     |> result.map_error(workspace.PathRefused),
   )
   use names <- result.try(

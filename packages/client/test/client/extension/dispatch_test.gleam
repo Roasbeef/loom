@@ -50,6 +50,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/directory_access
 import tools/tool
 
 // --- the policy translation -----------------------------------------------
@@ -786,7 +787,7 @@ fn idle_broker() -> broker.Broker {
 fn ceilinged_jobs() -> jobseam.Door {
   let unreached = jobs.Invalid(reason: "this test asks only for a start")
   jobseam.Door(
-    start: fn(_strand, _operation, _command, _wall) {
+    start: fn(_strand, _operation, _command, _wall, _policy) {
       Error(jobs.CeilingReached(limit: 4))
     },
     poll: fn(_strand, _id, _wait, _cursors) { Error(unreached) },
@@ -1025,6 +1026,7 @@ fn a_ctx() -> tool.Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 7))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

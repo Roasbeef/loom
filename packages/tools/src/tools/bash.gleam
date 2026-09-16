@@ -57,6 +57,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import tools/blob
 import tools/job.{type Jobs}
+import tools/permissions
 import tools/tool.{type Ctx, type ToolOutcome}
 
 /// Wall-clock timeout applied when the arguments give none.
@@ -108,7 +109,9 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     name: "bash",
     description: "Run a shell command in the sandboxed workspace. The "
       <> "command runs as `bash -o pipefail -c` in the workspace using "
-      <> "the session's PATH and network policy. A failed command before "
+      <> "the session's PATH and network policy. Declare extra paths or full "
+      <> "network access in permissions to request approval before execution. "
+      <> "A failed command before "
       <> "a pipe remains a failed pipeline; inspect its output before "
       <> "claiming tests passed. For scratch files use "
       <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}`, not a literal `/tmp`: macOS "
@@ -129,7 +132,7 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     // asserted line-by-line against the JSON request body it renders
     // into (`client/serve_test`), and a quote is escaped there.
     prompt_snippet: option.Some(
-      "`bash` runs a shell command in the workspace, jailed and offline; "
+      "`bash` runs a shell command under the session jail policy; "
       <> "`mode: background` starts it as a job instead. Use "
       <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}` for scratch, not literal `/tmp`. "
       <> "A pipeline that "
@@ -138,6 +141,7 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     ),
     schema: tool.object_schema(
       [
+        #("permissions", permissions.schema()),
         #("command", tool.string_property("the shell command to run")),
         #(
           "timeout_ms",
@@ -202,6 +206,9 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     return: tool.failure("invalid arguments: `timeout_ms` must be >= 1"),
   )
 
+  use ctx <- tool.or_outcome(permissions.authorize(ctx, args), fn(outcome) {
+    outcome
+  })
   case mode {
     Background -> background(jobs, ctx, command, requested)
     Foreground -> foreground(ctx, command, requested)

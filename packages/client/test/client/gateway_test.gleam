@@ -8,6 +8,7 @@ import broker/policy.{type Grant}
 import client/advisor
 import client/advisorguard
 import client/catalog
+import client/directories
 import client/gateway
 import client/grants
 import client/protocol
@@ -41,10 +42,12 @@ import runtime/effects
 import runtime/escalation as durable
 import runtime/writer
 import session/session
+import simplifile
 import storage/access
 import storage/storage
 import support/addresses
 import support/tool_registry
+import tools/directory_access
 import tools/tool
 import tui/advisor_pending as terminal_nudges
 import tui/notes_view as terminal_notes
@@ -4702,4 +4705,126 @@ pub fn draining_waits_for_transport_flush_outside_the_gateway_test() {
     as "the transport acknowledgement releases the drain caller"
   let assert weft.AllDelivered = weft.pull(draining, within: 1000)
     as "the bounded drain task retires after its acknowledgement"
+}
+
+fn directory_harness(root: String) -> Harness {
+  let harness = start_harness()
+  let live = harness.runtime
+  let admin =
+    directories.admin(
+      live.session,
+      fn() { Ok(live) },
+      root,
+      policy.SandboxPolicy(..policy.workspace_default(root), protected: [
+        root <> "/private",
+      ]),
+    )
+  let name = addresses.new()
+  let options =
+    gateway.default_options("sess-01", live) |> gateway.with_directories(admin)
+  let assert Ok(_) = gateway.start_host_fixture(options, name)
+    as "the directory gateway must start"
+  let hub = gateway.Gateway(name:)
+  let inbox = process.new_subject()
+  let assert Ok(connection) =
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    as "the operator must attach"
+  Harness(..harness, hub:, connection:, inbox:)
+}
+
+pub fn add_directory_commits_read_only_then_upgrades_without_widening_neighbors_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directory-config-test"
+  let shared = root <> "/shared"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the granted directory must exist"
+  let harness = directory_harness(root)
+  subscribe(harness)
+  let addition = fn(access) {
+    json.Object([
+      #(
+        "add_directory",
+        json.Object([
+          #("path", json.String(shared)),
+          #("access", json.String(access)),
+        ]),
+      ),
+    ])
+  }
+  send(harness, 901, protocol.SetConfig(None, addition("read")))
+  let first = next_reply(harness, 901, 20)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(_)) = first.event
+    as "the operator receives the committed directory snapshot"
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([shared], []))
+  send(harness, 902, protocol.SetConfig(None, addition("write")))
+  let _upgraded = next_reply(harness, 902, 20)
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([shared], [shared]))
+  send(harness, 903, protocol.SetConfig(None, addition("read")))
+  let _duplicate = next_reply(harness, 903, 20)
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([shared], [shared]))
+  assert api.put_fact(harness.runtime, directories.key, json.Object([]))
+    != Ok(Nil)
+}
+
+pub fn add_directory_refuses_protected_missing_and_strand_scoped_requests_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directory-refusals-test"
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/private")
+    as "the protected directory must exist"
+  let harness = directory_harness(root)
+  subscribe(harness)
+  let addition = fn(path) {
+    json.Object([
+      #(
+        "add_directory",
+        json.Object([
+          #("path", json.String(path)),
+          #("access", json.String("write")),
+        ]),
+      ),
+    ])
+  }
+  send(harness, 911, protocol.SetConfig(None, addition(root <> "/private")))
+  let assert protocol.ErrorEvent(..) = next_reply(harness, 911, 20).event
+    as "protected authority cannot be added"
+  send(harness, 912, protocol.SetConfig(None, addition(root <> "/missing")))
+  let assert protocol.ErrorEvent(..) = next_reply(harness, 912, 20).event
+    as "nonexistent directories cannot be added"
+  send(harness, 913, protocol.SetConfig(Some("main"), addition(root)))
+  let assert protocol.ErrorEvent(..) = next_reply(harness, 913, 20).event
+    as "directory authority belongs to the session, not a strand"
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.none())
+}
+
+pub fn add_directory_allows_read_only_access_to_write_protected_directory_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directory-protected-read-test"
+  let protected = root <> "/private"
+  let assert Ok(Nil) = simplifile.create_directory_all(protected)
+    as "the protected directory must exist"
+  let harness = directory_harness(root)
+  subscribe(harness)
+  let addition =
+    json.Object([
+      #(
+        "add_directory",
+        json.Object([
+          #("path", json.String(protected)),
+          #("access", json.String("read")),
+        ]),
+      ),
+    ])
+  send(harness, 921, protocol.SetConfig(None, addition))
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(_)) =
+    next_reply(harness, 921, 20).event
+    as "write protection must not reject an operator's read-only addition"
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([protected], []))
 }

@@ -10,6 +10,7 @@ import broker/policy
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
+import tools/directory_access
 import tools/tool.{type Ctx}
 
 /// What a fake call records back to the test.
@@ -116,6 +117,7 @@ fn base_ctx(
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: now), seed: 7))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     op_id:,
     step_id: "step-1",

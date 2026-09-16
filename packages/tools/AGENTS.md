@@ -1,5 +1,22 @@
 # tools
 
+## Explicit directory access and approvals
+
+`directory_access.Access` carries explicit roots separately from the jail's
+host and toolchain read paths. Native filesystem tools retain workspace-only
+access by default. Added writable roots are readable as well, and protected
+writes remain refused. Relative paths resolve against the workspace; authority
+is checked against canonical targets.
+
+`permissions` decodes optional `permissions` arguments on `bash` and
+`code_mode`: `readable_roots`, `writable_roots`, and `network: "full"`.
+`tool.authorize_policy` derives the missing grants using policy composition
+and calls the existing action-bound escalation before execution. Native file
+tools can request their exact target before I/O. Approval is confined to the
+invocation and never updates session additions. Kernel errors after a program
+starts remain ordinary results and never trigger automatic replay.
+
+
 ## Purpose
 
 The core tool set and the behaviour every tool implements: `bash` and

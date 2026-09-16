@@ -37,6 +37,7 @@ import client/codemode as codemode_wiring
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
+import client/directories
 import client/distill
 import client/distillpass
 import client/escalate
@@ -3310,6 +3311,12 @@ fn assemble_in(
       supervision.worker(fn() {
         hub.start(
           hub.default_options(settings.session_id, runtime)
+            |> hub.with_directories(directories.admin(
+              opened,
+              fn() { Ok(runtime) },
+              settings.workspace,
+              base_policy,
+            ))
             |> hub.with_bus(event_bus)
             |> hub.with_worktree_diff(fn() {
               worktree_diff.capture_since(worktree_wiring, git_start)

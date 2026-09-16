@@ -21,6 +21,7 @@ import gleam/string
 import provider/secret
 import simplifile
 import tools/bash
+import tools/directory_access
 import tools/fs
 import tools/grep
 import tools/job
@@ -102,6 +103,7 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
   let #(op_id, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_910))
   let ctx =
     tool.Ctx(
+      directory_access: directory_access.none(),
       workspace:,
       strand: "main",
       op_id:,

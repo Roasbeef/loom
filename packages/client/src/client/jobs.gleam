@@ -229,6 +229,8 @@ pub type Request {
     /// a job that named no timeout is admitted under the policy as it
     /// stands rather than refused for asking for the whole hour.
     wall_ms: Option(Int),
+    /// Invocation policy captured before admission; running jobs retain it.
+    captured_policy: Option(SandboxPolicy),
   )
 }
 
@@ -1137,7 +1139,8 @@ fn admitted(
   // is a job at all. Everything below this line is bookkeeping the caller
   // never waits on.
   let reports = process.new_subject()
-  let _relay = spawn_runner(state, record, wall_ms, reports)
+  let _relay =
+    spawn_runner(state, record, wall_ms, reports, request.captured_policy)
   let held = Held(record:, custody: Dispatching(reports:, reply_with:))
   Ok(State(..state, generator:, jobs: dict.insert(state.jobs, id, held)))
 }
@@ -1300,8 +1303,13 @@ fn spawn_runner(
   record: JobRecord,
   wall_ms: Int,
   reports: Subject(weft.Pulled(Settlement, RunnerFault)),
+  captured_policy: Option(SandboxPolicy),
 ) -> Pid {
-  let wiring = state.wiring
+  let wiring =
+    Wiring(
+      ..state.wiring,
+      base_policy: option.unwrap(captured_policy, state.wiring.base_policy),
+    )
   let home = state.self
   let backstop = wiring.clearance_ms + wall_ms + settle_grace_ms
   weft.new([fn() { run(wiring, record, home) }])

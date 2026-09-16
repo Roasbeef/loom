@@ -94,6 +94,7 @@ import support/addresses
 import support/extensions
 import support/origin
 import telemetry/log
+import tools/directory_access
 import tools/tool
 import weft/actor
 import weft/registry as address
@@ -1291,6 +1292,7 @@ fn live_ctx(workspace: String, base: policy.SandboxPolicy) -> tool.Ctx {
   let wall = wall_clock()
   let #(op, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_902))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id: op,

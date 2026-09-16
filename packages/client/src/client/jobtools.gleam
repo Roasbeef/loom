@@ -40,12 +40,14 @@
 //// from the caller rather than from an argument, so no tool call and no
 //// program can name the strand its authority comes from.
 
+import broker/policy
 import client/jobs
 import client/jobseam
 import client/jobstate
 import codemode/workspace
 import core/ids.{type OpId}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import tools/job
 import tools/tail
@@ -62,7 +64,13 @@ import tools/tool.{type Ctx}
 pub fn seam(door: jobseam.Door) -> job.Jobs {
   job.Jobs(
     start: fn(ctx: Ctx, command, wall_ms) {
-      door.start(ctx.strand, ctx.op_id, command, wall_ms)
+      door.start(
+        ctx.strand,
+        ctx.op_id,
+        command,
+        wall_ms,
+        Some(policy.compose(ctx.base_policy, ctx.base_policy, ctx.grants).0),
+      )
       |> translate(started)
     },
     poll: fn(ctx: Ctx, id, wait_ms, cursors) {
@@ -101,9 +109,25 @@ pub fn capability_door(
   strand strand: String,
   operation operation: OpId,
 ) -> workspace.JobDoor {
+  capability_door_with_policy(door, strand, operation, None)
+}
+
+/// Binds a code-mode job to the submission's captured filesystem policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobtools.capability_door_with_policy(door, strand, op, Some(policy))
+/// ```
+pub fn capability_door_with_policy(
+  door: jobseam.Door,
+  strand: String,
+  operation: OpId,
+  captured_policy: Option(policy.SandboxPolicy),
+) -> workspace.JobDoor {
   workspace.JobDoor(
     start: fn(command, wall_ms) {
-      door.start(strand, operation, command, wall_ms)
+      door.start(strand, operation, command, wall_ms, captured_policy)
       |> translate(started)
     },
     poll: fn(id, wait_ms, cursors) {

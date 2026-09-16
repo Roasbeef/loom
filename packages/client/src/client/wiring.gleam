@@ -131,6 +131,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import client/catalog
 import client/checkpoint
+import client/directories
 import client/escalate.{type Escalations}
 import client/grants
 import client/notes
@@ -166,6 +167,7 @@ import runtime/effects.{type Effects}
 import runtime/hooks
 import session/session.{type Session}
 import storage/storage
+import tools/directory_access
 import tools/fs
 import tools/history
 import tools/tool.{type Registry}
@@ -1282,8 +1284,18 @@ pub fn clear(
 ///
 pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
   let ctx = tool_context(config, run)
-  let outcome =
-    tool.dispatch(config.registry, ctx, run.call.name, run.arguments)
+  let outcome = case directories.read(config.session) {
+    Error(reason) -> tool.failure(reason)
+    Ok(access) -> {
+      let ctx =
+        tool.Ctx(
+          ..ctx,
+          directory_access: access,
+          base_policy: directory_access.widen(ctx.base_policy, access),
+        )
+      tool.dispatch(config.registry, ctx, run.call.name, run.arguments)
+    }
+  }
   let #(now, _clock) = clock.read(config.clock)
   effects.ToolCompleted(
     result: tool.to_result_message(
@@ -1338,6 +1350,7 @@ pub fn terminates(terminate: tool.Terminate) -> Bool {
 ///
 pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace: config.workspace,
     strand: run.strand,
     op_id: run.operation,

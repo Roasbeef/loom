@@ -9,6 +9,7 @@ import gleam/string
 import simplifile
 import support/fake_broker
 import support/memory_fs
+import tools/directory_access
 import tools/fs
 import tools/hashline
 import tools/tool
@@ -1085,4 +1086,77 @@ pub fn image_bytes_do_not_change_the_text_capability_test() {
     as "the fixture must be writable"
   assert fs.read_text_file(ctx.filesystem, "/work/picture.png")
     == Error(fs.NotText)
+}
+
+pub fn added_read_directory_does_not_grant_write_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) = filesystem.write("/shared/a", <<"before":utf8>>)
+    as "fixture file exists outside workspace"
+  let ctx =
+    tool.Ctx(..ctx, directory_access: directory_access.Access(["/shared"], []))
+  let read =
+    fs.read_tool().run(ctx, args([#("path", json.String("/shared/a"))]))
+  assert read.is_error == False
+  let denied =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("/shared/a")),
+        #("content", json.String("after")),
+      ]),
+    )
+  assert denied.is_error == True
+  assert filesystem.read("/shared/a") == Ok(<<"before":utf8>>)
+}
+
+pub fn added_write_directory_keeps_neighbors_and_protected_paths_closed_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let ctx =
+    tool.Ctx(
+      ..with_protected(ctx, ["/shared/private"]),
+      directory_access: directory_access.Access(["/shared"], ["/shared"]),
+    )
+  let allowed =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("/shared/a")),
+        #("content", json.String("written")),
+      ]),
+    )
+  assert allowed.is_error == False
+  list.each(["/shared-other/a", "/shared/private/a"], fn(path) {
+    let denied =
+      fs.write_tool().run(
+        ctx,
+        args([
+          #("path", json.String(path)),
+          #("content", json.String("forbidden")),
+        ]),
+      )
+    assert denied.is_error == True
+    assert filesystem.read(path) != Ok(<<"forbidden":utf8>>)
+  })
+}
+
+pub fn native_file_approval_is_call_scoped_and_precedes_write_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let asked = process.new_subject()
+  let approved =
+    tool.Ctx(..ctx, raise_refusal: fn(request: tool.RaisedRefusal) {
+      assert filesystem.read("/shared/a") != Ok(<<"written":utf8>>)
+      process.send(asked, request.denial.wanted)
+      tool.Resume(request.denial.wanted)
+    })
+  let arguments =
+    args([
+      #("path", json.String("/shared/a")),
+      #("content", json.String("written")),
+    ])
+  assert fs.write_tool().run(approved, arguments).is_error == False
+  let assert Ok(wanted) = process.receive(asked, 1000)
+    as "the missing file authority must be shown before writing"
+  assert list.contains(wanted, policy.GrantWritableRoot("/shared/a"))
+  assert filesystem.read("/shared/a") == Ok(<<"written":utf8>>)
+  assert fs.write_tool().run(ctx, arguments).is_error == True
 }

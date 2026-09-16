@@ -28,6 +28,7 @@ import storage/storage
 import support/tool_registry
 import telemetry/level
 import telemetry/log
+import tools/directory_access
 import tools/remember
 import tools/tool
 
@@ -723,6 +724,7 @@ fn a_ctx() -> tool.Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 3))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

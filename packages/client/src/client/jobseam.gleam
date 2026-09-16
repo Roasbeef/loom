@@ -59,6 +59,7 @@
 //// *shape* is what is frozen here: five closures, keyed on the caller's
 //// strand.
 
+import broker/policy
 import client/jobs.{type Cursors, type Listed, type Polled, type Started}
 import client/jobstate.{type JobId}
 import core/clock.{type Clock}
@@ -148,10 +149,11 @@ pub type Wiring {
 pub type Door {
   Door(
     /// The caller's strand, the operation the job clears under, the
-    /// command, and the wall it asked for in milliseconds — `None` for
-    /// the default hour. Returns once the clearance has answered, so a
+    /// command, the wall it asked for in milliseconds — `None` for the
+    /// default hour — and the invocation's captured policy when available.
+    /// Returns once the clearance has answered, so a
     /// policy refusal reaches the caller rather than the next poll.
-    start: fn(String, OpId, String, Option(Int)) ->
+    start: fn(String, OpId, String, Option(Int), Option(policy.SandboxPolicy)) ->
       Result(Started, jobs.Refusal),
     /// The caller's strand, the job's id, how long to wait for it to
     /// finish in milliseconds, and where the last poll left off in each
@@ -184,12 +186,12 @@ pub type Door {
 ///
 pub fn door(wiring: Wiring) -> Door {
   Door(
-    start: fn(strand, operation, command, wall_ms) {
+    start: fn(strand, operation, command, wall_ms, captured_policy) {
       jobs.start_job(
         wiring.name,
         strand:,
         operation:,
-        request: jobs.Request(command:, wall_ms:),
+        request: jobs.Request(command:, wall_ms:, captured_policy:),
         waiting: wiring.clearance_ms + start_margin_ms,
       )
     },
@@ -235,7 +237,7 @@ pub fn door(wiring: Wiring) -> Door {
 pub fn none() -> Door {
   let absent = jobs.Unavailable(reason: "this session runs no background jobs")
   Door(
-    start: fn(_strand, _operation, _command, _wall) { Error(absent) },
+    start: fn(_strand, _operation, _command, _wall, _policy) { Error(absent) },
     poll: fn(_strand, _id, _wait, _cursors) { Error(absent) },
     list: fn(_strand) { Error(absent) },
     kill: fn(_strand, _id) { Error(absent) },

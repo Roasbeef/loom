@@ -48,6 +48,7 @@ import runtime/api
 import simplifile
 import support/provider as provider_test
 import support/tool_registry
+import tools/directory_access
 import tools/remember
 import tools/tool
 
@@ -368,6 +369,7 @@ fn a_ctx(root: String) -> tool.Ctx {
   let #(op_id, _generator) =
     core_ids.mint_op(core_ids.generator(clock.fixed(at: 0), seed: 3))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,
