@@ -62,7 +62,7 @@ Both corrections are covered by the installed-release smoke.
 
 ## What to do next
 
-The local `codex/codemode-diagnostics` branch improves code-mode parse refusals
+The local `fix/codemode-diagnostics` branch improves code-mode parse refusals
 with submitted-source line/column, a bounded excerpt and caret, source-token
 spelling, and a grouping-parenthesis hint. The reported failure was invalid Gleam
 expression grouping, confirmed by the compiler formatter. Tools (455 tests),
