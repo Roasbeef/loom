@@ -10,6 +10,32 @@ merge. The new tag workflow has passed local script tests and workflow lint;
 its native macOS reproduction and GitHub draft upload remain unverified until
 hosted execution. No release was tagged or published by this work.
 
+## Jailed scratch follow-up
+
+The `codex/jail-scratch` branch is based on merged main `c5fb6038`.
+The earlier #434 paragraphs below describe its pre-merge validation;
+#434 is included in this branch's base.
+
+The helper now publishes `LOOM_SCRATCH_DIR` through the effective environment
+allowlist. It names the private macOS directory, Linux's mounted `/tmp`, or
+the configured host scratch path. It is absent when degraded Linux has no
+scratch mount. Explicit `TMPDIR` values remain intact. Shell guidance uses
+`${LOOM_SCRATCH_DIR:-$TMPDIR}` and explains that private scratch lasts for one
+command or background job; later calls need workspace files.
+
+The native regression reaches the real helper, writes and reads scratch,
+checks macOS cleanup and sibling isolation, and verifies environment filtering
+and explicit `TMPDIR`. Removing scratch publication makes the regression fail.
+The client fixture also exercises the portable expression through the real
+shell tool and broker. The independent review found no correctness or security
+issues; its stale environment documentation finding was corrected.
+
+Native sandbox vet/build/tests, all 459 tools tests and all 1,834 client
+tests passed on macOS. Lint, formatting and documentation gates passed
+with existing warnings. Hosted CI is recorded in the PR. Linux kernel execution
+and separate Linux signoff have not been run locally for this branch. No
+installed daemon was changed.
+
 ## Code-mode and image fixes (PR #434)
 
 PR #434 on `fix/codemode-diagnostics` combines the September 15 code-mode
