@@ -97,6 +97,15 @@ verified; the public-facing claims received an independent source review.
 The selected woven logo is included as font-independent SVG assets, with
 light and dark README variants and separate color and monochrome marks.
 
+The advisor integration fixture now holds its scripted nudge until the second
+operator turn has settled, then observes delivery before admitting the third.
+The earlier ordering let a valid run-start drain share an operator request,
+making the expected five requests become four. The exact count, quiet-verdict
+bound and final duplicate-fence assertion remain intact. Twenty focused runs
+under constrained scheduling, all 1,834 client tests, lint, documentation checks
+and independent review passed. Hosted CI and Linux signoff must be checked again
+at the commit containing this fixture fix.
+
 ## Where the tree is
 
 | Body of work | Verified state |

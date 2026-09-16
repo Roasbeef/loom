@@ -33,15 +33,13 @@
 ////    open, as a fresh run if it is idle. Either way it is in a primary
 ////    request body, which is the only place a message that was never sent
 ////    could not appear;
-//// 2. the second turn ends and the advisor answers `nudge`, which
-////    reaches `main` as one fenced `advisor-nudges` message the moment
-////    the primary stops: a run of its own if the primary is already
-////    idle, a born-placed follow-up on the run that is ending
-////    otherwise. Either costs `main` exactly one more request, which is
-////    why the count below is fixed even though the door is not;
-//// 3. the third turn ends and the advisor answers `quiet`, which emits
-////    nothing at all — the assertion for which is that no sixth primary
-////    request appears.
+//// 2. the script holds its `nudge` verdict until the second operator turn
+////    settles. Releasing it onto the idle primary starts one request
+////    carrying the fenced `advisor-nudges` message. The fixture observes
+////    this request before admitting the third prompt, so the run-start
+////    drain cannot fold the nudge into an existing operator request;
+//// 3. the third operator turn completes and the advisor answers `quiet`,
+////    which emits nothing. No sixth primary request may appear.
 ////
 //// ## Why the advisor's lane is scripted by position and not by count
 ////
@@ -78,7 +76,7 @@ import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/acceptance
 import machine/operation
@@ -183,13 +181,17 @@ pub fn a_second_model_reviews_the_primary_and_reaches_it_test_() -> EunitTest {
     assert !string.contains(opening, "`" <> advise.name <> "`")
       as "the primary's system prompt must not index its reviewer's tool"
 
-    // The second turn, and then the wait for the nudge it earns. The wait
-    // is on the advisor having *answered* twice rather than on the guard's
-    // pending list, because a nudge queued before the third run start is
-    // drained by it and a fixture watching the queue would miss the
-    // transition it was waiting for.
+    // The script holds its second verdict until this turn has settled.
+    // A nudge released earlier can join an operator's run-start request,
+    // or queue after the last run-end drain but before settlement. Waiting
+    // for an idle primary makes its one additional request deterministic.
     complete(instance, "add the test")
     await_advised(script, 2)
+    actor.call(script, waiting: 5000, sending: ReleaseNudge)
+    let _delivered = await_primary(script, fence_open())
+
+    // The third prompt cannot absorb the nudge: a provider request has
+    // already carried it. Every later scripted verdict is quiet.
     complete(instance, "confirm it passes")
 
     // One nudge, delivered once. The newest request carrying the fence
@@ -204,10 +206,9 @@ pub fn a_second_model_reviews_the_primary_and_reaches_it_test_() -> EunitTest {
     // the delivered block started and the one request the nudge cost are
     // five, and nothing left can add a sixth: the two verdicts that reach
     // the primary are a block and a nudge, the script raises one of each,
-    // and every later verdict is quiet. The nudge's own request is fixed
-    // whichever door it went through — a fresh run on an idle primary, or
-    // a follow-up continuing the run that was ending — because both are
-    // one more provider request on `main`. The bound is therefore watching
+    // and every later verdict is quiet. The controlled nudge release
+    // starts a fresh run on an idle primary, costing one more provider
+    // request on `main`. The bound is therefore watching
     // for a request that is merely late, and a scripted transport answers
     // in microseconds.
     let settled: poll.Outcome(Nil, Nil) =
@@ -305,8 +306,9 @@ fn await_primary(script: Subject(ScriptMessage), marker: String) -> String {
   body
 }
 
-// Waits until the advisor has answered `wanted` feeds with a verdict. The
-// count only ever rises, so a fixture that reads it late reads it right.
+// Waits until the script has prepared `wanted` verdicts. The second is held
+// until explicitly released, so this count establishes that ReleaseNudge
+// has a waiting provider request to answer.
 fn await_advised(script: Subject(ScriptMessage), wanted: Int) -> Nil {
   let counted: poll.Outcome(Nil, Nil) =
     poll.until(within: await_ms, every: 100, attempt: fn() {
@@ -317,7 +319,7 @@ fn await_advised(script: Subject(ScriptMessage), wanted: Int) -> Nil {
     })
 
   let assert poll.Answered(value: Nil) = counted
-    as "the advisor must answer enough feeds inside the wait"
+    as "the script must prepare enough verdicts inside the wait"
   Nil
 }
 
@@ -372,17 +374,23 @@ fn user(text: String) -> message.AgentMessage {
 // newest first while they accumulate and handed back oldest first, which is
 // the order every assertion reads them in.
 type Seen {
-  Seen(primary: List(String), advisor: List(String), advised: Int)
+  Seen(
+    primary: List(String),
+    advisor: List(String),
+    advised: Int,
+    nudge_reply: Option(Subject(String)),
+  )
 }
 
 type ScriptMessage {
   Dispatched(url: String, body: String, reply: Subject(String))
   Snapshot(reply: Subject(Seen))
+  ReleaseNudge(reply: Subject(Nil))
 }
 
 fn script() -> Subject(ScriptMessage) {
   let assert Ok(started) =
-    actor.new(Seen(primary: [], advisor: [], advised: 0))
+    actor.new(Seen(primary: [], advisor: [], advised: 0, nudge_reply: None))
     |> actor.on_message(dispatch)
     |> actor.start
     as "the two-model script must start"
@@ -394,6 +402,17 @@ fn dispatch(
   message: ScriptMessage,
 ) -> actor.Next(Seen, ScriptMessage) {
   case message {
+    // Only the fixture releases this reply, after the primary's second
+    // operator turn has settled. The acknowledgement orders that release
+    // before the fixture begins observing its delivery.
+    ReleaseNudge(reply:) -> {
+      let assert Some(waiting) = seen.nudge_reply
+        as "the nudge verdict must be prepared before release"
+      process.send(waiting, advise_turn(1))
+      process.send(reply, Nil)
+      actor.continue(Seen(..seen, nudge_reply: None))
+    }
+
     Snapshot(reply:) -> {
       process.send(
         reply,
@@ -452,9 +471,22 @@ fn advisor_reply(
     }
 
     False -> {
-      process.send(reply, advise_turn(seen.advised))
+      // The nudge's response remains on the script until the fixture
+      // releases it. Other verdicts still answer immediately.
+      let nudge_reply = case seen.advised {
+        1 -> Some(reply)
+        _other -> {
+          process.send(reply, advise_turn(seen.advised))
+          seen.nudge_reply
+        }
+      }
       actor.continue(
-        Seen(..seen, advisor: [body, ..seen.advisor], advised: seen.advised + 1),
+        Seen(
+          ..seen,
+          advisor: [body, ..seen.advisor],
+          advised: seen.advised + 1,
+          nudge_reply:,
+        ),
       )
     }
   }
@@ -510,10 +542,15 @@ fn seen(script: Subject(ScriptMessage)) -> Seen {
 
 fn scripted_transport(script: Subject(ScriptMessage)) -> http.Transport {
   provider_test.transport(fn(request: http.HttpRequest, events) {
+    // The second verdict waits for an operator turn to settle. Give that
+    // controlled hold the fixture's budget rather than a shorter transport
+    // timeout that could fail before the turn's own wait expires.
     let response =
-      actor.call(script, waiting: 10_000, sending: fn(reply) {
-        Dispatched(request.url, request.body, reply)
-      })
+      actor.call(
+        script,
+        waiting: test_timeout_seconds * 1000,
+        sending: fn(reply) { Dispatched(request.url, request.body, reply) },
+      )
 
     process.send(
       events,
