@@ -110,7 +110,13 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
   let assert Error(_) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", string.repeat("x", 257), "/config"),
+      protocol.CreateSession(
+        "key",
+        "/work",
+        string.repeat("x", 257),
+        "/config",
+        None,
+      ),
       epoch,
     )
     as "names are bounded before serialization"
@@ -131,7 +137,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
   let assert Ok(encoded) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", "New session", ""),
+      protocol.CreateSession("key", "/work", "New session", "", None),
       epoch,
     )
     as "omitted config can reach the daemon's inherited defaults"
@@ -144,6 +150,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "/work",
         "New session",
         string.repeat("x", 4097),
+        None,
       ),
       epoch,
     )
@@ -193,4 +200,52 @@ pub fn archive_controls_encode_with_their_authority_fields_test() {
     == Ok(
       "{\"v\":2,\"id\":7,\"cmd\":\"sessions.archived\",\"body\":{\"after\":\"\"}}",
     )
+}
+
+pub fn creation_names_a_roster_only_when_the_operator_chose_one_test() {
+  let epoch = protocol.Epoch("current")
+  let assert Ok(inherited) =
+    protocol.encode(
+      1,
+      protocol.CreateSession("key", "/work", "New session", "", None),
+      epoch,
+    )
+    as "an absent roster still encodes a complete creation request"
+
+  // Absence is the field's absence, not an empty word: a daemon reading this
+  // body cannot tell it apart from one sent by a launcher predating rosters,
+  // which is exactly the inherit case.
+  assert !string.contains(inherited, "roster")
+
+  let assert Ok(minimal) =
+    protocol.encode(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "New session",
+        "",
+        Some(protocol.Minimal),
+      ),
+      epoch,
+    )
+    as "a chosen roster encodes"
+  assert string.contains(minimal, "\"roster\":\"minimal\"")
+
+  let assert Ok(full) =
+    protocol.encode(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "New session",
+        "",
+        Some(protocol.Full),
+      ),
+      epoch,
+    )
+    as "the other roster encodes"
+  assert string.contains(full, "\"roster\":\"full\"")
+  assert protocol.roster_word(protocol.Minimal) == "minimal"
+  assert protocol.roster_word(protocol.Full) == "full"
 }

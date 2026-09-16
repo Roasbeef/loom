@@ -31,6 +31,19 @@ Opening sessions in a different order cannot replace it. Listing, restoring,
 or isolating this metadata does not open conversation, memory, index, or
 configuration files.
 
+The catalogue also stores each session's **tool roster**, in a `roster`
+column added by catalogue version 4. The stored word is `minimal`,
+`full`, or empty for a session that named none and inherits the daemon's
+own `[tools] roster`; every registration written before the column reads
+as empty. Storage does not know the vocabulary. It holds the word the
+creation request carried and hands it back, and the column's own
+constraint is what keeps a third word out. Because the roster is creation
+metadata, it joins the equality a creation retry is compared against: a
+retry that names a different roster under the same request key answers
+`conflict`, exactly as a different name or configuration does. Version 1,
+2 and 3 catalogues migrate transactionally. See
+[protocol-change/039](../../protocol-change/039-session-tool-roster.md).
+
 That reference does not replace each session's runtime configuration. A session
 can select different providers and tools while retaining the same owner-private
 domain paths; shared maintenance uses the domain's own configuration binding.

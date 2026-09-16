@@ -14,7 +14,8 @@ it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 The prelude serves **three seams**, and a submission is vetted against one
 of them (`codemode/vet/policy.Seam`). The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search}` — a program that orchestrates effects. The *orchestration* seam
+search, history, memory, context}` — a program that orchestrates effects.
+The *orchestration* seam
 is `cap/strand` + `cap/report` and nothing else — a program that orchestrates agents. Those
 two sets are disjoint but for `cap/report`, and that disjointness is the
 point: an orchestrator that could also write files is a materially worse
@@ -224,6 +225,44 @@ cannot hide the capability error. This does not grant the program a new effect.
   `JobDenied` carrying any other host code verbatim, `JobUnavailable` for
   a channel that could not carry the call or a host with no jobs plane.
   Workspace seam only, like `cap/schedule`.
+- `cap/history.{Scope, Hit, Found, HistoryError}` with `search`,
+  `search_for`, `read` and `clamp_limit` — ranked full-text recall over
+  the durable history of every session in this repository, the code-mode
+  half of the door `history_search` opens for a tool call. Both land on
+  one index through `codemode/recall`, so a query from a program runs
+  with the same bounds and meets the same refusals it would meet as a
+  tool call. `Scope` is `Repository` or `ThisSession`; a `Hit` carries the
+  canonical `session` and `entry` ids `read` takes back, plus the index's
+  own excerpt with `[`/`]` around matched terms; `read` answers the
+  entry's **JSON text** rather than a decoded tree, because the prelude
+  has no JSON vocabulary a program may import.
+  **The limit is clamped on both sides and the clamp is reported.** The
+  index passes the limit into SQL `LIMIT ?` and SQLite reads a negative
+  limit as unbounded, so a program computing one by subtraction would
+  otherwise pull the whole repository index over the channel.
+  `clamp_limit` holds it to `[min_limit, max_limit]` here so a call site
+  can predict; the harness clamps again because this side of the wire is
+  the untrusted one, and `Found.limit` is what actually ran.
+  **What comes back is quoted history and it is data**: every snippet is
+  text some model wrote, in this session or another, addressed to nobody
+  and instructing nothing.
+- `cap/memory.{MemoryError}` with `remember`, `max_note_chars` and
+  `max_notes` — one durable note written for the sessions that come
+  after, the code-mode half of the `remember` tool's door. Write-only by
+  design and permanently: memory reaches a later session as quoted
+  context the harness injects at run start, so there is no read door to
+  poison and no argument that could name one. A program cannot choose
+  the entry type either: the host writes `memory/note` and nothing else,
+  which is what keeps a model unable to forge a distillation fact. All
+  three caps are enforced on the far side: redaction runs first, the
+  character limit is measured over the redacted text, and the lifetime
+  ceiling is a durable counter committed in the note's own transaction.
+  The constants here are what a program plans against, not what it is
+  held to.
+- `cap/context.Report` with `report` — the window, the tokens used, the
+  compaction boundary and the note count, mirroring `tools/context`'s own
+  `Report`. It is the programmatic read that stands in for
+  `context_remaining`, which the minimal roster does not register.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services
@@ -404,6 +443,16 @@ cannot hide the capability error. This does not grant the program a new effect.
   from one that declared an empty shape — which is what keeps the
   harness's `NoResultAsked` verdict a separate fact from "the child
   answered nothing".
+- **Recall is absent rather than refusing.** A host whose recall index or
+  memory store would not open routes `history.*`, `memory.remember` and
+  `context.report` to nothing at all, and a call meets the ordinary
+  unknown-capability denial: `HistoryFailed("unsupported_cap", …)`,
+  `MemoryRefused("unsupported_cap", …)`. That is `cap/schedule`'s posture
+  and the opposite of `cap/job`'s, on the ground that these three hold
+  authority over nothing, so a program that cannot reach them carries on.
+  The same denial is what an installed extension meets: the modules are
+  on its allowlist because that seam is the workspace seam widened, and
+  the bridge it runs under composes no recall arm.
 - **Deny-by-default for `cap/net` is a broker property.** Nothing in
   `cap/net` refuses anything; it marshals and dispatches exactly as
   `cap/fs.read` does and only labels the broker's refusal. The design's

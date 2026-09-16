@@ -14,16 +14,21 @@ against exactly one of them (`vet/policy.Seam`). Three of them admit
 source that runs today; the fourth is frozen for a tier that does not
 exist. The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search}`, routed by
+search, history, memory, context}`, routed by
 `satellite.default_router` for the jailed `proc.run`, by
 `codemode/workspace` for the harness-side `fs.read`, `fs.list` and
-`kv.*`, and by `codemode/search` for the four read-only `search.*` names.
+`kv.*`, by `codemode/search` for the four read-only `search.*` names, and
+by `codemode/recall` for `history.search`, `history.read`,
+`memory.remember` and `context.report`.
 `codemode/search` is its own router rather than four more arms on
 `codemode/workspace` because the module a program imports is the unit of
 authorization: `cap/search` has no write arm, so a program that imports it
 instead of `cap/fs` has said so where vetting can see it, and the harness
 side keeps that split visible instead of asking a reader to subtract the
-write arms out of one list by eye. The *orchestration* seam is `cap/strand` + `cap/report` and
+write arms out of one list by eye. `codemode/recall` is separate for the
+same reason and one more: "may read every session this repository has
+ever had" and "may write a file" are different grants, and folding the
+first into `codemode/workspace` would put them behind one import. The *orchestration* seam is `cap/strand` + `cap/report` and
 nothing else, routed by `codemode/orchestration` onto the Agency closures
 the `agent_*` tools call. `report.emit` is the one capability **both**
 seams service, by one mechanism (`codemode/artifact`), because
@@ -251,6 +256,34 @@ session and sends it many invocations.
   all-or-nothing, `apply_replacements` is the pure corpus-pinned core),
   where `StaleContent` finally means something mintable — the file no
   longer contains your text — instead of a synthesised pin.
+- `codemode/recall.{Recall, none, serviced_caps, serviced_caps_on,
+  routing, history_denial, memory_denial}` plus the in-band refusal
+  codes — the workspace seam's recall router: `history.search`,
+  `history.read`, `memory.remember` and `context.report`. `Recall` holds
+  the tool seams themselves (`index:` a `tools/history.History`,
+  `store:` a `tools/remember.Memory`, `context:` a `tools/context.Context`),
+  not copies, which is
+  what makes "one implementation behind both doors" a fact about the code
+  rather than a claim: a query from a program runs over the same index
+  with the same bounds and meets the same refusals it would meet as a
+  tool call. Every plan is `satellite.ServedHere`, since a search
+  over an index the harness holds and a commit into a session file it
+  owns spawn no process and cross no namespace. What this module owns are
+  the two guards that `tools/history.History`'s closure contract names, met
+  the same way the tool's own `run` meets them: `history.clamp_limit` is
+  the tool's function rather than a second number, and an empty query is
+  refused at plan time in words a program can act on, because the index
+  answers one with a fault about full-text syntax. The clamp runs here
+  and not only in `cap/history` because this side of the wire is the
+  trusted one. Each half is an `Option`, and a `None` leaves its
+  capabilities **unrouted** rather than routed to a closure that always
+  refuses, so a program meets `unsupported_cap` from the innermost
+  router; `serviced_caps_on` is read per host so no description claims a
+  door the boot probe did not open. `history_denial` and `memory_denial`
+  are half of a contract whose other half is `cap/history.map_error` and
+  `cap/memory.map_error`, and `recall_test` drives each tool's own
+  refusal rendering and asserts the spelling so the two halves cannot
+  drift in silence.
 - `codemode/artifact.{Artifact, Emit, EmitRefusal, plan, answer, ceiling,
   emit_cap, max_emit_bytes, default_emit_ceiling, emit_ceiling_code}` —
   the `report.emit` mechanism, shared by both seams. One byte bound per
@@ -339,7 +372,10 @@ session and sends it many invocations.
   `budget`, `exec`), `core` (msgpack, ids, clock), `tools` (`tool.Collected`
   and the `blob` content address; `codemode/workspace` additionally names
   `tools/fs`'s `PathError` and `ReadError` so a refusal keeps the
-  harness's own vocabulary), `glance` 6.1+ + `glexer` (vetting parses and
+  harness's own vocabulary, and `codemode/recall` takes
+  `tools/history.History` and `tools/remember.Memory` directly rather
+  than copying a recall vocabulary that would be a second place to keep
+  in step), `glance` 6.1+ + `glexer` (vetting parses and
   token-scans; the Glance floor admits the syntax accepted by the shipped
   Gleam compiler), `tom` (the extension package's own `gleam.toml`, which
   `vet/package` decodes to decide what it may depend on),
@@ -439,7 +475,21 @@ session and sends it many invocations.
   capability *moved* between the seams and misses one *added to both* —
   and the door for that is `default_stdlib_modules`, which both seams
   append, so a second test asserts that list holds no `cap/*` entry at all
-  (issue #90).
+  (issue #90). The recall modules are the most recent thing that rule
+  decided: `cap/history`, `cap/memory` and `cap/context` are on
+  `default_cap_modules` and on no other seam's list, because an
+  orchestration program holding recall could read the transcripts of
+  agents it never ran, and a note reaches every later session as quoted
+  context, exactly the risk `cap/schedule` already carries.
+- **Recall is unrouted rather than refusing, and the router is bound to
+  the host.** `client/serve` probes the recall index and the memory store
+  at boot and wires whichever opened; a plane that did not open is `None`
+  in `Recall` exactly as it is in the registry, so the capability falls
+  through to `unsupported_cap` and no description claims it. The arm is
+  stacked on the *workspace* router only and is bound to the host rather
+  than to the request, unlike the search arm above it: an index and a
+  memory store are one per session, and nothing about a program's
+  workspace root selects between them.
 - **The admission ceilings are the host's, not the router's, and they
   cover every call that mints.** A call is throttled by turn cost — the
   model pays a round trip per call — and a program's loop pays nothing, so

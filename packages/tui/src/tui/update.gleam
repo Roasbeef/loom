@@ -141,6 +141,8 @@ fn install_locked(
       prefix <> "/bin/loomd",
       choices.state,
       choices.config,
+      // An update creates no session of its own, so it chooses no roster.
+      None,
     )
   case choices.action {
     options.InstallOnly -> files.publish(stage, prefix, client)

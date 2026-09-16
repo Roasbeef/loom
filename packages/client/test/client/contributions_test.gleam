@@ -11,14 +11,29 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import client/catalog
+import client/codemode as host_codemode
 import client/contributions
+import codemode/recall
+import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
 import core/json
+import core/message
+import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import prompt/default as prompt_default
+import prompt/pack
+import tools/agent
+import tools/codemode
+import tools/context
+import tools/history
+import tools/job
+import tools/remember
+import tools/schedule
 import tools/tool
 
 // A tool an extension might contribute, under whatever name the test
@@ -284,5 +299,392 @@ fn dead_filesystem() -> tool.FileSystem {
     is_file: fn(_path) { Ok(False) },
     read_link: fn(_path) { Ok(tool.LinkMissing) },
     rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+  )
+}
+
+// --- the wire tool roster --------------------------------------------------
+//
+// Plane gating answers whether this host *has* a thing. The roster
+// answers whether this deployment wants to *pay* for it, and the price is
+// the provider's cached prefix — every definition, on every request of
+// every strand, called or not. The two questions are independent, which
+// is why `Minimal` must ignore a plane that is genuinely present.
+
+// Every plane this host could open, all at once. No seam here is ever
+// called: registration is decided when a tool is constructed.
+fn every_plane() -> #(
+  Option(agent.Agency),
+  Option(codemode.CodeMode),
+  Option(history.History),
+  Option(remember.Memory),
+  Option(schedule.Schedules),
+  Option(context.Context),
+  Option(job.Jobs),
+) {
+  #(
+    Some(unused_agency()),
+    Some(unused_code_mode()),
+    Some(unused_history()),
+    Some(unused_memory()),
+    Some(unused_schedules()),
+    Some(unused_context()),
+    Some(job.unavailable()),
+  )
+}
+
+fn roster_names(roster: catalog.Roster) -> List(String) {
+  let #(agency, code_mode, history, memory, schedules, context, jobs) =
+    every_plane()
+  let assert Ok(registry) =
+    contributions.registry(contributions.built_in_for(
+      roster,
+      agency,
+      code_mode,
+      history,
+      memory,
+      schedules,
+      context,
+      jobs,
+    ))
+    as "the built-in contributions never collide"
+  list.map(tool.registered(registry), fn(each) { each.name })
+}
+
+pub fn the_minimal_roster_registers_six_tools_test() {
+  // Every plane is open and only two of them reach the wire. The order is
+  // the order the system prompt's index reads, and `code_mode` is last
+  // because it is the door that stands in for everything dropped.
+  assert roster_names(catalog.Minimal)
+    == ["bash", "grep", "fs_read", "fs_write", "fs_edit", "code_mode"]
+}
+
+pub fn the_roster_chooses_how_bash_reads_a_job_back_test() {
+  // The same roster value that decides whether job_poll is on the wire
+  // decides which readback bash names, so swapping the two arms cannot
+  // leave the description pointing at an absent tool.
+  let bash_of = fn(roster) {
+    let #(agency, code_mode, history, memory, schedules, context, jobs) =
+      every_plane()
+    let assert Ok(registry) =
+      contributions.registry(contributions.built_in_for(
+        roster,
+        agency,
+        code_mode,
+        history,
+        memory,
+        schedules,
+        context,
+        jobs,
+      ))
+    let assert Ok(bash) = tool.lookup(registry, "bash")
+    bash.description
+  }
+  assert string.contains(bash_of(catalog.Minimal), "job://<id>")
+  assert !string.contains(bash_of(catalog.Minimal), "`job_poll`")
+  assert string.contains(bash_of(catalog.Full), "`job_poll`")
+  assert !string.contains(bash_of(catalog.Full), "job://<id>")
+}
+
+pub fn the_minimal_roster_ignores_a_present_plane_test() {
+  // The point of the roster, stated as an absence: the agency, jobs,
+  // schedules, history and memory planes are all wired here, and none of
+  // them is on the wire. Nothing was taken from the session — each is
+  // reachable from a code-mode program — only from the cached prefix.
+  let names = roster_names(catalog.Minimal)
+  let dropped = [
+    "agent_spawn", "agent_send", "agent_wait", "agent_note", "agent_notes",
+    "agent_roster", "job_poll", "job_kill", "job_send", "schedule_create",
+    "schedule_list", "schedule_cancel", "history_search", "remember",
+    "context_remaining",
+  ]
+  assert list.filter(dropped, list.contains(names, _)) == []
+}
+
+pub fn a_minimal_host_without_code_mode_registers_the_five_test() {
+  // Code mode is gated on its plane under `Minimal` exactly as it is
+  // under `Full`: a host that opened no pipeline has no `code_mode` to
+  // register, and pays for no definition that could only refuse.
+  let #(agency, _code_mode, history, memory, schedules, context, jobs) =
+    every_plane()
+  let assert Ok(registry) =
+    contributions.registry(contributions.built_in_for(
+      catalog.Minimal,
+      agency,
+      None,
+      history,
+      memory,
+      schedules,
+      context,
+      jobs,
+    ))
+    as "the built-in contributions never collide"
+  assert list.map(tool.registered(registry), fn(each) { each.name })
+    == ["bash", "grep", "fs_read", "fs_write", "fs_edit"]
+}
+
+pub fn the_full_roster_is_what_built_in_has_always_registered_test() {
+  // `built_in` is `built_in_for(Full, ..)` under its historical name, and
+  // the assertion is on the registration order rather than on the set:
+  // the tool array is the byte prefix of the provider's cached region, so
+  // a definition that moved would reprice every strand.
+  let #(agency, code_mode, history, memory, schedules, context, jobs) =
+    every_plane()
+  let assert Ok(historical) =
+    contributions.registry(contributions.built_in(
+      agency,
+      code_mode,
+      history,
+      memory,
+      schedules,
+      context,
+      jobs,
+    ))
+    as "the built-in contributions never collide"
+  assert roster_names(catalog.Full)
+    == list.map(tool.registered(historical), fn(each) { each.name })
+  assert list.length(roster_names(catalog.Full)) == 21
+}
+
+pub fn bash_keeps_the_jobs_door_under_the_minimal_roster_test() {
+  // The door is not one of the dropped tools. `job_*` leaves the wire;
+  // `mode: "background"` does not leave `bash`'s schema, because taking
+  // it away would change what a core tool *does* rather than how many
+  // definitions the prefix carries.
+  let #(agency, code_mode, history, memory, schedules, context, jobs) =
+    every_plane()
+  let assert Ok(registry) =
+    contributions.registry(contributions.built_in_for(
+      catalog.Minimal,
+      agency,
+      code_mode,
+      history,
+      memory,
+      schedules,
+      context,
+      jobs,
+    ))
+    as "the built-in contributions never collide"
+  let assert Ok(shell) = tool.lookup(registry, "bash")
+    as "every roster registers bash"
+
+  // The schema still offers the background mode, which is the half of
+  // the door the model can see.
+  assert string.contains(json.to_string(shell.schema), "background")
+
+  // And the seam behind it is reached rather than absent: a background
+  // call on this fixture's `job.unavailable()` door refuses in band,
+  // which only the door can produce.
+  let outcome =
+    tool.dispatch(
+      registry,
+      a_ctx(),
+      "bash",
+      json.Object([
+        #("command", json.String("true")),
+        #("mode", json.String("background")),
+      ]),
+    )
+  assert outcome.is_error
+  assert string.contains(
+    outcome_text(outcome),
+    "this session runs no background jobs",
+  )
+}
+
+// The text a dispatched outcome carries, for a test that is about the
+// words the seam produced rather than about the block structure.
+fn outcome_text(outcome: tool.ToolOutcome) -> String {
+  list.filter_map(outcome.content, fn(block) {
+    case block {
+      message.ToolResultText(text:, ..) -> Ok(text)
+      message.ToolResultImage(..) -> Error(Nil)
+    }
+  })
+  |> string.join("\n")
+}
+
+// --- seams the roster census needs -----------------------------------------
+//
+// None of these is ever called: a registration is decided from the tool's
+// name, and the one dispatch above goes through the jobs door rather than
+// through any of them.
+
+fn unused_refusal() -> String {
+  "this seam is never called"
+}
+
+fn unused_agency() -> agent.Agency {
+  agent.Agency(
+    spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
+    send: fn(_caller, _to, _text) { Error(agent.AgencyUnavailable) },
+    wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
+    note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
+    notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    roster: fn(_caller) { Error(agent.AgencyUnavailable) },
+    max_wait_ms: 1000,
+    model_names: [],
+  )
+}
+
+fn unused_code_mode() -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(_request) { panic as "the roster census never runs a program" },
+    seams: codemode.one_seam(
+      codemode.SeamOffer(
+        seam: codemode.WorkspaceSeam,
+        allowed_imports: ["cap/report"],
+        serviced_caps: ["proc.run"],
+        extra_surfaces: [],
+      ),
+    ),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+fn unused_history() -> history.History {
+  history.History(
+    read: fn(_session, _entry) {
+      Error(history.IndexUnavailable(reason: unused_refusal()))
+    },
+    search: fn(_text, _limit, _scope) {
+      Error(history.IndexUnavailable(reason: unused_refusal()))
+    },
+  )
+}
+
+fn unused_memory() -> remember.Memory {
+  remember.Memory(remember: fn(_note) {
+    Error(remember.MemoryUnavailable(reason: unused_refusal()))
+  })
+}
+
+fn unused_schedules() -> schedule.Schedules {
+  schedule.Schedules(
+    create: fn(_ctx, _request) {
+      Error(schedule.Unavailable(reason: unused_refusal()))
+    },
+    list: fn(_ctx) { Error(schedule.Unavailable(reason: unused_refusal())) },
+    cancel: fn(_ctx, _name, _target) {
+      Error(schedule.Unavailable(reason: unused_refusal()))
+    },
+  )
+}
+
+fn unused_context() -> context.Context {
+  context.Context(report: fn(_strand) { Error(unused_refusal()) })
+}
+
+// Compare complete registries with identical capability availability. The two
+// default configurations are also printed: full serves workspace, minimal both.
+// Run with scripts/test.sh client --match complete_roster_costs_test.
+pub fn complete_roster_costs_test() {
+  let workspace =
+    shipped_offer(vet_policy.WorkspaceSeam, codemode.WorkspaceSeam)
+  let orchestration =
+    shipped_offer(vet_policy.OrchestrationSeam, codemode.OrchestrationSeam)
+  list.each(
+    [
+      #("workspace", codemode.one_seam(workspace)),
+      #("both", codemode.Seams(default: workspace, alternates: [orchestration])),
+    ],
+    fn(pair) {
+      let #(seams_name, seams) = pair
+      list.each([catalog.Full, catalog.Minimal], fn(roster) {
+        let #(agency, _, history, memory, schedules, context, jobs) =
+          every_plane()
+        let code_mode = codemode.CodeMode(..unused_code_mode(), seams:)
+        let assert Ok(registry) =
+          contributions.registry(contributions.built_in_for(
+            roster,
+            agency,
+            Some(code_mode),
+            history,
+            memory,
+            schedules,
+            context,
+            jobs,
+          ))
+        let definitions = tool.registered(registry)
+        let field_bytes =
+          list.fold(definitions, 0, fn(total, item) {
+            total
+            + string.byte_size(item.name)
+            + string.byte_size(item.description)
+            + string.byte_size(json.to_string(item.schema))
+          })
+        let wire =
+          json.Array(
+            list.map(definitions, fn(item) {
+              json.Object([
+                #("type", json.String("function")),
+                #(
+                  "function",
+                  json.Object([
+                    #("name", json.String(item.name)),
+                    #("description", json.String(item.description)),
+                    #("parameters", item.schema),
+                  ]),
+                ),
+              ])
+            }),
+          )
+        let assert Ok(pack) = pack.decode(prompt_default.source)
+        let prompt =
+          pack.render(
+            pack,
+            pack.environment(
+              workspace: "/work",
+              platform: "linux/x86_64",
+              shell: "/bin/bash",
+              tools: tool.names(registry),
+              available_tools: tool.snippets(registry),
+              enforcement: pack.FullyEnforced,
+              network: pack.NetworkBlocked,
+              protected_paths: [],
+              repository_guidance: None,
+            ),
+          )
+        io.println(
+          "ROSTER_COST "
+          <> json.to_string(
+            json.Object([
+              #(
+                "roster",
+                json.String(case roster {
+                  catalog.Full -> "full"
+                  catalog.Minimal -> "minimal"
+                }),
+              ),
+              #("seams", json.String(seams_name)),
+              #("tools", json.Int(list.length(definitions))),
+              #("fields_bytes", json.Int(field_bytes)),
+              #(
+                "openai_tools_array_bytes",
+                json.Int(string.byte_size(json.to_string(wire))),
+              ),
+              #("prompt_bytes", json.Int(string.byte_size(prompt))),
+            ]),
+          ),
+        )
+        // A whole-roster ceiling catches growth outside code_mode as well.
+        assert field_bytes < 65_000
+        assert string.byte_size(prompt) < 20_000
+      })
+    },
+  )
+}
+
+fn shipped_offer(vet, seam) {
+  codemode.SeamOffer(
+    seam:,
+    allowed_imports: vet_policy.allowed_imports(vet_policy.for_seam(vet)),
+    serviced_caps: list.append(host_codemode.seam_caps(vet), case vet {
+      vet_policy.WorkspaceSeam -> recall.serviced_caps
+      vet_policy.OrchestrationSeam
+      | vet_policy.ExtensionSeam
+      | vet_policy.ResidentSeam -> []
+    }),
+    extra_surfaces: [],
   )
 }

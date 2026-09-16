@@ -20,6 +20,67 @@ pub const version = 2
 /// A complete control frame or fragmented message may contain at most 64 KiB.
 pub const max_bytes = 65_536
 
+/// Which tool roster a creation request asks its session to be built with.
+///
+/// The choice is made once, at creation, and travels with the registration
+/// rather than with a connection: a restarted daemon rebuilds the registry
+/// the operator asked for instead of the one its configuration file names
+/// today. Nothing narrows a registry after the fact, so there is no fourth
+/// variant for "changed my mind"; that would be a new session.
+pub type RosterRequest {
+  /// Take whatever `[tools] roster` the daemon's own configuration names.
+  InheritRoster
+
+  /// Build the session with the minimal roster, whatever the daemon default.
+  MinimalRoster
+
+  /// Build the session with the full roster, whatever the daemon default.
+  FullRoster
+}
+
+/// The durable word for a roster choice, written beside the registration.
+///
+/// The empty word is inherit, which is also what every registration written
+/// before this field existed reads as. Storage holds the word and not this
+/// type, so this function and `roster_request` are the only two places that
+/// know the vocabulary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.roster_word(protocol.MinimalRoster)
+/// // -> "minimal"
+/// ```
+pub fn roster_word(roster: RosterRequest) -> String {
+  case roster {
+    InheritRoster -> ""
+    MinimalRoster -> "minimal"
+    FullRoster -> "full"
+  }
+}
+
+/// Reads a stored roster word back, refusing anything this build cannot mean.
+///
+/// A word written by a newer daemon is an error rather than a silent inherit:
+/// answering "default" for a roster somebody explicitly chose would start the
+/// session with a registry it was not created for, and the operator would
+/// have no way to see that it happened.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.roster_request("full")
+/// // -> Ok(protocol.FullRoster)
+/// ```
+pub fn roster_request(stored: String) -> Result(RosterRequest, String) {
+  case stored {
+    "" -> Ok(InheritRoster)
+    "minimal" -> Ok(MinimalRoster)
+    "full" -> Ok(FullRoster)
+    other -> Error("unknown stored session roster " <> other)
+  }
+}
+
 /// Decoded requests carry no client-supplied principal or database path.
 pub type Command {
   /// Changes only display metadata under owner authority in this daemon epoch.
@@ -85,6 +146,7 @@ pub type Command {
     name: String,
     configuration: String,
     domain_scope: domain.Scope,
+    roster: RosterRequest,
   )
 
   /// Explicitly requests execution in the named daemon epoch.
@@ -265,8 +327,9 @@ fn decode_fields(
       use workspace <- result.try(text_field(fields, "workspace", 4096))
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
-      use scope <- result.map(domain_scope(fields))
-      CreateSession(key, workspace, name, configuration, scope)
+      use scope <- result.try(domain_scope(fields))
+      use roster <- result.map(roster_field(fields))
+      CreateSession(key, workspace, name, configuration, scope, roster)
     }
     "sessions.open" -> {
       use id <- result.try(session_id(fields))
@@ -291,6 +354,20 @@ fn decode_fields(
     }
     "daemon.shutdown" -> result.map(text_field(fields, "epoch", 256), Shutdown)
     _unknown -> Error("unsupported control command")
+  }
+}
+
+// An absent field is the request to inherit, so a client that has never
+// heard of rosters keeps asking for the daemon's configured default. A
+// present field is one of exactly two words; anything else is refused here
+// rather than silently narrowed, because narrowing a registry the operator
+// did not ask to narrow is the failure this whole path exists to prevent.
+fn roster_field(fields) {
+  case list.key_find(fields, "roster") {
+    Error(Nil) -> Ok(InheritRoster)
+    Ok(json.String("minimal")) -> Ok(MinimalRoster)
+    Ok(json.String("full")) -> Ok(FullRoster)
+    Ok(_unknown) -> Error("expected minimal or full roster")
   }
 }
 

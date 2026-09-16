@@ -6,6 +6,7 @@
 import broker/token
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
@@ -97,7 +98,13 @@ fn fixture_with(
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("socket-fixture", ready.state_root, "socket", ""),
+      manager.Creation(
+        "socket-fixture",
+        ready.state_root,
+        "socket",
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 981),
       scope: domain.SessionOnly,

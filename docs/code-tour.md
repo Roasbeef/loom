@@ -107,7 +107,13 @@ The tool registry is assembled next, and what goes into it is decided
 here rather than at call time: the `agent_*` family when a messaging
 plane was wired, `code_mode` only if this host has the toolchain and
 the build seed code mode needs (§15), and `advise` only when the
-catalogue routes an `advisor` role (§14). It arrives as a *list of
+catalogue routes an `advisor` role (§14). An operator decides a second
+question the planes cannot: `[tools] roster`, which `contributions.built_in_for`
+reads. `full` registers every plane the host opened, and `minimal`
+registers the five core tools and `code_mode` and nothing else, on the
+argument that everything it drops is reachable from a code-mode program
+through the capability prelude. `loom --tools` sets it for one session
+and it persists with that session's registration. It arrives as a *list of
 contributions* (`client/contributions.gleam`), each naming who it came
 from — a built-in or a named extension — and
 `contributions.registry` refuses a name two contributions both claim
@@ -742,7 +748,7 @@ failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `run` (`tools/bash.gleam:132`) builds a `CallSpec` naming the
+For `bash`, `run` (`tools/bash.gleam:158`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -1354,10 +1360,20 @@ digest by `scripts/gen-prelude.sh --check` inside `make check`. Each seam
 renders only what it adds, because tool bytes are the byte prefix of the
 provider's cached region and are paid on every request of the session.
 
+That last sentence is why the description carries an index rather than
+everything. `tools/prelude` ships two constants over the same modules:
+`surfaces`, the whole public surface, and `type_surfaces`, the same block
+cut after the `pub type` declarations. The description renders the short
+one, and the rest is read on demand through a scheme on `fs_read`:
+`cap://<module>` for one module's whole surface, `cap://` for the list.
+That put a workspace host's `code_mode` entry at 25,690 bytes on the
+wire instead of 52,162. `job://<id>` is the same mechanism over a
+background job.
+
 Registration is gated on discovery rather than on refusing at call time.
 `contributions.built_in` (`client/contributions.gleam`) contributes the
 tool only when
-`codemode.discover` (`client/codemode.gleam:888`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:975`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
@@ -1495,7 +1511,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:267`): the tool table
+lets it is `registry` (`client/contributions.gleam:189`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could

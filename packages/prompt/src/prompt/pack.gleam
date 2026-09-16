@@ -388,7 +388,8 @@ pub const required_fragments = [
 pub const binding_names = [
   "workspace", "platform", "shell", "tools", "protected_paths", "network_allow",
   "available_tools_list", "repository_guidance_text", "enforcement", "network",
-  "protected", "available_tools", "repository_guidance",
+  "protected", "available_tools", "delegation", "code_mode_discovery",
+  "repository_guidance", "delegation_common", "checkpoint_api",
 ]
 
 /// Something wrong with a pack that is not bad syntax: the file decoded,
@@ -510,7 +511,11 @@ pub fn assess(pack: Pack) -> Assessment {
 pub fn problems(pack: Pack) -> List(Problem) {
   let present = list.map(pack.sections, fn(section) { section.name })
   let missing =
-    list.append(canonical_sections, required_fragments)
+    list.flatten([
+      canonical_sections,
+      required_fragments,
+      selected_fragments(pack),
+    ])
     |> list.filter(fn(name) { !list.contains(present, name) })
     |> list.map(MissingSection)
   let unknown =
@@ -520,6 +525,27 @@ pub fn problems(pack: Pack) -> List(Problem) {
       |> list.map(fn(name) { UnknownPlaceholder(section: section.name, name:) })
     })
   list.append(missing, unknown)
+}
+
+// New roster fragments are required only when an operator pack opts into
+// their bindings. Earlier packs may keep their delegation prose inline;
+// accepting them must neither inject shipped prose nor replace operator text.
+fn selected_fragments(pack: Pack) -> List(String) {
+  let used =
+    list.flat_map(pack.sections, fn(section) { placeholders(section.template) })
+  [
+    #("delegation", ["_delegation", "_delegation_via_code_mode"]),
+    #("delegation_common", ["_delegation_common"]),
+    #("code_mode_discovery", ["_code_mode_discovery"]),
+    #("checkpoint_api", ["_checkpoint_direct", "_checkpoint_via_code_mode"]),
+  ]
+  |> list.flat_map(fn(pair) {
+    let #(binding, fragments) = pair
+    case list.contains(used, binding) {
+      True -> fragments
+      False -> []
+    }
+  })
 }
 
 /// The placeholder names a template refers to, in first-appearance
@@ -929,12 +955,63 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
       [] -> ""
       _ -> fragment(pack, "_available_tools", literal)
     }),
+    #("delegation_common", case delegation_fragment(environment) {
+      Ok(_) -> fragment(pack, "_delegation_common", literal)
+      Error(Nil) -> ""
+    }),
+    #("checkpoint_api", case list.contains(environment.tools, "agent_note") {
+      True -> fragment(pack, "_checkpoint_direct", literal)
+      False ->
+        case list.contains(environment.tools, "code_mode") {
+          True -> fragment(pack, "_checkpoint_via_code_mode", literal)
+          False -> ""
+        }
+    }),
+
+    // Which delegation wording this host gets, if any. The two wordings
+    // instruct against different machinery, so the one a host cannot act
+    // on is worse than silence.
+    #("delegation", case delegation_fragment(environment) {
+      Ok(name) -> fragment(pack, name, literal)
+      Error(Nil) -> ""
+    }),
+    // The sentence telling an agent how to read a prelude module's
+    // signatures. It names `code_mode` and is worth nothing without it.
+    #(
+      "code_mode_discovery",
+      case list.contains(environment.tools, "code_mode") {
+        True -> fragment(pack, "_code_mode_discovery", literal)
+        False -> ""
+      },
+    ),
     #("repository_guidance", case environment.repository_guidance {
       None -> ""
       Some(_) -> fragment(pack, "_repository_guidance", literal)
     }),
   ]
   dict.merge(literal, dict.from_list(selected))
+}
+
+// Delegation follows the tool roster, because the two wordings describe
+// two different seams. A host that registered `agent_spawn` gets the
+// prose about the `agent_*` tools; a host that did not, but has
+// `code_mode`, reaches the same machinery through the capability prelude
+// and gets the prose about that. A host with neither cannot delegate at
+// all, so it is told nothing: an instruction naming tools the model was
+// never given is an invitation to call them and read a refusal.
+//
+// The roster is read here rather than carried as a flag so that the
+// prompt cannot disagree with the schemas on the wire — both come from
+// the one registry.
+fn delegation_fragment(environment: Environment) -> Result(String, Nil) {
+  case list.contains(environment.tools, "agent_spawn") {
+    True -> Ok("_delegation")
+    False ->
+      case list.contains(environment.tools, "code_mode") {
+        True -> Ok("_delegation_via_code_mode")
+        False -> Error(Nil)
+      }
+  }
 }
 
 fn enforcement_fragment(enforcement: Enforcement) -> String {

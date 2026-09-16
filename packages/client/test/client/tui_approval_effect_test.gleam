@@ -11,6 +11,7 @@ import client/catalog
 import client/daemon/admin
 import client/daemon/main as daemon_main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
@@ -238,7 +239,13 @@ fn create(serving: daemon_main.Serving(serve.Instance), directory) {
   let assert Ok(created) =
     manager.create_scoped(
       serving.ready.registry,
-      manager.Creation("approval-effect", workspace, "Approval effect", ""),
+      manager.Creation(
+        "approval-effect",
+        workspace,
+        "Approval effect",
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 51),
       scope: domain.SessionOnly,

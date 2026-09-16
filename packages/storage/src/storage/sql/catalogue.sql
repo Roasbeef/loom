@@ -4,14 +4,14 @@
 INSERT INTO catalogue_meta (singleton, revision) VALUES (1, 0);
 
 -- name: FindRegistrations :many
-SELECT session_id, path, workspace, name, configuration, created_at, request_key, state
+SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, roster
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?;
 
 -- name: InsertRegistration :exec
 INSERT INTO catalogue_sessions
-  (session_id, path, workspace, name, configuration, created_at, request_key, state)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved');
+  (session_id, path, workspace, name, configuration, created_at, request_key, state, roster)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?);
 
 -- name: ConfirmRegistration :exec
 UPDATE catalogue_sessions SET state = 'saved' WHERE session_id = ?;
@@ -25,7 +25,7 @@ ON CONFLICT(session_id) DO UPDATE SET name = excluded.name;
 
 -- name: RegistrationPage :many
 SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state
+       s.configuration, s.created_at, s.request_key, s.state, s.roster
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE s.session_id > @after
@@ -39,7 +39,7 @@ SELECT revision FROM catalogue_meta WHERE singleton = 1;
 
 -- name: MemberRegistrationPage :many
 SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state
+       s.created_at, s.request_key, s.state, s.roster
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id

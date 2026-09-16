@@ -30,6 +30,7 @@
 
 import broker/internal/call
 import client/daemon/domain as domain_service
+import client/daemon/protocol
 import client/distill
 import client/distillpass
 import client/internal/instance_host as host
@@ -124,6 +125,8 @@ pub type Creation {
     name: String,
     /// Validated configuration reference with no credential values.
     configuration: String,
+    /// The tool roster this session is built with, or inherit the daemon's.
+    roster: protocol.RosterRequest,
   )
 }
 
@@ -1863,6 +1866,7 @@ fn reserve_creation(
         record.workspace == request.workspace
         && record.name == request.name
         && record.configuration == request.configuration
+        && record.roster == protocol.roster_word(request.roster)
       {
         True -> {
           use selected <- result.try(domain.for_session(store, record.id))
@@ -1886,6 +1890,7 @@ fn reserve_creation(
           created_at: ids.session_id_timestamp_ms(id),
           request_key: request.request_key,
           state: catalogue.Reserved,
+          roster: protocol.roster_word(request.roster),
         )
       use selected <- result.try(select_creation_domain(
         store,

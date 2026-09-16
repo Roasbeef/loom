@@ -14,6 +14,7 @@ import client/catalog
 import client/daemon/domain
 import client/daemon/main as daemon_main
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/daemon/root
 import client/daemon/session_socket
 import client/daemon_server_test as wire
@@ -237,7 +238,13 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
   let assert Ok(view) =
     manager.create(
       serving.ready.registry,
-      manager.Creation("soak-" <> int.to_string(seed), workspace, "Soak", ""),
+      manager.Creation(
+        "soak-" <> int.to_string(seed),
+        workspace,
+        "Soak",
+        "",
+        roster: daemon_protocol.InheritRoster,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
     )

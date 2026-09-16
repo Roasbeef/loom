@@ -1002,6 +1002,246 @@ pub fn write_whole_creates_missing_parents_test() {
   assert text == "landed\n"
 }
 
+// --- the scheme resolver -------------------------------------------------
+
+// A scheme that answers with a fixed body, so a test asserting on the
+// rendering is asserting on the rendering alone.
+fn fixed_scheme(name: String, body: String) -> fs.Scheme {
+  fs.Scheme(
+    name:,
+    summary: "`" <> name <> "://x` reads a " <> name <> " object.",
+    read: fn(_ctx, _reference) { Ok(body) },
+  )
+}
+
+// A scheme that echoes the reference it was handed, which is how a test
+// proves the split kept everything after the *first* `://`.
+fn echoing_scheme(name: String) -> fs.Scheme {
+  fs.Scheme(
+    name:,
+    summary: "`" <> name <> "://x` echoes x.",
+    read: fn(_ctx, reference) { Ok("ref=" <> reference) },
+  )
+}
+
+fn refusing_scheme(name: String, refusal: fs.SchemeRefusal) -> fs.Scheme {
+  fs.Scheme(
+    name:,
+    summary: "`" <> name <> "://x` always refuses.",
+    read: fn(_ctx, _reference) { Error(refusal) },
+  )
+}
+
+pub fn scheme_read_renders_plain_text_test() {
+  // No digest and no `line:anchor|` prefixes: nothing edits a scheme
+  // read, so the two things anchors exist for — naming a line an
+  // `fs_edit` hunk can reference, and carrying the digest that hunk must
+  // quote — are bytes the model would pay for and never spend.
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome =
+    fs.read_tool_with([fixed_scheme("demo", "alpha\nbeta\n")]).run(
+      ctx,
+      args([#("path", json.String("demo://thing"))]),
+    )
+  assert outcome.is_error == False
+  assert first_text(outcome) == "alpha\nbeta"
+  assert !string.contains(first_text(outcome), "digest:")
+  assert !string.contains(first_text(outcome), "|alpha")
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "scheme") == Ok(json.String("demo"))
+  assert list.key_find(fields, "total_lines") == Ok(json.Int(2))
+  assert list.key_find(fields, "has_more") == Ok(json.Bool(False))
+  assert list.key_find(fields, "digest") == Error(Nil)
+}
+
+pub fn scheme_read_splits_on_the_first_separator_test() {
+  // Everything after the first `://` is the reference, separator and
+  // all. A split on the last one would hand `cap://mcp/github` to a
+  // scheme named `cap://mcp` that nobody registered.
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome =
+    fs.read_tool_with([echoing_scheme("demo")]).run(
+      ctx,
+      args([#("path", json.String("demo://a://b"))]),
+    )
+  assert outcome.is_error == False
+  assert first_text(outcome) == "ref=a://b"
+}
+
+pub fn scheme_read_windows_by_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome =
+    fs.read_tool_with([fixed_scheme("demo", "l1\nl2\nl3\nl4\nl5")]).run(
+      ctx,
+      args([
+        #("path", json.String("demo://thing")),
+        #("offset", json.Int(2)),
+        #("limit", json.Int(2)),
+      ]),
+    )
+  assert outcome.is_error == False
+  assert first_text(outcome) == "l2\nl3"
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "offset") == Ok(json.Int(2))
+  assert list.key_find(fields, "limit") == Ok(json.Int(2))
+  assert list.key_find(fields, "total_lines") == Ok(json.Int(5))
+  assert list.key_find(fields, "has_more") == Ok(json.Bool(True))
+}
+
+pub fn scheme_read_past_the_end_says_so_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome =
+    fs.read_tool_with([fixed_scheme("demo", "l1\nl2")]).run(
+      ctx,
+      args([
+        #("path", json.String("demo://thing")),
+        #("offset", json.Int(9)),
+      ]),
+    )
+  assert outcome.is_error == False
+  assert first_text(outcome) == "(no lines at offset 9; the answer has 2 lines)"
+}
+
+pub fn scheme_read_refuses_an_oversized_window_test() {
+  // The same inline ceiling a file read is held to, and refused rather
+  // than spilled: the window is the knob that makes the answer fit.
+  let #(ctx, _filesystem) = memory_ctx()
+  let body = string.repeat(string.repeat("y", 100) <> "\n", 1000)
+  let outcome =
+    fs.read_tool_with([fixed_scheme("demo", body)]).run(
+      ctx,
+      args([#("path", json.String("demo://thing"))]),
+    )
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "smaller window")
+}
+
+pub fn an_unregistered_scheme_names_the_served_ones_test() {
+  // The refusal is the model's one chance to learn what it may ask for,
+  // and it is spent in the round trip the wrong guess already cost.
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome =
+    fs.read_tool_with([fixed_scheme("cap", "x"), fixed_scheme("job", "y")]).run(
+      ctx,
+      args([#("path", json.String("history://42"))]),
+    )
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "unknown scheme `history://`")
+  assert string.contains(first_text(outcome), "this host serves cap://, job://")
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "error") == Ok(json.String("unknown_scheme"))
+}
+
+pub fn a_scheme_reference_is_never_retried_as_a_path_test() {
+  // A reference that names no scheme must not fall through to the file
+  // resolver: "no such file" answers a question the model did not ask,
+  // and it is the one path on which a crafted argument would reach
+  // `resolve_real` wearing a scheme's clothes.
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "alpha\n")
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("demo://a.txt"))]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "unknown scheme")
+  assert string.contains(first_text(outcome), "no schemes")
+  assert !string.contains(first_text(outcome), "not found")
+}
+
+pub fn a_path_without_a_separator_still_reads_a_file_test() {
+  // Registering schemes changes nothing about the file read: same
+  // anchors, same digest, same bytes.
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "alpha\nbeta\n")
+  let with_schemes =
+    fs.read_tool_with([fixed_scheme("demo", "unused")]).run(
+      ctx,
+      args([#("path", json.String("a.txt"))]),
+    )
+  let plain = fs.read_tool().run(ctx, args([#("path", json.String("a.txt"))]))
+  assert with_schemes.is_error == False
+  assert first_text(with_schemes) == first_text(plain)
+  assert string.contains(first_text(with_schemes), "digest: ")
+}
+
+pub fn each_scheme_refusal_renders_as_an_error_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let refused = fn(refusal) {
+    fs.read_tool_with([refusing_scheme("demo", refusal)]).run(
+      ctx,
+      args([#("path", json.String("demo://thing"))]),
+    )
+  }
+
+  let missing = refused(fs.NotFound(what: "widget `w1`"))
+  assert missing.is_error
+  assert first_text(missing) == "no such widget `w1`"
+
+  let absent = refused(fs.Unavailable(reason: "this session runs no widgets"))
+  assert absent.is_error
+  assert first_text(absent) == "this session runs no widgets"
+
+  let bad = refused(fs.Malformed(reason: "`w1` is not a widget id"))
+  assert bad.is_error
+  assert first_text(bad) == "malformed reference: `w1` is not a widget id"
+
+  let codes =
+    list.map(
+      [
+        refused(fs.NotFound(what: "w")),
+        refused(fs.Unavailable(reason: "r")),
+        refused(fs.Malformed(reason: "r")),
+      ],
+      fn(outcome) {
+        let assert Some(json.Object(fields)) = outcome.details
+        list.key_find(fields, "error")
+      },
+    )
+  assert codes
+    == [
+      Ok(json.String("scheme_not_found")),
+      Ok(json.String("scheme_unavailable")),
+      Ok(json.String("scheme_malformed")),
+    ]
+}
+
+pub fn the_description_renders_the_schemes_in_registration_order_test() {
+  // These bytes sit in the provider's cached prefix, so the rule has to
+  // be a function of the list alone: no schemes is the text that shipped
+  // before, and the order is the order the host registered.
+  let none = fs.read_tool_with([])
+  assert none.description == fs.read_tool().description
+  assert none.prompt_snippet == fs.read_tool().prompt_snippet
+  assert !string.contains(none.description, "://")
+
+  let one = fs.read_tool_with([fixed_scheme("cap", "x")])
+  assert one.description == none.description <> " `cap://x` reads a cap object."
+  let assert Some(snippet) = one.prompt_snippet
+  let assert Some(base_snippet) = none.prompt_snippet
+  assert snippet == base_snippet <> " `cap://x` reads a cap object."
+
+  let two =
+    fs.read_tool_with([fixed_scheme("cap", "x"), fixed_scheme("job", "y")])
+  assert two.description
+    == none.description
+    <> " `cap://x` reads a cap object."
+    <> " `job://x` reads a job object."
+
+  // Registration order, not sorted order: reversing the list reverses
+  // the sentences.
+  let reversed =
+    fs.read_tool_with([fixed_scheme("job", "y"), fixed_scheme("cap", "x")])
+  assert reversed.description != two.description
+}
+
+pub fn a_scheme_read_is_replay_safe_and_concurrent_test() {
+  // A scheme read observes and causes nothing, so a replay is harmless
+  // even where the answer has moved on since.
+  let tool_value = fs.read_tool_with([fixed_scheme("demo", "x")])
+  assert tool_value.replay == tool.Safe
+  assert tool_value.execution_mode == tool.Concurrent
+  assert tool_value.name == "fs_read"
+}
+
 // Magic bytes, including UTF-8-compatible GIF headers, take precedence over
 // line rendering. File extensions do not participate in classification.
 pub fn read_supported_images_as_image_blocks_test() {

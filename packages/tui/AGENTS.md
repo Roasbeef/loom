@@ -350,6 +350,22 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   control requires `wss`. The codec
   caps a complete frame before JSON parsing, but does not claim a preallocation
   bound in the inherited Stratus parser.
+- `tui/bootstrap.Options.roster` is the launcher's `--tools
+  <minimal|full>` flag, as an `Option(tui/daemon/protocol.Roster)` where
+  `None` means inherit. It is the one launch option deliberately absent
+  from `daemon_launch_arguments`: a daemon is started once and outlives
+  any number of sessions, so a per-session choice must not become the
+  flag a shared daemon boots with. It travels instead on
+  `sessions.create`, where `None` sends no field at all, which is how the
+  daemon tells "inherit" from a named roster. The flag parser
+  (`tui.local_options`, `@internal` so a test can read the flag table
+  without driving a terminal) refuses any other word on the spot rather
+  than forwarding it to a server that would have to guess, and a creation
+  retry under a retained key must repeat the same choice or the daemon
+  answers `conflict`. `scripts/cli_help_test.sh` holds `loom --help` to
+  listing it and `loomd --help` to not.
+  [Protocol 039](../../protocol-change/039-session-tool-roster.md) defines
+  the field.
 - `tui/bootstrap.Options` describes local-launch inputs, while
   `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
   connection path. `tui/bootstrap.SessionChoice` is the canonical workspace

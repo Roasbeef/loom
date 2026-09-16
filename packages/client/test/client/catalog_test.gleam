@@ -707,6 +707,7 @@ pub fn absent_tools_table_permits_network_without_inheriting_secrets_test() {
     == Ok(
       catalog.ToolsConfig(
         network: catalog.ToolNetworkFull,
+        roster: catalog.Full,
         env: [],
         set: [],
         path: [],
@@ -730,6 +731,7 @@ path = [\"/opt/homebrew/bin\", \"/usr/local/go/bin\"]\n\n[tools.set]\nGH_CONFIG_
     == Ok(
       catalog.ToolsConfig(
         network: catalog.ToolNetworkFull,
+        roster: catalog.Full,
         env: ["GH_TOKEN"],
         set: [#("GH_CONFIG_DIR", "/home/me/.config/gh")],
         path: ["/opt/homebrew/bin", "/usr/local/go/bin"],
@@ -761,6 +763,65 @@ pub fn a_relative_path_entry_is_refused_test() {
 pub fn unknown_tools_key_refused_test() {
   let assert Error("unknown key `netwrok` in [tools]" <> _rest) =
     catalog.parse_tools(with_tools("netwrok = \"full\""))
+}
+
+// --- the wire tool roster --------------------------------------------------
+//
+// Which built-in tools a session registers is an operator's decision,
+// and the price behind it is the provider's cached prefix: every
+// definition is paid for on every request of every strand. The parser's
+// job is to make the two postures nameable and to refuse anything else
+// in words, because a roster that quietly fell back to the default would
+// hide the typo for the life of the deployment.
+
+pub fn the_minimal_roster_parses_test() {
+  let assert Ok(parsed) =
+    catalog.parse_tools(with_tools("roster = \"minimal\""))
+    as "`minimal` is one of the two rosters"
+  assert parsed.roster == catalog.Minimal
+}
+
+pub fn the_full_roster_parses_test() {
+  let assert Ok(parsed) = catalog.parse_tools(with_tools("roster = \"full\""))
+    as "`full` is one of the two rosters"
+  assert parsed.roster == catalog.Full
+}
+
+pub fn an_absent_roster_takes_the_default_test() {
+  // Both ways of saying nothing land on the same value, which is why the
+  // parser reads the default out of `default_tools` rather than naming a
+  // variant of its own.
+  assert catalog.default_tools().roster == catalog.Full
+  let assert Ok(absent) = catalog.parse_tools(minimal)
+    as "a catalogue with no [tools] table parses"
+  assert absent.roster == catalog.Full
+  let assert Ok(omitted) = catalog.parse_tools(with_tools("network = \"off\""))
+    as "a [tools] table may omit the roster"
+  assert omitted.roster == catalog.Full
+}
+
+pub fn an_unknown_roster_word_is_refused_in_words_test() {
+  // Not a default: an operator who typed `minimum` meant something.
+  let assert Error(message) =
+    catalog.parse_tools(with_tools("roster = \"minimum\""))
+    as "an unrecognized roster word must be refused"
+  assert message
+    == "tools.roster must be \"minimal\" or \"full\", got \"minimum\""
+}
+
+pub fn a_non_string_roster_is_refused_test() {
+  let assert Error("tools.roster must be a string" <> _rest) =
+    catalog.parse_tools(with_tools("roster = true"))
+}
+
+pub fn the_tools_allow_list_names_the_roster_test() {
+  // The refusal's allow-list is what an operator reads to find the key
+  // they meant, so a new key that is not in it is a key nobody discovers.
+  let assert Error(message) =
+    catalog.parse_tools(with_tools("rostre = \"minimal\""))
+    as "a misspelled roster key is still an unknown key"
+  assert string.contains(message, "unknown key `rostre` in [tools]")
+  assert string.contains(message, "roster")
 }
 
 pub fn unknown_tools_network_word_refused_test() {

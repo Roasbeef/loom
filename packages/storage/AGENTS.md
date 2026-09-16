@@ -21,6 +21,19 @@ by WP-C-full.
   before their limit. `archived_page` uses the same revision and bounded shape.
   [Protocol 035](../../protocol-change/035-session-archive.md) defines the boundary.
 
+- `Registration.roster` carries the tool roster a creation request named:
+  `minimal`, `full`, or the empty word for a session that named none and
+  inherits the daemon's own configured default. Schema version 4 adds the
+  column with that empty default, so every registration written before it
+  reads as inherit. Versions 1, 2 and 3 migrate transactionally
+  through `catalogue_rosters_schema`. This layer does not know the
+  vocabulary: it stores the word the client chose and hands it back
+  unchanged, and the column's own `CHECK` constraint is what keeps a
+  third word out. Because the roster is creation metadata, it takes part
+  in the comparison a creation retry makes through `by_request_key`.
+  [Protocol 039](../../protocol-change/039-session-tool-roster.md) defines
+  the field.
+
 - `catalogue.rename` writes a session display-name override and increments the
   catalogue revision in one immediate transaction. The version-2 migration adds
   `catalogue_session_names`; the embedded `catalogue_names_schema` migrates
@@ -92,7 +105,8 @@ by WP-C-full.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the
   version-2 name-override table; `catalogue_archives_schema` embeds the version-3
-  archive overlay. Generation loads all four schemas for
+  archive overlay; `catalogue_rosters_schema` embeds the version-4 roster
+  column. Generation loads every schema for
   query checking, but each database executes only its own schema. `make gen-sql`
   regenerates these artifacts, and tests pin them to their sources.
 - `storage/catalogue.{query, statement, atomic, coherent}` are internal
@@ -352,6 +366,16 @@ by WP-C-full.
   version bump commit in one transaction. The same admission transaction
   serializes racing creators, so N concurrent opens of a fresh path write
   exactly one catalog row and every loser gets an in-band `OpenError`.
+- **A catalogue migration replays exactly the steps its version has not
+  seen, and it reads before it writes.** `initialize_schema` reads the
+  revision first, which is the proof that this really is a catalogue and
+  not a same-application-id file with an unreadable meta table, so a
+  migration never writes into a database it could not read. Each older
+  version then replays the steps it is missing and nothing else: a
+  version-3 file takes the roster column alone, a version-1 file takes
+  names, archives and rosters in order, and the whole sequence commits in
+  one transaction with the `user_version` bump. A fresh file gets every
+  column from `schema.sql` itself, so no migration is replayed over it.
 - **The precise rewrite is the sole sanctioned exception to "entries are
   never modified"** (pi §2.9), and it is offline: an unexpired writer lease
   refuses it with `RewriteLeaseHeld`. The rewrite then *claims and holds*

@@ -27,7 +27,7 @@ fn run_with_script(
   let filesystem = memory_fs.filesystem(memory_fs.start())
   let recorded = process.new_subject()
   let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
-  let outcome = bash.tool(job.unavailable()).run(ctx, args)
+  let outcome = bash.tool(job.unavailable(), bash.ViaPollTool).run(ctx, args)
   #(outcome, recorded)
 }
 
@@ -119,7 +119,7 @@ pub fn bash_asks_for_every_root_the_base_grants_test() {
       "/repo/.git",
     ])
   let _outcome =
-    bash.tool(job.unavailable()).run(
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(
       tool.Ctx(..ctx, base_policy: widened),
       command_args("git commit"),
     )
@@ -284,7 +284,11 @@ pub fn bash_shows_the_observer_each_chunk_as_it_lands_test() {
       recorded,
       observed,
     )
-  let outcome = bash.tool(job.unavailable()).run(ctx, command_args("make"))
+  let outcome =
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(
+      ctx,
+      command_args("make"),
+    )
   assert outcome.is_error == False
 
   let assert Ok(first) = process.receive(observed, 1000)
@@ -335,7 +339,10 @@ pub fn bash_observes_output_before_settlement_test() {
   process.spawn_unlinked(fn() {
     process.send(
       finished,
-      bash.tool(job.unavailable()).run(ctx, command_args("make")),
+      bash.tool(job.unavailable(), bash.ViaPollTool).run(
+        ctx,
+        command_args("make"),
+      ),
     )
   })
 
@@ -377,7 +384,8 @@ pub fn bash_observer_sees_a_bounded_tail_of_a_long_stream_test() {
       recorded,
       observed,
     )
-  let outcome = bash.tool(job.unavailable()).run(ctx, command_args("yes"))
+  let outcome =
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(ctx, command_args("yes"))
   assert outcome.is_error == False
   let assert Ok(_first) = process.receive(observed, 1000)
   let assert Ok(second) = process.receive(observed, 1000)
@@ -405,7 +413,8 @@ pub fn bash_observer_is_shown_no_text_for_binary_output_test() {
       recorded,
       observed,
     )
-  let _outcome = bash.tool(job.unavailable()).run(ctx, command_args("cat"))
+  let _outcome =
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(ctx, command_args("cat"))
   let assert Ok(seen) = process.receive(observed, 1000)
   assert seen
     == tool.OutputTail(stream: framing.Stdout, tail: "", total_bytes: 3)
@@ -476,7 +485,10 @@ pub fn bash_policy_refusal_carries_wanted_grants_test() {
       refusal: broker.PolicyRefused(denial:),
     )
   let outcome =
-    bash.tool(job.unavailable()).run(ctx, command_args("curl example.com"))
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(
+      ctx,
+      command_args("curl example.com"),
+    )
   assert outcome.is_error
   assert string.contains(first_text(outcome), "policy refused")
   let assert Some(json.Object(fields)) = outcome.details
@@ -516,14 +528,15 @@ pub fn bash_bad_timeout_test() {
 // --- contract flags ------------------------------------------------------
 
 pub fn bash_flags_test() {
-  let bash_tool = bash.tool(job.unavailable())
+  let bash_tool = bash.tool(job.unavailable(), bash.ViaPollTool)
   assert bash_tool.name == "bash"
   assert bash_tool.replay == tool.Never
   assert bash_tool.execution_mode == tool.Exclusive
 }
 
 pub fn bash_schema_requires_command_test() {
-  let assert json.Object(fields) = bash.tool(job.unavailable()).schema
+  let assert json.Object(fields) =
+    bash.tool(job.unavailable(), bash.ViaPollTool).schema
   assert list.key_find(fields, "required")
     == Ok(json.Array([json.String("command")]))
 }
@@ -542,7 +555,10 @@ fn run_under_base(
   let recorded = process.new_subject()
   let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
   let _outcome =
-    bash.tool(job.unavailable()).run(tool.Ctx(..ctx, base_policy: base), args)
+    bash.tool(job.unavailable(), bash.ViaPollTool).run(
+      tool.Ctx(..ctx, base_policy: base),
+      args,
+    )
   recorded
 }
 

@@ -47,6 +47,9 @@ client|client@daemon_soak_test|asserts erlang:system_info(atom_count) is unchang
 cap|cap_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|cap@mcp_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|cap@search_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|cap@history_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|cap@memory_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|cap@context_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|runtime_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|strand_test|depends on the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_term slot for every serving test

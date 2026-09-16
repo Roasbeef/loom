@@ -24,7 +24,7 @@ and the reason each was deferred.
 A model working in Loom cannot start something and come back to it. Every
 `bash` call is foreground: the tool's `run` blocks its effect process for
 the whole execution (`runtime/effects.gleam:252-253`), and past its budget
-the call returns the literal `[command timed out]` (`tools/bash.gleam:222`)
+the call returns the literal `[command timed out]` (`tools/bash.gleam:247`)
 with the process reaped. The motivating case is small and exact: start
 `tail -f build.log`, keep working, every so often ask "what has it printed
 since I last looked", and eventually stop it. Today the only way to watch
@@ -114,7 +114,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:3251`), bound to a
+beside `extension_hosts` (`client/serve.gleam:3393`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -159,7 +159,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:120-127`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:351`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:413`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong
@@ -299,8 +299,16 @@ stream the runner already folds.
 Tool-surface cost is arithmetic (`client/contributions.gleam:145-152`):
 every permanent definition is the byte prefix of the provider's cached
 region and is paid on every request of every strand for the session. The
-roster is eighteen fully wired. So the surface is one flag and three
-tools, not five.
+roster was eighteen fully wired when this was written. So the surface is
+one flag and three tools, not five.
+
+Since then the roster has become an operator setting
+(`docs/design-notes/tool-roster-and-dyn.md`). Under `full` the three job
+tools are registered as described here and the count is twenty-one. Under
+`minimal` none of them is: `bash` keeps its jobs door, so `mode:
+"background"` still admits a job. A job is read back through
+`job://<id>` on `fs_read`, or reached in full from a program through
+`cap/job`.
 
 `bash` gains `mode`, a two-value enum (`"foreground"`, the default, or
 `"background"`), modelled on the Gleam side as a two-variant type rather

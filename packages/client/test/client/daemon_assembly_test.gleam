@@ -7,6 +7,7 @@ import client/catalog
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
+import client/daemon/protocol as daemon_protocol
 import client/history
 import client/owned_assembly_test
 import client/serve
@@ -115,6 +116,7 @@ fn create(
       workspace: settings.workspace,
       name: "session " <> string.inspect(seed),
       configuration: "",
+      roster: daemon_protocol.InheritRoster,
     )
   let assert Ok(view) =
     manager.create(

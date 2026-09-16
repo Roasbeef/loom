@@ -37,6 +37,7 @@ import client/codemode as codemode_wiring
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
+import client/daemon/protocol as daemon_protocol
 import client/distill
 import client/distillpass
 import client/escalate
@@ -74,6 +75,7 @@ import client/scratch
 import client/secrets
 import client/server
 import client/session_git
+import client/session_roster
 import client/skill_tool
 import client/system_prompt
 import client/wiring
@@ -121,6 +123,7 @@ import telemetry/log.{type Logger}
 import tom
 import tools/advise
 import tools/agent.{type Agency}
+import tools/context as context_tool
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -374,6 +377,10 @@ pub type Settings {
     /// has built one. The default is `WorkspaceOnly` — the seam an
     /// unconfigured server has always served.
     codemode_seams: codemode_wiring.Seams,
+    /// The explicit seam override, retained when resolving a legacy roster.
+    codemode_seams_override: Option(String),
+    /// The original creation request, separate from its resolved default.
+    roster_request: daemon_protocol.RosterRequest,
     /// The triggered project rules from the same `loom.toml`, in file
     /// order. Empty — the ordinary case — starts no scanner at all, so
     /// a server nobody configured rules for runs exactly the processes
@@ -808,9 +815,30 @@ pub fn resolve_managed(
       selected.index_path,
     )),
   )
+
+  // The creation request overrides the daemon's candidate default. Boot
+  // later resolves that candidate through session_roster.prepare before
+  // constructing the registry, so inherited defaults are selected only
+  // once. The original request remains in the catalogue for retry
+  // equality (protocol-change/039). An unknown stored word refuses the
+  // boot rather than silently inheriting a different surface.
+  use roster <- result.try(daemon_protocol.roster_request(registration.roster))
+  let session_tools = roster_for_session(settings.tools, roster)
+
+  // `resolve` above answered the seams question against the daemon's own
+  // `[tools] roster`; the registration may have just overridden it. The
+  // seams follow the roster this session actually got, so `--tools
+  // minimal` on a daemon configured `full` still reaches `cap/strand`.
+  use codemode_seams <- result.try(seams_for(
+    flags.codemode_seams,
+    session_tools.roster,
+  ))
   Ok(
     Settings(
       ..settings,
+      tools: session_tools,
+      roster_request: roster,
+      codemode_seams:,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
       // The daemon's secrets, not the daemon's directory. Masking the
@@ -820,6 +848,22 @@ pub fn resolve_managed(
       base_policy: protecting_state_root(settings.base_policy, state_root),
     ),
   )
+}
+
+// The registration's choice applied over the daemon's default. `Inherit`
+// is the absent field on `sessions.create`, so a session that never named
+// a roster follows the configuration it was created under.
+fn roster_for_session(
+  tools: catalog.ToolsConfig,
+  roster: daemon_protocol.RosterRequest,
+) -> catalog.ToolsConfig {
+  case roster {
+    daemon_protocol.InheritRoster -> tools
+    daemon_protocol.MinimalRoster ->
+      catalog.ToolsConfig(..tools, roster: catalog.Minimal)
+    daemon_protocol.FullRoster ->
+      catalog.ToolsConfig(..tools, roster: catalog.Full)
+  }
 }
 
 /// Builds domain services from their stored maintenance configuration only.
@@ -1075,7 +1119,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     catalog.main_model(catalogue)
     |> result.replace_error("the catalogue routes no usable main model"),
   )
-  use codemode_seams <- result.try(parse_codemode_seams(flags.codemode_seams))
+  use codemode_seams <- result.try(seams_for(flags.codemode_seams, tools.roster))
 
   // Every `[secrets]` entry run here, because the gateway built a few
   // lines down closes over the store and every later reader of a
@@ -1145,6 +1189,8 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     compaction: compaction_settings(main_entry.context_window),
     codemode_seed: seed_root(flags.codemode_seed, workspace),
     codemode_seams:,
+    codemode_seams_override: flags.codemode_seams,
+    roster_request: daemon_protocol.InheritRoster,
     rules: rule_list,
     schedules: schedule_list,
     schedule_policy:,
@@ -1225,6 +1271,40 @@ fn named_tools(value: String) -> List(String) {
   string.split(value, on: ",")
   |> list.map(string.trim)
   |> list.filter(fn(name) { name != "" })
+}
+
+/// The seams this session serves: the operator's word when there is one,
+/// and otherwise the seams the roster implies.
+///
+/// `Minimal` registers no `agent_*` tool, so a code-mode program is the
+/// only way that session reaches the orchestration plane at all — and
+/// `cap/strand` lives on the orchestration seam, which the shipped
+/// default does not serve. A roster chosen to narrow the *door* would
+/// then have silently removed the ability behind it, which is the
+/// opposite of what `Minimal` is for. So an unflagged `Minimal` serves
+/// both seams.
+///
+/// An explicit word outranks the roster in either direction: an operator
+/// who writes `--codemode-seams workspace` beside `--tools minimal` has
+/// stated a posture, and a flag the server quietly widened would be
+/// worse than one it refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.seams_for(None, catalog.Minimal)
+/// ```
+@internal
+pub fn seams_for(
+  named: Option(String),
+  roster: catalog.Roster,
+) -> Result(codemode_wiring.Seams, String) {
+  case named, roster {
+    None, catalog.Minimal -> Ok(codemode_wiring.BothSeams)
+    None, catalog.Full -> Ok(codemode_wiring.WorkspaceOnly)
+    Some(word), catalog.Minimal | Some(word), catalog.Full ->
+      parse_codemode_seams(Some(word))
+  }
 }
 
 // The `--codemode-seams` value, or the default. An unrecognised name is a
@@ -1820,6 +1900,9 @@ fn code_mode_seam(
   scratch_seam: codemode_wiring.Scratch,
   schedule_door: Option(scheduleseam.Door),
   jobs_door: jobseam.Door,
+  history_seam: Option(history_tool.History),
+  memory_seam: Option(remember.Memory),
+  context_seam: context_tool.Context,
   owner: Option(custody.Owner),
 ) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
   case discovered {
@@ -1880,6 +1963,22 @@ fn code_mode_seam(
           // the model is offered jobs unconditionally, so a program that
           // could not even ask would be the surprise.
           |> codemode_wiring.over_jobs(Some(jobs_door))
+          // `history.*`, `memory.remember` and `context.report` are
+          // answered over the same three seams the `history_search`,
+          // `remember` and `context_remaining` tools are built on, so a
+          // query a program runs is the query a tool call runs — one
+          // index, one set of bounds, one memory session, one estimate of
+          // how full the window is. A plane whose boot probe failed is
+          // `None` here exactly as it is in the registry, so the
+          // capability goes unrouted rather than refusing, and no
+          // description claims it. The context seam is unconditional
+          // because it is derived rather than opened: it reads the
+          // session this boot already has.
+          |> codemode_wiring.over_recall(
+            index: history_seam,
+            store: memory_seam,
+            context: Some(context_seam),
+          )
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
@@ -2586,6 +2685,38 @@ fn assemble_in(
     }
   })
 
+  // Resolve inheritance durably before recovery can read a strand's active
+  // names. Reusing this surface also preserves the prompt's cached tool index.
+  use surface <- result.try(
+    session_roster.prepare(
+      opened,
+      settings.roster_request,
+      settings.tools.roster,
+      fn(roster) {
+        case roster == settings.tools.roster {
+          True -> Ok(settings.codemode_seams)
+          False -> seams_for(settings.codemode_seams_override, roster)
+        }
+      },
+    ),
+  )
+
+  // An explicit seam restriction must not be widened by the saved surface.
+  // Changing a session's surface requires a new session, never a quiet override.
+  use Nil <- result.try(case settings.codemode_seams_override {
+    Some(_) if settings.codemode_seams != surface.seams ->
+      Error(
+        "The saved session uses different code-mode seams; restore its original seam setting or create a new session",
+      )
+    _ -> Ok(Nil)
+  })
+  let settings =
+    Settings(
+      ..settings,
+      tools: catalog.ToolsConfig(..settings.tools, roster: surface.roster),
+      codemode_seams: surface.seams,
+    )
+
   // The effect plane: a pool of jailed helpers behind the one broker.
   use #(pool, broker_actor) <- result.try(start_effect_plane_in(
     settings.helper_path,
@@ -2735,6 +2866,53 @@ fn assemble_in(
       clearance_ms: jobs_clearance_ms,
     ))
 
+  // Recall, on the same two-name pattern and gated the same way: the
+  // holder that owns the index cannot exist until the runtime has been
+  // opened (its canonical session id is what a scoped query and every
+  // hit from this session are named by), so the tool seam closes over
+  // the name now and the holder starts under it further down. An index
+  // that will not open registers no tool at all.
+  let history_name = address.new_address(namespace)
+  let history_pulls = address.new_address(namespace)
+  use history_seam <- result.try(case services, ownership {
+    None, _ -> Ok(history_seam(index_path, history_name, logger))
+    Some(shared), Some(#(_, identity)) ->
+      Ok(
+        option.map(domain_service.history(shared), fn(shared) {
+          history.seam_for(shared, identity)
+        }),
+      )
+    Some(_), None ->
+      Error("shared domain assembly requires owned session identity")
+  })
+
+  // The memory door, gated the same way and for the same reason: a
+  // `remember` definition renders into the provider's cached byte prefix
+  // and is paid for on every request, so a host whose memory plane will
+  // not open registers no tool and says so once.
+  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
+
+  // The model's own door onto the compaction arithmetic. It reads the
+  // strand's window the way the threshold will — the strand's own
+  // catalogue entry, else the configured fallback — so what the model is
+  // told and what it is compacted on are one number.
+  let facts = catalogue_facts(settings.catalog)
+  let context_seam =
+    checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
+      wiring.strand_window(
+        opened,
+        facts,
+        strand,
+        fallback: settings.context_window,
+      )
+    })
+
+  // All three seams are decided before the code-mode configuration rather
+  // than after it, because code mode is the *second* door onto each of
+  // them: `history.*`, `memory.remember` and `context.report` are
+  // serviced over these very records, so a configuration built first
+  // would have to be revised afterwards and the tool seam derived from it
+  // would carry the unrevised one.
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -2749,6 +2927,9 @@ fn assemble_in(
     scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
     schedule_door,
     jobs_door,
+    history_seam,
+    memory_seam,
+    context_seam,
     owner,
   ))
   let code_mode = option.map(code_mode_host, codemode_wiring.seam)
@@ -2791,32 +2972,6 @@ fn assemble_in(
   list.each(unset_names, fn(name) {
     log.warn(logger, "tools.env_unset", [field.ident(key: "name", value: name)])
   })
-
-  // Recall, on the same two-name pattern and gated the same way: the
-  // holder that owns the index cannot exist until the runtime has been
-  // opened (its canonical session id is what a scoped query and every
-  // hit from this session are named by), so the tool seam closes over
-  // the name now and the holder starts under it further down. An index
-  // that will not open registers no tool at all.
-  let history_name = address.new_address(namespace)
-  let history_pulls = address.new_address(namespace)
-  use history_seam <- result.try(case services, ownership {
-    None, _ -> Ok(history_seam(index_path, history_name, logger))
-    Some(shared), Some(#(_, identity)) ->
-      Ok(
-        option.map(domain_service.history(shared), fn(shared) {
-          history.seam_for(shared, identity)
-        }),
-      )
-    Some(_), None ->
-      Error("shared domain assembly requires owned session identity")
-  })
-
-  // The memory door, gated the same way and for the same reason: a
-  // `remember` definition renders into the provider's cached byte prefix
-  // and is paid for on every request, so a host whose memory plane will
-  // not open registers no tool and says so once.
-  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
 
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
@@ -2864,21 +3019,6 @@ fn assemble_in(
       extension_memory.for_session(agency_config),
     )
 
-  // The model's own door onto the compaction arithmetic. It reads the
-  // strand's window the way the threshold will — the strand's own
-  // catalogue entry, else the configured fallback — so what the model is
-  // told and what it is compacted on are one number.
-  let facts = catalogue_facts(settings.catalog)
-  let context_seam =
-    checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
-      wiring.strand_window(
-        opened,
-        facts,
-        strand,
-        fallback: settings.context_window,
-      )
-    })
-
   // The advisor, on the same two-name pattern as the scratch store and
   // the satellite registry: the address is minted now so the `advise`
   // seam and the hook wrapper can close over it, and the actor that
@@ -2910,7 +3050,8 @@ fn assemble_in(
   })
   use tool_registry <- result.try(
     list.append(
-      contributions.built_in(
+      contributions.built_in_for(
+        settings.tools.roster,
         Some(agency_seam),
         code_mode,
         history_seam,

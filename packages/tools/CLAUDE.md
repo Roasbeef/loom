@@ -12,6 +12,15 @@ reads share the workspace checks and 8 MiB file bound with text reads. Only
 text reads use offset/limit and hashline anchors; `cap/fs.read` remains text. WP-I.
 Tool failures are data, never crashes.
 
+`fs_read` also resolves **schemes**: a `path` containing `://` names one
+of Loom's own objects rather than a file, and the host registers the
+resolvers for the planes it opened. That lives inside `fs_read` rather
+than beside it because a tool definition is paid for in the provider's
+cached prefix on every request of every strand, called or not, while a
+scheme costs one sentence on a tool the model already reaches for. Two
+ship: `cap://` for the capability prelude's documentation and `job://`
+for a background job's state.
+
 Also the `agent_*` family — `agent_spawn`, `agent_wait`, `agent_send`,
 `agent_note`, `agent_notes`, `agent_roster` — the six shells through
 which a model reaches the messaging plane. They are shells only: each is
@@ -190,12 +199,34 @@ was asked.
   eight `satellite.RunError` variants become the four that read
   differently to a model, with the pipeline's reason text carried
   verbatim.
-- `tools/prelude.surfaces` — **generated** (`make gen-prelude`): every
-  capability-prelude module paired with its public surface — `pub type`
+- `tools/prelude.{surfaces, type_surfaces}` — **generated**
+  (`make gen-prelude`): the same capability-prelude modules in the same
+  order, rendered twice from `gleam export package-interface` over
+  `packages/cap`. `surfaces` is the whole public surface (`pub type`
   declarations with their constructors, `pub const`, `pub fn` signatures,
-  each under the prelude's own `///` docs — rendered from `gleam export
-  package-interface` over `packages/cap`. Unfiltered by design;
-  `tools/codemode` selects from it through a seam's `allowed_imports`.
+  each under the prelude's own `///` docs), and is what `cap://<module>`
+  reads out. `type_surfaces` is that block cut after the type
+  declarations and is what the `code_mode` description renders; each
+  entry is a character-for-character prefix of its `surfaces`
+  counterpart, so the read extends what the model was shown rather than
+  restating it. Both are unfiltered by design; `tools/codemode` selects
+  from them through a seam's `allowed_imports`.
+- `tools/fs.{Scheme, SchemeRefusal}` with `read_tool_with` — the
+  `fs_read` resolver for objects that are not files. A `path` carrying
+  `://` is routed by scheme name before any path discipline runs and is
+  never retried as a file, so an unregistered scheme is refused by name
+  rather than answered "no such file". `Scheme(name:, summary:, read:)`:
+  `name` is the word before the `://`, `summary` is one sentence rendered
+  verbatim into the description and the prompt snippet, and `read` is
+  total, receiving everything after the `://` and answering a
+  `SchemeRefusal` of `NotFound` / `Unavailable` / `Malformed`. An empty
+  reference is how a scheme offers an index of itself. `read_tool()` is
+  `read_tool_with([])` and renders the bytes it always has.
+  Two schemes ship, both wired from the planes a host opened
+  (`client/contributions.built_in_for`): `tools/codemode.cap_scheme`
+  answers `cap://<module>` with one prelude module's whole surface and
+  `cap://` with the index, and `tools/job.scheme` answers `job://<id>`
+  with a zero-wait poll and `job://` with the listing.
 - `tools/history.{History, Hit, Scope, Refusal, tool, tool_name,
   clamp_limit, min_limit, max_limit, default_limit, fence}` — the recall
   seam and the `history_search` tool over it. `History.search` takes a
@@ -550,7 +581,20 @@ was asked.
 - **`fs_read` is exempt from blob overflow.** Text windowed reads are its
   bounding mechanism, and anchors inside an elided blob would defeat
   hashline editing. Image blocks are bounded by the 8 MiB file limit and
-  remain inline for vision providers. Bash and grep output do overflow.
+  remain inline for vision providers. Bash and grep output do overflow. A
+  scheme read is held to the same inline ceiling and refuses above it rather than
+  spilling, because a spill costs a second round trip to read back and
+  `limit` is the knob that makes the answer fit.
+- **A scheme read renders plain, and stays `replay: Safe`.** It carries no
+  digest line and no `line:anchor|` prefixes, because nothing edits a
+  prelude module's documentation or a job's state; `offset`/`limit` still window
+  it by line, through the file reader's own windowing, so a model that
+  learns to page one has learned to page the other. `job://` stays `Safe`
+  where `job_poll` is `Never` because it polls with `wait_ms: 0` from
+  `Cursors(0, 0)`: it carries no cursor, advances nothing, and a replay
+  re-reads the same retained tail. What `Never` guards against is a
+  cursor moved past output the model never saw, which is not what a
+  later, different answer is.
 - **Environments are allowlist-constructed, never inherited.** `Ctx.env`
   carries what the caller built; the helper drops anything absent from the
   policy's `env_allow` even if the broker sent it.
@@ -605,30 +649,36 @@ was asked.
   concurrent call in the same step would open that ledger with *its*
   budget — and a satellite needs two outstanding effects to exist at
   all.
-- **The description carries the prelude's signatures, and they are
-  filtered through the allowlist rather than through the package.** A
-  model writing a program has no autocomplete and no language server: it
-  authors blind and learns a signature from a `CompileFailed` round trip
-  carrying a whole hermetic build. So every module a seam admits is
-  rendered into the description in full, statically — nothing is added to
-  the tool array and nothing varies between turns, because tool bytes are
-  the byte prefix of the provider's cached region and a surface that
-  changes per turn does not cost a cache write, it costs the cache
-  (issue #36). `gleam export package-interface` reports fourteen modules
-  and the three seams admit twelve between them: `cap/runtime` and
-  `cap/mcp` are on none,
-  so `surface_text` runs each `SeamOffer.allowed_imports` over
-  `prelude.surfaces` and not the other way round. Advertising a module
-  vetting will reject is the same class of lie as classifying a
-  submission by reading its imports. The signatures follow the same
-  per-seam split as the import lists — shared modules stated once, each
-  seam naming only what it adds — so an orchestration-only host pays for
-  `cap/strand` and `cap/report` and for none of the other nine. Measured
-  against the shipped allowlists, the whole description is 17,678 bytes
-  for a workspace-only host, 15,205 for an orchestration-only one, and
-  28,818 for a host serving both; about half of that is the `pub type`
-  declarations, which are not optional because a program that cannot name
-  `proc.Output`'s `stdout` field cannot read the output it paid for.
+- **The description carries an index and the types; the signatures are
+  read on demand. Both are filtered through the allowlist rather than
+  through the package.** A model writing a program has no autocomplete
+  and no language server: it authors blind and learns a signature from a
+  `CompileFailed` round trip carrying a whole hermetic build (issue #36).
+  So every module a seam admits is rendered into the description
+  statically: its heading, its purpose line and its `pub type`
+  declarations, from `prelude.type_surfaces`. The legend says in one
+  sentence that function signatures are not there and that `fs_read` of
+  `cap://<module>` returns them. Nothing is added to the tool array
+  either way, because `cap://` is a scheme on a tool that is already
+  registered. The cut is where it is because the halves fail differently:
+  a signature can be read when it is wanted, while a program that cannot
+  name `proc.Output`'s `stdout` field cannot read the output it paid for,
+  so the declarations stay where they cannot be missed. `cap/runtime` and
+  `cap/mcp` are on no seam's allowlist, so `type_surface_text` runs each
+  `SeamOffer.allowed_imports` over the artifact and not the other way
+  round. `cap_scheme` applies the same filter to the same modules, for
+  the same reason: a door onto the documentation must not be wider than
+  the door onto the thing it documents. Advertising a module vetting will reject is the
+  same class of lie as classifying a submission by reading its imports. A
+  host-generated `cap/mcp/<server>` façade is indexed rather than
+  rendered, because it carries no separable type section to keep. The
+  index follows the same per-seam split as the import lists, shared
+  modules stated once. Measured on the wire as name plus description plus
+  schema against the shipped allowlists, the `code_mode` entry went from
+  52,162 bytes to 25,690 for a workspace-only host, 17,753 to 10,698 for
+  an orchestration-only one, and 64,842 to 33,472 for a host serving
+  both. `the_workspace_description_stays_under_its_bound_test` pins the
+  first under 28,000 bytes.
 - **A code-mode result never implies a jail that was not applied.** The
   seam hands back an `Enforcement` naming *both* jailed stages — the
   hermetic build and the satellite node — as a record rather than a

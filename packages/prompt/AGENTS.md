@@ -104,11 +104,28 @@ sessions.
 The default system pack carries the canonical sections — `identity`,
 `tool_discipline`, `available_tools`, `delegation`, `conduct`,
 `environment`, `sandbox`, `repository_guidance` — plus the fragments
-three of them select between. `available_tools` renders the host's tool
+five of them select between. `available_tools` renders the host's tool
 index through the `_available_tools` fragment and disappears entirely on
 a host whose registry offered no snippets.
 `pack.canonical_sections` is the list, in render order, and the shipped
-pack is held against it.
+pack is held against it. The shipped version is `loom-default-9`.
+
+Four bindings select prose from registered tool names. `delegation_common`
+selects `_delegation_common` whenever delegation is available: self-contained
+briefs, task boundaries, file ownership, batch waits, pending results,
+self-contained answers, and notes versus messages. `delegation` adds direct
+`agent_*` names or the `cap/strand` APIs. `checkpoint_api` names direct note
+and history tools or the correct capability modules and seams. Checkpoint
+boards belong to `cap/strand`; `cap/memory` proposes long-term consolidation.
+`code_mode_discovery` names `cap://` reads when code mode is registered.
+
+These fragments are required only if the custom pack references their
+bindings. A version-7 pack with inline delegation remains valid and retains
+its operator text. Opting into a binding requires all its selectable
+fragments; missing fragments still refuse boot as corruption. Fragment bodies
+expand against literal bindings only, so selection never introduces recursive
+expansion. The roster is fixed for the session and every strand shares a
+cached prefix.
 
 ## Relationships
 
@@ -245,7 +262,17 @@ written by whoever calls `render`, not here.
   report, so a brief must ask for a self-contained final answer. Each
   sentence is checked against `tools/agent` and `client/agency` by a
   test in `default_test`; if one of those changes, the sentence is
-  wrong, not merely stale.
+  wrong, not merely stale. The code-mode wording is held to the same
+  standard against `cap/strand`, `cap/job`, `cap/schedule`, `cap/memory`
+  and `cap/history`.
+- **A build-constant section may select a fragment; it may never splice a
+  value.** `identity`, `tool_discipline`, `delegation` and `conduct` are
+  identical for every session and every strand on a given build, and
+  `build_constant_sections_vary_only_with_the_tool_roster_test` holds
+  them that way. The four placeholders they carry choose between whole
+  fragments from the registered tool names, and the fragments they reach
+  are themselves placeholder-free. So nothing host-specific can enter
+  through them.
 
 ## Deep Docs
 

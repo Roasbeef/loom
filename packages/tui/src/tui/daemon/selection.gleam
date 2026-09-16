@@ -6,7 +6,7 @@
 
 import gleam/bit_array
 import gleam/erlang/process
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
@@ -229,10 +229,15 @@ fn open_selected(host: Host, selected: protocol.Session) {
 /// Naming is metadata supplied with the original admission, not a later
 /// rename or an inference request. A lost reply retains the same creation key.
 ///
+/// The roster is creation metadata like the name: `None` asks the daemon for
+/// whatever its own configuration names, and a retry under the retained key
+/// must repeat the same choice or the daemon answers a conflict rather than
+/// handing back a session built with a different registry.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create_named(host, key, project.path, workspace.session_name(project), config)
+/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, None)
 /// ```
 pub fn create_named(
   host: Host,
@@ -240,11 +245,12 @@ pub fn create_named(
   workspace: String,
   name: String,
   configuration: String,
+  roster: Option(protocol.Roster),
 ) -> Result(attachment.Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
-      protocol.CreateSession(key, workspace, name, configuration),
+      protocol.CreateSession(key, workspace, name, configuration, roster),
       10_000,
     )
     |> result.map_error(failure),

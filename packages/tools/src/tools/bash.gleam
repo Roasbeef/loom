@@ -25,9 +25,12 @@
 //// job**: the same command, admitted under the same rules, but allowed
 //// to outlive the tool call that started it. A background call clears
 //// through `tools/job.Jobs` — the host's door — and returns a handle at
-//// once rather than the command's output, and the model reads it
-//// afterwards with `job_poll`, feeds it with `job_send` and stops it
-//// with `job_kill`.
+//// once rather than the command's output. How the model reads that
+//// handle back afterwards depends on the host's tool roster rather than
+//// on the jobs plane, which is what `Readback` carries: with the `job_*`
+//// tools registered it polls with `job_poll`, feeds with `job_send` and
+//// stops with `job_kill`; without them it reads `job://<id>` through
+//// `fs_read` and drives the write side from a `cap/job` program.
 ////
 //// One flag on a tool the model already has, rather than a fourth tool
 //// definition, because tool-surface cost is arithmetic: every permanent
@@ -88,7 +91,33 @@ pub type Mode {
   Background
 }
 
-/// The `bash` tool over one jobs door.
+/// How a session reads a background job back, which is a fact about the
+/// host's tool roster rather than about the jobs plane.
+///
+/// `bash` describes the readback in two places — the `mode` half of its
+/// description, and the sentence a background start answers with — and
+/// both have to name something the session was actually given. Under the
+/// minimal roster the three `job_*` definitions are not registered at
+/// all, so a sentence telling the model to call `job_poll` is an
+/// invitation to read a refusal. The `job://` scheme is registered on
+/// `fs_read` on exactly the hosts that opened a jobs plane, so it is the
+/// readback that always exists.
+///
+/// A two-variant type rather than a `Bool` for the ordinary reason: a
+/// call site reading `bash.tool(door, True)` names neither door nor
+/// polarity.
+pub type Readback {
+  /// The `job_*` tools are registered: name `job_poll`, and the two
+  /// write-side tools beside it.
+  ViaPollTool
+
+  /// The `job_*` tools are not registered: name the `fs_read` scheme,
+  /// which is, and leave the write side to a `cap/job` program.
+  ViaScheme
+}
+
+/// The `bash` tool over one jobs door, wording its readback for the
+/// roster this host registered.
 ///
 /// The door is taken unconditionally rather than as an `Option` because
 /// `bash` exists on every host and only one of its two modes needs one:
@@ -100,10 +129,10 @@ pub type Mode {
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.registry([bash.tool(job.unavailable())])
+/// // tool.registry([bash.tool(job.unavailable(), bash.ViaPollTool)])
 /// ```
 ///
-pub fn tool(jobs: Jobs) -> tool.Tool {
+pub fn tool(jobs: Jobs, readback: Readback) -> tool.Tool {
   tool.Tool(
     name: "bash",
     description: "Run a shell command in the sandboxed workspace. The "
@@ -113,14 +142,8 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
       <> "claiming tests passed. With `mode: \"background\"` the "
       <> "command is started as a background job instead: the call returns "
       <> "a job id straight away and the command keeps running after it, so "
-      <> "use it for a long build or something you want to watch. Read a "
-      <> "job with `"
-      <> job.poll_tool_name
-      <> "`, write to its stdin with `"
-      <> job.send_tool_name
-      <> "`, and stop it with `"
-      <> job.kill_tool_name
-      <> "`.",
+      <> "use it for a long build or something you want to watch. "
+      <> readback_sentence(readback),
     // No double quotes in a snippet: the system prompt's index is
     // asserted line-by-line against the JSON request body it renders
     // into (`client/serve_test`), and a quote is escaped there.
@@ -161,8 +184,40 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements:,
-    run: fn(ctx, args) { run(jobs, ctx, args) },
+    run: fn(ctx, args) { run(jobs, readback, ctx, args) },
   )
+}
+
+// How the description tells a model to reach a started job. The
+// poll-tool wording names all three `job_*` definitions because a host
+// that registers one registers them all; the scheme wording names the
+// read and points the write side at a `code_mode` program, which is the
+// only door a minimal roster has to a job's stdin.
+fn readback_sentence(readback: Readback) -> String {
+  case readback {
+    ViaPollTool ->
+      "Read a job with `"
+      <> job.poll_tool_name
+      <> "`, write to its stdin with `"
+      <> job.send_tool_name
+      <> "`, and stop it with `"
+      <> job.kill_tool_name
+      <> "`."
+
+    ViaScheme ->
+      "Read a job with `fs_read` of `job://<id>`; a `code_mode` program "
+      <> "writes to its stdin and stops it through `cap/job`."
+  }
+}
+
+// The same choice, worded for one job that has just started. The scheme
+// arm spells the whole reference out rather than leaving a placeholder,
+// because this sentence arrives with the id in hand.
+fn started_readback(readback: Readback, id: String) -> String {
+  case readback {
+    ViaPollTool -> "read it with `" <> job.poll_tool_name <> "`."
+    ViaScheme -> "read it with `fs_read` of `job://" <> id <> "`."
+  }
 }
 
 /// The bash tool's policy-shaped needs: workspace writable, network off,
@@ -183,7 +238,12 @@ pub fn requirements(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
-fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run(
+  jobs: Jobs,
+  readback: Readback,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use command <- tool.with_arg(tool.required_string(args, "command"))
   use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   use mode <- tool.with_arg(requested_mode(args))
@@ -197,7 +257,7 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   )
 
   case mode {
-    Background -> background(jobs, ctx, command, requested)
+    Background -> background(jobs, readback, ctx, command, requested)
     Foreground -> foreground(ctx, command, requested)
   }
 }
@@ -228,6 +288,7 @@ fn requested_mode(args: JsonValue) -> Result(Mode, String) {
 // arriving at some later poll. What it does not wait for is the command.
 fn background(
   jobs: Jobs,
+  readback: Readback,
   ctx: Ctx,
   command: String,
   requested: Option(Int),
@@ -241,9 +302,8 @@ fn background(
     <> started.id
     <> ", with a wall of "
     <> int.to_string({ started.wall_ms + 999 } / 1000)
-    <> "s. It is running now; read it with `"
-    <> job.poll_tool_name
-    <> "`.",
+    <> "s. It is running now; "
+    <> started_readback(readback, started.id),
   )
   |> tool.with_details(
     json.Object([

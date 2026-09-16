@@ -687,7 +687,7 @@ fn dispatch(
       |> result.map_error(error_code)
       |> result.map(fn(view) { #("sessions.set_default", view_json(view)) })
     }
-    protocol.CreateSession(key, workspace, name, configuration, scope) -> {
+    protocol.CreateSession(key, workspace, name, configuration, scope, roster) -> {
       use Nil <- result.try(owner(principal))
       use workspace <- result.try(
         bootstrap.canonical_directory(workspace)
@@ -704,7 +704,7 @@ fn dispatch(
       )
       manager.create_scoped(
         state.registry,
-        manager.Creation(key, workspace, name, configuration),
+        manager.Creation(key, workspace, name, configuration, roster),
         directory: state.sessions_directory,
         generator: config.generator(),
         scope:,
