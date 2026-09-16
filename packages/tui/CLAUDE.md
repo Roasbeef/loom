@@ -671,10 +671,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   when the prompt is sent. A single pasted local path becomes an image
   attachment only when it is a regular PNG/JPEG/GIF/WebP file no larger than
   20 MiB; one prompt retains at most four images and 20 MiB of raw image data
-  in aggregate. The chip shows a terminal-sanitized filename, MIME, and size,
-  on its own row above the editor: beside the editor it took its width from
-  that summary and left the editor a column or two, so the row costs one line
-  of prompt height and the editor keeps the full interior width.
+  in aggregate. A count row precedes one row per accepted image, with a
+  terminal-sanitized filename, MIME, and size. The editor keeps its full width
+  and at least one row when space is constrained. Rejecting a fifth image
+  names the rejected file and confirms that four attachments remain.
   Unsupported files and multi-token paths stay text, while read errors preserve
   the editor and show a local error. The backend enables bracketed-paste mode
   so a real terminal paste arrives as one event. Backspace on an empty editor
