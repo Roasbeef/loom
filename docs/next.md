@@ -16,8 +16,9 @@ Existing executions keep their captured authority. Protected writes remain
 denied. Proposal 040 records the ownership and wire contract; the
 [review record](review/session-directory-permissions.md) records the findings,
 regressions and remaining boundaries. The full `make check` gate passed with
-exit status zero, including 464 tools, 1,843 client and 555 TUI tests. Lint and
-documentation checks report zero errors; warning censuses remain. Seeded
+exit status zero after the dialog follow-up, including 464 tools, 1,850 client
+and 558 TUI tests. Lint and documentation checks report zero errors; warning
+censuses remain. Seeded
 code-mode checks also passed: 304 code-mode tests and 13 client live tests,
 with the Linux-only MCP death-observation fixture reporting a skip.
 
@@ -26,6 +27,15 @@ permissions through existing action-bound approvals before execution. Native
 file tools can ask for their missing target access directly. Kernel errors
 remain tool results because automatically retrying an arbitrary program could
 repeat earlier effects.
+
+PR #437 also adds automatic permission dialogs with Allow once, Allow for
+session, and Deny. Remembered filesystem and full-network grants survive a
+session reopen. Proposal 041 records the atomic approval-and-permission write
+and the captured-question contract. A fresh independent review identified and
+verified a fix for a late lookup replacing an open dialog. Raw syscall errors
+still require the agent to submit a new permission request; no command is
+automatically replayed after partial execution. Manual installed-TUI testing
+remains the next operator check.
 
 Boot defaults are unchanged. Host-filtered networking remains issue #214;
 full secret-store backend support remains issue #181. Host-command secret

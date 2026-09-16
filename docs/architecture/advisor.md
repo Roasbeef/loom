@@ -85,7 +85,7 @@ cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
 `ensure_strand` (`client/advisor.gleam:1714`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1024`) instead, which is the
+`create_idle_strand` (`runtime/api.gleam:1035`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
 
@@ -668,8 +668,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:7845`) extracts one of three
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:7936`) renders
+`advisor_payload` (`tui.gleam:7825`) extracts one of three
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8000`) renders
 it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
 `advisor feed`) with an opening excerpt and the expand hint; expanded,
 the body under the same heading with the frame lines dropped, since

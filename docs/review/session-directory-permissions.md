@@ -56,6 +56,58 @@ and approval consumption; its real MCP-process death fixture still reported
 a skip because macOS has no `/proc`. Both commands exited zero. Linux kernel
 enforcement and installed-release behavior were not validated on this host.
 
+## Remembered approval dialog follow-up
+
+Proposal 041 extends the action-bound approval flow with an explicit session
+scope. Pending permission records automatically open a TUI dialog with Allow
+once, Allow for session, and Deny. No option is initially selected. Tab or the
+left/right arrows select a choice; Enter submits it and Escape defers it.
+Filesystem and full-network grants can be remembered. Requests containing
+execution limits, environment changes, scratch changes or other network modes
+remain once-only.
+
+The gateway validates the echoed action and grants against the captured
+question. The runtime writes the remembered permissions and approval in one
+transaction guarded by both register sequences. A stale question or concurrent
+permission update commits neither. Subsequent invocations capture the saved
+authority, including after restart; existing executions retain their snapshot.
+
+A fresh independent adversarial pass found one reachable presentation race:
+a late `/approvals` lookup could replace an automatically opened dialog. The
+lookup now preserves the open question, selection and scroll position. The
+regression delivers a newer lookup after selecting an answer and verifies that
+submission still carries the original question sequence. The review found no
+other confirmed authority widening in this follow-up.
+
+Focused regressions cover the transaction races, actual native-write pause and
+resume, a second call using the remembered grant, SQLite close/reopen, exact-file
+isolation, full-network persistence, corrupt facts, gateway grant subsets and
+once-only behavior, scope wire encoding, observer exclusion, deferred prompts,
+and captured-question preservation. The first full gate caught two integration
+fixtures still expecting the old inspector title. The multiplayer fixture also
+needed to use the automatically opened operator dialog rather than paste a
+lookup command into it. Both retain their approval-race and single-execution
+checks. The combined native-write fixture drives the TUI decision encoder and
+runtime commit; separate gateway tests exercise
+authenticated dispatch and echoed-grant validation. A separate terminal-driver
+test selects Allow for session through real key events and an authenticated
+WebSocket, then verifies the gateway saved exactly the displayed network grant.
+These are automated fixtures, not a manual installed-daemon test.
+
+The final `make check` rerun exited zero with all 1,850 client and 558 TUI
+tests passing, along with the remaining package suites, release checks and
+native Go tests. House-rule lint reported zero errors and 816 warnings.
+`make doc-check` also passed with zero errors and 154 warnings. The seeded
+code-mode suite passed all 304 tests in the full gate. Linux-only and
+shipped-server fixtures still reported skips; installed-release behavior was
+not checked.
+
+The dialog is triggered by a pending permission request: native tools produce
+one before accessing a denied path, and shell/code-mode calls can declare extra
+permissions before execution. Arbitrary syscall errors inside an already
+running program remain tool results; the agent must request missing permissions
+in a later call. We do not infer grants from stderr or replay partial commands.
+
 ## Remaining boundaries
 
 This change preserves boot defaults: shell host reads, workspace writes and
