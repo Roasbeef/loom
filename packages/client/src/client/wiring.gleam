@@ -784,8 +784,62 @@ fn image_bearing(config: Config, operation: OpId) -> Bool {
   case notes.strand_of(config.session, operation) {
     Error(Nil) -> False
     Ok(strand) ->
-      vision.image_bearing(hooks.project(config.session, strand).messages)
+      request_image_bearing(
+        config,
+        operation,
+        hooks.project(config.session, strand).messages,
+      )
   }
+}
+
+// The admitted prompt batch is immutable for the operation. It can contain
+// an image followed by a text instruction when held inputs are released
+// together. Keep that entire image-bearing run on vision, including tool and
+// run-end continuations; the next operation gets a new batch and can recover
+// to text after a failed image run. Context classification additionally covers
+// image steers and legacy callers without operation metadata.
+fn request_image_bearing(
+  config: Config,
+  operation: OpId,
+  context: List(AgentMessage),
+) -> Bool {
+  vision.image_bearing(context)
+  || admitted_image_bearing(config.session, operation) |> result.unwrap(False)
+}
+
+fn admitted_image_bearing(
+  session: Session,
+  operation: OpId,
+) -> Result(Bool, Nil) {
+  use cell <- result.try(
+    session.op_meta(session, operation) |> result.replace_error(Nil),
+  )
+  use cell <- result.try(option.to_result(cell, Nil))
+  let meta = cell.value
+  use last_prompt <- result.try(case meta.intent {
+    operation.RunIntent(prompt_entries:) -> list.last(prompt_entries)
+    operation.CompactionIntent(..) | operation.NavigationIntent(..) ->
+      Error(Nil)
+  })
+  let scan = storage.branch_scan(last_prompt)
+  let scan = case meta.source_leaf {
+    None -> scan
+    Some(leaf) -> storage.branch_stop_at_id(scan, leaf)
+  }
+  use entries <- result.try(
+    storage.scan_branch(session.store, scan) |> result.replace_error(Nil),
+  )
+  Ok(
+    list.any(entries, fn(item) {
+      case item {
+        entry.MessageEntry(id:, message:, ..) ->
+          Some(id) != meta.source_leaf && vision.image_bearing([message])
+        entry.CompactionEntry(..)
+        | entry.BranchSummaryEntry(..)
+        | entry.CustomEntry(..) -> False
+      }
+    }),
+  )
 }
 
 // A handle whose single event is an in-band, terminally-classified
@@ -835,7 +889,7 @@ pub fn provider_request(
         tools: [],
         max_output_tokens: None,
       )
-    effects.GenerationRequest(configuration:, context:, ..) -> {
+    effects.GenerationRequest(operation:, configuration:, context:, ..) -> {
       // The vision rule's dispatch half (issue #358): the request's
       // own content, not the strand's pinned model, decides the target
       // when the two disagree about images. An image-bearing request
@@ -848,7 +902,8 @@ pub fn provider_request(
       // invalid input on any turn, not just the newest one.
       let reading = model_facts(config, configuration.model).reading
       let routed = case
-        reading == catalog.TextOnly && vision.image_bearing(context)
+        reading == catalog.TextOnly
+        && request_image_bearing(config, operation, context)
       {
         True -> vision_route(config, configuration)
         False -> None

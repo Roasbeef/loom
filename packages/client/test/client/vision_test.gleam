@@ -742,3 +742,273 @@ pub fn text_only_projection_classifies_imageless_test() {
   assert !client_vision.image_bearing([text_user("hello")])
   assert !client_vision.image_bearing([])
 }
+
+fn model_catalogue(model_id: String, declaration: String) -> catalog.Catalog {
+  let assert Ok(parsed) =
+    catalog.parse(
+      "[models.acme]\ndialect = \"openai\"\napi_key_env = \"ACME_KEY\"\n"
+      <> "model_id = \""
+      <> model_id
+      <> "\"\ncontext_window = 200000\n"
+      <> "max_output_tokens = 8192\n"
+      <> declaration
+      <> "\n[roles]\nmain = [\"acme\"]\n",
+    )
+    as "the catalogue fixture must parse"
+  parsed
+}
+
+pub fn glm_capability_default_respects_exact_identity_and_override_test() {
+  let assert [glm] = model_catalogue("zai-org/GLM-5.3", "").models
+    as "the fixture has one model"
+  let assert [short_glm] = model_catalogue("GLM-5.3", "").models
+    as "the fixture has one model"
+  let assert [flash] = model_catalogue("zai-org/GLM-5.3-Flash", "").models
+    as "the fixture has one model"
+  let assert [overridden] =
+    model_catalogue("zai-org/GLM-5.3", "vision = true\n").models
+    as "the fixture has one model"
+  assert glm.vision == catalog.TextOnly
+  assert short_glm.vision == catalog.TextOnly
+  assert flash.vision == catalog.ReadsImages
+  assert overridden.vision == catalog.ReadsImages
+}
+
+// Build the same projection the driver uses: failed assistant responses
+// disappear before vision routing sees the messages.
+fn projected_failure_then_prompt(
+  prompt: message.AgentMessage,
+) -> List(message.AgentMessage) {
+  let assert message.AssistantMessage(..) as answer = assistant_answer()
+    as "the fixture is an assistant message"
+  let failure =
+    message.AssistantMessage(
+      ..answer,
+      content: [],
+      stop_reason: message.Errored,
+    )
+  let messages =
+    list.append(list.repeat(image_user(), 14), [
+      failure,
+      prompt,
+      text_user("notes digest"),
+    ])
+  messages
+  |> list.index_map(fn(message, index) {
+    MessageEntry(
+      id: ids.mint_entry(ids.generator(clock.fixed(0), index + 100)).0,
+      parent: None,
+      seq: index + 1,
+      ts: 0,
+      message:,
+      terminate: False,
+    )
+  })
+  |> list.reverse
+  |> session.project_scan
+}
+
+fn owner_prompt(content: List(message.UserBlock)) -> message.AgentMessage {
+  message.UserMessage(
+    content:,
+    timestamp: 0,
+    origin: Some(message.Origin("owner-fixture", "Owner")),
+  )
+}
+
+pub fn text_prompt_after_fourteen_images_and_provider_failure_recovers_test() {
+  let context =
+    projected_failure_then_prompt(
+      owner_prompt([message.UserText("test", None)]),
+    )
+  let request =
+    wiring.provider_request(config_with(vision_gateway()), generation(context))
+  assert list.length(context) == 16
+    as "the failed response was removed by the production projection"
+  assert request.messages == client_vision.placeholdered(context)
+  assert request.target != client_vision.routed_target(Some(model.ThinkingOff))
+  assert !client_vision.image_bearing(context)
+}
+
+pub fn new_image_prompt_after_failure_stays_on_vision_through_tools_test() {
+  let context =
+    projected_failure_then_prompt(
+      owner_prompt([message.UserImage("YQ==", "image/png")]),
+    )
+  let with_tools = list.append(context, [assistant_tool_call(), tool_result()])
+  let request =
+    wiring.provider_request(
+      config_with(vision_gateway()),
+      generation(with_tools),
+    )
+  assert client_vision.image_bearing(with_tools)
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == with_tools
+}
+
+/// Catalogue defaults must reach dispatch, not merely a parsing assertion.
+pub fn default_glm_routes_images_and_recovers_text_requests_test() {
+  let catalogue = model_catalogue("zai-org/GLM-5.3", "")
+  let assert [entry] = catalogue.models as "the fixture has one model"
+  let config = config_with(vision_gateway())
+  let config =
+    wiring.Config(..config, facts: fn(identity: ModelIdentity) {
+      case identity.model_id {
+        "zai-org/GLM-5.3" ->
+          Ok(#(catalog.resolved(entry), "openai-completions", entry.vision))
+        _ -> entry_facts(identity)
+      }
+    })
+  let assert effects.GenerationRequest(..) as spec = generation([image_user()])
+    as "the fixture is a generation"
+  let configuration =
+    StrandConfiguration(
+      ..text_only_configuration(),
+      model: ModelIdentity("acme", "zai-org/GLM-5.3"),
+    )
+  let spec = effects.GenerationRequest(..spec, configuration:)
+  let image_request = wiring.provider_request(config, spec)
+  assert image_request.target
+    == client_vision.routed_target(Some(model.ThinkingOff))
+  assert image_request.messages == [image_user()]
+
+  let context =
+    projected_failure_then_prompt(
+      owner_prompt([message.UserText("test", None)]),
+    )
+  let text_request =
+    wiring.provider_request(config, effects.GenerationRequest(..spec, context:))
+  assert text_request.messages == client_vision.placeholdered(context)
+  assert text_request.target != image_request.target
+}
+
+/// Held prompts form one admission batch, even when its last item is text.
+pub fn held_image_and_text_batch_routes_admission_and_dispatch_test() {
+  let opened = image_session()
+  let assert Ok(Some(session.Cell(value: Some(image_id), ..))) =
+    session.strand_leaf(opened, "main")
+    as "the fixture's image is the initial leaf"
+  let operation_id = image_operation(opened)
+  let text_id = ids.mint_entry(ids.generator(clock.fixed(0), 12_345)).0
+  let text = owner_prompt([message.UserText("review that image", None)])
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(MessageEntry(
+            id: text_id,
+            parent: Some(image_id),
+            seq: 0,
+            ts: 0,
+            message: text,
+            terminate: False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(text_id)),
+          ),
+          SetRegister(
+            ns: register.OpMeta,
+            key: ids.op_id_to_string(operation_id),
+            value: register.RegisterValue(
+              machine_codec.encode_operation(operation.Operation(
+                id: operation_id,
+                strand: "main",
+                source_leaf: None,
+                started_at: 0,
+                intent: operation.RunIntent(prompt_entries: [image_id, text_id]),
+              )),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the held batch and its admission must commit"
+  let config = config_on(vision_gateway(), opened)
+  let hooks_record = wiring.compaction_hooks(config)
+  let assert planner.Admitted(context_window: 64_000, ..) =
+    hooks_record.admission(effects.AdmissionQuery(
+      operation: operation_id,
+      step_id: "turn-1",
+      attempt: 1,
+      configuration: text_only_configuration(),
+      stream_options: json.Object([]),
+    ))
+    as "admission must account against the vision model"
+  let assert effects.GenerationRequest(..) as spec =
+    generation([image_user(), text])
+    as "the fixture is a generation"
+  let spec = effects.GenerationRequest(..spec, operation: operation_id)
+  let request = wiring.provider_request(config, spec)
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == [image_user(), text]
+
+  // A run-end continuation retains the image model for this admitted run.
+  let continued =
+    wiring.provider_request(
+      config,
+      effects.GenerationRequest(..spec, context: [
+        image_user(),
+        text,
+        assistant_answer(),
+        text_user("follow-up"),
+      ]),
+    )
+  assert continued.target == request.target
+
+  // A successor run excludes the previous batch at its immutable source leaf.
+  let next_op = ids.mint_op(ids.generator(clock.fixed(0), 9876)).0
+  let next_id = ids.mint_entry(ids.generator(clock.fixed(0), 9876)).0
+  let next_prompt = owner_prompt([message.UserText("plain text retry", None)])
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(MessageEntry(
+            id: next_id,
+            parent: Some(text_id),
+            seq: 0,
+            ts: 0,
+            message: next_prompt,
+            terminate: False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(next_id)),
+          ),
+          SetRegister(
+            ns: register.OpMeta,
+            key: ids.op_id_to_string(next_op),
+            value: register.RegisterValue(
+              machine_codec.encode_operation(operation.Operation(
+                id: next_op,
+                strand: "main",
+                source_leaf: Some(text_id),
+                started_at: 0,
+                intent: operation.RunIntent(prompt_entries: [next_id]),
+              )),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the successor operation must commit"
+  let recovered =
+    wiring.provider_request(
+      config,
+      effects.GenerationRequest(..spec, operation: next_op, context: [
+        image_user(),
+        text,
+        next_prompt,
+      ]),
+    )
+  assert recovered.target == model.ForRole(model.Main, Some(model.ThinkingOff))
+  assert recovered.messages
+    == client_vision.placeholdered([image_user(), text, next_prompt])
+}

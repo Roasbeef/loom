@@ -41,8 +41,8 @@
 ////   request.
 ////
 //// The current turn decides because that is what this request must be
-//// answered against, and a turn lasts until an assistant message ends
-//// it: a tool call and its result are steps inside the turn, so the
+//// answered against. A new attributed user prompt or a settled assistant
+//// response bounds it; a tool call and its result are steps inside it, so the
 //// second request of an image turn stays on the model that saw the
 //// image. An older image, on a request whose current turn is text,
 //// stays in the projection of a vision-capable model (the model may
@@ -54,7 +54,7 @@ import core/message.{
   ToolResultMessage, ToolUse, UserImage, UserMessage, UserText,
 }
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import machine/operation.{OperationError}
 import machine/planner.{type RequestAdmission, AdmissionUnavailable}
 import machine/strand.{type ModelIdentity}
@@ -83,22 +83,15 @@ pub fn placeholder(mime_type: String) -> UserBlock {
 /// Whether the projection's *current turn* carries an image — the
 /// classification admission routes on.
 ///
-/// The current turn is everything after the newest settled assistant
-/// message. That boundary, rather than "the newest user message", is
-/// what makes the classification hold on a real session: the run-start
-/// hooks inject the notes digest, the memory digest and extension
-/// notes as user messages *after* the operator's prompt, so the
-/// newest-user-message walk would classify a digest and silently
-/// placeholder the operator's image — the exact failure the rule
-/// exists to remove. Injections are harness-authored context inside the
-/// current turn only when the operator's image is there too, and
-/// everything an assistant has already answered is a past turn whose
-/// images a vision model may still read and a text-only one is
-/// placeholdered on anyway.
+/// The newest attributed user prompt begins a turn. Run-start digests have
+/// no human origin, so they remain inside that prompt's turn, as do assistant
+/// tool calls and their results. A settled assistant response also closes a
+/// turn, preserving the boundary for older transcripts without attribution.
 ///
-/// No prefix-sniffing and no authorship check: the boundary is the
-/// conversation's own shape, so a reminder, a digest, or a future
-/// injection kind needs no enumeration here.
+/// Failed assistant messages are removed by session projection. Relying only
+/// on assistant boundaries would therefore route a later text prompt through
+/// vision forever after a rejected image request. Attribution survives that
+/// projection and identifies the new prompt without inspecting its text.
 ///
 /// ## Examples
 ///
@@ -116,27 +109,28 @@ pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
   })
 }
 
-// The messages after the newest assistant message that ended its turn,
-// or the whole projection when no turn has ended yet — a fresh session's
-// first turn is all current turn.
-//
-// A tool call does not end a turn. The assistant that answered an image
-// with a tool call is mid-turn, and the request that carries the tool's
-// result back is the same turn's next step; classifying it imageless
-// would hand the continuation to the text-only model with a placeholder
-// for an image only the vision model has seen, which is issue #358's
-// failure on any strand that uses tools.
+// Walk newest-first until the current human prompt or a settled answer.
+// The attributed prompt belongs to the result; the preceding answer does not.
+// Digests and tool steps stay with the prompt that caused them.
 fn current_turn(messages: List(AgentMessage)) -> List(AgentMessage) {
-  messages
-  |> list.reverse
-  |> list.take_while(fn(entry) {
-    case entry {
-      UserMessage(..) | ToolResultMessage(..) | CustomMessage(..) -> True
-      AssistantMessage(stop_reason: ToolUse, ..) -> True
-      AssistantMessage(..) -> False
-    }
-  })
-  |> list.reverse
+  collect_turn(list.reverse(messages), [])
+}
+
+fn collect_turn(
+  newest_first: List(AgentMessage),
+  collected: List(AgentMessage),
+) -> List(AgentMessage) {
+  case newest_first {
+    [] -> collected
+    [UserMessage(origin: Some(_), ..) as prompt, ..] -> [prompt, ..collected]
+    [AssistantMessage(stop_reason: ToolUse, ..) as step, ..rest] ->
+      collect_turn(rest, [step, ..collected])
+    [AssistantMessage(..), ..] -> collected
+    [UserMessage(..) as step, ..rest]
+    | [ToolResultMessage(..) as step, ..rest]
+    | [CustomMessage(..) as step, ..rest] ->
+      collect_turn(rest, [step, ..collected])
+  }
 }
 
 fn is_image(block: UserBlock) -> Bool {
