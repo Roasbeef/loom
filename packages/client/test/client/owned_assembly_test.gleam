@@ -6,6 +6,7 @@ import broker/broker
 import broker/exec
 import client/catalog
 import client/codemode
+import client/daemon/protocol as daemon_protocol
 import client/distillpass
 import client/internal/ffi_os
 import client/internal/instance_host as host
@@ -62,6 +63,8 @@ pub fn settings() -> serve.Settings {
       mcp_servers: [],
     )
   serve.Settings(
+    roster_request: daemon_protocol.InheritRoster,
+    codemode_seams_override: option.None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",

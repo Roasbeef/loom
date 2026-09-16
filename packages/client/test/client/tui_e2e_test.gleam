@@ -1018,6 +1018,8 @@ fn absolute(path: String) -> String {
 
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
+    roster_request: daemon_protocol.InheritRoster,
+    codemode_seams_override: option.None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: test_root <> "/session.db",

@@ -55,6 +55,7 @@
 import broker/exec
 import client/catalog
 import client/codemode
+import client/daemon/protocol as daemon_protocol
 import client/distillpass
 import client/internal/ffi_os
 import client/jobs
@@ -554,6 +555,8 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
   let assert Ok(here) = simplifile.current_directory()
     as "the test process must know where it is"
   serve.Settings(
+    roster_request: daemon_protocol.InheritRoster,
+    codemode_seams_override: option.None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: rig.root <> "/session.db",

@@ -30,6 +30,16 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- `client/session_roster.Surface` — the resolved built-in roster and code-mode
+  seams. `prepare` reads or initializes the reserved `session/tool-roster`
+  fact through `storage.commit` before the runtime writer and recovery start.
+  The catalogue retains the original request for retry equality. Existing
+  sessions reuse this surface when daemon defaults change; no strand config
+  or prompt is rewritten. Legacy inherited sessions use the pre-feature full
+  roster. `serve.Settings` retains the original roster request and explicit
+  seam override so this migration resolves defaults without discarding an
+  operator's seam choice.
+
 - `client/daemon/protocol.{RosterRequest, roster_word, roster_request}` —
   which tool roster a `sessions.create` asks for: `InheritRoster`,
   `MinimalRoster` or `FullRoster`. The choice is made once, at creation,

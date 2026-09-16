@@ -24,6 +24,7 @@ import broker/exec
 import broker/policy
 import client/catalog
 import client/codemode
+import client/daemon/protocol as daemon_protocol
 import client/distillpass
 import client/jobs
 import client/memory
@@ -437,6 +438,8 @@ fn settings(
   let assert Ok(here) = simplifile.current_directory()
     as "the fixture locates its protocol-speaking helper"
   serve.Settings(
+    roster_request: daemon_protocol.InheritRoster,
+    codemode_seams_override: option.None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/" <> file,

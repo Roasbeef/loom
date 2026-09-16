@@ -92,7 +92,9 @@ that is the same tolerance every optional field in this envelope already
 has. Conversation databases and the frozen conversation protocol do not
 change.
 
-### What inherit means across a flip
+### What inherit meant before the addendum
+
+The addendum below supersedes this original behavior.
 
 An explicit roster survives a restart byte for byte: the word is stored
 on the registration and `serve.resolve_managed` applies it over the
@@ -124,3 +126,26 @@ Corrections recorded during that review: the field is absent rather than
 empty when inheriting, and it must join the creation-retry equality rather
 than sitting beside it, so a retry cannot recover a session built with a
 different registry.
+
+## Addendum: inherited rosters are session state
+
+The daemon default now selects a roster only at a session's first activation.
+Before any strand can recover, boot records the effective roster and code-mode
+seams in the reserved `session/tool-roster` fact. Later activations rebuild
+from that fact. Changing the daemon default therefore affects new sessions;
+it cannot pair an old prompt and strand configuration with a new registry.
+The original catalogue request remains unchanged, preserving creation-retry
+equality. Existing strand configurations, including narrowed child tool lists,
+are never rewritten by this selection.
+
+A session from before this feature has no roster fact. If it already has a
+primary configuration or a pinned prompt, its inherited roster is `full`, the
+only roster those releases supplied. An explicit catalogue choice from an
+unreleased version of this branch remains authoritative during that first
+migration. New sessions without prior state use the current default. The
+selection and its seam choice are committed before recovery, so a failed boot
+cannot resolve inheritance differently on its next attempt.
+
+A later explicit seam flag that conflicts with the saved surface refuses
+activation. Restore the original setting or create a new session; boot must
+never silently widen an explicit restriction.

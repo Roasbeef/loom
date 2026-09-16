@@ -163,6 +163,8 @@ fn settings_under(root: String) -> serve.Settings {
   // no tool call could ever run under.
   let root = absolute(root)
   serve.Settings(
+    roster_request: daemon_protocol.InheritRoster,
+    codemode_seams_override: option.None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",
@@ -1098,6 +1100,65 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
   assert resumed == pinned
   assert !string.contains(resumed, "different now")
   serve.shutdown(second)
+}
+
+/// A changed daemon default cannot recover a full strand with a minimal
+/// registry. The assertion observes the actual provider request after restart.
+pub fn inherited_roster_restart_keeps_prompt_active_names_and_wire_tools_test() {
+  let root = "build/serve-test-inherited-roster"
+  let _stale = simplifile.delete(root)
+  let base = settings_under(root)
+  let assert Ok(first) = serve.boot(base)
+  let pinned = first.instance.prompt.text
+  let original =
+    session.strand_configuration(first.instance.runtime.session, "main")
+  serve.shutdown(first)
+
+  let bodies = process.new_subject()
+  let catalogue = thinking_catalog(model.ThinkingOff)
+  let assert Ok(second) =
+    serve.boot(
+      serve.Settings(
+        ..base,
+        tools: catalog.ToolsConfig(..base.tools, roster: catalog.Minimal),
+        codemode_seams: codemode.BothSeams,
+        catalog: catalogue,
+        gateway: recording_gateway(catalogue, bodies),
+      ),
+    )
+  assert second.instance.prompt.text == pinned
+  assert session.strand_configuration(second.instance.runtime.session, "main")
+    == original
+  let assert Ok(_) =
+    api.prompt(second.instance.runtime, [
+      user("show the available tool surface"),
+    ])
+  let assert Ok(body) = process.receive(bodies, within: 10_000)
+  assert string.contains(body, "agent_spawn")
+  assert string.contains(body, "agent_note")
+  serve.shutdown(second)
+}
+
+/// A saved both-seam surface cannot silently widen an explicit restriction.
+pub fn a_changed_explicit_seam_refuses_the_saved_surface_test() {
+  let root = "build/serve-test-seam-conflict"
+  let _stale = simplifile.delete(root)
+  let base = settings_under(root)
+  let assert Ok(first) =
+    serve.boot(serve.Settings(..base, codemode_seams: codemode.BothSeams))
+  serve.shutdown(first)
+  let attempted =
+    serve.boot(
+      serve.Settings(
+        ..base,
+        codemode_seams: codemode.WorkspaceOnly,
+        codemode_seams_override: Some("workspace"),
+      ),
+    )
+  assert result.map(attempted, fn(_) { Nil })
+    == Error(
+      "The saved session uses different code-mode seams; restore its original seam setting or create a new session",
+    )
 }
 
 /// The enforcement demand is part of the prompt's durable identity. A

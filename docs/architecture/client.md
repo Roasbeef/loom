@@ -691,23 +691,19 @@ session overrides it: `loom --tools minimal|full` travels as an optional
 every rebuild and applies it over the daemon's default, so a restarted
 daemon serves the same registry to the same session rather than whatever
 its configuration file names at recovery time. A stored word that this build
-cannot mean refuses the boot instead of defaulting. A session that stored
-no word follows the daemon's configured roster at every boot, while its
-pinned prompt and its seeded `active_tool_names` do not re-render. So an
-operator who flips the daemon's default should expect such a session to
-carry a prompt index naming tools that are no longer registered, until a
-new session is created.
+cannot mean refuses the boot instead of defaulting. The catalogue preserves the original request for creation-retry equality.
+Before runtime recovery, `session_roster.prepare` records the resolved roster
+and code-mode seams in `session/tool-roster`. Later boots reuse that fact, so
+changing the daemon default cannot mismatch the registry, pinned prompt and
+seeded active names. Legacy inherited sessions retain the full roster. Strand
+configurations, including restricted child lists, are not migrated or widened.
 
-Because the prompt is rendered from the registry and then pinned, the
-roster changes the prompt too, and only through whole fragments rather
-than spliced values. `prompt/default`'s `delegation` section selects
-`_delegation` where `agent_spawn` is registered, `_delegation_via_code_mode`
-where only `code_mode` is, and nothing where neither is; `tool_discipline`
-gains `_code_mode_discovery`, the sentence telling an agent to read
-`cap://<module>` before writing against it, wherever `code_mode` is
-registered. Both selections read the registered tool names, which are
-fixed for the life of a session, so every strand still shares one prefix.
-The pack version is `loom-default-8`.
+The shipped prompt is `loom-default-9`. Both rosters share delegation
+principles through `_delegation_common`; selected fragments name the available
+APIs. Checkpoint boards use `cap/strand` on orchestration; history, context,
+long-term memory, jobs and schedules use workspace. Discovery still reads
+`cap://<module>`. Custom packs with inline delegation remain valid; packs
+using the new bindings must supply their selectable fragments.
 
 Error codes are `bad_request`, `unknown_session`, `unknown_strand`,
 `unknown_escalation`, `not_pending`, `conflict`, `unsupported`, and

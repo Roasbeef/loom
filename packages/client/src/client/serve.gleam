@@ -75,6 +75,7 @@ import client/scratch
 import client/secrets
 import client/server
 import client/session_git
+import client/session_roster
 import client/skill_tool
 import client/system_prompt
 import client/wiring
@@ -376,6 +377,10 @@ pub type Settings {
     /// has built one. The default is `WorkspaceOnly` — the seam an
     /// unconfigured server has always served.
     codemode_seams: codemode_wiring.Seams,
+    /// The explicit seam override, retained when resolving a legacy roster.
+    codemode_seams_override: Option(String),
+    /// The original creation request, separate from its resolved default.
+    roster_request: daemon_protocol.RosterRequest,
     /// The triggered project rules from the same `loom.toml`, in file
     /// order. Empty — the ordinary case — starts no scanner at all, so
     /// a server nobody configured rules for runs exactly the processes
@@ -811,12 +816,12 @@ pub fn resolve_managed(
     )),
   )
 
-  // The roster a session was created with outranks the daemon's own
-  // `[tools] roster`, and it is read from the registration on every
-  // rebuild rather than once: the registry is not journaled, so this is
-  // the only way a restarted daemon serves the same six or twenty-one
-  // definitions to the same session (protocol-change/039). A stored word
-  // the decoder does not know refuses the boot, never defaults.
+  // The creation request overrides the daemon's candidate default. Boot
+  // later resolves that candidate through session_roster.prepare before
+  // constructing the registry, so inherited defaults are selected only
+  // once. The original request remains in the catalogue for retry
+  // equality (protocol-change/039). An unknown stored word refuses the
+  // boot rather than silently inheriting a different surface.
   use roster <- result.try(daemon_protocol.roster_request(registration.roster))
   let session_tools = roster_for_session(settings.tools, roster)
 
@@ -832,6 +837,7 @@ pub fn resolve_managed(
     Settings(
       ..settings,
       tools: session_tools,
+      roster_request: roster,
       codemode_seams:,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
@@ -1183,6 +1189,8 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     compaction: compaction_settings(main_entry.context_window),
     codemode_seed: seed_root(flags.codemode_seed, workspace),
     codemode_seams:,
+    codemode_seams_override: flags.codemode_seams,
+    roster_request: daemon_protocol.InheritRoster,
     rules: rule_list,
     schedules: schedule_list,
     schedule_policy:,
@@ -2676,6 +2684,38 @@ fn assemble_in(
       |> result.map_error(string.inspect)
     }
   })
+
+  // Resolve inheritance durably before recovery can read a strand's active
+  // names. Reusing this surface also preserves the prompt's cached tool index.
+  use surface <- result.try(
+    session_roster.prepare(
+      opened,
+      settings.roster_request,
+      settings.tools.roster,
+      fn(roster) {
+        case roster == settings.tools.roster {
+          True -> Ok(settings.codemode_seams)
+          False -> seams_for(settings.codemode_seams_override, roster)
+        }
+      },
+    ),
+  )
+
+  // An explicit seam restriction must not be widened by the saved surface.
+  // Changing a session's surface requires a new session, never a quiet override.
+  use Nil <- result.try(case settings.codemode_seams_override {
+    Some(_) if settings.codemode_seams != surface.seams ->
+      Error(
+        "The saved session uses different code-mode seams; restore its original seam setting or create a new session",
+      )
+    _ -> Ok(Nil)
+  })
+  let settings =
+    Settings(
+      ..settings,
+      tools: catalog.ToolsConfig(..settings.tools, roster: surface.roster),
+      codemode_seams: surface.seams,
+    )
 
   // The effect plane: a pool of jailed helpers behind the one broker.
   use #(pool, broker_actor) <- result.try(start_effect_plane_in(
