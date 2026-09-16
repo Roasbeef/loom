@@ -12,7 +12,15 @@
 %% merely not collected yet, so every settled sample is taken after a forced
 %% collection. Without this the series is dominated by garbage and says
 %% nothing about retention either way.
+%%
+%% It is collected twice. A collection sizes the new heap from what the
+%% process was allocating, not from what survived, so a single sweep leaves a
+%% sample that reports the recent allocation rate as retention: the same
+%% bounded live set reads as one of two plateaus depending on how hard the
+%% process had been working just before. The second sweep runs against the
+%% already-small live set and so sizes the heap from it.
 collected(Pid) ->
+    erlang:garbage_collect(Pid),
     erlang:garbage_collect(Pid),
     nil.
 

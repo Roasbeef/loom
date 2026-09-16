@@ -116,18 +116,134 @@ pub fn tool_call_entry(
   command: String,
   seq: Int,
 ) -> String {
+  identified_tool_call_entry(strand, "call-1", tool, command, seq)
+}
+
+/// The same turn, with the provider's call ID chosen by the caller.
+///
+/// A group of compact tool rows is keyed by call ID, and a repeated ID ends
+/// the group rather than extending it, so a fixture that wants two calls
+/// grouped together has to name them apart.
+pub fn identified_tool_call_entry(
+  strand: String,
+  call_id: String,
+  tool: String,
+  command: String,
+  seq: Int,
+) -> String {
   message_entry(
     strand,
     seq,
     assistant_message([
       message.AssistantToolCall(call: message.ToolCall(
-        id: "call-1",
+        id: call_id,
         name: tool,
         arguments: json.Object([#("command", json.String(command))]),
         thought_signature: None,
         namespace: None,
       )),
     ]),
+  )
+}
+
+/// One durable turn whose prose and tool call arrive together.
+///
+/// A response carrying prose is a narrative rather than a member of an
+/// activity group, so this is the fixture for the boundary between a
+/// paragraph and the call beneath it in the same response.
+pub fn narrated_tool_call_entry(
+  strand: String,
+  call_id: String,
+  text: String,
+  command: String,
+  seq: Int,
+) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([
+      message.AssistantText(text:, text_signature: None),
+      message.AssistantToolCall(call: message.ToolCall(
+        id: call_id,
+        name: "bash",
+        arguments: json.Object([#("command", json.String(command))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ]),
+  )
+}
+
+/// One durable `agent_note` turn, whose value the transcript renders as
+/// Markdown beneath the call summary.
+///
+/// The note body is what makes this fixture worth having: it is a detail row
+/// that closes itself with a blank, unlike the bare summary row a plain
+/// command leaves behind.
+pub fn note_call_entry(
+  strand: String,
+  call_id: String,
+  value: String,
+  seq: Int,
+) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([
+      message.AssistantToolCall(call: message.ToolCall(
+        id: call_id,
+        name: "agent_note",
+        arguments: json.Object([#("value", json.String(value))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ]),
+  )
+}
+
+/// One durable successful result answering a named call.
+pub fn identified_tool_result_ok_entry(
+  strand: String,
+  call_id: String,
+  text: String,
+  seq: Int,
+) -> String {
+  message_entry(
+    strand,
+    seq,
+    message.ToolResultMessage(
+      tool_call_id: call_id,
+      tool_name: "bash",
+      content: [message.ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+  )
+}
+
+/// One durable failed result answering a named call.
+pub fn identified_tool_failure_entry(
+  strand: String,
+  call_id: String,
+  text: String,
+  seq: Int,
+) -> String {
+  message_entry(
+    strand,
+    seq,
+    message.ToolResultMessage(
+      tool_call_id: call_id,
+      tool_name: "bash",
+      content: [message.ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: True,
+      timestamp: 0,
+    ),
   )
 }
 
