@@ -28,7 +28,8 @@
 //// context_window = 200000
 //// max_output_tokens = 32000
 //// thinking = "off"                   # off|low|medium|high|unsupported
-//// vision = false                     # optional; reads image blocks? default false
+//// vision = false                     # optional override; GLM-5.3 defaults to false
+//// max_images = 8                     # positive request-wide image limit
 ////
 //// [models.<name>.pricing]            # optional; US dollars per million
 //// input = 3.00                       # tokens, the unit providers publish
@@ -104,6 +105,7 @@ import gleam/result
 import gleam/string
 import provider/gateway as provider_gateway
 import provider/http.{type Transport}
+import provider/image_budget
 import provider/model
 import provider/pricing
 import provider/secret.{type SecretStore}
@@ -155,8 +157,10 @@ pub type CatalogModel {
     /// is an unpriced model, whose usage records keep a zero cost.
     pricing: Option(pricing.Pricing),
     /// Whether the endpoint reads image blocks (`vision` in the
-    /// catalogue, default `ReadsImages`).
+    /// catalogue; known model defaults apply before the legacy `ReadsImages`).
     vision: ImageReading,
+    /// Maximum image blocks per request, including retained history.
+    max_images: Int,
   )
 }
 
@@ -166,17 +170,10 @@ pub type CatalogModel {
 /// boolean is a thing every reader must carry in their head; a name
 /// reads at the case arm (`ReadsImages` cannot be got backwards).
 ///
-/// `vision = false` is a declaration, not a default. Nothing on the wire
-/// marks whether a model reads images: an OpenAI-compatible listing has
-/// no capability field, and a model that cannot read one answers in
-/// prose that it cannot see it rather than rejecting the request. The
-/// fact is learned by probing (issue #358: GLM-5.3 does not, GLM-5.3-Flash
-/// does), so the honest thing to write down is the negative on the
-/// entries an operator has actually tested. An absent key therefore
-/// means `ReadsImages`, which is what every catalogue written before the
-/// key existed already assumed; treating an undeclared entry as blind
-/// would placeholder or refuse image turns on models that read them
-/// perfectly well, on a fact nobody stated.
+/// An explicit `vision` declaration overrides the built-in model fact.
+/// GLM-5.3 is text-only; GLM-5.3-Flash is a distinct model that reads images.
+/// Unknown identifiers retain the legacy image-capable default, since an
+/// OpenAI-compatible model listing does not establish vision capability.
 pub type ImageReading {
   /// The endpoint reads image blocks.
   ReadsImages
@@ -455,7 +452,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking", "pricing", "vision",
+      "max_output_tokens", "thinking", "pricing", "vision", "max_images",
     ],
     place,
   ))
@@ -492,19 +489,18 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   })
   use pricing <- result.try(parse_pricing(fields, place))
 
-  // `vision` is the one capability the request path routes on (issue
-  // #358): whether an entry reads image blocks decides whether an
-  // image-bearing request is admitted there, re-routed through the
-  // `vision` chain, or refused. Absent means `ReadsImages`: the routing
-  // and the refusal act only on an entry the operator has declared
-  // blind, so a catalogue that predates the key keeps the behaviour it
-  // had, and the one silent failure that remains — an undeclared blind
-  // model — is exactly the one the catalogue had before the key existed.
+  // Explicit endpoint declarations win. Otherwise use the known model's
+  // capability, so older catalogues route GLM image turns without requiring
+  // a newly introduced flag. Unknown identities retain legacy behavior.
   use vision <- result.try(case dict.get(fields, "vision") {
     Ok(tom.Bool(True)) -> Ok(ReadsImages)
     Ok(tom.Bool(False)) -> Ok(TextOnly)
     Ok(_other) -> Error(place <> ".vision must be true or false")
-    Error(Nil) -> Ok(ReadsImages)
+    Error(Nil) -> Ok(default_image_reading(model_id))
+  })
+  use max_images <- result.try(case dict.has_key(fields, "max_images") {
+    True -> positive_int(fields, place, "max_images")
+    False -> Ok(image_budget.default_max_images)
   })
   Ok(CatalogModel(
     name:,
@@ -517,7 +513,18 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     thinking:,
     pricing:,
     vision:,
+    max_images:,
   ))
+}
+
+// Match complete model identities, never a family prefix: GLM-5.3-Flash
+// supports images while GLM-5.3 does not. An explicit `vision` declaration
+// remains authoritative for endpoints with different capabilities.
+fn default_image_reading(model_id: String) -> ImageReading {
+  case string.lowercase(model_id) {
+    "zai-org/glm-5.3" | "glm-5.3" -> TextOnly
+    _ -> ReadsImages
+  }
 }
 
 // The optional `[models.<name>.pricing]` table. Absent means unpriced, and
@@ -1750,6 +1757,11 @@ pub fn gateway(
       fn(gateway, entry) {
         provider_gateway.add_provider(gateway, provider_config(entry))
         |> priced(entry)
+        |> provider_gateway.with_image_limit(
+          entry.name,
+          entry.model_id,
+          entry.max_images,
+        )
       },
     )
   list.fold(catalog.roles, registered, fn(gateway, route) {

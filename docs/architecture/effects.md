@@ -641,9 +641,20 @@ name (SHA-256), and the result carries `{ref, size, head_excerpt,
 tail_excerpt}` with excerpts of at most 2 KiB trimmed to a UTF-8
 boundary. Content addressing makes the write idempotent: replaying a
 `Safe` tool or re-running an identical command lands the same bytes at
-the same ref. `fs_read` is exempt, because windowed reads are already its
-bound and anchors buried inside an elided blob would defeat hashline
-editing; `bash` and `grep` output do overflow.
+the same ref. Text returned by `fs_read` is exempt, because windowed reads
+are already its bound and anchors buried inside an elided blob would defeat
+hashline editing; `bash` and `grep` output do overflow.
+
+`fs_read` also returns PNG, JPEG, GIF, and WebP files as `ToolResultImage`
+blocks with a text caption identifying the path. File signatures select the
+MIME type; images share the workspace checks and 8 MiB byte limit with text
+reads, but do not use line windows or edit anchors. The capability operation
+`cap/fs.read` retains its text contract. Tool-result images in the current
+turn participate in vision admission and routing, and historical image blocks
+become placeholders when a later request uses a text-only model. OpenAI and
+Gemini serialize tool images after the complete tool-result batch; Anthropic
+keeps them inside the results. These provider projections leave durable roles
+and image bytes unchanged.
 
 The filesystem tools run **harness-side rather than through the broker**,
 so their path discipline is their own responsibility: `resolve_path`

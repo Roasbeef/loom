@@ -5,7 +5,11 @@
 The core tool set and the behaviour every tool implements: `bash` and
 `grep` through the broker's jailed executor, `fs_read` / `fs_write` /
 `fs_edit` harness-side with hashline anchoring and workspace path
-discipline, plus content-addressed blob overflow for large output. WP-I.
+discipline, plus content-addressed blob overflow for large output. `fs_read`
+returns PNG, JPEG, GIF, and WebP bytes as `ToolResultImage` blocks, with a
+text caption naming the file. MIME detection uses file signatures, and image
+reads share the workspace checks and 8 MiB file bound with text reads. Only
+text reads use offset/limit and hashline anchors; `cap/fs.read` remains text. WP-I.
 Tool failures are data, never crashes.
 
 Also the `agent_*` family — `agent_spawn`, `agent_wait`, `agent_send`,
@@ -543,9 +547,10 @@ was asked.
   or re-running an identical command never duplicates storage. Output past
   `overflow_threshold_bytes` (64 KiB) carries `{ref, size, head_excerpt,
   tail_excerpt}` at `excerpt_bytes` (2 KiB) each.
-- **`fs_read` is exempt from blob overflow.** Windowed reads are its
+- **`fs_read` is exempt from blob overflow.** Text windowed reads are its
   bounding mechanism, and anchors inside an elided blob would defeat
-  hashline editing. Bash and grep output do overflow.
+  hashline editing. Image blocks are bounded by the 8 MiB file limit and
+  remain inline for vision providers. Bash and grep output do overflow.
 - **Environments are allowlist-constructed, never inherited.** `Ctx.env`
   carries what the caller built; the helper drops anything absent from the
   policy's `env_allow` even if the broker sent it.
@@ -638,9 +643,12 @@ was asked.
   span where one exists, the **seam** it was judged against and that
   seam's allowlist; compiler diagnostics cross verbatim. One round trip
   per rule is exactly what in-band repair exists to avoid. Parse failures
-  report the unexpected token and byte offset without teaching a dialect
-  workaround: the Glance floor and codemode corpus now pin the submitted
-  constructs that the shipped compiler accepts.
+  show the token in source syntax and a bounded excerpt with a one-based
+  line, grapheme column and caret, while retaining the original byte offset.
+  Positions refer to the submitted source, including EOF; unusable offsets
+  keep the refusal without fabricated coordinates. A grouping-parenthesis
+  hint teaches valid Gleam braces, without weakening vetting or adding a
+  workaround for syntax the shipped compiler already accepts.
 - **A submission is judged against exactly one seam, and it is the one
   it named.** `CodeMode.seams` is what this host serves; the shell
   resolves the call's `seam` argument against it, defaults an unnamed

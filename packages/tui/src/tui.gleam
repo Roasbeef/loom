@@ -175,6 +175,9 @@ pub const live_stream_limit = 24_576
 // while retaining a fixed bound; Ctrl+G exposes the complete stored patch.
 const patch_preview_lines = 60
 
+// Submitted code stays readable in compact mode; expansion retains every line.
+const code_preview_lines = 60
+
 /// The undurable fragments of one strand-and-kind generation.
 ///
 /// A request owns its text, thinking and tool-call fragments. Operation IDs
@@ -3700,8 +3703,8 @@ fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
 /// chip summary carries a filename, a mime type and a byte count, so a side by
 /// side split gave the chip most of the panel and left the editor a column or
 /// two — the operator could no longer read the sentence they were typing. A
-/// full width editor with one row of chips above it costs a single terminal
-/// row and never depends on how long the filename is.
+/// full width editor with one row per image above it keeps every accepted
+/// attachment visible, independently of filename length.
 ///
 /// ## Examples
 ///
@@ -3716,14 +3719,19 @@ pub fn input_layout(
   area: Rect,
   attachments: List(composer.Attachment),
 ) -> #(Rect, Rect) {
-  case composer.summary(attachments) {
-    None -> #(geometry.rect_zero(), area)
+  case composer.preview_lines(attachments) {
+    [] -> #(geometry.rect_zero(), area)
 
     // A panel one row tall has nothing to give the chip row. Yielding the
     // whole area to the editor keeps the prompt usable; the chip is dropped
     // for this frame rather than the text the operator is writing.
-    Some(_) ->
-      case geometry.split_v(area, [Length(1), Fill]) {
+    rows ->
+      case
+        geometry.split_v(area, [
+          Length(int.min(list.length(rows), int.max(0, area.size.height - 1))),
+          Fill,
+        ])
+      {
         [chip_area, editor_area] -> #(chip_area, editor_area)
         [] | [_] | [_, _, _, ..] -> #(geometry.rect_zero(), area)
       }
@@ -3801,13 +3809,9 @@ fn wrapped_cursor(prefix: String, width: Int, rows: Int) -> #(Int, Int) {
 }
 
 fn input_height(model: Model) -> Int {
-  // The chip row is the height `input_layout` will take off the top of the
-  // panel. Counting it here is what stops the split from stealing a row the
-  // editor was already drawing text into.
-  let chip_rows = case model.attachments {
-    [] -> 0
-    [_, ..] -> 1
-  }
+  // Reserve the same rows that `input_layout` assigns to the attachment
+  // list, so every accepted image is visible above the editor.
+  let chip_rows = model.attachments |> composer.preview_lines |> list.length
 
   let content_rows =
     model.input
@@ -4037,25 +4041,17 @@ fn render_paste_chip(
   area: Rect,
   attachments: List(composer.Attachment),
 ) -> buffer.Buffer {
-  case
-    composer.summary(attachments),
-    area.size.width > 0 && area.size.height > 0
-  {
-    Some(summary), True -> {
-      // The chip owns its whole row now, so a long summary would run off the
-      // panel instead of pushing the editor aside. Truncating to the row less
-      // its two brackets keeps the ellipsis inside the border.
-      let truncated =
-        text.truncate(summary, int.max(0, area.size.width - 2), "…")
-
-      paragraph.render_styled(buf, area, [
-        span.line_new([
-          span.span_styled("[" <> truncated <> "]", theme.signal_bold()),
-        ]),
+  let rows = composer.preview_lines(attachments)
+  let lines =
+    rows
+    |> list.take(area.size.height)
+    |> list.map(fn(row) {
+      let truncated = text.truncate(row, int.max(0, area.size.width - 2), "…")
+      span.line_new([
+        span.span_styled("[" <> truncated <> "]", theme.signal_bold()),
       ])
-    }
-    Some(_), False | None, True | None, False -> buf
-  }
+    })
+  paragraph.render_styled(buf, area, lines)
 }
 
 fn render_command_palette(
@@ -7518,8 +7514,16 @@ fn activity_heading(calls: List(tool_activity.Call)) -> Line {
 }
 
 fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
-  let summary =
-    tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  // The invocation owns its source preview, so settling a result changes the
+  // status without adding or removing code rows. Reuse the expanded entry's
+  // Gleam renderer instead of displaying the transport JSON as a summary.
+  let program =
+    code_mode_program(call.invocation.name, call.invocation.arguments, False)
+  let summary = case program {
+    Some(_) -> "code_mode"
+    None ->
+      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  }
   let rows = case call.outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
@@ -7562,6 +7566,14 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     Some(message.UserMessage(..))
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+  let rows = case rows, program {
+    [heading, ..details], Some(source) -> [
+      heading,
+      Line(ToolDetail, source),
+      ..details
+    ]
+    [], Some(_) | _, None -> rows
   }
   list.append(
     rows,
@@ -8168,7 +8180,7 @@ pub fn code_mode_program(
         Ok(json.String(program)) -> {
           let source = case details_expanded {
             True -> program
-            False -> program_preview(program, 12)
+            False -> program_preview(program, code_preview_lines)
           }
           Some(fenced_gleam(source))
         }

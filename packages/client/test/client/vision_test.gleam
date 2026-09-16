@@ -25,6 +25,8 @@ import core/json
 import core/message
 import core/register
 import core/tx.{Expect, InsertEntry, SetRegister, Tx}
+import gleam/bit_array
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -35,12 +37,15 @@ import machine/strand.{
   type ModelIdentity, type StrandConfiguration, ModelIdentity,
   StrandConfiguration,
 }
+import provider/adapter/openai
 import provider/gateway
 import provider/http
 import provider/model
 import provider/secret
+import provider/stream
 import runtime/effects
 import session/session
+import simplifile
 import storage/storage
 import support/provider as provider_test
 import support/tool_registry
@@ -54,8 +59,12 @@ fn dead_transport() -> http.Transport {
 // One provider, two entries: the text-only head the strand is pinned to
 // and the vision model the image request should borrow.
 fn vision_gateway() -> gateway.Gateway {
+  vision_gateway_transport(dead_transport())
+}
+
+fn vision_gateway_transport(transport: http.Transport) -> gateway.Gateway {
   gateway.new(
-    transport: dead_transport(),
+    transport:,
     secrets: secret.from_list([#("ACME_KEY", "unit-test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -741,4 +750,659 @@ pub fn a_turn_ends_at_the_answer_not_at_the_tool_call_test() {
 pub fn text_only_projection_classifies_imageless_test() {
   assert !client_vision.image_bearing([text_user("hello")])
   assert !client_vision.image_bearing([])
+}
+
+fn model_catalogue(model_id: String, declaration: String) -> catalog.Catalog {
+  let assert Ok(parsed) =
+    catalog.parse(
+      "[models.acme]\ndialect = \"openai\"\napi_key_env = \"ACME_KEY\"\n"
+      <> "model_id = \""
+      <> model_id
+      <> "\"\ncontext_window = 200000\n"
+      <> "max_output_tokens = 8192\n"
+      <> declaration
+      <> "\n[roles]\nmain = [\"acme\"]\n",
+    )
+    as "the catalogue fixture must parse"
+  parsed
+}
+
+pub fn glm_capability_default_respects_exact_identity_and_override_test() {
+  let assert [glm] = model_catalogue("zai-org/GLM-5.3", "").models
+    as "the fixture has one model"
+  let assert [short_glm] = model_catalogue("GLM-5.3", "").models
+    as "the fixture has one model"
+  let assert [flash] = model_catalogue("zai-org/GLM-5.3-Flash", "").models
+    as "the fixture has one model"
+  let assert [overridden] =
+    model_catalogue("zai-org/GLM-5.3", "vision = true\n").models
+    as "the fixture has one model"
+  assert glm.vision == catalog.TextOnly
+  assert short_glm.vision == catalog.TextOnly
+  assert flash.vision == catalog.ReadsImages
+  assert overridden.vision == catalog.ReadsImages
+}
+
+// Build the same projection the driver uses: failed assistant responses
+// disappear before vision routing sees the messages.
+fn projected_failure_then_prompt(
+  prompt: message.AgentMessage,
+) -> List(message.AgentMessage) {
+  let assert message.AssistantMessage(..) as answer = assistant_answer()
+    as "the fixture is an assistant message"
+  let failure =
+    message.AssistantMessage(
+      ..answer,
+      content: [],
+      stop_reason: message.Errored,
+    )
+  let messages =
+    list.append(list.repeat(image_user(), 14), [
+      failure,
+      prompt,
+      text_user("notes digest"),
+    ])
+  messages
+  |> list.index_map(fn(message, index) {
+    MessageEntry(
+      id: ids.mint_entry(ids.generator(clock.fixed(0), index + 100)).0,
+      parent: None,
+      seq: index + 1,
+      ts: 0,
+      message:,
+      terminate: False,
+    )
+  })
+  |> list.reverse
+  |> session.project_scan
+}
+
+fn owner_prompt(content: List(message.UserBlock)) -> message.AgentMessage {
+  message.UserMessage(
+    content:,
+    timestamp: 0,
+    origin: Some(message.Origin("owner-fixture", "Owner")),
+  )
+}
+
+pub fn text_prompt_after_fourteen_images_and_provider_failure_recovers_test() {
+  let context =
+    projected_failure_then_prompt(
+      owner_prompt([message.UserText("test", None)]),
+    )
+  let request =
+    wiring.provider_request(config_with(vision_gateway()), generation(context))
+  assert list.length(context) == 16
+    as "the failed response was removed by the production projection"
+  assert request.messages == client_vision.placeholdered(context)
+  assert request.target != client_vision.routed_target(Some(model.ThinkingOff))
+  assert !client_vision.image_bearing(context)
+}
+
+pub fn new_image_prompt_after_failure_stays_on_vision_through_tools_test() {
+  let context =
+    projected_failure_then_prompt(
+      owner_prompt([message.UserImage("YQ==", "image/png")]),
+    )
+  let with_tools = list.append(context, [assistant_tool_call(), tool_result()])
+  let request =
+    wiring.provider_request(
+      config_with(vision_gateway()),
+      generation(with_tools),
+    )
+  assert client_vision.image_bearing(with_tools)
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == with_tools
+}
+
+/// Catalogue defaults must reach dispatch, not merely a parsing assertion.
+pub fn default_glm_routes_images_and_recovers_text_requests_test() {
+  let catalogue = model_catalogue("zai-org/GLM-5.3", "")
+  let assert [entry] = catalogue.models as "the fixture has one model"
+  let config = config_with(vision_gateway())
+  let config =
+    wiring.Config(..config, facts: fn(identity: ModelIdentity) {
+      case identity.model_id {
+        "zai-org/GLM-5.3" ->
+          Ok(#(catalog.resolved(entry), "openai-completions", entry.vision))
+        _ -> entry_facts(identity)
+      }
+    })
+  let assert effects.GenerationRequest(..) as spec = generation([image_user()])
+    as "the fixture is a generation"
+  let configuration =
+    StrandConfiguration(
+      ..text_only_configuration(),
+      model: ModelIdentity("acme", "zai-org/GLM-5.3"),
+    )
+  let spec = effects.GenerationRequest(..spec, configuration:)
+  let image_request = wiring.provider_request(config, spec)
+  assert image_request.target
+    == client_vision.routed_target(Some(model.ThinkingOff))
+  assert image_request.messages == [image_user()]
+
+  let context =
+    projected_failure_then_prompt(
+      owner_prompt([message.UserText("test", None)]),
+    )
+  let text_request =
+    wiring.provider_request(config, effects.GenerationRequest(..spec, context:))
+  assert text_request.messages == client_vision.placeholdered(context)
+  assert text_request.target != image_request.target
+}
+
+/// Held prompts form one admission batch, even when its last item is text.
+pub fn held_image_and_text_batch_routes_admission_and_dispatch_test() {
+  let opened = image_session()
+  let assert Ok(Some(session.Cell(value: Some(image_id), ..))) =
+    session.strand_leaf(opened, "main")
+    as "the fixture's image is the initial leaf"
+  let operation_id = image_operation(opened)
+  let text_id = ids.mint_entry(ids.generator(clock.fixed(0), 12_345)).0
+  let text = owner_prompt([message.UserText("review that image", None)])
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(MessageEntry(
+            id: text_id,
+            parent: Some(image_id),
+            seq: 0,
+            ts: 0,
+            message: text,
+            terminate: False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(text_id)),
+          ),
+          SetRegister(
+            ns: register.OpMeta,
+            key: ids.op_id_to_string(operation_id),
+            value: register.RegisterValue(
+              machine_codec.encode_operation(operation.Operation(
+                id: operation_id,
+                strand: "main",
+                source_leaf: None,
+                started_at: 0,
+                intent: operation.RunIntent(prompt_entries: [image_id, text_id]),
+              )),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the held batch and its admission must commit"
+  let config = config_on(vision_gateway(), opened)
+  let hooks_record = wiring.compaction_hooks(config)
+  let assert planner.Admitted(context_window: 64_000, ..) =
+    hooks_record.admission(effects.AdmissionQuery(
+      operation: operation_id,
+      step_id: "turn-1",
+      attempt: 1,
+      configuration: text_only_configuration(),
+      stream_options: json.Object([]),
+    ))
+    as "admission must account against the vision model"
+  let assert effects.GenerationRequest(..) as spec =
+    generation([image_user(), text])
+    as "the fixture is a generation"
+  let spec = effects.GenerationRequest(..spec, operation: operation_id)
+  let request = wiring.provider_request(config, spec)
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == [image_user(), text]
+
+  // A run-end continuation retains the image model for this admitted run.
+  let continued =
+    wiring.provider_request(
+      config,
+      effects.GenerationRequest(..spec, context: [
+        image_user(),
+        text,
+        assistant_answer(),
+        text_user("follow-up"),
+      ]),
+    )
+  assert continued.target == request.target
+
+  // A successor run excludes the previous batch at its immutable source leaf.
+  let next_op = ids.mint_op(ids.generator(clock.fixed(0), 9876)).0
+  let next_id = ids.mint_entry(ids.generator(clock.fixed(0), 9876)).0
+  let next_prompt = owner_prompt([message.UserText("plain text retry", None)])
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(MessageEntry(
+            id: next_id,
+            parent: Some(text_id),
+            seq: 0,
+            ts: 0,
+            message: next_prompt,
+            terminate: False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(next_id)),
+          ),
+          SetRegister(
+            ns: register.OpMeta,
+            key: ids.op_id_to_string(next_op),
+            value: register.RegisterValue(
+              machine_codec.encode_operation(operation.Operation(
+                id: next_op,
+                strand: "main",
+                source_leaf: Some(text_id),
+                started_at: 0,
+                intent: operation.RunIntent(prompt_entries: [next_id]),
+              )),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the successor operation must commit"
+  let recovered =
+    wiring.provider_request(
+      config,
+      effects.GenerationRequest(..spec, operation: next_op, context: [
+        image_user(),
+        text,
+        next_prompt,
+      ]),
+    )
+  assert recovered.target == model.ForRole(model.Main, Some(model.ThinkingOff))
+  assert recovered.messages
+    == client_vision.placeholdered([image_user(), text, next_prompt])
+}
+
+// This exercises the production disk seam and tool-result conversion before
+// routing and serialization, rather than manufacturing only a user image.
+pub fn disk_image_read_routes_to_vision_and_preserves_pixels_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  let workspace = here <> "/build/vision-disk-image"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+    as "the image workspace must exist"
+  let data =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aoykAAAAASUVORK5CYII="
+  let assert Ok(bytes) = bit_array.base64_decode(data)
+    as "the fixture is a one-pixel PNG"
+  let assert Ok(Nil) = simplifile.write_bits(workspace <> "/pixel.png", bytes)
+    as "the image must exist on disk"
+  let config =
+    wiring.Config(
+      ..config_with(vision_gateway()),
+      workspace:,
+      base_policy: policy.workspace_default(workspace),
+    )
+  let assert message.AssistantMessage(
+    content: [message.AssistantToolCall(call:)],
+    ..,
+  ) as assistant = assistant_tool_call()
+    as "the fixture assistant requests one read"
+  let arguments = json.Object([#("path", json.String("pixel.png"))])
+  let call = message.ToolCall(..call, arguments:)
+  let operation_id = image_operation(config.session)
+  let assert effects.ToolCompleted(result:, terminate: False) =
+    wiring.run_tool(
+      config,
+      effects.ToolRun(
+        operation: operation_id,
+        step_id: "read-image",
+        source_index: 0,
+        strand: "main",
+        call:,
+        arguments:,
+        replay: operation.ReplaySafe,
+        grants: [],
+      ),
+    )
+    as "the production read must complete"
+  let assert message.ToolResultMessage(is_error: False, content: [_, image], ..) =
+    result
+    as "disk image bytes must survive conversion to the durable message type"
+  assert image == message.ToolResultImage(data, "image/png")
+  let context = [
+    owner_prompt([message.UserText("look at pixel.png", None)]),
+    message.AssistantMessage(..assistant, content: [
+      message.AssistantToolCall(call),
+    ]),
+    result,
+  ]
+  // Admission reads durable history before dispatch builds its request. Both
+  // must resolve the vision head, including its smaller context allowance.
+  let assert Ok(_) =
+    session.ensure_strand(config.session, "main", text_only_configuration())
+    as "the disk-read strand must exist"
+  let entry_id = fn(index) {
+    ids.mint_entry(ids.generator(clock.fixed(0), 500 + index)).0
+  }
+  let writes =
+    list.index_map(context, fn(entry, index) {
+      InsertEntry(MessageEntry(
+        id: entry_id(index),
+        parent: case index {
+          0 -> None
+          _ -> Some(entry_id(index - 1))
+        },
+        seq: 0,
+        ts: 0,
+        message: entry,
+        terminate: False,
+      ))
+    })
+  let assert Ok(_) =
+    storage.commit(
+      config.session.store,
+      Tx(
+        writes: list.append(writes, [
+          SetRegister(
+            register.StrandLeaf,
+            "main",
+            register.leaf_value(Some(entry_id(2))),
+          ),
+        ]),
+        expected: [],
+      ),
+    )
+    as "the read transcript must commit"
+  let query =
+    effects.AdmissionQuery(
+      operation: operation_id,
+      step_id: "after-read",
+      attempt: 1,
+      configuration: text_only_configuration(),
+      stream_options: json.Object([]),
+    )
+  let assert planner.Admitted(context_window: 64_000, ..) =
+    wiring.compaction_hooks(config).admission(query)
+    as "a disk image must use the vision head's admission facts"
+  let unrouted = wiring.Config(..config, gateway: blind_gateway())
+  let assert planner.AdmissionUnavailable(error:) =
+    wiring.compaction_hooks(unrouted).admission(query)
+    as "a disk image without a vision route must be refused before dispatch"
+  assert error.code == "image_unsupported"
+
+  let request = wiring.provider_request(config, generation(context))
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == context
+  let wire =
+    openai.build_request(
+      "https://example.test",
+      "k",
+      resolved("loom-eyes", 64_000),
+      request,
+    )
+  assert string.contains(wire.body, "data:image/png;base64," <> data)
+
+  // Further tool steps stay on vision; a later human text prompt can recover
+  // even if projection has removed a failed provider response.
+  let continued = list.append(context, [assistant_tool_call(), tool_result()])
+  assert wiring.provider_request(config, generation(continued)).target
+    == request.target
+  let next_context =
+    list.append(continued, [
+      owner_prompt([message.UserText("continue in text", None)]),
+    ])
+  let next = wiring.provider_request(config, generation(next_context))
+  assert next.target == model.ForRole(model.Main, Some(model.ThinkingOff))
+  assert next.messages == client_vision.placeholdered(next_context)
+  let text_wire =
+    openai.build_request(
+      "https://example.test",
+      "k",
+      resolved("loom-text", 200_000),
+      next,
+    )
+  assert !string.contains(text_wire.body, data)
+  assert string.contains(
+    text_wire.body,
+    "described earlier in this conversation",
+  )
+}
+
+pub fn historical_tool_image_placeholder_preserves_result_metadata_test() {
+  let original =
+    message.ToolResultMessage(
+      tool_call_id: "read-photo",
+      tool_name: "fs_read",
+      content: [
+        message.ToolResultText("photo.png", None),
+        message.ToolResultImage("YQ==", "image/png"),
+      ],
+      details: Some(json.Object([#("path", json.String("photo.png"))])),
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 42,
+    )
+  let expected =
+    message.ToolResultMessage(..original, content: [
+      message.ToolResultText("photo.png", None),
+      message.ToolResultText(
+        "[image: image/png, described earlier in this conversation]",
+        None,
+      ),
+    ])
+  assert client_vision.placeholdered([original]) == [expected]
+  assert client_vision.image_bearing([
+    text_user("look"),
+    assistant_tool_call(),
+    original,
+  ])
+  assert !client_vision.image_bearing([original, assistant_answer()])
+}
+
+// The gateway protects a whole admitted batch, then releases that protection
+// at the next operation's source leaf. This is the recovery path for held
+// images followed by a text instruction and a subsequent smaller image turn.
+pub fn image_budget_protects_held_batch_and_recovers_next_run_test() {
+  let opened = memory_session()
+  let assert Ok(_) =
+    session.ensure_strand(opened, "main", text_only_configuration())
+    as "the image-budget fixture needs a strand"
+  let nine =
+    owner_prompt(list.repeat(message.UserImage("YQ==", "image/png"), 9))
+  let first = budget_append(opened, None, 700, nine)
+  let instruction =
+    owner_prompt([message.UserText("compare all of those", None)])
+  let last = budget_append(opened, Some(first), 701, instruction)
+  let op = budget_operation(opened, None, [first, last], 702)
+  let sent = process.new_subject()
+  let transport =
+    provider_test.transport(fn(request, events) {
+      process.send(sent, request.body)
+      process.send(events, http.ResponseStatus(400, []))
+      process.send(
+        events,
+        http.ResponseChunk(<<
+          "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture stop\"}}":utf8,
+        >>),
+      )
+      process.send(events, http.ResponseEnd)
+    })
+  let config = config_on(vision_gateway_transport(transport), opened)
+  let assert effects.GenerationRequest(..) as spec =
+    generation([nine, instruction])
+    as "the fixture makes a generation request"
+  let surface = wiring.build_effects(config).provider
+  let handle = surface.request(effects.GenerationRequest(..spec, operation: op))
+  let assert Ok(#([], stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the held batch must fail locally instead of losing one current image"
+  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+    stream.underlying_error(error)
+    as "the refusal must come from the image budget"
+  assert string.contains(message, "current turn contains 9 images")
+  assert process.receive(sent, within: 0) == Error(Nil)
+
+  let newest = owner_prompt([message.UserImage("Yg==", "image/png")])
+  let newest_id = budget_append(opened, Some(last), 703, newest)
+  let next_op = budget_operation(opened, Some(last), [newest_id], 704)
+  let context = [nine, instruction, newest]
+  let handle =
+    surface.request(
+      effects.GenerationRequest(..spec, operation: next_op, context:),
+    )
+  let assert Ok(#(_, stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the fixture transport deliberately returns an HTTP error"
+  let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
+    as "the next run must reach transport instead of inheriting old protection"
+  let assert Ok(body) = process.receive(sent, within: 0)
+    as "the next request body must be observable"
+  assert list.length(string.split(body, "\"type\":\"image\"")) - 1 == 8
+  assert string.contains(body, "Yg==")
+  assert string.contains(body, "omitted from this request")
+  assert session.project_context(opened, Some(newest_id)) == Ok(context)
+}
+
+fn budget_append(
+  opened: session.Session,
+  parent: option.Option(ids.EntryId),
+  seed: Int,
+  content: message.AgentMessage,
+) -> ids.EntryId {
+  let id = ids.mint_entry(ids.generator(clock.fixed(0), seed)).0
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(MessageEntry(
+            id:,
+            parent:,
+            seq: 0,
+            ts: 0,
+            message: content,
+            terminate: False,
+          )),
+          SetRegister(
+            register.StrandLeaf,
+            "main",
+            register.leaf_value(Some(id)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the budget fixture message must commit"
+  id
+}
+
+fn budget_operation(
+  opened: session.Session,
+  source: option.Option(ids.EntryId),
+  prompts: List(ids.EntryId),
+  seed: Int,
+) -> ids.OpId {
+  let id = ids.mint_op(ids.generator(clock.fixed(0), seed)).0
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          SetRegister(
+            register.OpMeta,
+            ids.op_id_to_string(id),
+            register.RegisterValue(
+              machine_codec.encode_operation(operation.Operation(
+                id:,
+                strand: "main",
+                source_leaf: source,
+                started_at: 0,
+                intent: operation.RunIntent(prompts),
+              )),
+            ),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the budget fixture operation must commit"
+  id
+}
+
+// Automatic compaction can retain old exchanges together with the current
+// prompt. Its copied tail must not turn those historical images into new ones.
+pub fn image_budget_after_compaction_keeps_the_operation_boundary_test() {
+  let opened = memory_session()
+  let assert Ok(_) =
+    session.ensure_strand(opened, "main", text_only_configuration())
+    as "the compaction fixture needs a strand"
+  let historical =
+    owner_prompt(list.repeat(message.UserImage("YQ==", "image/png"), 8))
+  let old_id = budget_append(opened, None, 801, historical)
+  let answered = assistant_answer()
+  let source = budget_append(opened, Some(old_id), 802, answered)
+  let current = owner_prompt([message.UserImage("Yg==", "image/png")])
+  let current_id = budget_append(opened, Some(source), 803, current)
+  let op = budget_operation(opened, Some(source), [current_id], 804)
+  let compacted = ids.mint_entry(ids.generator(clock.fixed(0), 805)).0
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(entry.CompactionEntry(
+            id: compacted,
+            parent: Some(current_id),
+            seq: 0,
+            ts: 0,
+            summary: "Earlier context",
+            retained_tail: [historical, answered, current],
+            tokens_before: 10_000,
+            from_hook: True,
+            usage: None,
+          )),
+          SetRegister(
+            register.StrandLeaf,
+            "main",
+            register.leaf_value(Some(compacted)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "same-run compaction must commit with the original parent chain"
+  let assert Ok(context) = session.project_context(opened, Some(compacted))
+    as "the projection must include the retained historical images"
+  let sent = process.new_subject()
+  let transport =
+    provider_test.transport(fn(request, events) {
+      process.send(sent, request.body)
+      process.send(events, http.ResponseStatus(400, []))
+      process.send(
+        events,
+        http.ResponseChunk(<<
+          "{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"fixture stop\"}}":utf8,
+        >>),
+      )
+      process.send(events, http.ResponseEnd)
+    })
+  let config = config_on(vision_gateway_transport(transport), opened)
+  let assert effects.GenerationRequest(..) as spec = generation(context)
+    as "the fixture makes a generation request"
+  let handle =
+    wiring.build_effects(config).provider.request(
+      effects.GenerationRequest(..spec, operation: op),
+    )
+  let assert Ok(#(_, stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the fixture transport must complete"
+  let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
+    as "historical images carried through compaction must not cause a local refusal"
+  let assert Ok(body) = process.receive(sent, within: 0)
+    as "the budgeted request must reach transport"
+  assert list.length(string.split(body, "\"type\":\"image\"")) - 1 == 8
+  assert string.contains(body, "Yg==")
+  assert string.contains(body, "omitted from this request")
+  assert session.project_context(opened, Some(compacted)) == Ok(context)
 }

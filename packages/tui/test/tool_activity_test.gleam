@@ -730,3 +730,69 @@ pub fn aborted_turns_show_stopped_above_an_unconfirmed_diagnostic_test() {
   assert string.contains(failure, diagnostic)
   assert !string.contains(failure, "Stopped")
 }
+
+// Exercise the grouped transcript path, which previously bypassed the source
+// renderer and left compact code-mode calls as a truncated JSON argument row.
+pub fn compact_code_mode_keeps_formatted_source_when_it_settles_test() {
+  let source =
+    "import cap/report\n\npub fn main() {\n  report.text(\"hello\")\n}"
+  let arguments = json.Object([#("program", json.String(source))])
+  let #(pending, before) =
+    model() |> received(call(1, "code", "code_mode", arguments)) |> painted
+  assert string.contains(before, "code_mode · awaiting result")
+  assert string.contains(before, "import cap/report")
+  assert string.contains(before, "report.text(\"hello\")")
+  assert !string.contains(before, "{\"program\"")
+  let #(completed, after) =
+    pending |> received(code_outcome(2, "code", False)) |> painted
+  assert !completed.details_expanded
+  assert string.contains(after, "✓ code_mode")
+  assert string.contains(after, "import cap/report")
+  assert string.contains(after, "report.text(\"hello\")")
+  assert !string.contains(after, "{\"program\"")
+  assert !string.contains(after, "awaiting result")
+
+  // The source rows are identical across settlement, so successful completion
+  // does not change the compact transcript's height or duplicate the program.
+  let details = fn(state: tui.Model) {
+    state.compact_call_cache
+    |> dict.values
+    |> list.flatten
+    |> list.filter(fn(line) { line.speaker == tui.ToolDetail })
+  }
+  assert details(pending) == details(completed)
+  assert list.length(details(completed)) == 1
+  assert list.length(pending.rendered_rows)
+    == list.length(completed.rendered_rows)
+  let #(_, failed) =
+    pending |> received(code_outcome(2, "code", True)) |> painted
+  assert string.contains(failed, "import cap/report")
+  assert string.contains(failed, "completed")
+}
+
+pub fn compact_code_mode_is_bounded_and_expandable_in_the_frame_test() {
+  let source = string.repeat("// source row\n", 59) <> "// LINE_60\n// LINE_61"
+  let arguments = json.Object([#("program", json.String(source))])
+  let #(compact, visible) =
+    model()
+    |> received(call(1, "code", "code_mode", arguments))
+    |> received(code_outcome(2, "code", False))
+    |> painted
+  assert string.contains(visible, "LINE_60")
+  assert !string.contains(visible, "LINE_61")
+  assert string.contains(visible, "// …")
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "LINE_61")
+}
+
+fn code_outcome(seq, id, failed) {
+  let assert entry.MessageEntry(message: body, ..) as placed =
+    outcome(seq, id, failed, None)
+    as "The fixture is a message entry"
+  let assert message.ToolResultMessage(..) = body as "The fixture is a result"
+  entry.MessageEntry(
+    ..placed,
+    message: message.ToolResultMessage(..body, tool_name: "code_mode"),
+  )
+}

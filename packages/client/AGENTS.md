@@ -385,7 +385,8 @@ catalogue without opening runtimes. Explicit admission invokes
   worked example) and the builder that turns a catalogue into the
   provider gateway's registry — one provider per entry, named by the
   entry (so durable identities store `{catalogue-name, model_id}`),
-  one route per `[roles]` row, and one rate card per entry that carries
+  one route per `[roles]` row, a positive per-model `max_images` limit
+  (default eight), and one rate card per entry that carries
   an optional `[models.<name>.pricing]` table (US dollars per million
   tokens; `input` and `output` required, the two cache rates defaulting
   to `input` so the default over-reports rather than hiding spend). An
@@ -1544,25 +1545,37 @@ catalogue without opening runtimes. Explicit admission invokes
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
 - `client/vision` — the vision routing rule (issue #358): a request
-  whose current turn carries an image, on a strand whose catalogue
-  entry declares `vision = false`, dispatches through the routed
+  whose current turn carries an attached or tool-result image, on a strand whose catalogue
+  entry is text-only, dispatches through the routed
   `vision` chain (`ForRole(Vision)`, admitted and accounted against
   the vision head's own facts) or is refused in band at admission with
   a worded reason — `image_unsupported` when no chain resolves,
   `vision_misconfigured` when the routed head is itself declared
   `TextOnly`. Every other request to a text-only identity carries its
-  `UserImage` blocks replaced with a text placeholder, in the transient
+  `UserImage` and `ToolResultImage` blocks replaced with text placeholders, in the transient
   projection only; the durable transcript keeps the images. The
-  classifier walks the *current turn* — everything after the newest
-  assistant message that ended its turn, so a tool call and its result
-  are steps inside the turn and the second request of an image turn
-  stays on the model that saw the image — because the run-start hooks
-  inject the notes and memory digests as user messages after the
-  operator's prompt, and a newest-user-message walk would classify a
-  digest and silently placeholder the image, the exact failure the rule
-  removes. An entry that never wrote `vision` reads images: the flag is
-  a declaration learned by probing, since nothing on the wire marks the
-  capability, and the routing and the refusal act only on the negative.
+  classifier walks the current turn from the latest attributed human
+  prompt or settled assistant boundary. Digests have no origin and tool
+  steps do not close a turn. A disk image returned by `fs_read` switches the
+  next request to vision and subsequent tool steps retain that route.
+  Human attribution also survives projection of failed assistant responses,
+  allowing the next text prompt to end a rejected image turn. The immutable
+  operation admission batch is checked as well, including captured inputs
+  before its explicit prompts. An image-bearing admitted run stays on vision
+  through tool and run-end continuations, so a held image followed by a text
+  instruction cannot be silently placeholdered. A new text-only run does not
+  inherit the previous run's image requirement. Explicit `vision` declarations override the built-in capability.
+  Before preparing dispatch, wiring counts the original user and tool-result
+  images after the operation's source leaf and gives the gateway a request-local
+  protected count. The scan crosses compactions through their preserved parent
+  links, ignores copied retained tails and stops at the immutable run boundary.
+  The gateway budgets historical images independently for every fallback model
+  and refuses an oversized active turn locally. A successor run excludes old
+  images from protection; compaction cannot reclassify retained history as new.
+  GLM-5.3 (with or without the `zai-org/` prefix) defaults to text-only;
+  GLM-5.3-Flash remains distinct. Unknown identifiers retain the legacy
+  image-capable default. A following attributed text prompt can recover from a failed image request
+  with historical image placeholders, even after projection removes the error.
   The catalogue parse refuses a `vision` chain that names a
   `vision = false` entry, so a retryable walk cannot deliver an image
   to a model that cannot read it. `Config.facts` carries the entry's

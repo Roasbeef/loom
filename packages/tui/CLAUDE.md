@@ -153,6 +153,8 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   once it settles — and `Ctrl+G` shows the block itself; a redacted block is
   its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
+  Code-mode calls retain a syntax-highlighted preview of up to 60 submitted
+  source lines, with an omission marker; Ctrl+G shows the complete program.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
   worktree observation.
@@ -572,9 +574,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   idle or a successor. Older recordings retain their local echo semantics.
 - **Compact tools and changes**: `tui/tool_activity` groups consecutive tool
   calls, joining results by call ID and ending a group when a later response
-  reuses an ID. Compact history shows the latest three calls and the group's
-  failure count; Ctrl+g recovers the original entries. Captured `fs_edit` diffs
-  remain the explicitly labelled fallback when a worktree observation is
+  reuses an ID. Compact history retains every call and the group's failure
+  count; Ctrl+g recovers the original entries. Code-mode source previews belong
+  to their invocation, so pending, successful and failed calls keep the same
+  bounded fenced-Gleam block instead of exposing the argument JSON. Captured
+  `fs_edit` diffs remain the explicitly labelled fallback when a worktree observation is
   unavailable. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
 - **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
@@ -667,10 +671,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   when the prompt is sent. A single pasted local path becomes an image
   attachment only when it is a regular PNG/JPEG/GIF/WebP file no larger than
   20 MiB; one prompt retains at most four images and 20 MiB of raw image data
-  in aggregate. The chip shows a terminal-sanitized filename, MIME, and size,
-  on its own row above the editor: beside the editor it took its width from
-  that summary and left the editor a column or two, so the row costs one line
-  of prompt height and the editor keeps the full interior width.
+  in aggregate. A count row precedes one row per accepted image, with a
+  terminal-sanitized filename, MIME, and size. The editor keeps its full width
+  and at least one row when space is constrained. Rejecting a fifth image
+  names the rejected file and confirms that four attachments remain.
   Unsupported files and multi-token paths stay text, while read errors preserve
   the editor and show a local error. The backend enables bracketed-paste mode
   so a real terminal paste arrives as one event. Backspace on an empty editor
@@ -708,8 +712,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   the same number of wrapped rows, so a reader following the tail sees text
   change and not the transcript grow and shrink under them. The two regions
   this covers are a running tool call — whose output window is detail, drawn
-  only with details expanded — and a reasoning block, whose live and settled
-  forms are both one `ReasoningDigest` row when collapsed. A result the
+  only with details expanded, while code-mode source is already visible — and
+  a reasoning block, whose live and settled forms are both one
+  `ReasoningDigest` row when collapsed. A result the
   reader has to see still costs the rows it needs: a failure adds its result
   text under the failure summary, and `fs_edit` and `context_remaining` draw
   their own rows. What the rule removes is growth that carried no

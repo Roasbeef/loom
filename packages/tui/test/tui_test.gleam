@@ -1387,7 +1387,7 @@ pub fn image_attachment_summary_sanitizes_the_filename_test() {
 /// An attached image must not cost the editor its width.
 ///
 /// The chip row is taken off the top of the prompt interior, so the editor
-/// keeps every column it had and loses one row. Both halves are asserted:
+/// keeps every column it had beneath the count and filename. Both halves are asserted:
 /// a layout that gave the editor the full rectangle would pass a width
 /// check alone while drawing the chip over the first line of the prompt.
 pub fn attachment_chips_stack_above_a_full_width_editor_test() {
@@ -1403,10 +1403,10 @@ pub fn attachment_chips_stack_above_a_full_width_editor_test() {
   let #(chips, editor) =
     tui.input_layout(area, [composer.ImageAttachment(image)])
 
-  assert chips == geometry.rect_new(1, 10, 80, 1)
-    as "the chip row is one row at the top of the interior"
-  assert editor == geometry.rect_new(1, 11, 80, 3)
-    as "the editor keeps the full width and gives up one row"
+  assert chips == geometry.rect_new(1, 10, 80, 2)
+    as "the image has a count row and a filename row"
+  assert editor == geometry.rect_new(1, 12, 80, 2)
+    as "the editor keeps the full width below the image list"
 }
 
 pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
@@ -1426,7 +1426,7 @@ pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
       four,
       composer.ImageAttachment(test_image("5", 1)),
     )
-    == Error("a prompt may attach at most four images")
+    == Error("not attached: 5; 4/4 images retained (per-prompt limit)")
 
   let full =
     composer.ImageAttachment(test_image(
@@ -1466,7 +1466,7 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   assert composer.images(attachments) == [first, second]
   assert composer.drop_last(attachments) == [composer.ImageAttachment(first)]
   assert composer.summary(attachments)
-    == Some("a.png image/png 1 B · b.jpg image/jpeg 1 B")
+    == Some("2 images · a.png image/png 1 B · b.jpg image/jpeg 1 B")
   assert tui.image_prompt_content("", composer.images(attachments))
     == [
       message.UserImage("YQ==", "image/png"),
@@ -1532,23 +1532,19 @@ pub fn code_mode_program_renders_as_gleam_test() {
 }
 
 pub fn code_mode_program_preview_is_bounded_test() {
-  let arguments =
-    json.Object([
-      #(
-        "program",
-        json.String(
-          "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13",
-        ),
-      ),
-    ])
+  let source = string.repeat("// preview row\n", 59) <> "// LINE_60\n// LINE_61"
+  let arguments = json.Object([#("program", json.String(source))])
   let assert Some(collapsed) =
     tui.code_mode_program("code_mode", arguments, False)
+    as "A valid source field has a compact preview"
   let assert Some(expanded) =
     tui.code_mode_program("code_mode", arguments, True)
+    as "A valid source field can be expanded"
 
-  assert !string.contains(collapsed, "line-13")
+  assert string.contains(collapsed, "LINE_60")
+  assert !string.contains(collapsed, "LINE_61")
   assert string.contains(collapsed, "// …")
-  assert string.contains(expanded, "line-13")
+  assert string.contains(expanded, "LINE_61")
 }
 
 pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
@@ -2268,4 +2264,56 @@ pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
   assert selection.text(last, selected) == "\n\u{25C7} gam"
   assert list.any(run.final.records, fn(record) { record.entry.seq == 4 })
     as "incoming output still advances the model behind the selected pane"
+}
+
+/// Each image has its own row even when long names would fill the old chip.
+pub fn image_preview_lists_all_four_images_test() {
+  let attachments =
+    list.map(
+      [
+        "one-long-name.png",
+        "two-long-name.png",
+        "three-long-name.png",
+        "four-long-name.png",
+      ],
+      fn(name) { composer.ImageAttachment(test_image(name, 10)) },
+    )
+  assert composer.preview_lines(attachments)
+    == [
+      "4/4 images attached",
+      "1. one-long-name.png image/png 10 B",
+      "2. two-long-name.png image/png 10 B",
+      "3. three-long-name.png image/png 10 B",
+      "4. four-long-name.png image/png 10 B",
+    ]
+  let #(images, editor) =
+    tui.input_layout(geometry.rect_new(0, 0, 30, 8), attachments)
+  assert images.size.height == 5
+  assert editor.size.height == 3
+  assert editor.size.width == 30
+
+  // A short terminal must still leave a row for editing the prompt.
+  let #(short_images, short_editor) =
+    tui.input_layout(geometry.rect_new(0, 0, 30, 2), attachments)
+  assert short_images.size.height == 1
+  assert short_editor.size.height == 1
+}
+
+/// The complete frame, not only the summary helper, must show the fourth drop.
+pub fn image_preview_renders_fourth_image_and_keeps_prompt_visible_test() {
+  let model =
+    tui.Model(
+      ..quiet_model(connection.new_inbox()),
+      attachments: list.map(
+        ["one.png", "two.png", "three.png", "four.png"],
+        fn(name) { composer.ImageAttachment(test_image(name, 10)) },
+      ),
+      input: text_area.state_from_string("review these screenshots"),
+    )
+  let #(drawn, _) = tui.view(model, geometry.rect_new(0, 0, 50, 24))
+  let shown = frame.buffer_to_text(drawn)
+  assert string.contains(shown, "4/4 images attached")
+  assert string.contains(shown, "1. one.png")
+  assert string.contains(shown, "4. four.png")
+  assert string.contains(shown, "review these screenshots")
 }

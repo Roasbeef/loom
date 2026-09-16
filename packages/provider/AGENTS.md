@@ -10,6 +10,13 @@ classification, and the secret-injection seam. SSE parsing and adapter folds
 are pure Gleam; the gateway custodian and native transport owner are the small
 processful shell around that sans-io core. WP-F.
 
+Tool-result images survive all three adapters. Anthropic retains image blocks
+inside tool results; Gemini and OpenAI emit a user image turn after the complete
+tool-result batch. OpenAI keeps the text tool messages and their call IDs before
+that image turn, so parallel calls are all answered before a user message is
+inserted. Captions identify each producing call; custom transcript entries do
+not split the batch. These are transient wire projections.
+
 ## Key Types
 
 - A terminal parsed from an HTTP chunk, including OpenAI `[DONE]`, requests
@@ -28,12 +35,25 @@ processful shell around that sans-io core. WP-F.
   Context never substitutes for a drain witness or changes a deadline.
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
-  (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`); exposes the
+  (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`,
+  `with_image_limit`); exposes the
   frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
   That owner is the request guard, a `weft/state_machine` over `Phase` and
   `Guard`; see **Traffic** for its states and its three state timeouts.
+- `provider/image_budget.{count, project, default_max_images}` bounds the total
+  `UserImage` and `ToolResultImage` blocks in one request. Each actual gateway
+  attempt uses its own endpoint/model limit (default eight), always starting
+  from the original request so a larger fallback can retain more history.
+  Oldest historical images become explicit text placeholders; text, message
+  metadata and durable history are preserved. An active turn above the limit
+  fails locally with terminal `StreamError("image_limit", ...)` before secret
+  lookup or HTTP. `gateway.with_protected_images` makes a request-scoped copy
+  carrying the caller's active-run image count for held prompt batches. The
+  inferred current turn is also protected, and counts are capped to pixels
+  actually present after context projection. These settings live on the opaque
+  gateway; the frozen `ResolvedModel` and `ProviderRequest` shapes are unchanged.
 - `provider/pricing.{Pricing, price, free}` — the costing layer. `Pricing`
   is one model's rate card in US dollars per million tokens, the unit
   providers publish; `price` is the pure function turning a `Usage` into a

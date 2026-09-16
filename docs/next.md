@@ -10,6 +10,102 @@ merge. The new tag workflow has passed local script tests and workflow lint;
 its native macOS reproduction and GitHub draft upload remain unverified until
 hosted execution. No release was tagged or published by this work.
 
+## Code-mode and image fixes (PR #434)
+
+PR #434 on `fix/codemode-diagnostics` combines the September 15 code-mode
+diagnostics, compact source preview, and image-handling fixes. It addresses the
+attachment reports. The composer shows a count and one row per accepted image;
+the existing four-image/20-MiB limit remains, with a named rejection for a fifth
+file. GLM-5.3 defaults to text-only without a configuration migration, while
+explicit overrides and the distinct Flash model retain their behavior.
+
+Vision classification now distinguishes a new attributed prompt from old failed
+image turns after projection removes error responses. It also reads the whole
+immutable admission batch, so releasing a held image and text together keeps
+the image. Image-bearing admitted runs stay on vision through tool and run-end
+continuations; a new text-only run does not inherit that requirement. Durable
+images are preserved. Unknown model identifiers retain the legacy image-capable
+default; this is not automatic capability discovery for arbitrary endpoints.
+
+The independent review found and verified the held-batch correction. TUI tests,
+focused vision regressions, both package lints and documentation checks pass.
+The final package gate passed 551 TUI and 1,828 client tests with its own exit
+status checked. Optional seed-dependent and shipped-server fixtures reported
+skips; live provider requests and installed-release behavior were not tested. No daemon was restarted and no
+installed configuration was edited. These changes are not merged or installed.
+
+The disk-read follow-up extends `fs_read` to PNG, JPEG, GIF, and WebP files.
+It returns the existing durable image block, uses file signatures rather than
+extensions, and retains the workspace checks and 8 MiB file limit. A tool-result
+image now routes admission and dispatch through vision when the primary model
+is text-only. Following text prompts placeholder old tool images without
+altering durable history. OpenAI serialization now preserves these images in a
+user turn after the complete tool-result batch, with captions naming each call;
+Anthropic and Gemini already supported tool-result images. `cap/fs.read`
+continues to return text.
+
+The disk-read package gate passed 454 tools, 214 provider, and 1,830 client tests,
+including a real PNG read through production tool dispatch, durable history,
+vision admission and OpenAI serialization. All three package lints have zero
+errors, with existing warning censuses retained. Documentation checks pass
+with existing warnings. The independent review found no actionable issues.
+Optional code-mode seed, Linux-only and shipped-release fixtures reported skips;
+live provider calls and an installed daemon remain untested. The follow-up is
+included in PR #434, not merged or installed.
+
+The request-budget follow-up keeps the same conversation context for vision
+routing and adds a positive per-model `max_images` setting, default eight.
+Every actual provider attempt bounds attached and tool-result images against
+its own limit. The oldest historical images become explicit placeholders;
+current-run images remain intact or cause a local terminal refusal before HTTP.
+Text, answers, tool metadata and stored image bytes remain unchanged. Fallbacks
+start from the original request, so a larger fallback retains its full allowance.
+This does not identify or deduplicate versions of the same image.
+
+Held prompt batches use the operation's immutable source leaf to protect all
+current images even when the last prompt is text. Review caught a compaction
+case that counted copied historical images as current. A regression reproduced
+the false refusal with eight historical images and one current image, then
+passed after counting original message entries through the preserved parent
+chain. The reviewer verified that correction. A later operation starts a new
+protection boundary and can recover after an oversized image request.
+
+The request-budget gates passed 222 provider tests and, after the compaction
+correction, 1,834 client tests. Provider/client lint and documentation checks
+have zero errors with existing warnings retained. Optional seed-dependent,
+Linux-only and shipped-server fixtures reported skips. Live provider calls and
+installed-daemon behavior remain untested. The changes are included in
+PR #434, not merged or installed.
+
+The integrated branch retains the original parse diagnostics and the 60-line
+compact code-mode preview alongside these image fixes. Execution of reusable
+programs from files or named notes remains separate in issue #435.
+
+The integrated gate passed 459 tools, 222 provider, 304 code-mode, 1,834 client,
+and 553 TUI tests, including the seeded code-mode fixture. The gate exited zero;
+package lint and the documentation gate also passed with existing warnings.
+The integration review found no actionable issues. The client suite reported
+Linux-only and shipped-release fixture skips; live provider requests and an
+installed daemon remain untested. Check the updated PR head's hosted CI before
+merge. Nothing was merged or installed by this integration.
+
+The README now introduces the implemented features, setup and update paths,
+with diagrams and a real code-mode terminal capture using a scripted local
+provider. The former launch reference is preserved in [Running Loom](running.md).
+Documentation checks, local links, rendered diagrams and the capture were
+verified; the public-facing claims received an independent source review.
+The selected woven logo is included as font-independent SVG assets, with
+light and dark README variants and separate color and monochrome marks.
+
+The advisor integration fixture now holds its scripted nudge until the second
+operator turn has settled, then observes delivery before admitting the third.
+The earlier ordering let a valid run-start drain share an operator request,
+making the expected five requests become four. The exact count, quiet-verdict
+bound and final duplicate-fence assertion remain intact. Twenty focused runs
+under constrained scheduling, all 1,834 client tests, lint, documentation checks
+and independent review passed. Hosted CI and Linux signoff must be checked again
+at the commit containing this fixture fix.
+
 ## Where the tree is
 
 | Body of work | Verified state |
@@ -61,6 +157,20 @@ Gleam's generated `@` module separators while preserving path containment.
 Both corrections are covered by the installed-release smoke.
 
 ## What to do next
+
+The local `fix/codemode-diagnostics` branch also keeps up to 60
+syntax-highlighted source lines in compact code-mode calls. The preview is
+present while awaiting a result and survives success or failure; Ctrl+G exposes
+the full program. The TUI gate passed 551 tests; lint, documentation checks and
+independent review passed. It is not yet merged or installed.
+
+The local `fix/codemode-diagnostics` branch improves code-mode parse refusals
+with submitted-source line/column, a bounded excerpt and caret, source-token
+spelling, and a grouping-parenthesis hint. The reported failure was invalid Gleam
+expression grouping, confirmed by the compiler formatter. Tools (455 tests),
+code mode (304 tests, including the seeded end-to-end run), package lint, the
+documentation gate and independent review passed. The branch is not yet merged
+or installed; no user session was changed or restarted.
 
 1. Review and merge the local update wrapper and release-automation changes.
    **Exit:** applicable CI and signoff at the proposed head. No live daemon or

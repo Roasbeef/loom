@@ -64,6 +64,25 @@ mode and maps to `off`, which sends no reasoning field at all. For a
 Gemini 3 model, which cannot stop reasoning, `off` therefore means the
 model reasons at its own default and shows none of it.
 
+`max_images` is an optional positive count, defaulting to eight. It limits
+all attached and tool-result image blocks in a provider request, including
+history. The default is conservative; the setting should match the endpoint's
+actual limit. The gateway applies it separately to each resolved fallback,
+starting from the original request each time. It replaces the oldest historical
+images with explicit placeholders while preserving text, answers, tool-call
+relationships and metadata. Images in the active run stay intact; too many
+produce a local, terminal `image_limit` error before secret lookup or transport.
+
+Wiring supplies the image count for the entire admitted run so held prompts
+remain one batch even when the last prompt is text. Compaction does not reset
+that boundary: the count follows original entries back to the operation's
+source leaf and ignores copies in retained tails. Retained tails are contiguous
+suffixes, so when compaction removes current-run images, all older history has
+also left the projection. Capping the protected count to the images still in
+the request then preserves the surviving current images. A new run gets a new
+boundary and can recover after an oversized image turn. Durable image bytes
+remain available; this is a transient request projection.
+
 **Keys never live in the file.** `api_key_env` names an environment
 variable, and that name travels all the way into the gateway's
 `ProviderConfig` as a name. The value is read once per dispatch by the
@@ -310,12 +329,13 @@ entry's own declared level applies. A summary is published as text rather
 than as a response attributed to a model, so there is no durable identity
 contract to honour there and a cheaper fallback is pure gain.
 
-`plan` and `vision` are **reserved vocabulary**: parsed, validated, routed
-into the registry, reported in the `models` listing, and dispatched on by
-nothing. There is no plan-generation step and no image-bearing request
-path in the harness for them to attach to, so wiring a dispatch site would
-be inventing the caller as well as the route. Recorded in
-`docs/spec-gaps.md`.
+`plan` remains reserved vocabulary. `vision` serves image-bearing requests
+when the strand's primary model is text-only. It receives the existing system
+prompt, tools and conversation context, bounded by the image policy above.
+It is a routed generation for that turn, not a separate image-description
+subtask. Later text-only turns can return to the primary with historical images
+replaced by placeholders. The catalogue refuses a vision chain containing an
+explicitly text-only model.
 
 ## Dialects and the adapter seam
 

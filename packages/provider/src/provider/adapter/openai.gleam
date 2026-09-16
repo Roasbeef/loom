@@ -175,7 +175,65 @@ fn encode_messages(request: ProviderRequest) -> List(JsonValue) {
     ]
     None -> []
   }
-  list.append(system, list.filter_map(request.messages, encode_message))
+  let messages = move_tool_images(request.messages, [], [])
+  list.append(system, list.filter_map(messages, encode_message))
+}
+
+// Chat Completions tool messages carry text, while image_url belongs in a
+// user message. Collect images across a whole tool-result batch before adding
+// that user turn: inserting it between parallel results leaves calls pending.
+// This is a wire-only projection; durable messages keep their original roles.
+fn move_tool_images(
+  messages: List(AgentMessage),
+  pending: List(message.UserBlock),
+  collected: List(AgentMessage),
+) -> List(AgentMessage) {
+  case messages {
+    [] -> list.reverse(flush_tool_images(pending, collected))
+    [CustomMessage(..), ..rest] -> move_tool_images(rest, pending, collected)
+    [ToolResultMessage(content:, tool_call_id:, ..) as entry, ..rest] -> {
+      let images =
+        list.filter_map(content, fn(block) {
+          case block {
+            ToolResultImage(data:, mime_type:) -> Ok(UserImage(data, mime_type))
+            ToolResultText(..) -> Error(Nil)
+          }
+        })
+
+      // A caption retains the producing call when several reads share a batch.
+      let pending = case images {
+        [] -> pending
+        _ ->
+          list.fold(
+            [
+              UserText("Images from tool call " <> tool_call_id <> ":", None),
+              ..images
+            ],
+            pending,
+            fn(acc, block) { [block, ..acc] },
+          )
+      }
+      move_tool_images(rest, pending, [entry, ..collected])
+    }
+    [entry, ..rest] ->
+      move_tool_images(rest, [], [
+        entry,
+        ..flush_tool_images(pending, collected)
+      ])
+  }
+}
+
+fn flush_tool_images(
+  pending: List(message.UserBlock),
+  collected: List(AgentMessage),
+) -> List(AgentMessage) {
+  case pending {
+    [] -> collected
+    _ -> [
+      UserMessage(content: list.reverse(pending), timestamp: 0, origin: None),
+      ..collected
+    ]
+  }
 }
 
 fn encode_message(message: AgentMessage) -> Result(JsonValue, Nil) {

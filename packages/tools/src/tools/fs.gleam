@@ -3,7 +3,8 @@
 ////
 //// `fs_read` renders hashline-anchored windows (`line:anchor|text`)
 //// with the total line count and the whole-file digest, so edits can
-//// reference exact content; `fs_edit` applies a multi-hunk
+//// reference exact content. PNG, JPEG, GIF, and WebP reads instead return
+//// image blocks for the configured vision route; `fs_edit` applies a multi-hunk
 //// anchor-checked, digest-bound plan and rejects any staleness with
 //// fresh anchors for replanning; `fs_write` creates or replaces a
 //// whole file. All three resolve paths against the *real* filesystem
@@ -46,6 +47,7 @@
 
 import broker/policy
 import core/json.{type JsonValue}
+import core/message.{ToolResultImage}
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -548,17 +550,18 @@ fn covers_target(
 
 // --- fs_read -------------------------------------------------------------
 
-/// The `fs_read` tool: hashline-anchored windowed reads.
+/// The `fs_read` tool: anchored text windows or whole images.
 pub fn read_tool() -> tool.Tool {
   tool.Tool(
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
       <> "Use offset/limit to window large files; anchors are what fs_edit "
       <> "hunks must reference, and the result text carries the file digest "
-      <> "fs_edit requires.",
+      <> "fs_edit requires. PNG, JPEG, GIF, and WebP files return images for "
+      <> "visual inspection; offset/limit apply only to text.",
     prompt_snippet: Some(
       "`fs_read` reads a text file as anchored lines, which is where an "
-      <> "edit's anchors come from.",
+      <> "edit's anchors come from, or returns an image for visual inspection.",
     ),
     schema: tool.object_schema(
       [
@@ -599,8 +602,56 @@ fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:),
     path_outcome,
   )
-  use content <- tool.or_outcome(read_text(ctx, resolved), identity_outcome)
-  read_outcome(path, content, offset, limit)
+  use bytes <- tool.or_outcome(
+    read_bytes(ctx.filesystem, resolved),
+    read_error_outcome,
+  )
+  case image_media_type(bytes) {
+    Some(mime_type) -> image_outcome(path, bytes, mime_type)
+    None -> {
+      use content <- tool.or_outcome(
+        bit_array.to_string(bytes) |> result.replace_error(NotText),
+        read_error_outcome,
+      )
+      read_outcome(path, content, offset, limit)
+    }
+  }
+}
+
+// File contents determine the media type; a misleading extension must not
+// turn a text file into an image or hide a supported image from the model.
+fn image_media_type(bytes: BitArray) -> Option(String) {
+  case bytes {
+    <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, _:bits>> ->
+      Some("image/png")
+    <<0xFF, 0xD8, 0xFF, _:bits>> -> Some("image/jpeg")
+    <<"GIF87a", _:bits>> | <<"GIF89a", _:bits>> -> Some("image/gif")
+    <<"RIFF", _:size(32), "WEBP", _:bits>> -> Some("image/webp")
+    _ -> None
+  }
+}
+
+// Images use the existing durable tool-result block. The accompanying text
+// identifies the file even when a later text-only turn placeholders its pixels.
+fn image_outcome(
+  path: String,
+  bytes: BitArray,
+  mime_type: String,
+) -> ToolOutcome {
+  let outcome = tool.success("Image: " <> path <> " (" <> mime_type <> ")")
+  tool.ToolOutcome(
+    ..outcome,
+    content: list.append(outcome.content, [
+      ToolResultImage(bit_array.base64_encode(bytes, True), mime_type),
+    ]),
+  )
+  |> tool.with_details(
+    json.Object([
+      #("path", json.String(path)),
+      #("mime_type", json.String(mime_type)),
+      #("byte_size", json.Int(bit_array.byte_size(bytes))),
+    ]),
+  )
 }
 
 fn read_outcome(
@@ -707,6 +758,16 @@ pub fn read_text_file(
   filesystem filesystem: FileSystem,
   resolved resolved: String,
 ) -> Result(String, ReadError) {
+  use bytes <- result.try(read_bytes(filesystem, resolved))
+  bit_array.to_string(bytes) |> result.replace_error(NotText)
+}
+
+// Text capability reads and multimodal tool reads share the same byte bound.
+// Only fs_read interprets image bytes; cap/fs.read remains a text operation.
+fn read_bytes(
+  filesystem: FileSystem,
+  resolved: String,
+) -> Result(BitArray, ReadError) {
   use bytes <- result.try(
     filesystem.read(resolved) |> result.map_error(ReadFailed),
   )
@@ -715,7 +776,7 @@ pub fn read_text_file(
     when: size > max_read_bytes,
     return: Error(TooLarge(size:, limit: max_read_bytes)),
   )
-  bit_array.to_string(bytes) |> result.replace_error(NotText)
+  Ok(bytes)
 }
 
 // Reads and decodes a file for the text tools; failures are in-band

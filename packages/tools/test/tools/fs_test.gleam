@@ -1,6 +1,7 @@
 import broker/policy
 import core/json
 import core/message
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
@@ -999,4 +1000,89 @@ pub fn write_whole_creates_missing_parents_test() {
   let assert Ok(text) =
     simplifile.read(ctx.workspace <> "/new_dir/deeper/file.txt")
   assert text == "landed\n"
+}
+
+// Magic bytes, including UTF-8-compatible GIF headers, take precedence over
+// line rendering. File extensions do not participate in classification.
+pub fn read_supported_images_as_image_blocks_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  list.each(
+    [
+      #(<<0x89, "PNG", 13, 10, 26, 10, 0, 255>>, "image/png"),
+      #(<<255, 216, 255, 0>>, "image/jpeg"),
+      #(<<"GIF87a", 0>>, "image/gif"),
+      #(<<"GIF89a", 0>>, "image/gif"),
+      #(<<"RIFF", 4:size(32), "WEBP", 0>>, "image/webp"),
+    ],
+    fn(sample) {
+      let #(bytes, mime) = sample
+      let assert Ok(Nil) = filesystem.write("/work/picture.data", bytes)
+        as "the fixture must be writable"
+      let outcome =
+        fs.read_tool().run(
+          ctx,
+          args([
+            #("path", json.String("picture.data")),
+            #("offset", json.Int(200)),
+            #("limit", json.Int(1)),
+          ]),
+        )
+      assert !outcome.is_error
+      let assert [
+        message.ToolResultText(text:, ..),
+        message.ToolResultImage(data:, mime_type:),
+      ] = outcome.content
+        as "an image read must include both its identity and pixels"
+      assert string.contains(text, "picture.data")
+      assert mime_type == mime
+      assert bit_array.base64_decode(data) == Ok(bytes)
+      assert outcome.details
+        == Some(
+          json.Object([
+            #("path", json.String("picture.data")),
+            #("mime_type", json.String(mime)),
+            #("byte_size", json.Int(bit_array.byte_size(bytes))),
+          ]),
+        )
+    },
+  )
+}
+
+pub fn image_extension_does_not_replace_text_anchors_test() {
+  let #(ctx, _) = memory_ctx()
+  write_file(ctx, "notes.png", "still text")
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("notes.png"))]))
+  assert !outcome.is_error
+  assert string.contains(first_text(outcome), "|still text")
+  assert visible_digest(outcome) == hashline.digest("still text")
+}
+
+pub fn image_read_shares_the_file_size_guard_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let payload_size = fs.max_read_bytes - 7
+  let assert Ok(Nil) =
+    filesystem.write("/work/big.png", <<
+      0x89,
+      "PNG",
+      13,
+      10,
+      26,
+      10,
+      0:size(payload_size)-unit(8),
+    >>)
+    as "the oversized image fixture must be writable"
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("big.png"))]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "larger than")
+}
+
+pub fn image_bytes_do_not_change_the_text_capability_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) =
+    filesystem.write("/work/picture.png", <<0x89, "PNG", 13, 10, 26, 10>>)
+    as "the fixture must be writable"
+  assert fs.read_text_file(ctx.filesystem, "/work/picture.png")
+    == Error(fs.NotText)
 }

@@ -15,6 +15,7 @@ import provider/gateway as provider_gateway
 import provider/model
 import provider/pricing
 import provider/secret
+import provider/stream
 import simplifile
 import support/provider as provider_test
 
@@ -1027,4 +1028,60 @@ pub fn the_baseten_example_routes_an_advisor_test() {
   assert list.key_find(parsed.roles, catalog.advisor_role)
     == Ok(["baseten-glm-5-3"])
   assert catalog.parse_advisor(text) == Ok(catalog.default_advisor())
+}
+
+pub fn image_limit_defaults_and_invalid_configuration_test() {
+  let assert Ok(defaults) = catalog.parse(minimal)
+    as "the minimal catalogue must parse"
+  let assert [entry] = defaults.models as "the fixture has one model"
+  assert entry.max_images == 8
+  list.each(["0", "-1", "1.5", "true", "\"8\""], fn(value) {
+    let configured =
+      string.replace(
+        minimal,
+        "[roles]",
+        "max_images = " <> value <> "\n[roles]",
+      )
+    let assert Error(reason) = catalog.parse(configured)
+      as "only positive integer image limits are accepted"
+    assert string.contains(reason, "max_images")
+  })
+}
+
+pub fn configured_image_limit_reaches_gateway_before_secret_lookup_test() {
+  let configured = string.replace(minimal, "[roles]", "max_images = 1\n[roles]")
+  let assert Ok(parsed) = catalog.parse(configured)
+    as "an explicit image count must parse"
+  let gw =
+    catalog.gateway(
+      parsed,
+      provider_test.silent(),
+      secret.from_list([]),
+      clock.fixed(0),
+    )
+  let request =
+    model.ProviderRequest(
+      target: model.ForRole(model.Main, None),
+      system: None,
+      messages: [
+        message.UserMessage(
+          [
+            message.UserImage("YQ==", "image/png"),
+            message.UserImage("Yg==", "image/png"),
+          ],
+          0,
+          Some(message.Origin("owner", "Owner")),
+        ),
+      ],
+      tools: [],
+      max_output_tokens: None,
+    )
+  let handle = provider_gateway.request(gw, request)
+  let assert Ok(#([], stream.Failed(error:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the configured image limit must fail before missing credentials"
+  let assert stream.StreamError(api_error_type: "image_limit", message:) =
+    stream.underlying_error(error)
+    as "this must be an image-budget error, not a missing-key error"
+  assert string.contains(message, "at most 1")
 }
