@@ -108,21 +108,24 @@ five of them select between. `available_tools` renders the host's tool
 index through the `_available_tools` fragment and disappears entirely on
 a host whose registry offered no snippets.
 `pack.canonical_sections` is the list, in render order, and the shipped
-pack is held against it. The shipped version is `loom-default-8`.
+pack is held against it. The shipped version is `loom-default-9`.
 
-Two of those selections follow the **tool roster**, and both choose a
-whole fragment rather than splicing a host value in. `delegation` selects
-`_delegation` where `agent_spawn` is registered, `_delegation_via_code_mode`
-where only `code_mode` is, and nothing where neither is. The two wordings
-instruct against different machinery, and a wording that a host cannot
-act on is worse than silence: an instruction naming tools the model was
-never given is an invitation to call them and read a refusal.
-`tool_discipline` gains `_code_mode_discovery`, the sentence telling an
-agent to read `cap://<module>` before writing against it, wherever
-`code_mode` is registered. Both read `Environment.tools`, the registry's
-own names, so the prompt cannot disagree with the schemas on the wire.
-Both are fixed for the life of a session, so every strand still
-shares one cached prefix.
+Four bindings select prose from registered tool names. `delegation_common`
+selects `_delegation_common` whenever delegation is available: self-contained
+briefs, task boundaries, file ownership, batch waits, pending results,
+self-contained answers, and notes versus messages. `delegation` adds direct
+`agent_*` names or the `cap/strand` APIs. `checkpoint_api` names direct note
+and history tools or the correct capability modules and seams. Checkpoint
+boards belong to `cap/strand`; `cap/memory` proposes long-term consolidation.
+`code_mode_discovery` names `cap://` reads when code mode is registered.
+
+These fragments are required only if the custom pack references their
+bindings. A version-7 pack with inline delegation remains valid and retains
+its operator text. Opting into a binding requires all its selectable
+fragments; missing fragments still refuse boot as corruption. Fragment bodies
+expand against literal bindings only, so selection never introduces recursive
+expansion. The roster is fixed for the session and every strand shares a
+cached prefix.
 
 ## Relationships
 
@@ -266,7 +269,7 @@ written by whoever calls `render`, not here.
   value.** `identity`, `tool_discipline`, `delegation` and `conduct` are
   identical for every session and every strand on a given build, and
   `build_constant_sections_vary_only_with_the_tool_roster_test` holds
-  them that way. The two placeholders they now carry choose between whole
+  them that way. The four placeholders they carry choose between whole
   fragments from the registered tool names, and the fragments they reach
   are themselves placeholder-free. So nothing host-specific can enter
   through them.

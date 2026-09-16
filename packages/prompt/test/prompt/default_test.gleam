@@ -76,7 +76,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-8"
+  assert decoded.version == "loom-default-9"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -121,10 +121,16 @@ pub fn build_constant_sections_vary_only_with_the_tool_roster_test() {
 
 // The two bindings a build-constant section may carry, and every
 // fragment they can select.
-const roster_bindings = ["delegation", "code_mode_discovery"]
+const roster_bindings = [
+  "delegation",
+  "delegation_common",
+  "code_mode_discovery",
+  "checkpoint_api",
+]
 
 const roster_fragments = [
-  "_delegation", "_delegation_via_code_mode", "_code_mode_discovery",
+  "_delegation", "_delegation_common", "_delegation_via_code_mode",
+  "_code_mode_discovery", "_checkpoint_direct", "_checkpoint_via_code_mode",
 ]
 
 pub fn host_specific_sections_use_only_environment_bindings_test() {
@@ -197,17 +203,12 @@ pub fn delegation_states_the_descendant_only_addressing_rule_test() {
 }
 
 pub fn delegation_says_a_childs_answer_is_its_last_message_test() {
-  // `LastResult` carries `final_assistant: Option(EntryId)` and no
-  // payload, so the report is the child's last assistant text and there
-  // is no structured result format to write a brief against.
+  // A child returns its final assistant text. A requested schema constrains
+  // the result note; it does not replace the final-answer requirement.
   let rendered = phrases(pack.FullyEnforced)
-  assert string.contains(
-    rendered,
-    "its last assistant message, not a structured report",
-  )
+  assert string.contains(rendered, "its last assistant message")
   assert string.contains(rendered, "a final answer that stands on its own")
-  // `Ready` carries the child's blackboard cells beside its report, so
-  // notes are the one way a child can hand back something with shape.
+  // `Ready` also carries the child's blackboard cells beside its report.
   assert string.contains(rendered, "a child's notes come back with its result")
 }
 
@@ -230,7 +231,7 @@ pub fn delegation_distinguishes_a_note_from_a_message_test() {
 
 // A phrase from each wording, chosen from a sentence the other does not
 // contain.
-const agent_tool_wording = "a subagent is a strand of this session"
+const agent_tool_wording = "use `agent_spawn` for a child"
 
 const code_mode_wording = "modules of the capability prelude"
 
@@ -247,10 +248,14 @@ pub fn a_host_with_code_mode_and_no_agent_spawn_gets_the_prelude_wording_test() 
   assert string.contains(rendered, code_mode_wording)
   assert !string.contains(rendered, agent_tool_wording)
   assert string.contains(rendered, "`cap/strand` spawns a")
-  assert string.contains(rendered, "`cap/job` starts background work")
-  assert string.contains(rendered, "`cap/schedule` arranges a heartbeat")
-  assert string.contains(rendered, "`cap/memory` writes the")
-  assert string.contains(rendered, "`cap/history` searches")
+  assert string.contains(rendered, "workspace execution for `cap/job`")
+  assert string.contains(rendered, "`cap/schedule` to arrange a heartbeat")
+  assert string.contains(
+    rendered,
+    "`cap/strand.note` to update your checkpoint board",
+  )
+  assert string.contains(rendered, "`cap/history` searches and reads")
+  assert string.contains(rendered, "it does not write the strand board")
 }
 
 pub fn a_host_with_neither_is_told_nothing_about_delegation_test() {
@@ -399,4 +404,33 @@ pub fn the_index_says_the_schema_is_what_binds_test() {
   let rendered = string.lowercase(with_snippets(["`bash` runs."]))
   assert string.contains(rendered, "not a specification")
   assert string.contains(rendered, "callable all the same")
+}
+
+// Every shared rule survives selecting the minimal API vocabulary.
+pub fn both_rosters_keep_delegation_principles_test() {
+  list.each(
+    [["agent_spawn", "agent_note", "fs_read"], ["code_mode", "fs_read"]],
+    fn(tools) {
+      let rendered = roster(tools)
+      list.each(
+        [
+          "objective, relevant context, scope, constraints",
+          "assign separate file ownership",
+          "delegate what is worth a whole run",
+          "spawn the batch, then wait on the batch",
+          "reaches you only at your next checkpoint",
+          "comes back pending",
+          "wait only on what you spawned",
+          "a final answer that stands on its own",
+          "a declared result schema requires a matching json value",
+          "writing one notifies nobody",
+          "parent whose run has ended is refused",
+          "check the claims before relying on them",
+        ],
+        fn(rule) {
+          assert string.contains(rendered, rule)
+        },
+      )
+    },
+  )
 }

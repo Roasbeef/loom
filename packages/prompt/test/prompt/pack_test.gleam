@@ -344,3 +344,49 @@ pub fn a_reworded_pack_has_a_different_digest_test() {
   let assert Ok(after) = pack.decode(source("%% section conduct\nBe brief."))
   assert before.digest != after.digest
 }
+
+// Legacy operator packs carried delegation inline and need no new fragments.
+pub fn inline_delegation_pack_keeps_operator_text_test() {
+  let assert Ok(shipped) = pack.decode(default.source)
+  let sections =
+    shipped.sections
+    |> list.filter(fn(section) {
+      !list.contains(
+        [
+          "_delegation",
+          "_delegation_common",
+          "_delegation_via_code_mode",
+          "_code_mode_discovery",
+          "_checkpoint_direct",
+          "_checkpoint_via_code_mode",
+        ],
+        section.name,
+      )
+    })
+    |> list.map(fn(section) {
+      case section.name {
+        "delegation" ->
+          pack.Section(..section, template: "Operator delegation policy.")
+        "identity" -> pack.Section(..section, template: "Operator identity.")
+        "tool_discipline" ->
+          pack.Section(..section, template: "Operator tools policy.")
+        _ -> section
+      }
+    })
+  let custom = pack.Pack(..shipped, sections:)
+  assert pack.assess(custom).corrupting == []
+  let opted_in =
+    pack.Pack(
+      ..custom,
+      sections: list.map(sections, fn(section) {
+        case section.name {
+          "delegation" -> pack.Section(..section, template: "{delegation}")
+          _ -> section
+        }
+      }),
+    )
+  assert list.contains(
+    pack.assess(opted_in).corrupting,
+    pack.MissingSection("_delegation_via_code_mode"),
+  )
+}

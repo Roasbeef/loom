@@ -377,8 +377,8 @@ pub const canonical_sections = [
 pub const required_fragments = [
   "_enforcement_enforced", "_enforcement_platform", "_enforcement_degraded",
   "_enforcement_best_effort", "_network_blocked", "_network_proxied",
-  "_network_open", "_protected_paths", "_available_tools", "_delegation",
-  "_delegation_via_code_mode", "_code_mode_discovery", "_repository_guidance",
+  "_network_open", "_protected_paths", "_available_tools",
+  "_repository_guidance",
 ]
 
 /// Every placeholder name a pack may use. The closed list is half of why
@@ -389,7 +389,7 @@ pub const binding_names = [
   "workspace", "platform", "shell", "tools", "protected_paths", "network_allow",
   "available_tools_list", "repository_guidance_text", "enforcement", "network",
   "protected", "available_tools", "delegation", "code_mode_discovery",
-  "repository_guidance",
+  "repository_guidance", "delegation_common", "checkpoint_api",
 ]
 
 /// Something wrong with a pack that is not bad syntax: the file decoded,
@@ -511,7 +511,11 @@ pub fn assess(pack: Pack) -> Assessment {
 pub fn problems(pack: Pack) -> List(Problem) {
   let present = list.map(pack.sections, fn(section) { section.name })
   let missing =
-    list.append(canonical_sections, required_fragments)
+    list.flatten([
+      canonical_sections,
+      required_fragments,
+      selected_fragments(pack),
+    ])
     |> list.filter(fn(name) { !list.contains(present, name) })
     |> list.map(MissingSection)
   let unknown =
@@ -521,6 +525,27 @@ pub fn problems(pack: Pack) -> List(Problem) {
       |> list.map(fn(name) { UnknownPlaceholder(section: section.name, name:) })
     })
   list.append(missing, unknown)
+}
+
+// New roster fragments are required only when an operator pack opts into
+// their bindings. Earlier packs may keep their delegation prose inline;
+// accepting them must neither inject shipped prose nor replace operator text.
+fn selected_fragments(pack: Pack) -> List(String) {
+  let used =
+    list.flat_map(pack.sections, fn(section) { placeholders(section.template) })
+  [
+    #("delegation", ["_delegation", "_delegation_via_code_mode"]),
+    #("delegation_common", ["_delegation_common"]),
+    #("code_mode_discovery", ["_code_mode_discovery"]),
+    #("checkpoint_api", ["_checkpoint_direct", "_checkpoint_via_code_mode"]),
+  ]
+  |> list.flat_map(fn(pair) {
+    let #(binding, fragments) = pair
+    case list.contains(used, binding) {
+      True -> fragments
+      False -> []
+    }
+  })
 }
 
 /// The placeholder names a template refers to, in first-appearance
@@ -930,6 +955,19 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
       [] -> ""
       _ -> fragment(pack, "_available_tools", literal)
     }),
+    #("delegation_common", case delegation_fragment(environment) {
+      Ok(_) -> fragment(pack, "_delegation_common", literal)
+      Error(Nil) -> ""
+    }),
+    #("checkpoint_api", case list.contains(environment.tools, "agent_note") {
+      True -> fragment(pack, "_checkpoint_direct", literal)
+      False ->
+        case list.contains(environment.tools, "code_mode") {
+          True -> fragment(pack, "_checkpoint_via_code_mode", literal)
+          False -> ""
+        }
+    }),
+
     // Which delegation wording this host gets, if any. The two wordings
     // instruct against different machinery, so the one a host cannot act
     // on is worse than silence.
