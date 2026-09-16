@@ -175,6 +175,9 @@ pub const live_stream_limit = 24_576
 // while retaining a fixed bound; Ctrl+G exposes the complete stored patch.
 const patch_preview_lines = 60
 
+// Submitted code stays readable in compact mode; expansion retains every line.
+const code_preview_lines = 60
+
 /// The undurable fragments of one strand-and-kind generation.
 ///
 /// A request owns its text, thinking and tool-call fragments. Operation IDs
@@ -7518,8 +7521,16 @@ fn activity_heading(calls: List(tool_activity.Call)) -> Line {
 }
 
 fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
-  let summary =
-    tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  // The invocation owns its source preview, so settling a result changes the
+  // status without adding or removing code rows. Reuse the expanded entry's
+  // Gleam renderer instead of displaying the transport JSON as a summary.
+  let program =
+    code_mode_program(call.invocation.name, call.invocation.arguments, False)
+  let summary = case program {
+    Some(_) -> "code_mode"
+    None ->
+      tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  }
   let rows = case call.outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
@@ -7562,6 +7573,14 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     Some(message.UserMessage(..))
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+  let rows = case rows, program {
+    [heading, ..details], Some(source) -> [
+      heading,
+      Line(ToolDetail, source),
+      ..details
+    ]
+    [], Some(_) | _, None -> rows
   }
   list.append(
     rows,
@@ -8168,7 +8187,7 @@ pub fn code_mode_program(
         Ok(json.String(program)) -> {
           let source = case details_expanded {
             True -> program
-            False -> program_preview(program, 12)
+            False -> program_preview(program, code_preview_lines)
           }
           Some(fenced_gleam(source))
         }

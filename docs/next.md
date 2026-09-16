@@ -62,6 +62,12 @@ Both corrections are covered by the installed-release smoke.
 
 ## What to do next
 
+The local `fix/codemode-diagnostics` branch also keeps up to 60
+syntax-highlighted source lines in compact code-mode calls. The preview is
+present while awaiting a result and survives success or failure; Ctrl+G exposes
+the full program. The TUI gate passed 551 tests; lint, documentation checks and
+independent review passed. It is not yet merged or installed.
+
 The local `fix/codemode-diagnostics` branch improves code-mode parse refusals
 with submitted-source line/column, a bounded excerpt and caret, source-token
 spelling, and a grouping-parenthesis hint. The reported failure was invalid Gleam

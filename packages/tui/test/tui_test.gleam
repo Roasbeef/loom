@@ -1532,23 +1532,19 @@ pub fn code_mode_program_renders_as_gleam_test() {
 }
 
 pub fn code_mode_program_preview_is_bounded_test() {
-  let arguments =
-    json.Object([
-      #(
-        "program",
-        json.String(
-          "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13",
-        ),
-      ),
-    ])
+  let source = string.repeat("// preview row\n", 59) <> "// LINE_60\n// LINE_61"
+  let arguments = json.Object([#("program", json.String(source))])
   let assert Some(collapsed) =
     tui.code_mode_program("code_mode", arguments, False)
+    as "A valid source field has a compact preview"
   let assert Some(expanded) =
     tui.code_mode_program("code_mode", arguments, True)
+    as "A valid source field can be expanded"
 
-  assert !string.contains(collapsed, "line-13")
+  assert string.contains(collapsed, "LINE_60")
+  assert !string.contains(collapsed, "LINE_61")
   assert string.contains(collapsed, "// …")
-  assert string.contains(expanded, "line-13")
+  assert string.contains(expanded, "LINE_61")
 }
 
 pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {

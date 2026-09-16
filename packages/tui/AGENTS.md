@@ -153,6 +153,8 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   once it settles — and `Ctrl+G` shows the block itself; a redacted block is
   its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
+  Code-mode calls retain a syntax-highlighted preview of up to 60 submitted
+  source lines, with an omission marker; Ctrl+G shows the complete program.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
   worktree observation.
@@ -572,9 +574,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   idle or a successor. Older recordings retain their local echo semantics.
 - **Compact tools and changes**: `tui/tool_activity` groups consecutive tool
   calls, joining results by call ID and ending a group when a later response
-  reuses an ID. Compact history shows the latest three calls and the group's
-  failure count; Ctrl+g recovers the original entries. Captured `fs_edit` diffs
-  remain the explicitly labelled fallback when a worktree observation is
+  reuses an ID. Compact history retains every call and the group's failure
+  count; Ctrl+g recovers the original entries. Code-mode source previews belong
+  to their invocation, so pending, successful and failed calls keep the same
+  bounded fenced-Gleam block instead of exposing the argument JSON. Captured
+  `fs_edit` diffs remain the explicitly labelled fallback when a worktree observation is
   unavailable. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
 - **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
@@ -708,8 +712,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   the same number of wrapped rows, so a reader following the tail sees text
   change and not the transcript grow and shrink under them. The two regions
   this covers are a running tool call — whose output window is detail, drawn
-  only with details expanded — and a reasoning block, whose live and settled
-  forms are both one `ReasoningDigest` row when collapsed. A result the
+  only with details expanded, while code-mode source is already visible — and
+  a reasoning block, whose live and settled forms are both one
+  `ReasoningDigest` row when collapsed. A result the
   reader has to see still costs the rows it needs: a failure adds its result
   text under the failure summary, and `fs_edit` and `context_remaining` draw
   their own rows. What the rule removes is growth that carried no
