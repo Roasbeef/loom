@@ -415,6 +415,9 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	// in the policy's env_allow, so a policy that never allowed PATH
 	// still sees none.
 	writableRoots := pathExcludedRoots(req.Policy, feat.Platform.GOOS)
+	if scratchDir != "" {
+		writableRoots = append(writableRoots, scratchDir)
+	}
 	env := make(map[string]string, len(req.Env)+1)
 	for k, v := range req.Env {
 		env[k] = v
@@ -422,6 +425,15 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	env["PATH"] = strings.Join(
 		BuildPath(req.Env["PATH"], os.Getenv("PATH"), writableRoots), ":",
 	)
+
+	// Only the helper knows the private directory created for this call.
+	// Replace any caller value, including when no scratch exists, before
+	// filtering: the policy must still grant the name, and a degraded jail
+	// must not advertise a caller's path as helper-provided scratch.
+	delete(env, scratchEnv)
+	if scratch := executionScratch(req.Policy, feat, scratchDir); scratch != "" {
+		env[scratchEnv] = scratch
+	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = FilterEnv(env, req.Policy.EnvAllow)

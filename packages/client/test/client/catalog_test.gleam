@@ -805,10 +805,12 @@ pub fn a_name_in_both_env_and_set_refused_test() {
 pub fn a_server_owned_name_is_refused_from_env_test() {
   let assert Error("tools.env may not name PATH" <> _rest) =
     catalog.parse_tools(with_tools("env = [\"PATH\"]"))
+  let assert Error("tools.env may not name LOOM_SCRATCH_DIR" <> _rest) =
+    catalog.parse_tools(with_tools("env = [\"LOOM_SCRATCH_DIR\"]"))
 }
 
 pub fn a_server_owned_name_is_refused_from_set_test() {
-  // All three names, because each is owned for its own reason and a
+  // All four names, because each is owned for its own reason and a
   // check that only covered `PATH` would look exactly like this one.
   let assert Error("tools.set may not name HOME" <> _rest) =
     catalog.parse_tools(with_tools("[tools.set]\nHOME = \"/elsewhere\""))
@@ -816,6 +818,8 @@ pub fn a_server_owned_name_is_refused_from_set_test() {
     catalog.parse_tools(with_tools("[tools.set]\nTMPDIR = \"/tmp\""))
   let assert Error("tools.set may not name PATH" <> _rest) =
     catalog.parse_tools(with_tools("[tools.set]\nPATH = \"/usr/bin\""))
+  let assert Error("tools.set may not name LOOM_SCRATCH_DIR" <> _rest) =
+    catalog.parse_tools(with_tools("[tools.set]\nLOOM_SCRATCH_DIR = \"/tmp\""))
 }
 
 pub fn a_scalar_tools_key_is_refused_test() {

@@ -3882,7 +3882,7 @@ const hook_step_id = "extension-hooks"
 /// `bash` tool runs, a satellite, a hook host.
 ///
 /// Allowlist-constructed and shared by the tool path and the hook path,
-/// so a host launched by whichever came first is the same host. Three
+/// so a host launched by whichever came first is the same host. Four
 /// names, each earned by a failure a live drive produced:
 ///
 /// - `PATH` is the toolchain's when code mode found one, so `gleam` and
@@ -3897,10 +3897,13 @@ const hook_step_id = "extension-hooks"
 ///   operator's checkout — an untracked directory in every `git status`
 ///   the model ran. A home of its own keeps what a toolchain writes to
 ///   `$HOME` off the tree.
-/// - `TMPDIR` is a directory under the workspace, the one root the jail
-///   lets a tool write. The host's temp directory is not writable from
-///   inside, so a compiler or test runner that mints temp files died on
-///   its first one. Code mode pins its compiler's `TMPDIR` the same way.
+/// - `TMPDIR` is a writable directory under the workspace. It remains
+///   the fallback when no private scratch is available. Code mode pins
+///   its compiler's `TMPDIR` to the build root, independently of scratch.
+/// - `LOOM_SCRATCH_DIR` reserves the helper-owned scratch name. The empty
+///   value carries the name through each tool's environment allowlist;
+///   the helper replaces it with its actual scratch path, or omits it
+///   when no scratch exists. `TMPDIR` remains the writable fallback.
 ///
 /// ## Examples
 ///
@@ -3910,6 +3913,7 @@ const hook_step_id = "extension-hooks"
 ///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
 ///     #("HOME", "/work/.codemode/home"),
 ///     #("TMPDIR", "/work/.codemode/tmp"),
+///     #("LOOM_SCRATCH_DIR", ""),
 ///   ]
 /// ```
 ///
@@ -3922,6 +3926,7 @@ pub fn session_environment(
     #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
     #("HOME", tool_home_directory(workspace)),
     #("TMPDIR", tool_tmp_directory(workspace)),
+    #("LOOM_SCRATCH_DIR", ""),
   ]
 }
 
@@ -3942,13 +3947,13 @@ pub fn tool_home_directory(workspace: String) -> String {
 }
 
 /// The whole environment a jailed tool shell of this session runs under:
-/// the three names the server owns, then whatever the `[tools]` table
+/// the four names the server owns, then whatever the `[tools]` table
 /// added.
 ///
-/// The order is the guarantee. `session_environment`'s three names come
-/// first and nothing after them may repeat one, because each is derived
-/// from the workspace or from the toolchain this boot discovered and a
-/// shell that took one from a config file would run against neither.
+/// The order is the guarantee. `session_environment`'s four names come
+/// first and nothing after them may repeat one. The server selects the
+/// workspace and toolchain paths, and the helper supplies actual scratch;
+/// configuration cannot replace either owner's choice.
 /// `client/catalog.parse_tools` refuses a table that names one, so the
 /// order here is the second lock rather than the only one.
 ///
@@ -4518,7 +4523,9 @@ pub fn session_base(
 /// allows, and the base allows `PATH` and `HOME` but not `TMPDIR`. The
 /// bash tool passes `TMPDIR` (see `session_environment`), so the name is
 /// granted on the session base here — the same move the code-mode
-/// builder makes on its own derived base, for the same variable.
+/// builder makes on its own derived base, for the same variable. The
+/// helper-owned `LOOM_SCRATCH_DIR` travels through the same allowlists;
+/// reserving it here lets the helper expose its private directory.
 ///
 /// Public to this package for the reason `under_tools_config` is: the
 /// composed allowlist is a value a test should be able to read back.
@@ -4535,7 +4542,9 @@ pub fn allowing_tool_tmpdir(
 ) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..base,
-    env_allow: list.unique(list.append(base.env_allow, ["TMPDIR"])),
+    env_allow: list.unique(
+      list.append(base.env_allow, ["TMPDIR", "LOOM_SCRATCH_DIR"]),
+    ),
   )
 }
 

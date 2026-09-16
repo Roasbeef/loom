@@ -72,8 +72,9 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
     serve.base_policy(workspace)
     |> serve.merging_mounts
 
-  // Session assembly admits its owned TMPDIR before tools are wired.
-  let base = policy.SandboxPolicy(..base, env_allow: ["PATH", "HOME", "TMPDIR"])
+  // Session assembly admits its temporary-directory names before tools
+  // are wired, including the scratch path supplied by the helper.
+  let base = serve.allowing_tool_tmpdir(base)
   assert missing == [] as "default tools must need no configured secrets"
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(
@@ -134,6 +135,18 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
       "git --version && python3 -c 'print(2 + 3)' "
         <> "&& go test -mod=readonly ./... && go env GOPATH GOMODCACHE",
     )
+
+  // The model uses the same portable expression on both platforms. The
+  // helper publishes its private path through the real broker meet;
+  // degraded Linux retains the session's writable TMPDIR fallback.
+  let scratch =
+    run(
+      ctx,
+      "scratch=${LOOM_SCRATCH_DIR:-$TMPDIR}; "
+        <> "probe=$(mktemp \"$scratch/probe.XXXXXX\") && "
+        <> "printf scratch-ok > \"$probe\" && cat \"$probe\" && "
+        <> "printf '\\nprivate=%s\\n' \"${LOOM_SCRATCH_DIR:-}\"",
+    )
   let failed_pipeline = run(ctx, "(exit 23) | tail -n 1")
   let outside_read = run(ctx, "cat " <> quoted(external))
   let outside_write = run(ctx, "printf changed > " <> quoted(external))
@@ -155,6 +168,18 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
   assert !shell.is_error as rendered(shell)
   assert string.contains(rendered(shell), "ok")
   assert string.contains(rendered(shell), home <> "/go/pkg/mod")
+  assert !scratch.is_error as rendered(scratch)
+  assert string.contains(rendered(scratch), "scratch-ok")
+  case ffi_os.platform().0 {
+    "darwin" -> {
+      assert string.contains(
+        rendered(scratch),
+        "private=/private/tmp/loom-exec-scratch-",
+      )
+    }
+    _other -> Nil
+  }
+
   assert failed_pipeline.is_error
     as "tail must not erase the tested exit status"
   let assert Some(json.Object(details)) = failed_pipeline.details

@@ -2612,7 +2612,7 @@ across one operation a `Stop` block holds open.
   outside the workspace. It is the trust a primary checkout's `.git`
   already has. A primary checkout, a non-repository, or an unreadable
   `.git` file leaves the base untouched.
-- **A jailed child's environment is three names, built once per session.**
+- **A jailed child's environment reserves four names per session.**
   `serve.session_environment` gives every tool shell, satellite and hook
   host the same `PATH`. The bundled toolchain stays first, followed by the
   explicit additions and host PATH, so arbitrary installations are discoverable
@@ -2620,16 +2620,17 @@ across one operation a `Stop` block holds open.
   reads. The other server-owned names are
   `HOME` (`<workspace>/.codemode/home`, so what a toolchain writes to its home — macOS makes a
   `Library/Caches` — stays out of the operator's tree) and `TMPDIR`
-  (`<workspace>/.codemode/tmp`, the one root the jail lets a tool write;
-  the host's temp directory is not reachable from inside). The
-  session base policy grants `TMPDIR` for the same reason the code-mode
-  builder grants it on its derived base: the policy meet keeps only the
-  names the base allows.
+  (`<workspace>/.codemode/tmp`, a writable fallback). `LOOM_SCRATCH_DIR`
+  starts empty so call requirements include the name; the helper replaces
+  it with the execution's actual scratch path or removes it when none exists.
+  The session base grants both temporary-directory names, because the policy
+  meet keeps only names both sides allow. Compiler-owned `TMPDIR` values
+  remain unchanged.
 - **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names
   read from the host at boot and `[tools.set]` literals;
-  `serve.tool_environment` appends them *after* the three server-owned
+  `serve.tool_environment` appends them *after* the four server-owned
   names, and `serve.under_tools_config` puts the chosen network on the
   session base and every configured name on its `env_allow`. The daemon
   `--network off|full` flag overrides the selected file at session resolution. Both halves
@@ -2638,7 +2639,8 @@ across one operation a `Stop` block holds open.
   remains offline and passes only PATH. The meet also
   intersects `env_allow`, which is why a name in the environment but not
   on the allowlist is a narrowing refusal rather than a variable. `PATH`,
-  `HOME` and `TMPDIR` are refused from both lists by the parser, so the
+  `HOME`, `TMPDIR` and `LOOM_SCRATCH_DIR` are refused from both lists by
+  the parser, so the
   ordering in `tool_environment` is the second lock rather than the only
   one. A configured name the host has not set is skipped with one
   `tools.env_unset` warning, never a boot failure.

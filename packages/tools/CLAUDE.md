@@ -402,6 +402,13 @@ was asked.
 
 ## Invariants
 
+- **Shell scratch uses the published path.** `bash` directs the model to
+  `${LOOM_SCRATCH_DIR:-$TMPDIR}`. macOS private scratch is a generated
+  directory, while Linux mounts it at `/tmp`. Private scratch lasts for
+  one command or background job; files needed across calls belong in the
+  workspace. The helper retains explicit `TMPDIR` for compilers and the
+  session fallback when no private scratch is available.
+
 - **`bash` asks for every writable root the session base grants, not the
   workspace alone.** `policy.compose` intersects roots, so a shell that
   asked for `[workspace]` would get the workspace whatever the base said;

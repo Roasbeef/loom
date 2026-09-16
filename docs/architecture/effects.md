@@ -247,11 +247,17 @@ The same table carries the environment those shells need with the network
 — `env` naming host variables read at boot, `[tools.set]` carrying
 literals — because `gh` with egress and no token is `gh` that does not
 work. Every name it mentions joins the base's `env_allow` too, since the
-meet intersects that list as well. `PATH`, `HOME` and `TMPDIR` are
-refused from both lists: the server derives them from the workspace and
-the discovered toolchain, and a shell that took one from a config file
-would resolve a different `gleam` than the compiler, or source the
-operator's dotfiles from inside the jail.
+meet intersects that list as well. `PATH`, `HOME`, `TMPDIR` and
+`LOOM_SCRATCH_DIR` are refused from both lists. The server derives `PATH`,
+`HOME` and `TMPDIR` from the workspace and discovered toolchain; taking
+them from a config file could select a different compiler or source the
+operator's dotfiles inside the jail. `LOOM_SCRATCH_DIR` is supplied
+by the helper after scratch allocation and passes through the same environment
+allowlist. On macOS it names the private directory; on Linux it names `/tmp`
+only when bubblewrap mounted scratch. A configured host scratch path is
+reported as configured. When no scratch exists, the variable is absent and
+`${LOOM_SCRATCH_DIR:-$TMPDIR}` uses the existing workspace fallback. Private
+scratch is removed at execution retirement; a configured host path persists.
 
 There is no allowlist, deliberately. Host-level `allow = ["github.com"]`
 needs the egress proxy this phase does not build, and a config key that

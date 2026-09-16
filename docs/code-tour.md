@@ -742,11 +742,11 @@ failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `run` (`tools/bash.gleam:132`) builds a `CallSpec` naming the
+For `bash`, `call_spec` (`tools/bash.gleam:299`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
-(`tools/bash.gleam:122`). Then one call:
+(`tools/bash.gleam:345`). Then one call:
 
 ```gleam
       case ctx.clear_call(spec, events) {

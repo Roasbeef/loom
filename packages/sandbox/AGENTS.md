@@ -136,6 +136,13 @@ only Go module.
   `TMPDIR` says — and the private per-execution scratch is made under
   `/private/tmp`, not the helper's `TMPDIR`, precisely so that grant does
   not make one execution's scratch writable by another.
+  `LOOM_SCRATCH_DIR` exposes that path when the effective environment
+  allowlist grants the name. The helper replaces any caller value; Linux
+  uses `/tmp` only when bubblewrap mounted it, and a configured host scratch
+  uses its policy path. Degraded Linux with no tmpfs omits the variable.
+  Explicit `TMPDIR` is preserved, so `${LOOM_SCRATCH_DIR:-$TMPDIR}` selects
+  scratch while retaining the session fallback. Private scratch lasts for
+  the execution or background job; configured host scratch is not removed.
 - `internal/jail.{Stage2Skip, Stage2SkipPrefix, BwrapUnwitnessedSkip}` —
   the entries for a stage 2 that never reported on fd 4, and for the
   bwrap layer that consequently has no witness.
@@ -341,8 +348,9 @@ only Go module.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
-  determinism. `PATH` is the one name the helper rebuilds instead of
-  forwarding: `jail.BuildPath` (`internal/jail/env.go`) folds the broker's
+  determinism. The helper replaces `LOOM_SCRATCH_DIR` with the actual
+  execution scratch path and rebuilds `PATH` rather than forwarding it:
+  `jail.BuildPath` (`internal/jail/env.go`) folds the broker's
   requested `PATH` and the helper process's own inherited `PATH` — the
   daemon's, which is where the operator's toolchain actually lives
   (Homebrew's `/opt/homebrew/bin` on macOS, say) — with a fixed floor
