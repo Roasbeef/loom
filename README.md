@@ -1,697 +1,332 @@
 # Loom
 
-Loom is a coding agent harness written in Gleam and running on the BEAM. A
-session is a supervision tree over a write-once conversation store: every
-step an agent takes — the prompt it received, the tool call it made, the
-result that came back, the tokens it spent — is committed to a per-session
-SQLite file before anything else can depend on it, so killing the OS
-process at any instant loses no work and re-runs no side effect.
-Everything the model influences executes outside the harness virtual
-machine, in kernel-sandboxed OS processes reached through a single
-capability-checked broker.
+**A durable, multiplayer coding agent built on the BEAM.**
 
-Three existing harnesses supply the parts: the durability model comes from
-pi, the sandbox posture from Codex CLI, and the tool surface from omp. The
-BEAM supplies what none of them have, because a harness is already an
-actor system — strands, subagents, tool executions, and stream parsers are
-processes, and crash recovery is a supervisor plus durable state rather
-than defensive code. It is also why code mode is worth building: an
-agent-written Gleam program that fans out, races two strategies, and holds
-stateful actors gets real concurrency from a runtime built for it.
+Loom is a terminal coding agent and an extensible agent runtime written in
+Gleam. Work survives terminal disconnects and daemon restarts. People and
+subagents can collaborate in one session. Models can compose tools into typed
+programs, with real concurrency and kernel-enforced execution boundaries.
 
-## Rule Zero
+[Get started](#get-started) · [Code mode](#code-mode) ·
+[Multiplayer](#multiplayer-and-subagents) · [Advisor mode](#advisor-mode) ·
+[Architecture](docs/loom-design.md) ·
+[Contributing](#working-on-loom)
 
-BEAM processes give fault isolation, not security isolation. Any process
-in the virtual machine can call `os:cmd/1`, open any file the OS user can
-open, and dial the network; there is no capability model inside the VM to
-lean on. So the harness leans on the kernel instead:
+## Why Loom
 
-> **Rule Zero: model-influenced execution never runs in the harness VM.**
-> The BEAM node orchestrates. Untrusted work — shell commands,
-> agent-written programs, third-party language servers and Model Context
-> Protocol servers — runs in OS-sandboxed external processes under
-> kernel-enforced policy. The kernel isolates threats; the BEAM isolates
-> faults; the two are never confused.
+| Feature | What it gives you |
+|---|---|
+| **Durable sessions** | SQLite-backed conversation trees, recorded tool intents and results, resumable work, and forks that preserve the original history. |
+| **Multiplayer** | Several terminals and collaborators in one session, with attributed prompts, presence, shared approvals, and operator/observer roles. |
+| **Code mode** | Gleam programs that compose tools, filter intermediate results, and run work concurrently in one model turn. |
+| **BEAM concurrency** | Lightweight processes and OTP supervision for agents, streams, and tool execution, with independent lifecycles and explicit cancellation. |
+| **Controlled execution** | Sandboxed commands and agent-written programs, capability-checked effects, and approvals bound to the action being approved. |
+| **Model routing and advisors** | Choose models by role, configure fallbacks, and pair a fast primary with a separate model that reviews its work. |
+| **Memory and automation** | Search prior sessions, retain workspace knowledge, schedule follow-ups, and manage background jobs. |
+| **Extensibility** | Anthropic, OpenAI-compatible, and Gemini adapters; MCP servers, Markdown skills, and typed Gleam extensions. |
 
-Every effect leaves through the ToolBroker, which composes a policy,
-refuses or narrows it, mints a capability token bound to one operation
-step, and guarantees the caller exactly one settlement whatever happens
-downstream. The sandbox policy is a typed, versioned value stored durably
-with the execution intent, so the transcript records which jail each
-command ran in. A denial surfaces as a structured escalation carrying the
-exact policy difference — "wants: network to registry.npmjs.org" — the
-tool that asked, and a bounded preview of its arguments, so the person
-answering reads the command rather than only the appetite. The approval is
-bound to that action by a digest over those arguments: a call that would
-do something else can neither claim it nor spend it, and one approval buys
-exactly one re-execution, recorded. Prompts are a user interface, never a
-control.
+The terminal includes streaming responses, syntax-highlighted code and diffs,
+image attachments, tool activity, and a session picker. A shared daemon keeps
+sessions running independently of the terminal displaying them. Context
+compaction, searchable history, and workspace memory support longer projects.
 
-## The three planes
+## Get started
 
-The planes are strictly layered: the durability plane knows nothing about
-agents, the orchestration plane knows nothing about sandboxes, and
-everything crossing the trust boundary goes through the one door.
-
-```mermaid
-graph TD
-  subgraph VM["harness BEAM VM — trusted, one OS process"]
-    ST["strands<br/>one process each"]
-    WR["StorageWriter<br/>the one writer, one file per session"]
-    EV["EventBus<br/>projections, search"]
-    BR["ToolBroker<br/>policy, tokens, budgets"]
-    ST -->|commit| WR
-    WR -->|events| EV
-    ST -->|ask for an effect| BR
-  end
-  subgraph JAIL["kernel-enforced jails — untrusted"]
-    EX["sandboxed executors<br/>bash, edits, grep"]
-    SA["satellite nodes<br/>agent-written programs"]
-    LS["language servers<br/>MCP servers"]
-  end
-  BR ==>|"capability token over framed msgpack"| JAIL
-```
-
-The **durability** plane stores rows, answers queries, and decides
-nothing. The **orchestration** plane decides what happens next and what
-must be durable before it happens. The **effect** plane is everything that
-touches the world.
-
-| Package | Plane | What it holds |
-|---|---|---|
-| `core` | durability | Ids, entries, registers, transactions, and total decoders. Pure. |
-| `storage` | durability | The storage interface, the in-memory and SQLite backends, the fenced lease. |
-| `session` | durability | The session and repository layer, tree views, the branch index, forks. |
-| `machine` | orchestration | Operation types, `next_action`, classification order. Pure; no I/O, no state between calls. |
-| `prompt` | orchestration | The system-prompt pack: named sections, a total decoder, rendered against an environment. Pure. |
-| `runtime` | orchestration | The storage writer, the strand supervisor, the driver loop, recovery, the multi-strand surface. |
-| `events` | orchestration | The event bus (OTP `pg` process groups), rebuildable projections, full-text search across a repository's sessions. |
-| `provider` | effect | Typed provider clients, streaming, retries, role-based routing with fallback chains. |
-| `broker` | effect | The ToolBroker: policies, capability tokens, budgets, escalation. |
-| `sandbox` | effect | The `loom-exec` helper binary and platform drivers. Go. |
-| `tools` | effect | bash, hash-anchored filesystem reads and edits, grep, the `agent_*` family, and the `code_mode` door. |
-| `codemode` | effect | The vetting lint, the hermetic compile service, the satellite launcher, and the in-harness host that answers a running program's capability calls. |
-| `cap` | effect | The capability prelude a model-written program is written against — compiled *into* the jail, never linked into the harness. |
-| `ext` | effect | The extension prelude: the behaviours an out-of-tree extension's tools are typed against, and the satellite runtime that serves one call. |
-| `mcp` | effect | The MCP client, transport, and the per-server module generator that puts MCP tools behind code mode. |
-| `tui` | client | The native terminal client over the gateway protocol, with a local `--demo` mode. Gleam over etui. |
-| `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loomd` entry point. |
-| `telemetry` | cross-cutting | Structured logs whose correlation context travels as a value, and two enforced redaction rules. |
-| `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
-| `lint` | tooling | Loom's own house-rule lint over Gleam source; five of its twelve rules gate at error level. |
-
-Process machinery across the effectful packages — deadline-bounded spawns,
-phase machines, drain witnesses over work that outlives its process,
-foreground polls — is built on [weft](https://github.com/Roasbeef/weft), a
-sibling library of owned, bounded concurrency and the missing OTP
-behaviours; `docs/weft.md` says when and why.
-
-Two commits bracket every effect, and the gap between them is the
-session's only non-durable window.
-
-```mermaid
-sequenceDiagram
-  participant S as strand
-  participant W as StorageWriter
-  participant B as ToolBroker
-  S->>W: intent — args, reserved output ids, sandbox policy
-  W-->>S: durable
-  S->>B: run it (the only non-durable window)
-  B-->>S: output
-  S->>W: settlement — output, usage, next state
-  W-->>S: durable
-```
-
-Tools declare whether replaying them is safe. Recovery finds an effect
-that was in flight and, on that declaration, either re-executes it from
-the persisted arguments or settles the reserved id with a synthetic error.
-Nothing runs twice, every call ends with a result, and the token ledger
-survives a kill at any instant.
-
-## Strands that talk to each other
-
-A subagent is a strand: same driver code, its own leaf in the tree, its
-own durable configuration. Strands are processes, so a raw `Process.send`
-between them is possible — and forbidden as a transport, because a BEAM
-mailbox evaporates on crash. An unread "found the bug at auth.gleam:42" is
-simply gone after a supervisor restart.
-
-> **Payloads travel durably; process messages are only doorbells.**
-> Sending to another strand enqueues onto that strand in one commit, then
-> rings an ephemeral nudge so the target wakes now rather than at its next
-> checkpoint poll. A lost nudge costs latency, never data.
-
-Four patterns fall out of that rule, and the runtime exposes each:
-**request/reply** (a parent creates a subagent with a task brief, and may
-state the shape it wants back so it reduces typed values rather than
-regexing prose), **peer to peer** (two strands steer each other, every
-turn a commit), **blackboard** (`fact.*` registers hold shared
-transactional session state), and **broadcast** (the event bus carries
-awareness; anything actionable is written durably too). Every exchange
-between agents sits in the tree, replayable and forkable. The line is
-sharp: if the recipient would act differently for having received it, it
-goes through a commit; if it only affects pacing or display, a plain
-message is fine.
-
-## Code mode: Gleam as the tool language
-
-Instead of a round-trip per tool call, the model writes a program that
-composes tools locally — loops, conditionals, intermediate values,
-concurrency — and the harness runs it and returns one structured result.
-The language is Gleam itself, which buys a property no scripting language
-can offer:
-
-> **A program's maximal capability set is computable from its source** —
-> the transitive closure of its imports plus its own `@external`
-> declarations.
-
-Pure Gleam cannot perform I/O, and there is no eval, no reflection, no
-dynamic module lookup, and no macros, so every effect must enter through
-an import. Vetting is a compiler-adjacent lint: reject `@external` in
-submitted source, reject imports outside the allowlist, pin the rest to
-the capability prelude. That prelude *is* the capability system — typed
-modules whose implementations are broker calls carrying the execution's
-token — and the type checker becomes the tool-argument validator.
-
-There are two preludes, and a submission is judged against exactly one,
-because *which capabilities travel together* is the point. The
-**workspace seam** — `cap/fs`, `cap/proc`, `cap/net`, `cap/git`,
-`cap/lsp`, `cap/task`, `cap/actor`, `cap/kv`, `cap/report` — orchestrates
-effects. The **orchestration seam** — `cap/strand` and `cap/report`, and
-nothing else — orchestrates agents: it spawns child strands, joins them on
-one shared deadline, messages them and reads their notes, and can touch
-neither disk, network, nor process. The two sets share no module carrying
-authority of its own, and a test pins that. The server serves the
-workspace seam alone by default; `--codemode-seams` widens that. The
-`code_mode` tool description carries the full public surface of every
-admitted module, generated from `packages/cap` by `make gen-prelude` and
-held to a digest inside `make check`, so a model authoring blind is not
-told about functions that no longer exist.
-
-What an agent writes on the workspace seam looks like this:
-
-```gleam
-import cap/fs
-import cap/lsp
-import cap/proc
-import cap/report
-import cap/task
-
-// These imports are the program's whole capability set. It cannot open a
-// socket: cap/net is absent, and no runtime trick can conjure it.
-
-pub fn main() -> report.Report {
-  // The language server knows where the call sites are; ripgrep guesses
-  // fast. Race them — the loser is cancelled where it stands, and the
-  // kernel jail behind it is killed.
-  let sites =
-    task.race([
-      fn() { lsp.reference_paths(symbol: "decode_entry") },
-      fn() { proc.lines(proc.run("rg", ["-l", "decode_entry", "src/"])) },
-    ])
-
-  // Eight at a time, results in input order, all eight sharing one
-  // budget: one deadline, one cgroup, one ceiling on outstanding effects.
-  let edited =
-    task.parallel_map(sites, max_concurrency: 8, fn(path) {
-      fs.replace(in: path, each: "decode_entry", with: "entry_decoder")
-    })
-
-  case proc.run("gleam", ["build", "--warnings-as-errors"]) {
-    Ok(_) -> report.ok(edited)
-    Error(failure) -> report.failed("the rename broke the build", failure)
-  }
-}
-```
-
-That is the shape of the thing rather than a demonstration of it. Of the
-ten modules the workspace seam admits, the shipped capability router
-services exactly one call, `proc.run`; every other capability vets,
-compiles, and comes back refused in band as `unsupported_cap` — a routing
-table still being filled in (issue #16), not a security property.
-`cap/task` and `cap/actor` run inside the satellite itself, so the race,
-the cancellation, and the order-preserving fan-out above are real today.
-Two worked programs are read verbatim by their own tests and put through
-real vetting, a real offline build in a jail, and a real satellite:
-`docs/examples/stale_symbol_sweep.gleam` on the workspace seam and
-`docs/examples/fan_out_review.gleam` on the orchestration seam.
-
-Vetting is strong, and the design does not bet on it alone. Programs run
-in a **satellite node**: a disposable `erl` process launched inside the
-executor sandbox with distribution disabled, the network off except for
-the socket back to the broker, a heap ceiling, a cgroup, and a wall-clock
-deadline — killable as a unit. A hostile module that slipped the lint
-still sits in a jail whose only reachable effects are token-checked broker
-calls, so an escape needs both a vetting bypass and a kernel escape.
-
-Every executed program is an entry in the tree, and so a candidate for
-promotion: **L0** ephemeral and satellite-jailed, **L1** a named session
-skill at L0 privileges, **L2** a candidate compiled against the wider
-extension API and passing its own tests in the sandbox, **L3** an
-installed extension, **L4** a pull request against Loom itself.
-
-ADR-007 changed what L3 costs. An installed extension runs *jailed* by
-default — in the same satellite an L0 program runs in, against a widened
-allowlist, judged by the same broker — so installing one touches the
-harness VM not at all, and hot-loading is reserved for the one case that
-cannot be expressed as a jailed callback. **L0 and operator-installed L3
-extensions both exist**; the section below is the second of them. The
-*agent-authored* on-ramp, L1's skill store and L2's candidate pipeline,
-is still design, and when it is built it feeds the same manifest and the
-same install record rather than a parallel mechanism.
-
-## Extensions
-
-A tool the model can call is normally defined in this repository and
-shipped in a release. An extension is capability that arrives from
-somebody else's repository without arriving inside the trusted computing
-base: it is written in Gleam, installed by an operator, vetted and
-compiled by the harness itself, and executed in the same kernel jail a
-code-mode program is executed in. Installing one links no foreign code
-into the harness VM, so Rule Zero holds by construction rather than by
-argument.
-
-The credential is the sharp end. An extension's manifest names an
-*environment variable* and the header it belongs in for one host; the
-harness reads the value at request time and injects it into the request
-it makes on the host. The extension's own source never sees the key, no
-file holds it, and no frame on the capability channel carries it.
-
-```mermaid
-flowchart TB
-    subgraph I["Install — operator, once, no git client"]
-      SRC[github.com/Roasbeef/loom-web-search] --> FET[one-host GET through broker/egress]
-      FET --> EXT[total tar reader, pruned to the extension's own tree]
-      EXT --> VET[vet every module against the extension seam]
-      VET --> BLD[gleam build, network off, offline seed]
-      BLD --> REC[install record written last, then renamed into place]
-    end
-    subgraph C["A call — one satellite per tool call"]
-      MOD[model calls web_search] --> SAT[jailed satellite: the compiled extension]
-      SAT -->|net.request| EGR[broker/egress, on the host]
-      EGR -->|X-Subscription-Token injected here| API[api.search.brave.com]
-      API --> EGR
-      EGR -->|response only| SAT
-      SAT --> MOD
-    end
-    KEY["BRAVE_API_KEY — in loomd's environment, never in the jail"] -.-> EGR
-```
-
-The acceptance extension is [loom-web-search][ws], a separate
-repository that gives the model a `web_search` tool:
+Build from source on Linux or macOS. You'll need **Gleam 1.18+**, **Erlang/OTP
+29+**, **Go 1.26+**, `rebar3`, and native build tools (a C compiler, `make`, and
+`strip`). Linux sandboxing also requires bubblewrap, user namespaces, and
+delegated cgroup v2 resources; see the [sandbox guide](packages/sandbox/README.md)
+and [Docker guide](docs/docker.md) for host setup.
 
 ```sh
-export BRAVE_API_KEY=…   # only loomd ever reads it; it is in no file
-loom ext install https://github.com/Roasbeef/loom-web-search
-loom ext list
+git clone https://github.com/Roasbeef/loom.git
+cd loom
+make install
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`loom ext` also has `remove` and `verify`; every install is
-content-addressed, and a load re-derives the tree digest, the manifest,
-the vetting, the recorded allowlist and the artifact's own content
-address before an extension is used. Install and dispatch are both
-built: a booting server registers what it finds installed, a tool call
-spends one jailed satellite on the artifact the install compiled, and
-`net.request` is served host-side under the policy the manifest
-declared. `docs/architecture/extensions.md` says what stands where.
+`make install` builds the client, server, sandbox helper, and code-mode
+toolchain under `~/.local`. The default installation bundles the BEAM runtime;
+the resulting client and server don't need a separate Erlang installation.
 
-[ws]: https://github.com/Roasbeef/loom-web-search
-
-## Beyond one machine
-
-Erlang distribution is location-transparent and fully trusting after the
-handshake, which makes it a fine control plane and a disastrous data
-plane, so the design keeps the two apart:
-
-> **Data plane** — length-prefixed msgpack over stdio, Unix sockets, SSH
-> tunnels, or mutually authenticated TLS, to everything untrusted or
-> semi-trusted. Every message is parsed and validated as data.
->
-> **Control plane** — TLS-wrapped native distribution, strictly between
-> orchestrator nodes you operate. Native distribution never crosses a
-> trust boundary.
-
-Because the broker already treats every effect as uncertain and remote, a
-remote executor pool is a driver rather than an architecture change, and
-sessions move because a session is one file plus a tree booted from it.
-Clients are always thin — a terminal, an editor plugin, and a phone all
-speak the same gateway protocol. None of that section has code behind it
-yet: every channel Loom opens today is data plane and single-node, and the
-only thin client that exists is `loom`. What the doctrine buys today is
-the rule about what may *not* be built.
-
-## How it is tested
-
-- **Storage conformance.** One suite, parameterized over a backend
-  constructor, runs against both backends and defines what "correct
-  backend" means: atomicity, sequence ordering, the expectation matrix,
-  branch scans, catch-up reads, and a torture script that re-scans every
-  entry after every commit. A 10,000-entry session scans its newest 50
-  entries with a p50 near 3 ms; the gate holds a 15 ms ceiling rather than
-  the 5 ms target, because a bound at the target flakes on shared
-  hardware.
-- **Crash exploration by enumeration.** The storage writer exposes a seam
-  that runs after a commit is durable but before the committer learns of
-  it. Five scenarios run once to fix their commit counts, then once per
-  boundary with the kill armed there: 42 crashed runs, each converging on
-  the same outcome, projection and ledger, with no replay-unsafe tool
-  executed twice.
-- **Crash exploration by generation.** A deterministic simulation runner
-  replaces the hand-written list with a seed. One integer splits into a
-  *script* (what the session is asked to do) and a *schedule* (what goes
-  wrong while it does it); the script runs clean, then faulted, and the
-  pair is held to named checks. Every fault in the taxonomy is transparent
-  by construction — crashes at commit boundaries and mid-effect, refused
-  and stale commits, read faults, lease theft, dropped doorbells, slow and
-  dying effects, torn frames — so anything that legitimately changes the
-  outcome lives in the script. Failing schedules shrink; one that found a
-  real defect is pinned as a hand-built regression. `make soak` runs
-  thousands of seeds. The honest limits are in
-  `docs/architecture/simulation.md`: real processes rather than a
-  simulated scheduler, so BEAM interleaving is not reproducible.
-- **A jailed end-to-end.** A scripted provider drives the real broker, the
-  real executor pool, and the freshly built Go helper against a real
-  workspace, with a crash rider over the integrated stack.
-- **Code mode against a live toolchain.** `make e2e-codemode` takes a
-  model-written program through real vetting, a real hermetic `gleam
-  build` in a network-off jail, and a real `erl` satellite making a real
-  capability call: the happy path, a transitive import the build refuses,
-  a runaway program dying at its deadline, a type error coming back in
-  band, and an approved escalation reaching a capability its unwidened
-  twin is refused. Every run prints the helper's enforcement report and
-  says whether network-off was *enforced*.
-- **A sandbox self-test that reports what the kernel actually gave it.**
-  `loom-exec --self-test` runs nine probes through the real jail path and
-  prints `ENFORCED` or `SKIPPED` per probe, summarized separately, so a
-  green run in a neutered container cannot be mistaken for a verified
-  sandbox. `.github/enforcement-expectations` is the reviewed answer to
-  which layers a CI machine must really have applied, and it fails the
-  job in either direction. The `jail (linux)` job now reports **nine of
-  nine probes ENFORCED and none skipped**, and the applied-layer list it
-  prints carries `landlock:abi=7` beside bubblewrap, cgroup v2, the
-  rlimits, `no_new_privs` and the seccomp network filter, so the one layer
-  that used to be asserted rather than demonstrated (issue #62) is now
-  observed. macOS has a generated deny-default
-  Seatbelt jail; its process-table tracker is not a PID namespace, so
-  every Darwin execution reports `skip:darwin-process-lifecycle` and the
-  production default admits only that gap and ADR-006's two reported
-  resource gaps. Windows remains specified and unbuilt.
-
-## What is not built
-
-The architecture above is described as designed; this is where it and the
-tree still part company. Each line names the open issue that tracks it.
-Anything with a closed issue or a per-merge verification record is not
-listed here: `docs/next.md` carries the current state of the work and its
-verification, and the `phase:` labels carry the plan.
-
-- **The `lsp.*` capability family reaches no effect**, and **`lsp_*` and
-  `dap_*` tools do not exist** (#25, #26). Every other capability family
-  is served: `proc.run` through the jailed executor, `fs.*` and `kv.*`
-  through `codemode/workspace`, `report.emit` through `codemode/artifact`,
-  `mcp.<server>` through `client/mcp`, and `net.request` for an installed
-  extension through `client/extension/seam` under the policy its manifest
-  declared. The four `lsp.*` names are gated on the long-lived stdio
-  client and refuse in band. The tool set a model sees today is the five
-  core tools (bash and the hash-anchored read, write, edit and grep), the
-  six `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
-  `schedule_*` tools, `context_remaining`, and the three `job_*` tools;
-  any MCP servers the catalogue names are reached through `code_mode`.
-- **`Proxy(allowlist)` is not enforced as a mode.** The broker narrows it
-  to network-off and reports the narrowing. This is a decision rather than
-  a gap: ADR-007 replaced the egress proxy sidecar with `broker/egress`,
-  which performs outbound HTTP in the harness under a policy the caller
-  cannot widen, so the jail's network namespace stays empty.
-- **There is no jail on Windows.** The helper refuses to serve there
-  without `--allow-unenforced`.
-- **An MCP server process is not jailed** (#109). MCP is code-mode only
-  by design (#106): configured servers come up concurrently at boot and
-  each becomes a generated module behind `code_mode`, with no generic
-  tool dispatcher. The server itself is an ordinary child process on the
-  host; `packages/mcp/src/mcp/transport.gleam` says in its own module doc
-  that an unjailed spawn there is the production primitive and not the
-  final security posture, and whether such a process should be jailed at
-  all is an open decision. Its credential, named by `api_key_env`, is in
-  that unjailed process's environment.
-- **Self-improvement is operator-driven only.** An operator installs an
-  extension with `loom ext` and it runs jailed, and the model can call
-  it. Not built: the agent-authored on-ramp (no skill store, no
-  extension candidate pipeline), the harness-resident tier and its hot
-  code loading, and the persistent satellite that hooks need.
-- **The chaos runner is unbuilt.** `make soak` is the deterministic seed
-  soak; random process kills under load are not tested.
-- **Distribution is single-platform and unpublished.** `make dist` builds
-  server and client tarballs for the host it runs on, and no release has
-  been published. Both platforms have local packaging and gate evidence;
-  `docs/next.md` has the verification record.
-
-## Running Loom
-
-The **server** (`loomd`) and the default **client** (`loom`) each carry
-the BEAM runtime system, so neither needs Erlang installed on its host.
-An optional slim client uses the host's Erlang/OTP 29 instead. `make dist`
-builds all three tarballs for the current platform;
-`docs/distribution.md` describes their contents and measured sizes.
-
-The server tarball unpacks to `bin/loomd`, `bin/loom-exec` (the sandbox
-helper, a file beside it — Loom never extracts an executable at run
-time), the runtime system, the compiled applications, the code-mode
-toolchain (`bin/gleam` and `share/codemode-seed`), and a `SHA256SUMS` over
-every executable that `sha256sum -c` will check. Code mode is roughly half
-the download; `DIST_CODEMODE=0 make release` leaves it out. A release is
-built for one platform and cannot be otherwise.
-
-### Running a session
-
-Install `loom` and `loomd` beside one another, change into a workspace,
-and run the client:
+Choose a model by copying the [catalogue example](docs/examples/loom.toml) to
+`~/.loom/loom.toml` and editing its model entries and role routes. API keys stay
+in environment variables named by the catalogue, not in the file. Set those
+variables before starting the daemon.
 
 ```sh
-cd ~/src/myproj
+# Open the terminal without a provider or server.
+loom --demo
+
+# Start working in a project with your configured provider credentials.
+cd ~/src/my-project
 loom
 ```
 
-`loom` authenticates the daemon recorded under `~/.loom`, or starts
-`loomd` after checking that it can claim the private endpoint. An
-uncertain process identity or malformed endpoint blocks auto-start.
-The daemon is shared across workspaces. The client opens a session picker:
-press Enter to open
-the selected saved session, or choose New session to create one. Starting
-the daemon and listing its catalogue open no session runtimes; a daemon
-restart restores saved metadata until you explicitly open a session.
+`loom` starts or reconnects to the shared local daemon and opens the session
+picker. Choose **New session**, or select a saved session to resume. Use
+`/sessions` to switch sessions and `/model` to choose a configured model.
 
-Several terminals can attach to the same session or use independent
-sessions in that daemon. `/sessions` opens the catalogue picker again.
-Switching replaces that terminal's attachment after validating the new
-session's snapshot; it leaves the previous session running for other
-clients.
+See [Running Loom](docs/running.md) for daemon flags, explicit configuration,
+direct connections, and enforcement settings. [Updating](docs/updating.md)
+covers release updates and graceful daemon restarts.
 
-The launcher's options are `--workspace`, `--session <id>`, `--server`
-(`LOOM_SERVER` is the environment form), `--state-dir`, and
-`--config <loom.toml>`. An explicit `--session` selects and opens that
-saved session without the picker. `--config` supplies the model catalogue
-when launching a daemon; without it, the launcher uses
-`<state-dir>/loom.toml` if present. It never loads workspace configuration
-implicitly or runs the server from the workspace, because repository
-content is not launch authority. It also ignores relative `PATH` entries
-when looking for `loomd`. `loom --demo` renders a canned preview without a
-server or network connection.
-
-To manage the daemon yourself, use the same state directory in both
-terminals:
+### Updating
 
 ```sh
-# Terminal 1: one daemon for all sessions in this catalogue.
-loomd --state-dir "$HOME/.loom-dev" --bind 127.0.0.1:44123
-
-# Terminal 2: authenticate that daemon and open its session picker.
-loom --state-dir "$HOME/.loom-dev" --workspace "$HOME/src/myproj"
+loom update --check   # Check published release metadata without installing.
+loom update           # Install the latest stable published release.
+make update           # Build and activate the current source checkout.
+loom version          # Show the installed client version, commit, and platform.
 ```
 
-The daemon stores its catalogue and session databases under the private
-state directory. Its owner credential is `owner.token`, a `0600` file
-reused across daemon restarts, not a token per session. Session IDs come
-from the catalogue, not database filenames.
+`make update` runs from a clean, committed checkout and builds and smoke-tests
+its release artifacts before installing. Both update paths install fresh release
+trees and gracefully restart the shared daemon; reopen terminals to use the new
+client. `make install` installs a source build without restarting the daemon,
+and `loom update --install-only` does the same for a release update. Coordinate
+a shared daemon restart with other users. Published-release updates require an
+available release for your platform.
 
-For a direct attachment, first open the session through the picker, then
-replace `SESSION_ID` below with its catalogue ID:
+## Durable by construction
 
-```sh
-loom --addr ws://127.0.0.1:44123/v2/sessions/SESSION_ID/ws \
-  --session SESSION_ID --token-file "$HOME/.loom-dev/owner.token"
+Each session has a write-once conversation tree in SQLite. Prompts, tool
+intents, results, configuration, and usage become durable records. Forks share
+history up to their branch point, so exploring another approach keeps the
+original conversation intact.
+
+Tool execution has two commits: one records the intent before execution; the
+other records the result. After a crash, Loom reconciles unfinished work using
+each tool's replay policy. Replay-safe operations can retry. An uncertain
+operation that isn't safe to replay gets an explicit failure instead of being
+silently executed again.
+
+The same rule applies between agents: messages are committed before a recipient
+acts on them. Process notifications wake the recipient, but the payload lives
+in durable storage. Restarting a process doesn't erase its unread messages.
+
+Read more about [durability](docs/architecture/durability.md),
+[recovery](docs/architecture/orchestration.md), and
+[agent messaging](docs/architecture/messaging.md).
+
+## Multiplayer and subagents
+
+Several people can work with the same agent session. Attached terminals share
+the committed conversation and receive live output. Prompts and steering carry
+their author's identity, and presence shows who is connected. The owner grants
+session membership: operators can direct work and resolve approvals; observers
+can follow without changing it.
+
+Subagents are **strands**: independent agents with their own conversation branch
+and configuration. They can run concurrently, exchange durable messages, and
+return structured results to a parent. Shared session state supports coordination
+without copying every intermediate result into the main conversation.
+
+One daemon hosts sessions across workspaces. Closing or switching a terminal's
+attachment leaves the session available to other clients. Remote connections
+use a secure tunnel or TLS proxy to the loopback-bound daemon.
+
+See [multiplayer](docs/architecture/multiplayer.md) and
+[session management](docs/architecture/sessions.md) for access and lifecycle
+details.
+
+## Code mode
+
+A model can write a Gleam program instead of issuing a sequence of tool calls.
+The program reads files, runs commands, branches on results, and returns the
+answer the model needs. Intermediate data stays inside the program, reducing
+the tool output carried into the next model turn.
+
+Code mode supports bounded parallel work, races with cancellation, and stateful
+actors. For example, an agent can inspect several packages concurrently, run
+checks, and return a structured summary in one execution. The
+[migration example](docs/examples/stale_symbol_sweep.gleam) and
+[subagent review example](docs/examples/fan_out_review.gleam) are exercised by
+tests through vetting, compilation, and a real sandboxed runtime.
+
+![Loom executing a code-mode program that reads three files concurrently and returns their line counts](docs/images/code-mode.png)
+
+*Code mode in the native terminal. A scripted local provider supplies the demo;
+compilation, sandboxed execution, and file reads are real.*
+
+```mermaid
+flowchart TB
+    A[Model writes Gleam] --> B[Vet imports and source]
+    B --> C[Compile offline]
+    C --> D[Run in sandboxed BEAM process]
+    D --> E[Return structured result]
+    D <-->|Capability calls| F[Broker checks policy]
 ```
 
-The direct route attaches only to an already-open session. For a remote
-host, carry the connection through a secure tunnel or TLS proxy and use a
-credential authorized for that session. The daemon itself binds only to
-loopback; do not expose bearer credentials over plaintext remote traffic.
+Typed capability modules expose filesystem access, commands, shared state, and
+artifact reporting. Configured MCP servers become generated modules available
+through code mode. A separate, opt-in orchestration capability set lets programs
+spawn and coordinate subagents.
 
-### The server
+Submitted source cannot introduce foreign-function calls or import arbitrary
+modules. The compiler checks tool argument types, and the broker checks each
+effect against policy. Compilation and execution happen in disposable external
+processes, outside the trusted harness VM.
 
-`loomd` opens the catalogue and owner credential, then publishes one
-authenticated WebSocket listener. Each explicit session open assembles
-that session's SQLite store, helper pool, ToolBroker, provider, runtime,
-and gateway behind the shared listener. `SIGTERM` drains the sessions and
-shared domain services before closing the listener. Its flags:
+The [code-mode guide](docs/architecture/code-mode.md) explains the capability
+sets, build cache, execution budgets, and cancellation model.
 
+## Why Gleam
+
+Gleam makes code mode a typed programming interface. Tool arguments, return
+values, and failures have explicit types, so the compiler can catch a malformed
+call before it reaches a tool. Pattern matching lets a program handle those
+failures and return useful results to the model.
+
+Its small language has no `eval`, reflection, or dynamic module lookup. Effects
+enter through imported modules and foreign-function declarations, which gives
+Loom a concrete surface to vet. Submitted programs use an allowlisted capability
+library and cannot add their own foreign-function calls. The kernel sandbox
+provides the execution boundary behind those language checks.
+
+Gleam also compiles to the BEAM. The harness and code-mode programs use the same
+language, with lightweight processes and concurrency libraries available to both.
+
+## Why the BEAM
+
+An agent runtime has many independently active parts: model streams, tools,
+subagents, client connections, and background work. The BEAM provides lightweight
+processes, message passing, and OTP supervision to manage those lifecycles.
+Gleam adds static types and explicit error values to that runtime.
+
+Loom separates durable state, orchestration, and effects. A supervised process
+can restart and recover from committed state. The pure operation state machine
+can also run under deterministic simulation, where tests explore interleavings
+and crash boundaries without relying on timing luck.
+
+```mermaid
+flowchart TB
+    T["Terminals and collaborators"] <-->|"Authenticated gateway"| D["Shared daemon"]
+    D --> S["Session: agents and advisor"]
+    S <-->|"Commit and recover"| H[("SQLite conversation tree")]
+    S --> B["Broker: policy and approvals"]
+    B --> J["External sandboxes: commands and code mode"]
 ```
---state-dir <path>     private daemon state (default ~/.loom)
---bind host:port       loopback listen address (default 127.0.0.1:0; port printed)
---capacity <n>         maximum retained session instances (default 8)
---owner-name <name>    initial owner display name (default Owner)
---helper <path>        loom-exec location (default: beside the server, then PATH, then ./bin)
---config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
---codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed, then the bundled one)
---codemode-seams <s>   workspace, orchestration, or both (default workspace)
---full-enforcement     require every layer, including the ones Darwin cannot provide
---best-effort          accept broader sandbox degradation for development
+
+Process ownership and bounded concurrency build on
+[weft](https://github.com/Roasbeef/weft). The
+[code tour](docs/code-tour.md) follows a request through Loom, and the
+[simulation guide](docs/architecture/simulation.md) explains how recovery is
+tested.
+
+## Execution boundaries
+
+**The BEAM isolates faults; the kernel isolates untrusted execution.** Shell
+commands, agent-written programs, and installed extensions run outside the
+harness VM. A capability-checked broker controls their effects, and an approval
+is bound to the specific action and arguments it authorizes.
+
+Linux uses namespaces, bubblewrap, seccomp, and cgroup limits. macOS uses
+Seatbelt with explicitly reported enforcement gaps. Run `make selftest` on the
+host you plan to use; the production default refuses unexpected degradation.
+Configured MCP servers currently run as ordinary host child processes and
+should be treated as trusted installations.
+
+See the [effects architecture](docs/architecture/effects.md) and
+[sandbox guide](packages/sandbox/README.md) for the enforcement contract.
+
+## Model routing
+
+A model catalogue names endpoints and assigns ordered fallback chains to roles.
+Use a fast model for the main conversation, another for summaries, and a
+vision-capable route for images. Anthropic, OpenAI-compatible, and Gemini
+adapters share the same orchestration layer. Each strand retains its own model
+configuration, and `/model` switches the active strand from the terminal.
+
+Context and output limits, reasoning settings, image budgets, and optional
+pricing belong to each model entry. Usage is recorded durably; configured
+prices make the terminal's cost display meaningful across models. Credentials
+are read from the named environment variables at dispatch time.
+
+See the [model guide](docs/architecture/models.md) and
+[catalogue example](docs/examples/loom.toml).
+
+## Advisor mode
+
+Pair a fast primary model with a stronger model that independently reviews its
+work. The advisor receives incremental activity at run boundaries and during
+long runs, in a separate conversation. It can remain quiet, send a nudge, or
+issue a blocking verdict that interrupts and steers the primary.
+
+The harness controls the review feed and verdict delivery. The primary cannot
+message its advisor to negotiate a verdict. By default, the advisor's tools
+are limited to inspection and advice; the operator controls that tool set.
+Configure the review cadence and model pairing for the work you're doing.
+
+```mermaid
+flowchart TB
+    P["Primary model"] --> W["Work and durable results"]
+    W -->|"Incremental review feed"| A["Advisor: separate context"]
+    A --> V{"Verdict"}
+    V --> Q["Quiet"]
+    V --> N["Nudge at a safe boundary"]
+    V --> B["Block and steer"]
+    N --> P
+    B --> P
 ```
 
-**Models.** `--config` points at a catalogue: named entries (`dialect`,
-`base_url`, `api_key_env`, `model_id`, context and output limits, thinking
-level) plus role → fallback-chain routing. `docs/examples/loom.toml` is the
-commented example — it carries all three dialects, `anthropic`, `openai`
-and `gemini` — `docs/examples/loom-baseten.toml` wires four
-OpenAI-dialect models with per-role chains, and
-`docs/examples/loom-advisor.toml` is the smallest catalogue that pairs a
-fast primary model with a stronger one reviewing it through the optional
-`advisor` role (`docs/architecture/advisor.md`). Precedence is flags > config
-file > environment > defaults: with `--config` the catalogue is the whole
-model surface, and the launcher supplies `<state-dir>/loom.toml` when the
-flag is absent and that file exists (`~/.loom/loom.toml` by default).
-Without either, `LOOM_MODEL` (default `claude-opus-5`),
-`LOOM_BASE_URL`, `LOOM_CONTEXT_WINDOW`, `LOOM_MAX_OUTPUT_TOKENS` and
-`LOOM_SYSTEM_PROMPT` shape a one-entry catalogue. API keys never live in
-the file — each entry's `api_key_env` names the variable read at dispatch,
-`ANTHROPIC_API_KEY` in the env fallback — and a keyless server still boots
-and serves; generation requests then fail in band. The TUI lists the
-catalogue with `/model` and switches the active strand's model by name.
+Start with the [advisor catalogue](docs/examples/loom-advisor.toml), then read
+the [advisor guide](docs/architecture/advisor.md) for delivery semantics.
 
-**Instruction files.** The system prompt carries the workspace's own
-instructions verbatim, framed as project-authored data. Two files, in
-this order: `AGENTS.md` — the [cross-tool convention](https://agents.md/)
-every agent harness now reads — and then `CLAUDE.md`, which may add to
-it. A workspace with no `AGENTS.md` of its own falls back to the
-operator's global one, `~/.agents/AGENTS.md` then `~/.loom/AGENTS.md`;
-a workspace file always wins over both, and nested `AGENTS.md` files in
-subdirectories are not read. Each file reaches the model inside an
-`<instructions>` fence naming its path and whether it came from the
-workspace or the operator, so standing operator instructions are
-distinguishable from a project's. Every one of these reads warns and
-continues — an oversize, unreadable or absent file never stops a boot.
+## Context, memory, and automation
 
-**Markdown skills.** The daemon discovers `SKILL.md` libraries under
-`~/.agents/skills` and `~/.claude/skills`, with compatibility aliases described
-in [the skills guide](docs/skills.md). The terminal completes loaded skill
-names with Tab. The model initially sees names and descriptions, then calls
-`load_skill` to load a selected document. `/skill-name arguments` activates it
-explicitly. Invocation flags control visibility; skill instructions do not
-change tool permissions.
+- **Project instructions and skills.** Load workspace `AGENTS.md` and `CLAUDE.md`,
+  discover Markdown `SKILL.md` libraries, and activate skills by name. Full skill
+  instructions load on demand. [Skills guide](docs/skills.md).
+- **Long-running context.** Compact conversations while preserving their durable
+  history, and search earlier sessions when an older decision matters.
+  [Compaction guide](docs/architecture/compaction.md).
+- **Workspace memory.** Retain facts, lessons, and preferences across sessions,
+  with provenance and an explicit `remember` tool. Memory is private to the owner
+  by default; session isolation controls sharing. [Memory guide](docs/architecture/memory.md).
+- **Scheduled follow-ups.** Durable schedules can deliver prompts to strands
+  under operator policy, for periodic checks or later follow-up while the session
+  is running. [Schedule configuration](docs/examples/loom.toml).
+- **Background jobs.** Start a bounded, sandboxed command, continue working, then
+  poll its output or cancel it. Jobs have explicit ownership and deadlines.
+  [Background jobs](docs/design-notes/background-jobs.md).
 
-**Code mode** is registered only when the host has a Gleam compiler, an
-emulator, and a build seed whose dependency table matches the compile
-service's. A release carries all three; a checkout registers it once
-`make codemode-seed` has run. A host missing any of them says so once on
-stderr and ships no `code_mode` definition rather than one that always
-refuses, because a tool definition is paid for on every request of every
-strand. A strand's tool set is fixed when the strand is created, so a
-session opened before code mode was available keeps its original set.
+## Extend Loom
 
-**The sandbox.** Run `loom-exec --self-test` on the kernel you actually
-intend to run agents on; it prints `ENFORCED` or `SKIPPED` per probe. By
-default the server demands platform enforcement — Linux fully strict,
-Darwin admitting only ADR-006's three reported gaps — and refuses a
-missing jail, an unexpected gap, or a silent layer. `--full-enforcement`
-demands the cross-platform contract; `--best-effort` accepts broader
-degradation for development machines. `LOOM_HELPER_POOL` bounds how many
-`loom-exec` helpers run at once (the scheduler count clamped to `[4, 16]`),
-which is the real ceiling on how wide a parallel tool batch runs.
+Connect MCP servers to expose their tools as typed modules in code mode, or
+install Gleam extensions with their own declared capabilities. Extensions compile
+against a pinned prelude and execute outside the harness VM. For example,
+[loom-web-search](https://github.com/Roasbeef/loom-web-search) adds web search
+through broker-mediated HTTP.
+
+See the [MCP guide](docs/architecture/mcp.md) and
+[extension guide](docs/architecture/extensions.md) for configuration and the
+extension lifecycle.
 
 ## Working on Loom
 
-You need Gleam 1.18 or newer, Erlang/OTP 29 or newer, and Go 1.26 or
-newer for the sandbox helper; `make release` additionally needs `rebar3`,
-`strip` and a prepared build seed. The packages are monorepo-internal and
-built where they sit; the one library dependency Loom owns, weft, lives in
-a sibling repository and is published to Hex.
-
-```
-make check            # the full gate: format check, warning-free build, tests, lint
-make lint             # the house rules on their own (lint-<package> narrows it)
-make binaries         # bin/loom-exec plus the native TUI shipment and launcher
-make install          # seed, server and client releases under ~/.local; then just `loom`
-                      # INSTALL_CLIENT=slim for a client on the host's own Erlang
-make dev              # build a scratch daemon and open its session picker
-make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
-make e2e              # the jailed end-to-end against a freshly built helper
-make codemode-seed    # the offline package cache a code-mode build clones
-make e2e-codemode     # code mode for real: jailed build, real satellite, real cap call
-make release          # the self-contained server into build/release/loom (needs rebar3)
-make dist             # dist/: server, bundled client, slim client, SHA256SUMS
-make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
-make doc-check        # the doc graph: coverage, the AGENTS.md mirrors, citations
-make help             # everything else
+```sh
+make dev              # Build a scratch daemon and open its session picker.
+make check            # Format, warning-free builds, tests, and house-rule lint.
+make check-client     # Run a single package's gate.
+make e2e-codemode     # Compile and execute code mode through a real sandbox.
+make soak             # Run the deterministic simulation soak.
+make doc-check        # Check documentation coverage, mirrors, and references.
+make help             # List all targets.
 ```
 
-`make check` is exactly what CI runs, and `make check-<package>` narrows
-it to one package. It ends with `make lint`, Loom's own house-rule lint:
-twelve rules, of which R0 (unparseable source), R2 (`case` nesting depth),
-R4 (`panic` and `let assert` outside tests), R6 (the portable subset
-`core`, `machine` and `prompt` are held to) and R10 (a comment with no
-blank line above it) fail the build; the rest report a census and cost
-nothing. A rule earns the error tier by a census that is zero and argued.
+Start with the [code tour](docs/code-tour.md) and
+[Gleam style guide](docs/gleam-style.md). The
+[design](docs/loom-design.md) explains the architecture; the
+[implementation spec](docs/loom-implementation-spec.md) defines its contracts.
+Per-package `CLAUDE.md` files describe ownership, dependencies, and invariants.
 
-Two generated artifacts have gates rather than regeneration steps:
-`make gen-prelude` re-renders the capability prelude's public surface
-into `packages/tools/src/tools/prelude.gleam` and `make prelude-check`
-is the digest comparison `make check` runs; `make gen-sql` is the same
-arrangement for the generated SQL modules.
+Loom is under active development, with Linux and macOS as its current targets.
+The [handoff](docs/next.md) and [issue tracker](https://github.com/Roasbeef/loom/issues)
+record current work and verification; [distribution](docs/distribution.md)
+describes packaging and release builds.
 
-`make dev` builds, starts a daemon with fresh state under `build/dev.*`,
-opens the session picker, and stops that daemon when the TUI exits. The
-state and logs remain for inspection. Set `STATE_DIR` to reuse development
-state, `WORKSPACE` to select a workspace, or `SESSION` to open a saved
-session ID. `SESSION` is not a database path. `scripts/dev.sh --smoke`
-checks startup, authentication refusal, and clean shutdown without a TUI;
-`--shipment-smoke` runs those checks through the exported daemon.
+## Inspiration
 
-`make run-server STATE_DIR=build/dev/state` runs the daemon from source.
-In another terminal, `make run-tui STATE_DIR=build/dev/state` opens its
-picker. Both targets default to that isolated development state;
-`run-tui` also builds the daemon launcher for local auto-start. A direct
-attachment uses `make run-tui ADDR=... SESSION=... TOKEN_FILE=...` with the
-v2 session URL shown above.
-
-`make server-shipment` and `make tui-shipment` export BEAM files behind
-thin `bin/loomd` and `bin/loom` launchers that use the host's Erlang.
-`make release` and `make release-client` bundle the runtime system for
-the server and client respectively. The sandbox helper is built through
-`scripts/go-build.sh` with the same flags everywhere, so `bin/loom-exec`
-and the helper inside a release are byte-identical.
-
-## Reading further
-
-- `docs/architecture/` — the system as built: `durability.md`,
-  `orchestration.md`, `effects.md` for the three planes; then
-  `messaging.md`, `events.md`, `client.md`, `sessions.md`, `multiplayer.md`,
-  `models.md`, `compaction.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
-  `simulation.md`. Start here
-  to understand the code that exists.
-- `docs/weft.md` — when and why a process is built on weft, the in-tree
-  ports to copy from, and how the library is extended.
-- `docs/loom-design.md` — the intent: why the BEAM, the three planes, Rule
-  Zero, the two-channel doctrine, code mode, and the staged trust pipeline.
-- `docs/loom-implementation-spec.md` — the work packages, the frozen
-  interface contracts, and the acceptance criteria. Changing a frozen
-  interface takes a numbered proposal in `protocol-change/`, never silent
-  drift.
-- `docs/code-tour.md` — one request followed from a key press to an answer
-  on screen, with a file and a line for every step.
-- `docs/distribution.md` — how the downloadable server is built and why,
-  and every size in this README with how it was measured.
-- Every package carries a `README.md` and a `CLAUDE.md` that is denser and
-  more current than any top-level document about that package.
-- `docs/gleam-style.md` — a language tour and the house style; read it
-  before contributing.
-- `docs/performance.md` — the measurement loop for Gleam and the BEAM.
-- `docs/notebook.md` — the running lab log, newest entry first.
+Inspired by Pi, oh-my-pi, and Codex, and by the Erlang/OTP approach to building
+concurrent, fault-tolerant systems.

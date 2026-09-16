@@ -89,6 +89,12 @@ Linux-only and shipped-release fixture skips; live provider requests and an
 installed daemon remain untested. Check the updated PR head's hosted CI before
 merge. Nothing was merged or installed by this integration.
 
+The README now introduces the implemented features, setup and update paths,
+with diagrams and a real code-mode terminal capture using a scripted local
+provider. The former launch reference is preserved in [Running Loom](running.md).
+Documentation checks, local links, rendered diagrams and the capture were
+verified; the public-facing claims received an independent source review.
+
 ## Where the tree is
 
 | Body of work | Verified state |
