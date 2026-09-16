@@ -10,6 +10,33 @@ merge. The new tag workflow has passed local script tests and workflow lint;
 its native macOS reproduction and GitHub draft upload remain unverified until
 hosted execution. No release was tagged or published by this work.
 
+## Image attachments and routing (local follow-up)
+
+The local `fix/image-routing-preview` branch addresses the September 15
+attachment reports. The composer shows a count and one row per accepted image;
+the existing four-image/20-MiB limit remains, with a named rejection for a fifth
+file. GLM-5.3 defaults to text-only without a configuration migration, while
+explicit overrides and the distinct Flash model retain their behavior.
+
+Vision classification now distinguishes a new attributed prompt from old failed
+image turns after projection removes error responses. It also reads the whole
+immutable admission batch, so releasing a held image and text together keeps
+the image. Image-bearing admitted runs stay on vision through tool and run-end
+continuations; a new text-only run does not inherit that requirement. Durable
+images are preserved. Unknown model identifiers retain the legacy image-capable
+default; this is not automatic capability discovery for arbitrary endpoints.
+
+The independent review found and verified the held-batch correction. TUI tests,
+focused vision regressions, both package lints and documentation checks pass.
+The final package gate passed 551 TUI and 1,828 client tests with its own exit
+status checked. Optional seed-dependent and shipped-server fixtures reported
+skips; live provider requests and installed-release behavior were not tested. No daemon was restarted and no
+installed configuration was edited. These changes are not merged or installed.
+
+Related work remains separate: parse diagnostics are PR #434, the 60-line
+compact code-mode preview is local commit `d9465cc2`, and execution of reusable
+programs from files or named notes is tracked in issue #435.
+
 ## Where the tree is
 
 | Body of work | Verified state |
