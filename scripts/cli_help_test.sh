@@ -81,6 +81,9 @@ for binary in loom loomd; do
   run_help "$binary" "usage: $binary" help
 done
 
+# Preserve general help before the version checks reuse the output file.
+cp "$scratch/loom.stdout" "$scratch/loom-help.stdout"
+
 for flag in \
   --state-dir --bind --capacity --owner-name --read-scope --network --helper \
   --config --codemode-seed --codemode-seams --best-effort --full-enforcement
@@ -108,7 +111,7 @@ run_failure loom version --record "$scratch/version-recording.jsonl"
 # argument list, so it must be documented by `loom` and by nothing else.
 for flag in --workspace --session --server --state-dir --config --tools
 do
-  if ! grep -Fq -- "$flag" "$scratch/loom.stdout"; then
+  if ! grep -Fq -- "$flag" "$scratch/loom-help.stdout"; then
     echo "cli_help_test: loom help does not list $flag" >&2
     exit 1
   fi
