@@ -1010,3 +1010,14 @@ Part 1.4 holds the frozen wire protocol and §3.3 the security invariants,
 `docs/spec-gaps.md` records where implementation refined the spec —
 including the fd-3 delivery workaround, the anchor hash, and the shared
 clock era.
+
+## Session directory additions
+
+The operator's `/add-dir` command commits a canonical directory to the
+reserved session fact through `client/directories`. `client/wiring` captures
+those additions for each invocation. `tools/directory_access` keeps native
+file authority separate from the jail's system read roots; `tools/permissions`
+connects declared needs to existing call-bound approvals before execution.
+Background jobs and code-mode capabilities retain their captured authority.
+The wire and lifetime rules are in
+[protocol 040](../../protocol-change/040-session-directory-access.md).
