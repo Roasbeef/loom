@@ -62,6 +62,14 @@ Both corrections are covered by the installed-release smoke.
 
 ## What to do next
 
+The local `codex/codemode-diagnostics` branch improves code-mode parse refusals
+with submitted-source line/column, a bounded excerpt and caret, source-token
+spelling, and a grouping-parenthesis hint. The reported failure was invalid Gleam
+expression grouping, confirmed by the compiler formatter. Tools (455 tests),
+code mode (304 tests, including the seeded end-to-end run), package lint, the
+documentation gate and independent review passed. The branch is not yet merged
+or installed; no user session was changed or restarted.
+
 1. Review and merge the local update wrapper and release-automation changes.
    **Exit:** applicable CI and signoff at the proposed head. No live daemon or
    installed prefix is a test fixture.

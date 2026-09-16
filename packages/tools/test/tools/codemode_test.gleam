@@ -1282,3 +1282,81 @@ pub fn request_carries_the_callers_output_observer_test() {
   request.observe_output(seen)
   assert process.receive(observed, 100) == Ok(seen)
 }
+
+// Keep the real submission's original source coordinate: the error belongs
+// to the nested parenthesis, not the enclosing call or generated scaffolding.
+pub fn a_parse_rejection_shows_the_submitted_line_and_caret_test() {
+  let source = "pub fn main() {\n  float.to_string((10.0 -. 5.0) /. 5.0)\n}"
+  let text = text_of(parse_failure_at(source, codemode.SourcePoint(34)))
+  assert string.contains(text, "[byte 34]")
+  assert string.contains(text, "submitted program:2:19")
+  assert string.contains(text, "  2 |   float.to_string((10.0 -. 5.0) /. 5.0)")
+  assert string.contains(text, "    |                   ^")
+}
+
+pub fn source_positions_use_utf8_bytes_and_keep_tabs_aligned_test() {
+  // The multibyte comment shifts every later byte offset; the tab occupies
+  // one source column and four display spaces, including before the caret.
+  let source = "// café\r\n\tbad(\n"
+  let text = text_of(parse_failure_at(source, codemode.SourcePoint(14)))
+  assert string.contains(text, "submitted program:2:5")
+  assert string.contains(text, "  2 |     bad(")
+  assert string.contains(text, "    |        ^")
+}
+
+pub fn eof_and_span_locations_have_source_context_test() {
+  let source = "pub fn main() {\n"
+  let eof = text_of(parse_failure_at(source, codemode.SourcePoint(16)))
+  assert string.contains(eof, "submitted program:2:1\n  2 | \n    | ^")
+  let span = text_of(parse_failure_at(source, codemode.SourceSpan(4, 6)))
+  assert string.contains(span, "[bytes 4-6]")
+  assert string.contains(span, "submitted program:1:5")
+}
+
+pub fn unusable_source_locations_do_not_invent_coordinates_test() {
+  // The mocked seam can supply a stale or malformed offset. Rendering keeps
+  // its original refusal instead of crashing or pointing at unrelated text.
+  let source = "é"
+  list.each(
+    [
+      codemode.SourcePoint(-1),
+      codemode.SourcePoint(1),
+      codemode.SourcePoint(3),
+      codemode.Unlocated,
+    ],
+    fn(location) {
+      let text = text_of(parse_failure_at(source, location))
+      assert string.contains(text, "unexpected token")
+      assert !string.contains(text, "submitted program:")
+    },
+  )
+}
+
+pub fn long_source_lines_are_clipped_around_the_error_test() {
+  let source = string.repeat("a", 1000) <> "(" <> string.repeat("b", 1000)
+  let text = text_of(parse_failure_at(source, codemode.SourcePoint(1000)))
+  assert string.contains(text, "submitted program:1:1001")
+  assert string.contains(text, "..." <> string.repeat("a", 60) <> "(")
+  assert string.contains(text, string.repeat("b", 59) <> "...")
+  assert string.length(text) < 600
+}
+
+fn parse_failure_at(
+  source: String,
+  location: codemode.Location,
+) -> tool.ToolOutcome {
+  call(
+    scripted(codemode.Execution(
+      result: codemode.VetRejected([
+        codemode.Rejection(
+          rule: codemode.Unparseable,
+          detail: "unexpected token",
+          location:,
+        ),
+      ]),
+      enforcement: nothing_ran(),
+      refusal: codemode.NothingRefused,
+    )),
+    [#("program", json.String(source))],
+  )
+}

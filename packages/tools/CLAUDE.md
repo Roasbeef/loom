@@ -638,9 +638,12 @@ was asked.
   span where one exists, the **seam** it was judged against and that
   seam's allowlist; compiler diagnostics cross verbatim. One round trip
   per rule is exactly what in-band repair exists to avoid. Parse failures
-  report the unexpected token and byte offset without teaching a dialect
-  workaround: the Glance floor and codemode corpus now pin the submitted
-  constructs that the shipped compiler accepts.
+  show the token in source syntax and a bounded excerpt with a one-based
+  line, grapheme column and caret, while retaining the original byte offset.
+  Positions refer to the submitted source, including EOF; unusable offsets
+  keep the refusal without fabricated coordinates. A grouping-parenthesis
+  hint teaches valid Gleam braces, without weakening vetting or adding a
+  workaround for syntax the shipped compiler already accepts.
 - **A submission is judged against exactly one seam, and it is the one
   it named.** `CodeMode.seams` is what this host serves; the shell
   resolves the call's `seam` argument against it, defaults an unnamed
