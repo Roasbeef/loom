@@ -1540,44 +1540,54 @@ pub fn wire(
 ) -> Effects {
   let built = effects.hooks
   let tools = effects.tools
+
+  // A wrapper keeps its predecessor slot, never the whole sibling record.
+  // Effects cross several process boundaries, where sharing is flattened.
+  let run_start = built.run_start
+  let context = built.context
+  let run_end = built.run_end
+  let compaction_note = built.compaction_note
+  let on_usage = built.usage
+  let clear = tools.clear
+  let run_tool = tools.run
   effects.Effects(
     ..effects,
     hooks: effects.Hooks(
       ..built,
       run_start: fn(operation) {
         list.append(
-          built.run_start(operation),
+          run_start(operation),
           started(bus, session, clock, operation),
         )
       },
       context: fn(operation, messages) {
-        fold_context(bus, operation, built.context(operation, messages))
+        fold_context(bus, operation, context(operation, messages))
       },
       run_end: fn(operation) {
         // A notification beside the existing slot, never instead of it:
         // whatever follow-up the harness's own `run_end` was going to
         // place is placed unchanged, and the extensions are merely told.
-        let follow_up = built.run_end(operation)
+        let follow_up = run_end(operation)
         agent_end(bus, operation)
         follow_up
       },
       compaction_note: fn(operation, cue) {
         list.append(
-          built.compaction_note(operation, cue),
+          compaction_note(operation, cue),
           compaction_notes(bus, operation, cue),
         )
       },
       usage: fn(operation, row) {
-        built.usage(operation, row)
+        on_usage(operation, row)
         usage(bus, operation, row)
       },
     ),
     tools: effects.ToolSurface(
       ..tools,
       clear: fn(query: effects.ClearanceQuery) {
-        cleared(bus, tools.clear(query), query)
+        cleared(bus, clear(query), query)
       },
-      run: fn(run) { ran(bus, tools.run(run)) },
+      run: fn(run) { ran(bus, run_tool(run)) },
     ),
   )
 }

@@ -21,9 +21,11 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
 import machine/operation
+import machine/planner.{ModelResolved}
 import machine/strand
 import runtime/effects
 import session/session
+import support/internal/ffi_memory
 import telemetry/log
 
 pub fn main() -> Nil {
@@ -846,4 +848,42 @@ fn text_of(one: message.AgentMessage) -> String {
 
 fn repeat(unit: String, times: Int) -> String {
   list.repeat(unit, times) |> list.fold("", fn(built, part) { built <> part })
+}
+
+/// Extension wrappers must not retain unrelated hooks or tool capabilities.
+pub fn extension_wrappers_do_not_copy_sibling_slots_test() {
+  let bus = started([])
+  let session = no_session()
+  let base = cleared_effects()
+  let marker = list.repeat("marker", 4096)
+  let heavy =
+    effects.Effects(
+      ..base,
+      hooks: effects.Hooks(..base.hooks, resolution: fn(_) {
+        assert list.length(marker) == 4096
+        ModelResolved
+      }),
+      tools: effects.ToolSurface(..base.tools, replay_still_safe: fn(name) {
+        list.contains(marker, name)
+      }),
+    )
+  let small = hooks.wire(base, bus, session, clock.fixed(0))
+  let large = hooks.wire(heavy, bus, session, clock.fixed(0))
+  assert ffi_memory.flat_words(large.hooks.resolution)
+    > ffi_memory.flat_words(small.hooks.resolution) + 4096
+  assert ffi_memory.flat_words(large.hooks.run_start)
+    == ffi_memory.flat_words(small.hooks.run_start)
+  assert ffi_memory.flat_words(large.hooks.context)
+    == ffi_memory.flat_words(small.hooks.context)
+  assert ffi_memory.flat_words(large.hooks.run_end)
+    == ffi_memory.flat_words(small.hooks.run_end)
+  assert ffi_memory.flat_words(large.hooks.compaction_note)
+    == ffi_memory.flat_words(small.hooks.compaction_note)
+  assert ffi_memory.flat_words(large.hooks.usage)
+    == ffi_memory.flat_words(small.hooks.usage)
+  assert ffi_memory.flat_words(large.tools.clear)
+    == ffi_memory.flat_words(small.tools.clear)
+  assert ffi_memory.flat_words(large.tools.run)
+    == ffi_memory.flat_words(small.tools.run)
+  assert large.tools.replay_still_safe("marker")
 }
