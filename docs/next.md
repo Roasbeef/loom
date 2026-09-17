@@ -1,5 +1,26 @@
 # Next
 
+## Child run lifecycle
+
+The `agent/child-run-lifecycle` branch is rebased onto `eadc0587`, including
+merged PR #438. Its Agency roster
+selects current or latest work, while historical handles preserve earlier
+results. Resumed runs receive a fresh ten-minute default or an explicit
+`agent_send.within_ms`, with per-operation parent custody and stop reasons.
+Proposal 042 records the contract. The independent review and remaining
+schedule/rule limitations are in `docs/review/child-run-lifecycle.md`.
+
+Before the conflict-free source rebase, the full `make check` gate passed with
+exit status zero, including 1,855 client, 466 tools, 304 code-mode and 558 TUI
+tests. Lifecycle coverage includes 59
+Agency, 51 agent-tool and 12 runtime lineage tests, with a deterministic
+parent-finalization race regression. After rebasing, the affected package gates
+also passed: 144 runtime, 466 tools, 304 code-mode and 1,858 client tests.
+The rebased source commit is patch-equivalent to the reviewed implementation.
+Lint reports zero errors and 809 warnings; the documentation check passes.
+This branch has not been installed or merged. The sections below
+retain their historical baselines.
+
 ## Closure retention, September 16
 
 The `memory/closure-retention` branch starts at rebased PR #437 head

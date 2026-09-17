@@ -79,7 +79,7 @@ Each job has a `job/<id>` register in the session store. It is a key
 prefix inside the existing `fact.custom` namespace, so it costs no
 protocol change (`core/register.gleam:27-28` freezes the namespace set;
 prefixes are free). It becomes the tenth reserved corner: one line in
-`reserved_fact_key` (`runtime/api.gleam:1836-1722`), one row in the table
+`reserved_fact_key` (`runtime/api.gleam:2091`), one row in the table
 at `api.gleam:1650-1663`, written only through
 `put_reserved_fact_expecting`. Creation uses the expect-absent CAS the
 schedule seam uses for a named create (`client/scheduleseam.gleam:372-383`),

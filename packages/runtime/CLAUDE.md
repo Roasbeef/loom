@@ -805,3 +805,16 @@ extended by the M3 runtime wave.
   events. "From the M3 runtime wave": escalations as registers, opaque
   grant JSON, abort-race pacing, parallel dispatch's exclusivity.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Child operation metadata
+
+`runtime/child_run.Run` is a total-decoded reserved fact under
+`child-run/{operation}`. `api.accept_with_child_run` commits it with continued
+run admission when the target has lineage. The same transaction checks the
+lineage, parent strand and parent operation sequences. `send_to_child` requires
+a current sending operation for idle admission, supports an explicit positive
+budget, and refuses an explicit budget for an active child. A finishable parent
+checkpoint cannot transfer cleanup custody because run-end hooks precede the
+terminal commit. Ordinary operator admission at that boundary is unowned.
+Lineage retains original spawn identity and a default budget for later runs.
+Proposal 042 specifies compatibility and the additional wire metadata.

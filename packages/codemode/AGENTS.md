@@ -802,3 +802,12 @@ vendored requirement cannot silently select newer transitive dependencies.
 Release builds normalize seed source timestamps before compilation and retain
 the warm compiler cache. The seed lock and fixed builder prefix are recorded
 release inputs; see `docs/adr/012-release-manifests-and-updates.md`.
+
+## Continued child compatibility
+
+`orchestration` calls `Agency.send` with no explicit budget, so idle child
+continuations use their persisted default. The capability send/wait wire shape
+remains unchanged. The richer internal `Started` receipt and
+`BudgetExpired`/`ParentFinished` outcomes map to the existing operation and
+aborted capability results; direct agent tools expose the additional deadline
+and cause metadata specified by proposal 042.
