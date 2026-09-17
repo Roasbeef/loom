@@ -7,7 +7,7 @@
 │   Reply with exactly this sentence and nothing else: The recording works.                                                         │
 │                                                                                                                                   │
 │                                                                                                                                   │
-│◆ Agent The recording works.                                                                                                       │
+│◆ The recording works.                                                                                                             │
 │                                                                                                                                   │
 │                                                                                                                                   │
 │                                                                                                                                   │
