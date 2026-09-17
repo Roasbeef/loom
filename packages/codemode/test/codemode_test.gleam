@@ -185,8 +185,9 @@ pub fn dangling_benign_attribute_rejects_test() {
 
 // --- Category 2: imports outside the allowlist (well-formed names) -----------
 
-/// Well-formed but forbidden imports — the FFI-bearing and effectful modules a
-/// hostile program would reach for. All rejected on the allowlist rule.
+/// Well-formed imports outside the admitted surface remain forbidden,
+/// including runtime modules and pure helpers kept off the workspace seam.
+/// All are rejected on the allowlist rule.
 fn forbidden_import_cases() -> List(String) {
   [
     "import gleam/erlang\npub fn main() { 1 }\n",
@@ -198,8 +199,8 @@ fn forbidden_import_cases() -> List(String) {
     "import gleam/otp/task\npub fn main() { 1 }\n",
     "import gleam/otp/supervisor\npub fn main() { 1 }\n",
     "import gleam/io\npub fn main() { 1 }\n",
-    "import gleam/dynamic\npub fn main() { 1 }\n",
-    "import gleam/dynamic/decode\npub fn main() { 1 }\n",
+    "import gleam/bit_array\npub fn main() { 1 }\n",
+    "import core/json\npub fn main() { 1 }\n",
     "import shellout\npub fn main() { 1 }\n",
     "import simplifile\npub fn main() { 1 }\n",
     "import gleam/regexp\npub fn main() { 1 }\n",
@@ -425,6 +426,20 @@ pub fn pure_stdlib_programs_pass_test() {
     "pub fn main() { case \"abc\" { \"a\" as prefix <> rest -> #(prefix, rest) value -> #(value, \"\") } }\n",
   ]
   assert all_passed(cases)
+}
+
+/// JSON values can be decoded on both program seams without importing a
+/// runtime or granting any additional capability.
+pub fn json_decoding_passes_on_both_program_seams_test() {
+  let source =
+    "import gleam/json\n"
+    <> "import gleam/dynamic\n"
+    <> "import gleam/dynamic/decode\n"
+    <> "pub fn main() -> Result(dynamic.Dynamic, json.DecodeError) {\n"
+    <> "  json.parse(\"{}\", decode.dynamic)\n"
+    <> "}\n"
+  assert is_passed(vet.vet(source, policy.default()))
+  assert is_passed(vet.vet(source, policy.orchestration()))
 }
 
 /// A cap/actor + cap/kv program passes.
@@ -751,11 +766,10 @@ pub fn default_stdlib_membership_test() {
   let p = policy.default()
   let allowed = [
     "gleam/list", "gleam/string", "gleam/int", "gleam/result", "gleam/option",
-    "gleam/dict",
+    "gleam/dict", "gleam/json", "gleam/dynamic", "gleam/dynamic/decode",
   ]
   let denied = [
     "gleam/io", "gleam/erlang", "gleam/erlang/os", "gleam/otp/actor",
-    "gleam/dynamic",
   ]
   assert list.all(allowed, fn(m) { policy.contains(p, m) })
   assert list.all(denied, fn(m) { !policy.contains(p, m) })

@@ -155,6 +155,20 @@ pub fn code_mode_end_to_end_test_() -> EunitTest {
   })
 }
 
+/// The pinned JSON package must compile and run in the actual satellite,
+/// not merely pass the import allowlist.
+pub fn json_decoding_runs_in_a_jailed_satellite_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error(
+          "SKIP json_decoding_runs_in_a_jailed_satellite: " <> reason,
+        )
+      Ok(prerequisites) -> run_json(prerequisites)
+    }
+  })
+}
+
 pub fn hermetic_build_refuses_a_transitive_import_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
@@ -578,6 +592,23 @@ fn run_type_error(prerequisites: Prerequisites) -> Nil {
     execution.outcome
     as "a type error must come back in band"
   assert string.contains(diagnostics, "Type mismatch")
+  rig.stop(live)
+}
+
+// Execute the documented example verbatim, so the JSON API shown to a
+// reader is checked against the pinned compiler seed and satellite runtime.
+fn run_json(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "json", prerequisites:, pool_size: 2)
+  let assert Ok(source) =
+    simplifile.read("../../docs/examples/json_reviews.gleam")
+    as "the documented JSON example must be readable"
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "json"))
+  let assert codemode.Ran(outcome:, ..) = execution.outcome
+    as "JSON imports must vet, compile, and execute with the pinned seed"
+  let assert satellite.Completed(msgpack.StringValue(text)) = outcome
+    as "JSON filtering must return an encoded result"
+  assert text == "{\"approved\":[7]}"
   rig.stop(live)
 }
 

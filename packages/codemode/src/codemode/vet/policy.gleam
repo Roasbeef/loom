@@ -53,7 +53,7 @@
 //// - the **orchestration** seam — `cap/strand` and `cap/report`, and
 ////   nothing else — a program that orchestrates *agents*;
 //// - the **extension** seam — the workspace seam plus `ext`, `ext/hook`,
-////   `ext/memory` and the decoding half of the standard library — an
+////   `ext/memory` and HTTP data helpers — an
 ////   installed extension's tool, compiled once and run per call;
 //// - the **resident** seam — `ext`, `ext/hook` and the extension seam's
 ////   standard library, with every module that reaches the broker
@@ -325,10 +325,11 @@ fn is_ident_continue(code: Int) -> Bool {
 ///   effects; concurrency for submitted programs is `cap/task`/`cap/actor`.
 /// - `gleam/otp/*` — supervision and actors reaching the real VM; out of reach
 ///   by the same reasoning.
-/// - `gleam/dynamic` and `gleam/dynamic/decode` — pure in principle, but a
-///   decoding surface a submitted program should not need (cap modules return
-///   typed values). Left out until the prelude's API is shown to require it;
-///   add via `allow` or `new` if so.
+///
+/// JSON and dynamic decoders are included because typed capability results
+/// still carry unstructured file contents and command output. Parsing those
+/// strings grants no authority: the caller receives data, not access to the
+/// runtime, and the pinned compiler seed already supplies `gleam_json`.
 pub fn default() -> VetPolicy {
   new(list.append(default_cap_modules(), default_stdlib_modules()))
 }
@@ -364,7 +365,7 @@ pub fn orchestration() -> VetPolicy {
 
 /// The extension seam's allowlist: the workspace seam's capabilities plus
 /// the `ext` prelude, and the workspace seam's standard-library subset
-/// plus the modules an extension needs to speak JSON.
+/// plus the modules an extension needs for HTTP data.
 ///
 /// A superset of the workspace seam, on purpose. An extension tool *is* a
 /// workspace program — it reads files, runs processes, and (under
@@ -616,21 +617,12 @@ pub fn extension_cap_modules() -> List(String) {
 }
 
 /// The standard-library modules on the extension seam: the shared pure
-/// subset, plus the five an extension needs and a code-mode program does
-/// not.
+/// subset plus `gleam/bit_array` and `gleam/uri` for brokered HTTP data.
 ///
-/// `gleam/dynamic` and `gleam/dynamic/decode` are here because an
-/// extension tool's arguments arrive as a `Dynamic` — the manifest's JSON
-/// schema is the only thing that knows their shape, so the decode has to
-/// happen in the extension. `gleam/json` is how a reply is built and how
-/// those arguments are parsed; `gleam/bit_array` and `gleam/uri` are what
-/// a tool needs to read a brokered HTTP response and build the URL it
-/// asked for. All five are pure: none exposes I/O, processes, or an
-/// FFI-declaring surface to its caller, which is the same bar
-/// `default_stdlib_modules` is held to.
-///
-/// This list is *not* shared with the other two seams, which is the point
-/// of it being a separate function: widening it widens exactly one seam.
+/// JSON parsing and dynamic decoding are shared with code-mode programs.
+/// Extensions additionally need to read binary HTTP responses and build
+/// request URLs. These two helpers expose data transformations, not I/O,
+/// processes, or an FFI-declaring surface to their caller.
 ///
 /// ## Examples
 ///
@@ -639,10 +631,7 @@ pub fn extension_cap_modules() -> List(String) {
 /// ```
 ///
 pub fn extension_stdlib_modules() -> List(String) {
-  list.append(default_stdlib_modules(), [
-    "gleam/dynamic", "gleam/dynamic/decode", "gleam/bit_array", "gleam/uri",
-    "gleam/json",
-  ])
+  list.append(default_stdlib_modules(), ["gleam/bit_array", "gleam/uri"])
 }
 
 // `cap/schedule` stays on the workspace seam and not this one. A
@@ -757,6 +746,7 @@ pub fn default_stdlib_modules() -> List(String) {
   [
     "gleam/list", "gleam/string", "gleam/string_tree", "gleam/int",
     "gleam/float", "gleam/bool", "gleam/result", "gleam/option", "gleam/dict",
-    "gleam/set", "gleam/order", "gleam/pair", "gleam/function",
+    "gleam/set", "gleam/order", "gleam/pair", "gleam/function", "gleam/json",
+    "gleam/dynamic", "gleam/dynamic/decode",
   ]
 }
