@@ -49,6 +49,23 @@ Lint reports zero errors and 809 warnings; the documentation check passes.
 This work merged as PR #440 at `928b3dd9`. Installation state has not been
 reverified here. The sections below retain their historical baselines.
 
+## JSON in code mode
+
+The `codemode/json` branch starts at `eadc0587`. Workspace and orchestration
+programs can import `gleam/json`, `gleam/dynamic` and `gleam/dynamic/decode`.
+The compiler seed already pins the JSON package; no dependency or capability
+was added. Extension and resident module membership is unchanged.
+
+The API is `json.parse(raw, decoder)`. The documented
+[review example](examples/json_reviews.gleam) decodes records, filters them,
+and encodes its result in the real jailed satellite. Both new regressions
+fail on the original import policy, and all 306 code-mode tests pass with
+the new policy. The independent review found no production defect; its
+extension-documentation correction is fixed. Full `make check` passed with
+exit status zero, including 306 code-mode, 1,853 client and 558 TUI tests.
+Lint reports zero errors and 804 existing warnings; the documentation and
+prelude checks pass. No installed daemon has been changed.
+
 ## Closure retention, September 16
 
 The `memory/closure-retention` branch starts at rebased PR #437 head

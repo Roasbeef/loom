@@ -37,8 +37,10 @@ deliberately not disjointness: it is `extension_cap_modules` — the
 workspace seam's capabilities plus `ext` and `ext/hook`, which carry no
 authority, and `ext/memory`, which carries the one capability that is an
 extension's alone — over `extension_stdlib_modules`, the shared pure subset plus
-`gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json`. An installed extension's tool *is* a workspace program
+`gleam/bit_array` and `gleam/uri`. The shared subset includes `gleam/json`,
+`gleam/dynamic` and `gleam/dynamic/decode`: workspace files and command output
+can contain JSON even though their capability envelopes are typed. An installed
+extension's tool *is* a workspace program
 with a different entry point, so carving it something narrower would buy
 nothing and would have to be kept in step by hand. The property test is
 therefore a superset claim, and the widening is pinned to exactly its
