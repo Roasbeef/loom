@@ -86,6 +86,7 @@ pub fn writer_publishes_committed_events_test() {
 
 pub fn follow_up_is_drained_at_may_finish_test() {
   let rec = recorder.start()
+  let first_started = process.new_subject()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "the memory session must open"
@@ -96,7 +97,13 @@ pub fn follow_up_is_drained_at_may_finish_test() {
       [],
       fn(spec) {
         case fake.turn(spec) {
-          0 -> fake.Reply(fake.answer("First", 3))
+          0 -> {
+            let release_first = process.new_subject()
+            process.send(first_started, release_first)
+            let assert Ok(Nil) = process.receive(release_first, within: 1000)
+              as "the follow-up must be admitted before the first answer"
+            fake.Reply(fake.answer("First", 3))
+          }
           _ -> fake.Reply(fake.answer("Second", 4))
         }
       },
@@ -107,11 +114,16 @@ pub fn follow_up_is_drained_at_may_finish_test() {
   let assert Ok(rt) =
     api.open(sess, eff, api.default_options(harness.configuration()))
     as "the session tree must boot"
-  // Accept quietly so the follow-up is admitted before any driving.
-  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+
+  // A quiet admission can still run on a checkpoint poll. Hold the first
+  // provider response until the follow-up is durable, rather than racing it.
+  let assert Ok(op) = api.prompt(rt, [fake.user("Hello")])
     as "acceptance must succeed"
+  let assert Ok(release_first) = process.receive(first_started, within: 1000)
+    as "the first generation must be waiting"
   let assert Ok(_entry) = api.follow_up(rt, fake.user("One more thing"))
     as "follow-up admission must succeed"
+  process.send(release_first, Nil)
   let assert Ok(outcome) = api.await_result(rt, op, within_ms: 5000)
     as "the run must complete"
   harness.assert_completed(outcome)
