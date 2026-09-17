@@ -102,10 +102,10 @@ seam.
 unlike the first two it is deliberately *not* disjoint from its
 siblings. `extension_cap_modules` is `default_cap_modules()` widened by
 exactly three names — `ext`, `ext/hook` and `ext/memory`
-(`vet/policy.gleam:605`) — and
+(`vet/policy.gleam:611`) — and
 `extension_stdlib_modules` is the shared pure subset widened by
-`gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json` (`vet/policy.gleam:633`).
+`gleam/bit_array` and `gleam/uri` (`vet/policy.gleam:633`). JSON and dynamic
+decoding belong to the shared subset, including ordinary code-mode programs.
 
 Disjointness exists between the workspace and orchestration seams because
 an orchestrator and an effect program are different kinds of thing, and
@@ -132,7 +132,7 @@ seam's programs have an installed name to key a subtree by — and that
 among them, because the superset test
 alone would pass if the extension seam had quietly picked up agent
 orchestration, putting the disk and the lineage in one program after all.
-The five extra standard-library names live on a list of their own so that
+The two extra standard-library names live on a list of their own so that
 widening them widens exactly one seam, and
 `the_extension_stdlib_list_admits_no_capability_test`
 (`codemode/test/codemode_test.gleam:596`) holds that list to carrying no
@@ -1330,7 +1330,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1931`) with `start`, `invoke` (`codemode/satellite.gleam:2122`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:605`) and `extension_stdlib_modules` (`vet/policy.gleam:633`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:611`) and `extension_stdlib_modules` (`vet/policy.gleam:633`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |

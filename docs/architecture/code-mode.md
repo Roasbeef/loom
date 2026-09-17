@@ -351,14 +351,37 @@ spawns again passes forever. It is enforced by the satellite host, because
 one host is stood up per execution holding the one `PhaseIdentity` a
 caller may mint, so the tally is keyed to that identity by construction.
 
+### JSON in submitted programs
+
+The compiler seed already pins `gleam_json`; ordinary code-mode programs can
+import `gleam/json`, `gleam/dynamic` and `gleam/dynamic/decode`. The current API
+is `json.parse(raw, decoder)`, where `raw` can be file contents or command
+output. For example:
+
+```gleam
+import gleam/dynamic/decode
+import gleam/json
+
+let parsed = json.parse(raw, decode.list(decode.int))
+```
+
+For an unknown shape, use `json.parse(raw, decode.dynamic)` and then
+`decode.run` with a typed decoder. Build output with `json.object`,
+`json.array` and `json.to_string`. The [review example](../examples/json_reviews.gleam)
+is executed verbatim by the jailed JSON regression, so its decoder and encoder
+must work with the pinned package. Parsing does not add filesystem, network,
+process or foreign-function authority; those boundaries retain their existing
+capability checks.
+
 ### The third seam: extensions, and why it is a superset
 
 The **extension seam** is the workspace seam widened, and its relation to
 the other two is deliberately not disjointness. It is
 `extension_cap_modules` — the ten workspace capabilities plus `ext` —
 over `extension_stdlib_modules`, the shared pure subset plus
-`gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json`.
+`gleam/bit_array` and `gleam/uri`. JSON and dynamic decoders are part of the
+shared subset, so workspace and orchestration programs can parse JSON data
+without gaining an effectful import.
 
 The argument for disjointness above does not apply here, and saying why
 matters more than restating it. Disjointness exists because an
@@ -383,10 +406,9 @@ a list of its own, and the property test is a superset claim where the
 other two have an intersection. The widening is pinned to exactly that
 one name, which is what stops a `cap/strand` arriving on the way and
 quietly putting the disk and the lineage in one program after all. The
-five extra standard-library modules are on a list of their own rather
-than in `default_stdlib_modules`, so widening them widens exactly one
-seam — the door the shared list leaves open, and the reason a test
-asserts the shared list holds no capability at all.
+two extra standard-library modules remain on the extension list. JSON
+support uses the shared list because parsing data does not grant authority.
+The shared list still contains no capability module, which a test asserts.
 
 Two consequences worth stating. **The extension seam sees no generated
 MCP façades**: an extension's allowlist is fixed at install and recorded,
