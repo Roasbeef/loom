@@ -1,5 +1,7 @@
 package jail
 
+import "github.com/roasbeef/loom/sandbox/internal/policy"
+
 // The system view: what a jail must contain before it can run anything
 // at all.
 //
@@ -32,6 +34,8 @@ package jail
 //     them tolerantly makes the two layouts one code path: on a merged
 //     system the bind follows the link and reproduces the directory under
 //     its old name, and on a system without `/lib32` the bind is skipped.
+//     A whole-host grant already supplies the links themselves, so its
+//     system binds use the resolved destinations instead; see systemRootsFor.
 //   - `/etc` carries the configuration a toolchain reads on startup, from
 //     `ld.so.conf` and `nsswitch.conf` to the TLS trust store.
 //   - `/opt` is where hand-installed and vendor toolchains land.
@@ -137,4 +141,25 @@ func BaseViewName(readableRoots []string) string {
 		return "minimal"
 	}
 	return "host-view"
+}
+
+// systemRootsFor resolves the automatic system binds only when a host-root
+// grant supplies the host's symlinks inside the jail. On usr-merged Linux,
+// binding /bin onto /bin would otherwise fail: bubblewrap refuses a symlink
+// destination. The resolved directories remain read-only even when the root
+// grant is writable. Omitting the system binds would silently lose that
+// restriction. A minimal root has no inherited links and keeps the original
+// destinations so legacy paths such as /bin/sh remain present.
+func systemRootsFor(p policy.Policy, systemRoots []string) []string {
+	roots := append(append([]string{}, p.ReadableRoots...), p.WritableRoots...)
+	if !p.ScratchIsTmpfs() {
+		roots = append(roots, p.Scratch)
+	}
+	if PlanIsMinimal(roots) {
+		return systemRoots
+	}
+
+	// Missing optional paths keep their names and their --ro-bind-try
+	// semantics, just as missing protected paths retain their names.
+	return resolveProtected(systemRoots)
 }
