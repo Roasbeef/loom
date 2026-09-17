@@ -17,6 +17,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import machine/strand.{ModelIdentity, StrandConfiguration, ThinkingOff}
 import runtime/api
+import runtime/child_run
+import runtime/effects
 import runtime/lineage
 import runtime/supervisor
 import session/session
@@ -78,6 +80,7 @@ fn a_cell(strand: String, parent: String) -> lineage.Lineage {
     ),
     brief: an_op(4),
     tools: ["fs_read"],
+    default_within_ms: Some(600_000),
     deadline: Some(1_700_000_000_000),
     detached: False,
     reaped: False,
@@ -103,6 +106,10 @@ pub fn the_ledger_and_the_prompt_are_refused_to_put_fact_test() {
   // a forged cursor is only a bounded re-scan, but it shares the prefix.
   let assert Error(api.ReservedFactKey(key: "rule/fired/main/gate")) =
     api.put_fact(runtime, "rule/fired/main/gate", json.String("forged"))
+  // Models cannot reset a child's deadline or forge its cancellation cause.
+  let assert Error(api.ReservedFactKey(..)) =
+    api.put_fact(runtime, child_run.key(an_op(99)), json.Null)
+
   // The two that were already reserved are still reserved.
   let assert Error(api.ReservedFactKey(..)) =
     api.put_fact(runtime, "escalation/e1", json.Null)
@@ -354,4 +361,174 @@ fn until(predicate: fn() -> Bool, attempts: Int) -> Bool {
         }
       }
   }
+}
+
+pub fn legacy_lineage_defaults_to_ten_minutes_but_preserves_unbounded_test() {
+  let cell = a_cell("sub:1", "main")
+  let assert json.Object(fields) = lineage.encode(cell)
+    as "the lineage encoding is an object"
+  let legacy =
+    json.Object(list.filter(fields, fn(field) { field.0 != "defaultWithinMs" }))
+  assert lineage.decode(legacy) == Ok(cell)
+  let unbounded = lineage.Lineage(..cell, default_within_ms: None)
+  assert lineage.decode(lineage.encode(unbounded)) == Ok(unbounded)
+  let json.Object(old_fields) = legacy
+  list.each([json.Int(0), json.Int(-1), json.String("later")], fn(budget) {
+    let assert Error(_) =
+      lineage.decode(json.Object([#("defaultWithinMs", budget), ..old_fields]))
+      as "invalid budgets must never become unbounded"
+  })
+}
+
+pub fn child_run_records_round_trip_and_reject_missing_custody_test() {
+  let original =
+    child_run.Run(
+      strand: "sub:1",
+      owner: Some(an_op(30)),
+      deadline: Some(50_000),
+      stop: child_run.Unstopped,
+    )
+  list.each(
+    [
+      child_run.Unstopped, child_run.BudgetExpired, child_run.ParentFinished,
+      child_run.LegacyReaped,
+    ],
+    fn(stop) {
+      let run = child_run.Run(..original, stop:)
+      assert child_run.decode(child_run.encode(run)) == Ok(run)
+    },
+  )
+  let detached = child_run.Run(..original, owner: None, deadline: None)
+  assert child_run.decode(child_run.encode(detached)) == Ok(detached)
+  let assert json.Object(fields) = child_run.encode(original)
+    as "the run encoding is an object"
+  list.each(fields, fn(field) {
+    let missing =
+      json.Object(list.filter(fields, fn(pair) { pair.0 != field.0 }))
+    let assert Error(_) = child_run.decode(missing)
+      as "missing metadata is corruption, not an unbounded or detached run"
+    let malformed =
+      json.Object([
+        #(field.0, json.Bool(False)),
+        ..list.filter(fields, fn(pair) { pair.0 != field.0 })
+      ])
+    let assert Error(_) = child_run.decode(malformed)
+      as "malformed lifecycle metadata must be rejected"
+  })
+}
+
+pub fn child_admission_cannot_acquire_a_parent_after_run_end_begins_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let entered = process.new_subject()
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_) { fake.Reply(fake.answer("done", 1)) },
+      fn(_) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base,
+      hooks: effects.Hooks(..base.hooks, run_end: fn(operation) {
+        let release = process.new_subject()
+        process.send(entered, #(operation, release))
+        let assert Ok(Nil) = process.receive(release, within: 5000)
+          as "the test must release the parked completion hook"
+        None
+      }),
+    )
+  let assert Ok(runtime) =
+    api.open(sess, eff, api.default_options(configuration()))
+    as "the runtime must open"
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      runtime,
+      named: "sub:1",
+      configuration: configuration(),
+      at: None,
+    )
+    as "the child must be idle before the parent finishes"
+  let assert Ok(parent) = api.prompt(runtime, [fake.user("finish")])
+    as "the parent must start"
+  let assert Ok(#(ending, release)) = process.receive(entered, within: 5000)
+    as "the parent must reach its completion hook"
+  assert ending == parent
+  let cell = a_cell("sub:1", "main")
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      lineage.register_key("sub:1"),
+      lineage.encode(cell),
+    )
+    as "the child lineage must be published"
+
+  // StrandState still names the parent here, but its cleanup boundary has
+  // begun. Refusing a stale sender must not publish any child lifecycle.
+  let assert Error(api.ReadFailed(_)) =
+    api.send_to_child(
+      runtime,
+      "sub:1",
+      fake.user("late parent work"),
+      parent,
+      None,
+    )
+    as "a finishing parent must not admit another owned run"
+  assert api.reserved_facts(runtime, child_run.key_prefix) == Ok([])
+  let assert Ok(operation) =
+    api.accept_quietly(api.on_strand(runtime, "sub:1"), [
+      fake.user("operator continuation"),
+    ])
+    as "the operator may admit work without inheriting finished custody"
+  let assert Ok(Some(value)) = api.fact(runtime, child_run.key(operation))
+    as "admission must publish the run metadata atomically"
+  let assert Ok(run) = child_run.decode(value) as "the run metadata must decode"
+  assert run.owner == None
+  assert run.deadline != None
+  process.send(release, Nil)
+  process.kill(runtime.tree.supervisor)
+}
+
+pub fn corrupt_lineage_refuses_agent_admission_but_keeps_host_recovery_test() {
+  let runtime = open_runtime(fn(_) { False })
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      runtime,
+      named: "sub:1",
+      configuration: configuration(),
+      at: None,
+    )
+    as "the child strand must exist"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      lineage.register_key("sub:1"),
+      json.String("corrupt"),
+    )
+    as "the test must corrupt the lineage ledger"
+  let assert Error(api.ReadFailed(_)) =
+    api.send_to_child(
+      runtime,
+      "sub:1",
+      fake.user("agent continuation"),
+      an_op(70),
+      Some(600_000),
+    )
+    as "an agent must not admit work through corrupt lineage"
+  assert api.reserved_facts(runtime, child_run.key_prefix) == Ok([])
+
+  // The host can still operate the conversation for recovery. That does not
+  // make the broken lineage trustworthy enough to mint lifecycle metadata.
+  let assert Ok(operation) =
+    api.prompt(api.on_strand(runtime, "sub:1"), [fake.user("operator recovery")])
+    as "direct host prompting must remain usable"
+  assert api.fact(runtime, child_run.key(operation)) == Ok(None)
+  assert api.fact(runtime, lineage.register_key("sub:1"))
+    == Ok(Some(json.String("corrupt")))
+  let _closed = api.close(runtime)
+  Nil
 }

@@ -90,10 +90,11 @@ fn echoing_agency() -> agent.Agency {
         tools: option.unwrap(request.tools, ["inherited"]),
         model: option.unwrap(request.model, "default-model"),
         model_id: "provider-model-id",
+        deadline_ms: option.None,
       ))
     },
-    send: fn(caller, to, text) {
-      Ok(agent.Started(operation: caller.operation))
+    send: fn(caller, to, text, _within_ms) {
+      Ok(agent.Started(operation: caller.operation, deadline_ms: None))
       |> echo_send(caller, to, text)
     },
     wait: fn(caller, handles, within_ms) {
@@ -130,6 +131,7 @@ fn echoing_agency() -> agent.Agency {
           relation: agent.ParentOf,
           handle: None,
           outcome: None,
+          deadline_ms: option.None,
           tools: [],
         ),
       ])
@@ -224,6 +226,7 @@ fn watching_spawn(
       tools: [],
       model: "default-model",
       model_id: "provider-model-id",
+      deadline_ms: option.None,
     ))
   }
 }
@@ -231,7 +234,7 @@ fn watching_spawn(
 fn refusing_agency(refusal: agent.Refusal) -> agent.Agency {
   agent.Agency(
     spawn: fn(_caller, _request) { Error(refusal) },
-    send: fn(_caller, _to, _text) { Error(refusal) },
+    send: fn(_caller, _to, _text, _within_ms) { Error(refusal) },
     wait: fn(_caller, _handles, _within) { Error(refusal) },
     note: fn(_caller, _key, _value) { Error(refusal) },
     notes: fn(_caller, _prefix) { Error(refusal) },
@@ -1145,6 +1148,7 @@ pub fn a_join_without_a_schema_renders_exactly_what_it_did_before_test() {
               #("strand", json.String("sub:a")),
               #("state", json.String("ready")),
               #("outcome", json.String("completed")),
+              #("abort_reason", json.Null),
               #("report", json.String("main@30000")),
               #("notes", json.Object([])),
             ]),
@@ -1174,4 +1178,81 @@ pub fn wait_explains_how_to_repair_a_quoted_json_array_test() {
     "as an array, not a quoted JSON string",
   )
   assert string.contains(text_of(outcome), "\"handles\": [")
+}
+
+pub fn send_forwards_a_budget_and_returns_a_waitable_new_handle_test() {
+  let next = an_op(77)
+  let seam =
+    agent.Agency(
+      ..echoing_agency(),
+      send: fn(caller: agent.Caller, to, text, budget) {
+        assert caller.operation == ctx_for("main", "turn", 0).op_id
+        assert to == "sub:review"
+        assert text == "continue"
+        assert budget == option.Some(900_000)
+        Ok(agent.Started(operation: next, deadline_ms: option.Some(901_000)))
+      },
+    )
+  let outcome =
+    run(
+      "agent_send",
+      ctx_for("main", "turn", 0),
+      seam,
+      json.Object([
+        #("to", json.String("sub:review")),
+        #("message", json.String("continue")),
+        #("within_ms", json.Int(900_000)),
+      ]),
+    )
+  assert !outcome.is_error
+  let assert option.Some(json.Object(fields)) = outcome.details
+    as "a continuation receipt must expose structured metadata"
+  let assert Ok(json.String(handle)) = list.key_find(fields, "handle")
+    as "the receipt must contain a directly waitable handle"
+  assert agent.parse_handle(handle)
+    == Ok(agent.Handle(strand: "sub:review", operation: next))
+  assert list.key_find(fields, "deadline_ms") == Ok(json.Int(901_000))
+}
+
+pub fn wait_exposes_abort_causes_without_changing_the_wire_outcome_test() {
+  let handle = agent.Handle(strand: "sub:review", operation: an_op(77))
+  list.each(
+    [
+      #(agent.BudgetExpired, "budget_expired"),
+      #(agent.ParentFinished, "parent_finished"),
+    ],
+    fn(pair) {
+      let seam =
+        agent.Agency(..echoing_agency(), wait: fn(_, _, _) {
+          Ok([
+            agent.Ready(
+              handle:,
+              outcome: pair.0,
+              report: "partial",
+              result: agent.NoResultAsked,
+              notes: [],
+            ),
+          ])
+        })
+      let outcome =
+        run(
+          "agent_wait",
+          ctx_for("main", "turn", 0),
+          seam,
+          json.Object([
+            #(
+              "handles",
+              json.Array([json.String(agent.handle_to_string(handle))]),
+            ),
+          ]),
+        )
+      let assert option.Some(json.Object(fields)) = outcome.details
+        as "wait must expose structured results"
+      let assert Ok(json.Array([json.Object(answer)])) =
+        list.key_find(fields, "results")
+        as "the one requested handle must have one result"
+      assert list.key_find(answer, "outcome") == Ok(json.String("aborted"))
+      assert list.key_find(answer, "abort_reason") == Ok(json.String(pair.1))
+    },
+  )
 }

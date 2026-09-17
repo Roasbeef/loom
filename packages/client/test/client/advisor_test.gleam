@@ -1002,7 +1002,12 @@ pub fn the_advisor_is_outside_the_lineage_ledger_test() {
     as "the agency holder must start"
   let seam = agency.seam(config)
 
-  assert seam.send(a_caller(advisor.primary), advisor.strand, "reconsider")
+  assert seam.send(
+      a_caller(advisor.primary),
+      advisor.strand,
+      "reconsider",
+      None,
+    )
     == Error(agent.NotAddressable(strand: advisor.strand))
   stop(rig)
 }

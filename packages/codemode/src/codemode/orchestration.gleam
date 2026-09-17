@@ -608,7 +608,8 @@ fn waited_value(waited: agent.Waited) -> MsgPackValue {
 fn outcome_value(outcome: agent.Outcome) -> MsgPackValue {
   case outcome {
     agent.Completed -> msgpack.MapValue([field("kind", text("completed"))])
-    agent.Aborted -> msgpack.MapValue([field("kind", text("aborted"))])
+    agent.Aborted | agent.BudgetExpired | agent.ParentFinished ->
+      msgpack.MapValue([field("kind", text("aborted"))])
     agent.Failed(reason:) ->
       msgpack.MapValue([
         field("kind", text("failed")),
@@ -659,7 +660,7 @@ fn send_plan(
   let caller = caller_of(seam, request)
   Ok(
     ServedHere(fn() {
-      case seam.agency.send(caller, to, body) {
+      case seam.agency.send(caller, to, body, None) {
         Error(refusal) -> refused(refusal)
         Ok(agent.Steered(entry:)) ->
           answered(
@@ -668,7 +669,7 @@ fn send_plan(
               field("entry", text(ids.entry_id_to_string(entry))),
             ]),
           )
-        Ok(agent.Started(operation:)) ->
+        Ok(agent.Started(operation:, ..)) ->
           answered(
             msgpack.MapValue([
               field("kind", text("started")),

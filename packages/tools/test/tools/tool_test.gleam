@@ -255,7 +255,7 @@ fn unused_refusal() -> String {
 fn unused_agency() -> agent.Agency {
   agent.Agency(
     spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
-    send: fn(_caller, _to, _text) { Error(agent.AgencyUnavailable) },
+    send: fn(_caller, _to, _text, _within_ms) { Error(agent.AgencyUnavailable) },
     wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
     note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
     notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
