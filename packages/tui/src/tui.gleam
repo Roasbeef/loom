@@ -491,6 +491,8 @@ pub type FrameCache {
     screen: Rect,
     revision: Int,
     rendered: #(buffer.Buffer, Result(geometry.Position, Nil)),
+    /// Viewport copy metadata for these exact rendered cells.
+    selection_gutters: List(#(Int, Int)),
   )
 }
 
@@ -739,7 +741,11 @@ pub type Model {
     revealed_rows: Int,
     /// Durable provenance for wrapped rows; transient rows have no anchor.
     rendered_anchors: List(Option(transcript_anchor.Row)),
+    /// Copy gutters aligned with `rendered_rows`, built in the same pass.
+    rendered_gutters: List(Int),
     record_rows: List(span.Line),
+    /// Durable copy gutters, aligned with `record_rows`.
+    record_gutters: List(Int),
     /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
     /// only the current projection, so old branches and outcomes are released.
     record_line_cache: Dict(Line, List(span.Line)),
@@ -777,6 +783,8 @@ pub type Model {
     selection: Option(selection.Selection),
     /// The selected pane stays on its original cells until the selection ends.
     selection_frame: Option(buffer.Buffer),
+    /// Screen row and transcript gutter captured with `selection_frame`.
+    selection_gutters: List(#(Int, Int)),
     /// Whether a finished selection reaches the terminal's clipboard.
     clipboard: Clipboard,
     /// The Herdr pane reporter, when this terminal runs inside one. Held
@@ -1144,7 +1152,9 @@ pub fn new_model_with_clock(
     rendered_rows: [],
     revealed_rows: 0,
     rendered_anchors: [],
+    rendered_gutters: [],
     record_rows: [],
+    record_gutters: [],
     record_line_cache: dict.new(),
     compact_call_cache: dict.new(),
     compact_entry_cache: dict.new(),
@@ -1165,6 +1175,7 @@ pub fn new_model_with_clock(
     herdr_published: None,
     selection: None,
     selection_frame: None,
+    selection_gutters: [],
     clipboard: NoClipboard,
   )
 }
@@ -2971,7 +2982,10 @@ fn render_rows(
     |> list.reverse
     |> list.map(fn(line) {
       case line.spans {
-        [first, ..] if first.style.bg == theme.user_background ->
+        [first, ..]
+          if first.style.bg == theme.user_background
+          || first.style.bg == theme.assistant_background
+        ->
           span.Line(
             ..line,
             spans: list.append(line.spans, [
@@ -3047,7 +3061,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
-    Assistant -> #("◆ Agent ", theme.current_bold())
+    Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
@@ -3079,7 +3093,12 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
         |> list.append([span.line_plain("")])
       ]
     }
-    Assistant | Reasoning -> [
+    Assistant -> [
+      span.line_plain(""),
+      ..marked_markdown_rows(line.text, mark, mark_style, width)
+      |> assistant_rows
+    ]
+    Reasoning -> [
       span.line_plain(""),
       ..marked_markdown_rows(line.text, mark, mark_style, width)
     ]
@@ -3121,6 +3140,30 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
   }
 }
 
+// Plain Markdown spans share one shaded style for the whole block. Rebuilding
+// that identical record for every word makes the bounded live tail retain
+// hundreds of duplicate style tuples. Emphasis keeps its own foreground and
+// modifiers, while blank rows carry the same background to the pane edge.
+fn assistant_rows(rows: List(span.Line)) -> List(span.Line) {
+  let plain = style.default_style()
+  let shaded = style.with_bg(plain, theme.assistant_background)
+  list.map(rows, fn(line) {
+    let span.Line(spans:, alignment:) = line
+    let spans = case spans {
+      [] -> [span.span_styled(" ", shaded)]
+      spans ->
+        list.map(spans, fn(value) {
+          let painted = case value.style == plain {
+            True -> shaded
+            False -> style.with_bg(value.style, theme.assistant_background)
+          }
+          span.Span(..value, style: painted)
+        })
+    }
+    span.Line(spans:, alignment:)
+  })
+}
+
 // One row, whatever the pane is. Clipping rather than wrapping is what makes
 // the height invariant hold at every width: bounding the digest text by a
 // character count only moves the width at which it wraps, because the mark
@@ -3153,8 +3196,8 @@ fn digest_row(
 
 // The cells every row of a block after its first is indented by.
 //
-// A mark like `"◆ Agent "` is a heading, not a left edge. Repeating its eight
-// cells under a message's second paragraph, list or fence left that body
+// A speaker mark is a heading, not a left edge. Repeating its whole width
+// under a message's second paragraph, list or fence left that body
 // hanging in from the margin while the first paragraph's own wrapped rows
 // fell back to column zero, so one message had two left edges and neither was
 // the glyph's. Every mark this transcript draws opens with a glyph and a
@@ -4171,7 +4214,14 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     // so it goes with the old layout rather than surviving as a highlight
     // over whatever now occupies those cells.
     backend.Resize(width, height) ->
-      Model(..model, width:, height:, selection: None, selection_frame: None)
+      Model(
+        ..model,
+        width:,
+        height:,
+        selection: None,
+        selection_frame: None,
+        selection_gutters: [],
+      )
       |> mark_activity
       |> invalidate_frame
     backend.Tick -> update_tick(model)
@@ -4515,6 +4565,7 @@ fn refresh_frame_cache(model: Model, boundary: pacing.FrameBoundary) -> Model {
           screen:,
           revision: paced.frame_revision,
           rendered: render_frame(paced, screen),
+          selection_gutters: selection_gutters_on_display(paced),
         )),
       )
     }
@@ -4675,7 +4726,8 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       let cached =
         refresh_diff_cache(before, Model(..after, reading_lines:))
         |> refresh_record_cache(width)
-      let rendered_rows = rendered_rows_for(cached, width)
+      let #(rendered_rows, rendered_gutters) =
+        rendered_layout_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
 
       // Source anchors belong to the durable row cache. Metadata and live
@@ -4728,6 +4780,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
         rendered_rows:,
         revealed_rows:,
         rendered_anchors:,
+        rendered_gutters:,
         scroll_offset: bounded_scroll_offset(
           anchored,
           rendered_row_count,
@@ -4768,7 +4821,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
       case matches {
         True -> after
         False -> {
-          let #(rows, line_cache) =
+          let #(rows, line_cache, _) =
             diff_content(after)
             |> cached_record_lines(
               diff_width(after),
@@ -4862,13 +4915,14 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       }
       let #(lines, compact_call_cache, compact_entry_cache) =
         record_lines(model.records, model, active_notices(model))
-      let #(record_rows, record_line_cache) =
+      let #(record_rows, record_line_cache, record_gutters) =
         model.transcript
         |> list.append(lines)
         |> cached_record_lines(width, previous)
       Model(
         ..model,
         record_rows:,
+        record_gutters:,
         record_line_cache:,
         compact_call_cache:,
         compact_entry_cache:,
@@ -4882,7 +4936,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     True, [] -> model
     True, pending -> {
       let #(lines, calls, narratives) = record_lines(pending, model, [])
-      let #(newest_rows, appended) =
+      let #(newest_rows, appended, newest_gutters) =
         lines
         |> separated_from_screen(model)
         |> cached_record_lines(width, model.record_line_cache)
@@ -4894,6 +4948,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       Model(
         ..model,
         record_rows: list.append(newest_rows, model.record_rows),
+        record_gutters: list.append(newest_gutters, model.record_gutters),
         record_line_cache: dict.merge(model.record_line_cache, appended),
         compact_call_cache: dict.merge(model.compact_call_cache, calls),
         compact_entry_cache: dict.merge(model.compact_entry_cache, narratives),
@@ -4936,15 +4991,21 @@ fn cached_record_lines(
   lines: List(Line),
   width: Int,
   previous: Dict(Line, List(span.Line)),
-) -> #(List(span.Line), Dict(Line, List(span.Line))) {
-  list.fold(lines, #([], dict.new()), fn(acc, line) {
-    let #(rows, cached) = acc
+) -> #(List(span.Line), Dict(Line, List(span.Line)), List(Int)) {
+  list.fold(lines, #([], dict.new(), []), fn(acc, line) {
+    let #(rows, cached, gutters) = acc
     let rendered =
       dict.get(previous, line)
       |> result.lazy_unwrap(fn() { render_line(line, width) })
+    let rendered_count = list.length(rendered)
+    let line_gutters =
+      list.index_map(rendered, fn(_, index) {
+        copy_gutter(line, index, rendered_count)
+      })
     #(
       list.append(list.reverse(rendered), rows),
       dict.insert(cached, line, rendered),
+      list.append(list.reverse(line_gutters), gutters),
     )
   })
 }
@@ -5097,17 +5158,70 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
 //
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
-fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
+fn rendered_layout_for(
+  model: Model,
+  width: Int,
+) -> #(List(span.Line), List(Int)) {
   case model.help_open, model.notes_open {
-    True, _ ->
-      help_content().lines |> markdown.wrap_lines(width) |> list.reverse
-    False, True -> notes_content(model, width).lines |> list.reverse
-    False, False -> {
-      let content =
-        option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
-        |> transcript_content(width)
-      content.lines |> list.reverse |> list.append(model.record_rows)
+    True, _ -> {
+      let rows =
+        help_content().lines |> markdown.wrap_lines(width) |> list.reverse
+      #(rows, list.repeat(0, list.length(rows)))
     }
+    False, True -> {
+      let rows = notes_content(model, width).lines |> list.reverse
+      #(rows, list.repeat(0, list.length(rows)))
+    }
+    False, False -> {
+      let lines =
+        option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
+      let #(transient_rows, transient_gutters) = rendered_lines(lines, width)
+      #(
+        transient_rows |> list.reverse |> list.append(model.record_rows),
+        transient_gutters |> list.reverse |> list.append(model.record_gutters),
+      )
+    }
+  }
+}
+
+// Rows and copy gutters are emitted together so a live stream is parsed and
+// wrapped once. The metadata is an integer per row, not another text tree.
+fn rendered_lines(
+  lines: List(Line),
+  width: Int,
+) -> #(List(span.Line), List(Int)) {
+  list.fold(lines, #([], []), fn(acc, line) {
+    let #(rows, gutters) = acc
+    let rendered = render_line(line, width)
+    let rendered_count = list.length(rendered)
+    let line_gutters =
+      list.index_map(rendered, fn(_, index) {
+        copy_gutter(line, index, rendered_count)
+      })
+    #(list.append(rows, rendered), list.append(gutters, line_gutters))
+  })
+}
+
+// Only prefixes whose ownership is explicit in `speaker_rows` are removed.
+// Assistant Markdown and user blocks can contain arbitrary leading spaces;
+// those begin after these fixed cells and are never inspected here.
+fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
+  case line.speaker {
+    Assistant | Reasoning if index > 1 -> 2
+    User if index == 1 -> 1
+    User if index > 1 && index < row_count - 1 -> 3
+    ToolDetail -> 2
+    System
+    | User
+    | Assistant
+    | Reasoning
+    | ReasoningDigest
+    | ToolCall
+    | ToolResult
+    | ToolPatch
+    | ToolFailure
+    | Failure
+    | Spacer -> 0
   }
 }
 
@@ -6116,7 +6230,9 @@ fn adopt_session(
     rendered_rows: [],
     revealed_rows: 0,
     rendered_anchors: [],
+    rendered_gutters: [],
     record_rows: [],
+    record_gutters: [],
     record_line_cache: dict.new(),
     compact_call_cache: dict.new(),
     compact_entry_cache: dict.new(),
@@ -6235,6 +6351,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         streams: [],
         tool_tails: [],
         record_rows: [],
+        record_gutters: [],
         record_line_cache: dict.new(),
         compact_call_cache: dict.new(),
         compact_entry_cache: dict.new(),
@@ -9359,7 +9476,7 @@ fn cancel_pending(model: Model, reason: String) -> Model {
 }
 
 fn clear_selection(model: Model) -> Model {
-  Model(..model, selection: None, selection_frame: None)
+  Model(..model, selection: None, selection_frame: None, selection_gutters: [])
 }
 
 // A press starts over: whatever was highlighted is replaced by a fresh
@@ -9379,6 +9496,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
         ..model,
         selection: None,
         selection_frame: None,
+        selection_gutters: [],
         diff_scroll_offset: 0,
         worktree: worktree_view.State(
           ..model.worktree,
@@ -9387,12 +9505,15 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
         ),
       )
       |> invalidate_transcript
-    None ->
+    None -> {
+      let #(shown, selection_gutters) = selection_display(model)
       Model(
         ..model,
         selection: Some(selection.start(hit_area(model, at), at)),
-        selection_frame: Some(frame_on_display(model)),
+        selection_frame: Some(shown),
+        selection_gutters:,
       )
+    }
   }
 }
 
@@ -9416,15 +9537,27 @@ fn finish_selection(model: Model, at: geometry.Position) -> Model {
     Some(selected) -> {
       let selected = selection.extend(selected, at)
       case selection.is_click(selected) {
-        True -> Model(..model, selection: None, selection_frame: None)
+        True ->
+          Model(
+            ..model,
+            selection: None,
+            selection_frame: None,
+            selection_gutters: [],
+          )
         False -> {
-          let text =
-            selection.text(
-              option.lazy_unwrap(model.selection_frame, fn() {
-                frame_on_display(model)
-              }),
-              selected,
-            )
+          let shown =
+            option.lazy_unwrap(model.selection_frame, fn() {
+              selection_display(model).0
+            })
+          let text = case selection_covers_transcript(model, selected) {
+            True ->
+              transcript_selection_text(
+                shown,
+                selected,
+                model.selection_gutters,
+              )
+            False -> selection.text(shown, selected)
+          }
           write_clipboard(model.clipboard, text)
           Model(
             ..model,
@@ -9439,13 +9572,85 @@ fn finish_selection(model: Model, at: geometry.Position) -> Model {
   }
 }
 
-// The frame the terminal is showing is the cached one, stale or not: a copy
-// takes what the hand highlighted, not what a fresh render would draw.
-fn frame_on_display(model: Model) -> buffer.Buffer {
+// Only the transcript has speaker gutters. Other selectable panels carry
+// ordinary whitespace whose meaning this projection cannot reinterpret.
+fn selection_covers_transcript(
+  model: Model,
+  selected: selection.Selection,
+) -> Bool {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body_area, _, _) = layout(screen, model)
+  let #(transcript_panel, _, _) = body_layout(body_area, model)
+  selected.area == panel_inner(transcript_panel) && !main_shows_diff(model)
+}
+
+/// Reads selected transcript cells without copying their visual left gutter.
+///
+/// Fixed gutter widths are captured from the private transcript layout which
+/// painted the frame. Indentation after that prefix is authored text and
+/// remains byte-for-byte intact. Rows remain separate because the frame does
+/// not encode whether Markdown ended a block or wrapped one; guessing from row
+/// width would join real newlines or split real paragraphs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.transcript_selection_text(frame, selected, gutters)
+/// ```
+@internal
+pub fn transcript_selection_text(
+  shown: buffer.Buffer,
+  selected: selection.Selection,
+  gutters: List(#(Int, Int)),
+) -> String {
+  selection.rows(selected)
+  |> list.map(fn(row) {
+    let prefix = list.key_find(gutters, row.position.y) |> result.unwrap(0)
+    let gutter =
+      int.clamp(
+        selected.area.position.x + prefix - row.position.x,
+        0,
+        row.size.width,
+      )
+    frame.row_text(
+      shown,
+      row.position.x + gutter,
+      row.position.y,
+      row.size.width - gutter,
+    )
+  })
+  |> string.join("\n")
+}
+
+// The transcript is bottom-addressed in `rendered_gutters`, while screen rows
+// run top to bottom. This is the metadata twin of `render_rows`'s viewport
+// slice and reverse; the completed frame caches this map beside its cells.
+fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body_area, _, _) = layout(screen, model)
+  let #(transcript_panel, _, _) = body_layout(body_area, model)
+  let area = panel_inner(transcript_panel)
+  model.rendered_gutters
+  |> list.drop(model.scroll_offset + viewport_backlog(model))
+  |> list.take(area.size.height)
+  |> list.reverse
+  |> list.index_map(fn(gutter, index) { #(area.position.y + index, gutter) })
+}
+
+// The frame and its copy layout come from one completed cache entry. A paced
+// scroll may leave that entry deliberately stale; taking either half from the
+// current model would pair old cells with new row metadata.
+fn selection_display(model: Model) -> #(buffer.Buffer, List(#(Int, Int))) {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   case model.frame_cache {
-    Some(FrameCache(rendered: #(shown, _), ..)) -> shown
-    None -> render_frame(model, screen).0
+    Some(FrameCache(rendered: #(shown, _), selection_gutters:, ..)) -> #(
+      shown,
+      selection_gutters,
+    )
+    None -> #(
+      render_frame(model, screen).0,
+      selection_gutters_on_display(model),
+    )
   }
 }
 
@@ -9961,6 +10166,7 @@ fn submit_text(model: Model) -> Model {
         transcript: [],
         records: [],
         record_rows: [],
+        record_gutters: [],
         record_line_cache: dict.new(),
         compact_call_cache: dict.new(),
         compact_entry_cache: dict.new(),

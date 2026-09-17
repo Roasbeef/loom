@@ -173,8 +173,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `attempt.HistoryRange` restores request ownership during replay. Attachment
   replacement clears a different session's history; same-session reconnect
   preserves the reading endpoint without reusing mutation authority.
-- User messages have a shaded, labelled block. Agent prose and reasoning have
-  explicit labels. In compact mode a reasoning block is one `ReasoningDigest`
+- User messages have a warm shaded, labelled block. Assistant prose has a
+  restrained cold background and the blue diamond mark; reasoning retains its
+  explicit label. In compact mode a reasoning block is one `ReasoningDigest`
   row — the line count while it streams, its opening line and the expand hint
   once it settles — and `Ctrl+G` shows the block itself; a redacted block is
   its one-line marker in either mode.
@@ -323,7 +324,14 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   the rail beside it are never part of a copy. `text` reads the covered
   rows back from the frame on display through `frame.row_text`, `highlight`
   adds the reverse modifier to those cells, and `clipboard_sequence` is the
-  OSC 52 write. `tui.Clipboard` says whether that write reaches a terminal:
+  OSC 52 write. Transcript copies additionally remove only fixed speaker
+  gutters recorded by the private row layout; authored indentation and
+  screen-row boundaries remain unchanged. `FrameCache` owns the visible
+  gutter map alongside its cells, so a paced scroll cannot pair old text with
+  new metadata at mouse-down. Durable gutters follow the record-row cache;
+  live fragments do not re-project retained history. Plain assistant spans
+  share one shaded style per block to keep the live-stream memory bound. `tui.Clipboard` says whether that
+  write reaches a terminal:
   only the interactive launch sets `TerminalClipboard`; a replay or a
   scripted test keeps `NoClipboard`, because their stdout is not one.
 - `tui/protocol.Event` is the client-owned view of the frozen

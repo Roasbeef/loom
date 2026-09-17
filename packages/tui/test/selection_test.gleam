@@ -3,8 +3,10 @@ import etui/geometry.{Position}
 import etui/style
 import gleam/list
 import gleam/string
+import tui
 import tui/frame
 import tui/selection
+import tui/theme
 
 // A 12x4 screen whose text sits inside a one-cell frame, the way the
 // transcript sits inside its border, so the clipping to an area shows.
@@ -95,6 +97,42 @@ pub fn a_selected_wide_glyph_copies_once_test() {
     selection.start(screen, Position(0, 0))
     |> selection.extend(Position(5, 0))
   assert selection.text(buf, sel) == "\u{4F60}\u{597D}ok"
+}
+
+pub fn transcript_copy_drops_layout_gutters_but_keeps_indentation_test() {
+  let screen = geometry.rect_new(0, 0, 24, 4)
+  let user = style.new(theme.paper, theme.user_background, style.none())
+  let buf =
+    buffer.buffer_new(screen)
+    |> buffer.set_string(Position(0, 0), "◆ answer", theme.current_bold())
+    |> buffer.set_string(Position(0, 1), "  continued", theme.current_bold())
+    |> buffer.set_string(Position(2, 1), "continued", style.default_style())
+    |> buffer.set_string(Position(0, 2), "    authored", theme.current_bold())
+    |> buffer.set_string(Position(2, 2), "  authored", style.default_style())
+    |> buffer.set_string(Position(0, 3), "     quoted", user)
+  let selected =
+    selection.start(screen, Position(0, 0))
+    |> selection.extend(Position(23, 3))
+
+  assert tui.transcript_selection_text(buf, selected, [
+      #(1, 2),
+      #(2, 2),
+      #(3, 3),
+    ])
+    == "◆ answer\ncontinued\n  authored\n  quoted"
+
+  // A press inside the gutter excludes its remaining cell, but the next row's
+  // authored indentation remains after its complete presentation prefix.
+  let partial =
+    selection.start(screen, Position(1, 1))
+    |> selection.extend(Position(23, 2))
+  assert tui.transcript_selection_text(buf, partial, [#(1, 2), #(2, 2)])
+    == "continued\n  authored"
+
+  let gutter_only =
+    selection.start(screen, Position(0, 1))
+    |> selection.extend(Position(1, 1))
+  assert tui.transcript_selection_text(buf, gutter_only, [#(1, 2)]) == ""
 }
 
 pub fn the_clipboard_write_is_osc_52_over_base64_test() {

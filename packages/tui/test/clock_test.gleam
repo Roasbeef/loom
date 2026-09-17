@@ -6,6 +6,7 @@
 
 import etui/backend
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import tui
@@ -56,6 +57,42 @@ pub fn real_event_handler_paces_frames_on_the_injected_clock_test() {
   let flushed = tui.update(backend.Tick, again)
   assert flushed.frame_debt == pacing.FrameSettled
   assert flushed.last_frame_ms == -9983
+}
+
+pub fn wheel_then_press_captures_one_painted_copy_layout_test() {
+  let lines =
+    list.repeat(Nil, 12)
+    |> list.index_map(fn(_, index) {
+      case index % 2 {
+        0 -> tui.Line(tui.User, "  user " <> int.to_string(index))
+        _ -> tui.Line(tui.Assistant, "assistant " <> int.to_string(index))
+      }
+    })
+  let drawn =
+    tui.Model(..initial(-10_000), transcript: lines)
+    |> tui.update(backend.Resize(50, 12), _)
+  let assert Some(tui.FrameCache(
+    rendered: #(painted, _),
+    selection_gutters: painted_gutters,
+    ..,
+  )) = drawn.frame_cache
+  let scrolled =
+    drawn
+    |> at(-10_000)
+    |> tui.update(backend.MouseScroll(5, 5, True), _)
+
+  assert scrolled.scroll_offset != drawn.scroll_offset
+    as "premise: the wheel moved the model's viewport"
+  assert scrolled.frame_cache == drawn.frame_cache
+    as "the frozen clock keeps the old frame painted"
+
+  let pressed =
+    scrolled
+    |> at(-10_000)
+    |> tui.update(backend.MousePress(2, 4, backend.MouseLeft), _)
+  assert pressed.selection_frame == Some(painted)
+  assert pressed.selection_gutters == painted_gutters
+    as "mouse-down must capture copy metadata from the painted frame"
 }
 
 pub fn generation_and_usage_measure_one_injected_clock_test() {

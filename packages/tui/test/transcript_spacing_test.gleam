@@ -330,7 +330,7 @@ fn transcript_rows(pane: Pane) -> List(String) {
 // speaker mark, and the blank rows around the block, are gone.
 fn body_rows(rows: List(String)) -> List(String) {
   rows
-  |> list.drop_while(fn(row) { !string.contains(row, "Agent") })
+  |> list.drop_while(fn(row) { !string.contains(row, "◆") })
   |> list.drop(1)
   |> list.filter(fn(row) { row != "" })
 }

@@ -1856,6 +1856,140 @@ pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   assert selection.text(last, selected) == "\n\u{25C7} gam"
 }
 
+pub fn assistant_rows_use_the_subtle_background_test() {
+  let inbox = connection.new_inbox()
+  let model = assistant_copy_model(inbox)
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 18),
+      [],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  let assert Ok(last) = list.last(run.frames)
+  let rows = frame.buffer_to_lines(last)
+  let assert Ok(answer_y) = row_containing(rows, "◆ opening paragraph")
+  let area = tui.hit_area(run.final, Position(2, 2))
+
+  assert buffer.get_cell(last, Position(area.position.x, answer_y)).style.bg
+    == theme.assistant_background
+  assert buffer.get_cell(last, Position(geometry.right(area) - 1, answer_y)).style.bg
+    == theme.assistant_background
+}
+
+pub fn rendered_assistant_copy_keeps_authored_structure_test() {
+  let inbox = connection.new_inbox()
+  let model = assistant_copy_model(inbox)
+  let preview =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 18),
+      [],
+      inbox,
+    )
+  let assert Ok(previewed) = tui.run_script(model, preview)
+  let assert Ok(drawn) = list.last(previewed.frames)
+  let rows = frame.buffer_to_lines(drawn)
+  let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
+  let assert Ok(last_y) = row_containing(rows, "let answer = 1")
+  let area = tui.hit_area(previewed.final, Position(2, 2))
+  let last_x = area.position.x + 22
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 18),
+      [
+        virtual_backend.Input(backend.MousePress(
+          area.position.x,
+          first_y,
+          backend.MouseLeft,
+        )),
+        virtual_backend.Input(backend.MouseRelease(
+          last_x,
+          last_y,
+          backend.MouseLeft,
+        )),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  let assert Some(selected) = run.final.selection
+  let assert Some(original) = run.final.selection_frame
+  let copied =
+    tui.transcript_selection_text(
+      original,
+      selected,
+      run.final.selection_gutters,
+    )
+
+  assert copied
+    == "◆ opening paragraph\n\nsecond paragraph\n\n▎ gleam\n▎   let answer = 1"
+}
+
+pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
+  let inbox = connection.new_inbox()
+  let model = assistant_copy_model(inbox)
+  let preview =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 18),
+      [],
+      inbox,
+    )
+  let assert Ok(previewed) = tui.run_script(model, preview)
+  let assert Ok(drawn) = list.last(previewed.frames)
+  let rows = frame.buffer_to_lines(drawn)
+  let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
+  let assert Ok(last_y) = row_containing(rows, "let answer = 1")
+  let area = tui.hit_area(previewed.final, Position(2, 2))
+  let assert Some(tui.FrameCache(selection_gutters:, ..)) =
+    previewed.final.frame_cache
+    as "the painted frame owns its copy layout"
+  let partial =
+    selection.start(area, Position(area.position.x + 4, last_y))
+    |> selection.extend(Position(area.position.x + 10, last_y))
+
+  // This range begins after the speaker gutter, inside the code's authored
+  // indentation. Its actual cached prefix must not trim any selected text.
+  assert tui.transcript_selection_text(drawn, partial, selection_gutters)
+    == selection.text(drawn, partial)
+
+  let backwards =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 18),
+      [
+        virtual_backend.Input(backend.MousePress(
+          area.position.x + 22,
+          last_y,
+          backend.MouseLeft,
+        )),
+        virtual_backend.Input(backend.MouseRelease(
+          area.position.x,
+          first_y,
+          backend.MouseLeft,
+        )),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, backwards)
+  let assert Some(selected) = run.final.selection
+  let assert Some(original) = run.final.selection_frame
+  assert tui.transcript_selection_text(
+      original,
+      selected,
+      run.final.selection_gutters,
+    )
+    == "◆ opening paragraph\n\nsecond paragraph\n\n▎ gleam\n▎   let answer = 1"
+}
+
+fn assistant_copy_model(
+  inbox: process.Subject(connection.Message),
+) -> tui.Model {
+  tui.Model(..quiet_model(inbox), transcript: [
+    tui.Line(
+      tui.Assistant,
+      "opening paragraph\n\nsecond paragraph\n\n```gleam\n  let answer = 1\n```",
+    ),
+  ])
+}
+
 pub fn a_resize_drops_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
