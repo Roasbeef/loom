@@ -13,11 +13,13 @@ import core/ids
 import gleam/erlang/process.{type Monitor}
 import gleam/int
 import gleam/list
+import gleam/otp/system
 import gleam/string
 import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
+import support/internal/ffi_memory
 import weft/poll
 
 fn registration(seed: Int) -> catalogue.Registration {
@@ -34,6 +36,67 @@ fn registration(seed: Int) -> catalogue.Registration {
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
   )
+}
+
+/// Resident assembly hosts must not retain runtimes from earlier admissions.
+pub fn assembly_hosts_do_not_capture_other_resident_instances_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let built = process.new_subject()
+  let domain_built = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, _) {
+          process.send(domain_built, process.self())
+          Ok(domain_service.inert())
+        },
+        build: fn(_, _, _, _) {
+          process.send(built, process.self())
+          Ok(list.repeat(42, 8192))
+        },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "daemon-test",
+      limit: 3,
+    )
+    as "registry starts without invoking assembly"
+
+  let sizes =
+    list.map([910, 911, 912], fn(seed) {
+      let record = saved(store, seed)
+      let assert Ok(manager.Opening(operation)) =
+        manager.open(registry, record.id)
+        as "each admission starts a distinct assembly host"
+      let assert Ok(builder) = process.receive(built, 2000)
+        as "assembly identifies the real persistent host"
+      let assert Ok(domain_builder) = process.receive(domain_built, 2000)
+        as "each distinct domain identifies its persistent host"
+      await_status(registry, record.id, manager.Resident(operation))
+
+      // Residency follows publication, so later admissions see the earlier
+      // payloads in the registry. Each host needs only its own build inputs.
+      let assert Ok(instance) = manager.resolve(registry, record.id)
+        as "published instances remain resolvable"
+      assert ffi_memory.flat_words(instance) >= 8192 * 2
+        as "each resident really contributes the unrelated payload"
+      #(
+        ffi_memory.flat_words(system.get_state(builder)),
+        ffi_memory.flat_words(system.get_state(domain_builder)),
+      )
+    })
+  let assert [first, second, third] = sizes as "all three host pairs publish"
+  assert second.0 <= first.0 + 256
+    as "a second host does not retain the first resident payload"
+  assert third.0 <= first.0 + 256
+    as "host retention stays bounded as unrelated residents accumulate"
+  assert second.1 <= first.1 + 256
+    as "a later domain host does not retain earlier resident payloads"
+  assert third.1 <= first.1 + 256
+    as "domain host retention stays bounded as residents accumulate"
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
 }
 
 pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
@@ -231,7 +294,7 @@ fn down(watch: Monitor) -> process.Down {
   down
 }
 
-fn stop(registry: manager.Manager(String)) -> Nil {
+fn stop(registry: manager.Manager(instance)) -> Nil {
   let watch = process.monitor(manager.pid(registry))
   manager.shutdown(registry)
   let assert process.ProcessDown(reason: process.Normal, ..) = down(watch)
@@ -240,7 +303,7 @@ fn stop(registry: manager.Manager(String)) -> Nil {
 }
 
 fn await_status(
-  registry: manager.Manager(String),
+  registry: manager.Manager(instance),
   id: String,
   expected: manager.Status,
 ) -> Nil {

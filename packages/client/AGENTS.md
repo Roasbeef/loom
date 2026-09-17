@@ -3675,6 +3675,14 @@ record retains the binding, parser permit and registry handle; the resident
 instance and runtime effects are no longer transport-owned. Authorization
 still rechecks the original epoch, incarnation and credential on the registry.
 
+The daemon manager projects its command subject and assembly callback before
+constructing the persistent instance host's builder. The host keeps that builder
+after publication, so capturing the manager book would retain earlier resident
+instances. Domain builders likewise capture only their projected callback and
+source lookup. `daemon_manager_test` opens three real host pairs with large runtime
+payloads and checks that host state stays bounded while publication and ordered
+shutdown still succeed.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)

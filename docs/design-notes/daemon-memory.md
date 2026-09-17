@@ -505,3 +505,29 @@ predated PR #438, so their measurements cannot validate the new client build.
 
 The optional [BEAM memory review skill](../../.claude/skills/beam-memory-review/SKILL.md)
 records this distinction and a repeatable ownership and copy-cost review.
+
+
+## 2026-09-17 resident assembly host capture
+
+The live investigation identified two persistent `instance_host` processes
+allocating approximately 45.7 MiB each. Their retained builder closures captured
+the daemon manager book, including two earlier resident instances. This is a
+reachable ownership defect; the allocated heap totals are not a prediction of
+what this repair will reclaim.
+
+`manager.prepare_domain_slot` now binds the command subject and assembly
+callback before constructing the builder. `prepare_shared_domain` likewise
+projects `domain_build` before constructing its persistent builder. Domain
+service lookup still occurs inside assembly with the same session and operation
+identity. The host's publication, failure, and custody protocols are unchanged.
+
+The regression opens three real hosts, each publishing an 8,192-element list.
+On the original capture, the first host state flattened to 369 words and the
+second to 16,996 words, exceeding the permitted 256-word variation. With the
+projected inputs, the bounded-growth assertion passes for both later hosts.
+The expanded regression also detects the domain-host variant: before its
+projection, the second domain host flattened to 16,868 words versus 240 for
+the first. Both host types pass after projection. All 27 manager tests pass,
+including publication and retirement coverage. This establishes independence from earlier resident payloads. It does not
+measure installed RSS or total VM savings; the production daemon has not been
+updated for this repair.
