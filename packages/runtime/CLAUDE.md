@@ -428,6 +428,13 @@ extended by the M3 runtime wave.
   → commit and re-plan on `Transition`/`Finish`; on `Dispatch` commit the
   intent *then* start the effect; on `AwaitEffect(key)` resolve the key; on
   `Wait` schedule a timer or a poll permit; on `Fault` stop abnormally.
+- **Restart callbacks retain only their own inputs.** `api.open_published`
+  projects option fields before constructing runtime and driver builders.
+  `supervisor.start_published` captures the classifier and driver builder
+  separately, so publication and booter specifications do not inherit the
+  entire effects graph. An actual started-supervisor regression grows the
+  writer subscriber list and checks that only OTP's initial writer specification
+  and active writer entry retain it.
 - **Crash recovery and cold start are the same code.** A restarted strand's
   first drive re-reads its registers and resumes (spec §3.1); the tree is
   rest-for-one, so a writer crash restarts the writer *and* the whole

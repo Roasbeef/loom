@@ -338,6 +338,13 @@ catalogue without opening runtimes. Explicit admission invokes
   forwarder binds a reclaimable Weft reference address. The writer's
   `Routed` subscription resolves it for each hint, so a restart neither
   requires resubscription nor interrupts the writer.
+- Provider observation layers retain the inner preparation capability and its
+  timeout. `provider_relay.observing` and `previewing` build both outward
+  facades from that capability, so adding a layer does not recursively copy
+  both facades of every predecessor. Preview factories still execute in the
+  observer process. `extension/hooks.wire` similarly captures each wrapped
+  hook or tool function before the record update. Copy-size regressions cover
+  sibling-slot independence and every provider observation layer.
 - `client/provider_relay.{prepare, wrap}` — the shared provider-wrapper
   ownership seam: `prepare` returns a minimal public custodian before it
   releases the guard, while `wrap` is the prepare-and-begin compatibility
@@ -3661,6 +3668,12 @@ slots into every supervisor and worker that receives the effects. Likewise,
 flattened callback sizes; the size probe is confined to test support. See
 [the daemon memory investigation](../../docs/design-notes/daemon-memory.md)
 for the isolated workload measurements and their limits.
+
+The session socket projects a resolved `Attachment` into a private authorization
+record before creating its long-lived handler and gateway callbacks. That
+record retains the binding, parser permit and registry handle; the resident
+instance and runtime effects are no longer transport-owned. Authorization
+still rechecks the original epoch, incarnation and credential on the registry.
 
 ## Deep Docs
 

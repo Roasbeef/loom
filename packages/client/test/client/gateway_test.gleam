@@ -47,6 +47,7 @@ import simplifile
 import storage/access
 import storage/storage
 import support/addresses
+import support/internal/ffi_memory
 import support/tool_registry
 import tools/directory_access
 import tools/tool
@@ -4941,4 +4942,40 @@ pub fn once_approval_leaves_session_permissions_absent_test() {
     as "legacy once-only approval still succeeds"
   assert record.status == "approved"
   assert api.fact_cell(harness.runtime, permissions.key) == Ok(None)
+}
+
+/// Repeated observers retain one preparation path per facade, not every
+/// compatibility facade from every preceding wrapper.
+pub fn provider_wrappers_have_linear_copy_cost_test() {
+  let name = addresses.new()
+  let events = process.new_subject()
+  let marker = list.repeat("payload", 4096)
+  let prepare = fn(_) {
+    stream.PreparedStream(
+      handle: stream.immediate(events:, cancel: fn() { Nil }),
+      begin: fn() {
+        assert list.length(marker) == 4096
+      },
+    )
+  }
+  let base =
+    effects.PreparedProviderSurface(
+      request: fn(spec) { prepare(spec) |> stream.start_prepared },
+      prepare:,
+      timeout_ms: 5000,
+    )
+  let once = gateway.tap_provider(base, to: name)
+  let twice = gateway.tap_preview_provider(once, to: name)
+  let thrice = gateway.tap_provider(twice, to: name)
+
+  // Each new layer may add its own small routing environment. It must not
+  // double the payload retained by every prior layer's compatibility facade.
+  let first_growth = ffi_memory.flat_words(once) - ffi_memory.flat_words(base)
+  let second_growth = ffi_memory.flat_words(twice) - ffi_memory.flat_words(once)
+  let third_growth =
+    ffi_memory.flat_words(thrice) - ffi_memory.flat_words(twice)
+  assert first_growth < 1024
+  assert second_growth < 1024
+  assert third_growth < 1024
+  assert ffi_memory.flat_words(thrice) >= ffi_memory.flat_words(base)
 }

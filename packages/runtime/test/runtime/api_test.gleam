@@ -23,6 +23,7 @@ import runtime/writer
 import session/session
 import support/fake
 import support/harness
+import support/internal/ffi_memory
 import support/recorder
 import weft/registry as address
 
@@ -86,6 +87,7 @@ pub fn writer_publishes_committed_events_test() {
 
 pub fn follow_up_is_drained_at_may_finish_test() {
   let rec = recorder.start()
+  let first_started = process.new_subject()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "the memory session must open"
@@ -96,7 +98,13 @@ pub fn follow_up_is_drained_at_may_finish_test() {
       [],
       fn(spec) {
         case fake.turn(spec) {
-          0 -> fake.Reply(fake.answer("First", 3))
+          0 -> {
+            let release_first = process.new_subject()
+            process.send(first_started, release_first)
+            let assert Ok(Nil) = process.receive(release_first, within: 1000)
+              as "the follow-up must be admitted before the first answer"
+            fake.Reply(fake.answer("First", 3))
+          }
           _ -> fake.Reply(fake.answer("Second", 4))
         }
       },
@@ -107,11 +115,16 @@ pub fn follow_up_is_drained_at_may_finish_test() {
   let assert Ok(rt) =
     api.open(sess, eff, api.default_options(harness.configuration()))
     as "the session tree must boot"
-  // Accept quietly so the follow-up is admitted before any driving.
-  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+
+  // A quiet admission can still run on a checkpoint poll. Hold the first
+  // provider response until the follow-up is durable, rather than racing it.
+  let assert Ok(op) = api.prompt(rt, [fake.user("Hello")])
     as "acceptance must succeed"
+  let assert Ok(release_first) = process.receive(first_started, within: 1000)
+    as "the first generation must be waiting"
   let assert Ok(_entry) = api.follow_up(rt, fake.user("One more thing"))
     as "follow-up admission must succeed"
+  process.send(release_first, Nil)
   let assert Ok(outcome) = api.await_result(rt, op, within_ms: 5000)
     as "the run must complete"
   harness.assert_completed(outcome)
@@ -844,4 +857,48 @@ fn answering_runtime() -> api.Runtime {
     api.open(sess, eff, api.default_options(harness.configuration()))
     as "the session tree must boot"
   rt
+}
+
+/// Writer subscribers belong to one restart specification, not every child.
+/// Compare real started supervisors so the test covers OTP's stored inputs.
+pub fn supervisor_restart_inputs_do_not_multiply_writer_options_test() {
+  let small = supervisor_words_with_subscribers(0)
+  let large = supervisor_words_with_subscribers(4096)
+  let subscriber = writer.Direct(process.new_subject())
+  let marker_words = ffi_memory.flat_words(list.repeat(subscriber, 4096))
+
+  // OTP retains both the initial specifications and the active child map.
+  // Only the writer entry in each may own this subscriber list.
+  assert large - small >= marker_words
+  assert large - small == marker_words * 2
+}
+
+fn supervisor_words_with_subscribers(count: Int) -> Int {
+  let rec = recorder.start()
+  let assert Ok(sess) = session.open_memory(clock.fixed(at: 1000))
+    as "the copy-size fixture must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.fixed(at: 1000),
+      [],
+      fn(_) { fake.Reply(fake.answer("done", 1)) },
+      fn(_) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let options = api.default_options(harness.configuration())
+  let assert Ok(rt) =
+    api.open(
+      sess,
+      eff,
+      api.Options(
+        ..options,
+        subscribers: list.repeat(writer.Direct(process.new_subject()), count),
+      ),
+    )
+    as "the measured supervisor must start"
+  let words = ffi_memory.flat_words(ffi_memory.state(rt.tree.supervisor, 1000))
+  let assert Ok(Nil) = api.close(rt) as "the measured tree must close"
+  words
 }

@@ -28,14 +28,17 @@ import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/system
 import gleam/string
 import host/bootstrap
 import mist
 import runtime/api
+import runtime/effects
 import runtime/escalation
 import runtime/writer
 import storage/domain
 import support/internal/ffi_daemon_socket
+import support/internal/ffi_memory
 import support/internal/ffi_ws
 import weft
 import weft/poll
@@ -180,9 +183,9 @@ fn fixture_with(
 
   // The outcome is read only once every owner has retired, so a failing test
   // reports its own assertion rather than a teardown that never happened.
-  let assert [weft.Completed(0, _)] = outcomes
+  let assert [weft.Completed(0, value)] = outcomes
     as "the fixture body ran to completion inside its own deadline"
-  Nil
+  value
 }
 
 fn field(value, name) {
@@ -277,6 +280,52 @@ pub fn begin(socket, id, within_ms within_ms: Int) {
   let assert json.String(snapshot_id) = field(body, "snapshot_id")
     as "begin identifies its transfer"
   #(body, snapshot_id)
+}
+
+/// Attaching a real socket must not copy unrelated resident effects into its hub.
+pub fn authenticated_socket_does_not_retain_resident_effects_test() {
+  let small = attachment_growth(0)
+  let large = attachment_growth(8192)
+
+  // Generated session and connection identities can differ in representation,
+  // but thousands of unrelated list cells must not reach either callback.
+  assert large <= small + 256
+    as "socket authorization and reader failure retain identity, not effects"
+}
+
+fn attachment_growth(payload_size) {
+  fixture_with(
+    fn(id) {
+      let harness = gateway_test.reserved_fixture(id)
+      let payload = list.repeat(message.UserMessage([], 0, None), payload_size)
+      let runtime = harness.runtime
+      let hooks =
+        effects.Hooks(..runtime.effects.hooks, run_start: fn(_) { payload })
+      let inflated =
+        api.Runtime(
+          ..runtime,
+          effects: effects.Effects(..runtime.effects, hooks:),
+        )
+      assert ffi_memory.flat_words(inflated) >= payload_size * 2
+        as "the attachment instance really contains the unrelated payload"
+      gateway_test.Harness(..harness, runtime: inflated)
+    },
+    fn(_, _) { Nil },
+    fn(_, port, credential, id, _, harness) {
+      let assert Ok(subject) = registry.lookup(harness.hub.name)
+        as "the fixture hub is registered"
+      let assert Ok(pid) = process.subject_owner(subject)
+        as "the registered subject has an owner"
+      let before = ffi_memory.flat_words(system.get_state(pid))
+      let #(socket, _) =
+        wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
+      let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
+      let _ = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+      let after = ffi_memory.flat_words(system.get_state(pid))
+      let _ = ffi_ws.tcp_close(socket)
+      after - before
+    },
+  )
 }
 
 pub fn admission_slower_than_the_initializer_budget_still_serves_test() {

@@ -1217,15 +1217,7 @@ pub fn tap_provider(
   surface: effects.ProviderSurface,
   to name: address.Address(Message),
 ) -> effects.ProviderSurface {
-  effects.PreparedProviderSurface(
-    timeout_ms: effects.provider_timeout_ms(surface),
-    request: fn(spec) {
-      provider_relay.wrap(surface, spec, observe_provider(name, spec))
-    },
-    prepare: fn(spec) {
-      provider_relay.prepare(surface, spec, observe_provider(name, spec))
-    },
-  )
+  provider_relay.observing(surface, fn(spec) { observe_provider(name, spec) })
 }
 
 /// The production observer for a running tool call's output — the seam
@@ -1353,38 +1345,30 @@ fn request_identity(spec: effects.RequestSpec) -> String {
 /// ```
 @internal
 pub fn tap_preview_provider(surface: effects.ProviderSurface, to name) {
-  let prepare = fn(spec) {
-    provider_relay.prepare_preview(surface, spec, fn() {
-      let operation = case spec {
-        effects.GenerationRequest(operation:, ..)
-        | effects.PollRequest(operation:, ..)
-        | effects.SummaryRequest(operation:, ..) ->
-          ids.op_id_to_string(operation)
-      }
-      let lease = {
-        use subject <- result.try(
-          address.lookup(name) |> result.replace_error("hub absent"),
-        )
-        let expires = bootstrap.monotonic_time_ms() + 200
-        use source <- result.try(
-          call.try_call(subject, waiting: 200, sending: LeasePreview(
-            process.self(),
-            expires,
-            _,
-          ))
-          |> result.replace_error("preview admission timed out")
-          |> result.flatten,
-        )
-        Ok(#(subject, source))
-      }
-      preview_observer(lease, operation, request_identity(spec))
-    })
-  }
-  effects.PreparedProviderSurface(
-    timeout_ms: effects.provider_timeout_ms(surface),
-    request: fn(spec) { prepare(spec) |> stream.start_prepared },
-    prepare:,
-  )
+  provider_relay.previewing(surface, fn(spec) {
+    let operation = case spec {
+      effects.GenerationRequest(operation:, ..)
+      | effects.PollRequest(operation:, ..)
+      | effects.SummaryRequest(operation:, ..) -> ids.op_id_to_string(operation)
+    }
+    let lease = {
+      use subject <- result.try(
+        address.lookup(name) |> result.replace_error("hub absent"),
+      )
+      let expires = bootstrap.monotonic_time_ms() + 200
+      use source <- result.try(
+        call.try_call(subject, waiting: 200, sending: LeasePreview(
+          process.self(),
+          expires,
+          _,
+        ))
+        |> result.replace_error("preview admission timed out")
+        |> result.flatten,
+      )
+      Ok(#(subject, source))
+    }
+    preview_observer(lease, operation, request_identity(spec))
+  })
 }
 
 fn preview_observer(

@@ -182,6 +182,12 @@ pub fn start_published(
   let drains_name = address.new_address(namespace)
   let registry_name = address.new_address(namespace)
   let writer_name = address.new_address(namespace)
+
+  // Each restart closure owns only its child's inputs. Capturing Config
+  // here would copy the effects-bearing driver builder into unrelated
+  // publication and booter specifications every time the tree starts.
+  let subagent = config.subagent
+  let strand_options = config.strand_options
   let describe_tree = fn(root, drains) {
     SessionTree(
       supervisor: root,
@@ -191,7 +197,7 @@ pub fn start_published(
       namespace:,
       strands: registry.Primary,
       subagent_strands: registry.Subagent,
-      subagent: config.subagent,
+      subagent:,
     )
   }
   let factory = fn(strand_name) {
@@ -203,7 +209,7 @@ pub fn start_published(
       )),
     )
     let template =
-      config.strand_options(writer_name, fn(strand, reaper) {
+      strand_options(writer_name, fn(strand, reaper) {
         drain_registry.claim(drains, strand, reaper)
       })
     let name = registry.ensure(reg, strand_name)
@@ -256,7 +262,7 @@ pub fn start_published(
     )
     |> sup.add(
       supervision.worker(fn() {
-        booter_start(writer_name, registry_name, config.subagent)
+        booter_start(writer_name, registry_name, subagent)
       }),
     )
     |> sup.start
