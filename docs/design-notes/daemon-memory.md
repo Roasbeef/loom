@@ -1,7 +1,8 @@
 # Investigation handoff: daemon memory per session
 
-Status: **additional closure captures repaired locally**; see the September 14
-addendum for the new measurements. The September 7 repair covered earlier sites.
+Status: **supervisor and provider captures repaired locally**; see the September
+16 addendum for the current evidence and limits. Earlier sections describe their
+own builds and workloads.
 
 Historical status: **owner found and repaired**; see "2026-09-07, second pass"
 of this note. The first pass, recorded below unchanged, established the size
@@ -307,3 +308,125 @@ compaction projection capture, and output-observer capture independently made
 the corresponding assertions fail, and restoring the fixes made them pass.
 The final client gate passed all 1,800 tests. Independent review checked the
 capture boundaries and the negative/positive test results.
+
+
+## 2026-09-16: supervisor restart inputs and provider facades
+
+The installed daemon still retained large session supervisor states after a
+full diagnostic collection. One supervisor reported 81.633 MiB of allocated
+process memory. A read-only, external inspection of its state found 157.273 MiB
+of flattened copy cost, descending through a runtime startup callback, its
+`Config.strand_options` builder, and a 15.718 MiB `Effects` value. The largest
+provider descendant was 7.330 MiB, with successive gateway wrapper captures
+of 3.665 MiB and 1.832 MiB. The inspected daemon ran build `2b09671`; the repair
+branch starts at `7662215415a74de5b4ca7a0547b637a21d20e41d`.
+
+These measurements describe different quantities. `process_info(memory)` and
+`erlang:memory/0` report allocated memory, including unused process heap
+capacity. A full collection removes collectable garbage but does not make
+those counters an exact reachable-term size. `erts_debug:flat_size/1` measures
+copy cost with sharing removed; `erts_debug:size/1` accounts for sharing in
+the inspected term. An RPC copy can already have lost the original sharing.
+The earlier sections' use of "live" or "reachable" for the entire post-GC
+process-memory total was too strong.
+
+### Repairs and regression evidence
+
+The runtime now projects `Options` and `Config` fields before constructing
+restart closures. Publication and the booter need the subagent classifier,
+not the entire effects-bearing driver builder. The factory needs that builder,
+not the writer's subscribers and callbacks. A regression starts real session
+trees and grows a writer-only subscriber list by 4,096 entries. The original
+supervisor state adds 983,040 flattened words; the repaired state adds 98,304.
+On this 64-bit OTP 29 build, the marker's contribution falls from 7.5 MiB to
+0.75 MiB. Two copies remain because OTP stores both initial specifications and
+the active child map. This is a fixture measurement, not the installed daemon's
+memory reduction.
+
+`extension/hooks.wire` now captures each of its five wrapped hook functions
+and two wrapped tool functions individually. Growing an unrelated hook made
+the original `run_start` wrapper grow from 495 to 20,976 flattened words.
+The repaired wrappers retain constant copy cost for that unrelated payload.
+The test also checks that the payload remains reachable through its own slot.
+
+Provider observation now composes one projected preparation capability and
+its timeout. Both outward facades use that capability, while a relay's startup
+state holds only the preparation function it can call. The previous first
+wrapper added 41,047 words for a 4,096-element marker. Each repaired layer adds
+less than 1,024 words in the fixture, including the preview layer. Existing
+request/prepare entry points, parked publication, cancellation, and drain
+ordering remain in place. Preview observer construction still happens in the
+observer process.
+
+An isolated post-repair probe also compared shared and flattened word counts.
+The same 4,096-element provider payload passes through ordinary, preview, and
+ordinary observation layers:
+
+| Provider surface | Shared words | Flattened words |
+|---|---:|---:|
+| Base | 8,214 | 40,990 |
+| One ordinary observer | 8,248 | 41,058 |
+| Then one preview observer | 8,257 | 41,120 |
+| Then another ordinary observer | 8,269 | 41,188 |
+
+Each layer adds 62 or 68 flattened words in this fixture. Its small shared
+size alone would have hidden the earlier duplication. The separately started
+supervisor fixtures reported 21,960 and 602,176 allocated bytes after a full
+collection for zero and 4,096 subscribers. Their externally copied states
+contained 3,821 and 102,125 flattened words. Those counters need not agree:
+heap capacity and copying affect them differently.
+
+### R12 audit and the remaining candidates
+
+The source audit classified all 90 warnings at the branch base: 11 confirmed
+retention boundaries, 35 candidates requiring a size measurement, nine small
+sites, and 35 dismissals. The confirmed set comprises the four runtime warnings
+and seven extension hook/tool warnings repaired here. The repair also covers
+an unflagged booter capture, the provider facade chain, and one small capture
+in the relay's returned begin callback. R12 falls to 78 warnings; its syntactic
+scope and warning severity are unchanged.
+
+The remaining candidates include job and schedule door layers, code-mode
+workspace closures, and extension routing. Their process lifetimes make them
+worth measuring, but the audit does not establish their contribution to the
+installed daemon. Request-scoped capability plans, simulation callbacks,
+small one-field handles, and local predicates do not justify a mechanical
+warning cleanup. The complete base-line inventory and per-site dispositions
+are recorded in the [review inventory](../review/closure-retention.md).
+
+### Mailboxes, temporary work, and the next measurement
+
+An OTP 29 `+recv_opt_info` check of generated runtime, provider, relay, and weft
+code traced receives to `gleam_erlang_ffi`. Its generic selector and subject
+receives report `NOT OPTIMIZED`: the fresh-reference relationship is hidden
+across the FFI boundary. The match-any flush is reported as always fast. These
+diagnostics identify a potential scan cost, not a demonstrated backlog. The
+inspected loops are tail recursive and normally reuse selectors. Provider and
+relay work already has request-scoped owners, deadlines, and cancellation;
+no measured temporary allocation owner justifies another worker layer here.
+
+After installing the repair and starting fresh session trees, compare the
+same empty, admitted, idle, and post-collection cuts. Record process-memory
+and mailbox lengths before inspecting selected state terms. Restrict state
+copies to one owner at a time: the external probe's second large copy exceeded
+its 512 MiB heap limit, although its first state trace completed. No probe
+module was loaded into the installed daemon. The live source of the retained
+graph is identified, but this patch has not yet been installed or measured
+against that daemon's current sessions.
+
+Keep ordinary observations separate from explicit diagnostic collection.
+Heap-size flags, periodic GC, and `persistent_term` do not address these
+unnecessary copies and were not added. Shared storage would need its own
+lifetime and update-cost argument. The next acceptance measurement is the
+actual admitted-session cost after the repaired build starts those trees.
+
+
+### Validation
+
+The full `make check` gate passed with exit status zero, including 140 runtime,
+222 provider, 1,852 client, and 558 TUI tests. Documentation checks passed with
+zero errors. Lint reports zero errors, 804 warnings, and 78 R12 findings.
+The default gate reports unseeded code-mode/extension, opt-in packaged-daemon,
+and platform-specific skips; those extra lanes were not exercised here.
+Independent source review found no production correctness issue. Its two test
+and comment-format findings were corrected before the final gate.

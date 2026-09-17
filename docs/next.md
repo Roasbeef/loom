@@ -1,5 +1,35 @@
 # Next
 
+## Closure retention, September 16
+
+The `memory/closure-retention` branch starts at rebased PR #437 head
+`7662215415a74de5b4ca7a0547b637a21d20e41d`. It narrows supervisor restart
+inputs, extension hook/tool wrappers, and nested provider observation facades.
+The [measurement note](design-notes/daemon-memory.md#2026-09-16-supervisor-restart-inputs-and-provider-facades)
+and [review inventory](review/closure-retention.md) distinguish reproduced
+retention from remaining candidates. The 90-warning base census falls to 78;
+R12 still warns and does not prove a memory bound.
+
+The new regressions fail against the old captures and pass after projection.
+The runtime fixture measures an actual started supervisor; the client fixtures
+measure flattened hook and provider terms. Independent review found no
+production defect; its preview-layer assertion and comment-spacing findings
+are fixed. Full `make check` passed with exit status zero, including 140
+runtime, 222 provider, 1,852 client, and 558 TUI tests. Documentation and lint
+checks pass with existing warning censuses. The default gate reported skips
+for unseeded code-mode and extension fixtures, opt-in packaged-daemon fixtures,
+and platform-specific cases; those extra lanes were not run in this patch.
+
+The patch is local. The installed daemon has not received it. After updating
+and starting fresh session trees, take matched admission, idle, and explicit
+post-collection cuts before claiming an installed memory reduction. Inspect
+one large state at a time from an external process with a bounded heap. The
+remaining job/schedule/workspace captures need measurements before edits.
+Generic receive code lacks the fresh-reference optimization, but no observed
+mailbox backlog or accumulating loop allocation justifies changing it here.
+
+## Earlier directory-permission work
+
 The current directory-permission work is based on merged main `c5fb6038`,
 checked September 16, 2026. The earlier sections below describe their own
 historical verification. In particular, their claim that PR #434 is unmerged

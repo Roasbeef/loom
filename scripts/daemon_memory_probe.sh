@@ -113,8 +113,9 @@ census "two sessions admitted, one stopped"
 sleep "$IDLE"
 census "after ${IDLE}s idle"
 
-# A full collection separates a term something still holds from garbage the
-# collector had not yet reached. If the step survives this, it is reachable.
+# A full collection removes collectable garbage before the last cut. A step
+# that survives can still include retained heap capacity; inspect terms before
+# attributing the whole step to reachable state.
 census "after a forced full collection" collect
 
 # The walk itself allocates on the target node, so it runs after every cut

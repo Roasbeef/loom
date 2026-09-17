@@ -338,6 +338,13 @@ catalogue without opening runtimes. Explicit admission invokes
   forwarder binds a reclaimable Weft reference address. The writer's
   `Routed` subscription resolves it for each hint, so a restart neither
   requires resubscription nor interrupts the writer.
+- Provider observation layers retain the inner preparation capability and its
+  timeout. `provider_relay.observing` and `previewing` build both outward
+  facades from that capability, so adding a layer does not recursively copy
+  both facades of every predecessor. Preview factories still execute in the
+  observer process. `extension/hooks.wire` similarly captures each wrapped
+  hook or tool function before the record update. Copy-size regressions cover
+  sibling-slot independence and every provider observation layer.
 - `client/provider_relay.{prepare, wrap}` — the shared provider-wrapper
   ownership seam: `prepare` returns a minimal public custodian before it
   releases the guard, while `wrap` is the prepare-and-begin compatibility

@@ -19,8 +19,8 @@ main([NodeStr, Label, Mode]) ->
     io:format("~n"),
     erlang:halt(0, [{flush, true}]).
 
-%% A full sweep of every process, so the next census reports what is reachable
-%% rather than what the collector has not yet reached.
+%% A full sweep removes collectable garbage before the next census. Process
+%% memory still includes retained heap capacity, so it is not a live-term size.
 collect(Node, "collect") ->
     Pids = rpc:call(Node, erlang, processes, []),
     [rpc:call(Node, erlang, garbage_collect, [Pid]) || Pid <- Pids],
@@ -28,7 +28,7 @@ collect(Node, "collect") ->
 collect(_Node, _Mode) ->
     ok.
 
-%% erlang:memory/0 is the VM's own account of what it believes is live.
+%% erlang:memory/0 reports allocated VM memory, including unused heap capacity.
 memory(Node) ->
     Mem = rpc:call(Node, erlang, memory, []),
     io:format("erlang:memory/0~n"),
