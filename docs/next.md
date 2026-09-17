@@ -40,6 +40,36 @@ loop allocation justifies changing it here.
 
 ## Earlier directory-permission work
 
+## Transcript copy and assistant presentation
+
+The `tui/transcript-copy` branch is based directly on merged main
+`b3bb6b9d`, checked September 16, 2026. PR #437 is merged in this base;
+the directory-permission notes below describe its earlier verification.
+Memory-retention work is separate in PR #438 and is not included here.
+
+Transcript selection now removes the selected portion of each speaker gutter
+while preserving authored indentation and blank lines. Gutter metadata is
+built with the rendered rows and captured with the displayed frame, so a
+paced scroll cannot apply a newer layout to older selected cells. Screen-row
+line breaks remain screen-row line breaks; soft-wrap reconstruction is not
+implemented. Assistant replies retain the blue diamond, omit the Agent label,
+and use a subtle blue-green background across the reply area.
+
+The independent review identified frame/metadata mismatch, unnecessary history
+projection during streaming, and a quadratic gutter traversal; all three were
+fixed and checked. Plain Markdown spans share their shaded style within each
+reply to preserve the existing streaming-memory bound. All 563 TUI tests pass,
+including the unchanged heap bound and new rendered selection and pacing
+regressions. TUI lint and documentation checks pass with zero errors.
+
+Next, check the published branch's CI and exercise copy/paste in the installed
+terminal after updating the client. Exit: paragraph and code indentation paste
+correctly, reverse and partial selections agree, and the reply shading remains
+readable with the user's terminal palette. No installed client or daemon was
+changed by this work.
+
+## Earlier work and verification
+
 The current directory-permission work is based on merged main `c5fb6038`,
 checked September 16, 2026. The earlier sections below describe their own
 historical verification. In particular, their claim that PR #434 is unmerged
