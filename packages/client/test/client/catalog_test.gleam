@@ -803,6 +803,9 @@ pub fn a_name_in_both_env_and_set_refused_test() {
 }
 
 pub fn a_server_owned_name_is_refused_from_env_test() {
+  let assert Error("tools.env may not name GIT_CONFIG_GLOBAL" <> _rest) =
+    catalog.parse_tools(with_tools("env = [\"GIT_CONFIG_GLOBAL\"]"))
+
   let assert Error("tools.env may not name PATH" <> _rest) =
     catalog.parse_tools(with_tools("env = [\"PATH\"]"))
   let assert Error("tools.env may not name LOOM_SCRATCH_DIR" <> _rest) =
@@ -810,7 +813,12 @@ pub fn a_server_owned_name_is_refused_from_env_test() {
 }
 
 pub fn a_server_owned_name_is_refused_from_set_test() {
-  // All four names, because each is owned for its own reason and a
+  let assert Error("tools.set may not name GIT_CONFIG_GLOBAL" <> _rest) =
+    catalog.parse_tools(with_tools(
+      "[tools.set]\nGIT_CONFIG_GLOBAL = \"/elsewhere\"",
+    ))
+
+  // All five names, because each is owned for its own reason and a
   // check that only covered `PATH` would look exactly like this one.
   let assert Error("tools.set may not name HOME" <> _rest) =
     catalog.parse_tools(with_tools("[tools.set]\nHOME = \"/elsewhere\""))

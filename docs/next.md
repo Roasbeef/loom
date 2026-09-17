@@ -1,5 +1,28 @@
 # Next
 
+## Git identity in the sandbox, September 17
+
+The `fix/git-identity` branch starts at `5c5ed817`. Session startup resolves
+the operator's global `user.name` and `user.email` through a read-only jailed
+Git command, including conditional includes for the opened workspace. It
+publishes only those values and `user.useConfigOnly` to the tool home through
+the broker. Repository identity overrides and existing commit authors retain
+their normal precedence. Missing identity refuses a commit rather than guessing
+an email from the host name. Imported operator hooks keep their normal HOME.
+
+Independent review found that writing the shared configuration in place could
+race another startup or an existing Git reader. Publication now builds a unique
+sibling file and renames it atomically. The real-jail regression runs two
+preparations with an existing reader and an occupied destination lock. All six
+identity regressions pass on macOS, as do the two-session startup and tighter
+execution-limit runtime regressions. Full `make check` passed with exit status
+zero: 1,867 client, 563 TUI and 306 code-mode tests; lint reports zero errors
+and 809 warnings. The identity fixture also passes with the existing test
+convention that tolerates unavailable resource-accounting layers while still
+requiring the filesystem denial.
+Linux execution, hosted CI, publication and installation have not been performed
+for this branch. Earlier sections below describe their own historical baselines.
+
 ## Resident host capture and memory review
 
 PR #441 adds the optional BEAM memory review skill in both

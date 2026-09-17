@@ -1422,8 +1422,15 @@ fn tool_set_pairs(
 // came from this file would resolve a different `gleam` than the one the
 // compiler uses, and one whose `HOME` did would source the operator's
 // own dotfiles from inside the jail. LOOM_SCRATCH_DIR is filled by the
-// helper only after the execution's scratch has been prepared.
-const server_owned_names = ["PATH", "HOME", "TMPDIR", "LOOM_SCRATCH_DIR"]
+// helper only after the execution's scratch has been prepared. The Git
+// global path selects the identity-only defaults prepared before model work.
+const server_owned_names = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "LOOM_SCRATCH_DIR",
+  "GIT_CONFIG_GLOBAL",
+]
 
 fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
   case list.contains(server_owned_names, name) {
@@ -1433,7 +1440,7 @@ fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
         place
         <> " may not name "
         <> name
-        <> ": PATH, HOME, TMPDIR and LOOM_SCRATCH_DIR are owned by the"
+        <> ": PATH, HOME, TMPDIR, LOOM_SCRATCH_DIR and GIT_CONFIG_GLOBAL are owned by the"
         <> " server and jail helper so tools use the selected toolchain,"
         <> " workspace and scratch directory",
       )

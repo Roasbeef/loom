@@ -49,6 +49,7 @@ import client/extension/manifest as extension_manifest
 import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
+import client/git_identity
 import client/history
 import client/hookcompat
 import client/hookrunner
@@ -256,7 +257,10 @@ pub fn hook_environment(
   workspace: String,
 ) -> List(#(String, String)) {
   let based = case home {
-    Some(operator) -> list.key_set(environment, "HOME", operator)
+    Some(operator) ->
+      environment
+      |> list.filter(fn(pair) { pair.0 != git_identity.environment_name })
+      |> list.key_set("HOME", operator)
     None -> environment
   }
   list.key_set(based, "CLAUDE_PROJECT_DIR", workspace)
@@ -2973,6 +2977,21 @@ fn assemble_in(
       env: environment,
       entropy:,
     )
+
+  // Resolve identity before the runtime can commit. Only global identity
+  // defaults cross into the tool home; repository settings retain precedence.
+  use identity_warning <- result.try(git_identity.prepare(
+    worktree_wiring,
+    settings.home,
+    reading: env_text,
+  ))
+  case identity_warning {
+    None -> Nil
+    Some(reason) ->
+      log.warn(logger, "tools.git_identity_unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
+  }
   use git_start <- result.try(
     session_git.prepare(opened, settings.session_id, settings.workspace, fn() {
       worktree_diff.starting_revision(worktree_wiring)
@@ -3889,7 +3908,7 @@ const hook_step_id = "extension-hooks"
 /// `bash` tool runs, a satellite, a hook host.
 ///
 /// Allowlist-constructed and shared by the tool path and the hook path,
-/// so a host launched by whichever came first is the same host. Four
+/// so a host launched by whichever came first is the same host. Five
 /// names, each earned by a failure a live drive produced:
 ///
 /// - `PATH` is the toolchain's when code mode found one, so `gleam` and
@@ -3904,6 +3923,10 @@ const hook_step_id = "extension-hooks"
 ///   operator's checkout — an untracked directory in every `git status`
 ///   the model ran. A home of its own keeps what a toolchain writes to
 ///   `$HOME` off the tree.
+/// - `GIT_CONFIG_GLOBAL` names the identity-only configuration prepared by
+///   `git_identity`. Repository overrides still win; absent identity refuses a
+///   commit instead of using the host name. Imported operator hooks retain
+///   their normal HOME and global configuration.
 /// - `TMPDIR` is a writable directory under the workspace. It remains
 ///   the fallback when no private scratch is available. Code mode pins
 ///   its compiler's `TMPDIR` to the build root, independently of scratch.
@@ -3919,6 +3942,7 @@ const hook_step_id = "extension-hooks"
 ///   == [
 ///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
 ///     #("HOME", "/work/.codemode/home"),
+///     #("GIT_CONFIG_GLOBAL", "/work/.codemode/home/gitconfig"),
 ///     #("TMPDIR", "/work/.codemode/tmp"),
 ///     #("LOOM_SCRATCH_DIR", ""),
 ///   ]
@@ -3932,6 +3956,10 @@ pub fn session_environment(
   [
     #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
     #("HOME", tool_home_directory(workspace)),
+    #(
+      git_identity.environment_name,
+      tool_home_directory(workspace) <> "/gitconfig",
+    ),
     #("TMPDIR", tool_tmp_directory(workspace)),
     #("LOOM_SCRATCH_DIR", ""),
   ]
@@ -3954,10 +3982,10 @@ pub fn tool_home_directory(workspace: String) -> String {
 }
 
 /// The whole environment a jailed tool shell of this session runs under:
-/// the four names the server owns, then whatever the `[tools]` table
+/// the five names the server owns, then whatever the `[tools]` table
 /// added.
 ///
-/// The order is the guarantee. `session_environment`'s four names come
+/// The order is the guarantee. `session_environment`'s five names come
 /// first and nothing after them may repeat one. The server selects the
 /// workspace and toolchain paths, and the helper supplies actual scratch;
 /// configuration cannot replace either owner's choice.
@@ -4550,7 +4578,11 @@ pub fn allowing_tool_tmpdir(
   policy.SandboxPolicy(
     ..base,
     env_allow: list.unique(
-      list.append(base.env_allow, ["TMPDIR", "LOOM_SCRATCH_DIR"]),
+      list.append(base.env_allow, [
+        "TMPDIR",
+        "LOOM_SCRATCH_DIR",
+        git_identity.environment_name,
+      ]),
     ),
   )
 }

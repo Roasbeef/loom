@@ -247,8 +247,9 @@ The same table carries the environment those shells need with the network
 — `env` naming host variables read at boot, `[tools.set]` carrying
 literals — because `gh` with egress and no token is `gh` that does not
 work. Every name it mentions joins the base's `env_allow` too, since the
-meet intersects that list as well. `PATH`, `HOME`, `TMPDIR` and
-`LOOM_SCRATCH_DIR` are refused from both lists. The server derives `PATH`,
+meet intersects that list as well. `PATH`, `HOME`, `TMPDIR`,
+`LOOM_SCRATCH_DIR` and `GIT_CONFIG_GLOBAL` are refused from both lists.
+The server derives `PATH`,
 `HOME` and `TMPDIR` from the workspace and discovered toolchain; taking
 them from a config file could select a different compiler or source the
 operator's dotfiles inside the jail. `LOOM_SCRATCH_DIR` is supplied
@@ -258,6 +259,19 @@ only when bubblewrap mounted scratch. A configured host scratch path is
 reported as configured. When no scratch exists, the variable is absent and
 `${LOOM_SCRATCH_DIR:-$TMPDIR}` uses the existing workspace fallback. Private
 scratch is removed at execution retirement; a configured host path persists.
+
+Git uses a generated global configuration in the tool home. Before admitting
+model work, `client/git_identity` queries the operator's global `user.name` and
+`user.email` with Git, including conditional includes in the workspace context.
+Only those values cross into the generated file; credentials, hooks and other
+configuration do not. Both the read-only query and the write run through the
+broker, so publication cannot follow a symlink beyond the session's write
+permission. Publication renames a complete temporary file over the destination,
+so concurrent sessions always read a complete configuration.
+The file sets `user.useConfigOnly=true`: absent identity makes a
+commit fail instead of inventing an email from the hostname. Repository-local
+and worktree-local overrides still win, and cherry-picks retain their authors.
+Imported operator hooks use their original HOME and global configuration.
 
 There is no allowlist, deliberately. Host-level `allow = ["github.com"]`
 needs the egress proxy this phase does not build, and a config key that
