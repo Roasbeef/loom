@@ -114,7 +114,8 @@ type BeginPermit {
 /// arguments' worth of it.
 type Startup {
   Startup(
-    surface: effects.ProviderSurface,
+    prepare: fn(effects.RequestSpec) -> stream.PreparedStream,
+    timeout_ms: Int,
     spec: effects.RequestSpec,
     observe: fn() -> ObservationCallback,
     mode: ObservationMode,
@@ -350,7 +351,8 @@ pub fn prepare(
   observe: fn(stream.StreamEvent) -> Nil,
 ) -> stream.PreparedStream {
   prepare_observed(
-    surface,
+    preparation(surface),
+    effects.provider_timeout_ms(surface),
     spec,
     fn() { repeated_observer(observe) },
     BlockingObservation,
@@ -370,7 +372,13 @@ pub fn prepare(
 /// ```
 @internal
 pub fn prepare_preview(surface, spec, observe: fn() -> ObservationCallback) {
-  prepare_observed(surface, spec, observe, PreviewObservation)
+  prepare_observed(
+    preparation(surface),
+    effects.provider_timeout_ms(surface),
+    spec,
+    observe,
+    PreviewObservation,
+  )
 }
 
 fn repeated_observer(
@@ -382,10 +390,77 @@ fn repeated_observer(
   })
 }
 
-fn prepare_observed(surface, spec, observe, mode) {
+// Project before building any wrapper. Retaining both facades of an inner
+// prepared surface doubles its closure graph at every observation layer.
+fn preparation(surface: effects.ProviderSurface) {
+  case surface {
+    effects.PreparedProviderSurface(prepare:, ..) -> prepare
+    effects.ProviderSurface(request:, ..) -> fn(spec) {
+      stream.PreparedStream(handle: request(spec), begin: fn() { Nil })
+    }
+  }
+}
+
+/// Adds an observer while retaining only the inner preparation capability.
+/// Existing request and prepare entry points retain their publication order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // provider_relay.observing(surface, fn(spec) { observer(spec) })
+/// ```
+@internal
+pub fn observing(
+  surface: effects.ProviderSurface,
+  observe: fn(effects.RequestSpec) -> fn(stream.StreamEvent) -> Nil,
+) -> effects.ProviderSurface {
+  observed_surface(
+    surface,
+    fn(spec) { repeated_observer(observe(spec)) },
+    BlockingObservation,
+  )
+}
+
+/// Adds preview observation without retaining the inner compatibility facade.
+/// The observer factory still executes inside the relay's observer process.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // provider_relay.previewing(surface, fn(spec) { observer(spec) })
+/// ```
+@internal
+pub fn previewing(
+  surface: effects.ProviderSurface,
+  observe: fn(effects.RequestSpec) -> ObservationCallback,
+) -> effects.ProviderSurface {
+  observed_surface(surface, observe, PreviewObservation)
+}
+
+fn observed_surface(surface, observe, mode) {
+  let inner_prepare = preparation(surface)
+  let timeout_ms = effects.provider_timeout_ms(surface)
+  let prepare = fn(spec) {
+    prepare_observed(
+      inner_prepare,
+      timeout_ms,
+      spec,
+      fn() { observe(spec) },
+      mode,
+    )
+  }
+  effects.PreparedProviderSurface(
+    request: fn(spec) { prepare(spec) |> stream.start_prepared },
+    prepare:,
+    timeout_ms:,
+  )
+}
+
+fn prepare_observed(prepare, timeout_ms, spec, observe, mode) {
   let consumer = process.self()
   let outer = process.new_subject()
-  let startup = Startup(surface:, spec:, observe:, mode:, consumer:, outer:)
+  let startup =
+    Startup(prepare:, timeout_ms:, spec:, observe:, mode:, consumer:, outer:)
   case start_guard(startup) {
     Ok(started) -> published(started, outer, consumer)
 
@@ -447,14 +522,15 @@ fn published(
   consumer: Pid,
 ) -> stream.PreparedStream {
   let #(control, begin) = started.data
-  let owner = custodian.start(started.pid, control, Cancel, consumer)
+  let guard = started.pid
+  let owner = custodian.start(guard, control, Cancel, consumer)
   stream.PreparedStream(
     handle: stream.owned(
       events: outer,
       owner: custodian.owner(owner),
       cancel: fn() { custodian.cancel(owner) },
     ),
-    begin: fn() { begin_guard(begin, owner, started.pid) },
+    begin: fn() { begin_guard(begin, owner, guard) },
   )
 }
 
@@ -783,7 +859,7 @@ fn open_inner(
   acknowledged: Subject(Nil),
 ) -> sm.Next(Phase, Data, Msg) {
   let stream.PreparedStream(handle: inner, begin: begin_inner) =
-    effects.prepare_provider(startup.surface, startup.spec)
+    startup.prepare(startup.spec)
   let drain = watch_inner(inner)
   let observations = process.new_subject()
   let relay =
@@ -793,7 +869,7 @@ fn open_inner(
       observations:,
       outer: startup.outer,
       consumer: startup.consumer,
-      request_timeout_ms: effects.provider_timeout_ms(startup.surface) + 100,
+      request_timeout_ms: startup.timeout_ms + 100,
       drain:,
       observation: Idle,
       mode: startup.mode,
@@ -801,7 +877,7 @@ fn open_inner(
         startup.spec,
         stream.RelaySource,
         stream.TerminalResponse,
-        effects.provider_timeout_ms(startup.surface) + 100,
+        startup.timeout_ms + 100,
         cancel_grace_ms,
       ),
     )
