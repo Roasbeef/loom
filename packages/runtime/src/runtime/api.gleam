@@ -336,15 +336,19 @@ pub fn open_published(
     )
     |> result.map_error(describe_session_error),
   )
+
+  // These callbacks become retained supervisor restart inputs. Project
+  // options before closure construction so writer-only subscribers and
+  // callbacks do not travel with every driver and publication callback.
+  let strand = options.strand
+  let settings = options.settings
+  let stream_options = options.stream_options
+  let retry_policy = options.retry_policy
+  let poll_interval_ms = options.poll_interval_ms
+  let logger = options.logger
+
   let describe_runtime = fn(tree) {
-    Runtime(
-      tree:,
-      session:,
-      session_id:,
-      effects:,
-      strand: options.strand,
-      settings: options.settings,
-    )
+    Runtime(tree:, session:, session_id:, effects:, strand:, settings:)
   }
   let config =
     supervisor.Config(
@@ -358,13 +362,13 @@ pub fn open_published(
         // writer address. No placeholder can escape into a live driver.
         strand_runtime.Options(
           writer:,
-          strand: options.strand,
+          strand:,
           effects:,
-          stream_options: options.stream_options,
-          retry_policy: options.retry_policy,
-          poll_interval_ms: options.poll_interval_ms,
+          stream_options:,
+          retry_policy:,
+          poll_interval_ms:,
           claim_reaper:,
-          logger: options.logger,
+          logger:,
         )
       },
       tolerance: options.tolerance,
