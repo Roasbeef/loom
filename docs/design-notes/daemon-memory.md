@@ -472,3 +472,36 @@ fixture. The opt-in shipped-daemon fixtures and Linux-only MCP death check
 remain skipped on this macOS run. Documentation checks report zero errors;
 lint remains at zero errors, 804 warnings and 78 R12 findings. Independent
 review of the follow-up found no correctness defect.
+
+
+## 2026-09-16 production verification after PR #438
+
+A non-collecting observation of the installed `eadc0587` daemon measured
+960.9 MiB RSS, 1,124.645 MiB BEAM allocation, and 1,074.903 MiB process
+memory. Binary memory was 12.333 MiB; ETS accounted for 1.041 MiB. Process
+heaps dominate this cut. Workload and collection history differ from the
+previous observation, so the lower total is not a causal PR-wide saving.
+
+The socket fix is visible in production: each of five transport callbacks in
+three inspected connections flattened to approximately 0–1 KiB. The earlier
+whole-attachment callback flattened to 10.931 MiB. This validates the capture
+boundary directly without attributing the whole daemon delta to it.
+
+Static supervisors still allocated 244.920 MiB, factory supervisors 81.714
+MiB, and state machines 126.773 MiB. One supervisor child specification
+contained a 10.946 MiB flattened Effects value, including 5.038 MiB of hooks.
+An advisor/wiring descendant retained a 0.981 MiB configuration dominated by
+a 23-entry tool registry. These are copy-cost measurements, not additive
+estimates of reclaimable resident memory. Narrowing hook inputs and measuring
+restart closure fanout are the next candidates; neither saving is proven yet.
+
+A 60.121 MiB actor exposed only 18 KiB of application state through
+`sys:get_state`. In pinned Weft 0.4.4, that interface omits the loop handler,
+shutdown callback, selectors and timers. The difference therefore cannot be
+classified as garbage without inspecting those roots or collecting in a
+controlled experiment. No forced collection, restart, hot patch or target-side
+probe-module load was performed for this observation. Existing attached clients
+predated PR #438, so their measurements cannot validate the new client build.
+
+The optional [BEAM memory review skill](../../.claude/skills/beam-memory-review/SKILL.md)
+records this distinction and a repeatable ownership and copy-cost review.
