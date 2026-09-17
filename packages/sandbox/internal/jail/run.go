@@ -295,7 +295,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 				"outside it", prot, selfExe)
 		}
 
-		plan := MountPlan(jailed, kinds, selfExe)
+		plan := mountPlanWithSystemRoots(jailed, kinds, selfExe, systemRootsFor(jailed, SystemRoots))
 
 		// A PathMissing protected path bwrap cannot actually mask —
 		// creating its mount point needs write access to the parent
@@ -341,7 +341,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		// Audited here, reported only if stage 2 later proves the plan
 		// was actually executed. See mounts.go for both halves.
 		mounts = AuditMounts(jailed, plan)
-		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds, selfExe)...)
+		argv = append([]string{feat.BwrapPath}, bwrapArgsForPlan(jailed, plan)...)
 		argv = append(argv, stage2Argv(jailed.ScratchIsTmpfs())...)
 	case feat.Platform.GOOS == "darwin":
 		if feat.SeatbeltPath != SeatbeltExecutable {

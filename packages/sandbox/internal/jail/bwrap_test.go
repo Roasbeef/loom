@@ -729,12 +729,19 @@ func jailFixture(t *testing.T) string {
 // touch the network.
 func inJail(t *testing.T, p policy.Policy, kinds map[string]PathKind, script string) string {
 	t.Helper()
+	plan := mountPlanWithSystemRoots(p, kinds, "", systemRootsFor(p, SystemRoots))
+	return inJailPlan(t, p, plan, script)
+}
+
+// inJailPlan exercises an already prepared plan through the production renderer.
+func inJailPlan(t *testing.T, p policy.Policy, plan []MountOp, script string) string {
+	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		t.Skip("mount precedence is bwrap's to apply; no bwrap on this host")
 	}
 	p.Network = policy.Network{Mode: policy.NetworkFull}
-	argv := append(BwrapArgs(p, kinds, ""), "/bin/sh", "-c", script)
+	argv := append(bwrapArgsForPlan(p, plan), "/bin/sh", "-c", script)
 	out, _ := exec.Command(bwrap, argv...).CombinedOutput()
 	return string(out)
 }

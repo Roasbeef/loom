@@ -1,5 +1,17 @@
 # Next
 
+## Whole-host system aliases
+
+`sandbox: resolve inherited system aliases` repairs Linux jail startup when
+a whole-root policy inherits paths such as `/bin -> usr/bin`. It resolves
+automatic system roots before building one plan for audit and execution,
+retaining their read-only permissions and the existing masks. The original
+failures reproduce on `928b3dd9`; patched focused Linux tests pass three
+race-enabled runs, and full native and Linux sandbox race suites pass.
+The independent review and remaining explicit-policy alias limitation are in
+[the review note](review/system-root-aliases.md). Hosted CI and merge are
+pending; no daemon installation is part of this work.
+
 ## Child run lifecycle
 
 The `agent/child-run-lifecycle` branch is rebased onto `eadc0587`, including
@@ -18,8 +30,8 @@ parent-finalization race regression. After rebasing, the affected package gates
 also passed: 144 runtime, 466 tools, 304 code-mode and 1,858 client tests.
 The rebased source commit is patch-equivalent to the reviewed implementation.
 Lint reports zero errors and 809 warnings; the documentation check passes.
-This branch has not been installed or merged. The sections below
-retain their historical baselines.
+This work merged as PR #440 at `928b3dd9`. Installation state has not been
+reverified here. The sections below retain their historical baselines.
 
 ## Closure retention, September 16
 

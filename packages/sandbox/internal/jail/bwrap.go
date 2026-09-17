@@ -172,6 +172,12 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 // MaskSource. Neither can be read through, written through, or created
 // in.
 func BwrapArgs(p policy.Policy, kinds map[string]PathKind, helper string) []string {
+	return bwrapArgsForPlan(p, MountPlan(p, kinds, helper))
+}
+
+// bwrapArgsForPlan renders the same plan that the mount audit inspected.
+// Host path resolution happens before planning, never between audit and exec.
+func bwrapArgsForPlan(p policy.Policy, plan []MountOp) []string {
 	args := []string{
 		// Tie the jail's lifetime to the helper: if the helper dies, the
 		// kernel delivers SIGKILL to bwrap and the PID namespace dies
@@ -193,7 +199,7 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind, helper string) []stri
 		// fails closed to no direct network (see BlocksDirectNetwork).
 		args = append(args, "--unshare-net")
 	}
-	for _, op := range MountPlan(p, kinds, helper) {
+	for _, op := range plan {
 		args = append(args, op.Argv...)
 	}
 
@@ -293,6 +299,14 @@ type MountOp struct {
 // overlaps between the four path lists are decided here, once, instead
 // of falling out of the order the lists are appended in.
 func MountPlan(p policy.Policy, kinds map[string]PathKind, helper string) []MountOp {
+	return mountPlanWithSystemRoots(p, kinds, helper, SystemRoots)
+}
+
+// mountPlanWithSystemRoots keeps host discovery outside the precedence model.
+// A whole-host view supplies symlinks absent from the minimal root, so its
+// caller supplies the resolved system destinations before grants are sorted.
+func mountPlanWithSystemRoots(p policy.Policy, kinds map[string]PathKind,
+	helper string, systemRoots []string) []MountOp {
 	// Grants, keyed by region, so two grants naming the same path
 	// resolve by class instead of being emitted twice and overwritten.
 	grants := make(map[string]MountOp)
@@ -317,7 +331,7 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind, helper string) []Moun
 	// this class is how the audit knows the jail was built on the minimal
 	// base view rather than on a bind of the host.
 	grant(MountOp{Class: ClassRootTmpfs, Path: "/"})
-	for _, sys := range SystemRoots {
+	for _, sys := range systemRoots {
 		grant(readableRootOp(sys))
 	}
 

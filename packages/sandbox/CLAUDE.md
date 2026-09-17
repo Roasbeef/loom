@@ -63,7 +63,13 @@ only Go module.
   behaviour. `PathKind` and `MaskSource` are its protected-path half,
   `ClassMountReadOnly`/`ClassMountReadWrite` are the explicit mounts, and
   `ClassRootTmpfs` is the empty tmpfs at `/` the minimal base view
-  starts from. `MountPlan` and `BwrapArgs` take the helper's own binary
+  starts from. Before planning a whole-host bind from a readable root,
+  writable root or scratch, `systemRootsFor` resolves the automatic system
+  directories through host symlinks. Otherwise `/bin -> usr/bin` is already
+  present when bubblewrap tries to mount onto `/bin`, and startup fails.
+  The resolved targets remain read-only, including under a writable `/`;
+  minimal-root plans retain the legacy destinations. `Start` audits and
+  renders the same prepared plan. `MountPlan` and `BwrapArgs` take the helper's own binary
   path as their last argument: stage 2 is loom-exec re-executed inside
   the jail, so a base view that does not carry it is a jail that cannot
   start, and where the helper was installed is the helper's knowledge
