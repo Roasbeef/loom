@@ -1,5 +1,31 @@
 # tui
 
+## Automatic permission dialog
+
+A newly pending exact request opens `approval_panel` for an owner or operator.
+The dialog captures the record's sequence, action and grants. Metadata refreshes
+cannot replace that question before a decision. The terminal tracks presented
+questions by ID and sequence, so dismissal does not reopen the same question
+and a reopened request with a new sequence is offered again.
+
+No action is selected on opening. Left/right or Tab selects Allow once, Allow
+for session, or Deny; Enter confirms and Escape defers. Session approval sends
+`approve` with `scope: "session"` and is available only for complete filesystem
+or full-network grant sets. Other grants and incomplete details cannot receive
+session approval. Legacy `/approve` retains once-only behavior. The server
+commits the session authority and exact decision atomically. See protocol 041.
+
+
+## Session directory access
+
+`/add-dir PATH` adds read access; `/add-write-dir PATH` (also `/add-dir --write PATH`) adds read and write
+access. The parser preserves spaces in the remaining path. Both use the
+session-scoped `set_config.add_directory` command, subject to the same mutable
+attachment gate as approvals. The terminal displays canonical additions from
+the server's committed config snapshot. Grants belong to the saved session
+and survive reconnect or reopening; they affect subsequent invocations.
+
+
 ## Streamed response handoff
 
 For generation and poll observations carrying a reserved response entry,

@@ -22,6 +22,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import tools/agent
+import tools/directory_access
 import tools/tool.{type Ctx}
 
 // --- fixtures --------------------------------------------------------------
@@ -34,6 +35,7 @@ fn an_op(seed: Int) -> OpId {
 fn ctx_for(strand: String, step: String, index: Int) -> Ctx {
   let workspace = "/nonexistent/loom-agent-test"
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand:,
     op_id: an_op(11),

@@ -27,11 +27,13 @@ import core/ids
 import gleam/int
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/string
 import simplifile
 import support/addresses
 import tools/blob
 import tools/codemode as codemode_tool
+import tools/directory_access
 import tools/fs
 import tools/tool
 
@@ -611,6 +613,7 @@ fn request_over(root: String) -> codemode_tool.Request {
   let #(op, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 3))
   codemode_tool.Request(
+    directory_access: directory_access.none(),
     source: "pub fn main() { todo }",
     seam: codemode_tool.WorkspaceSeam,
     strand: "main",
@@ -667,4 +670,48 @@ fn directories(entries: List(workspace.DirEntry)) -> List(String) {
 
 fn counting(count: Int) -> List(Int) {
   int.range(from: count, to: 0, with: [], run: list.prepend)
+}
+
+pub fn explicit_directory_authority_reaches_capabilities_test() {
+  let root = fresh("added-directory")
+  let added = root <> "-outside"
+  let assert Ok(Nil) = simplifile.create_directory_all(added)
+    as "the added directory must exist"
+  let assert Ok(Nil) = simplifile.write(added <> "/input", "shared")
+    as "the shared input must exist"
+  let base = request_over(root)
+  let read_request =
+    codemode_tool.Request(
+      ..base,
+      directory_access: directory_access.Access([added], []),
+    )
+  let read_only = codemode.workspace_seam(config_over(root), read_request)
+  assert read_only.fs_read(added <> "/input") == Ok("shared")
+  let search = codemode.search_seam_with_access(root, [added])
+  let assert Ok(entry) = search.stat(added <> "/input")
+    as "metadata lookup must use the same added directory authority"
+  assert entry.path == added <> "/input"
+  assert search.stat(root <> "-elsewhere/input") |> result.is_error
+
+  assert read_only.fs_write(added <> "/output", "denied") != Ok(Nil)
+  let write_request =
+    codemode_tool.Request(..read_request, grants: [
+      policy.GrantWritableRoot(added),
+    ])
+  let writable = codemode.workspace_seam(config_over(root), write_request)
+  assert writable.fs_write(added <> "/output", "allowed") == Ok(Nil)
+  assert simplifile.read(added <> "/output") == Ok("allowed")
+  assert writable.fs_write(root <> "-elsewhere/output", "denied") != Ok(Nil)
+  let protected =
+    codemode_tool.Request(
+      ..write_request,
+      base_policy: policy.SandboxPolicy(..base.base_policy, protected: [
+        added <> "/private",
+      ]),
+    )
+  assert codemode.workspace_seam(config_over(root), protected).fs_write(
+      added <> "/private/key",
+      "denied",
+    )
+    != Ok(Nil)
 }

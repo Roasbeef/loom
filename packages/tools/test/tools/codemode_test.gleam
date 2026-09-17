@@ -26,6 +26,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import tools/codemode
+import tools/directory_access
 import tools/prelude
 import tools/tool.{type Ctx}
 
@@ -39,6 +40,7 @@ fn an_op(seed: Int) -> OpId {
 fn ctx_for(step: String) -> Ctx {
   let workspace = "/nonexistent/loom-codemode-test"
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id: an_op(7),

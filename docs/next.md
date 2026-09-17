@@ -1,14 +1,49 @@
 # Next
 
-Read this first for the current work, settled boundaries and remaining
-acceptance. Detailed verification belongs in the linked review records.
+The current directory-permission work is based on merged main `c5fb6038`,
+checked September 16, 2026. The earlier sections below describe their own
+historical verification. In particular, their claim that PR #434 is unmerged
+is obsolete: this branch starts at its merge commit. Installed-release status
+has not been rechecked.
 
-This edition is based on merged main `228078b6`, including updater #423 and
-compiler-pin #424, plus the local `make update` and release-automation changes,
-checked September 15, 2026. PR #424 passed hosted CI and Linux signoff before
-merge. The new tag workflow has passed local script tests and workflow lint;
-its native macOS reproduction and GitHub draft upload remain unverified until
-hosted execution. No release was tagged or published by this work.
+## Session directory access
+
+The `session-directory-permissions` branch adds `/add-dir PATH` for
+read-only access and `/add-write-dir PATH` (also `/add-dir --write PATH`) for read/write access. Additions
+are durable for one saved session and apply to subsequent native file tools,
+foreground commands, background jobs and code-mode workspace capabilities.
+Existing executions keep their captured authority. Protected writes remain
+denied. Proposal 040 records the ownership and wire contract; the
+[review record](review/session-directory-permissions.md) records the findings,
+regressions and remaining boundaries. The full `make check` gate passed with
+exit status zero after the dialog follow-up, including 464 tools, 1,850 client
+and 558 TUI tests. Lint and documentation checks report zero errors; warning
+censuses remain. Seeded
+code-mode checks also passed: 304 code-mode tests and 13 client live tests,
+with the Linux-only MCP death-observation fixture reporting a skip.
+
+Shell and code-mode arguments can request extra filesystem or full-network
+permissions through existing action-bound approvals before execution. Native
+file tools can ask for their missing target access directly. Kernel errors
+remain tool results because automatically retrying an arbitrary program could
+repeat earlier effects.
+
+PR #437 also adds automatic permission dialogs with Allow once, Allow for
+session, and Deny. Remembered filesystem and full-network grants survive a
+session reopen. Proposal 041 records the atomic approval-and-permission write
+and the captured-question contract. A fresh independent review identified and
+verified a fix for a late lookup replacing an open dialog. Raw syscall errors
+still require the agent to submit a new permission request; no command is
+automatically replayed after partial execution. Manual installed-TUI testing
+remains the next operator check.
+
+Boot defaults are unchanged. Host-filtered networking remains issue #214;
+full secret-store backend support remains issue #181. Host-command secret
+resolution and origin-bound brokered HTTP credential injection already exist.
+Neither issue is part of this directory-permission implementation. No daemon
+or installed configuration was changed.
+
+## Earlier work and verification
 
 ## Jailed scratch follow-up
 

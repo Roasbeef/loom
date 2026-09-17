@@ -8,8 +8,10 @@ import broker/policy.{type Grant}
 import client/advisor
 import client/advisorguard
 import client/catalog
+import client/directories
 import client/gateway
 import client/grants
+import client/permissions
 import client/protocol
 import client/provider_relay
 import client/schedule
@@ -41,10 +43,12 @@ import runtime/effects
 import runtime/escalation as durable
 import runtime/writer
 import session/session
+import simplifile
 import storage/access
 import storage/storage
 import support/addresses
 import support/tool_registry
+import tools/directory_access
 import tools/tool
 import tui/advisor_pending as terminal_nudges
 import tui/notes_view as terminal_notes
@@ -4702,4 +4706,239 @@ pub fn draining_waits_for_transport_flush_outside_the_gateway_test() {
     as "the transport acknowledgement releases the drain caller"
   let assert weft.AllDelivered = weft.pull(draining, within: 1000)
     as "the bounded drain task retires after its acknowledgement"
+}
+
+fn directory_harness(root: String) -> Harness {
+  let harness = start_harness()
+  let live = harness.runtime
+  let admin =
+    directories.admin(
+      live.session,
+      fn() { Ok(live) },
+      root,
+      policy.SandboxPolicy(..policy.workspace_default(root), protected: [
+        root <> "/private",
+      ]),
+    )
+  let name = addresses.new()
+  let options =
+    gateway.default_options("sess-01", live) |> gateway.with_directories(admin)
+  let assert Ok(_) = gateway.start_host_fixture(options, name)
+    as "the directory gateway must start"
+  let hub = gateway.Gateway(name:)
+  let inbox = process.new_subject()
+  let assert Ok(connection) =
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    as "the operator must attach"
+  Harness(..harness, hub:, connection:, inbox:)
+}
+
+pub fn add_directory_commits_read_only_then_upgrades_without_widening_neighbors_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directory-config-test"
+  let shared = root <> "/shared"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the granted directory must exist"
+  let harness = directory_harness(root)
+  subscribe(harness)
+  let addition = fn(access) {
+    json.Object([
+      #(
+        "add_directory",
+        json.Object([
+          #("path", json.String(shared)),
+          #("access", json.String(access)),
+        ]),
+      ),
+    ])
+  }
+  send(harness, 901, protocol.SetConfig(None, addition("read")))
+  let first = next_reply(harness, 901, 20)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(_)) = first.event
+    as "the operator receives the committed directory snapshot"
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([shared], []))
+  send(harness, 902, protocol.SetConfig(None, addition("write")))
+  let _upgraded = next_reply(harness, 902, 20)
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([shared], [shared]))
+  send(harness, 903, protocol.SetConfig(None, addition("read")))
+  let _duplicate = next_reply(harness, 903, 20)
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([shared], [shared]))
+  assert api.put_fact(harness.runtime, directories.key, json.Object([]))
+    != Ok(Nil)
+}
+
+pub fn add_directory_refuses_protected_missing_and_strand_scoped_requests_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directory-refusals-test"
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/private")
+    as "the protected directory must exist"
+  let harness = directory_harness(root)
+  subscribe(harness)
+  let addition = fn(path) {
+    json.Object([
+      #(
+        "add_directory",
+        json.Object([
+          #("path", json.String(path)),
+          #("access", json.String("write")),
+        ]),
+      ),
+    ])
+  }
+  send(harness, 911, protocol.SetConfig(None, addition(root <> "/private")))
+  let assert protocol.ErrorEvent(..) = next_reply(harness, 911, 20).event
+    as "protected authority cannot be added"
+  send(harness, 912, protocol.SetConfig(None, addition(root <> "/missing")))
+  let assert protocol.ErrorEvent(..) = next_reply(harness, 912, 20).event
+    as "nonexistent directories cannot be added"
+  send(harness, 913, protocol.SetConfig(Some("main"), addition(root)))
+  let assert protocol.ErrorEvent(..) = next_reply(harness, 913, 20).event
+    as "directory authority belongs to the session, not a strand"
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.none())
+}
+
+pub fn add_directory_allows_read_only_access_to_write_protected_directory_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directory-protected-read-test"
+  let protected = root <> "/private"
+  let assert Ok(Nil) = simplifile.create_directory_all(protected)
+    as "the protected directory must exist"
+  let harness = directory_harness(root)
+  subscribe(harness)
+  let addition =
+    json.Object([
+      #(
+        "add_directory",
+        json.Object([
+          #("path", json.String(protected)),
+          #("access", json.String("read")),
+        ]),
+      ),
+    ])
+  send(harness, 921, protocol.SetConfig(None, addition))
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(_)) =
+    next_reply(harness, 921, 20).event
+    as "write protection must not reject an operator's read-only addition"
+  assert directories.read(harness.runtime.session)
+    == Ok(directory_access.Access([protected], []))
+}
+
+pub fn session_approval_remembers_only_the_echoed_grants_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let wanted = [policy.GrantNetwork(policy.NetworkFull), wall(60)]
+  claim(
+    harness,
+    "remember",
+    scope_on("main", op_id(601)),
+    durable.Action("bash", "remember-action", "network request"),
+    wanted,
+  )
+  let _displayed = next_escalation(harness)
+  let seq = current_question_seq(harness, "remember")
+  send(
+    harness,
+    931,
+    protocol.ApproveForSession(
+      "remember",
+      [policy.GrantNetwork(policy.NetworkFull)],
+      "remember-action",
+      seq,
+    ),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 931, 20).event
+    as "the remembered approval is acknowledged after commit"
+  assert record.status == "approved"
+  assert permissions.read(harness.runtime.session)
+    == Ok([policy.GrantNetwork(policy.NetworkFull)])
+  assert api.put_fact(harness.runtime, permissions.key, json.Object([]))
+    != Ok(Nil)
+    as "the model cannot write standing authority"
+}
+
+pub fn session_approval_rejects_stale_or_unsupported_grants_without_persistence_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "remember-stale",
+    scope_on("main", op_id(602)),
+    durable.Action("bash", "remember-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  let seq = current_question_seq(harness, "remember-stale")
+  send(
+    harness,
+    932,
+    protocol.ApproveForSession(
+      "remember-stale",
+      [policy.GrantNetwork(policy.NetworkFull)],
+      "other-action",
+      seq,
+    ),
+  )
+  let assert protocol.ErrorEvent(code: "stale_approval", ..) =
+    next_reply(harness, 932, 20).event
+    as "unseen replacement authority cannot be remembered"
+  assert permissions.read(harness.runtime.session) == Ok([])
+  claim(
+    harness,
+    "remember-limit",
+    scope_on("main", op_id(603)),
+    durable.Action("bash", "limit-action", "long command"),
+    [wall(60)],
+  )
+  let _displayed = next_escalation(harness)
+  send(
+    harness,
+    933,
+    protocol.ApproveForSession(
+      "remember-limit",
+      [wall(60)],
+      "limit-action",
+      current_question_seq(harness, "remember-limit"),
+    ),
+  )
+  let assert protocol.ErrorEvent(code: "bad_request", ..) =
+    next_reply(harness, 933, 20).event
+    as "resource limits cannot become session permissions"
+  assert permissions.read(harness.runtime.session) == Ok([])
+  assert stored(harness, "remember-limit").status == durable.Pending
+}
+
+pub fn once_approval_leaves_session_permissions_absent_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "allow-once",
+    scope_on("main", op_id(604)),
+    durable.Action("bash", "once-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  send(
+    harness,
+    934,
+    protocol.Approve(
+      "allow-once",
+      [policy.GrantNetwork(policy.NetworkFull)],
+      "once-action",
+      0,
+    ),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 934, 20).event
+    as "legacy once-only approval still succeeds"
+  assert record.status == "approved"
+  assert api.fact_cell(harness.runtime, permissions.key) == Ok(None)
 }

@@ -36,6 +36,7 @@ import runtime/effects
 import runtime/lineage
 import session/session
 import support/addresses
+import tools/directory_access
 import tools/schedule as schedule_tool
 import tools/tool
 
@@ -101,6 +102,7 @@ fn stop(rig: Rig) -> Nil {
 
 fn ctx(strand: String) -> tool.Ctx {
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace: "/tmp/loom-scheduleseam-test",
     strand:,
     op_id: an_op(),

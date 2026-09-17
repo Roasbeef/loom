@@ -58,6 +58,7 @@ import support/addresses
 import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
+import tools/directory_access
 import tools/fs
 import tools/search
 import tools/tool
@@ -125,6 +126,7 @@ fn request_widened(
   grants: List(policy.Grant),
 ) -> codemode_tool.Request {
   codemode_tool.Request(
+    directory_access: directory_access.none(),
     source: "pub fn main() { todo }",
     seam:,
     strand: "sub:main/sweep-1-0",
@@ -744,6 +746,7 @@ fn rendered(outcome: tool.ToolOutcome) -> String {
 
 fn ctx_for(workspace: String) -> tool.Ctx {
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id: an_op(3),

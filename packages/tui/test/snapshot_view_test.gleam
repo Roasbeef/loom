@@ -7,12 +7,15 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import etui/keys
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
 import tui
+import tui/approval
+import tui/approval_panel
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -340,4 +343,128 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
   assert list.map(model.tool_tails, fn(tail) { #(tail.strand, tail.call_id) })
     == [#("main", "call-running")]
     as "capture retirement is exact and applies beyond the active strand"
+}
+
+fn pending_permission_cut(seq: Int) -> snapshot.Captured {
+  let value =
+    json.Object([
+      #("id", json.String("permission")),
+      #("status", json.String("pending")),
+      #("tool", json.String("fs_write")),
+      #("preview", json.String("write the requested file")),
+      #("action", json.String("captured-action")),
+      #("origin", json.Null),
+      #(
+        "denial",
+        json.Object([
+          #(
+            "wanted",
+            json.Array([
+              json.Object([
+                #("grant", json.String("writable_root")),
+                #("path", json.String("/shared/output")),
+              ]),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+  let row =
+    json.Object([
+      #("namespace", json.String("fact.custom")),
+      #("key", json.String("escalation/permission")),
+      #("seq", json.Int(seq)),
+      #("value", value),
+    ])
+  snapshot.Captured(..cut(metadata([row]), snapshot.empty()), next_seq: seq + 1)
+}
+
+fn capture_permission(
+  model: tui.Model,
+  captured: snapshot.Captured,
+) -> tui.Model {
+  let assert Ok(view) = snapshot_view.decode(captured)
+    as "the approval metadata must decode"
+  tui.apply_channel_update(
+    model,
+    session_channel.Captured(captured, view, session_channel.Refreshed),
+  )
+}
+
+pub fn pending_permission_automatically_opens_a_dialog_with_captured_consent_test() {
+  let first = pending_permission_cut(11)
+  let opened = capture_permission(pushed.attached(), first)
+  let assert tui.ApprovalInspector(panel) = opened.overlay
+    as "a new pending request must present decision options automatically"
+  let assert approval_panel.Continue(_) =
+    approval_panel.update(keys.Enter, panel)
+    as "an Enter queued before the dialog appeared cannot approve anything"
+  let refreshed = capture_permission(opened, pending_permission_cut(12))
+  let assert tui.ApprovalInspector(still_captured) = refreshed.overlay
+    as "a metadata refresh must not replace the visible question"
+  let assert approval_panel.Continue(selected) =
+    approval_panel.update(keys.Right, still_captured)
+    as "the operator explicitly selects allow once"
+  let assert approval_panel.Decide(review, approval_panel.AllowOnce) =
+    approval_panel.update(keys.Enter, selected)
+    as "the dialog returns its captured decision"
+  assert review.seq == 11
+  assert review.permission
+    == approval.Exact("captured-action", [
+      json.Object([
+        #("type", json.String("writable_root")),
+        #("path", json.String("/shared/output")),
+      ]),
+    ])
+}
+
+pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {
+  let first = pending_permission_cut(21)
+  let opened = capture_permission(pushed.attached(), first)
+  let deferred = tui.Model(..opened, overlay: tui.NoOverlay)
+  let same = capture_permission(deferred, first)
+  assert same.overlay == tui.NoOverlay
+  let reopened = capture_permission(same, pending_permission_cut(22))
+  let assert tui.ApprovalInspector(_) = reopened.overlay
+    as "the same request ID at a new sequence is a new question"
+  let observer_cut =
+    snapshot.Captured(
+      ..first,
+      attachment: snapshot.Attachment(
+        ..first.attachment,
+        role: snapshot.Observer,
+      ),
+    )
+  assert capture_permission(pushed.attached(), observer_cut).overlay
+    == tui.NoOverlay
+    as "read-only observers do not receive decision controls automatically"
+}
+
+pub fn late_lookup_preserves_the_open_question_and_selection_test() {
+  let opened = capture_permission(pushed.attached(), pending_permission_cut(31))
+  let assert tui.ApprovalInspector(panel) = opened.overlay
+    as "the captured question must be visible"
+  let assert approval_panel.Continue(selected) =
+    approval_panel.update(keys.Right, panel)
+    as "the operator selects allow once before the lookup finishes"
+  let looking_up =
+    tui.Model(
+      ..opened,
+      overlay: tui.ApprovalInspector(selected),
+      inspecting_approval: Some("permission"),
+    )
+  let newer = capture_permission(pushed.attached(), pending_permission_cut(32))
+  let updated =
+    tui.apply_channel_update(
+      looking_up,
+      session_channel.LookedUp(newer.approvals, []),
+    )
+  assert updated.overlay == looking_up.overlay
+  assert updated.inspecting_approval == None
+  let assert tui.ApprovalInspector(preserved) = updated.overlay
+    as "the lookup cannot replace the question under review"
+  let assert approval_panel.Decide(review, approval_panel.AllowOnce) =
+    approval_panel.update(keys.Enter, preserved)
+    as "the existing selection remains attached to the captured question"
+  assert review.seq == 31
 }

@@ -52,6 +52,7 @@ import support/fake_mcp
 import tools/agent
 import tools/blob
 import tools/codemode as codemode_tool
+import tools/directory_access
 import tools/tool
 
 // What the jailed `/bin/echo` prints, and therefore what has to survive
@@ -1714,6 +1715,7 @@ fn live_ctx(
 ) -> tool.Ctx {
   let #(op, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_825))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id: op,

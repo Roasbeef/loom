@@ -198,7 +198,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:3418`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:3408`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -220,7 +220,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:389`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:400`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:408`), and its shape is the shape of every admission
 in the system.
@@ -615,7 +615,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:751`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2613`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2602`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -643,7 +643,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:4999`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:5034`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -725,7 +725,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1600`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1474`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1487`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -736,13 +736,13 @@ runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 registry (`run_tool`, `client/wiring.gleam:1283`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:510`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:569`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `call_spec` (`tools/bash.gleam:299`) builds a `CallSpec` naming the
+For `bash`, `call_spec` (`tools/bash.gleam:306`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -1192,7 +1192,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:957`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:973`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1203,7 +1203,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1270`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1286`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3724`). Keying
@@ -1229,7 +1229,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1019`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1035`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans

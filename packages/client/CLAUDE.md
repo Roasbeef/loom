@@ -1,5 +1,40 @@
 # client
 
+## Remembered permission decisions
+
+`permissions` owns `fact.custom/client/permission_grants`, separate from the
+existing-directory additions. It accepts canonical readable/writable paths,
+including exact files that do not exist yet, and full network access. Every
+other grant type remains once-only. `gateway` validates the displayed action,
+sequence and echoed subset before preparing a union of those echoed grants.
+The runtime atomically commits that fact and approval under both expectations.
+
+`wiring.run_tool` validates and snapshots remembered grants once. Their path
+component joins explicit native access; their path and network component joins
+the jail policy. Protected writes remain denied. Reopening the session restores
+this authority, while a paused call resumes with its consumed call approval and
+already-running jobs keep their earlier snapshot. A malformed fact or retargeted
+canonical path refuses dispatch. See protocol 041.
+
+
+## Session directory authority
+
+`directories` owns the reserved `fact.custom/client/directory_access` record.
+The operator gateway accepts `set_config.add_directory`, validates the real
+existing directory and enforces protected paths for write additions, and commits through
+`api.put_reserved_fact_expecting`. The recorded origin attributes the change.
+Observers cannot mutate it, and model fact writes cannot name the reserved
+key. Directory additions survive reopening the session; unreadable, malformed
+or retargeted state refuses tool execution.
+
+`wiring.run_tool` captures additions once and derives the jail policy and
+native `directory_access.Access` separately. Jobs receive the invocation's
+captured policy through `jobseam.Door.start` and `jobs.Request`; they do not
+change when later tools receive new access. Code-mode filesystem and search
+closures capture explicit native roots plus consumed call grants. Installed
+extensions retain their separate installation authority.
+
+
 ## Streamed response handoff
 
 Provider observation identities include the reserved response entry for

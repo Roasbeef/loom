@@ -20,6 +20,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import tools/directory_access
 import tools/schedule
 import tools/tool.{type Ctx}
 
@@ -97,6 +98,7 @@ fn a_ctx() -> Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

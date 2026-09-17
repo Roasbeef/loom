@@ -685,6 +685,8 @@ pub type Model {
     creation_key: Option(String),
     /// Current pending requests and at most sixteen bounded resolved summaries.
     approvals: List(approval.Review),
+    /// Questions already presented locally, keyed by their exact durable sequence.
+    prompted_approvals: List(#(String, Int)),
     /// Exact decision currently requested for local inspection, if any.
     inspecting_approval: Option(String),
     /// Last sent mutation whose outcome was not observed; survives adoption.
@@ -1115,6 +1117,7 @@ pub fn new_model_with_clock(
     reconnect: ReconnectIdle,
     creation_key: None,
     approvals: [],
+    prompted_approvals: [],
     inspecting_approval: None,
     unconfirmed: None,
     next_attempt: 1,
@@ -4404,6 +4407,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         },
         note_board: None,
         approvals: [],
+        prompted_approvals: [],
         inspecting_approval: None,
         records: [],
         streams: [],
@@ -5287,6 +5291,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           captured: None,
           note_board: None,
           approvals: [],
+          prompted_approvals: [],
           overlay: NoOverlay,
           creation_key: case creation_key {
             Some(key) if model.creation_key == Some(key) -> None
@@ -5564,7 +5569,7 @@ fn reconcile_cut(
   case model.captured {
     Some(#(previous, _))
       if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
-    -> Model(..model, captured: Some(#(cut, view)))
+    -> present_pending_approval(Model(..model, captured: Some(#(cut, view))))
     Some(_) | None -> {
       let updated = apply_cut(Model(..model, last_capture: trigger), cut, view)
       let updated = case model.captured {
@@ -5624,7 +5629,37 @@ fn apply_cut(
     Ok(current) -> approval.project(model.approvals, current)
     Error(_) -> []
   }
-  render_cut(model, cut, view, reviews)
+  render_cut(model, cut, view, reviews) |> present_pending_approval
+}
+
+// A question is offered once per exact sequence. Deferring one leaves it in
+// /approvals, while a reopened request with the same ID is a new question.
+fn present_pending_approval(model: Model) -> Model {
+  case model.overlay, model.captured {
+    NoOverlay, Some(#(cut, _)) if cut.attachment.role != snapshot.Observer -> {
+      let seen =
+        list.filter(model.prompted_approvals, fn(identity) {
+          list.any(model.approvals, fn(record) {
+            #(record.id, record.seq) == identity
+          })
+        })
+      let unseen =
+        list.find(model.approvals, fn(record) {
+          record.status == approval.Pending
+          && !list.contains(seen, #(record.id, record.seq))
+        })
+      case unseen {
+        Error(Nil) -> Model(..model, prompted_approvals: seen)
+        Ok(record) ->
+          Model(
+            ..model,
+            prompted_approvals: [#(record.id, record.seq), ..seen],
+            overlay: ApprovalInspector(approval_panel.new(record)),
+          )
+      }
+    }
+    _, _ -> model
+  }
 }
 
 fn render_cut(
@@ -5884,8 +5919,12 @@ fn unconfirmed_lines(unconfirmed: Option(UnconfirmedSubmission)) {
 }
 
 fn inspect_looked_up(model: Model, records, missing) {
-  case model.inspecting_approval {
-    Some(id) ->
+  // A lookup started before automatic presentation may finish while the
+  // operator is reviewing another question. The visible record owns consent
+  // until that dialog closes, including its selection and scroll position.
+  case model.overlay, model.inspecting_approval {
+    ApprovalInspector(_), _ -> Model(..model, inspecting_approval: None)
+    _, Some(id) ->
       case list.find(records, fn(record: approval.Review) { record.id == id }) {
         Ok(record) ->
           Model(
@@ -5899,7 +5938,7 @@ fn inspect_looked_up(model: Model, records, missing) {
             False -> model
           }
       }
-    None -> model
+    _, None -> model
   }
 }
 
@@ -5938,6 +5977,30 @@ fn approval_lines(reviews: List(approval.Review)) {
           "More decisions are captured; /approvals <id> loads an exact decision.",
         ),
       ])
+  }
+}
+
+// The panel returns its captured review. Looking the ID up again here would
+// replace the displayed question with a newer record the operator never saw.
+fn decide_captured_approval(
+  model: Model,
+  record: approval.Review,
+  choice: approval_panel.Choice,
+) -> Model {
+  case mutation_refusal(model, command.Approve(record.id)) {
+    Some(reason) -> append_error(model, reason)
+    None -> {
+      let encoded = case choice {
+        approval_panel.AllowOnce -> approval.approve(model.next_id, record)
+        approval_panel.AllowSession ->
+          approval.approve_for_session(model.next_id, record)
+        approval_panel.Deny -> approval.deny(model.next_id, record)
+      }
+      case encoded {
+        Error(reason) -> append_error(model, reason)
+        Ok(frame) -> send_frame(Model(..model, overlay: NoOverlay), frame)
+      }
+    }
   }
 }
 
@@ -6236,12 +6299,21 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       |> send_frame(protocol.skills(model.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
-    protocol.ConfigSnapshot(model_name:) ->
-      case model_name {
+    protocol.ConfigSnapshot(model_name:, directories:) -> {
+      let model = case model_name {
         Some(name) ->
           Model(..model, current_model: name, notice: "model: " <> name)
         None -> model
       }
+      case directories {
+        None -> model
+        Some(value) ->
+          Model(
+            ..model,
+            notice: "Session directory access: " <> json.to_string(value),
+          )
+      }
+    }
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
     protocol.AdvisorPendingSnapshot(board) ->
       receive_advisor_nudges(model, board)
@@ -8914,6 +8986,8 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
             approval_panel.Close -> Model(..model, overlay: NoOverlay)
             approval_panel.Continue(next) ->
               Model(..model, overlay: ApprovalInspector(next))
+            approval_panel.Decide(record, choice) ->
+              decide_captured_approval(model, record, choice)
           }
         NoOverlay -> update_main_key(key, model)
       }
@@ -9729,7 +9803,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Abort
     | command.Steer(_)
     | command.Queue(_) -> True
-    command.Approve(_) | command.Deny(_) -> True
+    command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
     command.Empty -> model.attachments != []
     command.Help
     | command.Models
@@ -9959,6 +10033,8 @@ fn submit_text(model: Model) -> Model {
       })
     command.Approvals(Some(id)) ->
       request_decisions(Model(..cleared, inspecting_approval: Some(id)), [id])
+    command.AddDirectory(path, access) ->
+      send_frame(cleared, protocol.add_directory(cleared.next_id, path, access))
     command.Approve(id) -> decide(cleared, id, approval.approve)
     command.Deny(id) -> decide(cleared, id, approval.deny)
     command.Notes ->
@@ -10053,6 +10129,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.Sessions
     | command.Rename(_)
     | command.Approvals(_)
+    | command.AddDirectory(..)
     | command.Approve(_)
     | command.Deny(_)
     | command.Notes

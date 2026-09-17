@@ -761,3 +761,63 @@ fn quiet_runtime() -> api.Runtime {
     as "the session tree must boot"
   rt
 }
+
+pub fn remembered_approval_rejects_stale_question_without_writing_fact_test() {
+  let rt = quiet_runtime()
+  let assert Ok(Nil) = api.raise_escalation(rt, "remember-stale", denial())
+    as "the question must exist"
+  let assert Ok(cell) = api.escalation_cell(rt, "remember-stale")
+    as "the displayed question must be captured"
+  let assert Ok(_) = api.deny_escalation_at(rt, cell, None)
+    as "another client wins the decision"
+  let change =
+    api.ReservedFactChange(
+      "client/test_permissions",
+      json.String("allow"),
+      None,
+    )
+  assert api.approve_escalation_with_fact_at(rt, cell, [grant()], None, change)
+    == Error(api.RaceLost)
+  assert api.fact_cell(rt, change.key) == Ok(None)
+  let assert Ok(record) = api.escalation(rt, "remember-stale")
+    as "the winning denial must remain"
+  assert record.status == escalation.Rejected
+  let assert Ok(Nil) = api.close(rt) as "the fixture must drain"
+}
+
+pub fn remembered_approval_fact_conflict_keeps_loser_pending_test() {
+  let rt = quiet_runtime()
+  let assert Ok(Nil) = api.raise_escalation(rt, "remember-one", denial())
+    as "the first question must exist"
+  let assert Ok(Nil) = api.raise_escalation(rt, "remember-two", denial())
+    as "the second question must exist"
+  let assert Ok(first) = api.escalation_cell(rt, "remember-one")
+    as "the first client captured its question"
+  let assert Ok(second) = api.escalation_cell(rt, "remember-two")
+    as "the second client captured its question"
+  let initial =
+    api.ReservedFactChange(
+      "client/test_permissions",
+      json.Array([grant()]),
+      None,
+    )
+  let assert Ok(_) =
+    api.approve_escalation_with_fact_at(rt, first, [grant()], None, initial)
+    as "the first union and approval commit together"
+  let stale_union = api.ReservedFactChange(..initial, value: json.Array([]))
+  assert api.approve_escalation_with_fact_at(
+      rt,
+      second,
+      [grant()],
+      None,
+      stale_union,
+    )
+    == Error(api.RaceLost)
+  let assert Ok(Some(stored)) = api.fact_cell(rt, initial.key)
+    as "the winning permission fact remains present"
+  assert stored.value == initial.value
+  let assert Ok(pending) = api.escalation(rt, "remember-two")
+    as "the losing approval remains pending"
+  assert pending.status == escalation.Pending
+  let assert Ok(Nil) = api.close(rt) as "the fixture must drain"
+}

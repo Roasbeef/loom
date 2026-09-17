@@ -139,8 +139,10 @@ import broker/policy.{type Grant}
 import client/advisor_pending
 import client/catalog
 import client/daemon/transfer
+import client/directories
 import client/grants
 import client/notes_view
+import client/permissions
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
@@ -293,6 +295,8 @@ pub type Options {
     /// Boot diagnostic when code mode could not be registered.
     code_mode_issue: Option(String),
     schedules: Option(scheduleadmin.Admin),
+    /// Operator-owned additions to this session's filesystem authority.
+    directories: Option(directories.Admin),
     /// The effect plane's own sweep of an aborted operation, called by
     /// the `abort` command with the operation it just marked cancelled.
     /// `client/serve` fills it with `broker.abort`; a host assembled
@@ -328,11 +332,23 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     skills: skill.empty(),
     code_mode_issue: None,
     schedules: None,
+    directories: None,
     effect_abort: None,
     worktree_diff: None,
     live_jobs: None,
     context: None,
   )
+}
+
+/// Supplies the authenticated session directory administration door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_directories(options, admin)
+/// ```
+pub fn with_directories(options: Options, admin: directories.Admin) -> Options {
+  Options(..options, directories: Some(admin))
 }
 
 /// Supplies the owner-only worktree reader, run outside the gateway actor.
@@ -658,6 +674,8 @@ type State {
     code_mode_issue: Option(String),
     // The operator's scheduling door, when this host has one.
     schedules: Option(scheduleadmin.Admin),
+    /// Operator-owned additions to this session's filesystem authority.
+    directories: Option(directories.Admin),
   )
 }
 
@@ -869,6 +887,7 @@ fn start_with_delivery(
         skills: options.skills,
         code_mode_issue: options.code_mode_issue,
         schedules: options.schedules,
+        directories: options.directories,
       )
 
     // Prime: advance past everything already in the store, and learn
@@ -1790,6 +1809,7 @@ fn network_command(
     | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
+    | protocol.ApproveForSession(..)
     | protocol.Deny(..)
     | protocol.Fork(..)
     | protocol.Navigate(..)
@@ -2539,6 +2559,7 @@ fn read_only(command: Command) {
     | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
+    | protocol.ApproveForSession(..)
     | protocol.Deny(..)
     | protocol.Fork(..)
     | protocol.Navigate(..)
@@ -3883,6 +3904,20 @@ fn run_command(
         grants,
         action,
         expected_seq,
+        Once,
+      )
+    protocol.ApproveForSession(escalation_id:, grants:, action:, expected_seq:),
+      Subscribed
+    ->
+      approve(
+        state,
+        connection,
+        id,
+        escalation_id,
+        grants,
+        action,
+        expected_seq,
+        ForSession,
       )
     protocol.Deny(escalation_id:, expected_seq:), Subscribed ->
       deny(state, connection, id, escalation_id, expected_seq)
@@ -5201,6 +5236,12 @@ fn sweep_effects(state: State, op: OpId) -> Nil {
 
 // --- escalations -----------------------------------------------------------
 
+// Remembering authority is a separate explicit decision from allowing one call.
+type ApprovalLifetime {
+  Once
+  ForSession
+}
+
 // One approval, decided against one read.
 //
 // An approval used to be a statement about a record id: `grants: None`
@@ -5228,6 +5269,7 @@ fn approve(
   echoed: List(Grant),
   action: String,
   expected_seq: Int,
+  lifetime: ApprovalLifetime,
 ) -> State {
   use cell <- or_refuse(
     pending_escalation_cell(state, escalation_id, expected_seq),
@@ -5244,7 +5286,7 @@ fn approve(
     id,
   )
   use Nil <- or_refuse(
-    commit_approval(state, connection, cell, echoed),
+    commit_approval(state, connection, cell, echoed, lifetime),
     state,
     connection,
     id,
@@ -5357,15 +5399,36 @@ fn commit_approval(
   connection: Int,
   cell: api.EscalationCell,
   echoed: List(Grant),
+  lifetime: ApprovalLifetime,
 ) -> Result(Nil, WireEvent) {
-  case
-    api.approve_escalation_at(
-      state.runtime,
-      cell,
-      list.map(echoed, grants.encode),
-      connection_origin(state, connection),
-    )
-  {
+  let author = connection_origin(state, connection)
+  use change <- result.try(case lifetime {
+    Once -> Ok(None)
+    ForSession ->
+      permissions.remembering(state.runtime, echoed, author)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) {
+        refusal(protocol.code_bad_request, reason)
+      })
+  })
+  let committed = case change {
+    None ->
+      api.approve_escalation_at(
+        state.runtime,
+        cell,
+        list.map(echoed, grants.encode),
+        author,
+      )
+    Some(change) ->
+      api.approve_escalation_with_fact_at(
+        state.runtime,
+        cell,
+        list.map(echoed, grants.encode),
+        author,
+        change,
+      )
+  }
+  case committed {
     Ok(_) -> Ok(Nil)
     Error(api.RaceLost) -> Error(moved_under_the_answer(state, cell.record.id))
     Error(error) -> {
@@ -6016,7 +6079,7 @@ fn set_config(
   use fields <- or_reply(config_fields(config), state, connection, id)
   use #(state, committed) <- or_reply(
     result.map_error(
-      apply_config(state, strand, fields, connection_origin(state, connection)),
+      apply_operator_config(state, connection, strand, fields),
       fn(message) { #(protocol.code_bad_request, message) },
     ),
     state,
@@ -6040,6 +6103,42 @@ fn set_config(
     }
   })
   state
+}
+
+fn apply_operator_config(
+  state: State,
+  connection: Int,
+  strand: Option(String),
+  fields: List(#(String, JsonValue)),
+) -> Result(#(State, JsonValue), String) {
+  case list.key_find(fields, "add_directory") {
+    Error(Nil) ->
+      apply_config(state, strand, fields, connection_origin(state, connection))
+    Ok(value) -> {
+      use <- bool.guard(
+        strand != None || list.length(fields) != 1,
+        Error(
+          "add_directory must be the only setting and must be session-scoped",
+        ),
+      )
+      use _ <- result.try(
+        input_author(state, connection)
+        |> result.map_error(fn(error) { error.1 }),
+      )
+      use admin <- result.try(
+        state.directories
+        |> option.to_result("directory administration is unavailable"),
+      )
+      use added <- result.try(admin.add(
+        value,
+        connection_origin(state, connection),
+      ))
+      Ok(#(
+        state,
+        json.Object([#("directories", added), ..base_config_fields(state)]),
+      ))
+    }
+  }
 }
 
 fn config_fields(
@@ -6481,7 +6580,15 @@ fn parse_thinking_level(
 }
 
 fn effective_config(state: State, strand: Option(String)) -> JsonValue {
-  let base = base_config_fields(state)
+  let directories = case state.directories {
+    None -> []
+    Some(admin) ->
+      case admin.read() {
+        Ok(value) -> [#("directories", value)]
+        Error(reason) -> [#("directories_error", json.String(reason))]
+      }
+  }
+  let base = list.append(base_config_fields(state), directories)
   case strand {
     None -> json.Object(base)
     Some(strand) ->

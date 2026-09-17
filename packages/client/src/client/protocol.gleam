@@ -157,6 +157,14 @@ pub type Command {
     expected_seq: Int,
   )
 
+  /// Approve the exact pending request and remember its path/network grants.
+  ApproveForSession(
+    escalation_id: String,
+    grants: List(Grant),
+    action: String,
+    expected_seq: Int,
+  )
+
   /// Reject a pending escalation.
   Deny(escalation_id: String, expected_seq: Int)
 
@@ -723,6 +731,16 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("expected_seq", json.Int(expected_seq)),
       ]),
     )
+    ApproveForSession(escalation_id:, grants:, action:, expected_seq:) -> #(
+      "approve",
+      json.Object([
+        #("escalation_id", json.String(escalation_id)),
+        #("grants", json.Array(list.map(grants, encode_grant))),
+        #("action", json.String(action)),
+        #("expected_seq", json.Int(expected_seq)),
+        #("scope", json.String("session")),
+      ]),
+    )
     Deny(escalation_id:, expected_seq:) -> #(
       "deny",
       json.Object([
@@ -958,7 +976,13 @@ fn decode_command_body(
       })
       use action <- result.try(required_string(fields, "action"))
       use expected_seq <- result.try(nonnegative_field(fields, "expected_seq"))
-      Ok(Approve(escalation_id:, grants:, action:, expected_seq:))
+      case list.key_find(fields, "scope") {
+        Error(Nil) | Ok(json.String("once")) ->
+          Ok(Approve(escalation_id:, grants:, action:, expected_seq:))
+        Ok(json.String("session")) ->
+          Ok(ApproveForSession(escalation_id:, grants:, action:, expected_seq:))
+        Ok(_) -> Error("approval scope must be once or session")
+      }
     }
     "deny" -> {
       use fields <- result.try(body_fields(body))

@@ -1010,3 +1010,29 @@ Part 1.4 holds the frozen wire protocol and §3.3 the security invariants,
 `docs/spec-gaps.md` records where implementation refined the spec —
 including the fd-3 delivery workaround, the anchor hash, and the shared
 clock era.
+
+## Session directory additions
+
+The operator's `/add-dir` command commits a canonical directory to the
+reserved session fact through `client/directories`. `client/wiring` captures
+those additions for each invocation. `tools/directory_access` keeps native
+file authority separate from the jail's system read roots; `tools/permissions`
+connects declared needs to existing call-bound approvals before execution.
+Background jobs and code-mode capabilities retain their captured authority.
+The wire and lifetime rules are in
+[protocol 040](../../protocol-change/040-session-directory-access.md).
+
+## Session approval lifetime
+
+The TUI automatically presents pending requests with once-only, session and
+denial choices. Session approval retains only the displayed filesystem or
+full-network grants. `client/permissions` prepares their durable union, and
+`runtime/api.approve_escalation_with_fact_at` writes that union and the approval
+in one transaction guarded by both observed sequences. Dispatch captures the
+standing authority once without changing a running execution's policy.
+
+Native pre-I/O checks and declared permission preflights can identify an exact
+missing grant. Raw shell syscall errors and refusals inside a running code-mode
+program remain results: the executor does not report a canonical missing grant,
+and replay could repeat earlier effects. A subsequent invocation can declare
+the required permissions. See [protocol 041](../../protocol-change/041-session-approval-dialog.md).

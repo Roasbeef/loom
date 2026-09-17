@@ -10,6 +10,9 @@ import gleam/string
 
 /// One action entered at the prompt.
 pub type Command {
+  /// Add read access to a directory, or write access with an explicit flag.
+  AddDirectory(path: String, access: String)
+
   /// Show the command reference.
   Help
 
@@ -247,6 +250,12 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/compact", "compact the active strand", False),
     Suggestion("/abort", "abort the live operation", False),
     Suggestion("/approvals", "show captured approval decisions", False),
+    Suggestion(
+      "/add-dir",
+      "add session directory access (--write for writes)",
+      True,
+    ),
+    Suggestion("/add-write-dir", "add read/write directory access", True),
     Suggestion("/approve", "approve an exact displayed request", True),
     Suggestion("/deny", "reject an exact displayed request", True),
     Suggestion("/steer", "inject into the live operation", True),
@@ -300,6 +309,8 @@ pub fn parse(input: String) -> Command {
     "/rename" -> MissingArgument("rename")
     "/rename " <> rest -> required_argument("rename", rest, Rename)
     "/approvals" -> Approvals(None)
+    "/add-dir" -> MissingArgument("add-dir")
+    "/add-write-dir" -> MissingArgument("add-write-dir")
     "/approve" -> MissingArgument("approve")
     "/deny" -> MissingArgument("deny")
     "/notes" -> Notes
@@ -320,6 +331,17 @@ pub fn parse(input: String) -> Command {
     "/model " <> rest -> required_argument("model", rest, Model)
     "/approvals " <> rest ->
       required_argument("approvals", rest, fn(id) { Approvals(Some(id)) })
+    "/add-write-dir " <> rest ->
+      required_argument("add-write-dir", rest, fn(path) {
+        AddDirectory(path, "write")
+      })
+    "/add-dir --write " <> rest ->
+      required_argument("add-dir", rest, fn(path) {
+        AddDirectory(path, "write")
+      })
+    "/add-dir --write" -> MissingArgument("add-dir")
+    "/add-dir " <> rest ->
+      required_argument("add-dir", rest, fn(path) { AddDirectory(path, "read") })
     "/approve " <> rest -> required_argument("approve", rest, Approve)
     "/deny " <> rest -> required_argument("deny", rest, Deny)
     "/strand " <> rest -> required_argument("strand", rest, Strand)
@@ -399,6 +421,8 @@ pub fn help_text() -> String {
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
   <> "/strands          list session strands\n"
   <> "/schedules        list session schedules\n"
+  <> "/add-dir [--write] <path>  add directory access for this session\n"
+  <> "/add-write-dir <path>  add read/write directory access\n"
   <> "/unschedule <name> [target]  retire one schedule\n"
   <> "/strand <name>    switch the active strand\n"
   <> "/fork <name>      fork the active strand\n"

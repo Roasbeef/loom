@@ -217,6 +217,67 @@ fn exact(fields) {
 /// // approval.approve(4, displayed)
 /// ```
 pub fn approve(id: Int, record: Review) -> Result(String, String) {
+  approve_scoped(id, record, [])
+}
+
+/// Encodes explicit consent to remember the displayed authority for this session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.approve_for_session(4, displayed)
+/// ```
+pub fn approve_for_session(id: Int, record: Review) -> Result(String, String) {
+  use _ <- result.try(rememberable(record))
+  approve_scoped(id, record, [#("scope", json.String("session"))])
+}
+
+/// Explains whether the complete grant set is eligible for session persistence.
+///
+/// Mixed requests remain once-only; the UI never promises to remember only an
+/// undisclosed subset of the authority shown in the dialog.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.rememberable(displayed)
+/// ```
+pub fn rememberable(record: Review) -> Result(Nil, String) {
+  use _ <- result.try(details(record))
+  case record.permission {
+    Unavailable(reason) -> Error(reason)
+    Exact(_, grants) -> {
+      use <- bool.guard(
+        grants == [] || !list.all(grants, persistent_grant),
+        Error("Only filesystem and full-network permissions can be remembered."),
+      )
+      Ok(Nil)
+    }
+  }
+}
+
+fn persistent_grant(value: json.JsonValue) -> Bool {
+  let supported = {
+    use fields <- result.try(object(value))
+    use kind <- result.try(text(fields, "type"))
+    case kind {
+      "readable_root" | "writable_root" -> Ok(Nil)
+      "network" -> {
+        use network <- result.try(field(fields, "network"))
+        use fields <- result.try(object(network))
+        use mode <- result.try(text(fields, "mode"))
+        case mode {
+          "full" -> Ok(Nil)
+          _ -> Error("unsupported network permission")
+        }
+      }
+      _ -> Error("unsupported remembered permission")
+    }
+  }
+  result.is_ok(supported)
+}
+
+fn approve_scoped(id, record, scope) -> Result(String, String) {
   use _ <- result.try(details(record))
   case record.status, record.permission {
     Pending, Exact(action, grants) ->
@@ -226,6 +287,7 @@ pub fn approve(id: Int, record: Review) -> Result(String, String) {
           #("expected_seq", json.Int(record.seq)),
           #("action", json.String(action)),
           #("grants", json.Array(grants)),
+          ..scope
         ]),
       )
     Pending, Unavailable(reason) -> Error(reason)

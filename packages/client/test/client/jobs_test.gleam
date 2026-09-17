@@ -747,7 +747,7 @@ fn started_or_refused(
     harness.name,
     strand:,
     operation: harness.operation,
-    request: jobs.Request(command:, wall_ms:),
+    request: jobs.Request(command:, wall_ms:, captured_policy: None),
     waiting: 10_000,
   )
 }
@@ -767,7 +767,7 @@ fn start_job_under(
       harness.name,
       strand:,
       operation:,
-      request: jobs.Request(command:, wall_ms: None),
+      request: jobs.Request(command:, wall_ms: None, captured_policy: None),
       waiting: 10_000,
     )
     as "this job must be admitted"
@@ -1110,7 +1110,11 @@ fn start_over(
     name,
     strand: "main",
     operation: an_op(),
-    request: jobs.Request(command: "tail -f build.log", wall_ms:),
+    request: jobs.Request(
+      command: "tail -f build.log",
+      wall_ms:,
+      captured_policy: None,
+    ),
     waiting: 10_000,
   )
 }
@@ -1210,7 +1214,11 @@ pub fn a_starter_whose_runner_died_first_is_answered_test() {
       name,
       strand: "main",
       operation: an_op(),
-      request: jobs.Request(command: "sleep 999", wall_ms: None),
+      request: jobs.Request(
+        command: "sleep 999",
+        wall_ms: None,
+        captured_policy: None,
+      ),
       waiting: 5000,
     )
     as "a start whose runner died is refused rather than left hanging"
@@ -1810,4 +1818,44 @@ fn live_field(value: json.JsonValue, name: String) -> json.JsonValue {
   let assert Ok(value) = list.key_find(fields, name)
     as "the live roster field is present"
   value
+}
+
+pub fn invocation_policy_reaches_background_job_without_changing_later_jobs_test() {
+  let harness = start_harness()
+  let base = policy.workspace_default("/workspace")
+  let captured =
+    policy.SandboxPolicy(
+      ..base,
+      writable_roots: ["/workspace", "/shared"],
+      readable_roots: ["/workspace", "/shared"],
+      network: policy.NetworkFull,
+    )
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "write /shared/result",
+        wall_ms: None,
+        captured_policy: Some(captured),
+      ),
+      waiting: 10_000,
+    )
+    as "the captured invocation must be admitted"
+  let assert [first] = specs(harness) as "one job was launched"
+  assert first.base_policy == captured
+  assert list.contains(first.requirements.writable_roots, "/shared")
+  assert first.requirements.network == policy.NetworkFull
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, "main", started)
+  let _later = start_job(harness, "main", "ordinary later job")
+  let later =
+    specs(harness)
+    |> list.filter(fn(spec) {
+      spec.argv == ["bash", "-o", "pipefail", "-c", "ordinary later job"]
+    })
+  let assert [later] = later as "the later job has its own policy capture"
+  assert !list.contains(later.base_policy.writable_roots, "/shared")
+  assert later.base_policy.network == policy.NetworkOff
 }

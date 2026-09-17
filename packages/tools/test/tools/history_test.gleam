@@ -20,6 +20,7 @@ import gleam/list
 import gleam/option
 import gleam/string
 import tools/blob
+import tools/directory_access
 import tools/history
 import tools/tool.{type Ctx}
 
@@ -99,6 +100,7 @@ fn a_ctx() -> Ctx {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
   tool.Ctx(
+    directory_access: directory_access.none(),
     workspace:,
     strand: "main",
     op_id:,

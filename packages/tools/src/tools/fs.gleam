@@ -9,9 +9,9 @@
 //// fresh anchors for replanning; `fs_write` creates or replaces a
 //// whole file. All three resolve paths against the *real* filesystem
 //// (`resolve_real`): symlinks are resolved component by component and
-//// the resolved path must land under the (equally resolved) workspace
-//// root, so neither `..` nor a symlink planted inside the workspace
-//// can reach outside it. This is not defense in depth but the sole
+//// the resolved path must land under the workspace or an explicitly
+//// authorized directory. Outside targets raise an action-bound approval
+//// before I/O; a symlink does not provide authority over its target. This is not defense in depth but the sole
 //// boundary: these tools run in the harness and never pass through
 //// the broker or the kernel jail, so path discipline is entirely
 //// their own responsibility. Containment is only half of it: the
@@ -57,6 +57,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/blob
+import tools/directory_access
 import tools/hashline
 import tools/internal/ffi_path
 import tools/tool.{type Ctx, type FileSystem, type FsError, type ToolOutcome}
@@ -247,6 +248,74 @@ pub fn resolve_real(
       )
       check_under(real_root, resolved, path)
     }
+  }
+}
+
+/// Resolves a path against workspace plus explicit canonical additions.
+///
+/// Added roots are already canonical authority, so they are not followed again
+/// if a host later replaces one with a symlink to another directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.resolve_readable(filesystem, "/work", ["/sibling"], "/sibling/a")
+/// ```
+pub fn resolve_readable(
+  filesystem: FileSystem,
+  workspace: String,
+  roots: List(String),
+  path: String,
+) -> Result(String, PathError) {
+  use <- bool.guard(path == "", Error(EmptyPath))
+  let joined = case path {
+    "/" <> _ -> path
+    _ -> workspace <> "/" <> path
+  }
+  use real_root <- result.try(
+    walk(filesystem, workspace)
+    |> result.map_error(Unresolvable(path:, reason: _)),
+  )
+  use resolved <- result.try(
+    walk(filesystem, joined)
+    |> result.map_error(Unresolvable(path:, reason: _)),
+  )
+
+  // Containment is checked on the resolved target, never the input spelling.
+  case
+    list.any([real_root, ..roots], fn(root) {
+      result.is_ok(check_under(root, resolved, path))
+    })
+  {
+    True -> Ok(resolved)
+    False -> Error(EscapesWorkspace(path:))
+  }
+}
+
+/// Applies the same write protection to every explicitly authorized root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.resolve_writable_roots(filesystem, "/work", ["/sibling"], [], path)
+/// ```
+pub fn resolve_writable_roots(
+  filesystem: FileSystem,
+  workspace: String,
+  roots: List(String),
+  protected: List(String),
+  path: String,
+) -> Result(String, PathError) {
+  use _ <- result.try(all_absolute(protected, path))
+  use resolved <- result.try(resolve_readable(
+    filesystem,
+    workspace,
+    roots,
+    path,
+  ))
+  case list.find(protected, covers_target(filesystem, _, resolved)) {
+    Error(Nil) -> Ok(resolved)
+    Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
   }
 }
 
@@ -465,12 +534,73 @@ fn normalize(path: String) -> String {
 /// reimplementing half of it. A second implementation is how two
 /// enforcement points drift.
 pub fn resolve_for_write(ctx: Ctx, path: String) -> Result(String, PathError) {
-  resolve_writable(
-    filesystem: ctx.filesystem,
-    workspace: ctx.workspace,
-    protected: ctx.base_policy.protected,
-    path:,
+  let access = directory_access.approved(ctx.directory_access, ctx.grants)
+  resolve_writable_roots(
+    ctx.filesystem,
+    ctx.workspace,
+    access.writable,
+    ctx.base_policy.protected,
+    path,
   )
+}
+
+// Native operations know their exact target before reading or writing it.
+// Consent grants that canonical target for this call, never its whole parent.
+type Intent {
+  Reading
+  Writing
+}
+
+fn resolve_invocation(
+  ctx: Ctx,
+  path: String,
+  intent: Intent,
+) -> Result(String, ToolOutcome) {
+  let absolute = case path {
+    "" -> ""
+    "/" <> _ -> path
+    _ -> ctx.workspace <> "/" <> path
+  }
+  use target <- result.try(
+    case intent {
+      Reading -> resolve_real(ctx.filesystem, "/", absolute)
+      Writing ->
+        resolve_writable_roots(
+          ctx.filesystem,
+          "/",
+          [],
+          ctx.base_policy.protected,
+          absolute,
+        )
+    }
+    |> result.map_error(path_outcome),
+  )
+  use workspace <- result.try(
+    resolve_real(ctx.filesystem, ctx.workspace, ".")
+    |> result.map_error(path_outcome),
+  )
+  let access = directory_access.approved(ctx.directory_access, ctx.grants)
+  let base =
+    policy.SandboxPolicy(
+      ..ctx.base_policy,
+      readable_roots: [workspace, ..access.readable],
+      writable_roots: [workspace, ..access.writable],
+    )
+  let requested = case intent {
+    Reading -> policy.SandboxPolicy(..base, readable_roots: [target])
+    Writing ->
+      policy.SandboxPolicy(..base, readable_roots: [target], writable_roots: [
+        target,
+      ])
+  }
+  use _ <- result.try(
+    tool.authorize_policy(ctx, base, requested)
+    |> result.map_error(fn(outcome) {
+      let refused = path_outcome(EscapesWorkspace(path))
+      tool.ToolOutcome(..refused, details: outcome.details)
+    }),
+  )
+  Ok(target)
 }
 
 /// The same boundary with its seams spelled out, for a caller holding
@@ -565,7 +695,12 @@ pub fn read_tool() -> tool.Tool {
     ),
     schema: tool.object_schema(
       [
-        #("path", tool.string_property("file path under the workspace root")),
+        #(
+          "path",
+          tool.string_property(
+            "file path; outside session access requires approval",
+          ),
+        ),
         #(
           "offset",
           tool.integer_property("1-based first line of the window (default 1)"),
@@ -599,8 +734,8 @@ fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     return: tool.failure("invalid arguments: offset and limit must be >= 1"),
   )
   use resolved <- tool.or_outcome(
-    resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:),
-    path_outcome,
+    resolve_invocation(ctx, path, Reading),
+    fn(outcome) { outcome },
   )
   use bytes <- tool.or_outcome(
     read_bytes(ctx.filesystem, resolved),
@@ -816,7 +951,12 @@ pub fn write_tool() -> tool.Tool {
     prompt_snippet: Some("`fs_write` creates or replaces a whole file."),
     schema: tool.object_schema(
       [
-        #("path", tool.string_property("file path under the workspace root")),
+        #(
+          "path",
+          tool.string_property(
+            "file path; outside session access requires approval",
+          ),
+        ),
         #("content", tool.string_property("the complete new file content")),
       ],
       ["path", "content"],
@@ -831,7 +971,10 @@ pub fn write_tool() -> tool.Tool {
 fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use content <- tool.with_arg(tool.required_string(args, "content"))
-  use resolved <- tool.or_outcome(resolve_for_write(ctx, path), path_outcome)
+  use resolved <- tool.or_outcome(
+    resolve_invocation(ctx, path, Writing),
+    fn(outcome) { outcome },
+  )
   let bytes = <<content:utf8>>
   use Nil <- tool.or_outcome(
     write_whole(filesystem: ctx.filesystem, resolved:, bytes:),
@@ -984,7 +1127,12 @@ fn edit_schema() -> JsonValue {
     #(
       "properties",
       json.Object([
-        #("path", tool.string_property("file path under the workspace root")),
+        #(
+          "path",
+          tool.string_property(
+            "file path; outside session access requires approval",
+          ),
+        ),
         #(
           "digest",
           tool.string_property(
@@ -1011,7 +1159,10 @@ fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use digest <- tool.with_arg(tool.required_string(args, "digest"))
   use hunks <- tool.with_arg(decode_hunks(args))
-  use resolved <- tool.or_outcome(resolve_for_write(ctx, path), path_outcome)
+  use resolved <- tool.or_outcome(
+    resolve_invocation(ctx, path, Writing),
+    fn(outcome) { outcome },
+  )
   use content <- tool.or_outcome(read_text(ctx, resolved), identity_outcome)
   use edited <- tool.or_outcome(
     hashline.apply(content, hashline.Plan(digest:, hunks:)),

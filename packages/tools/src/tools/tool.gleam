@@ -44,6 +44,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/directory_access
 import tools/tail.{type Tail}
 
 /// Whether a tool execution that crashed mid-flight may be re-executed
@@ -227,11 +228,12 @@ pub type RunningCall {
 /// `strand` and derive a spawned child's name from the other three, so a
 /// value invented here would let a model claim an identity or mint a
 /// second child on replay; `raise_refusal` answers about *this* call and
-/// no other, so a tool may raise through it at most once per `run` and
-/// must not build a retry loop out of a `Resume`.
+/// no other. Missing authority is requested before effects begin. Each
+/// refusal may be raised once; `Resume` must not become an execution retry
+/// loop. Declared permissions and broker limits can be separate preflights.
 pub type Ctx {
   Ctx(
-    /// Absolute workspace root; every tool path resolves under it.
+    /// Absolute workspace root used to resolve relative tool paths.
     workspace: String,
     /// The strand whose driver dispatched this call.
     strand: String,
@@ -243,6 +245,8 @@ pub type Ctx {
     source_index: Int,
     /// The session's base sandbox policy.
     base_policy: SandboxPolicy,
+    /// Explicit native filesystem additions captured for this invocation.
+    directory_access: directory_access.Access,
     /// Grants from consumed escalation approvals, if any.
     grants: List(Grant),
     /// Enforcement strictness for jailed executions.
@@ -269,6 +273,62 @@ pub type Ctx {
     /// nobody watching, and for tests that are about something else.
     observe_output: fn(OutputTail) -> Nil,
   )
+}
+
+/// Obtains missing authority before an effect begins, bound to this call.
+///
+/// A partial approval is checked again without asking twice. The caller keeps
+/// its original base policy; only consumed grants travel into execution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.authorize_policy(ctx, base, requested)
+/// ```
+pub fn authorize_policy(
+  ctx: Ctx,
+  base: SandboxPolicy,
+  requested: SandboxPolicy,
+) -> Result(Ctx, ToolOutcome) {
+  let #(_, missing) = policy.compose(base, requested, ctx.grants)
+  case missing {
+    [] -> Ok(ctx)
+    _ -> ask_permission(ctx, base, requested, missing)
+  }
+}
+
+fn ask_permission(
+  ctx: Ctx,
+  base: SandboxPolicy,
+  requested: policy.SandboxPolicy,
+  missing: List(policy.Narrowing),
+) -> Result(Ctx, ToolOutcome) {
+  let denial =
+    escalation.Denial(
+      reason: "This invocation requests additional filesystem or network access.",
+      source: escalation.PolicyDenial,
+      wanted: policy.wanted_grants(missing),
+    )
+  let #(now, _) = clock.read(ctx.clock)
+  case ctx.raise_refusal(RaisedRefusal(denial, now + 600_000)) {
+    Settle -> Error(refused(denial))
+    Resume(grants) -> {
+      let ctx = Ctx(..ctx, grants: list.append(ctx.grants, grants))
+      let #(_, remaining) = policy.compose(base, requested, ctx.grants)
+      case remaining {
+        [] -> Ok(ctx)
+        _ ->
+          Error(refused(
+            escalation.Denial(..denial, wanted: policy.wanted_grants(remaining)),
+          ))
+      }
+    }
+  }
+}
+
+fn refused(denial: escalation.Denial) -> ToolOutcome {
+  failure(denial.reason)
+  |> with_details(denial_to_json(denial))
 }
 
 /// What one stream of a running execution looks like right now.
