@@ -82,6 +82,18 @@ type Phase {
   Admitted(connection: gateway.ConnectionHandle)
 }
 
+// The transport has already selected its hub before admission. Keeping the
+// resolved instance here would copy its runtime and effects into the socket's
+// handler and the hub's authorization callbacks for the connection's lifetime.
+// Only the original binding, permit, and registry are needed after routing.
+type Authorization(instance) {
+  Authorization(
+    binding: gateway.Binding,
+    permit: root.Permit,
+    registry: manager.Manager(instance),
+  )
+}
+
 /// Upgrades one server-resolved resident session with its admitted parser limit.
 ///
 /// The default listener must bind loopback; remote cleartext serving is not a
@@ -104,6 +116,20 @@ pub fn upgrade(
     access.Owner | access.Participant(access.Operator) -> root.Operator
   }
   let limit = root.message_limit(class)
+  let authorization =
+    Authorization(
+      binding: gateway.Binding(
+        session_id: attachment.session_id,
+        epoch: attachment.epoch,
+        incarnation: attachment.incarnation,
+        connection_id: attachment.connection_id,
+        principal: attachment.principal,
+        authority: attachment.authority,
+        digest: attachment.digest,
+      ),
+      permit: attachment.permit,
+      registry: attachment.registry,
+    )
 
   // The barrier that keeps the permit's custody transfer ordered against this
   // HTTP process's own release. This process owns it; the websocket process
@@ -132,7 +158,7 @@ pub fn upgrade(
       handler: fn(phase, event, socket) {
         case phase, event {
           Pending(outbound), mist.Custom(Admit) ->
-            admit(daemon, attachment, hub, outbound, settled)
+            admit(daemon, authorization, hub, outbound, settled)
 
           // Unreachable, for the ordering reason given above: nothing can be
           // delivered to a pending socket before its own `Admit`. A push is
@@ -224,12 +250,12 @@ pub fn upgrade(
 // the work happens, not whose custody it transfers.
 fn admit(
   daemon: root.Root(instance),
-  attachment: server.Attachment(instance),
+  authorization: Authorization(instance),
   hub: gateway.Gateway,
   outbound: process.Subject(Signal),
   settled: process.Subject(Nil),
 ) -> mist.Next(Phase, Signal) {
-  let transferred = root.transfer(daemon, attachment.permit, within: 1000)
+  let transferred = root.transfer(daemon, authorization.permit, within: 1000)
 
   // Custody is decided either way now, so the waiting HTTP process is released
   // before the attach below, which answers to a different actor and can take
@@ -239,26 +265,14 @@ fn admit(
     use Nil <- result.try(transferred)
     gateway.attach_authenticated_flushing(
       hub,
-      // Four of these are adjacent strings that the source record happens
-      // to declare in the same order, so positional arguments would let a
-      // field added to either record compile into a binding whose repeated
-      // authorization compares the wrong identity.
-      gateway.Binding(
-        session_id: attachment.session_id,
-        epoch: attachment.epoch,
-        incarnation: attachment.incarnation,
-        connection_id: attachment.connection_id,
-        principal: attachment.principal,
-        authority: attachment.authority,
-        digest: attachment.digest,
-      ),
-      fn() { authorize(attachment) },
+      authorization.binding,
+      fn() { authorize(authorization) },
       // The outbound sink. It runs on the hub process, so it does the
       // one thing that cannot block there and leaves the socket write
       // to the process that owns the socket.
       fn(frame) { process.send(outbound, Push(frame)) },
       fn() { process.send(outbound, Refused) },
-      fn() { failed_reader(attachment) },
+      fn() { failed_reader(authorization) },
       fn(reply) { process.send(outbound, Flush(reply)) },
       process.self(),
     )
@@ -320,16 +334,16 @@ fn respond(connection, frame, socket) {
 
 // This returns after stop admission, not after retiring this requesting socket
 // or gateway. The registry compares the original incarnation atomically.
-fn failed_reader(attachment: server.Attachment(instance)) -> Nil {
-  // The attachment carries its registry so this request cannot be lost to a
+fn failed_reader(authorization: Authorization(instance)) -> Nil {
+  // The authorization carries its registry so this request cannot be lost to a
   // readiness round trip that times out: a poisoned hub whose stop never
   // reached the registry left the session resident and every later
   // attachment refused until the daemon restarted.
   let _ =
     manager.stop_if_incarnation(
-      attachment.registry,
-      attachment.session_id,
-      attachment.incarnation,
+      authorization.registry,
+      authorization.binding.session_id,
+      authorization.binding.incarnation,
     )
   Nil
 }
@@ -342,13 +356,13 @@ fn failed_reader(attachment: server.Attachment(instance)) -> Nil {
 // path. It is asked afresh each time rather than cached, so a credential
 // revoked between a command's admission and its delivery still closes the
 // attachment.
-fn authorize(attachment: server.Attachment(instance)) {
+fn authorize(authorization: Authorization(instance)) {
   manager.frame_authority(
-    attachment.registry,
-    epoch: attachment.epoch,
-    id: attachment.session_id,
-    incarnation: attachment.incarnation,
-    digest: attachment.digest,
+    authorization.registry,
+    epoch: authorization.binding.epoch,
+    id: authorization.binding.session_id,
+    incarnation: authorization.binding.incarnation,
+    digest: authorization.binding.digest,
   )
   |> result.map_error(refusal)
 }

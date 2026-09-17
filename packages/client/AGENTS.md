@@ -3669,6 +3669,12 @@ flattened callback sizes; the size probe is confined to test support. See
 [the daemon memory investigation](../../docs/design-notes/daemon-memory.md)
 for the isolated workload measurements and their limits.
 
+The session socket projects a resolved `Attachment` into a private authorization
+record before creating its long-lived handler and gateway callbacks. That
+record retains the binding, parser permit and registry handle; the resident
+instance and runtime effects are no longer transport-owned. Authorization
+still rechecks the original epoch, incarnation and credential on the registry.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)
