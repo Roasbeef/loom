@@ -35,6 +35,21 @@ The fixture now holds the first provider response on a provider-owned subject
 until the test has admitted the follow-up. The original projection assertions
 remain unchanged.
 
+## Live socket follow-up
+
+A refreshed live profile identified an unflagged whole-attachment capture in
+`session_socket`: gateway authorization and reader-failure callbacks copied
+the resolved resident instance, and the transport handler kept the same value
+after admission. The private authorization projection excludes the instance
+while retaining its original binding, permit and registry.
+
+The real WebSocket regression fails before the repair and passes afterwards;
+all ten socket tests pass. An independent report-only review found no defect
+in identity propagation, live revocation, permit ordering or incarnation-bound
+reader-failure handling. The regression directly measures hub callbacks. The
+handler's narrowed capture is established by source inspection, not a separate
+heap assertion. No further broad attachment capture remains in this adapter.
+
 ## Base warning inventory
 
 `confirmed` means repaired here; `high` means measure next; `small` means low

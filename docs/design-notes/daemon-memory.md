@@ -430,3 +430,45 @@ The default gate reports unseeded code-mode/extension, opt-in packaged-daemon,
 and platform-specific skips; those extra lanes were not exercised here.
 Independent source review found no production correctness issue. Its two test
 and comment-format findings were corrected before the final gate.
+
+
+## 2026-09-16 refreshed daemon and socket captures
+
+The installed daemon's BEAM code checksums match the initial repair in
+`runtime/api`, `runtime/supervisor`, `client/hookserve`, `client/gateway`, and
+`client/wiring`. After the operator updated and restarted it, an ordinary
+observation at 01:02 UTC on September 17 reported 1,311.180 MiB total VM memory,
+1,263.032 MiB process memory, and 10.722 MiB binaries. Allocator instrumentation
+was available in this build: eheap carriers occupied 1,274.016 MiB, with
+1,260.211 MiB scanned allocation. This was an active workload, without an
+explicit collection. It is not a matched before/after measurement of the
+preceding patch: the resident process counts and workload differ.
+
+A bounded external inspection of one large gateway found a 45.803 MiB
+flattened state. One connection contributed 21.863 MiB through authentication
+callbacks. Each callback retained a 10.931 MiB attachment containing the
+resolved instance, runtime, effects, and hook/tool closures. The WebSocket
+handler also captured that attachment even after its admission phase ended.
+The inspection printed sizes and term shapes, not credential or transcript
+values, and loaded no probe module into the daemon.
+
+`session_socket.upgrade` now projects the attachment into a private record
+containing the immutable gateway binding, original parser permit, and registry
+handle before constructing transport callbacks. The hub was already selected
+by the router. Permit transfer, gateway monitoring, and repeated registry
+authorization still use the original identities and owners; no authorization
+answer is cached. Reader failure retains its incarnation-checked stop path.
+
+A real WebSocket regression varies an unused runtime hook payload by 8,192
+list elements. Before the repair, the hub's attachment growth rose from 3,576
+to 118,264 words. The repaired capture passes the bounded-growth assertion,
+and all ten socket transport tests pass. This proves independence from the
+unused runtime payload, not an installed total-memory reduction. Fresh
+installed socket and admission measurements remain necessary.
+
+The follow-up full `make check` completed with exit status zero: 1,853 client,
+558 TUI, and 304 code-mode tests passed, including the real TUI end-to-end
+fixture. The opt-in shipped-daemon fixtures and Linux-only MCP death check
+remain skipped on this macOS run. Documentation checks report zero errors;
+lint remains at zero errors, 804 warnings and 78 R12 findings. Independent
+review of the follow-up found no correctness defect.

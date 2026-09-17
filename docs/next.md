@@ -20,13 +20,23 @@ checks pass with existing warning censuses. The default gate reported skips
 for unseeded code-mode and extension fixtures, opt-in packaged-daemon fixtures,
 and platform-specific cases; those extra lanes were not run in this patch.
 
-The patch is local. The installed daemon has not received it. After updating
-and starting fresh session trees, take matched admission, idle, and explicit
-post-collection cuts before claiming an installed memory reduction. Inspect
-one large state at a time from an external process with a bounded heap. The
-remaining job/schedule/workspace captures need measurements before edits.
-Generic receive code lacks the fresh-reference optimization, but no observed
-mailbox backlog or accumulating loop allocation justifies changing it here.
+The initial patch is published as PR #438. The operator has updated and
+restarted the daemon; the first ordinary profile reports 1,311 MiB VM memory,
+mostly process heaps, with allocator instrumentation available. Workload and
+resident counts differ from the earlier daemon, so this is not a matched
+reduction measurement. One sampled gateway retains full runtime instances in
+its socket authentication callbacks. The follow-up projects that attachment
+to binding, permit and registry, and its real WebSocket regression fails on
+the old code and passes with the projection. All ten socket tests pass. The follow-up full `make check` also passes
+with 1,853 client, 558 TUI and 304 code-mode tests. Independent review found
+no defect; opt-in shipped-daemon and Linux-only checks remain unexercised.
+
+Take matched admission, idle, and explicit post-collection cuts before claiming
+an installed memory reduction. Inspect one large state at a time from an
+external process with a bounded heap. Remaining job/schedule/workspace
+captures need measurements before edits. Generic receive code lacks the
+fresh-reference optimization, but no observed mailbox backlog or accumulating
+loop allocation justifies changing it here.
 
 ## Earlier directory-permission work
 
