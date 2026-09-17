@@ -130,6 +130,7 @@ import gleam/string
 import machine/operation.{type LastResult}
 import machine/strand as machine_strand
 import runtime/api
+import runtime/child_run
 import runtime/effects
 import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
 import runtime/writer
@@ -253,7 +254,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     fan_out: 8,
     session_strands: 16,
     max_wait_ms: 30_000,
-    default_within_ms: Some(600_000),
+    default_within_ms: Some(child_run.default_within_ms),
     first_slice_ms: 25,
     max_slice_ms: 250,
     rest: process.sleep,
@@ -334,7 +335,9 @@ pub fn is_subagent(strand: String) -> Bool {
 pub fn seam(config: Config) -> Agency {
   agent.Agency(
     spawn: fn(caller, request) { spawn(config, caller, request) },
-    send: fn(caller, to, text) { send(config, caller, to, text) },
+    send: fn(caller, to, text, within_ms) {
+      send(config, caller, to, text, within_ms)
+    },
     wait: fn(caller, handles, within_ms) {
       wait(config, caller, handles, within_ms)
     },
@@ -559,6 +562,7 @@ fn spawn_receipt(
     tools: cell.tools,
     model: configuration.model.provider,
     model_id: configuration.model.model_id,
+    deadline_ms: cell.deadline,
   ))
 }
 
@@ -690,6 +694,7 @@ fn reconcile(
       minted_by: call_site(caller),
       brief:,
       tools:,
+      default_within_ms: config.default_within_ms,
       deadline: deadline_of(config, now, request.within_ms),
       detached: request.detach,
       reaped: False,
@@ -704,8 +709,36 @@ fn reconcile(
     name,
     request.result_schema,
   ))
+  use cell <- result.try(seed_original_run(runtime, cell))
   use Nil <- result.try(write_cell(runtime, cell))
   spawn_receipt(runtime, cell)
+}
+
+// A crash can leave the run record committed before the lineage cell. Resume
+// that admission with its original deadline rather than granting extra time or
+// refusing every later replay because the first write already exists.
+fn seed_original_run(
+  runtime: api.Runtime,
+  cell: Lineage,
+) -> Result(Lineage, Refusal) {
+  use existing <- result.try(run_record(
+    runtime,
+    Handle(strand: cell.strand, operation: cell.brief),
+  ))
+  case existing {
+    Some(run) -> Ok(Lineage(..cell, deadline: run.record.deadline))
+    None ->
+      api.put_reserved_fact_expecting(
+        runtime,
+        child_run.key(cell.brief),
+        child_run.encode(original_run(cell)),
+        expected: None,
+      )
+      |> result.replace(cell)
+      |> result.map_error(fn(error) {
+        agent.PlaneFailed(reason: describe_api(error))
+      })
+  }
 }
 
 fn write_result_schema(
@@ -1161,10 +1194,11 @@ fn settle_pass(
 fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
   let notes =
     notes_under(runtime, agent.blackboard_prefix <> handle.strand <> "/")
+  let outcome = run_outcome(runtime, handle, last)
   Ready(
     handle:,
-    outcome: outcome_of(last),
-    report: partial_report(outcome_of(last), report_of(runtime, last), notes),
+    outcome:,
+    report: partial_report(outcome, report_of(runtime, last), notes),
     // The notes are already in hand, so the contract costs one point read
     // for the schema and no second listing: the result cell *is* a note,
     // which is the whole reason the blackboard was the right place to put
@@ -1184,10 +1218,14 @@ fn partial_report(
 ) -> String {
   case outcome {
     Completed -> final
-    Failed(_) | Aborted -> {
+    Failed(_) | Aborted | agent.BudgetExpired | agent.ParentFinished -> {
       let heading = case outcome {
         Failed(_) -> "Partial reviewer output (failed)."
         Aborted -> "Partial reviewer output (stopped)."
+        agent.BudgetExpired ->
+          "Partial reviewer output (wall-clock budget expired)."
+        agent.ParentFinished ->
+          "Partial reviewer output (owning parent run ended)."
         Completed -> "Reviewer output."
       }
       case final, notes {
@@ -1309,9 +1347,15 @@ fn send(
   caller: Caller,
   to: String,
   text: String,
+  within_ms: Option(Int),
 ) -> Result(Delivery, Refusal) {
   use runtime <- result.try(borrow(config))
   use ledger <- result.try(read_ledger(runtime))
+  use Nil <- result.try(case within_ms {
+    Some(ms) if ms <= 0 ->
+      Error(agent.InvalidArgument("within_ms must be positive"))
+    Some(_) | None -> Ok(Nil)
+  })
   let upward = case cell_of(ledger, caller.strand) {
     Some(cell) -> cell.parent == to
     None -> False
@@ -1325,11 +1369,14 @@ fn send(
   use Nil <- result.try(case upward {
     False -> Ok(Nil)
     True ->
-      case read_strand_state(runtime, to) {
-        Error(refusal) -> Error(refusal)
-        Ok(Some(machine_strand.StrandState(current_operation: Some(_), ..))) ->
-          Ok(Nil)
-        Ok(_) -> Error(agent.ParentRunEnded(strand: to))
+      case within_ms, read_strand_state(runtime, to) {
+        Some(_), _ ->
+          Error(agent.InvalidArgument("within_ms applies only to an idle child"))
+        None, Error(refusal) -> Error(refusal)
+        None,
+          Ok(Some(machine_strand.StrandState(current_operation: Some(_), ..)))
+        -> Ok(Nil)
+        None, Ok(_) -> Error(agent.ParentRunEnded(strand: to))
       }
   })
 
@@ -1350,10 +1397,31 @@ fn send(
       timestamp: now,
       origin: None,
     )
-  case api.send_to_strand(runtime, to:, message: payload) {
+  let delivery = case upward {
+    True -> api.send_to_strand(runtime, to:, message: payload)
+    False ->
+      api.send_to_child(
+        api.on_strand(runtime, caller.strand),
+        to:,
+        message: payload,
+        owner: caller.operation,
+        within_ms:,
+      )
+  }
+  case delivery {
+    Error(api.AcceptRejected(_)) if within_ms != None ->
+      Error(agent.InvalidArgument(
+        "within_ms starts a new run only; the child is already active",
+      ))
     Error(error) -> Error(agent.PlaneFailed(reason: describe_api(error)))
     Ok(api.Steered(entry:)) -> Ok(agent.Steered(entry:))
-    Ok(api.Started(operation:)) -> Ok(agent.Started(operation:))
+    Ok(api.Started(operation:)) -> {
+      use deadline_ms <- result.try(run_deadline(
+        runtime,
+        Handle(strand: to, operation:),
+      ))
+      Ok(agent.Started(operation:, deadline_ms:))
+    }
   }
 }
 
@@ -1519,33 +1587,26 @@ fn roster(config: Config, caller: Caller) -> Result(List(Peer), Refusal) {
         relation: agent.ParentOf,
         handle: None,
         outcome: None,
+        deadline_ms: None,
         tools: [],
       ),
     ]
   }
-  let children =
+  use children <- result.try(
     ledger
     |> dict.values
     |> list.filter(fn(cell) { cell.parent == caller.strand })
     |> list.sort(fn(a, b) { string.compare(a.strand, b.strand) })
-    |> list.map(fn(cell) {
-      agent.Peer(
-        strand: cell.strand,
-        relation: agent.ChildOf,
-        handle: Some(Handle(strand: cell.strand, operation: cell.brief)),
-        outcome: option.map(settled_result(runtime, cell), outcome_of),
-        tools: cell.tools,
-      )
-    })
+    |> list.try_map(fn(cell) { current_peer(runtime, cell) }),
+  )
   Ok(list.append(parent, children))
 }
 
 // --- reaping ---------------------------------------------------------------
 
-// Enforcement of a child's budget is lazy and durable: there is no timer
-// plane to lose, and any observation that walks the ledger aborts what it
-// finds overdue. The residual hole is real and named: a child nobody ever
-// asks about runs until the session closes.
+// Enforcement observes current operations, not the immutable spawn handle.
+// Each stop is durable before its exact operation is cancelled; an observation
+// that races a continuation can never abort the successor on that strand.
 fn reap_overdue(
   config: Config,
   runtime: api.Runtime,
@@ -1553,13 +1614,15 @@ fn reap_overdue(
 ) -> Nil {
   let #(now, _clock) = clock.read(config.clock)
   list.each(dict.values(ledger), fn(cell) {
-    case cell.deadline {
-      Some(at) if at <= now -> reap(runtime, cell)
-      _ ->
-        case cell.reaped {
-          True -> reap(runtime, cell)
-          False -> Nil
+    case current_run(runtime, cell) {
+      Ok(Some(run)) ->
+        case run.record.stop, run.record.deadline {
+          child_run.Unstopped, Some(at) if at <= now ->
+            reap(runtime, run, child_run.BudgetExpired)
+          child_run.Unstopped, _ -> Nil
+          _, _ -> reap(runtime, run, run.record.stop)
         }
+      Ok(None) | Error(_) -> Nil
     }
   })
 }
@@ -1572,51 +1635,189 @@ fn reap_run(config: Config, operation: OpId) -> Nil {
         Error(_refusal) -> Nil
         Ok(ledger) ->
           list.each(dict.values(ledger), fn(cell) {
-            case cell.detached, cell.minted_by.operation == operation {
-              False, True -> reap(runtime, cell)
-              _, _ -> Nil
+            case current_run(runtime, cell) {
+              Ok(Some(run)) if run.record.owner == Some(operation) ->
+                reap(runtime, run, child_run.ParentFinished)
+              Ok(_) | Error(_) -> Nil
             }
           })
       }
   }
 }
 
-// Marking is durable and the abort is re-issued on every later
-// observation, because `api.abort` is a no-op when no driver is
-// registered — a child whose driver is mid-restart would otherwise be
-// reported reaped, come back, and run until the session closed. The mark
-// is written once; the abort costs a message.
-fn reap(runtime: api.Runtime, cell: Lineage) -> Nil {
-  case is_live(runtime, cell) {
-    False -> Nil
-    True -> {
-      case cell.reaped {
-        True -> Nil
-        False -> {
-          let _written = write_cell(runtime, Lineage(..cell, reaped: True))
-          Nil
-        }
-      }
-      api.abort(api.on_strand(runtime, cell.strand))
-    }
+// A cause is written once for this operation. Losing its CAS leaves the next
+// observation to read the winner; it never sends an unrecorded cancellation.
+fn reap(runtime: api.Runtime, run: ObservedRun, stop: child_run.Stop) -> Nil {
+  let recorded = case run.record.stop {
+    child_run.Unstopped ->
+      api.put_reserved_fact_expecting(
+        runtime,
+        child_run.key(run.operation),
+        child_run.encode(child_run.Run(..run.record, stop:)),
+        expected: run.seq,
+      )
+      |> result.replace(Nil)
+    _ -> Ok(Nil)
+  }
+  case recorded {
+    Error(_) -> Nil
+    Ok(Nil) ->
+      api.abort_operation(
+        api.on_strand(runtime, run.record.strand),
+        run.operation,
+      )
   }
 }
 
 fn is_live(runtime: api.Runtime, cell: Lineage) -> Bool {
-  settled_result(runtime, cell) == None
+  case read_strand_state(runtime, cell.strand) {
+    Ok(Some(state)) -> state.current_operation != None
+    Ok(None) -> False
+    Error(_) -> True
+  }
 }
 
-fn settled_result(runtime: api.Runtime, cell: Lineage) -> Option(LastResult) {
-  case
-    api.await_strand_result(
-      runtime,
-      strand: cell.strand,
-      operation: cell.brief,
-      within_ms: 0,
-    )
+// A record and its CAS position travel together. Legacy brief runs have no
+// separate record until their first stop, but retain their recorded deadline.
+type ObservedRun {
+  ObservedRun(operation: OpId, record: child_run.Run, seq: Option(Int))
+}
+
+fn original_run(cell: Lineage) -> child_run.Run {
+  child_run.Run(
+    strand: cell.strand,
+    owner: case cell.detached {
+      True -> None
+      False -> Some(cell.minted_by.operation)
+    },
+    deadline: cell.deadline,
+    stop: case cell.reaped {
+      True -> child_run.LegacyReaped
+      False -> child_run.Unstopped
+    },
+  )
+}
+
+fn run_record(
+  runtime: api.Runtime,
+  handle: Handle,
+) -> Result(Option(ObservedRun), Refusal) {
+  use cell <- result.try(
+    api.fact_cell(runtime, child_run.key(handle.operation))
+    |> result.map_error(fn(error) { agent.PlaneFailed(describe_api(error)) }),
+  )
+  case cell {
+    None -> Ok(None)
+    Some(api.FactCell(value:, seq:)) -> {
+      use record <- result.try(
+        child_run.decode(value)
+        |> result.map_error(fn(_) {
+          agent.PlaneFailed("the child run record is corrupt")
+        }),
+      )
+      case record.strand == handle.strand {
+        True ->
+          Ok(
+            Some(ObservedRun(
+              operation: handle.operation,
+              record:,
+              seq: Some(seq),
+            )),
+          )
+        False ->
+          Error(agent.PlaneFailed("the child run belongs to another strand"))
+      }
+    }
+  }
+}
+
+fn current_run(
+  runtime: api.Runtime,
+  cell: Lineage,
+) -> Result(Option(ObservedRun), Refusal) {
+  use state <- result.try(read_strand_state(runtime, cell.strand))
+  case state {
+    Some(machine_strand.StrandState(current_operation: Some(operation), ..)) -> {
+      use record <- result.try(run_record(
+        runtime,
+        Handle(strand: cell.strand, operation:),
+      ))
+      case record {
+        Some(_) -> Ok(record)
+        None if operation == cell.brief ->
+          Ok(
+            Some(ObservedRun(operation:, record: original_run(cell), seq: None)),
+          )
+        None -> Ok(None)
+      }
+    }
+    _ -> Ok(None)
+  }
+}
+
+fn current_peer(
+  runtime: api.Runtime,
+  cell: Lineage,
+) -> Result(agent.Peer, Refusal) {
+  use state <- result.try(read_strand_state(runtime, cell.strand))
+  let operation = case state {
+    Some(machine_strand.StrandState(current_operation: Some(operation), ..)) ->
+      operation
+    _ ->
+      case read_last_result(runtime, cell.strand) {
+        Some(last) -> last.operation
+        None -> cell.brief
+      }
+  }
+  let handle = Handle(strand: cell.strand, operation:)
+  use deadline_ms <- result.try(run_deadline(runtime, handle))
+  let outcome = case
+    api.await_strand_result(runtime, cell.strand, operation, 0)
   {
-    Ok(last) -> Some(last)
+    Ok(last) -> Some(run_outcome(runtime, handle, last))
     Error(Nil) -> None
+  }
+  Ok(agent.Peer(
+    strand: cell.strand,
+    relation: agent.ChildOf,
+    handle: Some(handle),
+    outcome:,
+    deadline_ms: case deadline_ms {
+      None if operation == cell.brief -> cell.deadline
+      _ -> deadline_ms
+    },
+    tools: cell.tools,
+  ))
+}
+
+fn run_deadline(
+  runtime: api.Runtime,
+  handle: Handle,
+) -> Result(Option(Int), Refusal) {
+  use run <- result.map(run_record(runtime, handle))
+  option.then(run, fn(run) { run.record.deadline })
+}
+
+fn run_outcome(
+  runtime: api.Runtime,
+  handle: Handle,
+  last: LastResult,
+) -> Outcome {
+  let outcome = outcome_of(last)
+  case outcome, run_record(runtime, handle) {
+    Aborted,
+      Ok(Some(ObservedRun(
+        record: child_run.Run(stop: child_run.BudgetExpired, ..),
+        ..,
+      )))
+    -> agent.BudgetExpired
+    Aborted,
+      Ok(Some(ObservedRun(
+        record: child_run.Run(stop: child_run.ParentFinished, ..),
+        ..,
+      )))
+    -> agent.ParentFinished
+    _, _ -> outcome
   }
 }
 

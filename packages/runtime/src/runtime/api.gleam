@@ -63,6 +63,7 @@ import machine/operation.{
 }
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
+import runtime/child_run
 import runtime/effects.{type Effects}
 import runtime/escalation.{type Escalation}
 import runtime/lineage
@@ -564,6 +565,22 @@ fn accept_request(
   request: acceptance.AcceptRequest,
   mark: Option(Mark),
 ) -> Result(OpId, ApiError) {
+  accept_with_child_run(runtime, request, mark, None)
+}
+
+// A parent's explicit continuation owns the new child run. Other admissions
+// (including a human prompting a child directly) use its current parent run,
+// if any. The owner expectation is committed with the child's admission.
+type Continuation {
+  Continuation(owner: #(String, OpId), within_ms: Option(Int))
+}
+
+fn accept_with_child_run(
+  runtime: Runtime,
+  request: acceptance.AcceptRequest,
+  mark: Option(Mark),
+  continuation: Option(Continuation),
+) -> Result(OpId, ApiError) {
   retry_admission(4, fn() {
     use <- attempt
     let w = writer_subject(runtime)
@@ -590,6 +607,14 @@ fn accept_request(
       acceptance.accept_prompt(request, ctx),
       fn(reason) { AcceptRejected(reason:) },
     )
+    use plan_tx <- result.try(admitting_child_run(
+      runtime,
+      request,
+      continuation,
+      operation.id,
+      now,
+      plan_tx,
+    ))
     commit_admission(
       writer.commit(
         w,
@@ -605,6 +630,169 @@ fn accept_request(
       on_ok: operation.id,
     )
   })
+}
+
+// A continued child cannot become runnable before its budget and custody are
+// durable. A fact written after acceptance would leave an unowned run if the
+// sender died between commits. Ordinary strands and structural operations
+// carry no child lifecycle record.
+fn admitting_child_run(
+  runtime: Runtime,
+  request: acceptance.AcceptRequest,
+  continuation: Option(Continuation),
+  operation: OpId,
+  now: Int,
+  plan: tx.Tx,
+) -> Result(tx.Tx, ApiError) {
+  case request {
+    AcceptCompaction(..) | AcceptNavigation(..) -> Ok(plan)
+    AcceptRun(..) -> {
+      use cell <- result.try(
+        read_decoded(
+          runtime,
+          register.FactCustom,
+          lineage.register_key(runtime.strand),
+          fn(payload) {
+            case lineage.decode(payload), continuation {
+              Ok(cell), _ -> Ok(Some(cell))
+              Error(error), Some(_) -> Error(error)
+              Error(_), None -> Ok(None)
+            }
+          },
+        ),
+      )
+      case cell {
+        None -> Ok(plan)
+
+        // Lineage authorizes agent addressing, not direct host prompts. Keep
+        // the existing recovery path usable when this optional ledger is
+        // corrupt, without guessing an owner or silently repairing its data.
+        Some(#(seq, None)) ->
+          Ok(
+            tx.Tx(..plan, expected: [
+              tx.Expect(
+                register.FactCustom,
+                lineage.register_key(runtime.strand),
+                Some(seq),
+              ),
+              ..plan.expected
+            ]),
+          )
+        Some(#(seq, Some(lineage))) -> {
+          use #(owner, expected) <- result.try(child_owner(
+            runtime,
+            lineage,
+            continuation,
+          ))
+          let budget = case continuation {
+            Some(Continuation(within_ms: Some(budget), ..)) -> Some(budget)
+            Some(Continuation(within_ms: None, ..)) | None ->
+              lineage.default_within_ms
+          }
+          let run =
+            child_run.Run(
+              strand: runtime.strand,
+              owner:,
+              deadline: option.map(budget, fn(ms) { now + ms }),
+              stop: child_run.Unstopped,
+            )
+          Ok(tx.Tx(
+            writes: [
+              tx.SetRegister(
+                register.FactCustom,
+                child_run.key(operation),
+                register.value(child_run.encode(run)),
+              ),
+              ..plan.writes
+            ],
+            expected: list.append(expected, [
+              tx.Expect(
+                register.FactCustom,
+                lineage.register_key(runtime.strand),
+                Some(seq),
+              ),
+              tx.Expect(register.FactCustom, child_run.key(operation), None),
+              ..plan.expected
+            ]),
+          ))
+        }
+      }
+    }
+  }
+}
+
+// Even a detached continuation must be admitted by the still-current caller.
+// Detachment removes run-end custody, not the caller's authority check.
+fn child_owner(
+  runtime: Runtime,
+  child: lineage.Lineage,
+  continuation: Option(Continuation),
+) -> Result(#(Option(OpId), List(tx.SeqExpectation)), ApiError) {
+  let parent = case continuation {
+    Some(Continuation(owner: #(strand, _), ..)) -> strand
+    None -> child.parent
+  }
+  use #(seq, state) <- result.try(read_strand_state(on_strand(runtime, parent)))
+  use Nil <- result.try(case continuation {
+    Some(Continuation(owner: #(_, expected), ..)) ->
+      case state.current_operation == Some(expected) {
+        True -> Ok(Nil)
+        False -> Error(ReadFailed("the sending parent run has ended"))
+      }
+    None -> Ok(Nil)
+  })
+  use #(current_owner, owner_expectations) <- result.try(child_owner_phase(
+    runtime,
+    state.current_operation,
+    continuation,
+  ))
+  let owner = case child.detached {
+    True -> None
+    False -> current_owner
+  }
+  Ok(
+    #(owner, [
+      tx.Expect(register.StrandState, parent, Some(seq)),
+      ..owner_expectations
+    ]),
+  )
+}
+
+// Run-end hooks execute before the final strand-state commit. A prompt racing
+// that boundary must not acquire custody from a parent whose cleanup may have
+// already scanned its children. The existing phase and its CAS close that gap.
+fn child_owner_phase(
+  runtime: Runtime,
+  current: Option(OpId),
+  continuation: Option(Continuation),
+) -> Result(#(Option(OpId), List(tx.SeqExpectation)), ApiError) {
+  case current {
+    None -> Ok(#(None, []))
+    Some(id) -> {
+      use #(seq, state) <- result.try(read_op_state(runtime, id))
+      let finishing = case state {
+        operation.RunState(
+          phase: operation.Checkpoint(operation.CheckpointPhase(
+            continuation: operation.MayFinish(..),
+            ..,
+          )),
+          ..,
+        ) -> True
+        _ -> False
+      }
+      use owner <- result.try(case finishing, continuation {
+        True, Some(_) ->
+          Error(ReadFailed("the sending parent run is finishing"))
+        True, None -> Ok(None)
+        False, _ -> Ok(Some(id))
+      })
+      Ok(
+        #(owner, [
+          tx.Expect(register.OpState, ids.op_id_to_string(id), Some(seq)),
+        ]),
+      )
+    }
+  }
 }
 
 // Whether a non-null navigation target exists in the tree. `None` (the
@@ -1219,6 +1407,66 @@ pub fn send_to_strand(
   message message: AgentMessage,
 ) -> Result(Delivery, ApiError) {
   send_attempts(on_strand(runtime, target), message, None, 4)
+}
+
+/// Sends to a child under the caller's current operation. An idle child gains
+/// a fresh budget and owner atomically with the accepted run. An explicit
+/// budget is only meaningful for a new run, so it refuses an already busy
+/// child instead of silently ignoring or extending the budget.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.send_to_child(parent_runtime, child, message, owner, Some(900_000))
+/// ```
+pub fn send_to_child(
+  runtime: Runtime,
+  to target: String,
+  message message: AgentMessage,
+  owner owner: OpId,
+  within_ms within_ms: Option(Int),
+) -> Result(Delivery, ApiError) {
+  let continuation = Continuation(owner: #(runtime.strand, owner), within_ms:)
+  send_child_attempts(on_strand(runtime, target), message, continuation, 4)
+}
+
+fn send_child_attempts(
+  target: Runtime,
+  message: AgentMessage,
+  continuation: Continuation,
+  attempts: Int,
+) -> Result(Delivery, ApiError) {
+  use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+  let admission = fn() {
+    accept_with_child_run(
+      target,
+      AcceptRun(prompts: [message]),
+      None,
+      Some(continuation),
+    )
+    |> result.map(fn(operation) {
+      nudge(target)
+      Started(operation:)
+    })
+  }
+  case continuation.within_ms {
+    Some(ms) if ms <= 0 -> Error(ReadFailed("within_ms must be positive"))
+    Some(_) -> admission()
+    None ->
+      case enqueue(target, message, queue.enqueue_steer, None) {
+        Ok(entry) -> {
+          nudge(target)
+          Ok(Steered(entry:))
+        }
+        Error(QueueRejected(reason: queue.NoActiveRun)) ->
+          case admission() {
+            Error(AcceptRejected(StrandBusy)) ->
+              send_child_attempts(target, message, continuation, attempts - 1)
+            outcome -> outcome
+          }
+        Error(error) -> Error(error)
+      }
+  }
 }
 
 fn send_attempts(
@@ -1849,6 +2097,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, escalation.key_prefix)
   || string.starts_with(key, operation.result_fact_prefix)
   || string.starts_with(key, lineage.key_prefix)
+  || string.starts_with(key, child_run.key_prefix)
   || string.starts_with(key, prompt_fact_prefix)
   || string.starts_with(key, session_fact_prefix)
   || string.starts_with(key, rule_fact_prefix)

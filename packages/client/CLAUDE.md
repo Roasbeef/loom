@@ -2978,8 +2978,8 @@ across one operation a `Stop` block holds open.
   serving `Nudge`, `RequestAbort` and `PollTick`, which is exactly the
   property that makes a blocking tool safe. Every read, abort and commit
   a reap performs happens on the spawned process. The hook carries no
-  strand and does not need one: a lineage cell records the *operation*
-  that minted it, so "reap what this run spawned" is a ledger predicate.
+  strand and does not need one: each current child-run record names its
+  owning operation, including custody transferred on continuation.
 - **A reap's intent is durable and its abort is re-issued.** `api.abort`
   is a no-op when no driver is registered, so a reap that landed
   mid-restart would otherwise evaporate and the child would run until the
@@ -3721,3 +3721,16 @@ files. Its untracked query excludes only Loom's canonical generated
 cannot consume the observation budget. Tracked changes under those directories
 still appear. Both outputs retain NUL-framed path identity and the existing
 read-only broker, deadline and byte bounds; no repository ignore file is edited.
+
+## Child run lifecycle
+
+The Agency keeps immutable `lineage.Lineage` for addressing and spawn replay,
+while `runtime/child_run.Run` stores each operation's owner, deadline and stop
+cause. `current_peer` selects active or latest work; old handles still read
+operation-keyed results. `send` delegates idle admission to `api.send_to_child`,
+which commits budget and owner with the new operation. Explicit budgets are
+refused for busy children. Parent reaping matches the current run's owner and
+records its cause before requesting an exact-operation abort. New cancellation
+decisions do not update legacy `Lineage.reaped`. Proposal 042 records the wire
+and storage contract; `docs/review/child-run-lifecycle.md` records the remaining
+schedule and legacy held-rule policies.

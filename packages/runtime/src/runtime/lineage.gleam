@@ -20,8 +20,9 @@
 ////
 //// It is a `fact.custom` cell rather than a field on `StrandConfiguration`
 //// because adding a field there touches a `machine` type and every
-//// strand's register payload for state only the Agency reads. Revisit if
-//// lineage ever becomes load-bearing elsewhere.
+//// strand's register payload for child-only lifecycle metadata. The Agency
+//// reads the parent edge; runtime admission reads the default budget and
+//// guards that same lineage cell while accepting a continued child run.
 ////
 //// ## Why the prefix is `lineage/` and not `agency/`
 ////
@@ -43,6 +44,7 @@ import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import runtime/child_run
 
 /// The persisted coordinates of the tool call that minted a strand: the
 /// exact triple the planner replays a tool call under.
@@ -67,14 +69,11 @@ pub type CallSite {
 /// `minted_by` is the call site the name was derived from; `brief` is the
 /// operation id of the run the spawn accepted, which is what a handle
 /// names; `tools` is the child's active tool set as configured;
-/// `deadline` is an **absolute** wall-clock instant in milliseconds on
-/// the session's own time base (`None` means no budget) — absolute rather
-/// than a relative budget so a replayed wait resumes toward the same
-/// instant instead of restarting its clock; `detached` records whether
-/// the parent's run end should reap it; `reaped` is the durable record
-/// that a reap was decided, so a reap whose `api.abort` was dropped
-/// (no live driver) is re-issued on the next observation rather than
-/// evaporating.
+/// `deadline` preserves the original brief's absolute session-clock deadline;
+/// `default_within_ms` supplies the relative budget for later runs;
+/// `detached` removes parent run-end custody. `reaped` is a legacy original-run
+/// marker. New cancellation decisions live in `child_run.Run`, keyed by the
+/// exact operation, so a stopped run cannot mark every continuation stopped.
 pub type Lineage {
   Lineage(
     strand: String,
@@ -83,6 +82,8 @@ pub type Lineage {
     minted_by: CallSite,
     brief: OpId,
     tools: List(String),
+    /// Default budget for later runs; separate from the original deadline.
+    default_within_ms: Option(Int),
     deadline: Option(Int),
     detached: Bool,
     reaped: Bool,
@@ -152,6 +153,10 @@ pub fn encode(cell: Lineage) -> JsonValue {
     ),
     #("brief", json.String(ids.op_id_to_string(cell.brief))),
     #("tools", json.Array(list.map(cell.tools, json.String))),
+    #("defaultWithinMs", case cell.default_within_ms {
+      None -> json.Null
+      Some(budget) -> json.Int(budget)
+    }),
     #("deadline", case cell.deadline {
       None -> json.Null
       Some(at) -> json.Int(at)
@@ -183,6 +188,7 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
       use brief_text <- result.try(require_string(fields, "brief", where))
       use brief <- result.try(ids.parse_op_id(brief_text))
       use tools <- result.try(require_string_list(fields, "tools", where))
+      use default_within_ms <- result.try(decode_default_budget(fields, where))
       use deadline <- result.try(decode_deadline(fields, where))
       use detached <- result.try(require_bool(fields, "detached", where))
       use reaped <- result.try(require_bool(fields, "reaped", where))
@@ -193,6 +199,7 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
         minted_by:,
         brief:,
         tools:,
+        default_within_ms:,
         deadline:,
         detached:,
         reaped:,
@@ -203,6 +210,26 @@ pub fn decode(payload: JsonValue) -> Result(Lineage, CorruptionReport) {
         at: where,
         on: "payload",
         expected: "a lineage object",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+// Older lineage cells predate continuation budgets. Missing means the shipped
+// ten-minute default; explicit null preserves a host's unbounded policy.
+fn decode_default_budget(
+  fields: List(#(String, JsonValue)),
+  where: String,
+) -> Result(Option(Int), CorruptionReport) {
+  case list.key_find(fields, "defaultWithinMs") {
+    Error(Nil) -> Ok(Some(child_run.default_within_ms))
+    Ok(json.Null) -> Ok(None)
+    Ok(json.Int(budget)) if budget > 0 -> Ok(Some(budget))
+    Ok(other) ->
+      Error(corruption.report(
+        at: where,
+        on: "defaultWithinMs",
+        expected: "null or a positive budget in milliseconds",
         context: json.to_string(other),
       ))
   }

@@ -439,6 +439,7 @@ fn write_lineage(
       ),
       brief:,
       tools: [],
+      default_within_ms: Some(600_000),
       deadline: None,
       detached: False,
       reaped:,

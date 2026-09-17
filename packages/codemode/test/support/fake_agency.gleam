@@ -69,13 +69,14 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
         tools: ["bash", "fs_read"],
         model: "worker",
         model_id: "worker-id",
+        deadline_ms: option.None,
       ))
     },
     wait: fn(caller, handles, within_ms) {
       process.send(into, SawWait(caller:, handles:, within_ms:))
       Ok(list.map(handles, ready))
     },
-    send: fn(caller, to, text) {
+    send: fn(caller, to, text, _within_ms) {
       process.send(into, SawSend(caller:, to:, text:))
       Ok(agent.Steered(entry: entry_id(0)))
     },
@@ -95,6 +96,7 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
           relation: agent.ParentOf,
           handle: option.None,
           outcome: option.None,
+          deadline_ms: option.None,
           tools: [],
         ),
       ])
@@ -110,7 +112,7 @@ pub fn refusing(refusal: Refusal) -> Agency {
   agent.Agency(
     spawn: fn(_caller, _request) { Error(refusal) },
     wait: fn(_caller, _handles, _within_ms) { Error(refusal) },
-    send: fn(_caller, _to, _text) { Error(refusal) },
+    send: fn(_caller, _to, _text, _within_ms) { Error(refusal) },
     note: fn(_caller, _key, _value) { Error(refusal) },
     notes: fn(_caller, _prefix) { Error(refusal) },
     roster: fn(_caller) { Error(refusal) },

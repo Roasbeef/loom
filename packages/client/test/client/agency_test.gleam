@@ -27,6 +27,7 @@ import gleam/string
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
+import runtime/child_run
 import runtime/effects
 import runtime/lineage
 import session/session
@@ -49,6 +50,10 @@ type Harness {
 type Provider {
   Settles(text: String)
   Hangs
+
+  /// Leaves the parent prompt open while child reviews complete.
+  HoldsParent
+
   /// Answers like `Settles` and reports the context it was handed, so a
   /// test can assert on what actually reached a child's model rather than
   /// on the string the harness meant to put there.
@@ -158,6 +163,15 @@ fn scripted_stream(
   let events = process.new_subject()
   case provider {
     Hangs -> Nil
+    HoldsParent ->
+      case spec {
+        effects.GenerationRequest(context:, ..) ->
+          case context_text(context) == "hold parent" {
+            True -> Nil
+            False -> settle_into(events, "review complete")
+          }
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
     Watches(text:, into:) -> {
       report_context(into, spec)
       settle_into(events, text)
@@ -967,6 +981,7 @@ pub fn a_sibling_is_not_addressable_test() {
       caller_on(first.strand, "turn-1:tools", 0),
       second.strand,
       "psst",
+      None,
     )
     == Error(agent.NotAddressable(strand: second.strand))
   // Nor can a child reach a strand that does not exist at all.
@@ -974,6 +989,7 @@ pub fn a_sibling_is_not_addressable_test() {
       caller_on(first.strand, "turn-1:tools", 0),
       "sub:invented",
       "psst",
+      None,
     )
     == Error(agent.NotAddressable(strand: "sub:invented"))
   close(harness)
@@ -995,32 +1011,44 @@ pub fn a_report_into_a_finished_parent_is_refused_test() {
       caller_on(child.strand, "turn-1:tools", 0),
       "main",
       "here is what I found",
+      None,
     )
     == Error(agent.ParentRunEnded(strand: "main"))
   close(harness)
 }
 
 pub fn a_parent_may_give_an_idle_child_more_work_test() {
-  // The refusal above is narrow on purpose: downward, starting a run is
-  // a live agent's explicit decision inside its own run.
-  let harness = start_harness(Settles("done"))
-  let caller = caller_on("main", "turn-1:tools", 0)
+  let harness = start_harness(HoldsParent)
+  let caller = open_parent(harness, "first parent")
   let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
     as "the child must spawn"
-  assert until(
-    fn() {
-      case session.strand_state(harness.runtime.session, child.strand) {
-        Ok(Some(session.Cell(value: state, ..))) ->
-          state.current_operation == None
-        _ -> False
-      }
-    },
-    200,
-  )
-  let assert Ok(delivery) =
-    harness.seam.send(caller, child.strand, "one more thing")
-    as "a parent may address its own descendant"
-  let assert agent.Started(..) = delivery
+  assert settled(harness, child.handle) as "the original review must complete"
+
+  let assert Ok(agent.Started(operation:, deadline_ms:)) =
+    harness.seam.send(caller, child.strand, "one more thing", None)
+    as "a parent may continue its idle descendant"
+  let renewed = agent.Handle(strand: child.strand, operation:)
+  assert renewed != child.handle
+  assert deadline_ms != None
+  assert settled(harness, renewed)
+    as "the continuation must finish on the original conversation"
+  let assert Ok([peer]) = harness.seam.roster(caller)
+    as "the roster must describe the completed continuation"
+  assert peer.handle == Some(renewed)
+  assert peer.outcome == Some(agent.Completed)
+  assert peer.deadline_ms == deadline_ms
+
+  let assert Ok([old, new]) =
+    harness.seam.wait(caller, [child.handle, renewed], 0)
+    as "both historical and current handles must remain addressable"
+  assert handle_of(old) == child.handle
+  assert handle_of(new) == renewed
+  let assert agent.Ready(
+    outcome: agent.Completed,
+    report: "review complete",
+    ..,
+  ) = new
+    as "the current handle must retrieve the continuation's report"
   close(harness)
 }
 
@@ -1146,12 +1174,10 @@ pub fn an_overdue_child_is_reaped_and_the_reap_is_durable_test() {
       agent.SpawnRequest(..a_spawn("review"), within_ms: Some(1)),
     )
     as "the child must spawn"
-  let assert Some(before) = cell_for(harness, child.strand)
-  assert before.reaped == False
+  assert run_for(harness, child.handle).stop == child_run.Unstopped
   let assert Ok(_peers) = harness.seam.roster(caller)
     as "the roster observation must answer"
-  let assert Some(after) = cell_for(harness, child.strand)
-  assert after.reaped
+  assert run_for(harness, child.handle).stop == child_run.BudgetExpired
   close(harness)
 }
 
@@ -1171,12 +1197,7 @@ pub fn a_run_end_reaps_the_children_that_run_spawned_test() {
   // nothing.
   assert hooks.run_end(caller.operation) == None
   assert until(
-    fn() {
-      case cell_for(harness, child.strand) {
-        Some(cell) -> cell.reaped
-        None -> False
-      }
-    },
+    fn() { run_for(harness, child.handle).stop == child_run.ParentFinished },
     200,
   )
   close(harness)
@@ -1195,12 +1216,7 @@ pub fn a_detached_child_survives_its_parents_run_end_test() {
   assert hooks.run_end(caller.operation) == None
   // Give the reaper the same window the previous test needed to finish.
   assert !until(
-    fn() {
-      case cell_for(harness, child.strand) {
-        Some(cell) -> cell.reaped
-        None -> False
-      }
-    },
+    fn() { run_for(harness, child.handle).stop == child_run.ParentFinished },
     20,
   )
   close(harness)
@@ -1216,12 +1232,7 @@ pub fn a_run_end_leaves_another_runs_children_alone_test() {
   let other = caller_on("main", "turn-2:tools", 0)
   assert hooks.run_end(other.operation) == None
   assert !until(
-    fn() {
-      case cell_for(harness, child.strand) {
-        Some(cell) -> cell.reaped
-        None -> False
-      }
-    },
+    fn() { run_for(harness, child.handle).stop == child_run.ParentFinished },
     20,
   )
   close(harness)
@@ -1369,6 +1380,7 @@ pub fn a_name_minted_by_another_call_site_is_refused_not_adopted_test() {
       ),
       brief: caller_on("elsewhere", "turn-2:tools", 4).operation,
       tools: ["fs_read"],
+      default_within_ms: Some(600_000),
       deadline: None,
       detached: False,
       reaped: False,
@@ -1714,5 +1726,219 @@ pub fn a_stopped_reviewer_returns_saved_observations_as_partial_work_test() {
   assert string.contains(report, "lifetime cleanup still needs review")
   assert string.contains(report, "may include work from earlier turns")
   assert notes != []
+  close(harness)
+}
+
+// A real parent run gives renewed admission an owner whose state can be
+// checked in the same transaction. Fabricated call-site ids cannot test that.
+fn open_parent(harness: Harness, label: String) -> Caller {
+  let assert Ok(operation) =
+    api.prompt(harness.runtime, [
+      message.UserMessage(
+        content: [message.UserText(text: "hold parent", text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+    ])
+    as "the parent run must open"
+  Caller(..caller_on("main", label, 0), operation:)
+}
+
+fn run_for(harness: Harness, handle: Handle) -> child_run.Run {
+  let assert Ok(Some(value)) =
+    api.fact(harness.runtime, child_run.key(handle.operation))
+    as "every accepted child run must have a lifecycle record"
+  let assert Ok(run) = child_run.decode(value)
+    as "the persisted lifecycle must decode"
+  run
+}
+
+pub fn resuming_an_aborted_child_renews_its_budget_and_parent_owner_test() {
+  let harness = start_harness(Hangs)
+  let original_parent = open_parent(harness, "original parent")
+  let assert Ok(child) =
+    harness.seam.spawn(
+      original_parent,
+      agent.SpawnRequest(..a_spawn("review"), within_ms: Some(1)),
+    )
+    as "the child must spawn with a short budget"
+  let assert Ok(_) = harness.seam.roster(original_parent)
+    as "the expired budget must be observed"
+  assert settled(harness, child.handle)
+    as "the original run must stop before continuation"
+  let assert agent.Ready(outcome: agent.BudgetExpired, ..) =
+    joined(harness, original_parent, child.handle)
+    as "a budget expiry must be distinguishable from an unknown abort"
+
+  api.abort_operation(harness.runtime, original_parent.operation)
+  assert settled(
+    harness,
+    agent.Handle(strand: "main", operation: original_parent.operation),
+  )
+    as "the first parent must settle before the next parent run"
+  let parent = open_parent(harness, "next parent")
+  let assert Ok(agent.Started(operation:, deadline_ms: Some(deadline))) =
+    harness.seam.send(parent, child.strand, "continue the review", None)
+    as "the new parent must continue the same child"
+  let renewed = agent.Handle(strand: child.strand, operation:)
+  let run = run_for(harness, renewed)
+  assert run.owner == Some(parent.operation)
+  assert run.stop == child_run.Unstopped
+  assert run.deadline == Some(deadline)
+  let #(now, _) = clock.read(harness.runtime.effects.clock)
+  assert deadline - now > 590_000
+  assert deadline - now <= 600_000
+
+  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
+  let _ = hooks.run_end(original_parent.operation)
+  let assert Ok([peer]) = harness.seam.roster(parent)
+    as "the current run must be visible after a late original-owner hook"
+  assert peer.handle == Some(renewed)
+  assert peer.outcome == None
+  assert run_for(harness, renewed).stop == child_run.Unstopped
+  let assert agent.Ready(outcome: agent.BudgetExpired, ..) =
+    joined(harness, parent, child.handle)
+    as "the old handle must retain its original stop reason"
+
+  let _ = hooks.run_end(parent.operation)
+  assert until(
+    fn() { run_for(harness, renewed).stop == child_run.ParentFinished },
+    200,
+  )
+    as "the current parent must own the continued run's cleanup"
+  let assert agent.Ready(outcome: agent.ParentFinished, ..) =
+    joined(harness, parent, renewed)
+    as "parent completion must be distinguishable from budget expiry"
+  close(harness)
+}
+
+pub fn a_continuation_budget_is_explicit_and_cannot_extend_an_active_run_test() {
+  let harness = start_harness(Hangs)
+  let parent = open_parent(harness, "parent")
+  let assert Ok(child) = harness.seam.spawn(parent, a_spawn("review"))
+    as "the child must spawn"
+  let original = run_for(harness, child.handle)
+  let assert Error(agent.InvalidArgument(_)) =
+    harness.seam.send(parent, child.strand, "continue", Some(900_000))
+    as "a busy child's deadline must not be silently extended"
+  assert run_for(harness, child.handle) == original
+
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  assert settled(harness, child.handle) as "the child must become idle"
+  let assert Ok(agent.Started(operation:, deadline_ms: Some(deadline))) =
+    harness.seam.send(parent, child.strand, "continue", Some(900_000))
+    as "an idle child may receive an explicit new budget"
+  let #(now, _) = clock.read(harness.runtime.effects.clock)
+  assert deadline - now > 890_000
+  assert deadline - now <= 900_000
+  let renewed = agent.Handle(strand: child.strand, operation:)
+  assert run_for(harness, renewed).deadline == Some(deadline)
+  let assert Ok([peer]) = harness.seam.roster(parent)
+    as "the roster must expose the continued run's budget"
+  assert peer.handle == Some(renewed)
+  assert peer.deadline_ms == Some(deadline)
+
+  // Observe the renewed deadline itself: the original deadline cannot expire
+  // this run, and the explicit replacement must still be enforced.
+  let expired =
+    agency.seam(
+      agency.Config(..harness.config, clock: clock.fixed(at: deadline + 1)),
+    )
+  let assert Ok(_) = expired.roster(parent)
+    as "observing a spent renewed budget must request cancellation"
+  let assert agent.Ready(outcome: agent.BudgetExpired, ..) =
+    joined(harness, parent, renewed)
+    as "the renewed operation must stop for its own budget"
+  let assert agent.Ready(outcome: agent.Aborted, ..) =
+    joined(harness, parent, child.handle)
+    as "the new expiry must not rewrite the original manual abort"
+  close(harness)
+}
+
+pub fn prompting_a_child_directly_also_records_a_fresh_lifecycle_test() {
+  let harness = start_harness(Hangs)
+  let parent = open_parent(harness, "parent")
+  let assert Ok(child) = harness.seam.spawn(parent, a_spawn("review"))
+    as "the child must spawn"
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  assert settled(harness, child.handle) as "the original child run must stop"
+  let assert Ok(operation) =
+    api.prompt(api.on_strand(harness.runtime, child.strand), [
+      message.UserMessage(
+        content: [message.UserText(text: "continue", text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+    ])
+    as "the operator must be able to resume the child directly"
+  let renewed = agent.Handle(strand: child.strand, operation:)
+  let run = run_for(harness, renewed)
+  assert run.owner == Some(parent.operation)
+  assert run.deadline != None
+  assert run.stop == child_run.Unstopped
+  let assert Ok([peer]) = harness.seam.roster(parent)
+    as "the direct continuation must replace the stale roster handle"
+  assert peer.handle == Some(renewed)
+  assert peer.outcome == None
+  close(harness)
+}
+
+pub fn a_detached_continuation_survives_parent_completion_test() {
+  let harness = start_harness(Hangs)
+  let parent = open_parent(harness, "parent")
+  let assert Ok(child) =
+    harness.seam.spawn(
+      parent,
+      agent.SpawnRequest(..a_spawn("review"), detach: True),
+    )
+    as "the child must spawn detached"
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  assert settled(harness, child.handle) as "the original run must stop"
+  let assert Ok(agent.Started(operation:, ..)) =
+    harness.seam.send(parent, child.strand, "continue", None)
+    as "the detached child must accept a new run"
+  let renewed = agent.Handle(strand: child.strand, operation:)
+  assert run_for(harness, renewed).owner == None
+  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
+  let _ = hooks.run_end(parent.operation)
+  let assert Ok([peer]) = harness.seam.roster(parent)
+    as "the detached run must remain visible"
+  assert peer.handle == Some(renewed)
+  assert peer.outcome == None
+  assert run_for(harness, renewed).stop == child_run.Unstopped
+  close(harness)
+}
+
+pub fn a_finished_parent_cannot_admit_more_child_work_test() {
+  let harness = start_harness(Hangs)
+  let parent = open_parent(harness, "parent")
+  let assert Ok(child) = harness.seam.spawn(parent, a_spawn("review"))
+    as "the child must spawn"
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  assert settled(harness, child.handle) as "the child must be idle"
+  api.abort_operation(harness.runtime, parent.operation)
+  assert settled(
+    harness,
+    agent.Handle(strand: "main", operation: parent.operation),
+  )
+    as "the parent must finish"
+  let assert Error(_) =
+    harness.seam.send(parent, child.strand, "too late", None)
+    as "the expired caller must not admit a new child run"
+  let assert Ok([peer]) = harness.seam.roster(parent)
+    as "refused admission must preserve the original handle"
+  assert peer.handle == Some(child.handle)
   close(harness)
 }

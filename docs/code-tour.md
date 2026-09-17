@@ -1166,7 +1166,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:486`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:496`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:500`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1192,7 +1192,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:973`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1198`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1203,7 +1203,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1286`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1537`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3724`). Keying
@@ -1229,7 +1229,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1035`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1227`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans

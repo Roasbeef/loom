@@ -242,7 +242,7 @@ pub type Minter {
 /// compaction because it names nothing process-local.
 ///
 /// Constructor invariants: `strand` is the child's minted name and
-/// `operation` the brief run the spawn accepted. Rendered to the model as
+/// `operation` the run accepted by a spawn or a later send. Rendered as
 /// `{strand}#{operation}` and parsed back totally.
 pub type Handle {
   Handle(strand: String, operation: OpId)
@@ -417,6 +417,8 @@ pub type Spawned {
     model: String,
     /// The provider model identifier in that same durable configuration.
     model_id: String,
+    /// Absolute session-clock deadline for this run, or no budget.
+    deadline_ms: Option(Int),
   )
 }
 
@@ -430,6 +432,12 @@ pub type Outcome {
 
   /// The run was aborted — deadline, reap, or operator.
   Aborted
+
+  /// The harness stopped this run because its wall-clock budget expired.
+  BudgetExpired
+
+  /// The parent operation owning this run ended.
+  ParentFinished
 }
 
 /// One handle's position when a wait returned.
@@ -465,7 +473,7 @@ pub type Delivery {
   Steered(entry: EntryId)
 
   /// The target was idle: the message was accepted as a fresh run.
-  Started(operation: OpId)
+  Started(operation: OpId, deadline_ms: Option(Int))
 }
 
 /// How a peer stands in relation to the caller.
@@ -487,6 +495,8 @@ pub type Peer {
     relation: Relation,
     handle: Option(Handle),
     outcome: Option(Outcome),
+    /// The current or latest run's absolute deadline, when bounded.
+    deadline_ms: Option(Int),
     tools: List(String),
   )
 }
@@ -574,7 +584,7 @@ pub type Agency {
     /// Mints a child strand, seeds it, and accepts its brief.
     spawn: fn(Caller, SpawnRequest) -> Result(Spawned, Refusal),
     /// Delivers one attributed message to an addressable peer.
-    send: fn(Caller, String, String) -> Result(Delivery, Refusal),
+    send: fn(Caller, String, String, Option(Int)) -> Result(Delivery, Refusal),
     /// Waits, up to one shared deadline, for descendants' operations.
     wait: fn(Caller, List(Handle), Int) -> Result(List(Waited), Refusal),
     /// Writes one blackboard cell under the caller's own namespace.
@@ -1390,7 +1400,8 @@ pub fn spawn_tool(agency: Agency) -> Tool {
         #(
           "within_ms",
           tool.integer_property(
-            "wall-clock budget; the child is aborted when it expires",
+            "wall-clock budget in milliseconds; defaults to ten minutes. "
+            <> "The child is aborted when it expires",
           ),
         ),
         #(
@@ -1478,11 +1489,13 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
         <> "`) with tools ["
         <> string.join(spawned.tools, ", ")
         <> "]. Handle: "
-        <> handle_to_string(spawned.handle),
+        <> handle_to_string(spawned.handle)
+        <> deadline_text(spawned.deadline_ms),
       )
       |> tool.with_details(
         json.Object([
           #("handle", json.String(handle_to_string(spawned.handle))),
+          #("deadline_ms", deadline_json(spawned.deadline_ms)),
           #("strand", json.String(spawned.strand)),
           #("model", json.String(spawned.model)),
           #("model_id", json.String(spawned.model_id)),
@@ -1535,6 +1548,9 @@ pub fn wait_tool(agency: Agency) -> Tool {
       <> "not a failure — call again or do other work first. "
       <> "Example: {\"handles\":[\"<handle returned by agent_spawn>\"],\"within_ms\":1000}. "
       <> "The handles value is a JSON array, not a string containing JSON. "
+      <> "Handles identify runs: after agent_send starts another run on a "
+      <> "child, use the new handle printed by agent_send. The original "
+      <> "spawn handle still names the original run. "
       <> "Unconfirmed cancellation means cleanup was not proved; it does not "
       <> "establish a provider outage. Do not respawn while cleanup is unconfirmed.",
     prompt_snippet: Some(
@@ -1693,7 +1709,9 @@ fn outcome_text(outcome: Outcome) -> String {
   case outcome {
     Completed -> "completed"
     Failed(reason:) -> "failed: " <> reason
-    Aborted -> "aborted"
+    Aborted -> "aborted (reason not recorded)"
+    BudgetExpired -> "aborted: wall-clock budget expired"
+    ParentFinished -> "aborted: owning parent run ended"
   }
 }
 
@@ -1713,6 +1731,7 @@ fn waited_json(waited: Waited) -> JsonValue {
           #("strand", json.String(handle.strand)),
           #("state", json.String("ready")),
           #("outcome", outcome_json(outcome)),
+          #("abort_reason", abort_reason_json(outcome)),
           #("report", json.String(report)),
           #("notes", json.Object(notes)),
         ],
@@ -1767,7 +1786,7 @@ fn outcome_json(outcome: Outcome) -> JsonValue {
   case outcome {
     Completed -> json.String("completed")
     Failed(reason:) -> json.String("failed: " <> reason)
-    Aborted -> json.String("aborted")
+    Aborted | BudgetExpired | ParentFinished -> json.String("aborted")
   }
 }
 
@@ -1783,10 +1802,21 @@ pub fn send_tool(agency: Agency) -> Tool {
     name: "agent_send",
     description: "Send a message to your parent or to one of your "
       <> "subagents. It arrives as a durable message on their next "
-      <> "checkpoint; this does not wait for a reply.",
+      <> "checkpoint; this does not wait for a reply. An idle child, including "
+      <> "one whose previous run completed, failed, or was aborted, starts "
+      <> "a new run in the same conversation. To continue its work, send "
+      <> "to its strand name rather than spawning a replacement. When "
+      <> "delivery is started, wait with the new handle printed in the "
+      <> "result; the original spawn handle still names the old run. "
+      <> "The roster recovers the current or latest run's handle. "
+      <> "When delivery is steered, the existing run remains open. "
+      <> "A resumed run defaults to ten minutes. Set within_ms to choose "
+      <> "a different positive budget for an idle child; it is refused "
+      <> "for an active child and never extends an existing deadline.",
     prompt_snippet: Some(
       "`agent_send` delivers a message to your parent or to one of your "
-      <> "subagents, to be read once.",
+      <> "subagents; sending to an idle child starts another run. Wait on "
+      <> "the new handle returned for that run.",
     ),
     schema: tool.object_schema(
       [
@@ -1797,6 +1827,13 @@ pub fn send_tool(agency: Agency) -> Tool {
           ),
         ),
         #("message", tool.string_property("what to tell them")),
+        #(
+          "within_ms",
+          tool.integer_property(
+            "Optional positive wall-clock budget for a new run on an idle "
+            <> "child. Defaults to ten minutes; refused for an active child",
+          ),
+        ),
       ],
       ["to", "message"],
     ),
@@ -1810,13 +1847,15 @@ pub fn send_tool(agency: Agency) -> Tool {
 fn run_send(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use to <- tool.with_arg(tool.required_string(args, "to"))
   use message <- tool.with_arg(tool.required_string(args, "message"))
+  use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   use delivery <- tool.or_outcome(
-    agency.send(caller(ctx), to, message),
+    agency.send(caller(ctx), to, message, within_ms),
     refusal_outcome,
   )
   case delivery {
     Steered(entry:) -> steered_outcome(to, entry)
-    Started(operation:) -> started_outcome(to, operation)
+    Started(operation:, deadline_ms:) ->
+      started_outcome(to, operation, deadline_ms)
   }
 }
 
@@ -1830,12 +1869,26 @@ fn steered_outcome(to: String, entry: EntryId) -> ToolOutcome {
   )
 }
 
-fn started_outcome(to: String, operation: OpId) -> ToolOutcome {
-  tool.success("delivered to `" <> to <> "`, which started a run on it")
+fn started_outcome(
+  to: String,
+  operation: OpId,
+  deadline_ms: Option(Int),
+) -> ToolOutcome {
+  let handle = handle_to_string(Handle(strand: to, operation:))
+  tool.success(
+    "delivered to `"
+    <> to
+    <> "`, which started a run on it. "
+    <> "Wait for this run with agent_wait using handle `"
+    <> handle
+    <> "`.",
+  )
   |> tool.with_details(
     json.Object([
       #("delivery", json.String("started")),
       #("operation", json.String(ids.op_id_to_string(operation))),
+      #("handle", json.String(handle)),
+      #("deadline_ms", deadline_json(deadline_ms)),
     ]),
   )
 }
@@ -1937,8 +1990,9 @@ pub fn roster_tool(agency: Agency) -> Tool {
   tool.Tool(
     name: "agent_roster",
     description: "List your parent and your subagents, with their handles "
-      <> "and whether they have finished. Use this when you have lost a "
-      <> "handle.",
+      <> "for their current or latest runs, deadlines, and whether they "
+      <> "have finished. After continuing a child, this recovers the new "
+      <> "run's handle rather than the original spawn handle.",
     prompt_snippet: Some(
       "`agent_roster` lists your parent and your subagents with their "
       <> "handles.",
@@ -1975,6 +2029,7 @@ fn peer_text(peer: Peer) -> String {
     None -> " — working"
     Some(outcome) -> " — " <> outcome_text(outcome)
   }
+  <> deadline_text(peer.deadline_ms)
 }
 
 fn relation_text(relation: Relation) -> String {
@@ -1996,6 +2051,11 @@ fn peer_json(peer: Peer) -> JsonValue {
       None -> json.Null
       Some(outcome) -> outcome_json(outcome)
     }),
+    #("abort_reason", case peer.outcome {
+      None -> json.Null
+      Some(outcome) -> abort_reason_json(outcome)
+    }),
+    #("deadline_ms", deadline_json(peer.deadline_ms)),
     #("tools", json.Array(list.map(peer.tools, json.String))),
   ])
 }
@@ -2155,4 +2215,27 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
 fn empty_requirements(workspace: String) -> SandboxPolicy {
   let base = tool.read_requirements(workspace)
   policy.SandboxPolicy(..base, readable_roots: [])
+}
+
+// Keep terminal outcomes compatible while recording the reason separately.
+fn abort_reason_json(outcome: Outcome) -> JsonValue {
+  case outcome {
+    BudgetExpired -> json.String("budget_expired")
+    ParentFinished -> json.String("parent_finished")
+    Aborted | Completed | Failed(_) -> json.Null
+  }
+}
+
+fn deadline_json(deadline_ms: Option(Int)) -> JsonValue {
+  case deadline_ms {
+    None -> json.Null
+    Some(at) -> json.Int(at)
+  }
+}
+
+fn deadline_text(deadline_ms: Option(Int)) -> String {
+  case deadline_ms {
+    None -> ""
+    Some(at) -> " Deadline (session-clock ms): " <> int.to_string(at) <> "."
+  }
 }

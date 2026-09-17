@@ -750,3 +750,14 @@ was asked.
 - [packages/broker/CLAUDE.md](../broker/CLAUDE.md) — the door every jailed
   call goes through.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Resumed agent runs
+
+`Agency.send` receives an optional positive continuation budget. `Started`
+contains the new operation and optional absolute deadline; the tool receipt
+also renders a waitable handle. Spawn and roster expose `deadline_ms`, and
+wait/roster keep wire outcome `aborted` while reporting a recorded
+`abort_reason` separately. `BudgetExpired` and `ParentFinished` are internal
+outcome variants; unknown aborts remain `Aborted`. Tool guidance distinguishes
+continuing a strand with `agent_send` from observing one operation with
+`agent_wait`, and makes clear that the old handle remains historical.
