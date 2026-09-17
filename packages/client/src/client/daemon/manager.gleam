@@ -2024,18 +2024,25 @@ fn prepare_domain_slot(
   let faults = process.new_subject()
   let failures = process.new_subject()
   let operation = book.epoch <> ":" <> int.to_string(book.next)
+
+  // The persistent host retains its builder after assembly. Project these
+  // inputs before closing over them so it cannot retain the registry's other
+  // resident instances through the full book.
+  let commands = book.commands
+  let build = book.assembly.build
+
   case
     host.prepare(
       build: fn(owner) {
         use services <- result.try(
-          call.try_call(book.commands, waiting: 5000, sending: DomainServices(
+          call.try_call(commands, waiting: 5000, sending: DomainServices(
             record.id,
             operation,
             _,
           ))
           |> result.unwrap(Error("domain registry is unavailable")),
         )
-        book.assembly.build(record, selected, services, owner)
+        build(record, selected, services, owner)
       },
       fatal: book.assembly.fatal,
       results:,
@@ -2170,11 +2177,14 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
       // parks every queued authorization behind five hundred catalogue reads.
       let commands = book.commands
       let sources = fn() { collect_sources(commands, selected.id, "", [], 0) }
+
+      // Domain hosts also keep their builder after publication. Retain the
+      // callback alone, not the registry and its resident instances.
+      let domain_build = book.assembly.domain_build
+
       case
         host.prepare(
-          build: fn(owner) {
-            book.assembly.domain_build(selected, sources, owner)
-          },
+          build: fn(owner) { domain_build(selected, sources, owner) },
           fatal: domain_service.children,
           results:,
           faults:,

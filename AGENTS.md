@@ -16,6 +16,15 @@ briefing and monitoring sub-agents, the verification standard, and the
 hazards that have already cost real time. Read it before dispatching a
 sub-agent or trusting a green gate.
 
+## Repository skills
+
+[BEAM memory review](skills/beam-memory-review/SKILL.md) is an optional,
+evidence-ranked review of allocation, copying, and retention. Use it for
+memory investigations or memory-relevant changes; it is not a mandatory gate.
+The [.claude entry point](.claude/skills/beam-memory-review/SKILL.md) carries
+the same guidance for skill discovery. Keep both copies aligned, adjusting
+relative links for their directory depth.
+
 ## Required reading
 
 Before writing any code, read these in order:

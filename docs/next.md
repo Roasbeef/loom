@@ -1,5 +1,21 @@
 # Next
 
+## Resident host capture and memory review
+
+PR #441 adds the optional BEAM memory review skill in both
+`skills/beam-memory-review` and `.claude/skills/beam-memory-review`, linked from
+the root instructions. It also narrows the persistent assembly builder to its
+command subject and build callbacks, preventing capture of the manager book and
+earlier resident instances in both session and domain hosts. The regression
+fails against both original captures and passes after projection. Independent
+review is complete. The full `make check` gate passed with exit status zero:
+1,859 client, 563 TUI, and 304 code-mode tests; lint reports zero errors and
+809 warnings. A preceding run hit a schedule-residency shutdown failure; that
+fixture then passed five isolated runs with each of the original and projected
+managers, followed by the successful full gate. No daemon installation is part
+of this work.
+See the September 17 section of `docs/design-notes/daemon-memory.md`.
+
 ## Whole-host system aliases
 
 `sandbox: resolve inherited system aliases` repairs Linux jail startup when
