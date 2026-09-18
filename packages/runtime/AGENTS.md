@@ -205,6 +205,12 @@ extended by the M3 runtime wave.
   retained-tail copy), and that compaction's `previous_summary`.
   `hooks.project` reads one from a session; `hooks.uncompacted` wraps a
   plain message list.
+- `runtime/hooks.with_tool_references` — enables retained-tail result
+  references only after the host has authorized exact history retrieval. It
+  preserves the frozen cut and replaces only successful text-only results of
+  at least 4,096 bytes when the bounded reference is smaller. Provenance is the
+  original durable entry UUID; copied compaction tails resolve through their
+  parent branch and fail closed on positional or projection mismatch.
 - `runtime/hooks.{estimate_message, context_tokens, preparation,
   threshold, overflow}` — the compaction arithmetic: characters over
   four for a not-yet-priced message, pi's newest-durable-usage fold for
