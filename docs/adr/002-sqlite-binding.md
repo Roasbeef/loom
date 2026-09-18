@@ -103,7 +103,15 @@ The compiler patch and cold-build regression are maintained in
 and both Docker recipes apply them. Ordinary development now needs this
 compiler too. No modified cache or evaluation code-path override is needed.
 
-The real storage suite passes against the pinned build. The dependency's
-35 tests and the five original retirement regressions passed in the Linux
-evaluation. Full final-build gates, daemon soak, release smoke and hosted CI
-must pass before this dependency adoption is called complete.
+The real storage suite passes 104 tests against the pinned build. Full native
+and Linux gates pass, as do both release smoke tests. The Linux smoke builds
+its bundled seed offline. The daemon soak retains 35 descriptors after each
+retirement over 16 measured cycles following two warmups. The dependency's
+35 tests and the five original retirement regressions also passed in the
+Linux evaluation; the adopted source is identical to that tested repair.
+
+[Workflow 35296389719](https://github.com/Roasbeef/loom/actions/runs/35296389719)
+builds the maintained toolchain image and compares matching complete release
+artifacts from two independent Linux runners. The release workflow pins its
+published digest. [The repair review](../review/git-identity-linux.md) records
+verification limits and the clean-build requirement when retiring the pin.
