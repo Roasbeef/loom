@@ -189,6 +189,7 @@ import session/session
 import storage/access
 import storage/snapshot
 import storage/storage
+import tools/history
 import tools/tool.{type Registry}
 import weft
 import weft/actor
@@ -5811,6 +5812,26 @@ fn compaction_preparation(
   strand: String,
 ) -> Option(operation.StructuralPreparation) {
   let projected = hooks.project(state.runtime.session, strand)
+  let projected = case
+    state.registry,
+    ids.parse_session_id(state.session_id),
+    session.strand_configuration(state.runtime.session, strand)
+  {
+    Some(registry), Ok(session_id), Ok(Some(configuration)) ->
+      case
+        tool.lookup(registry, history.tool_name),
+        list.contains(configuration.value.active_tool_names, history.tool_name)
+      {
+        Ok(_), True ->
+          hooks.with_tool_references(
+            projected,
+            state.runtime.session,
+            session_id,
+          )
+        _, _ -> projected
+      }
+    _, _, _ -> projected
+  }
   let settings = state.runtime.settings.compaction
   case
     hooks.preparation(
