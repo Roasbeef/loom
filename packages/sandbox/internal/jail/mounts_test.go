@@ -172,6 +172,34 @@ func TestUnmountableProtectedIgnoresExistingPaths(t *testing.T) {
 	}
 }
 
+// The planner emits only the ancestor mask. Its missing descendants are
+// already hidden, so they need no mount point inside the read-only mask.
+func TestUnmountableProtectedUsesTheEmittedMasks(t *testing.T) {
+	pol := policy.Policy{
+		ReadableRoots: []string{"/"},
+		WritableRoots: []string{"/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Protected: []string{
+			"/state/domains/",
+			"/state/domains/session/index.db",
+			"/state/domains/session/index.db-wal",
+		},
+	}
+	kinds := map[string]PathKind{
+		"/state/domains/":                     PathDir,
+		"/state/domains/session/index.db":     PathMissing,
+		"/state/domains/session/index.db-wal": PathMissing,
+	}
+	plan := MountPlan(pol, kinds, "")
+	if bad := UnmountableProtected(kinds, plan); len(bad) != 0 {
+		t.Fatalf("ancestor mask already hides descendants: %v", bad)
+	}
+	if report := AuditMounts(pol, plan); len(report.Skipped) != 0 {
+		t.Fatalf("every protected path must remain masked: %+v", report)
+	}
+}
+
 // #63: a `writable_roots` entry that is not on this host has nothing
 // for `--bind` to bind from, and bwrap refuses the whole jail with a
 // bare `Can't bind mount SRC: No such file or directory` and exit 1.

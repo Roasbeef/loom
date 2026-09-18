@@ -389,6 +389,11 @@ resource and lifecycle gaps. Missing Seatbelt layers, unexpected skips, and
 silent reports still fail the demand. Callers that require cross-platform
 Linux equivalence select `FullEnforcement` explicitly.
 
+The fixed Git identity publication CLI is recorded in
+[protocol change 043](../protocol-change/043-git-identity-publication.md).
+It applies the original write authority through directory descriptors without
+constructing a jail or admitting a command. The framed ExecProto is unchanged.
+
 ### WP-I `tools` — core tool set
 
 **Scope**: tool behaviour (`name, schema, replay: Never|Safe, execution_mode, requirements → run(ctx, args)`); `bash` (via broker exec), `fs_read` (hashline anchors: per-line `xxh3(content)[:8]`; large files: windowed reads), `fs_edit` (anchor-checked replace/insert/delete; multi-hunk; stale-anchor → structured rejection listing fresh anchors), `fs_write`, `grep` (rg via exec). Later in M5: `lsp_*` (client over stdio port, per-project supervised, sandboxed), `dap_*`.

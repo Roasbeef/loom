@@ -196,7 +196,7 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
   let base =
     policy.SandboxPolicy(..base, env_allow: [
       "PATH", "HOME", "TMPDIR", "LOOM_SCRATCH_DIR", "CLAUDE_PROJECT_DIR",
-      "HOOK_MARKER",
+      "HOOK_MARKER", "GIT_CONFIG_GLOBAL",
     ])
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(

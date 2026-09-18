@@ -81,3 +81,37 @@ selects the Gleam build tool for the latter routes.
 An evaluation code-path override or a modified build cache is not a
 release mechanism. The dependency reference and final verification
 remain open until that packaging step is complete.
+
+## Addendum: pinned native Git build
+
+*Added 2026-09-17. This records the dependency packaging decision; final
+adoption verification is recorded with PR #444.*
+
+Storage now selects `Roasbeef/esqlite` commit
+`813d37449f1d9222c8bc3bc2374856f0fd371509` through a Git dependency. That
+commit adds only package metadata to the query-retirement repair at
+`45dbb48ce28c4d78b5cb93de0e1e78bb79f859d9`; its Erlang and C sources are
+identical. The SQLite version and the sqlight binding are unchanged.
+Every consuming package receives the same pin through storage.
+
+The maintained Gleam compiler accepts explicit `build_tool = "rebar3"`
+metadata for Git packages and uses the existing native builder. It retires
+cached native output when the pinned commit changes, including changes that
+keep the same package version. Native path dependencies remain unsupported.
+The compiler patch and cold-build regression are maintained in
+[`scripts/toolchain/gleam`](../../scripts/toolchain/gleam/README.md), and CI
+and both Docker recipes apply them. Ordinary development now needs this
+compiler too. No modified cache or evaluation code-path override is needed.
+
+The real storage suite passes 104 tests against the pinned build. Full native
+and Linux gates pass, as do both release smoke tests. The Linux smoke builds
+its bundled seed offline. The daemon soak retains 35 descriptors after each
+retirement over 16 measured cycles following two warmups. The dependency's
+35 tests and the five original retirement regressions also passed in the
+Linux evaluation; the adopted source is identical to that tested repair.
+
+[Workflow 35296389719](https://github.com/Roasbeef/loom/actions/runs/35296389719)
+builds the maintained toolchain image and compares matching complete release
+artifacts from two independent Linux runners. The release workflow pins its
+published digest. [The repair review](../review/git-identity-linux.md) records
+verification limits and the clean-build requirement when retiring the pin.

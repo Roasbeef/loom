@@ -21,6 +21,9 @@
 //	--probe-setsid  (internal) leave the process group with setsid(2) and
 //	                then hold stdout open; the self-test's witness that a
 //	                session escape does not outlive the jail.
+//	--publish-git-identity POLICY_BASE64 WORKSPACE ENTRIES_JSON
+//	                publish fixed Git identity data through an original
+//	                policy root; runs no submitted command or shell.
 package main
 
 import (
@@ -53,6 +56,11 @@ func main() {
 		runServer(cfg)
 	case args[0] == "--exec":
 		runStage2(args[1:])
+	case args[0] == "--publish-git-identity":
+		if err := jail.RunGitIdentityPublication(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "loom-exec: %v\n", err)
+			os.Exit(1)
+		}
 	case args[0] == "--self-test":
 		selfExe, err := os.Executable()
 		if err != nil {
@@ -86,6 +94,8 @@ to serve at all. --cgroup-base names a delegated, process-empty cgroup v2
 directory to create per-exec cgroups under (` + cgroup.BaseEnvVar + ` does
 the same); without one, memory and process ceilings are reported skipped
 rather than silently dropped.
+--publish-git-identity POLICY_BASE64 WORKSPACE ENTRIES_JSON is the internal,
+fixed Git identity publisher; it executes no supplied program or shell.
 `
 
 // cgroupBaseFlag names the delegated cgroup v2 base on the command

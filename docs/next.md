@@ -1,5 +1,53 @@
 # Next
 
+## Git identity and Linux startup, September 17
+
+PR #444's source repair is `0ea1269a`, based on `5c5ed817`; the following
+release-workflow change pins its rebuilt toolchain image. This section reflects
+that repair and its measured checks. The older sections retain their historical
+baselines and were not reverified as part of this startup fix.
+
+The operator's global `user.name` and `user.email` are resolved by a read-only
+brokered Git query, including workspace-dependent includes. Publication is a
+fixed helper operation that checks the original policy and walks existing
+directory descriptors without following tool-home symlinks. It atomically
+replaces only the generated configuration and always sets `user.useConfigOnly`.
+Repository overrides and preserved commit authors retain their normal behavior.
+[Protocol 043](../protocol-change/043-git-identity-publication.md) owns the
+private helper CLI; the framed execution protocol is unchanged.
+
+The previous edition's claim that publication ran through the broker is
+obsolete. On Linux, that namespace setup could create host directories for
+absent protected SQLite side files. The fixed publisher creates no mounts.
+Startup also captures its final policy after database probes, and protected
+mount validation ignores child masks already covered by an emitted ancestor.
+The fixed read-only metadata query does not require delegated memory/process
+cgroups; model executions keep their original limits and enforcement demand.
+
+Storage pins esqlite `813d37449f1d9222c8bc3bc2374856f0fd371509` from the
+maintained fork, which adds only build metadata to the existing private-query
+retirement repair. Sqlight and SQLite remain unchanged. Development now needs
+the [maintained compiler](../scripts/toolchain/gleam/README.md); stock Gleam
+cannot build this native Git dependency. [ADR-002](adr/002-sqlite-binding.md)
+records the pin, statement ownership and adoption evidence.
+
+Full native and Linux gates pass: 1,868 client, 563 TUI and 306 code-mode tests,
+with zero lint errors and 809 warnings. All seven identity regressions pass.
+Both release smokes pass, including the Linux bundled compiler's offline build.
+Linux's real-daemon soak retains 35 descriptors after every retirement across
+16 measured cycles. Hosted Linux jail and complete bootstrap lanes pass at
+the source repair. The rebuilt toolchain also produces matching release
+artifacts on two independent Linux runners. The
+[review record](review/git-identity-linux.md) distinguishes these results from
+container setup failures and records the two pre-existing residuals.
+
+Next, use the current PR head's complete CI status for review and merge.
+Retiring the Git pin for a same-version Hex package requires a clean build;
+the compiler's existing source-kind freshness limitation remains. General
+startup directory creation can still follow a planted `.codemode` symlink
+before the publisher refuses it; that separate path remains source-traced.
+No installed daemon or running user session was changed by this work.
+
 ## Resident host capture and memory review
 
 PR #441 adds the optional BEAM memory review skill in both

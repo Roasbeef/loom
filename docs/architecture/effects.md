@@ -247,8 +247,9 @@ The same table carries the environment those shells need with the network
 — `env` naming host variables read at boot, `[tools.set]` carrying
 literals — because `gh` with egress and no token is `gh` that does not
 work. Every name it mentions joins the base's `env_allow` too, since the
-meet intersects that list as well. `PATH`, `HOME`, `TMPDIR` and
-`LOOM_SCRATCH_DIR` are refused from both lists. The server derives `PATH`,
+meet intersects that list as well. `PATH`, `HOME`, `TMPDIR`,
+`LOOM_SCRATCH_DIR` and `GIT_CONFIG_GLOBAL` are refused from both lists.
+The server derives `PATH`,
 `HOME` and `TMPDIR` from the workspace and discovered toolchain; taking
 them from a config file could select a different compiler or source the
 operator's dotfiles inside the jail. `LOOM_SCRATCH_DIR` is supplied
@@ -258,6 +259,22 @@ only when bubblewrap mounted scratch. A configured host scratch path is
 reported as configured. When no scratch exists, the variable is absent and
 `${LOOM_SCRATCH_DIR:-$TMPDIR}` uses the existing workspace fallback. Private
 scratch is removed at execution retirement; a configured host path persists.
+
+Git uses a generated global configuration in the tool home. Before admitting
+model work, `client/git_identity` queries the operator's global `user.name` and
+`user.email` with Git, including conditional includes in the workspace context.
+Only those values cross into the generated file; credentials, hooks and other
+configuration do not. The read-only query runs through the broker. Publication
+uses the helper's fixed [identity operation](../../protocol-change/043-git-identity-publication.md),
+which checks the original policy and walks existing directories through
+descriptors without following tool-home symlinks. It creates no mountpoints,
+including missing SQLite journal masks beneath writable directories.
+Publication renames a complete temporary file over the destination,
+so concurrent sessions always read a complete configuration.
+The file sets `user.useConfigOnly=true`: absent identity makes a
+commit fail instead of inventing an email from the hostname. Repository-local
+and worktree-local overrides still win, and cherry-picks retain their authors.
+Imported operator hooks use their original HOME and global configuration.
 
 There is no allowlist, deliberately. Host-level `allow = ["github.com"]`
 needs the egress proxy this phase does not build, and a config key that
@@ -979,6 +996,7 @@ Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 | `broker/egress.gleam` | Outbound HTTPS under a per-caller policy: the origin allowlist, the reserved headers, credential injection, the redirect walk, the streamed size cap. `broker/internal/ffi_egress` performs one hop on a broker-private `httpc` profile. |
 | `broker/framing.gleam`, `broker/exec.gleam` | The protocol broker-side with its pure deframer; the helper actor, fd-3 spawn, cancel ladder, and pool. |
 | `sandbox/cmd/loom-exec/main.go` | Role selection by first argument: server mode, `--exec` (stage 2), `--self-test`, `--probe-socket`, and `--allow-unenforced`, which serves on a platform Loom has no jail for. |
+| `client/git_identity.gleam`, `sandbox/internal/jail/git_identity.go` | Brokered identity query and the fixed, descriptor-confined publication operation. |
 | `sandbox/internal/jail/platform.go` | Whether this *build* has a jail for its OS at all — a different question from what the running kernel provides, and kept apart from it everywhere it surfaces. |
 | `sandbox/internal/policy`, `.../framing`, `.../server` | The strict policy decoder, the protocol helper-side, and the frame loop. |
 | `sandbox/internal/jail` | bwrap argv, stage 2, env construction, output limiter, cancel escalation, supervision. |

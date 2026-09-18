@@ -220,6 +220,7 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
     == [
       #("PATH", "/usr/local/bin:/usr/bin:/bin"),
       #("HOME", "/work/.codemode/home"),
+      #("GIT_CONFIG_GLOBAL", "/work/.codemode/home/gitconfig"),
       #("TMPDIR", "/work/.codemode/tmp"),
       #("LOOM_SCRATCH_DIR", ""),
     ]
@@ -229,6 +230,35 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
   assert path == toolchain
   assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
   assert serve.tool_home_directory("/work") == "/work/.codemode/home"
+}
+
+pub fn boot_publishes_git_defaults_before_model_work_test() {
+  let location =
+    "build/serve-test-git-identity-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let settings = settings_under(location)
+
+  // A later activation probes the existing index before capturing masks.
+  // SQLite may retire WAL/SHM files while that probe closes its connection.
+  list.each([1, 2], fn(_) {
+    let assert Ok(booted) = serve.boot(settings)
+      as "each activation prepares identity before exposing the runtime"
+    let projected =
+      simplifile.read(
+        serve.tool_home_directory(settings.workspace) <> "/gitconfig",
+      )
+    serve.shutdown(booted)
+    let assert Ok(config) = projected as "boot must publish the Git defaults"
+    assert string.contains(config, "useConfigOnly = true")
+  })
+}
+
+pub fn imported_hooks_keep_the_operator_git_configuration_test() {
+  let environment =
+    serve.session_environment("/work", None)
+    |> serve.hook_environment(Some("/operator"), "/work")
+  assert list.key_find(environment, "HOME") == Ok("/operator")
+  assert list.key_find(environment, "GIT_CONFIG_GLOBAL") == Error(Nil)
 }
 
 pub fn a_linked_worktree_widens_the_base_to_its_git_directories_test() {
@@ -1612,6 +1642,7 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
     == [
       #("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"),
       #("HOME", "/work/.codemode/home"),
+      #("GIT_CONFIG_GLOBAL", "/work/.codemode/home/gitconfig"),
       #("TMPDIR", "/work/.codemode/tmp"),
       #("LOOM_SCRATCH_DIR", ""),
       #("GH_TOKEN", "gho_secret"),

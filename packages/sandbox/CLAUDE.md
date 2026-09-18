@@ -13,7 +13,7 @@ only Go module.
 
 ## Key Types
 
-- `cmd/loom-exec` — the binary's three roles, selected by the first
+- `cmd/loom-exec` — the binary's roles, selected by the first
   argument: no argument is **server mode** (read the base policy from fd 3,
   then frames on stdio); `--exec` is **stage 2** (read the policy from
   fd 3, apply the platform's in-process restrictions and rlimits, report on
@@ -28,6 +28,15 @@ only Go module.
   cgroup v2 base, which `LOOM_CGROUP_BASE` also supplies); an unknown
   server flag is a usage error, never a shrug, because a misspelled
   `--cgroup-base` would silently drop the ceilings it was meant to grant.
+- `internal/jail.RunGitIdentityPublication` implements the private
+  `--publish-git-identity POLICY_BASE64 WORKSPACE ENTRIES_JSON` mode from
+  [protocol 043](../../protocol-change/043-git-identity-publication.md).
+  It accepts only identity pairs and publishes the fixed tool-home file from
+  an original host-write grant, using no-follow directory walks and atomic
+  replacement. It creates no mounts or parent directories, so absent SQLite
+  side-file masks remain absent on the host. The existing policy decoder and
+  mount precedence enforce protected and read-only paths; only Linux and
+  macOS provide the descriptor implementation.
 - `internal/policy.Policy` — `SandboxPolicyV1` decoded strictly and
   totally, at wire version 2.
 - `internal/policy.{Mount, MountAccess}` — the explicit-bind vocabulary of

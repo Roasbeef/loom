@@ -196,7 +196,9 @@ runs:
     - name: Verify reproducible compiler caches
       if: hashFiles('scripts/toolchain/gleam/*.patch') != ''
       shell: bash
-      run: python3 scripts/toolchain/gleam/check_cache.py --runs 4
+      run: |
+        python3 scripts/toolchain/gleam/check_cache.py --runs 4
+        python3 scripts/toolchain/gleam/check_native_git.py
 
     - name: Install Go
       # actions/setup-go v7.0.0

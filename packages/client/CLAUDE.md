@@ -2654,7 +2654,7 @@ across one operation a `Stop` block holds open.
   outside the workspace. It is the trust a primary checkout's `.git`
   already has. A primary checkout, a non-repository, or an unreadable
   `.git` file leaves the base untouched.
-- **A jailed child's environment reserves four names per session.**
+- **A jailed child's environment reserves five names per session.**
   `serve.session_environment` gives every tool shell, satellite and hook
   host the same `PATH`. The bundled toolchain stays first, followed by the
   explicit additions and host PATH, so arbitrary installations are discoverable
@@ -2668,11 +2668,25 @@ across one operation a `Stop` block holds open.
   The session base grants both temporary-directory names, because the policy
   meet keeps only names both sides allow. Compiler-owned `TMPDIR` values
   remain unchanged.
+- **Git receives identity defaults, not the operator's full configuration.**
+  Before runtime admission, `git_identity.prepare` queries configured global
+  `user.name` and `user.email` through a read-only broker call in the workspace.
+  Git resolves conditional includes; inaccessible or malformed configuration
+  produces a warning and empty defaults. The helper's fixed publication mode
+  writes `<workspace>/.codemode/home/gitconfig` through directory descriptors
+  anchored to the original write grant. It quotes the two accepted keys with
+  Git's configuration grammar and creates no unrelated host mountpoints.
+  `GIT_CONFIG_GLOBAL` selects that file, which always sets `user.useConfigOnly`.
+  Repository and worktree identity overrides retain normal precedence, and
+  cherry-picks preserve their original author. No credentials or hooks are
+  copied. A write refusal aborts assembly; host code never follows a planted
+  tool-home symlink to publish this file. Imported operator hooks keep their
+  original HOME and ordinary global Git configuration.
 - **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names
   read from the host at boot and `[tools.set]` literals;
-  `serve.tool_environment` appends them *after* the four server-owned
+  `serve.tool_environment` appends them *after* the five server-owned
   names, and `serve.under_tools_config` puts the chosen network on the
   session base and every configured name on its `env_allow`. The daemon
   `--network off|full` flag overrides the selected file at session resolution. Both halves
@@ -2681,7 +2695,7 @@ across one operation a `Stop` block holds open.
   remains offline and passes only PATH. The meet also
   intersects `env_allow`, which is why a name in the environment but not
   on the allowlist is a narrowing refusal rather than a variable. `PATH`,
-  `HOME`, `TMPDIR` and `LOOM_SCRATCH_DIR` are refused from both lists by
+  `HOME`, `TMPDIR`, `LOOM_SCRATCH_DIR` and `GIT_CONFIG_GLOBAL` are refused from both lists by
   the parser, so the
   ordering in `tool_environment` is the second lock rather than the only
   one. A configured name the host has not set is skipped with one

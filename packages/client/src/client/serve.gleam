@@ -49,6 +49,7 @@ import client/extension/manifest as extension_manifest
 import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
+import client/git_identity
 import client/history
 import client/hookcompat
 import client/hookrunner
@@ -256,7 +257,10 @@ pub fn hook_environment(
   workspace: String,
 ) -> List(#(String, String)) {
   let based = case home {
-    Some(operator) -> list.key_set(environment, "HOME", operator)
+    Some(operator) ->
+      environment
+      |> list.filter(fn(pair) { pair.0 != git_identity.environment_name })
+      |> list.key_set("HOME", operator)
     None -> environment
   }
   list.key_set(based, "CLAUDE_PROJECT_DIR", workspace)
@@ -2587,6 +2591,39 @@ fn assemble_in(
     }
   })
 
+  // Recall, on the same two-name pattern and gated the same way: the
+  // holder that owns the index cannot exist until the runtime has been
+  // opened (its canonical session id is what a scoped query and every
+  // hit from this session are named by), so the tool seam closes over
+  // the name now and the holder starts under it further down. An index
+  // that will not open registers no tool at all.
+  let history_name = address.new_address(namespace)
+  let history_pulls = address.new_address(namespace)
+  use history_seam <- result.try(case services, ownership {
+    None, _ -> Ok(history_seam(index_path, history_name, logger))
+    Some(shared), Some(#(_, identity)) ->
+      Ok(
+        option.map(domain_service.history(shared), fn(shared) {
+          history.seam_for(shared, identity)
+        }),
+      )
+    Some(_), None ->
+      Error("shared domain assembly requires owned session identity")
+  })
+
+  // The memory door, gated the same way and for the same reason: a
+  // `remember` definition renders into the provider's cached byte prefix
+  // and is paid for on every request, so a host whose memory plane will
+  // not open registers no tool and says so once.
+  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
+
+  // The probes can create or retire SQLite WAL and SHM files. Capture
+  // conditional masks after those mutations, once, for every effect consumer.
+  // The earlier validation still precedes directory creation and lease custody.
+  let base_policy =
+    session_base(settings, index_path, memory_store, memory_digest, toolchain)
+  use Nil <- result.try(base_policy_fault(base_policy))
+
   // The effect plane: a pool of jailed helpers behind the one broker.
   use #(pool, broker_actor) <- result.try(start_effect_plane_in(
     settings.helper_path,
@@ -2793,32 +2830,6 @@ fn assemble_in(
     log.warn(logger, "tools.env_unset", [field.ident(key: "name", value: name)])
   })
 
-  // Recall, on the same two-name pattern and gated the same way: the
-  // holder that owns the index cannot exist until the runtime has been
-  // opened (its canonical session id is what a scoped query and every
-  // hit from this session are named by), so the tool seam closes over
-  // the name now and the holder starts under it further down. An index
-  // that will not open registers no tool at all.
-  let history_name = address.new_address(namespace)
-  let history_pulls = address.new_address(namespace)
-  use history_seam <- result.try(case services, ownership {
-    None, _ -> Ok(history_seam(index_path, history_name, logger))
-    Some(shared), Some(#(_, identity)) ->
-      Ok(
-        option.map(domain_service.history(shared), fn(shared) {
-          history.seam_for(shared, identity)
-        }),
-      )
-    Some(_), None ->
-      Error("shared domain assembly requires owned session identity")
-  })
-
-  // The memory door, gated the same way and for the same reason: a
-  // `remember` definition renders into the provider's cached byte prefix
-  // and is paid for on every request, so a host whose memory plane will
-  // not open registers no tool and says so once.
-  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
-
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
@@ -2973,6 +2984,22 @@ fn assemble_in(
       env: environment,
       entropy:,
     )
+
+  // Resolve identity before the runtime can commit. Only global identity
+  // defaults cross into the tool home; repository settings retain precedence.
+  use identity_warning <- result.try(git_identity.prepare(
+    worktree_wiring,
+    settings.home,
+    helper: settings.helper_path,
+    reading: env_text,
+  ))
+  case identity_warning {
+    None -> Nil
+    Some(reason) ->
+      log.warn(logger, "tools.git_identity_unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
+  }
   use git_start <- result.try(
     session_git.prepare(opened, settings.session_id, settings.workspace, fn() {
       worktree_diff.starting_revision(worktree_wiring)
@@ -3889,7 +3916,7 @@ const hook_step_id = "extension-hooks"
 /// `bash` tool runs, a satellite, a hook host.
 ///
 /// Allowlist-constructed and shared by the tool path and the hook path,
-/// so a host launched by whichever came first is the same host. Four
+/// so a host launched by whichever came first is the same host. Five
 /// names, each earned by a failure a live drive produced:
 ///
 /// - `PATH` is the toolchain's when code mode found one, so `gleam` and
@@ -3904,6 +3931,10 @@ const hook_step_id = "extension-hooks"
 ///   operator's checkout — an untracked directory in every `git status`
 ///   the model ran. A home of its own keeps what a toolchain writes to
 ///   `$HOME` off the tree.
+/// - `GIT_CONFIG_GLOBAL` names the identity-only configuration prepared by
+///   `git_identity`. Repository overrides still win; absent identity refuses a
+///   commit instead of using the host name. Imported operator hooks retain
+///   their normal HOME and global configuration.
 /// - `TMPDIR` is a writable directory under the workspace. It remains
 ///   the fallback when no private scratch is available. Code mode pins
 ///   its compiler's `TMPDIR` to the build root, independently of scratch.
@@ -3919,6 +3950,7 @@ const hook_step_id = "extension-hooks"
 ///   == [
 ///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
 ///     #("HOME", "/work/.codemode/home"),
+///     #("GIT_CONFIG_GLOBAL", "/work/.codemode/home/gitconfig"),
 ///     #("TMPDIR", "/work/.codemode/tmp"),
 ///     #("LOOM_SCRATCH_DIR", ""),
 ///   ]
@@ -3932,6 +3964,10 @@ pub fn session_environment(
   [
     #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
     #("HOME", tool_home_directory(workspace)),
+    #(
+      git_identity.environment_name,
+      tool_home_directory(workspace) <> "/gitconfig",
+    ),
     #("TMPDIR", tool_tmp_directory(workspace)),
     #("LOOM_SCRATCH_DIR", ""),
   ]
@@ -3954,10 +3990,10 @@ pub fn tool_home_directory(workspace: String) -> String {
 }
 
 /// The whole environment a jailed tool shell of this session runs under:
-/// the four names the server owns, then whatever the `[tools]` table
+/// the five names the server owns, then whatever the `[tools]` table
 /// added.
 ///
-/// The order is the guarantee. `session_environment`'s four names come
+/// The order is the guarantee. `session_environment`'s five names come
 /// first and nothing after them may repeat one. The server selects the
 /// workspace and toolchain paths, and the helper supplies actual scratch;
 /// configuration cannot replace either owner's choice.
@@ -4550,7 +4586,11 @@ pub fn allowing_tool_tmpdir(
   policy.SandboxPolicy(
     ..base,
     env_allow: list.unique(
-      list.append(base.env_allow, ["TMPDIR", "LOOM_SCRATCH_DIR"]),
+      list.append(base.env_allow, [
+        "TMPDIR",
+        "LOOM_SCRATCH_DIR",
+        git_identity.environment_name,
+      ]),
     ),
   )
 }

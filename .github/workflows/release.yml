@@ -45,7 +45,7 @@ jobs:
     with:
       source_commit: ${{ needs.prepare.outputs.commit }}
       release_tag: ${{ needs.prepare.outputs.tag }}
-      builder_image: ghcr.io/roasbeef/loom/release-builder@sha256:719150305f134457b2842679bcb1e330bd49682cec9ceb28d25a8867ff523ede
+      builder_image: ghcr.io/roasbeef/loom/release-builder@sha256:03edc3c58c7962f51b1faf4634d8efa4a0f63b1ca0699fc5eaaea45fa20694af
   macos:
     needs: prepare
     strategy:
