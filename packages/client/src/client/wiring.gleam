@@ -334,8 +334,8 @@ pub fn build_effects(config: Config) -> Effects {
 /// ```
 ///
 pub fn compaction_hooks(config: Config) -> effects.Hooks {
-  // Projection reads the session alone. Keeping the complete configuration
-  // here would copy its provider and tool closures into the overflow hook.
+  // Reference preparation needs the session and registered tool surface.
+  // Capture those fields rather than the entire wiring configuration.
   let opened = config.session
   let registry = config.registry
   let projection = fn(strand) { reference_projection(opened, registry, strand) }
@@ -359,6 +359,8 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
     admit(config, query)
   })
   |> hooks.with_threshold(fn(query: effects.ThresholdQuery) {
+    // First decide whether to compact from the driver's existing context.
+    // Only a crossed threshold pays for source recovery through older windows.
     case threshold_for(query.strand)(query) {
       ThresholdExceeded(outcome:) ->
         ThresholdExceeded(outcome: hooks.reference_outcome(
@@ -392,6 +394,10 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   |> hooks.build
 }
 
+// A pointer is useful only if this strand can ask for its contents. Require
+// both host registration and strand activation, plus the canonical session
+// identity. Missing configuration keeps the original messages; compaction
+// must never grant a tool or expose a database path to make recall possible.
 fn reference_projection(
   opened: Session,
   registry: Registry,

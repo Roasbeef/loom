@@ -5812,6 +5812,10 @@ fn compaction_preparation(
   strand: String,
 ) -> Option(operation.StructuralPreparation) {
   let projected = hooks.project(state.runtime.session, strand)
+
+  // Manual compaction has the same recall prerequisites as automatic cuts.
+  // Enable source recovery before preparation so the committed tail, rather
+  // than a later display-only projection, contains the exact references.
   let projected = case
     state.registry,
     ids.parse_session_id(state.session_id),
