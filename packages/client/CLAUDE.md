@@ -1664,6 +1664,11 @@ catalogue without opening runtimes. Explicit admission invokes
   `remaining_seam` fills `tools/context`'s seam from the same projection
   and token fold the threshold reads. `docs/architecture/compaction.md`
   carries the argument for a checkpoint over a summary.
+- `client/wiring.compaction_hooks` enables exact retained-tail references only
+  when its registry contains `history_search` and the durable strand
+  configuration activates that tool. Threshold and overflow preparations share
+  this gate. Manual compaction applies the same gate at the gateway boundary,
+  so custom and restricted tool surfaces retain payloads verbatim.
 - `client/serve.{default_reserve_tokens, default_keep_recent_tokens}` —
   pi's compaction defaults, and the only place they are stated.
   `LOOM_COMPACTION`, `LOOM_COMPACTION_RESERVE` and

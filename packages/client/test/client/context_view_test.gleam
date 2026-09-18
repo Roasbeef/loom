@@ -106,6 +106,9 @@ pub fn carried_usage_cannot_price_the_context_after_compaction_test() {
       [user("summary!"), answer(9000), user("new!")],
       2,
       Some("summary!"),
+      list.repeat(None, 3),
+      None,
+      None,
     )
   let items =
     context_view.inventory(

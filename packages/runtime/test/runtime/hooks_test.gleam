@@ -10,9 +10,13 @@
 //// session.
 
 import core/clock as core_clock
+import core/entry
 import core/ids as core_ids
 import core/json as core_json
 import core/message as core_message
+import core/register
+import core/tx.{InsertEntry, SetRegister, Tx}
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/operation.{
@@ -24,6 +28,8 @@ import machine/planner.{
 import machine/strand as machine_strand
 import runtime/effects.{AdmissionQuery, OverflowQuery, ThresholdQuery}
 import runtime/hooks
+import session/session
+import storage/storage
 import support/fake
 
 fn query() -> effects.ThresholdQuery {
@@ -120,6 +126,9 @@ pub fn carried_usage_is_never_read_test() {
       ],
       carried: 3,
       previous_summary: Some("[summary] …"),
+      origins: list.repeat(None, 4),
+      reference_session: None,
+      copied_from: None,
     )
   // Nothing after the carried region reports usage, so the whole
   // projection is estimated: four messages at one apiece.
@@ -138,6 +147,9 @@ pub fn a_post_compaction_report_is_read_test() {
       ],
       carried: 3,
       previous_summary: Some("[summary] …"),
+      origins: list.repeat(None, 5),
+      reference_session: None,
+      copied_from: None,
     )
   assert hooks.context_tokens(projected, one) == 12_000
 }
@@ -232,6 +244,9 @@ pub fn a_carried_summary_is_not_re_summarized_test() {
       ],
       carried: 2,
       previous_summary: Some("[summary] earlier work"),
+      origins: list.repeat(None, 4),
+      reference_session: None,
+      copied_from: None,
     )
   let assert Prepared(preparation: CompactionPreparation(
     messages_to_summarize:,
@@ -247,6 +262,314 @@ pub fn nothing_older_than_the_tail_is_an_empty_preparation_test() {
   let projected = hooks.uncompacted([fake.user("m1"), fake.user("m2")])
   assert hooks.preparation(projected, settings(50, 0), one, tokens_before: 2)
     == EmptyPreparation
+}
+
+pub fn an_observed_large_result_becomes_an_exact_reference_test() {
+  let generator = core_ids.generator(core_clock.fixed(at: 7), seed: 91)
+  let #(session_id, generator) = core_ids.mint_session(generator)
+  let #(cut_id, generator) = core_ids.mint_entry(generator)
+  let #(call_id, generator) = core_ids.mint_entry(generator)
+  let #(result_id, generator) = core_ids.mint_entry(generator)
+  let #(user_id, generator) = core_ids.mint_entry(generator)
+  let #(new_call_id, generator) = core_ids.mint_entry(generator)
+  let #(new_result_id, _generator) = core_ids.mint_entry(generator)
+  let call = fake.tool_use("calling", [#("same", "bash")], 0)
+  let result = large_tool_result("same", "bash", False)
+  let newest_call = fake.tool_use("newest", [#("new", "bash")], 0)
+  let newest_result = large_tool_result("new", "bash", False)
+  let projected =
+    hooks.Projected(
+      messages: [
+        fake.user("cut"),
+        call,
+        result,
+        fake.user("next"),
+        newest_call,
+        newest_result,
+      ],
+      carried: 0,
+      previous_summary: None,
+      origins: [
+        Some(cut_id),
+        Some(call_id),
+        Some(result_id),
+        Some(user_id),
+        Some(new_call_id),
+        Some(new_result_id),
+      ],
+      reference_session: Some(session_id),
+      copied_from: None,
+    )
+  let assert Prepared(CompactionPreparation(retained_tail:, ..)) =
+    hooks.preparation(projected, settings(5, 0), one, tokens_before: 6)
+    as "one old message makes the retained exchange publishable"
+  let assert [kept_call, referenced, _, kept_newest_call, kept_newest_result] =
+    retained_tail
+  assert kept_call == call
+  assert kept_newest_call == newest_call
+  assert kept_newest_result == newest_result
+  let text = result_text(referenced)
+  assert string.contains(text, "[loom tool-result reference]")
+  assert string.contains(text, core_ids.session_id_to_string(session_id))
+  assert string.contains(text, core_ids.entry_id_to_string(result_id))
+  assert string.byte_size(text) < string.byte_size(string.repeat("x", 8192))
+}
+
+pub fn failed_small_image_and_ambiguous_results_stay_verbatim_test() {
+  let generator = core_ids.generator(core_clock.fixed(at: 8), seed: 92)
+  let #(session_id, generator) = core_ids.mint_session(generator)
+  let #(cut_id, generator) = core_ids.mint_entry(generator)
+  let #(call_id, generator) = core_ids.mint_entry(generator)
+  let #(failed_id, generator) = core_ids.mint_entry(generator)
+  let #(small_id, generator) = core_ids.mint_entry(generator)
+  let #(image_id, generator) = core_ids.mint_entry(generator)
+  let #(ambiguous_id, generator) = core_ids.mint_entry(generator)
+  let #(newest_id, _generator) = core_ids.mint_entry(generator)
+  let call =
+    fake.tool_use(
+      "calling",
+      [
+        #("failed", "bash"),
+        #("small", "bash"),
+        #("image", "bash"),
+        #("dup", "bash"),
+        #("dup", "bash"),
+      ],
+      0,
+    )
+  let failed = large_tool_result("failed", "bash", True)
+  let small = tool_result("small", "bash")
+  let image = image_tool_result("image", "bash")
+  let ambiguous = large_tool_result("dup", "bash", False)
+  let newest = fake.answer("observed", 0)
+  let messages = [
+    fake.user("cut"),
+    call,
+    failed,
+    small,
+    image,
+    ambiguous,
+    newest,
+  ]
+  let projected =
+    hooks.Projected(
+      messages:,
+      carried: 0,
+      previous_summary: None,
+      origins: [
+        Some(cut_id),
+        Some(call_id),
+        Some(failed_id),
+        Some(small_id),
+        Some(image_id),
+        Some(ambiguous_id),
+        Some(newest_id),
+      ],
+      reference_session: Some(session_id),
+      copied_from: None,
+    )
+  let assert Prepared(CompactionPreparation(retained_tail:, ..)) =
+    hooks.preparation(projected, settings(6, 0), one, tokens_before: 7)
+  assert retained_tail == list.drop(messages, 1)
+}
+
+pub fn an_orphaned_call_disables_positional_references_test() {
+  let assert Ok(opened) = session.open_memory(core_clock.fixed(at: 0))
+  let generator = core_ids.generator(core_clock.fixed(at: 9), seed: 93)
+  let assert Ok(#(session_id, generator)) = session.ensure_id(opened, generator)
+  let #(old_id, generator) = core_ids.mint_entry(generator)
+  let #(carried_user_id, generator) = core_ids.mint_entry(generator)
+  let #(call_id, generator) = core_ids.mint_entry(generator)
+  let #(result_id, generator) = core_ids.mint_entry(generator)
+  let #(checkpoint_id, generator) = core_ids.mint_entry(generator)
+  let #(fresh_user_id, generator) = core_ids.mint_entry(generator)
+  let #(fresh_answer_id, generator) = core_ids.mint_entry(generator)
+  let #(orphan_id, _generator) = core_ids.mint_entry(generator)
+  let carried_user = fake.user("carried")
+  let call = fake.tool_use("calling", [#("old-call", "bash")], 0)
+  let result = large_tool_result("old-call", "bash", False)
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(entry.MessageEntry(
+            old_id,
+            None,
+            0,
+            0,
+            fake.user("old"),
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            carried_user_id,
+            Some(old_id),
+            0,
+            0,
+            carried_user,
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            call_id,
+            Some(carried_user_id),
+            0,
+            0,
+            call,
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            result_id,
+            Some(call_id),
+            0,
+            0,
+            result,
+            False,
+          )),
+          InsertEntry(entry.CompactionEntry(
+            checkpoint_id,
+            Some(result_id),
+            0,
+            0,
+            "checkpoint",
+            [carried_user, call, result],
+            10_000,
+            True,
+            None,
+          )),
+          InsertEntry(entry.MessageEntry(
+            fresh_user_id,
+            Some(checkpoint_id),
+            0,
+            0,
+            fake.user("fresh"),
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            fresh_answer_id,
+            Some(fresh_user_id),
+            0,
+            0,
+            fake.answer("observed", 0),
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            orphan_id,
+            Some(fresh_answer_id),
+            0,
+            0,
+            fake.tool_use("orphan", [#("missing", "bash")], 0),
+            False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(orphan_id)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+  let projected =
+    hooks.project(opened, "main")
+    |> hooks.with_tool_references(opened, session_id)
+  let assert Prepared(CompactionPreparation(retained_tail:, ..)) =
+    hooks.preparation(projected, settings(5, 0), one, tokens_before: 8)
+  let assert [kept_call, referenced, _, _, _, synthetic] = retained_tail
+  assert kept_call == call
+  let assert core_message.ToolResultMessage(is_error: True, ..) = synthetic
+  assert referenced == result
+  assert !string.contains(
+    result_text(referenced),
+    "[loom tool-result reference]",
+  )
+}
+
+pub fn an_exact_copied_tail_keeps_its_original_result_identity_test() {
+  let assert Ok(opened) = session.open_memory(core_clock.fixed(at: 0))
+  let generator = core_ids.generator(core_clock.fixed(at: 10), seed: 94)
+  let assert Ok(#(session_id, generator)) = session.ensure_id(opened, generator)
+  let #(root_id, generator) = core_ids.mint_entry(generator)
+  let #(call_id, generator) = core_ids.mint_entry(generator)
+  let #(result_id, generator) = core_ids.mint_entry(generator)
+  let #(checkpoint_id, generator) = core_ids.mint_entry(generator)
+  let #(fresh_user_id, generator) = core_ids.mint_entry(generator)
+  let #(fresh_answer_id, _generator) = core_ids.mint_entry(generator)
+  let root = fake.user("carried")
+  let call = fake.tool_use("calling", [#("old-call", "bash")], 0)
+  let result = large_tool_result("old-call", "bash", False)
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(entry.MessageEntry(root_id, None, 0, 0, root, False)),
+          InsertEntry(entry.MessageEntry(
+            call_id,
+            Some(root_id),
+            0,
+            0,
+            call,
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            result_id,
+            Some(call_id),
+            0,
+            0,
+            result,
+            False,
+          )),
+          InsertEntry(entry.CompactionEntry(
+            checkpoint_id,
+            Some(result_id),
+            0,
+            0,
+            "checkpoint",
+            [root, call, result],
+            10_000,
+            True,
+            None,
+          )),
+          InsertEntry(entry.MessageEntry(
+            fresh_user_id,
+            Some(checkpoint_id),
+            0,
+            0,
+            fake.user("fresh"),
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            fresh_answer_id,
+            Some(fresh_user_id),
+            0,
+            0,
+            fake.answer("observed", 0),
+            False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(fresh_answer_id)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+  let projected =
+    hooks.project(opened, "main")
+    |> hooks.with_tool_references(opened, session_id)
+  let assert Prepared(CompactionPreparation(retained_tail:, ..)) =
+    hooks.preparation(projected, settings(4, 0), one, tokens_before: 6)
+  let assert [kept_call, referenced, _, _] = retained_tail
+  assert kept_call == call
+  assert string.contains(
+    result_text(referenced),
+    "[loom tool-result reference]",
+  )
+  assert string.contains(
+    result_text(referenced),
+    core_ids.entry_id_to_string(result_id),
+  )
 }
 
 // --- the two signals -------------------------------------------------------
@@ -354,6 +677,53 @@ fn tool_result(id: String, name: String) -> core_message.AgentMessage {
     is_error: False,
     timestamp: 0,
   )
+}
+
+fn large_tool_result(
+  id: String,
+  name: String,
+  is_error: Bool,
+) -> core_message.AgentMessage {
+  core_message.ToolResultMessage(
+    tool_call_id: id,
+    tool_name: name,
+    content: [
+      core_message.ToolResultText(
+        text: string.repeat("x", 8192),
+        text_signature: None,
+      ),
+    ],
+    details: None,
+    usage: None,
+    added_tool_names: None,
+    is_error:,
+    timestamp: 0,
+  )
+}
+
+fn image_tool_result(id: String, name: String) -> core_message.AgentMessage {
+  core_message.ToolResultMessage(
+    tool_call_id: id,
+    tool_name: name,
+    content: [
+      core_message.ToolResultText(string.repeat("x", 8192), None),
+      core_message.ToolResultImage(string.repeat("YQ==", 2048), "image/png"),
+    ],
+    details: None,
+    usage: None,
+    added_tool_names: None,
+    is_error: False,
+    timestamp: 0,
+  )
+}
+
+fn result_text(result: core_message.AgentMessage) -> String {
+  let assert core_message.ToolResultMessage(
+    content: [core_message.ToolResultText(text:, ..)],
+    ..,
+  ) = result
+    as "the reference is one text result"
+  text
 }
 
 fn support_configuration() -> machine_strand.StrandConfiguration {

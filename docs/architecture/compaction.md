@@ -2,9 +2,11 @@
 
 Loom bounds a strand's active context by appending a checkpoint to its
 conversation tree. The checkpoint contains a bounded snapshot of the
-strand's notes and a verbatim recent tail. Older entries remain in the
-store; they stop appearing in the next model request. The host builds the
-checkpoint locally, without asking a model to summarize the transcript.
+strand's notes and a recent tail. Eligible large successful tool results in
+that tail may become exact retrieval references; every other retained message
+is verbatim. Older entries remain in the store; they stop appearing in the
+next model request. The host builds the checkpoint locally, without asking a
+model to summarize the transcript.
 
 This document describes the notes-based policy in PR #223. Deployment
 starts fresh sessions. Resuming an in-flight task from the removed
@@ -84,6 +86,23 @@ If this protected exchange cannot fit the model's window, compaction may
 not recover enough room. The existing overflow path then reports failure.
 A successful cut must not conceal the failure by discarding unread input.
 If there is nothing eligible to cut, preparation is empty.
+
+After selecting that cut, Loom may replace a large successful tool-result text
+inside the retained suffix with an exact history reference. The original
+`MessageEntry` remains unchanged. A reference names the canonical session and
+original entry UUID, keeps bounded head and tail excerpts, and is emitted only
+when `history_search` is both registered by the host and active on the strand.
+Results below 4,096 bytes, failures, images, ambiguous or incomplete call
+pairings, and the newest assistant exchange remain verbatim. Call arguments,
+provider signatures, tool names, namespaces, ordering and the cut itself are
+also unchanged.
+
+A retained tail copied by an earlier compaction has no entry identity in the
+copy. Reference preparation follows that compaction's parent branch lazily and
+accepts an origin only when the copied message is positionally equal to the
+original projection. Orphan healing or any other projection-cardinality
+mismatch clears all provenance. This fail-closed rule can cost an optimization;
+it cannot point a stub at the wrong durable entry.
 
 The replacement text contains the closed-window ordinal, cut and retained
 message counts, the pre-cut context estimate, the strand's notes, and any

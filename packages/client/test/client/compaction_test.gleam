@@ -23,17 +23,20 @@ import client/checkpoint
 import client/escalate
 import client/wiring
 import core/clock
+import core/codec
 import core/entry
+import core/ids
 import core/json
 import core/message.{type AgentMessage}
 import core/register
-import core/tx.{SetRegister, Tx}
+import core/tx.{InsertEntry, SetRegister, Tx}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import machine/operation
+import machine/planner.{Prepared, ThresholdExceeded}
 import machine/strand as machine_strand
 import provider/gateway as provider_gateway
 import provider/model
@@ -42,9 +45,13 @@ import provider/stream
 import runtime/api
 import runtime/effects
 import session/session
+import simplifile
+import storage/sqlite
 import storage/storage
 import support/provider as provider_test
 import support/tool_registry
+import tools/history as history_tool
+import tools/tool
 import weft/actor
 
 // Small enough that one scripted turn's reported usage crosses it.
@@ -94,6 +101,226 @@ pub fn a_crossed_threshold_publishes_the_notes_checkpoint_test() {
   // the compaction landed regardless.
   assert process.receive(rig.summaries, within: 0) == Error(Nil)
   let _closed = api.close(rig.runtime)
+}
+
+// Exact references are enabled only by the same registered-and-active tool
+// state the provider sees. The frozen preparation carries the durable entry
+// address, while the history seam still reads the original entry in full.
+pub fn production_threshold_references_a_retrievable_result_test() {
+  let root = "build/test_db/compaction-reference"
+  let path = root <> "/session.db"
+  let _stale = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(opened) =
+    session.open_sqlite(
+      path:,
+      owner: "compaction-reference-test",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 0),
+    )
+  let generator = ids.generator(clock.fixed(at: 7), seed: 99)
+  let assert Ok(#(session_id, generator)) = session.ensure_id(opened, generator)
+  let #(cut_id, generator) = ids.mint_entry(generator)
+  let #(call_id, generator) = ids.mint_entry(generator)
+  let #(result_id, generator) = ids.mint_entry(generator)
+  let #(answer_id, generator) = ids.mint_entry(generator)
+  let #(latest_id, generator) = ids.mint_entry(generator)
+  let #(op_id, _generator) = ids.mint_op(generator)
+  let call =
+    assistant(
+      [
+        message.AssistantToolCall(message.ToolCall(
+          id: "call-1",
+          name: "bash",
+          arguments: json.Object([#("script", json.String("argument-canary"))]),
+          thought_signature: Some("opaque-signature"),
+          namespace: Some("shell"),
+        )),
+      ],
+      message.ToolUse,
+      0,
+      None,
+    )
+  let tool_result =
+    message.ToolResultMessage(
+      tool_call_id: "call-1",
+      tool_name: "bash",
+      content: [
+        message.ToolResultText(
+          "exact-read-canary:" <> string.repeat("r", 8192),
+          None,
+        ),
+      ],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    )
+  let messages = [
+    user("cut:" <> string.repeat("x", 16_000)),
+    call,
+    tool_result,
+    answer(bulky("observed"), window),
+    user("continue"),
+  ]
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [history_tool.tool_name],
+    )
+  let assert Ok(Nil) = session.ensure_strand(opened, "main", configuration)
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      Tx(
+        writes: [
+          InsertEntry(entry.MessageEntry(
+            cut_id,
+            None,
+            0,
+            0,
+            list.first(messages) |> result.unwrap(user("missing")),
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            call_id,
+            Some(cut_id),
+            0,
+            0,
+            call,
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            result_id,
+            Some(call_id),
+            0,
+            0,
+            tool_result,
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            answer_id,
+            Some(result_id),
+            0,
+            0,
+            answer(bulky("observed"), window),
+            False,
+          )),
+          InsertEntry(entry.MessageEntry(
+            latest_id,
+            Some(answer_id),
+            0,
+            0,
+            user("continue"),
+            False,
+          )),
+          SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(latest_id)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+  let retrieval =
+    history_tool.History(
+      search: fn(_, _, _) {
+        Error(history_tool.IndexUnavailable("search is unused"))
+      },
+      read: fn(got_session, got_entry) {
+        sqlite.read_entry(path:, session: got_session, entry: got_entry)
+        |> result.map(codec.encode_entry)
+        |> result.map_error(fn(error) {
+          history_tool.IndexRefused(string.inspect(error))
+        })
+      },
+    )
+  let registry = tool.registry([history_tool.tool(retrieval)])
+  let assert Ok(base_config) = wiring_config_with_registry(opened, registry)
+  let config =
+    wiring.Config(
+      ..base_config,
+      compaction: operation.CompactionSettings(True, reserve, 3000),
+    )
+  let production = wiring.compaction_hooks(config)
+  let assert ThresholdExceeded(outcome: Prepared(preparation:)) =
+    production.threshold(effects.ThresholdQuery(
+      operation: op_id,
+      strand: "main",
+      messages:,
+      carried: 0,
+      previous_summary: None,
+    ))
+  let assert operation.CompactionPreparation(
+    retained_tail: [kept_call, referenced, _, _],
+    ..,
+  ) = preparation
+  assert kept_call == call
+  let assert message.ToolResultMessage(
+    content: [message.ToolResultText(reference_text, None)],
+    ..,
+  ) = referenced
+  assert string.contains(reference_text, "[loom tool-result reference]")
+  assert string.contains(reference_text, ids.entry_id_to_string(result_id))
+
+  let assert Ok(entropy) = start_entropy()
+  let assert Ok(turns) = start_turns()
+  let effects_record =
+    effects.Effects(
+      clock: clock.stepping(from: 1_756_000_000_000, by: 3),
+      entropy:,
+      timers: effects.real_timers(),
+      provider: scripted_provider(
+        Healthy,
+        turns,
+        process.new_subject(),
+        process.new_subject(),
+      ),
+      tools: refusing_tools(),
+      hooks: production,
+    )
+  let options = api.default_options(configuration)
+  let assert Ok(runtime) =
+    api.open(
+      opened,
+      effects_record,
+      api.Options(..options, poll_interval_ms: 20),
+    )
+  let assert Ok(compaction) =
+    api.compact(
+      runtime,
+      custom_instructions: None,
+      preparation: Some(preparation),
+    )
+  let assert Ok(_) = api.await_result(runtime, compaction, within_ms: 5000)
+  let assert [
+    entry.CompactionEntry(
+      retained_tail: [
+        persisted_call,
+        persisted_reference,
+        persisted_answer,
+        persisted_user,
+      ],
+      ..,
+    ),
+  ] = compactions(opened)
+  assert persisted_call == call
+  assert persisted_reference == referenced
+  assert persisted_answer
+    == messages |> list.drop(3) |> list.first |> result.unwrap(user("missing"))
+  assert persisted_user
+    == messages |> list.drop(4) |> list.first |> result.unwrap(user("missing"))
+  let assert Ok(Nil) = api.close(runtime)
+
+  let assert Ok(encoded) = retrieval.read(session_id, result_id)
+  assert string.contains(json.to_string(encoded), "exact-read-canary")
+  assert !string.contains(
+    json.to_string(encoded),
+    "[loom tool-result reference]",
+  )
 }
 
 // A strand that wrote nothing is told so, in words that say where notes
@@ -377,6 +604,16 @@ fn compaction_settings() -> operation.CompactionSettings {
 }
 
 fn wiring_config(opened: session.Session) -> Result(wiring.Config, String) {
+  wiring_config_with_registry(
+    opened,
+    tool_registry.built_in(None, None, None, None, None),
+  )
+}
+
+fn wiring_config_with_registry(
+  opened: session.Session,
+  registry: tool.Registry,
+) -> Result(wiring.Config, String) {
   use broker_actor <- result.try(
     broker.start(
       broker.BrokerConfig(
@@ -404,7 +641,7 @@ fn wiring_config(opened: session.Session) -> Result(wiring.Config, String) {
       compaction: compaction_settings(),
       broker: broker_actor,
       broker_timeout_ms: 1000,
-      registry: tool_registry.built_in(None, None, None, None, None),
+      registry:,
       workspace:,
       blob_root: workspace <> "/.blobs",
       base_policy: policy.workspace_default(workspace),

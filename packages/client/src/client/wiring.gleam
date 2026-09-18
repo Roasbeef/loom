@@ -152,7 +152,8 @@ import machine/operation.{
 }
 import machine/planner.{
   type ModelResolution, type RequestAdmission, type StructuralVerdict, Admitted,
-  ModelResolved, ModelUnresolved, VerdictDeclined, VerdictSupplied,
+  ModelResolved, ModelUnresolved, ThresholdExceeded, ThresholdNotExceeded,
+  VerdictDeclined, VerdictSupplied,
 }
 import machine/strand.{
   type ModelIdentity, type StrandConfiguration, ModelIdentity,
@@ -333,10 +334,11 @@ pub fn build_effects(config: Config) -> Effects {
 /// ```
 ///
 pub fn compaction_hooks(config: Config) -> effects.Hooks {
-  // Projection reads the session alone. Keeping the complete configuration
-  // here would copy its provider and tool closures into the overflow hook.
+  // Reference preparation needs the session and registered tool surface.
+  // Capture those fields rather than the entire wiring configuration.
   let opened = config.session
-  let projection = fn(strand) { hooks.project(opened, strand) }
+  let registry = config.registry
+  let projection = fn(strand) { reference_projection(opened, registry, strand) }
 
   // The threshold's window is the *strand's*, not the session's. One
   // `Effects` record serves every strand, and a strand switched to a
@@ -357,7 +359,16 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
     admit(config, query)
   })
   |> hooks.with_threshold(fn(query: effects.ThresholdQuery) {
-    threshold_for(query.strand)(query)
+    // First decide whether to compact from the driver's existing context.
+    // Only a crossed threshold pays for source recovery through older windows.
+    case threshold_for(query.strand)(query) {
+      ThresholdExceeded(outcome:) ->
+        ThresholdExceeded(outcome: hooks.reference_outcome(
+          outcome,
+          projection(query.strand),
+        ))
+      ThresholdNotExceeded -> ThresholdNotExceeded
+    }
   })
   |> hooks.with_overflow_preparation(hooks.overflow(
     config.compaction,
@@ -381,6 +392,42 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
     resolution(config, configuration)
   })
   |> hooks.build
+}
+
+// A pointer is useful only if this strand can ask for its contents. Require
+// both host registration and strand activation, plus the canonical session
+// identity. Missing configuration keeps the original messages; compaction
+// must never grant a tool or expose a database path to make recall possible.
+fn reference_projection(
+  opened: Session,
+  registry: Registry,
+  strand: String,
+) -> hooks.Projected {
+  let projected = hooks.project(opened, strand)
+  let available = {
+    use cell <- result.try(
+      session.strand_configuration(opened, strand)
+      |> result.replace_error(Nil),
+    )
+    use configuration <- result.try(option.to_result(cell, Nil))
+    use _registered <- result.try(tool.lookup(registry, history.tool_name))
+    use session_cell <- result.try(
+      session.id(opened) |> result.replace_error(Nil),
+    )
+    use session_id <- result.try(option.to_result(session_cell, Nil))
+    use <- bool.guard(
+      when: !list.contains(
+        configuration.value.active_tool_names,
+        history.tool_name,
+      ),
+      return: Error(Nil),
+    )
+    Ok(session_id)
+  }
+  case available {
+    Ok(session_id) -> hooks.with_tool_references(projected, opened, session_id)
+    Error(Nil) -> projected
+  }
 }
 
 // --- the checkpoint --------------------------------------------------------
@@ -469,6 +516,9 @@ fn reminded(
       messages:,
       carried: carried_by(config, strand),
       previous_summary: None,
+      origins: list.repeat(None, list.length(messages)),
+      reference_session: None,
+      copied_from: None,
     )
   let total = hooks.context_tokens(projected, hooks.estimate_message)
   let window = strand_facts(config, strand).context_window
