@@ -63,6 +63,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -253,6 +254,14 @@ func UnmountableProtected(kinds map[string]PathKind, plan []MountOp) []string {
 	var bad []string
 	for path, kind := range kinds {
 		if kind != PathMissing {
+			continue
+		}
+
+		// Nested masks omitted by the planner require no mount point:
+		// the emitted ancestor already denies access to the whole region.
+		if !slices.ContainsFunc(plan, func(op MountOp) bool {
+			return op.Class == ClassProtected && op.Path == region(path)
+		}) {
 			continue
 		}
 		parent := filepath.Dir(clean(path))

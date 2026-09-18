@@ -32,7 +32,13 @@ pub fn concurrent_preparation_preserves_existing_readers_test() {
     "[user]\nname = Operator\nemail = operator@example.invalid\n",
   )
   git(wiring, ["init", "--quiet"])
-  assert git_identity.prepare(wiring, Some(home), reading: absent) == Ok(None)
+  assert git_identity.prepare(
+      wiring,
+      Some(home),
+      helper: helper_path(),
+      reading: absent,
+    )
+    == Ok(None)
 
   // An existing Git writer owns the destination lock. Preparing another
   // session must neither claim that lock nor truncate the published file.
@@ -42,14 +48,24 @@ pub fn concurrent_preparation_preserves_existing_readers_test() {
     weft.new([
       fn() {
         list.each(list.repeat(Nil, 5), fn(_) {
-          assert git_identity.prepare(wiring, Some(home), reading: absent)
+          assert git_identity.prepare(
+              wiring,
+              Some(home),
+              helper: helper_path(),
+              reading: absent,
+            )
             == Ok(None)
         })
         Ok(Nil)
       },
       fn() {
         list.each(list.repeat(Nil, 5), fn(_) {
-          assert git_identity.prepare(wiring, Some(home), reading: absent)
+          assert git_identity.prepare(
+              wiring,
+              Some(home),
+              helper: helper_path(),
+              reading: absent,
+            )
             == Ok(None)
         })
         Ok(Nil)
@@ -81,7 +97,13 @@ pub fn global_defaults_preserve_local_identity_and_original_authors_test() {
     "[user]\nname = Operator\nemail = operator@example.invalid\n[core]\nhooksPath = /unavailable/hooks\n[credential]\nhelper = !touch credential-was-run\n",
   )
   git(wiring, ["init", "--quiet"])
-  assert git_identity.prepare(wiring, Some(home), reading: absent) == Ok(None)
+  assert git_identity.prepare(
+      wiring,
+      Some(home),
+      helper: helper_path(),
+      reading: absent,
+    )
+    == Ok(None)
   let projected =
     read(serve.tool_home_directory(wiring.workspace) <> "/gitconfig")
   assert !string.contains(projected, "credential")
@@ -118,7 +140,13 @@ pub fn global_defaults_preserve_local_identity_and_original_authors_test() {
 pub fn absent_identity_refuses_a_commit_until_repository_configuration_test() {
   use wiring, home <- with_fixture()
   git(wiring, ["init", "--quiet"])
-  assert git_identity.prepare(wiring, Some(home), reading: absent) == Ok(None)
+  assert git_identity.prepare(
+      wiring,
+      Some(home),
+      helper: helper_path(),
+      reading: absent,
+    )
+    == Ok(None)
   let failed =
     invoke(wiring, ["git", "commit", "--allow-empty", "-m", "must fail"])
   let assert broker.CallExited(report) = failed.outcome
@@ -170,7 +198,13 @@ pub fn conditional_global_identity_resolves_for_linked_worktrees_test() {
     )
   let linked =
     worktree_diff.Wiring(..wiring, workspace: linked, env: environment)
-  assert git_identity.prepare(linked, Some(home), reading: absent) == Ok(None)
+  assert git_identity.prepare(
+      linked,
+      Some(home),
+      helper: helper_path(),
+      reading: absent,
+    )
+    == Ok(None)
   git(linked, ["commit", "--allow-empty", "--quiet", "-m", "conditional"])
   assert git(linked, ["show", "-s", "--format=%an <%ae>"])
     == "Conditional <conditional@example.invalid>\n"
@@ -194,7 +228,13 @@ pub fn identity_values_cannot_inject_config_or_shell_source_test() {
     )
   git(host, ["config", "--global", "user.name", name])
   git(host, ["config", "--global", "user.email", "literal@example.invalid"])
-  assert git_identity.prepare(wiring, Some(home), reading: absent) == Ok(None)
+  assert git_identity.prepare(
+      wiring,
+      Some(home),
+      helper: helper_path(),
+      reading: absent,
+    )
+    == Ok(None)
   assert git(wiring, ["config", "--global", "--get", "user.name"])
     == name <> "\n"
   let missing =
@@ -202,6 +242,43 @@ pub fn identity_values_cannot_inject_config_or_shell_source_test() {
   let assert broker.CallExited(report) = missing.outcome as "the lookup settles"
   assert report.code == 1
   assert simplifile.is_file(wiring.workspace <> "/injected") == Ok(False)
+}
+
+pub fn publication_leaves_missing_database_side_files_absent_test() {
+  use wiring, home <- with_fixture()
+  let state = wiring.workspace <> "/state"
+  let assert Ok(Nil) = simplifile.create_directory_all(state)
+    as "state is below the workspace write grant"
+  let database = state <> "/catalogue.db"
+  let journal = database <> "-journal"
+  write(database, "untouched database\n")
+  let guarded =
+    worktree_diff.Wiring(
+      ..wiring,
+      base_policy: policy.SandboxPolicy(..wiring.base_policy, protected: [
+        database,
+        journal,
+        ..wiring.base_policy.protected
+      ]),
+    )
+
+  // A namespace mask for the absent journal used to create a host directory
+  // through the writable workspace bind. The next SQLite open then failed.
+  // Publication touches only its generated file, even when the read query
+  // cannot construct the stronger read-only view and returns a warning.
+  assert result.is_ok(git_identity.prepare(
+    guarded,
+    Some(home),
+    helper: helper_path(),
+    reading: absent,
+  ))
+  assert simplifile.is_directory(journal) == Ok(False)
+  assert simplifile.is_file(journal) == Ok(False)
+  assert read(database) == "untouched database\n"
+  assert string.contains(
+    read(serve.tool_home_directory(wiring.workspace) <> "/gitconfig"),
+    "useConfigOnly",
+  )
 }
 
 pub fn planted_tool_home_symlink_cannot_write_outside_the_workspace_test() {
@@ -218,9 +295,16 @@ pub fn planted_tool_home_symlink_cannot_write_outside_the_workspace_test() {
   assert result.is_error(git_identity.prepare(
     wiring,
     Some(home),
+    helper: helper_path(),
     reading: absent,
   ))
   assert read(target) == "untouched\n"
+}
+
+fn helper_path() -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the package has a working directory"
+  here <> "/../sandbox/loom-exec"
 }
 
 fn absent(_name: String) -> Result(String, Nil) {

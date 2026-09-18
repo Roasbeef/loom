@@ -2591,6 +2591,39 @@ fn assemble_in(
     }
   })
 
+  // Recall, on the same two-name pattern and gated the same way: the
+  // holder that owns the index cannot exist until the runtime has been
+  // opened (its canonical session id is what a scoped query and every
+  // hit from this session are named by), so the tool seam closes over
+  // the name now and the holder starts under it further down. An index
+  // that will not open registers no tool at all.
+  let history_name = address.new_address(namespace)
+  let history_pulls = address.new_address(namespace)
+  use history_seam <- result.try(case services, ownership {
+    None, _ -> Ok(history_seam(index_path, history_name, logger))
+    Some(shared), Some(#(_, identity)) ->
+      Ok(
+        option.map(domain_service.history(shared), fn(shared) {
+          history.seam_for(shared, identity)
+        }),
+      )
+    Some(_), None ->
+      Error("shared domain assembly requires owned session identity")
+  })
+
+  // The memory door, gated the same way and for the same reason: a
+  // `remember` definition renders into the provider's cached byte prefix
+  // and is paid for on every request, so a host whose memory plane will
+  // not open registers no tool and says so once.
+  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
+
+  // The probes can create or retire SQLite WAL and SHM files. Capture
+  // conditional masks after those mutations, once, for every effect consumer.
+  // The earlier validation still precedes directory creation and lease custody.
+  let base_policy =
+    session_base(settings, index_path, memory_store, memory_digest, toolchain)
+  use Nil <- result.try(base_policy_fault(base_policy))
+
   // The effect plane: a pool of jailed helpers behind the one broker.
   use #(pool, broker_actor) <- result.try(start_effect_plane_in(
     settings.helper_path,
@@ -2797,32 +2830,6 @@ fn assemble_in(
     log.warn(logger, "tools.env_unset", [field.ident(key: "name", value: name)])
   })
 
-  // Recall, on the same two-name pattern and gated the same way: the
-  // holder that owns the index cannot exist until the runtime has been
-  // opened (its canonical session id is what a scoped query and every
-  // hit from this session are named by), so the tool seam closes over
-  // the name now and the holder starts under it further down. An index
-  // that will not open registers no tool at all.
-  let history_name = address.new_address(namespace)
-  let history_pulls = address.new_address(namespace)
-  use history_seam <- result.try(case services, ownership {
-    None, _ -> Ok(history_seam(index_path, history_name, logger))
-    Some(shared), Some(#(_, identity)) ->
-      Ok(
-        option.map(domain_service.history(shared), fn(shared) {
-          history.seam_for(shared, identity)
-        }),
-      )
-    Some(_), None ->
-      Error("shared domain assembly requires owned session identity")
-  })
-
-  // The memory door, gated the same way and for the same reason: a
-  // `remember` definition renders into the provider's cached byte prefix
-  // and is paid for on every request, so a host whose memory plane will
-  // not open registers no tool and says so once.
-  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
-
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
@@ -2983,6 +2990,7 @@ fn assemble_in(
   use identity_warning <- result.try(git_identity.prepare(
     worktree_wiring,
     settings.home,
+    helper: settings.helper_path,
     reading: env_text,
   ))
   case identity_warning {

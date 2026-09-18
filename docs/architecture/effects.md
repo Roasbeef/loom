@@ -264,9 +264,12 @@ Git uses a generated global configuration in the tool home. Before admitting
 model work, `client/git_identity` queries the operator's global `user.name` and
 `user.email` with Git, including conditional includes in the workspace context.
 Only those values cross into the generated file; credentials, hooks and other
-configuration do not. Both the read-only query and the write run through the
-broker, so publication cannot follow a symlink beyond the session's write
-permission. Publication renames a complete temporary file over the destination,
+configuration do not. The read-only query runs through the broker. Publication
+uses the helper's fixed [identity operation](../../protocol-change/043-git-identity-publication.md),
+which checks the original policy and walks existing directories through
+descriptors without following tool-home symlinks. It creates no mountpoints,
+including missing SQLite journal masks beneath writable directories.
+Publication renames a complete temporary file over the destination,
 so concurrent sessions always read a complete configuration.
 The file sets `user.useConfigOnly=true`: absent identity makes a
 commit fail instead of inventing an email from the hostname. Repository-local
@@ -993,6 +996,7 @@ Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 | `broker/egress.gleam` | Outbound HTTPS under a per-caller policy: the origin allowlist, the reserved headers, credential injection, the redirect walk, the streamed size cap. `broker/internal/ffi_egress` performs one hop on a broker-private `httpc` profile. |
 | `broker/framing.gleam`, `broker/exec.gleam` | The protocol broker-side with its pure deframer; the helper actor, fd-3 spawn, cancel ladder, and pool. |
 | `sandbox/cmd/loom-exec/main.go` | Role selection by first argument: server mode, `--exec` (stage 2), `--self-test`, `--probe-socket`, and `--allow-unenforced`, which serves on a platform Loom has no jail for. |
+| `client/git_identity.gleam`, `sandbox/internal/jail/git_identity.go` | Brokered identity query and the fixed, descriptor-confined publication operation. |
 | `sandbox/internal/jail/platform.go` | Whether this *build* has a jail for its OS at all — a different question from what the running kernel provides, and kept apart from it everywhere it surfaces. |
 | `sandbox/internal/policy`, `.../framing`, `.../server` | The strict policy decoder, the protocol helper-side, and the frame loop. |
 | `sandbox/internal/jail` | bwrap argv, stage 2, env construction, output limiter, cancel escalation, supervision. |

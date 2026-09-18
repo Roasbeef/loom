@@ -237,15 +237,20 @@ pub fn boot_publishes_git_defaults_before_model_work_test() {
     "build/serve-test-git-identity-"
     <> int.to_string(ffi_os.unique_positive_integer())
   let settings = settings_under(location)
-  let assert Ok(booted) = serve.boot(settings)
-    as "assembly must prepare the tool environment before exposing the runtime"
-  let projected =
-    simplifile.read(
-      serve.tool_home_directory(settings.workspace) <> "/gitconfig",
-    )
-  serve.shutdown(booted)
-  let assert Ok(config) = projected as "boot must publish the Git defaults"
-  assert string.contains(config, "useConfigOnly = true")
+
+  // A later activation probes the existing index before capturing masks.
+  // SQLite may retire WAL/SHM files while that probe closes its connection.
+  list.each([1, 2], fn(_) {
+    let assert Ok(booted) = serve.boot(settings)
+      as "each activation prepares identity before exposing the runtime"
+    let projected =
+      simplifile.read(
+        serve.tool_home_directory(settings.workspace) <> "/gitconfig",
+      )
+    serve.shutdown(booted)
+    let assert Ok(config) = projected as "boot must publish the Git defaults"
+    assert string.contains(config, "useConfigOnly = true")
+  })
 }
 
 pub fn imported_hooks_keep_the_operator_git_configuration_test() {

@@ -2672,8 +2672,10 @@ across one operation a `Stop` block holds open.
   Before runtime admission, `git_identity.prepare` queries configured global
   `user.name` and `user.email` through a read-only broker call in the workspace.
   Git resolves conditional includes; inaccessible or malformed configuration
-  produces a warning and empty defaults. A fixed jailed command writes
-  `<workspace>/.codemode/home/gitconfig`, quoting values through Git itself.
+  produces a warning and empty defaults. The helper's fixed publication mode
+  writes `<workspace>/.codemode/home/gitconfig` through directory descriptors
+  anchored to the original write grant. It quotes the two accepted keys with
+  Git's configuration grammar and creates no unrelated host mountpoints.
   `GIT_CONFIG_GLOBAL` selects that file, which always sets `user.useConfigOnly`.
   Repository and worktree identity overrides retain normal precedence, and
   cherry-picks preserve their original author. No credentials or hooks are

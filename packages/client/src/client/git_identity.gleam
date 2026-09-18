@@ -2,16 +2,19 @@
 ////
 //// Tools use an empty HOME, so Git otherwise guesses a hostname-based email.
 //// A read-only Git query resolves the operator's global identity, including
-//// conditional includes, and a jailed write publishes only those values. The
+//// conditional includes, and the helper publishes only those values through
+//// directory descriptors anchored to the original write grant. The
 //// global scope leaves repository overrides and preserved commit authors intact.
-//// Neither query nor publication runs outside the session's filesystem policy.
+//// Neither query nor publication can exceed the session's filesystem policy.
 
 import broker/broker
 import broker/budget
 import broker/policy
+import client/internal/ffi_os
 import client/worktree_diff
 import core/clock
 import core/ids
+import core/json
 import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process
@@ -35,12 +38,13 @@ pub const environment_name = "GIT_CONFIG_GLOBAL"
 /// ## Examples
 ///
 /// ```gleam
-/// // git_identity.prepare(wiring, Some("/home/operator"), reading: host_env)
+/// // git_identity.prepare(wiring, Some("/home/operator"), helper: helper_path, reading: host_env)
 /// // -> Ok(None)
 /// ```
 pub fn prepare(
   wiring: worktree_diff.Wiring,
   home: Option(String),
+  helper helper: String,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> Result(Option(String), String) {
   let git = bootstrap.find_executable("git")
@@ -59,34 +63,38 @@ pub fn prepare(
     |> result.replace_error("the tool Git configuration path is missing"),
   )
 
-  // Content and paths are positional data, never shell source. The kernel
-  // checks a planted HOME or file symlink under exactly the tool's authority.
-  // Git itself quotes values when writing, including embedded newlines.
-  // Sessions sharing a workspace build separate files and publish by rename,
-  // so a concurrent commit always reads a complete configuration.
-  let arguments =
-    list.flatten([
-      [
-        "/bin/sh",
-        "-c",
-        "set -eu; destination=$1; git=$2; shift 2; umask 077; "
-          <> "file=$(mktemp \"$destination.XXXXXX\"); "
-          <> "trap 'rm -f \"$file\"' EXIT HUP INT TERM; "
-          <> "printf '[user]\\nuseConfigOnly = true\\n' > \"$file\"; "
-          <> "while [ \"$#\" -gt 0 ]; do "
-          <> "\"$git\" config --file \"$file\" \"$1\" \"$2\"; shift 2; done; "
-          <> "mv -f \"$file\" \"$destination\"",
-        "loom-git-identity",
-        destination,
-        result.unwrap(git, "git"),
-      ],
-      list.flat_map(identity, fn(pair) { [pair.0, pair.1] }),
-    ])
+  // The output location is server-owned. The helper walks its parent
+  // directories from the original granted root with no symlink traversal,
+  // then renames an exclusive temporary file through the opened directory.
+  // A model-planted HOME cannot become a new grant, and publication creates
+  // no unrelated mountpoints in the host's SQLite state directories.
+  use <- bool.guard(
+    destination != wiring.workspace <> "/.codemode/home/gitconfig",
+    Error("the tool Git configuration path is invalid"),
+  )
+  use encoded <- result.try(
+    policy.encode(wiring.base_policy)
+    |> result.replace_error("the Git publication policy could not be encoded"),
+  )
+  let entries =
+    json.Array(
+      list.map(identity, fn(pair) {
+        json.Array([json.String(pair.0), json.String(pair.1)])
+      }),
+    )
+    |> json.to_string
   use #(code, _) <- result.try(
-    run(wiring, wiring.base_policy, arguments, [
-      #("PATH", "/usr/bin:/bin"),
-      #("HOME", "/nonexistent"),
-    ]),
+    ffi_os.run_capture(
+      helper,
+      [
+        "--publish-git-identity",
+        bit_array.base64_encode(encoded, True),
+        wiring.workspace,
+        entries,
+      ],
+      8000,
+    )
+    |> result.replace_error("Git identity publication did not settle"),
   )
   case code {
     0 -> Ok(warning)
@@ -148,8 +156,8 @@ fn decode(output: String) -> Result(List(#(String, String)), String) {
   })
 }
 
-// Both fixed commands settle through the existing broker. The query demotes
-// filesystem access to reads; publication retains only the session's writes.
+// The fixed query settles through the existing broker with filesystem access
+// demoted to reads. Publication is a separate, descriptor-confined operation.
 fn run(
   wiring: worktree_diff.Wiring,
   base: policy.SandboxPolicy,
@@ -164,11 +172,15 @@ fn run(
       ..base,
       network: policy.NetworkOff,
       env_allow: list.map(environment, fn(pair) { pair.0 }),
+      // Fixed metadata setup keeps the filesystem and network demand, but
+      // does not require delegated cgroups before a session can open. Model
+      // work retains the original policy's memory and process ceilings.
+      limits: policy.Limits(..base.limits, mem_bytes: 0, pids: 0),
     )
   let requirements =
     policy.SandboxPolicy(
       ..base,
-      limits: policy.Limits(8, 8, 268_435_456, 16, 1_048_576, 65_536),
+      limits: policy.Limits(8, 8, 0, 0, 1_048_576, 65_536),
     )
 
   // These are ceilings, not minimum resources. A stricter session policy
