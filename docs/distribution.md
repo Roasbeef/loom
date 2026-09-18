@@ -9,27 +9,20 @@ Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.26.3 by running the targets it
 describes. They are not fresh measurements of the single-daemon implementation.
 Current verification and remaining release gates are recorded in [next.md](next.md).
 
-CI currently builds its own `gleam` from the 1.18.1 release tag named above
-with one upstream commit cherry-picked on top, rather than installing that
-release unmodified. Gleam 1.18.1 rewrites a path dependency's freshness
-fingerprint one at a time, so a tree with many path dependencies
-re-resolves through the Hex API on every successive `gleam` invocation and
-a burst of pull requests can trip Hex's rate limit (issue #248,
-gleam-lang/gleam#6244); the cherry-picked commit carries the fix, merged
-upstream as gleam-lang/gleam#6246. It is a patched release, not a build
-from `main`: `main`'s formatter has already drifted from 1.18.1's between
-the release and the fix, so building `main` at the fix commit directly
-would pass dependency resolution but fail `gleam format --check` across
-the tree against a formatter no released compiler agrees with. Building
-the tag plus the one commit keeps the formatter, and everything else this
-patch does not touch, byte-for-byte the release. The exact commit lives in
-`ci.yml`'s `GLEAM_PATCHES` variable, not here, so this paragraph does not
-go stale as the pin moves. A developer building locally on the unmodified
-1.18.1 release sees the repeated Hex re-resolution described above but no
-difference in what the compiler produces; the two toolchains agree on
-output, only on how often the patched one re-checks Hex. The patch is
-dropped, and CI reverts to installing the named release unmodified, the
-day a Gleam release ships carrying that commit.
+CI and local development use the maintained Gleam 1.18.1 compiler described
+in the [toolchain instructions](../scripts/toolchain/gleam/README.md). It
+applies the upstream path-dependency freshness fix for issue #248 and the
+repository's deterministic-cache and native-Git-dependency patches. Starting
+from the release tag retains its formatter; building upstream `main` would
+introduce unrelated language and formatting changes.
+
+The native dependency patch is required to build the pinned esqlite repair.
+Stock Gleam treats a Git dependency as a Gleam package and does not run its
+Rebar native build. CI and both Docker recipes apply all maintained patches,
+and their cache keys include the patch digest. A release-builder image must
+be rebuilt and its immutable digest updated when these compiler inputs change.
+Each patch can retire once a released compiler provides its behavior and the
+corresponding clean-build and release fixtures pass.
 
 ## The problem
 

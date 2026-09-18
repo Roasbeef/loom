@@ -1,0 +1,272 @@
+diff --git a/compiler-cli/src/dependencies.rs b/compiler-cli/src/dependencies.rs
+index 05c7943..9883cb9 100644
+--- a/compiler-cli/src/dependencies.rs
++++ b/compiler-cli/src/dependencies.rs
+@@ -18,7 +18,7 @@ use flate2::read::GzDecoder;
+ use gleam_core::{
+     Error, Result,
+     build::{Mode, SourceFingerprint, Target, Telemetry},
+-    config::PackageConfig,
++    config::{PackageBuildTool, PackageConfig},
+     dependency::{self, PackageFetchError},
+     error::{FileIoAction, FileKind, ShellCommandFailureReason, StandardIoAction},
+     hex::{self, HEXPM_PUBLIC_KEY},
+@@ -648,14 +648,17 @@ struct GitState {
+ 
+ impl LocalPackages {
+     pub fn extra_local_packages(&self, manifest: &Manifest) -> Vec<(EcoString, Version)> {
++        // Rebar dependencies cache their whole build directory. A new Git
++        // commit must retire that directory even when its version is unchanged.
+         let manifest_packages: HashSet<_> = manifest
+             .packages
+             .iter()
+-            .map(|p| (&p.name, &p.version))
++            .filter(|package| self.has_fresh(package))
++            .map(|package| &package.name)
+             .collect();
+         self.packages
+             .iter()
+-            .filter(|(n, v)| !manifest_packages.contains(&(&EcoString::from(*n), v)))
++            .filter(|(name, _)| !manifest_packages.contains(name))
+             .map(|(n, v)| (n.clone(), v.clone()))
+             .collect()
+     }
+@@ -876,6 +879,7 @@ fn same_requirements(
+ #[derive(Clone, Eq, PartialEq, Debug)]
+ struct ProvidedPackage {
+     version: Version,
++    build_tool: PackageBuildTool,
+     source: ProvidedPackageSource,
+     requirements: HashMap<EcoString, hexpm::version::Range>,
+ }
+@@ -928,7 +932,10 @@ impl ProvidedPackage {
+             name: name.into(),
+             version: self.version.clone(),
+             otp_app: None, // Note, this will probably need to be set to something eventually
+-            build_tools: vec!["gleam".into()],
++            build_tools: vec![match self.build_tool {
++                PackageBuildTool::Gleam => "gleam".into(),
++                PackageBuildTool::Rebar3 => "rebar3".into(),
++            }],
+             requirements: self.requirements.keys().cloned().collect(),
+             source: self.source.to_manifest_package_source(),
+         };
+@@ -1505,6 +1512,18 @@ fn provide_package(
+     }
+     // Load the package
+     let config = crate::config::read(package_path.join("gleam.toml"))?;
++    // Native path builds have no immutable source identity for the cached
++    // Rebar output. Keep this extension limited to pinned Git dependencies.
++    if config.build_tool == PackageBuildTool::Rebar3
++        && matches!(package_source, ProvidedPackageSource::Local { .. })
++    {
++        return Err(Error::FileIo {
++            action: FileIoAction::Parse,
++            kind: FileKind::File,
++            path: package_path.join("gleam.toml"),
++            err: Some("build_tool = rebar3 is supported only for Git dependencies".into()),
++        });
++    }
+     // Check that we are loading the correct project
+     if config.name != package_name {
+         return Err(Error::WrongDependencyProvided {
+@@ -1587,6 +1606,7 @@ fn provide_package(
+         config.name,
+         ProvidedPackage {
+             version: config.version,
++            build_tool: config.build_tool,
+             source: package_source,
+             requirements,
+         },
+diff --git a/compiler-cli/src/dependencies/tests.rs b/compiler-cli/src/dependencies/tests.rs
+index b3ec7db..207202e 100644
+--- a/compiler-cli/src/dependencies/tests.rs
++++ b/compiler-cli/src/dependencies/tests.rs
+@@ -624,6 +624,7 @@ fn provided_recursive() {
+ #[test]
+ fn provided_local_to_hex() {
+     let provided_package = ProvidedPackage {
++        build_tool: PackageBuildTool::Gleam,
+         version: Version::new(1, 0, 0),
+         source: ProvidedPackageSource::Local {
+             path: "canonical/path/to/package".into(),
+@@ -682,6 +683,7 @@ fn provided_local_to_hex() {
+ #[test]
+ fn provided_git_to_hex() {
+     let provided_package = ProvidedPackage {
++        build_tool: PackageBuildTool::Gleam,
+         version: Version::new(1, 0, 0),
+         source: ProvidedPackageSource::Git {
+             repo: "https://github.com/gleam-lang/gleam.git".into(),
+@@ -742,6 +744,7 @@ fn provided_git_to_hex() {
+ #[test]
+ fn provided_local_to_manifest() {
+     let provided_package = ProvidedPackage {
++        build_tool: PackageBuildTool::Gleam,
+         version: Version::new(1, 0, 0),
+         source: ProvidedPackageSource::Local {
+             path: "canonical/path/to/package".into(),
+@@ -779,6 +782,7 @@ fn provided_local_to_manifest() {
+ #[test]
+ fn provided_git_to_manifest() {
+     let provided_package = ProvidedPackage {
++        build_tool: PackageBuildTool::Gleam,
+         version: Version::new(1, 0, 0),
+         source: ProvidedPackageSource::Git {
+             repo: "https://github.com/gleam-lang/gleam.git".into(),
+@@ -1629,6 +1633,7 @@ fn package_config(
+     PackageConfig {
+         name: "the_package".into(),
+         version: Version::parse("1.0.0").unwrap(),
++        build_tool: PackageBuildTool::Gleam,
+         gleam_version: None,
+         licences: vec![],
+         description: "".into(),
+@@ -2049,6 +2054,7 @@ fn verified_releases_skips_provided_packages() {
+     let provided: HashMap<EcoString, ProvidedPackage> = [(
+         "wobble".into(),
+         ProvidedPackage {
++            build_tool: PackageBuildTool::Gleam,
+             version: Version::new(1, 0, 0),
+             source: ProvidedPackageSource::Local {
+                 path: "path/to/wobble".into(),
+@@ -2107,3 +2113,64 @@ fn hex_manifest_package_uses_verified_checksum_and_requirements() {
+         }
+     );
+ }
++
++#[test]
++fn provided_native_dependency_preserves_its_builder() {
++    let source = ProvidedPackageSource::Git {
++        repo: "https://example.com/native.git".into(),
++        commit: "0123456789012345678901234567890123456789".into(),
++        path: None,
++    };
++    let native = ProvidedPackage {
++        version: Version::new(1, 0, 0),
++        build_tool: PackageBuildTool::Rebar3,
++        source,
++        requirements: HashMap::new(),
++    };
++    let manifest = native.to_manifest_package("native");
++    assert_eq!(manifest.build_tools, vec![EcoString::from("rebar3")]);
++    assert_eq!(manifest.source, native.source.to_manifest_package_source());
++    let gleam = ProvidedPackage {
++        build_tool: PackageBuildTool::Gleam,
++        ..native
++    };
++    assert_eq!(
++        gleam.to_manifest_package("native").build_tools,
++        vec![EcoString::from("gleam")]
++    );
++}
++
++#[test]
++fn changed_git_commit_retires_native_build_at_same_version() {
++    let mut package = ManifestPackage {
++        name: "native".into(),
++        version: Version::new(1, 0, 0),
++        build_tools: vec!["rebar3".into()],
++        otp_app: None,
++        requirements: vec![],
++        source: ManifestPackageSource::Git {
++            repo: "https://example.com/native.git".into(),
++            commit: "old".into(),
++            path: None,
++        },
++    };
++    let old = Manifest {
++        packages: vec![package.clone()],
++        requirements: HashMap::new(),
++    };
++    let local = LocalPackages::from_manifest(&old);
++    assert!(local.extra_local_packages(&old).is_empty());
++    package.source = ManifestPackageSource::Git {
++        repo: "https://example.com/native.git".into(),
++        commit: "new".into(),
++        path: None,
++    };
++    let updated = Manifest {
++        packages: vec![package],
++        requirements: HashMap::new(),
++    };
++    assert_eq!(
++        local.extra_local_packages(&updated),
++        vec![(EcoString::from("native"), Version::new(1, 0, 0))]
++    );
++}
+diff --git a/compiler-core/src/config.rs b/compiler-core/src/config.rs
+index 6396a9d..6d578a9 100644
+--- a/compiler-core/src/config.rs
++++ b/compiler-core/src/config.rs
+@@ -140,12 +140,31 @@ impl GleamVersion {
+     }
+ }
+ 
++/// The builder for a provided dependency. Native packages use their existing
++/// Rebar configuration; merely carrying rebar.config does not opt a Gleam
++/// package into a different compiler.
++#[derive(Deserialize, Serialize, Debug, PartialEq, Eq, Clone, Copy, Default)]
++#[serde(rename_all = "lowercase")]
++pub enum PackageBuildTool {
++    #[default]
++    Gleam,
++    Rebar3,
++}
++
++impl PackageBuildTool {
++    fn is_gleam(&self) -> bool {
++        matches!(self, Self::Gleam)
++    }
++}
++
+ #[derive(Deserialize, Serialize, Debug, PartialEq, Clone)]
+ pub struct PackageConfig {
+     #[serde(deserialize_with = "package_name::deserialize")]
+     pub name: EcoString,
+     #[serde(default = "default_version")]
+     pub version: Version,
++    #[serde(default, skip_serializing_if = "PackageBuildTool::is_gleam")]
++    pub build_tool: PackageBuildTool,
+ 
+     #[serde(
+         default,
+@@ -724,6 +743,7 @@ impl Default for PackageConfig {
+         Self {
+             name: EcoString::new(),
+             version: default_version(),
++            build_tool: PackageBuildTool::Gleam,
+             gleam_version: None,
+             description: EcoString::new(),
+             documentation: Docs::default(),
+@@ -1508,3 +1528,18 @@ wibble = ">= 1.0.0 and < 2.0.0"
+     let canonical = deserialise_config("gleam.toml", toml.into()).expect("valid config");
+     assert_eq!(canonical, hyphen_alternative)
+ }
++
++#[test]
++fn provided_dependency_build_tool() {
++    let default: PackageConfig = toml::from_str("name = \"sample\"").unwrap();
++    assert_eq!(default.build_tool, PackageBuildTool::Gleam);
++    let native: PackageConfig =
++        toml::from_str("name = \"sample\"\nbuild_tool = \"rebar3\"").unwrap();
++    assert_eq!(native.build_tool, PackageBuildTool::Rebar3);
++    let encoded = serde_json::to_string(&native).unwrap();
++    let decoded: PackageConfig = serde_json::from_str(&encoded).unwrap();
++    assert_eq!(decoded.build_tool, PackageBuildTool::Rebar3);
++    assert!(
++        toml::from_str::<PackageConfig>("name = \"sample\"\nbuild_tool = \"unknown\"").is_err()
++    );
++}
+diff --git a/compiler-core/src/package_interface/tests.rs b/compiler-core/src/package_interface/tests.rs
+index 0bb223c..65aaf97 100644
+--- a/compiler-core/src/package_interface/tests.rs
++++ b/compiler-core/src/package_interface/tests.rs
+@@ -151,6 +151,7 @@ fn package_from_module(module: Module) -> Package {
+     Package {
+         config: PackageConfig {
+             name: "my_package".into(),
++            build_tool: crate::config::PackageBuildTool::Gleam,
+             version: hexpm::version::Version {
+                 major: 11,
+                 minor: 10,

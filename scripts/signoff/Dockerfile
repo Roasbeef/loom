@@ -142,7 +142,8 @@ RUN set -eux; \
 	chmod +x /usr/local/bin/gleam; \
 	rm -rf "$src" /root/.cargo/registry /root/.cargo/git; \
 	gleam --version; \
-	python3 /opt/loom-gleam-patches/check_cache.py --runs 4
+	python3 /opt/loom-gleam-patches/check_cache.py --runs 4; \
+	python3 /opt/loom-gleam-patches/check_native_git.py
 
 # --- Go ------------------------------------------------------------------
 RUN curl -fsSL -o /tmp/go.tar.gz \

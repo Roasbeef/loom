@@ -1,4 +1,4 @@
-# Maintained Gleam cache patch
+# Maintained Gleam patches
 
 `deterministic-cache.patch` is the source change from compiler commit
 `4c7a9605be04dbcd8bdcad76c29a5a789cdf9311`. It applies to Gleam 1.18.1 after the
@@ -39,7 +39,51 @@ host and image. The release-candidate workflow verifies complete artifacts on
 two separate hosted runners; neither the compiler fixture nor a same-host
 comparison substitutes for that result.
 
-Ordinary development can still use the released compiler. Its cache bytes need
-not match a release candidate. Remove this patch only after the pinned compiler
-release includes equivalent behavior and the fixture and complete-release
-comparison both pass. No production release signing is enabled by this pin.
+Remove the cache patch only after the pinned compiler release includes
+equivalent behavior and the fixture and complete-release comparison both pass.
+No production release signing is enabled by this pin.
+
+## Native Git dependencies
+
+`native-git-dependencies.patch` lets a pinned Git package declare
+`build_tool = "rebar3"` in its `gleam.toml`. The default remains Gleam; unknown
+build tools are errors. Native path dependencies are refused because their
+cached Rebar output has no immutable source identity. Changing a Git commit
+retires the cached package even when its version stays the same.
+
+Storage pins the esqlite query-retirement repair from the operator-maintained
+fork. Its metadata retains the `esqlite` application name and existing Rebar
+build. The Hex `sqlight` binding remains unchanged. See
+[ADR-002](../../../docs/adr/002-sqlite-binding.md) for the ownership bug and
+adoption evidence.
+
+Development now requires this maintained compiler too: stock Gleam 1.18.1
+ignores the native build-tool metadata and cannot build the pinned dependency.
+CI and both Docker recipes build the compiler from the release tag, apply the
+upstream path-dependency fix, then apply every local patch in filename order.
+Use the Docker development environment, or reproduce those steps locally:
+
+```sh
+git clone --branch v1.18.1 https://github.com/gleam-lang/gleam.git /path/to/gleam-source
+git -C /path/to/gleam-source fetch origin 860f8224ddb7e1ecb7f983fb622ede12466225e5
+git -C /path/to/gleam-source cherry-pick -X ours 860f8224ddb7e1ecb7f983fb622ede12466225e5
+for patch in "$PWD"/scripts/toolchain/gleam/*.patch; do
+  git -C /path/to/gleam-source apply "$patch"
+done
+cargo build --manifest-path /path/to/gleam-source/Cargo.toml --release --package gleam --bin gleam
+export PATH="/path/to/gleam-source/target/release:$PATH"
+python3 scripts/toolchain/gleam/check_cache.py --runs 4
+python3 scripts/toolchain/gleam/check_native_git.py
+```
+
+The native fixture builds a small Rebar dependency through a transitive Gleam
+wrapper, checks a clean rebuild, proves that an unchanged pin ignores a newer
+repository commit, and changes the pin without changing the version to catch
+stale native artifacts. It uses local Git repositories and no Hex downloads.
+CI runs it on compiler-cache hits as well as fresh compiler builds.
+
+
+When retiring the Git pin in favor of a same-version Hex release, rebuild from
+a clean checkout. The compiler's existing Hex freshness check compares version
+alone and can otherwise retain the former Git package's build output. This
+patch fixes changed Git commits; it does not repair that separate transition.
