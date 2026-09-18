@@ -1,5 +1,22 @@
 # Next
 
+## Retrievable compaction payloads, September 18
+
+Compaction now shortens eligible large successful tool-result text in its
+retained tail after the cut is selected. The stub names the original session and
+message entry for `history_search action=read`; original durable messages and
+tool-call arguments remain unchanged. The transform is available only when
+the host registered `history_search` and the strand activated it. Failures,
+images, small results, unread newest exchanges and inexact provenance remain
+verbatim.
+
+The focused production fixture publishes the frozen preparation through
+`api.compact` into SQLite, closes the runtime, and recovers the original entry
+through SQLite's read-only exact-entry path. Provider serialization is covered
+for Anthropic, OpenAI and Gemini. The remaining deliberate limitation is large
+tool-call arguments: Loom retains them because rewriting arbitrary arguments
+can violate tool schemas or invalidate opaque provider signatures.
+
 ## Git identity and Linux startup, September 17
 
 PR #444's source repair is `0ea1269a`, based on `5c5ed817`; the following
