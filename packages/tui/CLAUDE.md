@@ -1298,3 +1298,9 @@ after its fragment is written, and total bytes are checked before appending.
 Gun does not automatically redirect or retry. A normal transport-owner stop is
 the managed task's drain witness. Error bodies are never collected; only an
 explicit HTTP 404 counts as absence.
+
+The session connection adapter translates the transport's HTTP 503 startup
+refusal into daemon admission guidance, naming the two `[daemon]` connection
+settings. It retains other transport errors and performs no automatic retry.
+The transport does not expose the refusal response body, so the terminal does
+not claim which configured ceiling was exhausted.

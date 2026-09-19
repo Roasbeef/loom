@@ -160,3 +160,35 @@ degradation for development machines. `LOOM_HELPER_POOL` bounds how many
 `loom-exec` helpers run at once (the scheduler count clamped to `[4, 16]`),
 which is the real ceiling on how wide a parallel tool batch runs.
 
+### Connection admission
+
+The daemon reads these optional settings from its startup `--config` file.
+The ordinary `loom` launcher supplies the selected catalogue, defaulting to
+`~/.loom/loom.toml` when present. A manually launched `loomd` needs that
+`--config` flag explicitly:
+
+```toml
+[daemon]
+max_connections = 64
+max_reserved_message_bytes = 536870912 # 512 MiB.
+```
+
+Both values must be positive integers. Omitted keys use the defaults above;
+`profile` is optional in the same table. Changes take effect after a daemon
+restart. The startup file must be readable, valid TOML even before any
+session opens; invalid models and unavailable helpers still fail only when a
+session uses them. A session's own configuration does not change daemon-wide limits.
+
+A terminal normally holds one control socket and one operator socket. Control
+reserves 64 KiB, while an operator reserves 32 MiB for inbound messages plus
+8 MiB for retained delivery. The default budget therefore admits twelve such
+pairs. These are potential payload allowances, not preallocated memory or a
+bound on the daemon's entire RSS. The independent connection-count ceiling
+includes HTTP upgrades awaiting transfer and admitted sockets.
+
+At either ceiling, a new connection receives HTTP 503 with the exhausted
+setting named in the response. The terminal explains the admission failure
+and names both settings because its transport does not expose that HTTP body.
+Closing another terminal releases its connections without deleting its saved
+session. `--capacity` controls resident sessions separately from these socket
+limits.
