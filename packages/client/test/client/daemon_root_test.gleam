@@ -4,6 +4,7 @@
 
 import broker/token
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
@@ -34,7 +35,12 @@ fn directory(name: String) {
 }
 
 fn configuration(path: String) {
-  root.Config(state_root: path, owner_display_name: "Local owner", capacity: 2)
+  root.Config(
+    state_root: path,
+    owner_display_name: "Local owner",
+    capacity: 2,
+    connection_limits: limits.defaults,
+  )
 }
 
 fn assembly(
@@ -53,7 +59,12 @@ fn inert() {
 }
 
 fn start(path: String, assembly: manager.Assembly(String)) {
-  let assert Ok(daemon) = root.start(configuration(path), assembly)
+  start_with_limits(path, limits.defaults, assembly)
+}
+
+fn start_with_limits(path, connection_limits, assembly) {
+  let config = root.Config(..configuration(path), connection_limits:)
+  let assert Ok(daemon) = root.start(config, assembly)
     as "root preparation returns an inert owned handle"
   let assert Ok(ready) = root.ready(daemon, within: 10_000)
     as "root boot establishes stable ownership before readiness"
@@ -421,7 +432,7 @@ fn transferred(daemon: root.Root(String), permit: root.Permit) {
 pub fn admitted_connection_count_is_bounded_and_shutdown_joins_owners_test() {
   let #(daemon, _) = start(directory("connection-cap"), inert())
   let slots =
-    list.map(list.repeat(Nil, root.max_connections), fn(_) {
+    list.map(list.repeat(Nil, limits.defaults.connections), fn(_) {
       let #(owner, permit) = acquired(daemon, root.Control)
       #(owner, permit, process.monitor(owner))
     })
@@ -434,7 +445,12 @@ pub fn admitted_connection_count_is_bounded_and_shutdown_joins_owners_test() {
 }
 
 pub fn transferred_weight_survives_http_death_and_late_release_test() {
-  let #(daemon, _) = start(directory("connection-weight"), inert())
+  let #(daemon, _) =
+    start_with_limits(
+      directory("connection-weight"),
+      limits.Limits(64, 167_772_160),
+      inert(),
+    )
   let #(http, permit) = acquired(daemon, root.Operator)
   let websocket = transferred(daemon, permit)
   let watch = process.monitor(websocket)
@@ -463,7 +479,12 @@ pub fn transferred_weight_survives_http_death_and_late_release_test() {
 }
 
 pub fn observer_delivery_allowance_is_charged_before_upgrade_test() {
-  let #(daemon, _) = start(directory("observer-weight"), inert())
+  let #(daemon, _) =
+    start_with_limits(
+      directory("observer-weight"),
+      limits.Limits(64, 167_772_160),
+      inert(),
+    )
   let _observers =
     list.map(list.repeat(Nil, 19), fn(_) { acquired(daemon, root.Observer) })
   let assert Error(_) = root.acquire(daemon, root.Observer, within: 1000)
@@ -475,7 +496,12 @@ pub fn observer_delivery_allowance_is_charged_before_upgrade_test() {
 }
 
 pub fn multiplayer_operators_observer_and_controls_fit_budget_test() {
-  let #(daemon, _) = start(directory("multiplayer-budget"), inert())
+  let #(daemon, _) =
+    start_with_limits(
+      directory("multiplayer-budget"),
+      limits.Limits(64, 167_772_160),
+      inert(),
+    )
   let _operators =
     list.map(list.repeat(Nil, 3), fn(_) { acquired(daemon, root.Operator) })
   let _observer = acquired(daemon, root.Observer)
@@ -535,4 +561,37 @@ pub fn shutdown_joins_actual_websocket_pid_not_only_http_parent_test() {
   process.kill(http)
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   assert wait_down(websocket_watch).reason == process.Killed
+}
+
+pub fn default_budget_admits_four_terminal_pairs_test() {
+  let #(daemon, _) = start(directory("four-terminals"), inert())
+  list.each(list.repeat(Nil, 4), fn(_) {
+    let _control = acquired(daemon, root.Control)
+    let _operator = acquired(daemon, root.Operator)
+    Nil
+  })
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+}
+
+pub fn a_custom_connection_count_is_enforced_independently_test() {
+  let config = configuration(directory("custom-count"))
+  let assert Ok(daemon) =
+    root.start(
+      root.Config(
+        ..config,
+        connection_limits: limits.Limits(
+          2,
+          limits.defaults.reserved_message_bytes,
+        ),
+      ),
+      inert(),
+    )
+    as "the custom count is captured before startup"
+  let assert Ok(_) = root.ready(daemon, within: 10_000) as "root is ready"
+  let _first = acquired(daemon, root.Control)
+  let _second = acquired(daemon, root.Control)
+  let assert Error(reason) = root.acquire(daemon, root.Control, within: 1000)
+    as "the third control exceeds count while far below the byte ceiling"
+  assert string.contains(reason, "daemon.max_connections = 2")
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
 }

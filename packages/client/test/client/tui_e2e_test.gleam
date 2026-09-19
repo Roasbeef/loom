@@ -47,6 +47,7 @@ import broker/policy
 import client/catalog
 import client/codemode
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/daemon/root as daemon_root
@@ -892,7 +893,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
     as "the terminal fixture has a private absolute daemon root"
   let assert Ok(daemon) =
     daemon_root.start(
-      daemon_root.Config(config.state_root, "Owner", 4),
+      daemon_root.Config(config.state_root, "Owner", 4, limits.defaults),
       manager.Assembly(
         fn(_, _, _) { Ok(domain_service.inert()) },
         fn(record, selected_domain, _services, owner) {

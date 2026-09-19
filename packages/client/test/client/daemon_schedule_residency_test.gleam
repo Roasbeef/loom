@@ -5,6 +5,7 @@
 //// recurring cursor arithmetic remains covered by the scanner unit tests.
 
 import client/catalog
+import client/daemon/limits
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/daemon/root
@@ -87,7 +88,7 @@ fn start(settings: serve.Settings) {
     as "the root is stable across daemon incarnations"
   let assert Ok(daemon) =
     root.start(
-      root.Config(config.state_root, "Owner", 2),
+      root.Config(config.state_root, "Owner", 2, limits.defaults),
       manager.Assembly(
         fn(selected, sources, owner) {
           serve.build_domain(selected, sources, log.discard(), owner)

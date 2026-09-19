@@ -40,7 +40,8 @@ them from their own test mains.
   re-clear with the grant, all under the fault schedule.
 - `conformance/simulation/daemon/harness.{Harness, Row, Snapshot}` — the
   real daemon root, registry and catalogue over a temporary state root and
-  the simulation's logical clock, with no listener. The root starts a
+  the simulation's logical clock, with no listener. It supplies the default
+  connection limits but does not exercise socket admission. The root starts a
   listener only when a caller asks it to, creation takes its id generator
   from the caller, and assembly is a record of caller-supplied callbacks,
   so no seam had to be added to `client/daemon/root` to construct one from

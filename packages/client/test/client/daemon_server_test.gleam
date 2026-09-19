@@ -4,6 +4,7 @@
 
 import broker/token
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
@@ -14,6 +15,7 @@ import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
 import gleam/http/response
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -24,6 +26,7 @@ import storage/access
 import storage/catalogue
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
+import tui/connection
 import tui/daemon/protocol as terminal_protocol
 import weft
 import weft/poll
@@ -39,6 +42,10 @@ import weft/poll
 pub fn fixture(
   run: fn(root.Root(String), root.Ready(String), Int, String) -> Nil,
 ) {
+  fixture_with_limits(limits.defaults, run)
+}
+
+fn fixture_with_limits(connection_limits: limits.Limits, run) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -46,7 +53,7 @@ pub fn fixture(
     as "private fixture directory exists"
   let assert Ok(daemon) =
     root.start(
-      root.Config(directory, "Owner", 2),
+      root.Config(directory, "Owner", 2, connection_limits),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
@@ -809,5 +816,32 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
     assert catalogue.close(store) == Ok(Nil)
     let _ = ffi_ws.tcp_close(socket)
     Nil
+  })
+}
+
+pub fn hello_advertises_the_configured_connection_limits_test() {
+  let configured = limits.Limits(7, 100_000_000)
+  fixture_with_limits(configured, fn(_, _, port, credential) {
+    let #(socket, _headers) = connect(port, credential, "/v2/control")
+    let hello = frame(socket, within_ms: 2000)
+    let advertised = field(field(hello, "body"), "limits")
+    assert field(advertised, "connections") == json.Int(7)
+    assert field(advertised, "reserved_message_bytes") == json.Int(100_000_000)
+    ffi_ws.tcp_close(socket)
+  })
+}
+
+pub fn terminal_reports_connection_admission_refusal_without_actor_wrapper_test() {
+  fixture_with_limits(limits.Limits(1, 100_000_000), fn(_, _, port, credential) {
+    let #(socket, _headers) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 2000)
+    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+    let assert Error(reason) =
+      connection.connect(address, credential, connection.new_inbox())
+      as "the real second handshake exceeds the configured count"
+    assert string.contains(reason, "max_connections")
+    assert string.contains(reason, "max_reserved_message_bytes")
+    assert !string.contains(reason, "InitFailed")
+    ffi_ws.tcp_close(socket)
   })
 }

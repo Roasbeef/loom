@@ -159,7 +159,8 @@ catalogue without opening runtimes. Explicit admission invokes
   the registry so authenticated delivery can call `frame_authority` there.
   `root.Returns` consumes the task's final report before session cancellation.
   Task completion never replaces the original lifetime monitor's cleanup proof.
-  Connection admission caps 64 owners and 160MiB of accounted payload:
+  Connection admission uses startup-owned `[daemon]` limits, defaulting to
+  64 owners and 512MiB of accounted payload:
   inbound message limits plus 8MiB of bounded delivery allowance per session
   connection, with no exact BEAM heap/RSS claim. Only the original socket DOWN
   releases a transferred reservation.
@@ -3766,3 +3767,15 @@ records its cause before requesting an exact-operation abort. New cancellation
 decisions do not update legacy `Lineage.reaped`. Proposal 042 records the wire
 and storage contract; `docs/review/child-run-lifecycle.md` records the remaining
 schedule and legacy held-rule policies.
+
+## Connection admission configuration
+
+`daemon/limits` validates positive `max_connections` and
+`max_reserved_message_bytes` settings in the same `[daemon]` table as optional
+`profile`. Both `catalog` and daemon startup use that parser. `daemon/main`
+loads the last explicit startup configuration before preparing the root;
+session-specific configuration cannot alter a live root's limits. The root
+captures the limits in its handle and accounting state, and the control hello
+reports those captured values. Count and byte refusals name the exhausted
+setting before parser activation. Existing transfer, cancellation and DOWN
+accounting remain the owners of capacity release.

@@ -4,6 +4,7 @@
 //// Mapping events happens in that existing owner; this adapter adds no process.
 
 import gleam/erlang/process.{type Subject}
+import gleam/result
 import host/websocket
 
 /// A shared socket handle with the original reader's lifetime.
@@ -57,7 +58,17 @@ pub fn connect(
   token: String,
   inbox: Subject(Message),
 ) -> Result(Connection, String) {
+  // Stratus exposes a refused upgrade through this startup diagnostic, not
+  // its HTTP response body. Translate only the known admission status; other
+  // transport and authentication failures retain their original meaning.
   websocket.connect_mapped(address, token, inbox, terminal_event)
+  |> result.map_error(fn(reason) {
+    case reason {
+      "InitFailed(\"WebSocket handshake failed with status 503\")" ->
+        "daemon connection admission unavailable (503). Retry, or close another terminal / raise [daemon] max_connections or max_reserved_message_bytes and restart."
+      _ -> reason
+    }
+  })
 }
 
 fn terminal_event(event: websocket.Message) -> Message {
