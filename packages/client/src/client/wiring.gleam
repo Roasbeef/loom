@@ -338,6 +338,14 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   // Capture those fields rather than the entire wiring configuration.
   let opened = config.session
   let registry = config.registry
+  let compaction = config.compaction
+  let gateway = config.gateway
+  let role = config.role
+  let facts = config.facts
+  let api = config.api
+  let fallback_context_window = config.fallback_context_window
+  let fallback_max_output_tokens = config.fallback_max_output_tokens
+  let clock = config.clock
   let projection = fn(strand) { reference_projection(opened, registry, strand) }
 
   // The threshold's window is the *strand's*, not the session's. One
@@ -349,14 +357,29 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   // the durable store, the same place every other hook decides from.
   let threshold_for = fn(strand) {
     hooks.threshold(
-      config.compaction,
-      context_window: strand_facts(config, strand).context_window,
+      compaction,
+      context_window: strand_facts_from(
+        opened,
+        facts,
+        api,
+        fallback_context_window,
+        fallback_max_output_tokens,
+        strand,
+      ).context_window,
       estimate: hooks.estimate_message,
     )
   }
   hooks.new()
   |> hooks.with_admission(fn(query: effects.AdmissionQuery) {
-    admit(config, query)
+    admit_projected(
+      opened,
+      gateway,
+      facts,
+      api,
+      fallback_context_window,
+      fallback_max_output_tokens,
+      query,
+    )
   })
   |> hooks.with_threshold(fn(query: effects.ThresholdQuery) {
     // First decide whether to compact from the driver's existing context.
@@ -371,7 +394,7 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
     }
   })
   |> hooks.with_overflow_preparation(hooks.overflow(
-    config.compaction,
+    compaction,
     projection:,
     estimate: hooks.estimate_message,
   ))
@@ -379,17 +402,27 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   // `client/checkpoint` builds from the strand's own notes. Nothing
   // selects generation: no summarizer serves this host.
   |> hooks.with_structural_decision(fn(operation, _task) {
-    structural_decision(config, operation)
+    structural_decision_projected(opened, registry, operation)
   })
   // The checkpoint's other half: the reminder a request carries once the
   // context is within a reserve of the compaction point, so the model
   // writes its notes while the messages they describe are still in
   // front of it. Identity when compaction is off.
   |> hooks.with_context(fn(operation, messages) {
-    near_limit_reminder(config, operation, messages)
+    near_limit_reminder_projected(
+      opened,
+      facts,
+      api,
+      fallback_context_window,
+      fallback_max_output_tokens,
+      compaction,
+      clock,
+      operation,
+      messages,
+    )
   })
-  |> hooks.with_resolution(fn(configuration) {
-    resolution(config, configuration)
+  |> hooks.with_resolution(fn(_configuration) {
+    resolution_projected(gateway, role)
   })
   |> hooks.build
 }
@@ -438,13 +471,17 @@ fn reference_projection(
 // tree asks for one; and a checkpoint that could not be built, which
 // leaves a threshold compaction's run alive and unclamped and drains an
 // overflow's — never a published claim that the strand wrote nothing.
-fn structural_decision(config: Config, operation: OpId) -> StructuralVerdict {
+fn structural_decision_projected(
+  opened: Session,
+  registry: Registry,
+  operation: OpId,
+) -> StructuralVerdict {
   case
     checkpoint.for_operation(
-      config.session,
+      opened,
       operation,
-      recall(config, operation),
-      instructions_for(config, operation),
+      recall_projected(opened, registry, operation),
+      instructions_for_session(opened, operation),
     )
   {
     Ok(checkpoint.Checkpoint(text:)) ->
@@ -456,18 +493,19 @@ fn structural_decision(config: Config, operation: OpId) -> StructuralVerdict {
 
 // A registered tool may still be disabled on this strand. Match the
 // durable active-tool list used to build generation requests.
-fn recall(config: Config, operation: OpId) -> checkpoint.Recall {
+fn recall_projected(
+  opened: Session,
+  registry: Registry,
+  operation: OpId,
+) -> checkpoint.Recall {
   let available = {
-    use strand <- result.try(notes.strand_of(config.session, operation))
+    use strand <- result.try(notes.strand_of(opened, operation))
     use cell <- result.try(
-      session.strand_configuration(config.session, strand)
+      session.strand_configuration(opened, strand)
       |> result.replace_error(Nil),
     )
     use configuration <- result.try(option.to_result(cell, Nil))
-    use _registered <- result.try(tool.lookup(
-      config.registry,
-      history.tool_name,
-    ))
+    use _registered <- result.try(tool.lookup(registry, history.tool_name))
     Ok(list.contains(configuration.value.active_tool_names, history.tool_name))
   }
   case available {
@@ -479,15 +517,33 @@ fn recall(config: Config, operation: OpId) -> checkpoint.Recall {
 // The request's messages with the notes reminder appended, or untouched.
 // Compaction switched off means no boundary is coming, so there is
 // nothing to remind about.
-fn near_limit_reminder(
-  config: Config,
+fn near_limit_reminder_projected(
+  opened: Session,
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+  fallback_api: String,
+  fallback_context_window: Int,
+  fallback_max_output_tokens: Int,
+  compaction: CompactionSettings,
+  clock: Clock,
   operation: OpId,
   messages: List(AgentMessage),
 ) -> List(AgentMessage) {
-  use <- bool.guard(when: !config.compaction.enabled, return: messages)
-  case notes.strand_of(config.session, operation) {
+  use <- bool.guard(when: !compaction.enabled, return: messages)
+  case notes.strand_of(opened, operation) {
     Error(Nil) -> messages
-    Ok(strand) -> reminded(config, strand, messages)
+    Ok(strand) ->
+      reminded_projected(
+        opened,
+        facts,
+        fallback_api,
+        fallback_context_window,
+        fallback_max_output_tokens,
+        compaction,
+        clock,
+        strand,
+        messages,
+      )
   }
 }
 
@@ -506,29 +562,44 @@ fn near_limit_reminder(
 // context as it stood before the compaction. `carried` is how the usage
 // fold skips those, and without it the first request after a compaction
 // read a stale total and raised the reminder against room that was there.
-fn reminded(
-  config: Config,
+fn reminded_projected(
+  opened: Session,
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+  fallback_api: String,
+  fallback_context_window: Int,
+  fallback_max_output_tokens: Int,
+  compaction: CompactionSettings,
+  clock: Clock,
   strand: String,
   messages: List(AgentMessage),
 ) -> List(AgentMessage) {
   let projected =
     hooks.Projected(
       messages:,
-      carried: carried_by(config, strand),
+      carried: carried_by_session(opened, strand),
       previous_summary: None,
       origins: list.repeat(None, list.length(messages)),
       reference_session: None,
       copied_from: None,
     )
   let total = hooks.context_tokens(projected, hooks.estimate_message)
-  let window = strand_facts(config, strand).context_window
-  case total > checkpoint.reminder_point(window, config.compaction) {
+  let window =
+    strand_facts_from(
+      opened,
+      facts,
+      fallback_api,
+      fallback_context_window,
+      fallback_max_output_tokens,
+      strand,
+    ).context_window
+  case total > checkpoint.reminder_point(window, compaction) {
     False -> messages
     True ->
       list.append(messages, [
         checkpoint.reminder(
-          config.clock,
-          remaining: window - config.compaction.reserve_tokens - total,
+          clock,
+          remaining: window - compaction.reserve_tokens - total,
         ),
       ])
   }
@@ -539,15 +610,15 @@ fn reminded(
 // the compaction itself, which is the only part of the branch the count
 // needs; a strand with no compaction, or a store that will not answer,
 // carries nothing.
-fn carried_by(config: Config, strand: String) -> Int {
-  case session.strand_leaf(config.session, strand) {
+fn carried_by_session(opened: Session, strand: String) -> Int {
+  case session.strand_leaf(opened, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) -> {
       let newest =
         storage.branch_scan(from: leaf)
         |> storage.branch_stop_at_kind(storage.Compaction)
         |> storage.branch_kind(storage.Compaction)
         |> storage.branch_limit(1)
-        |> storage.scan_branch(config.session.store, _)
+        |> storage.scan_branch(opened.store, _)
       case newest {
         Ok([entry.CompactionEntry(retained_tail:, ..)]) ->
           1 + list.length(retained_tail)
@@ -613,8 +684,11 @@ fn prepared_unsupported(reason: String) -> stream.PreparedStream {
 // has no field for it: the preparation is the *input* the decision hook
 // froze, and the instructions are a property of the operation that asked
 // for the compaction.
-fn instructions_for(config: Config, operation: OpId) -> Option(String) {
-  case session.op_state(config.session, operation) {
+fn instructions_for_session(
+  opened: Session,
+  operation: OpId,
+) -> Option(String) {
+  case session.op_state(opened, operation) {
     Ok(Some(session.Cell(value: state, ..))) ->
       case state {
         operation.CompactionState(custom_instructions:, ..) ->
@@ -664,6 +738,21 @@ pub fn resolution(
   }
 }
 
+fn resolution_projected(
+  provider_gateway: Gateway,
+  role: Role,
+) -> ModelResolution {
+  case gateway.resolve(provider_gateway, role) {
+    Ok(_resolved) -> ModelResolved
+    Error(_missing) ->
+      ModelUnresolved(error: OperationError(
+        code: "model_unavailable",
+        message: "no configured route resolves to a usable provider",
+        details: None,
+      ))
+  }
+}
+
 // --- the catalogue's model facts -------------------------------------------
 
 // The window, output ceiling and adapter api one identity is accounted
@@ -688,7 +777,24 @@ type ModelFacts {
 // environment the catalogue never described, and routing consults only
 // the blind declarations the catalogue actually made.
 fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
-  case config.facts(identity) {
+  model_facts_from(
+    config.facts,
+    config.api,
+    config.fallback_context_window,
+    config.fallback_max_output_tokens,
+    identity,
+  )
+}
+
+fn model_facts_from(
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+  fallback_api: String,
+  fallback_context_window: Int,
+  fallback_max_output_tokens: Int,
+  identity: ModelIdentity,
+) -> ModelFacts {
+  case facts(identity) {
     Ok(#(resolved, api, reading)) ->
       ModelFacts(
         api:,
@@ -696,29 +802,47 @@ fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
         max_output_tokens: resolved.max_output_tokens,
         reading:,
       )
-    Error(Nil) -> fallback_facts(config)
+    Error(Nil) ->
+      ModelFacts(
+        api: fallback_api,
+        context_window: fallback_context_window,
+        max_output_tokens: fallback_max_output_tokens,
+        reading: catalog.ReadsImages,
+      )
   }
 }
 
 // The figures for an identity nobody stands behind: the config's own
 // declared fallbacks, stated once so the two readers cannot drift.
-fn fallback_facts(config: Config) -> ModelFacts {
-  ModelFacts(
-    api: config.api,
-    context_window: config.fallback_context_window,
-    max_output_tokens: config.fallback_max_output_tokens,
-    reading: catalog.ReadsImages,
-  )
-}
-
 // One strand's facts, read from its durable configuration. A strand whose
 // configuration is unreadable is accounted against the fallback figures:
 // a token count that cannot be taken must not halt a strand
 // (`runtime/hooks`' own rule for a failed projection).
-fn strand_facts(config: Config, strand: String) -> ModelFacts {
-  case strand_identity(config.session, strand) {
-    Some(identity) -> model_facts(config, identity)
-    None -> fallback_facts(config)
+fn strand_facts_from(
+  opened: Session,
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+  fallback_api: String,
+  fallback_context_window: Int,
+  fallback_max_output_tokens: Int,
+  strand: String,
+) -> ModelFacts {
+  case strand_identity(opened, strand) {
+    Some(identity) ->
+      model_facts_from(
+        facts,
+        fallback_api,
+        fallback_context_window,
+        fallback_max_output_tokens,
+        identity,
+      )
+    None ->
+      ModelFacts(
+        api: fallback_api,
+        context_window: fallback_context_window,
+        max_output_tokens: fallback_max_output_tokens,
+        reading: catalog.ReadsImages,
+      )
   }
 }
 
@@ -784,20 +908,61 @@ pub fn strand_window(
 // A store that will not answer classifies as imageless: a read that
 // fails must not strand the conversation (the `strand_facts` rule
 // above).
-fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
+fn admit_projected(
+  opened: Session,
+  provider_gateway: Gateway,
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+  fallback_api: String,
+  fallback_context_window: Int,
+  fallback_max_output_tokens: Int,
+  query: effects.AdmissionQuery,
+) -> RequestAdmission {
   let identity = query.configuration.model
-  let facts = model_facts(config, identity)
+  let model =
+    model_facts_from(
+      facts,
+      fallback_api,
+      fallback_context_window,
+      fallback_max_output_tokens,
+      identity,
+    )
   case
-    image_bearing(config, query.operation) && facts.reading == catalog.TextOnly
+    image_bearing_projected(opened, query.operation)
+    && model.reading == catalog.TextOnly
   {
     False ->
       Admitted(
         stream_options: query.stream_options,
-        intended_output_limit: facts.max_output_tokens,
-        context_window: facts.context_window,
-        api: facts.api,
+        intended_output_limit: model.max_output_tokens,
+        context_window: model.context_window,
+        api: model.api,
       )
-    True -> admit_image_bearing(config, query, identity)
+    True ->
+      case gateway.resolve(provider_gateway, model.Vision) {
+        Error(_missing) -> vision.no_route_refusal(identity)
+        Ok(head) ->
+          case facts(identity_of(head)) {
+            Ok(#(_resolved, _api, catalog.TextOnly)) ->
+              vision.blind_route_refusal(head)
+            Ok(#(_resolved, _api, catalog.ReadsImages)) | Error(Nil) -> {
+              let head_facts =
+                model_facts_from(
+                  facts,
+                  fallback_api,
+                  fallback_context_window,
+                  fallback_max_output_tokens,
+                  identity_of(head),
+                )
+              Admitted(
+                stream_options: query.stream_options,
+                intended_output_limit: head_facts.max_output_tokens,
+                context_window: head_facts.context_window,
+                api: head_facts.api,
+              )
+            }
+          }
+      }
   }
 }
 
@@ -806,33 +971,6 @@ fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
 // head reads images, or refused in band. The head's facts — not the
 // strand's — are what the request is admitted against, because they
 // are the facts of the identity the request will actually reach.
-fn admit_image_bearing(
-  config: Config,
-  query: effects.AdmissionQuery,
-  identity: ModelIdentity,
-) -> RequestAdmission {
-  case gateway.resolve(config.gateway, model.Vision) {
-    Error(_missing) -> vision.no_route_refusal(identity)
-    Ok(head) ->
-      case config.facts(identity_of(head)) {
-        Ok(#(_resolved, _api, catalog.TextOnly)) ->
-          vision.blind_route_refusal(head)
-
-        // A head the catalogue declares reading, or one it does not
-        // know, which reads by the same default.
-        Ok(#(_resolved, _api, catalog.ReadsImages)) | Error(Nil) -> {
-          let head_facts = model_facts(config, identity_of(head))
-          Admitted(
-            stream_options: query.stream_options,
-            intended_output_limit: head_facts.max_output_tokens,
-            context_window: head_facts.context_window,
-            api: head_facts.api,
-          )
-        }
-      }
-  }
-}
-
 // The identity a resolved model dispatches to, back on the seam's own
 // terms: `Config.facts` is keyed by the durable identity shape.
 fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
@@ -841,14 +979,14 @@ fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
 
 // Whether the current turn of this operation's strand projection
 // carries an image.
-fn image_bearing(config: Config, operation: OpId) -> Bool {
-  case notes.strand_of(config.session, operation) {
+fn image_bearing_projected(opened: Session, operation: OpId) -> Bool {
+  case notes.strand_of(opened, operation) {
     Error(Nil) -> False
     Ok(strand) ->
-      request_image_bearing(
-        config,
+      request_image_bearing_projected(
+        opened,
         operation,
-        hooks.project(config.session, strand).messages,
+        hooks.project(opened, strand).messages,
       )
   }
 }
@@ -908,6 +1046,15 @@ fn request_image_bearing(
 ) -> Bool {
   vision.image_bearing(context)
   || admitted_image_bearing(config.session, operation) |> result.unwrap(False)
+}
+
+fn request_image_bearing_projected(
+  opened: Session,
+  operation: OpId,
+  context: List(AgentMessage),
+) -> Bool {
+  vision.image_bearing(context)
+  || admitted_image_bearing(opened, operation) |> result.unwrap(False)
 }
 
 fn admitted_image_bearing(

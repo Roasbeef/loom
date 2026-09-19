@@ -215,6 +215,26 @@ pub fn overflow_projection_does_not_copy_tool_environment_test() {
     == ffi_memory.flat_words(small.overflow_preparation)
 }
 
+/// Every compaction callback projects the fields it can reach from wiring.
+pub fn compaction_callbacks_do_not_copy_tool_environment_test() {
+  let base = config()
+  let heavy =
+    wiring.Config(..base, env: list.repeat(#("MARKER", "value"), times: 4096))
+  let small = wiring.compaction_hooks(base)
+  let large = wiring.compaction_hooks(heavy)
+
+  assert ffi_memory.flat_words(large.admission)
+    == ffi_memory.flat_words(small.admission)
+  assert ffi_memory.flat_words(large.threshold)
+    == ffi_memory.flat_words(small.threshold)
+  assert ffi_memory.flat_words(large.structural_decision)
+    == ffi_memory.flat_words(small.structural_decision)
+  assert ffi_memory.flat_words(large.context)
+    == ffi_memory.flat_words(small.context)
+  assert ffi_memory.flat_words(large.resolution)
+    == ffi_memory.flat_words(small.resolution)
+}
+
 /// A collector's output callback carries identity independently of arguments.
 pub fn output_observer_does_not_copy_run_payload_test() {
   let opened = memory_session()
