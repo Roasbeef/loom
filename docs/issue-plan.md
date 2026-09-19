@@ -224,6 +224,7 @@ them, and the owner ratifies.
 | `kind:security` | touches the sandbox, the broker, the policy path, or the TCB |
 | `area:sandbox` `area:broker` `area:runtime` `area:client` `area:provider` `area:codemode` `area:events` `area:conformance` `area:ci` `area:docs` `area:tools` `area:ext` | package or surface |
 | `owner-action` | cannot be done by an agent; needs a human with repo admin |
+| `phase:debt` | found work with no phase gate — measured or filed, waiting on evidence or an owner decision, never blocking a milestone |
 
 ---
 
@@ -803,6 +804,7 @@ was.
 | **#17 — `api.compact` / `api.navigate` and optional-brief `create_strand`** | spec-gaps WP-L 2, WP-L 3 | A duplication cleanup with no acceptance criterion behind it. WP-N reuses the `client/agency` closures as they stand. Take it when someone is already in `runtime/api`. |
 | **#19 — the provider stubs** | spec-gaps WP-F 7 | Half of it is done: the pricing tables landed as `[models.<name>.pricing]` costed in the gateway, because an operator wanting real dollar totals did not need the token-budget work to arrive first. What stays out is the keychain half — a deployment convenience the environment backend already covers, named by no acceptance criterion in any row now in the release. |
 | **#12 — promoting the citation checker** | this plan, D2 | Answered, and nothing depends on the answer either way. |
+| **#454 — daemon memory on the current build** | issue #454, `phase:debt` | Measured found work, not scheduled work: a 1.65 GB `loomd` on a build that already carries every closure-retention repair. The log rules out CPU spin, TLS-connection leaks (per-request spawns are reaped) and 429 retry storms; attribution needs an operator-run `loom-profile` census, which no session can perform because the profile cookie is masked from every jail by design. Blocks nothing; the next memory wave starts from its census. |
 
 ---
 
