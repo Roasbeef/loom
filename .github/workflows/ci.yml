@@ -270,6 +270,43 @@ env:
   MACOS_CHECK_CACHE_NAMESPACE: "macos-check"
 
 jobs:
+  # Ordinary source builds must work with the public Gleam release. This job
+  # restores no compiler, package-build or shipment cache from patched lanes.
+  stock-compiler:
+    name: stock compiler (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          version-type: strict
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Build and smoke-test with stock Gleam
+        shell: bash
+        run: |
+          set -euo pipefail
+          gleam --version
+          .github/scripts/hex_retry.sh make check-storage
+          .github/scripts/hex_retry.sh make codemode-seed
+          .github/scripts/hex_retry.sh make -j1 dist
+          git diff --exit-code
+
   # -------------------------------------------------------- the linux gate
   #
   # `deps (linux)` builds once, everything downstream restores. See the
@@ -683,6 +720,7 @@ jobs:
       - static-linux
       - e2e-client-bootstrap-linux
       - deliverables-linux
+      - stock-compiler
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # `always()` so this job still runs — and still reports failure — when
@@ -698,6 +736,7 @@ jobs:
             [static-linux]='${{ needs.static-linux.result }}'
             [e2e-client-bootstrap-linux]='${{ needs.e2e-client-bootstrap-linux.result }}'
             [deliverables-linux]='${{ needs.deliverables-linux.result }}'
+            [stock-compiler]='${{ needs.stock-compiler.result }}'
           )
           fail=0
           for job in "${!results[@]}"; do
@@ -991,6 +1030,7 @@ jobs:
       - deps-macos
       - check-macos
       - e2e-macos
+      - stock-compiler
     runs-on: macos-15
     timeout-minutes: 10
     if: always()
@@ -1012,7 +1052,8 @@ jobs:
           for pair in \
             'deps-macos=${{ needs.deps-macos.result }}' \
             'check-macos=${{ needs.check-macos.result }}' \
-            'e2e-macos=${{ needs.e2e-macos.result }}'; do
+            'e2e-macos=${{ needs.e2e-macos.result }}' \
+            'stock-compiler=${{ needs.stock-compiler.result }}'; do
             job=${pair%%=*}
             result=${pair#*=}
             echo "  ${job}: ${result}"
