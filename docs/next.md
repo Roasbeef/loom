@@ -1,5 +1,35 @@
 # Next
 
+## Stock compiler source builds, September 18
+
+This dependency update is based on `83facc0f`; the executable and build changes
+were checked at `97071d80`. Ordinary builds now resolve `sqlight_loom` 1.2.0
+and `esqlite_loom` 0.9.0 from Hex. The native package retains OTP application
+`esqlite` and the private-query retirement repair; the companion keeps the
+existing `sqlight` modules and API. All six affected lockfiles were regenerated
+with released Gleam 1.18.1, without changing unrelated package versions.
+[ADR-002](adr/002-sqlite-binding.md#addendum-hex-distribution-for-stock-compiler-builds)
+records the package boundary and maintenance cost.
+
+The previous instruction to use a patched compiler for ordinary development is
+obsolete. Hex provides the native Rebar metadata that stock Gleam needs. The
+maintained compiler remains part of reproducible release certification; its
+deterministic-output and path-cache patches have not been retired.
+
+On macOS arm64, stock Gleam passed the full `make check` gate with exit zero,
+including 104 storage, 1,870 client, 563 TUI and 306 code-mode tests. Lint had
+zero errors and 814 warnings. `make -j1 dist` also exited zero, including server
+and client smoke checks; the server release contains
+`lib/esqlite-0.9.0/priv/esqlite3_nif.so`. Independent review found no actionable
+issue. The new uncached stock-compiler jobs build and smoke-test complete
+distributions on Linux and macOS and feed both aggregate CI gates.
+
+Next, require the proposed head's hosted CI and Linux signoff before merge.
+These local results do not certify Linux execution or reproducible artifacts.
+The updater implementation is unchanged, and no installed daemon was restarted.
+The sections below retain their historical verification baselines; their older
+pending-work and CI statements are not current status for this dependency PR.
+
 ## Retrievable compaction payloads, September 18
 
 Compaction now shortens eligible large successful tool-result text in its
@@ -41,12 +71,12 @@ mount validation ignores child masks already covered by an emitted ancestor.
 The fixed read-only metadata query does not require delegated memory/process
 cgroups; model executions keep their original limits and enforcement demand.
 
-Storage pins esqlite `813d37449f1d9222c8bc3bc2374856f0fd371509` from the
-maintained fork, which adds only build metadata to the existing private-query
-retirement repair. Sqlight and SQLite remain unchanged. Development now needs
-the [maintained compiler](../scripts/toolchain/gleam/README.md); stock Gleam
-cannot build this native Git dependency. [ADR-002](adr/002-sqlite-binding.md)
-records the pin, statement ownership and adoption evidence.
+That repair originally pinned esqlite
+`813d37449f1d9222c8bc3bc2374856f0fd371509` from the maintained fork and required
+the patched compiler to build its native Git dependency. The September 18 Hex
+publications above replace that distribution mechanism while retaining the
+repair. [ADR-002](adr/002-sqlite-binding.md) records both decisions, statement
+ownership and adoption evidence.
 
 Full native and Linux gates pass: 1,868 client, 563 TUI and 306 code-mode tests,
 with zero lint errors and 809 warnings. All seven identity regressions pass.

@@ -75,6 +75,11 @@ the rewrite exists for. WP-C plus WP-C-full.
 
 ## Relationships
 
+The `sqlight` module is supplied by the `sqlight_loom` Hex package, whose
+`esqlite_loom` dependency carries the native query-retirement repair.
+The module API is unchanged; the upstream packages must not coexist with
+these forks because they define the same modules.
+
 - **Depends on**: `core` (ids, entries, registers, tx), `storage` (both
   backends and the handle), `machine` (register payload types and the total
   codecs), `gleam_erlang` (the owned connection's PID type). Note that the

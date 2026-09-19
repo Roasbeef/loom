@@ -1,5 +1,11 @@
 # Maintained Gleam patches
 
+Ordinary Loom builds use released Gleam. The SQLite repair is distributed
+through `sqlight_loom` and `esqlite_loom` on Hex, where stock Gleam reads the
+native Rebar build metadata. The compiler below remains the reproducible
+release toolchain; its deterministic-cache patch is not a prerequisite for
+`make update`.
+
 `deterministic-cache.patch` is the source change from compiler commit
 `4c7a9605be04dbcd8bdcad76c29a5a789cdf9311`. It applies to Gleam 1.18.1 after the
 existing `860f8224ddb7e1ecb7f983fb622ede12466225e5` path-dependency fix. The
@@ -51,17 +57,15 @@ build tools are errors. Native path dependencies are refused because their
 cached Rebar output has no immutable source identity. Changing a Git commit
 retires the cached package even when its version stays the same.
 
-Storage pins the esqlite query-retirement repair from the operator-maintained
-fork. Its metadata retains the `esqlite` application name and existing Rebar
-build. The Hex `sqlight` binding remains unchanged. See
-[ADR-002](../../../docs/adr/002-sqlite-binding.md) for the ownership bug and
-adoption evidence.
+This patch supported the former esqlite Git pin. The production dependency
+now arrives through Hex, so ordinary builds no longer exercise this path.
+The maintained compiler still carries the patch and its regression fixture.
+See [ADR-002](../../../docs/adr/002-sqlite-binding.md) for the ownership bug
+and the move to Hex distribution.
 
-Development now requires this maintained compiler too: stock Gleam 1.18.1
-ignores the native build-tool metadata and cannot build the pinned dependency.
-CI and both Docker recipes build the compiler from the release tag, apply the
-upstream path-dependency fix, then apply every local patch in filename order.
-Use the Docker development environment, or reproduce those steps locally:
+CI release jobs and both Docker recipes build the maintained compiler from
+the release tag, apply the upstream path-dependency fix, then apply every
+local patch in filename order. To reproduce that release toolchain locally:
 
 ```sh
 git clone --branch v1.18.1 https://github.com/gleam-lang/gleam.git /path/to/gleam-source

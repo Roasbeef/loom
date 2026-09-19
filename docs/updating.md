@@ -61,6 +61,13 @@ procedure below. Downloading and publication do not hot-load a running VM.
 
 ## Install a source build
 
+Ordinary builds use released Gleam 1.18.1 or a compatible newer version,
+Erlang/OTP 29+, Rebar3, Go and a C compiler. The `sqlight_loom` and
+`esqlite_loom` Hex packages carry the SQLite repair and native build metadata;
+no patched Gleam compiler is required. The maintained compiler described in
+[the toolchain notes](../scripts/toolchain/gleam/README.md) is used for
+reproducible release builds.
+
 To build and activate the current commit from a clean checkout:
 
 ```sh

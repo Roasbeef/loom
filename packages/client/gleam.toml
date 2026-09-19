@@ -33,7 +33,7 @@ gleam_regexp = ">= 1.1.1 and < 2.0.0"
 
 [dev_dependencies]
 gleamy_bench = ">= 0.6.0 and < 1.0.0"
-sqlight = ">= 1.0.0 and < 2.0.0"
+sqlight_loom = "== 1.2.0"
 tui = { path = "../tui" }
 etui = { git = "https://github.com/Roasbeef/etui.git", ref = "b286b0cd7aa477f5289f76eabdeca33c7b574343" }
 gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -5,9 +5,8 @@ gleam = ">= 1.18.0"
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
-sqlight = ">= 1.0.0 and < 2.0.0"
-# Retire private query statements before closing their native connection.
-esqlite = { git = "https://github.com/Roasbeef/esqlite.git", ref = "813d37449f1d9222c8bc3bc2374856f0fd371509" }
+# The Hex binding selects the repaired native dependency through Rebar.
+sqlight_loom = "== 1.2.0"
 parrot = ">= 2.3.0 and < 3.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"

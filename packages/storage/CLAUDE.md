@@ -10,10 +10,12 @@ migrate-on-open, and the offline precise rewrite). Both pass the same
 conformance suite; that suite is the definition of correct. WP-B, extended
 by WP-C-full.
 
-The sqlight API remains the Hex binding. Storage supplies the transitive
-`esqlite` dependency from a full Git commit of the query-retirement repair,
-with native Rebar metadata consumed by the maintained Gleam compiler.
-[ADR-002](../../docs/adr/002-sqlite-binding.md) records the pin and adoption gate.
+The `sqlight` API comes from the `sqlight_loom` Hex package. Its native
+dependency, `esqlite_loom`, contains the query-retirement repair and retains
+the `esqlite` OTP application name. Hex metadata selects Rebar, so stock Gleam
+builds the C library. No upstream `sqlight` or `esqlite` package may coexist
+with these forks: they define the same modules.
+[ADR-002](../../docs/adr/002-sqlite-binding.md) records the packaging decision.
 
 ## Key Types
 
