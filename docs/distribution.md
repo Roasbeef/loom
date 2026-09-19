@@ -9,20 +9,19 @@ Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.26.3 by running the targets it
 describes. They are not fresh measurements of the single-daemon implementation.
 Current verification and remaining release gates are recorded in [next.md](next.md).
 
-CI and local development use the maintained Gleam 1.18.1 compiler described
-in the [toolchain instructions](../scripts/toolchain/gleam/README.md). It
-applies the upstream path-dependency freshness fix for issue #248 and the
-repository's deterministic-cache and native-Git-dependency patches. Starting
-from the release tag retains its formatter; building upstream `main` would
-introduce unrelated language and formatting changes.
+Ordinary source builds use released Gleam 1.18.1. The `sqlight_loom` and
+`esqlite_loom` Hex packages supply the SQLite repair, including the Rebar
+metadata that builds its C library. The `stock compiler` CI jobs build and
+smoke-test the distribution with unmodified Gleam on Linux and macOS.
 
-The native dependency patch is required to build the pinned esqlite repair.
-Stock Gleam treats a Git dependency as a Gleam package and does not run its
-Rebar native build. CI and both Docker recipes apply all maintained patches,
-and their cache keys include the patch digest. A release-builder image must
-be rebuilt and its immutable digest updated when these compiler inputs change.
-Each patch can retire once a released compiler provides its behavior and the
-corresponding clean-build and release fixtures pass.
+Reproducible release jobs use the maintained compiler described in the
+[toolchain instructions](../scripts/toolchain/gleam/README.md). It applies
+the upstream path-dependency freshness fix for issue #248 and the local
+compiler patches, including deterministic cache serialization. Starting from
+the release tag retains its formatter. These jobs and both Docker recipes
+include the patch digest in their compiler cache keys. A release-builder
+image must be rebuilt and its immutable digest updated when its compiler
+inputs change. Ordinary builds are not required to reproduce those bytes.
 
 ## The problem
 

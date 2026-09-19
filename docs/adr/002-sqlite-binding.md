@@ -115,3 +115,34 @@ builds the maintained toolchain image and compares matching complete release
 artifacts from two independent Linux runners. The release workflow pins its
 published digest. [The repair review](../review/git-identity-linux.md) records
 verification limits and the clean-build requirement when retiring the pin.
+
+
+## Addendum: Hex distribution for stock compiler builds
+
+*Added 2026-09-18. This supersedes the native Git dependency for ordinary
+source builds; the query-retirement repair is unchanged.*
+
+The native Git metadata is understood only by the maintained compiler.
+Stock Gleam 1.18.1 accepted the checkout but omitted the C build, producing
+a release without `esqlite3_nif.so`. The release smoke test refused startup
+before the updater installed the incomplete release.
+
+We distribute the repaired dependency as `esqlite_loom` 0.9.0 on Hex, with
+`build_tools = ["rebar3"]` and the original `esqlite` OTP application name.
+Its Erlang and C sources match repair commit
+`45dbb48ce28c4d78b5cb93de0e1e78bb79f859d9`. The companion `sqlight_loom` 1.2.0
+package preserves sqlight's modules and API while selecting that Hex package.
+All four direct binding dependencies in Loom select the companion package,
+so the upstream packages cannot introduce duplicate modules.
+
+Hex supplies the native builder metadata that released Gleam already
+supports. Contributors need Gleam, Erlang/OTP, Rebar3 and a C compiler;
+they do not need our native Git compiler patch. CI separately builds the
+complete distribution with stock Gleam on Linux and macOS, without restoring
+artifacts from patched-compiler jobs. Release reproduction retains its
+maintained compiler and deterministic-cache checks.
+
+The cost is maintaining two small package forks until an upstream release
+contains the repair. The binding fork changes packaging only. Returning to
+upstream packages requires changing every direct dependency together and
+checking that the resulting graph contains one SQLite implementation.

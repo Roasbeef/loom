@@ -2405,6 +2405,11 @@ across one operation a `Stop` block holds open.
 
 ## Relationships
 
+The `sqlight` module is supplied by the `sqlight_loom` Hex package, whose
+`esqlite_loom` dependency carries the native query-retirement repair.
+The module API is unchanged; the upstream packages must not coexist with
+these forks because they define the same modules.
+
 - **Depends on**: `host` (shared daemon OS bootstrap and WebSocket transport),
   `core` (json, codec, entries, messages), `session`,
   `runtime` (`api`, `effects`, `escalation`, `supervisor`, `writer`),
