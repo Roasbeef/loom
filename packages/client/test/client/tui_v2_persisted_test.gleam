@@ -5,6 +5,7 @@
 
 import broker/policy
 import client/catalog
+import client/daemon/limits
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/daemon/root
@@ -82,7 +83,7 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
     as "the daemon state is separate from both workspaces"
   let assert Ok(daemon) =
     root.start(
-      root.Config(config.state_root, "Owner", 4),
+      root.Config(config.state_root, "Owner", 4, limits.defaults),
       manager.Assembly(
         fn(selected_domain, sources, owner) {
           serve.build_domain(selected_domain, sources, log.discard(), owner)

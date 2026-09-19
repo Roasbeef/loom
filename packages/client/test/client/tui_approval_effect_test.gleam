@@ -9,6 +9,7 @@
 import broker/policy
 import client/catalog
 import client/daemon/admin
+import client/daemon/limits
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/daemon/root
@@ -172,7 +173,7 @@ fn start() {
     as "the daemon owns a fresh private root"
   let assert Ok(daemon) =
     root.start(
-      root.Config(config.state_root, "Owner", 2),
+      root.Config(config.state_root, "Owner", 2, limits.defaults),
       manager.Assembly(
         fn(selected, sources, owner) {
           serve.build_domain(selected, sources, log.discard(), owner)

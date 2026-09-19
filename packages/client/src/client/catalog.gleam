@@ -94,6 +94,7 @@
 //// the bearer key this format already carries.
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
+import client/daemon/limits as daemon_limits
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -365,28 +366,10 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   Ok(Catalog(models:, roles:, mcp_servers:))
 }
 
-// Distribution is selected by the launcher before the daemon's VM exists.
-// This parser still owns the operator-facing TOML contract: accepting an
-// unknown `[daemon]` key here would leave the shell and server disagreeing
-// about whether the requested isolation boundary was active.
+// Startup and session loading validate the same daemon table. Only the
+// startup owner consumes its limits; a session cannot reconfigure the daemon.
 fn validate_daemon(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
-  case dict.get(document, "daemon") {
-    Error(Nil) -> Ok(Nil)
-    Ok(tom.Table(fields)) -> {
-      use Nil <- result.try(known_keys(
-        dict.keys(fields),
-        ["profile"],
-        "[daemon]",
-      ))
-
-      case dict.get(fields, "profile") {
-        Ok(tom.Bool(_enabled)) -> Ok(Nil)
-        Ok(_other) -> Error("daemon.profile must be true or false")
-        Error(Nil) -> Error("daemon.profile is required")
-      }
-    }
-    Ok(_other) -> Error("daemon must be a [daemon] table")
-  }
+  daemon_limits.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server

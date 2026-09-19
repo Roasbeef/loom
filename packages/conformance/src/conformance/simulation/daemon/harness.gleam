@@ -41,6 +41,7 @@
 //// the exemption `packages/conformance/CLAUDE.md` records.
 
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
@@ -213,7 +214,12 @@ pub fn start(boot: Boot) -> Result(Harness, String) {
   let Boot(state_root:, clock: clockwork, capacity:, incarnation:, arrest:) =
     boot
   let config =
-    root.Config(state_root:, owner_display_name: "simulation-owner", capacity:)
+    root.Config(
+      state_root:,
+      owner_display_name: "simulation-owner",
+      capacity:,
+      connection_limits: limits.defaults,
+    )
   let lease_clock =
     clock.fixed(vclock.now(clockwork) + incarnation * lease_step_ms)
   use started <- result.try(root.start(config, assembly(lease_clock, arrest)))

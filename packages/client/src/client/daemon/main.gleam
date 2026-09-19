@@ -7,6 +7,7 @@
 
 import argv
 import client/catalog
+import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
 import client/daemon/root
@@ -30,6 +31,7 @@ import host/bootstrap
 import host/build_identity
 import host/endpoint
 import mist
+import simplifile
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -321,8 +323,33 @@ pub fn prepare(
   config: Config,
   logger: Logger,
 ) -> Result(root.Root(serve.Instance), String) {
+  use configuration <- result.try(captured_domain_configuration(
+    config.session_defaults,
+    "",
+  ))
+  use connection_limits <- result.try(case configuration {
+    "" -> Ok(limits.defaults)
+    path -> {
+      use text <- result.try(
+        simplifile.read(path)
+        |> result.map_error(fn(error) {
+          "the daemon config file "
+          <> path
+          <> " is unreadable: "
+          <> string.inspect(error)
+        }),
+      )
+      limits.parse(text)
+      |> result.map_error(fn(reason) { path <> ": " <> reason })
+    }
+  })
   root.start(
-    root.Config(config.state_root, config.owner_display_name, config.capacity),
+    root.Config(
+      config.state_root,
+      config.owner_display_name,
+      config.capacity,
+      connection_limits,
+    ),
     manager.Assembly(
       domain_build: fn(selected, sources, owner) {
         serve.build_domain(selected, sources, logger, owner)

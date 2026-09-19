@@ -4,6 +4,7 @@
 
 import broker/token
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/main as entrypoint
 import client/daemon/manager
 import client/daemon/root
@@ -49,7 +50,12 @@ fn inert() {
 fn start(config: entrypoint.Config, assembly) {
   let assert Ok(daemon) =
     root.start(
-      root.Config(config.state_root, config.owner_display_name, config.capacity),
+      root.Config(
+        config.state_root,
+        config.owner_display_name,
+        config.capacity,
+        limits.defaults,
+      ),
       assembly,
     )
     as "root is prepared before filesystem or listener work"
@@ -284,7 +290,10 @@ pub fn daemon_listener_rejects_legacy_route_and_competing_root_test() {
   assert bytes == <<"HTTP/1.1 404":utf8>>
   ffi_ws.tcp_close(socket)
   let assert Ok(second) =
-    root.start(root.Config(config.state_root, "Another", 8), inert())
+    root.start(
+      root.Config(config.state_root, "Another", 8, limits.defaults),
+      inert(),
+    )
     as "competing root remains prepared until lock attempt"
   assert root.ready(second, within: 5000) == Error("busy")
   assert root.shutdown(second, within: 5000) == Ok(Nil)
@@ -320,17 +329,21 @@ pub fn daemon_listener_cli_and_workspace_domains_test() {
 }
 
 pub fn daemon_listener_production_prepare_is_lazy_test() {
+  let initial = config()
+  let configuration = initial.state_root <> ".toml"
+  assert simplifile.write(configuration, "[models]\nnot_a_model = true\n")
+    == Ok(Nil)
   let config =
-    entrypoint.Config(..config(), session_defaults: [
-      "--helper", "/missing/loom-exec", "--config", "/missing/loom.toml",
+    entrypoint.Config(..initial, session_defaults: [
+      "--helper", "/missing/loom-exec", "--config", configuration,
     ])
   let assert Ok(daemon) = entrypoint.prepare(config, log.discard())
-    as "default assembly is prepared without resolving missing session inputs"
+    as "default assembly is prepared without resolving invalid session inputs"
   let assert Ok(serving) =
     entrypoint.listen(config, daemon, fn(_, _) {
       response.new(501) |> response.set_body(mist.Bytes(bytes_tree.new()))
     })
-    as "missing session helper/config do not prevent empty daemon readiness"
+    as "an invalid model catalogue and missing helper do not prevent empty daemon readiness"
   let assert Ok(manager.Summary(occupied: 0, ..)) =
     manager.summary(serving.ready.registry)
     as "production startup opens no runtime"

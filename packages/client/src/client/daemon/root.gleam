@@ -10,7 +10,7 @@
 //// requests that same drain. Proof loss permanently fences readiness and keeps
 //// available custody; a timeout is a reporting budget, never cleanup evidence.
 ////
-//// Admission reserves at most 64 connections and 160MiB of bounded payload:
+//// Admission reserves configured connection and bounded payload capacity:
 //// maximum inbound messages plus 8MiB of retained delivery allowance for each
 //// session connection. This accounts for encoded/copy bounds, not exact BEAM
 //// heap or RSS. HTTP reserves before upgrade; the actual WebSocket
@@ -28,6 +28,7 @@
 import broker/internal/call
 import broker/token
 import client/daemon/lifetime
+import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
 import gleam/bit_array
@@ -55,12 +56,18 @@ pub type Config {
     owner_display_name: String,
     /// Maximum simultaneously reserved runtime slots.
     capacity: Int,
+    /// Startup-owned socket and aggregate message ceilings.
+    connection_limits: limits.Limits,
   )
 }
 
 /// A prepared lifetime owner, retained even when readiness fails or times out.
 pub opaque type Root(instance) {
-  Root(commands: Subject(Message(instance)), pid: process.Pid)
+  Root(
+    commands: Subject(Message(instance)),
+    pid: process.Pid,
+    connection_limits: limits.Limits,
+  )
 }
 
 /// Parser reservation class chosen after authentication and authorization.
@@ -88,13 +95,6 @@ pub type ControlUse {
 pub opaque type Permit {
   Permit(http_owner: process.Pid, identity: Reference)
 }
-
-/// Maximum simultaneously reserved HTTP upgrades and admitted WebSockets.
-pub const max_connections = 64
-
-/// Sum of inbound limits and bounded delivery allowances, not a VM RSS limit.
-/// Decoded term overhead, parser copies, and kernel buffers remain separate.
-pub const max_reserved_message_bytes = 167_772_160
 
 type AdmissionPhase {
   HttpReserved
@@ -234,6 +234,8 @@ pub fn start(
   config: Config,
   assembly: manager.Assembly(instance),
 ) -> Result(Root(instance), String) {
+  use Nil <- result.try(limits.validate(config.connection_limits))
+
   let caller = process.self()
   sm.new_with_initialiser(1000, fn(commands) {
     let selector =
@@ -264,7 +266,9 @@ pub fn start(
   |> sm.unlinked
   |> sm.on_event(handle)
   |> sm.start
-  |> result.map(fn(started) { Root(started.data, started.pid) })
+  |> result.map(fn(started) {
+    Root(started.data, started.pid, config.connection_limits)
+  })
   |> result.map_error(string.inspect)
 }
 
@@ -878,22 +882,42 @@ fn acquire_slot(
   class: ConnectionClass,
   reply: Subject(Result(Permit, String)),
 ) {
-  let fits =
-    phase == Serving
-    && !dict.has_key(book.allocations, owner)
-    && dict.size(book.allocations) < max_connections
-    && book.reserved_bytes + connection_charge(class)
-    <= max_reserved_message_bytes
-  case fits {
-    False -> {
-      process.send(reply, Error("daemon connection capacity is unavailable"))
+  // Refusal happens before parser activation. Custody and phase checks do
+  // not spend capacity, and the two configured ceilings remain independent.
+  let admission = case phase {
+    Serving ->
+      case dict.has_key(book.allocations, owner) {
+        True -> Error("connection PID already owns a reservation")
+        False -> available_connection(book, class)
+      }
+    Dormant | Starting | Stopping | Refused(_) | RecoveryBlocked(_) | Closed ->
+      Error("daemon is not admitting connections")
+  }
+  case admission {
+    Error(reason) -> {
+      process.send(reply, Error(reason))
       sm.keep(book)
     }
-    True -> {
+    Ok(Nil) -> {
       let book = add_allocation(book, owner, identity, class, HttpReserved)
       process.send(reply, Ok(Permit(owner, identity)))
       sm.keep(book) |> sm.with_selector(book.selector)
     }
+  }
+}
+
+fn available_connection(book: Book(instance), class: ConnectionClass) {
+  let ceilings = book.config.connection_limits
+  case dict.size(book.allocations) >= ceilings.connections {
+    True -> Error(limits.count_refusal(ceilings))
+    False ->
+      case
+        book.reserved_bytes + connection_charge(class)
+        > ceilings.reserved_message_bytes
+      {
+        True -> Error(limits.bytes_refusal(ceilings))
+        False -> Ok(Nil)
+      }
   }
 }
 
@@ -1321,4 +1345,15 @@ fn closed(book: Book(instance)) {
   // death has no waiter, so Finish also retires an otherwise unused root.
   process.send(book.commands, Finish)
   sm.transition(Closed, Book(..book, stage: Empty))
+}
+
+/// Returns the same startup limits enforced by this root's admission owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // root.connection_limits(daemon)
+/// ```
+pub fn connection_limits(root: Root(instance)) -> limits.Limits {
+  root.connection_limits
 }
