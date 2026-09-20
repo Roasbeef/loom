@@ -1053,3 +1053,256 @@ sessions rather than inferred from six slots plus the insert and delete sites,
 and a forced collection to split the 30 MiB gap. Both want a daemon driven
 through many real provider turns, which is the same experiment the previous
 section says an idle-hibernate policy needs.
+
+
+
+
+## 2026-09-20: option A evaluated — the cost was nine references, not one big value
+
+This section evaluates the first of the two options above, a per-session owner
+for `Effects`. An owner process is not needed. The prior question had an
+answer: six of the nine references to the expensive value did not need it.
+Narrowing those six cut the per-session cost of an admitted session by 56% on
+a locally built daemon, with no new process, no new external function and no
+interface change.
+
+Everything below was measured on a release daemon built from this worktree,
+started with its own `--state-dir` and its own `HOME`, both under the
+worktree, against `scripts/release-smoke.toml` — a configuration whose one
+model endpoint is `http://127.0.0.1:1`, so no request can leave the host and
+no credential is involved. The operator's installed daemon was not touched,
+attached to, or read.
+
+### Two BEAM facts the arithmetic rests on
+
+A copy between processes preserves no sharing for ordinary heap terms, but two
+kinds of term are shared outright. Both were confirmed on this host and
+runtime (OTP 29, ERTS 17.0.5, macOS arm64) with a small Erlang module that
+sends a term to a fresh process and reads its heap growth:
+
+| Term sent | Flattened words | Receiver's heap growth |
+|---|---:|---:|
+| A list of 2,000 cells over one literal tuple | 22,000 | 3,952 |
+| The same shape built at run time | 22,000 | 28,457 |
+| A 200 KiB refc binary | 8 | 0 |
+| Two closures capturing one run-time-built value | 44,009 | 46,189 |
+
+Literals live in a module's constant area and are not copied. Refc binaries
+are shared. Run-time-built structure is duplicated, and duplicated **once per
+closure that captures it**, even when those closures sit in one record and
+share it perfectly in place.
+
+The last row is the shape of this problem. The first two rows are why option
+2a as written does not apply: a tool's description and its JSON schema are
+compiled literals or refc binaries, so they were never being copied. Measured
+directly, the five core tools' whole definitions flatten to 2,307 words, of
+which 2,050 are schemas and 40 are descriptions. There is no static bulk to
+move into `persistent_term` or into a binary. Nothing about the copy is
+static, so nothing about it can be made shared that way.
+
+### Where the 3.797 MiB went
+
+One admitted session on the local daemon. Its `Effects` flattens to
+3.797 MiB, against 3.143 MiB with sharing preserved. Field by field:
+
+| Field | Flattened | What it holds |
+|---|---:|---|
+| `clock`, `entropy`, `timers` | under 0.001 MiB each | small |
+| `provider` | 0.845 MiB | two relay closures at 0.422 MiB each |
+| `tools` | 1.688 MiB | four closures at 0.422 MiB each |
+| `hooks` | 1.264 MiB | three slots at about 0.413 MiB, eight negligible |
+| total | 3.797 MiB | |
+
+Every one of those 0.41–0.42 MiB figures is the same value: the session's
+`wiring.Config`, which is 0.422 MiB of which 0.410 MiB is the tool registry.
+Nine closures hold it, so a copy of `Effects` pays for it nine times.
+
+The registry's own 0.410 MiB is the same shape one level further down. Per
+tool, largest first: the three `schedule_*` tools at 0.044 MiB each, the six
+`agent_*` tools at 0.028 MiB each, `code_mode` at 0.020 MiB, then a tail under
+0.012 MiB. In each case almost all of it is the tool's `run` field, a closure
+over that plane's seam, duplicated once per tool in the family. Static
+definition data is the small remainder: the largest schema in the registry,
+`fs_edit`'s, is 0.007 MiB.
+
+This matches the installed daemon's shape at a smaller scale. There, `Effects`
+is 12.872 MiB with `hooks` at 6.965, `tool_surface` at 3.943 and
+`prepared_provider_surface` at 1.964; the registry is 0.961 MiB. The local
+daemon's `hooks` is much lighter because a smoke configuration installs no
+advisor, no extensions and no imported hooks, so it composes fewer layers.
+
+### Which of the nine references were real
+
+Reading each of the nine call sites, six need no registry:
+
+- `tools.replay_still_safe` reads one registration's replay declaration.
+- `tools.execution_mode` reads one registration's scheduling constraint.
+- `tools.clear` reads one registration's replay declaration and refuses a
+  name nothing registered. It touches no other field. The policy
+  requirements a reader might expect it to need belong to execution, which
+  reaches them through `tool.dispatch` inside `run_tool`.
+- the `threshold`, `overflow_preparation` and `structural_decision` hooks ask
+  one question between them, through `reference_projection` and
+  `recall_projected`: whether this host registered `history_search` at all.
+
+The other three are ownership rather than mis-scoped capture.
+`provider.request` and `provider.prepare` render the wire tool array, and
+`tools.run` dispatches through the registry.
+
+### The change, and what it cost
+
+`tool.declarations` projects a registry to one `Declaration` per name, and the
+three declaration-reading slots take that. The three compaction slots take a
+two-variant `HistoryRegistration` read once where the registry already is.
+Neither projection can go stale: the registry a session runs under is fixed
+for the life of the `Effects` record built from it, and `client/serve` builds
+both together in one assembly with no path that replaces one under the other.
+
+This is a type change and six call sites, plus two one-line bindings for the
+two captures outside `Effects` described below. It adds no process, no
+serialisation point, no restart relationship, no `@external`, and no change to
+any interface frozen in spec Part 1 — `effects.Effects`, `effects.ToolSurface`
+and `effects.Hooks` are untouched.
+
+### Before and after
+
+Same harness, same configuration, same host; two release builds differing only
+in these commits. N sessions were admitted over the daemon's own control
+plane and left resident. Figures are `erlang:memory/0` in MiB and `ps` RSS in
+KiB, so they are allocated memory rather than a reachable-term size.
+
+| Sessions | `processes` before | after | total before | after | RSS before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 (listening) | 15.68 | 15.68 | 56.02 | 56.06 | 103,808 | 100,256 |
+| 1 | 85.13 | 39.84 | 132.31 | 87.00 | 169,008 | 123,920 |
+| 3 | 236.86 | 101.94 | 284.46 | 149.49 | 290,320 | 169,952 |
+| 6 | 436.22 | 189.74 | 484.78 | 238.28 | 483,376 | 237,296 |
+
+Per resident session, process memory falls from 69.5–73.7 MiB to
+24.2–29.0 MiB: a 65.2%, 61.0% and 58.6% reduction at one, three and six
+sessions. At six sessions the whole VM falls 57.5% above the listening
+baseline, and RSS falls 50.9%.
+
+The `Effects` value behind most of that: 3.797 MiB flattened before,
+1.309 MiB after. `hooks` falls from 1.264 to 0.037 MiB and `tools` from 1.688
+to 0.427; `provider` is unchanged at 0.845, the two remaining copies that
+dispatch a request.
+
+The last 1.5 MiB per session comes from two captures of the same shape found
+outside `Effects` itself, and the first of the two was measured directly. The
+custody drain closure in `client/serve` captured the whole `api.Runtime` to
+read `runtime.tree`, and `custody.publish` sends that closure to the instance
+owner, which holds it in `cleanups` for the life of the session. At three
+resident sessions, with the wide capture and with the narrowed one:
+
+| Instance owner | `cleanups` flat | `Effects` reachable | process |
+|---|---:|---:|---:|
+| capturing `runtime` | 1.315 MiB | 1 | 1.504 MiB |
+| capturing `runtime.tree` | 0.002 MiB | 0 | 0.008 MiB |
+
+Three owners, one per session, identical to the byte in each column. That is
+the measurement in place of a unit test: the closure is built inside
+`api.open_published`'s callback in `serve.assemble_in`, which no cheap fixture
+reaches, and what matters is not the closure's size in isolation but what the
+owner's ledger holds after publication, which is what the table reads. The
+second capture is the first poll-clock arm in `runtime/strand_runtime`, which
+closed over the strand `State` where every later arm already binds
+`state.internal` first; `real_timers` hands that callback to a timer process,
+so the state was copied there too.
+
+The repository's own `scripts/daemon_memory_probe.sh` agrees. Run against two
+builds with its two-admitted-one-stopped acceptance, one resident session's
+process memory went from 93.583 MiB to 52.016 MiB at the intermediate stage
+where `tools.clear` had not yet been narrowed.
+
+### What this does not establish
+
+No provider turn was driven. The smoke configuration cannot serve one, and the
+`Effects` copies this change removes are created at admission and do not grow
+with a turn — the first pass of this investigation established that the step is
+deterministic and arrives before any request. A turn-driven measurement is
+still the right way to size the *other* option, idle hibernation, because that
+one depends on heap that accumulates over real work.
+
+The installed daemon's reduction is not measured. Extrapolating its 12.872 MiB
+`Effects` by removing six copies of its 0.961 MiB registry predicts about
+7.1 MiB, a 45% cut rather than the local 66%, because its `hooks` carries
+layers a smoke host does not install. That number is an inference and needs an
+installed before/after to become a measurement.
+
+The figures are allocated memory. A process's heap includes unused capacity,
+and `erts_debug:flat_size` counts words a same-node copy may share for short
+strings held as refc binaries, so the flattened figures over-state a copy in
+that one respect. The process-memory table above is the load-bearing evidence;
+the flattened figures explain it rather than stand in for it.
+
+### What is left, and whether an owner process is now worth it
+
+`Effects` still costs 1.309 MiB per copy: three references to one 0.41 MiB
+graph. Two routes remain and neither is taken here.
+
+The first is the multiplication *inside* the registry. The three `schedule_*`
+tools each hold a whole `Schedules` seam and the six `agent_*` tools each hold
+a whole `Agency`, which is this same bug one level down. Narrowing there
+divides the leaf, and the leaf is what all three remaining copies pay for, so
+it is the higher-leverage of the two. A second candidate at the same level:
+`provider.request` and `provider.prepare` reach the registry only through
+`tool_specs`, which reads `name`, `description` and `schema` and never `run`
+or `requirements`, so a name-keyed spec projection would cut most of their
+0.845 MiB. That one is a bigger change than the six call sites here, because
+those closures also need `gateway`, `facts`, `session` and the fallback
+counts, so it means splitting `Config` rather than swapping an argument.
+
+The second is the per-session owner process this section set out to evaluate.
+It would remove the remaining three copies, and it is still the more expensive
+shape: a serialisation point on the hot path for every effect call, a new
+failure domain needing restart custody, message copies of whatever it returns,
+and recovery and interleaving scenarios for an owner that dies mid-dispatch.
+Against a remaining 1.309 MiB it is not justified. It becomes worth
+re-examining only if the registry-internal narrowing above is taken and the
+residue still dominates a census.
+
+### Three copy holders left for their own change
+
+Each of these was found and confirmed in the code during this work and
+deliberately not touched, because each is a different subsystem from the one
+this change is about. They are recorded here rather than left to be
+rediscovered.
+
+- **The daemon manager's reply to a socket upgrade.** `daemon/manager`'s
+  `ResolveIncarnation` answers with a whole `serve.Instance`, and so a whole
+  `Effects`, while the upgrade path reads only `attachment.instance.gateway`
+  (`daemon/server.gleam:178`). A reply is a message, so this is a copy per
+  upgrade rather than a resident one, and the narrower reply is a projection of
+  the same shape as this change. Separately, `Book.slots` holding one
+  `Occupancy.Running(instance)` per resident session is why the manager is the
+  single heaviest process in every census taken here: at one session its state
+  reaches one `Effects`, at six it reaches six.
+- **The six `agent_*` tools each capture a whole `Agency`** — 0.028 MiB each in
+  the local registry, so about 0.17 MiB of the registry's 0.410.
+- **The three `schedule_*` tools each capture a whole `Schedules`** — 0.044 MiB
+  each, about 0.13 MiB. These two together are most of the leaf that all three
+  remaining `Effects` copies pay for, which is why the section above ranks them
+  ahead of an owner process.
+
+### Rerunning this
+
+`scripts/daemon_memory_probe.sh <config> <out>` is the committed harness, and
+it was repaired in this work. It had been reaching the daemon with
+`net_adm:ping/1`, which answers `pang` on a macOS host whose short hostname
+resolves to an address the machine does not answer on, and the script
+swallowed the failure and wrote only the OS numbers. It also ran the daemon
+under the operator's `HOME`, so it measured a registry built from their
+`~/.claude`. Both are fixed; `DIG=1` adds the heaviest-state walk.
+
+The per-field `Effects` breakdown above came from a throwaway sibling of
+`scripts/mem_dig.erl` that finds every `{effects, _, _, _, _, _, _}` tuple in
+a process state and reports `erts_debug:flat_size` and `erts_debug:size` for
+each field, for each slot of the three closure-bearing fields, and for each
+capture in those slots over 4,096 words, then does the same for the
+`{registry, _, _}` it finds. It is a dozen lines of pattern matching over
+`mem_dig`'s existing `children/1` walk and was not committed. Admitting more
+than one session needs something other than `client@release_probe_test`, which
+asserts zero residents at start: a few frames of `sessions.create` and
+`sessions.list` over the daemon's control websocket, built from
+`host/websocket`, `host/endpoint` and `host/bootstrap`, is enough.

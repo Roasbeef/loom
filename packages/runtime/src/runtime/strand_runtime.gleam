@@ -465,8 +465,14 @@ fn await_predecessors(
       // Recovery and its poll clock both begin after the ledger-authored
       // acknowledgement. Before this point, queued doorbells are harmless
       // because no durable work has crossed the effect boundary.
+      //
+      // The subject is bound before the closure for the reason every other
+      // arm of this clock binds it: `real_timers` hands the callback to a
+      // timer process, and a closure over `state` would copy the whole
+      // strand state — `Effects` included — into that process.
+      let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(state.internal, PollTick)
+        wake(internal, PollTick)
       })
       log.info(logger, "strand.started", [])
       finish(logger, drive(state))

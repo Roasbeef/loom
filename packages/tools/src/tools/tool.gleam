@@ -539,6 +539,75 @@ pub fn registered(registry: Registry) -> List(Tool) {
   list.filter_map(registry.order, fn(name) { lookup(registry, name) })
 }
 
+/// What one registration declares about re-running and scheduling a call,
+/// with the behaviour and the contract it hangs off left behind.
+///
+/// Two callers ask only these questions — the effect surface's
+/// `replay_still_safe` and `execution_mode` slots — and neither needs a
+/// tool's `run`, `requirements`, `schema` or description to answer them.
+/// The distinction matters because those slots are closures inside a
+/// record that is copied into every process a session assembly starts,
+/// and BEAM does not preserve sharing across a copy: a closure holding
+/// the registry to read two words out of it duplicates the whole tool
+/// table once per copy.
+pub type Declaration {
+  Declaration(
+    /// Whether a crash may re-execute this tool's call.
+    replay: ReplaySafety,
+    /// Whether the call may run beside others in its batch.
+    execution_mode: ExecutionMode,
+  )
+}
+
+/// Every registration's declarations, keyed by tool name.
+///
+/// Opaque because the only thing to do with it is ask about a name, and
+/// because a caller that could reach inside would be tempted to hold the
+/// registry beside it, which is the copy this projection exists to avoid.
+pub opaque type Declarations {
+  Declarations(table: Dict(String, Declaration))
+}
+
+/// Projects a registry down to its declarations.
+///
+/// Built once, where the registry already lives, and handed to the
+/// surfaces that answer from it. The registry a session runs under does
+/// not change while that session's effect record exists, so a projection
+/// taken when the record is built answers exactly what a lookup through
+/// the registry would have answered at call time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let declared = tool.declarations(tool.registry([bash.tool(door)]))
+/// assert tool.declared(declared, "bash")
+///   == Ok(tool.Declaration(tool.Never, tool.Exclusive))
+/// ```
+///
+pub fn declarations(registry: Registry) -> Declarations {
+  Declarations(
+    table: dict.map_values(registry.tools, fn(_name, tool) {
+      Declaration(replay: tool.replay, execution_mode: tool.execution_mode)
+    }),
+  )
+}
+
+/// One name's declarations, or `Error(Nil)` for a name nothing registered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.declared(tool.declarations(tool.registry([])), "bash")
+///   == Error(Nil)
+/// ```
+///
+pub fn declared(
+  declarations: Declarations,
+  name: String,
+) -> Result(Declaration, Nil) {
+  dict.get(declarations.table, name)
+}
+
 /// The available-tools index for the system prompt: each registered
 /// tool's `prompt_snippet`, in registration order, with the tools that
 /// carry none left out.
