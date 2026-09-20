@@ -512,9 +512,18 @@ fn check_output(output: String) -> List(String) {
     // One line, because a captured build log is many and a panel row is one.
     // The reviewer is shown the whole tail; the operator is shown that there
     // was output and what its shape is.
+    //
+    // The tail rather than the head, for the reason the capture itself keeps
+    // the tail: the head of a build log is the compiler starting up, and the
+    // head of this field is the `stdout:` labelling the capture put there. An
+    // operator reading the first two hundred characters read neither the
+    // failure nor anything else.
     printed -> [
       "  output: "
-      <> clipped_to(text_hygiene.single_line(printed), check_output_limit),
+      <> text_hygiene.fit_tail(
+        text_hygiene.single_line(printed),
+        check_output_limit,
+      ),
     ]
   }
 }

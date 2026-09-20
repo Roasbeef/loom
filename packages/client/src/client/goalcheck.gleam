@@ -45,8 +45,8 @@ import core/ids.{type OpId}
 import core/message
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
-import gleam/result
 import gleam/string
 import tools/tool
 
@@ -328,8 +328,23 @@ fn tail(captured_text: String) -> String {
   }
 }
 
+// Jailed output is expected to be UTF-8, and output that is not says so in
+// the `bash` tool's own words rather than becoming nothing.
+//
+// The empty string is what the reviewer reads as "the check printed nothing",
+// and a failing status beside that line is a contradiction it cannot resolve.
+// Neither case is exotic: a command that cats a binary produces the first, and
+// the sandbox's own byte ceiling produces the second every time it cuts a
+// stream mid-codepoint.
 fn text(bytes: BitArray) -> String {
-  bytes |> bit_array.to_string |> result.unwrap("")
+  case bit_array.to_string(bytes) {
+    Ok(said) -> said
+
+    Error(Nil) ->
+      "["
+      <> int.to_string(bit_array.byte_size(bytes))
+      <> " bytes of non-UTF-8 output]"
+  }
 }
 
 // The broker's own words for a refusal, taken from the rendering the tool

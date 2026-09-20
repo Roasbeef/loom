@@ -585,6 +585,36 @@ pub fn the_panel_draws_the_check_and_its_last_run_test() {
   assert !string.contains(output, "\n")
 }
 
+/// Output too long for the row shows its end rather than its beginning.
+///
+/// The head of this field is the `stdout:` labelling the capture writes and
+/// then the opening of a build log, so an operator reading the first two
+/// hundred characters read neither the failure nor anything else.
+pub fn long_check_output_shows_its_tail_test() {
+  let long =
+    checked(
+      Some("make check"),
+      Some(goal_view.CheckRun(
+        command: "make check",
+        status: Some(1),
+        not_finished: None,
+        output: "stdout:\ncompiling "
+          <> string.repeat("a", goal_view.check_output_limit)
+          <> "\nFAIL client",
+        ran_at_ms: 1_100_000,
+      )),
+    )
+
+  let assert [_status, _objective, _spend, _ages, _check, _last, output] =
+    goal_view.lines(long)
+    as "a checked goal draws three more lines"
+
+  assert string.contains(output, "FAIL client")
+    as "the end of the log is what the row keeps"
+  assert string.contains(output, "compiling") == False
+    as "the labelling and the opening of the log are what the row drops"
+}
+
 /// A check with no run yet says so rather than drawing an empty result, and a
 /// goal with no check draws neither line.
 pub fn an_unrun_check_says_so_and_no_check_draws_nothing_test() {
