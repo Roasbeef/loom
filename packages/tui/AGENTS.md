@@ -529,8 +529,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   pins both pairs against each other so a rename on either side fails a
   test rather than quietly disarming the panel's read triggers.
 
-- `tui/goal_view.{Board, Status, PauseCause, LimitCause, decode, lines,
-  row, refusal}` is the session goal's surface (protocol 044). `Board` has
+- `tui/goal_view.{Board, Status, PauseCause, LimitCause, CheckRun,
+  check_output_limit, decode, lines, row, refusal}` is the session goal's
+  surface (protocol 044). `Board` has
   two variants rather than one record of options, because "no goal is
   pinned" is a real state with nothing else to say about it: `NoGoal` is
   one stamp and `Pinned` is the whole goal. `Status` carries its cause for
@@ -541,11 +542,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   terminal did not write, with its own byte caps; an unknown *status* word
   is a worded refusal, while an unknown *reason* word becomes
   `UnknownPause`/`UnknownLimit` and the panel prints the server's `because`
-  sentence, which is what `docs/client-protocol.md` §4.9.26 asks of a
-  client. `lines` is the block `/goal` prints into the transcript and `row`
+  sentence, which is what `docs/client-protocol.md` §4.9.27 asks of a
+  client. `CheckRun` is the operator's check as it last ran: the status is an
+  option rather than a number with a sentinel, because a run the harness
+  stopped has none and a printed `-1` would invent the command's verdict on
+  the work, and a run carrying both a status and a reason is refused rather
+  than resolved. `lines` is the block `/goal` prints into the transcript and `row`
   is the single line drawn beside the composer.
-  `command.GoalStatus`, `GoalSet`, `GoalClear`, `GoalPause`, `GoalResume`
-  and `GoalBudgetInvalid` are the parsed grammar; `command.goal_words` is
+  `command.GoalStatus`, `GoalSet`, `GoalCheck`, `GoalClear`, `GoalPause`,
+  `GoalResume`, `GoalBudgetInvalid` and `GoalCheckTooLong` are the parsed
+  grammar; `command.goal_words` is
   what the palette completes past `/goal `, and
   `command.default_goal_budget` (200,000 tokens) is what a `/goal` with no
   `--budget` pins. `tui.GoalReport` says whether the next board is the
@@ -586,9 +592,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
   `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`,
   standalone `compact`, `schedules`, `schedule_cancel`, `snapshot_next`,
-  `catch_up`, `history`, `escalations_get`, `approve`, `deny`, and the five
-  goal commands `goal_get`, `goal_set`, `goal_clear`, `goal_pause` and
-  `goal_resume`.
+  `catch_up`, `history`, `escalations_get`, `approve`, `deny`, and the six
+  goal commands `goal_get`, `goal_set`, `goal_check`, `goal_clear`,
+  `goal_pause` and `goal_resume`.
 - **Live events in**: correlated `snapshot_begin`, `snapshot_chunk`,
   `snapshot_end`, `mutation_outcome` (`admitted`, `committed` or `queued`),
   bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
@@ -724,9 +730,14 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - **Session goal panel**: `/goal` shows the status block, `/goal <objective>`
   pins one, and `/goal clear|pause|resume` are subcommands **only as the
   whole argument**, so `/goal clear the failing test` is an objective. The
-  budget rides `--budget <tokens>` in the first position and nowhere else: a
-  trailing integer stays part of the objective, because reading one as the
-  budget fails silently on the common `fix issue 468` shape. A `/goal` with
+  budget rides `--budget <tokens>` (or `--budget=<tokens>`) in the first
+  position and nowhere else: a trailing integer stays part of the objective,
+  because reading one as the budget fails silently on the common `fix issue
+  468` shape. `check` is the one subcommand that takes an argument, so it is a
+  whole-argument **prefix**: bare `/goal check` clears the check and `/goal
+  check make check` pins it, which reads an objective beginning with the word
+  "check" as the subcommand — and `--budget` is the escape, since it puts the
+  objective past the first position. A `/goal` with
   no flag pins `command.default_goal_budget`, named in the row that confirms
   it. `tui.goal_action` reads the board on the three edges
   `advisor_nudges_action` reads on plus one the queue does not have — the

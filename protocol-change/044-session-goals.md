@@ -1,9 +1,10 @@
 # 044: Session goals
 
 Status: proposed, amended after a first independent adversarial review of
-the draft and reworked after a second review of the implementation. Extends
-one frozen surface — the session command set — and adds one reserved
-`fact.custom` prefix, with one feature: a persistent operator-pinned
+the draft, reworked after a second review of the implementation, and extended
+with the operator-supplied check of §8 after a third. Extends
+one frozen surface — the session command set, six commands rather than
+five — and adds one reserved `fact.custom` prefix, with one feature: a persistent operator-pinned
 objective that the session keeps working toward autonomously, judged
 complete by the advisor strand rather than by the model doing the work.
 
@@ -94,7 +95,8 @@ refused to say why; the pairing is checked rather than defaulted because
 a defaulted cause would put that state back.
 
 `phase` is where the loop stands, and it is in the cell rather than in
-the actor's heap. `state` is `idle`, `awaiting_verdict` or `continuing`;
+the actor's heap. `state` is `idle`, `checking`, `ready_to_feed`, `awaiting_verdict` or
+`continuing`;
 `operation` is the advisor run that owes the verdict, or the primary run
 the loop itself opened, and is null for `idle` alone. A state word whose
 operation does not match it — `idle` with one, or either of the other two
@@ -114,6 +116,27 @@ from the start of the branch; that direction is the safe one, because a
 wider stretch can only read as more progress, and reading progress where
 there was none costs one continuation where reading none where there was
 some pauses a working goal.
+
+`deadline_ms` rides the `checking` state alone and is the instant past which
+a check in flight is no longer waited for. It is durable because the wait must
+survive the actor: the task is linked to the actor, so an actor that dies
+takes an in-flight check with it, and a deadline already passed is the repair
+rather than an error — the next evaluation records that the check did not
+finish and feeds the reviewer with that as the evidence. An absent one inside
+`checking` reads as zero, which is a deadline already passed, and that is the
+safe direction for the reason `since_seq`'s absence is.
+
+`ready_to_feed` is the state between a recorded check and the feed it was run
+for. It exists so the check runs once per feed rather than in a loop with it,
+and it is unreachable on a goal with no check configured.
+
+`check` is the operator's check command (§8) or null, and `last_check` is what
+its last run produced or null: an object carrying the command that actually
+ran, exactly one of `status` and `not_finished`, a bounded output tail and the
+instant it was recorded. Both are absent-tolerant on read, so a cell written
+before the check existed decodes as a goal with no check rather than as a
+refusal — there are no deployed goal cells, so that is the codec's ordinary
+leniency about optional fields rather than a migration.
 
 `token_budget` is a **required** positive integer — v1 has no unbounded
 goals. `tokens_used` and `accounted_through_seq` form the accounting pair
@@ -199,6 +222,24 @@ with exactly one advise call: continue, or complete when the objective is
 actually achieved.]
 ```
 
+A goal whose operator pinned a check carries one more block above the
+evidence, drawn only when a run has been recorded:
+
+```text
+Check (run by the harness, not by the primary):
+  command: make check
+  result: exit status 1 (the check failed)
+  output:
+stdout:
+...a bounded tail...
+```
+
+`result` is `exit status N (the check passed|failed)` when the command
+produced one and `no exit status — <reason>` when it did not, because a number
+invented for a run the harness stopped would read as the command's own verdict
+on the work. Both the command and the output are made safe against this
+frame's own tokens and both objective delimiters.
+
 Two-token recognition (header plus footer), `frame_safe` bodies, thinking
 never rendered — the slice module's existing disciplines. The objective is
 made delimiter-safe the way advice is made frame-safe, so an objective
@@ -219,7 +260,8 @@ the state space property-testable without spawning a process.
 occasion to read the level rather than to apply an edge: the durable
 `phase`, the two strands' open operations, whether the stretch since the
 feed cursor did work, and the freshly recomputed accounting. `Action` is
-`Rest`, `FeedReviewer`, `WakePrimary(text)` or `WrapUp(text)`.
+`Rest`, `RunCheck(command)`, `FeedReviewer`, `WakePrimary(text)` or
+`WrapUp(text)`.
 
 This replaces the first implementation, which was edge-triggered on lossy
 casts with its phase in the actor's heap. The design's premise is that an
@@ -366,6 +408,15 @@ No compare-and-set: the CAS door in this tree claims *absence*, and the
 loss mode here is a dropped cast, which no CAS catches. A single writer
 with a recomputable value is the honest shape.
 
+**Spend while the goal is stopped is not charged to it.** A `paused`,
+`budget_limited` or `complete` goal is not accounted at all: the loop commits
+nothing while it is stopped, so every row the session records then belongs to
+whatever the operator is doing instead, and accounting it anyway cost a ledger
+scan and a durable cell write per row for a loop that was not running. A resume
+moves `accounted_through_seq` to where the ledger stands then, so the held
+stretch is not charged late either — the same read `goal_set` makes at pin
+time, for the same reason.
+
 ### 6. The continuation frame
 
 ```text
@@ -393,21 +444,29 @@ continuation as the operator's.
 
 ### 7. Gateway commands
 
-Five session commands. Mutations require operator-or-better authority and
+Six session commands. Mutations require operator-or-better authority and
 reply `mutation_outcome` status `committed`; the read is a subscribed
 observation like `advisor_pending`.
 
-- `goal_set {objective, token_budget}` — creates or replaces the goal,
-  routed through the actor. Replacing an `active` goal keeps accounting
+- `goal_set {objective, token_budget, check?}` — creates or replaces the
+  goal, routed through the actor. Replacing an `active` goal keeps accounting
   when the objective text is unchanged; a changed objective starts fresh
-  accounting. `token_budget` is a required positive integer. Refusals:
-  worded objective bounds; worded-budget bounds; `unsupported` when the
-  session routes no advisor (the gate — no judge, no goals).
+  accounting. `token_budget` is a required positive integer. `check` is the
+  optional command of §8, bounded at 1,000 characters; an absent one leaves
+  whatever check the goal already carries, so changing only the budget does
+  not clear it. Refusals: worded objective bounds; worded-budget bounds;
+  worded check bounds; `unsupported` when the session routes no advisor (the
+  gate — no judge, no goals).
 - `goal_get {}` — snapshot mode `goal`, board `{status, reason, because,
   objective, token_budget, tokens_used, cost_used, continuations,
-  created_ms, updated_ms, reviewer_note, observed_at_ms}`; an absent cell
+  created_ms, updated_ms, reviewer_note, check, last_check,
+  observed_at_ms}`; an absent cell
   is a board with `status: "none"`; an unreadable cell is `unavailable`,
   never a positive empty.
+
+  `check` and `last_check` are the operator's check and what it last did
+  (§8), so the operator reads the same evidence the reviewer was shown out of
+  the same cell.
 
   `reason` is the cause word of a stopped status (§1) or null. `because` is
   the same fact as one sentence, rendered server-side from one function so
@@ -416,6 +475,17 @@ observation like `advisor_pending`.
   `phase` or the two other bound counters: they are the loop's own
   bookkeeping, and an observer that read them would be reading state it
   has no transition for.
+- `goal_check {command?}` — sets the check on the pinned goal, or clears it
+  when `command` is absent or empty after trimming. Bounded at 1,000
+  characters with both counts in the refusal; `bad_request` when no goal is
+  pinned. It is a command of its own rather than only a `goal_set` argument
+  because `goal_set` with an unchanged objective is defined as a refresh, and
+  a refresh clears the bound counters and the phase: an operator who only
+  wants the reviewer to start seeing `make check` should not have to reset the
+  loop to ask for it. Setting or clearing the check returns the phase to idle
+  and drops the recorded result, which is also what makes a change mid-check
+  inert — the run in flight reports against a deadline the cell no longer
+  carries.
 - `goal_clear {}` — deletes the cell. Any status.
 - `goal_pause {}` — `active` or `budget_limited` → `paused`; already
   paused is a no-op `committed`.
@@ -423,56 +493,80 @@ observation like `advisor_pending`.
   budget-exhausted case); `complete` refuses `conflict`.
 
 The TUI maps: `/goal <objective> [budget]`, `/goal` (panel), `/goal
-clear|pause|resume`, each through the matching command. The panel is drawn
+clear|pause|resume`, `/goal check <command>` and bare `/goal check`, each
+through the matching command. `check` is the one subcommand that takes an
+argument, so it is matched as a whole-argument *prefix*: an objective
+beginning with the word "check" is read as the subcommand, and the escape is
+the flag the operator is already offered — `/goal --budget 200000 check the
+logs` pins that objective, because `--budget` puts the objective past the
+first position. The panel is drawn
 from `goal_get` on the same three transitions `advisor_pending` reads,
 plus after every goal mutation and after every goal-loop transition the
 panel can observe (a continuation, a completion, a pause).
 
-### 8. The operator-supplied check: recorded, not built
+### 8. The operator-supplied check
 
-`goal_set` will take an optional `check`, a shell command string, and the
-goal feed frame will carry a `Check:` block with the command, its exit
-status and a bounded frame-safe tail of its output, labelled as
-harness-run evidence. The reviewer still gives the verdict; the tool
-description will say that a failing check is strong evidence against
-`complete`. The command runs through the same capability-checked, jailed
-effect path an ordinary tool command takes — operator-authored is not the
-same as exempt, because Rule Zero is about where code runs — with the
-session's workspace, a bounded wall clock and bounded captured output, and
-its output is made frame-safe because a check that printed a frame footer
-must not be able to close the frame it is quoted inside.
+`goal_set` takes an optional `check` and `goal_check` sets it on its own (§7):
+a shell command the harness runs before each goal feed, whose command, exit
+status and bounded output tail ride the feed frame as a `Check:` block
+labelled as harness-run evidence (§3). The reviewer still gives the verdict;
+the `advise` description says that a failing check is strong evidence against
+`complete` and that the judgement is still the reviewer's.
 
-It is **not built in this change, and it is deferred rather than blocked**
-— a distinction an earlier draft of this section got wrong. That draft
-claimed the effect plane could not be reached from the advisor actor:
-`broker.clear_call` and its collector are synchronous in the calling
-process, by design, and the actor answers the nudge drains on the strand
-driver's critical path under `pending_timeout_ms`, so it cannot block.
-Both facts hold. Neither implies the check cannot run, because the call
-does not have to happen on the actor's process, and the level-triggered
-loop makes the off-actor shape cheap. The primitives are all in the tree:
-`weft.deadline` plus `weft.start_witnessed` for the deadline-bounded task,
-`tools/tool.broker_runner` for the jailed path the `bash` tool itself
-clears through, and `client/jobs.Wiring` as the precedent for the seven
-fields the wiring needs — every one of which is in scope in the function
-that builds the advisor's wiring. A lost result and a dead task need no new
-mechanism: a `Checking` phase past its deadline records "the check did not
-finish" as the evidence and feeds the reviewer with it, so the loop cannot
-stall on a check for the same reason it cannot stall on a feed.
+**Where it runs.** Through `tools/tool.broker_runner`, the closure the `bash`
+tool itself clears through, with the same requirements, the same
+`RefuseNarrowed`, the same enforcement demand and the same escalation path.
+Operator-authored is not the same as exempt: Rule Zero is about where code
+runs rather than about who wrote it, and a command executed in the harness VM
+would be a hole in the effect plane whatever its provenance. The policy is the
+session's own base — the policy the `bash` tool composes onto — and
+deliberately not a read-only view of the workspace, because the commands an
+operator would pin (`make check`, a build, a test binary) write build output
+and a check that could not write would fail for a reason that has nothing to
+do with the objective. The wall and the output ceiling are the two limits the
+requirements move; the step id is `goal-check`, its own name, so the pooled
+execution budget is not shared with the hooks'.
 
-`docs/design-notes/goals.md` carries the shape a build should take: the
-call in a weft managed task that casts its outcome back, one more
-`goalstate.Phase` variant for a check in flight, a `step_id` of its own so
-the budget ledger is not pooled with the hooks', six fields on
-`advisor.Wiring` that are all already in scope where it is built, and the
-last result in the cell. Nothing there is a frozen interface —
-`clear_call`, `CallSpec`, `effects.Hooks` and `advisor.Wiring` are all
-outside spec Part 1 — so the mechanism needs no further proposal. The
-`check` argument to `goal_set` and the cell field are this proposal's
-surface and are recorded here so the next reader finds them. It wants a
-wave of its own because it adds an off-process effect path to an actor
-that has none, and reviewing that together with the loop rework would mean
-reviewing two unrelated risks at once.
+**Where it runs from.** Not the actor's process. `broker.clear_call` and its
+collector are synchronous in the calling process by design — a broker that
+parked on checkout would deadlock, so the wait for a pool slot happens in the
+borrower — and the actor answers the nudge drains on the strand driver's
+critical path under `pending_timeout_ms`. So the borrower is a weft task:
+`weft.new([...]) |> weft.deadline(...) |> weft.start_witnessed`. The scope is
+linked to the actor, so an actor that dies takes an in-flight check with it;
+the deadline kills and joins the worker, so a command that ignores its own
+wall is still reaped.
+
+**How a lost result is repaired.** The phase gains `Checking(deadline_ms)` and
+`ReadyToFeed` (§1). A check that never reports — a killed task, a crashed one,
+an actor replaced mid-check — leaves a `Checking` phase whose deadline has
+passed, and the next level read records "the check did not finish" as the
+evidence and feeds the reviewer with that. A check can no more strand the loop
+than an unanswered feed can, and the loop's property test says so: a level
+read never leaves a `Checking` phase past its deadline, and an Active goal in
+`ReadyToFeed` with both strands idle never rests. The wall the process runs
+under and the durable deadline are one number, so a restarted actor cannot be
+waiting on a process the sandbox has already killed.
+
+**What it cannot do.** A check opens no run, so it resets no continuation cap
+and cannot be mistaken for somebody arriving with work of their own; the
+bounds are read before the phase, so a check in flight does not outlast the
+token budget, the continuation cap or the zero-progress pause. An
+always-failing check therefore costs the operator the cap rather than an
+unbounded loop.
+
+**Its output is untrusted the moment it exists.** The frame breaks its own
+header, its own footer and both untrusted-objective delimiters wherever the
+command printed them, so a check that prints a frame footer cannot close the
+frame it is quoted inside and speak the rest in the harness's voice. The
+command is operator data and is made safe the same way.
+
+`clear_call`, `CallSpec`, `effects.Hooks` and `advisor.Wiring` are all outside
+spec Part 1, so the mechanism needed no proposal of its own; the `check`
+argument, the `goal_check` command and the two cell fields are this proposal's
+surface and are recorded here and in §1 and §7. `docs/design-notes/goals.md`
+carries the design this build followed, down to the phase variants, and it was
+right about all of them.
 
 ## Compatibility and cost
 
@@ -624,3 +718,43 @@ test: if the state space had no reachable combination of an Active goal, an
 idle primary, an idle reviewer and a `Rest`, the edge-triggered shape would
 have been adequate and the rework unnecessary. It had several, including
 one the review had not named.
+
+## Review: the third pass, and the check
+
+A third review read the implementation the second pass produced. Its central
+finding was the one the second pass had already recorded as a design rather
+than a defect — the judge can check nothing — and this change answers it: §8
+is built, not recorded. Four smaller items came with it, and their disposition
+is here because the next reader will look for it beside the proposal rather
+than in a commit message.
+
+1. **Unanswered feeds re-offered immediately.** Confirmed. An `AdvisorEnded`
+   that closed a feed without a verdict returned the phase to idle and the
+   same evaluation offered the feed again at once, so a provider rate limit
+   with a thirty-second window burnt all three tries in the time it takes to
+   refuse three requests — the bound was spent on one outage rather than on
+   three. Answered by letting only the periodic tick re-offer a feed that went
+   unanswered: the immediate re-offer is what a notification is good for, and a
+   feed nobody answered is exactly the case the tick exists to retry.
+
+2. **Accounting ran for stopped goals.** Confirmed: every usage row triggered
+   the ledger scan and a cell write on a `paused`, `budget_limited` or
+   `complete` goal, which is a durable write per row for a loop that is not
+   running. Answered by not accounting for a stopped goal at all. What that
+   costs is stated rather than hidden: spend while the goal is stopped is
+   **not charged to it**, and a resume accounts from where the ledger stands
+   then. That is the honest book for a goal the harness was not steering — the
+   spend belongs to whatever the operator was doing instead — and it cannot
+   under-count the loop's own work, because the loop runs nothing while
+   stopped.
+
+3. **`/goal --budget=N` read as objective text.** Confirmed, and answered by
+   accepting the form rather than refusing it: `--budget=200000` and
+   `--budget 200000` now mean the same thing, because an operator who writes
+   the equals sign has said exactly what they meant and a terminal that pinned
+   their flag as an objective was the silent failure.
+
+4. **The `commanded` tail's evaluation.** Re-confirmed by removing it: with
+   the evaluation dropped, `a_resume_offers_the_goal_feed_at_once_test` fails,
+   which is the test standing guard over the stall `/goal resume` reached
+   through the operator's own door.

@@ -290,7 +290,8 @@ Control commands are `status`, `sessions.list`, `sessions.get`, `sessions.defaul
 
 [`docs/client-protocol.md`](client-protocol.md) is the client-facing reference for all of this: every command and event body, the transfer procedure, the error codes and the limits, written so a new frontend can be built from it alone.
 
-Session commands are `subscribe`, `catch_up`, `history`, `snapshot_next`, `escalations_get`, `prompt`, `prompt_content`, `steer`, `follow_up`, `abort`, `approve`, `deny`, `fork`, `navigate`, `compact`, `create_strand`, `set_config`, `models`, `skills`, `schedules`, `schedule_cancel`, `goal_set`, `goal_get`, `goal_clear`, `goal_pause` and `goal_resume`. Session events are `snapshot_begin`, `snapshot_chunk`, `snapshot_end`, `snapshot`, `entry`, `op_transition`, `stream_delta`, `usage`, `escalation`, `strand_result`, `mutation_outcome`, `attachment`, `presence` and `error`.
+Session commands are `subscribe`, `catch_up`, `history`, `snapshot_next`, `escalations_get`, `prompt`, `prompt_content`, `steer`, `follow_up`, `abort`, `approve`, `deny`, `fork`, `navigate`, `compact`, `create_strand`, `set_config`, `models`, `skills`, `schedules`, `schedule_cancel`, `goal_set`, `goal_get`, `goal_check`, `goal_clear`, `goal_pause` and
+`goal_resume`. Session events are `snapshot_begin`, `snapshot_chunk`, `snapshot_end`, `snapshot`, `entry`, `op_transition`, `stream_delta`, `usage`, `escalation`, `strand_result`, `mutation_outcome`, `attachment`, `presence` and `error`.
 
 [Protocol 027](../protocol-change/027-markdown-skills.md) adds the subscribed, read-only `skills{offset}` catalogue. Its paged `snapshot` replies carry names, descriptions and argument hints; selected documents enter context through prompt admission or the model's `load_skill` tool.
 

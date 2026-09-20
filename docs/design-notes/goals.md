@@ -431,7 +431,14 @@ goal.
   gate. (Deliberately no `[goals]` table for v1 — the advisor's
   `[advisor]` table already configures the judge.)
 
-## An operator-supplied check: designed, not built
+## An operator-supplied check: designed, then built
+
+**Built as designed.** Everything below was written before the build and the
+build followed it: the two phase variants, the weft task, the
+`broker_runner` path, the wiring record, and the deadline as the repair.
+`protocol-change/044` §8 carries what shipped, including the two things this
+note left open — the wall's value and the shape of the output tail — and is
+the current account. What follows is the design as it was argued.
 
 The reviewer judges the objective from a rendering of what the primary
 did. That is evidence about the work, not evidence about the result: a
@@ -526,9 +533,6 @@ tree prevents it.
   session.
 - **A `paused` popup on resume.** The TUI shows status in the panel;
   no modal flow for v1.
-- **The operator-supplied check.** Designed above down to the phase
-  variants and the primitives, and deferred to its own wave rather than
-  blocked: it adds an off-process effect path to an actor that has none.
 - **`continue` carrying explicit task instructions to inject.** The
   continuation frame carries the reviewer's text verbatim as advice; it
   does not become the operator's voice. If reviewers need to direct work
