@@ -10149,6 +10149,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Fork(_)
     | command.Effort(_)
     | command.GoalSet(..)
+    | command.GoalCheck(..)
     | command.GoalClear
     | command.GoalPause
     | command.GoalResume
@@ -10177,6 +10178,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.GoalStatus
     | command.GoalBudgetInvalid(_)
     | command.GoalObjectiveTooLong(_)
+    | command.GoalCheckTooLong(_)
     | command.Clear
     | command.Quit
     | command.Unknown(_)
@@ -10450,6 +10452,19 @@ fn submit_text(model: Model) -> Model {
         ),
         protocol.goal_set(cleared.next_id, objective, token_budget),
       )
+    // The confirmation names the command back, because an operator who
+    // mistyped it should see what the harness will run before the reviewer
+    // is shown its result.
+    command.GoalCheck(command: Some(check)) ->
+      send_frame(
+        confirming(cleared, "the goal check is " <> check),
+        protocol.goal_check(cleared.next_id, Some(check)),
+      )
+    command.GoalCheck(command: None) ->
+      send_frame(
+        confirming(cleared, "the goal check is cleared"),
+        protocol.goal_check(cleared.next_id, None),
+      )
     command.GoalClear ->
       send_frame(
         confirming(cleared, "the session goal is cleared"),
@@ -10480,6 +10495,16 @@ fn submit_text(model: Model) -> Model {
     // The count is shown because the operator has to know how much to cut,
     // and the objective is not sent: the server refuses it on the same
     // bound, and a round trip to be told so is a round trip wasted.
+    // The count is shown for the reason the objective's is: the operator has
+    // to know how much to cut, and the two bounds are different numbers.
+    command.GoalCheckTooLong(count) ->
+      append_error(
+        cleared,
+        "/goal check command is "
+          <> int.to_string(count)
+          <> " characters; the most a goal check may carry is "
+          <> int.to_string(command.check_limit),
+      )
     command.GoalObjectiveTooLong(count) ->
       append_error(
         cleared,
@@ -10551,11 +10576,13 @@ fn submit_with_images(model: Model) -> Model {
     | command.Effort(_)
     | command.GoalStatus
     | command.GoalSet(..)
+    | command.GoalCheck(..)
     | command.GoalClear
     | command.GoalPause
     | command.GoalResume
     | command.GoalBudgetInvalid(_)
     | command.GoalObjectiveTooLong(_)
+    | command.GoalCheckTooLong(_)
     | command.Compact
     | command.Abort
     | command.Steer(_)
@@ -11216,7 +11243,12 @@ fn apply_submission(
         // Every goal command is answered with a board, so a mutation owns
         // the same slot its read does: the server renders the fresh panel
         // into the mutation's reply rather than making the terminal ask.
-        "goal_get" | "goal_set" | "goal_clear" | "goal_pause" | "goal_resume" ->
+        "goal_get"
+        | "goal_set"
+        | "goal_check"
+        | "goal_clear"
+        | "goal_pause"
+        | "goal_resume" ->
           Model(
             ..model,
             goal_request: Some(request_id),

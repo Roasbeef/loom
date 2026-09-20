@@ -156,11 +156,47 @@ pub type Board {
     updated_ms: Int,
     /// The reviewer's note on what remains, when it wrote one.
     reviewer_note: Option(String),
+    /// The command the harness runs before each review, when the operator
+    /// pinned one. Untrusted display data, sanitized on the way to the
+    /// screen the way the objective is.
+    check: Option(String),
+    /// What the last run of that command produced, when one has run.
+    last_check: Option(CheckRun),
     /// The server's clock when the cell was observed. Ages are differences
     /// within this one clock domain, never against a terminal clock.
     observed_at_ms: Int,
   )
 }
+
+/// One run of the operator's check, as the panel reads it.
+///
+/// The status is modelled as an option rather than as a number with a
+/// sentinel because a run that was stopped has no exit status at all, and a
+/// terminal that printed `-1` would be inventing the command's verdict on the
+/// work. `not_finished` is the server's own words for that case.
+pub type CheckRun {
+  CheckRun(
+    /// The command as it was run, which may differ from the pinned one when
+    /// the operator has just changed it.
+    command: String,
+    /// The exit status, when the run produced one.
+    status: Option(Int),
+    /// Why there is no status, when there is none.
+    not_finished: Option(String),
+    /// The captured tail, already bounded server-side.
+    output: String,
+    /// The server's clock when the run was recorded.
+    ran_at_ms: Int,
+  )
+}
+
+/// How much of a check's captured output the panel prints.
+///
+/// The server bounds the tail already; this is the terminal's own bound on
+/// what it will paint into a panel the operator asked for, and it is smaller
+/// because a panel is a summary — the reviewer reads the whole tail, and an
+/// operator who wants the rest runs the command.
+pub const check_output_limit = 240
 
 /// Validates one goal observation without trusting the server's bounds.
 ///
@@ -223,6 +259,8 @@ fn pinned(
   use created <- result.try(number(fields, "created_ms"))
   use updated <- result.try(number(fields, "updated_ms"))
 
+  use last_check <- result.try(check_run(fields))
+
   Ok(Pinned(
     status:,
     because:,
@@ -234,8 +272,51 @@ fn pinned(
     created_ms: created,
     updated_ms: updated,
     reviewer_note: nullable_text(fields, "reviewer_note"),
+    check: nullable_text(fields, "check"),
+    last_check:,
     observed_at_ms: observed,
   ))
+}
+
+// The last check run, absent on every board written before the check existed
+// and on every goal whose check has not run. A present payload that is not a
+// well-formed run is a refusal, the discipline this decoder keeps for every
+// field it does read: a board this terminal cannot name is one it must not
+// describe to the operator.
+fn check_run(
+  fields: List(#(String, json.JsonValue)),
+) -> Result(Option(CheckRun), String) {
+  case list.key_find(fields, "last_check") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+
+    Ok(payload) -> {
+      use run <- result.try(object(payload))
+      use command <- result.try(text(run, "command"))
+      use ran_at_ms <- result.try(number(run, "ran_at_ms"))
+
+      let status = nullable_number(run, "status")
+      let not_finished = nullable_text(run, "not_finished")
+
+      // Exactly one of the pair carries a value. Both or neither is a server
+      // disagreeing with this decoder about what a result means, and picking
+      // a winner would show the operator evidence nobody produced.
+      case status, not_finished {
+        Some(_code), None | None, Some(_reason) ->
+          Ok(
+            Some(CheckRun(
+              command:,
+              status:,
+              not_finished:,
+              output: nullable_string(run, "output"),
+              ran_at_ms:,
+            )),
+          )
+
+        Some(_both), Some(_of_them) | None, None ->
+          Error("a check result must carry a status or a reason, not both")
+      }
+    }
+  }
 }
 
 // The status word and its cause word as one status. The pairing is checked
@@ -375,8 +456,65 @@ pub fn lines(board: Board) -> List(String) {
             <> age(board.updated_ms, board.observed_at_ms)
             <> " ago",
         ],
-        note_lines(board.reviewer_note),
+        list.append(
+          check_lines(board.check, board.last_check),
+          note_lines(board.reviewer_note),
+        ),
       )
+  }
+}
+
+// The check and what it last did. Nothing is drawn for a goal with no check,
+// because a line saying so on every panel of every goal would be paid for by
+// the goals that have none — which is all of them until an operator pins one.
+//
+// The result is drawn whenever one is recorded, even when the command has
+// since changed: the run names its own command, so the operator reads what
+// actually ran rather than what is pinned now.
+fn check_lines(
+  command: Option(String),
+  last: Option(CheckRun),
+) -> List(String) {
+  case command, last {
+    None, None -> []
+
+    Some(text), None -> [
+      "  check: " <> text_hygiene.single_line(text) <> " (not run yet)",
+    ]
+
+    None, Some(run) | Some(_pinned), Some(run) -> [
+      "  check: " <> text_hygiene.single_line(run.command),
+      "  last run: " <> check_result(run),
+      ..check_output(run.output)
+    ]
+  }
+}
+
+// What the run produced, in the operator's terms. A passing check says so in
+// as many words, because "exit status 0" alone asks the reader to know a
+// shell convention.
+fn check_result(run: CheckRun) -> String {
+  case run.status, run.not_finished {
+    Some(0), _either -> "passed (exit status 0)"
+    Some(code), _other -> "failed (exit status " <> int.to_string(code) <> ")"
+    None, Some(reason) -> "no result — " <> text_hygiene.single_line(reason)
+
+    // Unreachable: the decoder refuses a run carrying neither. The arm keeps
+    // the match total and says what it knows rather than nothing.
+    None, None -> "no result"
+  }
+}
+
+fn check_output(output: String) -> List(String) {
+  case output {
+    "" -> []
+    // One line, because a captured build log is many and a panel row is one.
+    // The reviewer is shown the whole tail; the operator is shown that there
+    // was output and what its shape is.
+    printed -> [
+      "  output: "
+      <> clipped_to(text_hygiene.single_line(printed), check_output_limit),
+    ]
   }
 }
 
@@ -433,9 +571,16 @@ fn cause_suffix(status: Status) -> String {
 // so it is answered by dropping the bound rather than by measuring the whole
 // objective: the cap is 72 graphemes and an objective may be thousands.
 fn clipped(text: String) -> String {
-  case string.drop_start(text, row_objective_limit) {
+  clipped_to(text, row_objective_limit)
+}
+
+// The same bounded question against any cap: whether the text is longer than
+// the bound is answered by dropping the bound rather than by measuring text
+// that may be thousands of graphemes.
+fn clipped_to(text: String, limit: Int) -> String {
+  case string.drop_start(text, limit) {
     "" -> text
-    _longer -> string.slice(text, 0, row_objective_limit) <> "…"
+    _longer -> string.slice(text, 0, limit) <> "…"
   }
 }
 
@@ -512,6 +657,33 @@ fn nullable_text(
   case list.key_find(fields, name) {
     Ok(json.String(value)) -> Some(value)
     Ok(_) | Error(Nil) -> None
+  }
+}
+
+// A nullable integer: the check's exit status, which a stopped run has none
+// of. Absent and null are the same answer, and a present value of the wrong
+// type reads as absent for the reason `nullable_text` gives — this terminal
+// must not refuse a board over a field that carries no goal state.
+fn nullable_number(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Option(Int) {
+  case list.key_find(fields, name) {
+    Ok(json.Int(value)) -> Some(value)
+    Ok(_other) | Error(Nil) -> None
+  }
+}
+
+// A string that may be absent and means the empty string when it is: a check
+// that printed nothing and a board that carried no output field are the same
+// thing to draw.
+fn nullable_string(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> String {
+  case list.key_find(fields, name) {
+    Ok(json.String(value)) -> value
+    Ok(_other) | Error(Nil) -> ""
   }
 }
 

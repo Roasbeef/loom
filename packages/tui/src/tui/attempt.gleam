@@ -310,6 +310,7 @@ fn decode_selection(kind, fields) {
     | "advisor_pending"
     | "goal_get"
     | "goal_set"
+    | "goal_check"
     | "goal_clear"
     | "goal_pause"
     | "goal_resume"

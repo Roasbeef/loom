@@ -115,6 +115,14 @@ pub type Command {
     token_budget: Int,
   )
 
+  /// Set or clear the check the harness runs before each goal feed.
+  ///
+  /// `None` clears it. The command is not validated here beyond its length:
+  /// whether a shell command is one the operator meant is not a question a
+  /// terminal can answer, and the server's own bound is what refuses a
+  /// pasted script.
+  GoalCheck(command: Option(String))
+
   /// Delete the session goal whatever its status.
   GoalClear
 
@@ -133,6 +141,17 @@ pub type Command {
   GoalBudgetInvalid(
     /// The rejected word, as the operator typed it.
     word: String,
+  )
+
+  /// A `/goal check` whose command is longer than the wire accepts.
+  ///
+  /// Its own variant rather than `GoalObjectiveTooLong` because the two
+  /// bounds are different numbers on different fields, and an operator told
+  /// the objective's limit while the command was refused would cut the wrong
+  /// text.
+  GoalCheckTooLong(
+    /// How many characters the command actually carried.
+    count: Int,
   )
 
   /// A `/goal` whose objective is longer than the wire accepts.
@@ -260,6 +279,7 @@ fn level_suggestions(partial: String) -> List(Suggestion) {
 /// rows are a reminder of the vocabulary rather than a claim about what the
 /// operator is typing. `--budget` takes an argument; the other three do not.
 pub const goal_words = [
+  #("check", "run a command before each review: /goal check make check"),
   #("clear", "unpin the session goal"),
   #("pause", "hold the goal without unpinning it"),
   #("resume", "continue a held or tripped goal"),
@@ -270,7 +290,14 @@ fn goal_suggestions(partial: String) -> List(Suggestion) {
   goal_words
   |> list.filter(fn(word) { string.starts_with(word.0, partial) })
   |> list.map(fn(word) {
-    Suggestion("/goal " <> word.0, word.1, word.0 == "--budget")
+    // Two of the words take an argument the operator keeps typing: the
+    // budget's number, and the check's command. The other three are whole
+    // commands, so the palette submits them rather than leaving the line open.
+    Suggestion(
+      "/goal " <> word.0,
+      word.1,
+      word.0 == "--budget" || word.0 == "check",
+    )
   })
 }
 
@@ -457,6 +484,15 @@ fn unschedule(raw: String) -> Command {
 /// immediately and re-pins with `--budget`.
 pub const default_goal_budget = 200_000
 
+/// The longest check command `/goal check` will send, in characters.
+///
+/// The server's own bound (`client/protocol.check_limit`, protocol 044 §8),
+/// mirrored for the reason the objective's bound is mirrored: the terminal
+/// can say so without a round trip, and a client that guessed a larger
+/// number would send a command the server refuses, which is the honest
+/// failure rather than a silent one.
+pub const check_limit = 1000
+
 /// The longest objective `/goal` will send, in characters.
 ///
 /// The server's own bound (`client/protocol.objective_limit`, protocol 044
@@ -483,10 +519,35 @@ fn goal(raw: String) -> Command {
     "pause" -> GoalPause
     "resume" -> GoalResume
 
+    // `check` is the one subcommand that takes an argument of its own, so it
+    // is matched as a whole-argument *prefix* rather than as the whole
+    // argument: bare `/goal check` clears the check, and `/goal check make
+    // check` pins that command.
+    //
+    // The cost is an objective that begins with the word "check" — `/goal
+    // check the logs` pins no goal, it sets a check. That is a real
+    // ambiguity and it already has an escape that needs no new syntax:
+    // `--budget` puts the objective past the first position, so `/goal
+    // --budget 200000 check the logs` pins the objective. One rule, and the
+    // escape is a flag the operator is already being offered.
+    "check" -> GoalCheck(command: None)
+    "check " <> command -> checking(string.trim(command))
+
     "--budget" -> MissingArgument("goal --budget")
     "--budget " <> rest -> budgeted(rest)
 
     objective -> pinning(objective, default_goal_budget)
+  }
+}
+
+// The check command, bounded here so the operator is told the count without
+// a round trip. An argument of nothing but whitespace is the bare form: the
+// server reads an empty command as a clear, and so does this.
+fn checking(command: String) -> Command {
+  case command, string.length(command) > check_limit {
+    "", _empty -> GoalCheck(command: None)
+    _text, True -> GoalCheckTooLong(count: string.length(command))
+    text, False -> GoalCheck(command: Some(text))
   }
 }
 
@@ -589,6 +650,7 @@ pub fn help_text() -> String {
   <> "/goal             show the session goal's status\n"
   <> "/goal [--budget N] <objective>  pin a session goal (default 200000 tokens)\n"
   <> "/goal clear|pause|resume  unpin, hold or continue the goal\n"
+  <> "/goal check [command]  run a command before each review, or clear it\n"
   <> "/strands          list session strands\n"
   <> "/schedules        list session schedules\n"
   <> "/add-dir [--write] <path>  add directory access for this session\n"

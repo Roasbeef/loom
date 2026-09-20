@@ -1233,6 +1233,29 @@ pub fn goal_set(id: Int, objective: String, token_budget: Int) -> String {
   ])
 }
 
+/// Sets the check the harness runs before each goal feed, or clears it.
+///
+/// An absent `command` is how the wire spells a clear, so `None` sends a
+/// body with no field in it rather than a null: the server reads absence as
+/// the clear, and a second spelling of one state is a second thing to keep in
+/// step (protocol 044 §8).
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_check(13, option.Some("make check"))
+/// ```
+///
+/// ```gleam
+/// protocol.goal_check(13, option.None)
+/// ```
+pub fn goal_check(id: Int, command_text: Option(String)) -> String {
+  command(id, "goal_check", case command_text {
+    None -> []
+    Some(text) -> [#("command", json.String(text))]
+  })
+}
+
 /// Unpins the session goal whatever its status.
 ///
 /// ## Examples

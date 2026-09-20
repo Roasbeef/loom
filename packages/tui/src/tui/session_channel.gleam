@@ -916,6 +916,7 @@ fn matching_presentation(name, intent, event) {
     // listing: the panel's new state is what the operator asked for, and a
     // second read would show it a round trip later.
     "goal_set", Mutation, protocol.GoalSnapshot(_) -> True
+    "goal_check", Mutation, protocol.GoalSnapshot(_) -> True
     "goal_clear", Mutation, protocol.GoalSnapshot(_) -> True
     "goal_pause", Mutation, protocol.GoalSnapshot(_) -> True
     "goal_resume", Mutation, protocol.GoalSnapshot(_) -> True

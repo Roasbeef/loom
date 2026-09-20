@@ -70,6 +70,27 @@ fn wire(status: String, reason: json.JsonValue) -> json.JsonValue {
   ])
 }
 
+// A field added to a board that does not carry it, which is how the check
+// fixtures are built: `replacing` only rewrites a field the fixture already
+// has, and the fixture is deliberately the board a server with no check
+// writes.
+fn with_field(
+  board: json.JsonValue,
+  name: String,
+  value: json.JsonValue,
+) -> json.JsonValue {
+  case board {
+    json.Object(fields) -> json.Object(list.append(fields, [#(name, value)]))
+
+    json.Array(..)
+    | json.String(..)
+    | json.Int(..)
+    | json.Float(..)
+    | json.Bool(..)
+    | json.Null -> board
+  }
+}
+
 fn replacing(
   board: json.JsonValue,
   name: String,
@@ -111,6 +132,8 @@ fn noted(status: goal_view.Status, note: Option(String)) -> goal_view.Board {
     created_ms: 1_000_000,
     updated_ms: 1_060_000,
     reviewer_note: note,
+    check: None,
+    last_check: None,
     observed_at_ms: 1_120_000,
   )
 }
@@ -140,6 +163,46 @@ pub fn the_subcommands_are_only_the_whole_argument_test() {
       objective: "pause the migration until review",
       token_budget: command.default_goal_budget,
     )
+}
+
+/// `check` is the one subcommand that takes an argument, so it is a
+/// whole-argument *prefix* rather than the whole argument: bare `/goal check`
+/// clears the check and `/goal check <command>` pins it.
+///
+/// The cost is an objective that begins with the word "check", and the escape
+/// is the flag the operator is already offered: `--budget` puts the objective
+/// past the first position. Both are asserted here, because the ambiguity is
+/// the one thing about this grammar a reader would otherwise have to guess.
+pub fn the_check_subcommand_takes_the_rest_as_its_command_test() {
+  assert command.parse("/goal check") == command.GoalCheck(command: None)
+  assert command.parse("/goal check   ") == command.GoalCheck(command: None)
+  assert command.parse("/goal check make check")
+    == command.GoalCheck(command: Some("make check"))
+  assert command.parse("/goal check go test ./... 2>&1 | tail -40")
+    == command.GoalCheck(command: Some("go test ./... 2>&1 | tail -40"))
+
+  // An objective that begins with the word is read as the subcommand, and
+  // `--budget` is how the operator says they meant the objective.
+  assert command.parse("/goal check the logs")
+    == command.GoalCheck(command: Some("the logs"))
+  assert command.parse("/goal --budget 1000 check the logs")
+    == command.GoalSet(objective: "check the logs", token_budget: 1000)
+}
+
+/// The command's own bound is refused here with the count, because the
+/// operator who pasted a script wants to know before the round trip — and the
+/// two bounds are different numbers, so the objective's count would send them
+/// looking at the wrong text.
+pub fn an_oversized_check_command_is_refused_with_its_count_test() {
+  assert command.check_limit == 1000
+
+  let oversized = string.repeat("x", command.check_limit + 1)
+  assert command.parse("/goal check " <> oversized)
+    == command.GoalCheckTooLong(count: command.check_limit + 1)
+
+  let allowed = string.repeat("x", command.check_limit)
+  assert command.parse("/goal check " <> allowed)
+    == command.GoalCheck(command: Some(allowed))
 }
 
 /// A trailing number belongs to the objective. The budget is carried by
@@ -240,7 +303,19 @@ pub fn the_palette_offers_goal_and_its_words_test() {
       suggestion.command
     })
   assert words
-    == ["/goal clear", "/goal pause", "/goal resume", "/goal --budget"]
+    == [
+      "/goal check", "/goal clear", "/goal pause", "/goal resume",
+      "/goal --budget",
+    ]
+
+  // `check` takes an argument of its own, so the palette offers it as a row
+  // the operator continues typing after.
+  let assert [check_row] =
+    list.filter(command.suggestions("/goal ch"), fn(row) {
+      row.command == "/goal check"
+    })
+    as "the palette completes /goal check"
+  assert check_row.takes_argument
 
   assert list.map(command.suggestions("/goal cl"), fn(row) { row.command })
     == ["/goal clear"]
@@ -257,6 +332,7 @@ pub fn the_help_text_documents_the_goal_grammar_test() {
   assert string.contains(text, "/goal             show the session goal")
   assert string.contains(text, "--budget")
   assert string.contains(text, "/goal clear|pause|resume")
+  assert string.contains(text, "/goal check [command]")
 }
 
 // --- the decoder is total ---------------------------------------------------
@@ -383,6 +459,31 @@ pub fn an_unknown_cause_word_is_kept_and_shown_as_the_server_spelled_it_test() {
     == "budget limited"
 }
 
+// The active board with a check pinned. Written out rather than derived from
+// `pinned` with a record update, because a value typed as the sum cannot be
+// updated into one variant — and spelling the literal keeps the check
+// fixtures readable beside the field they are about.
+fn checked(
+  check: Option(String),
+  last: Option(goal_view.CheckRun),
+) -> goal_view.Board {
+  goal_view.Pinned(
+    status: goal_view.Active,
+    because: "the goal is running",
+    objective: "get the branch green",
+    token_budget: 400_000,
+    tokens_used: 51_200,
+    cost_used: 0.42,
+    continuations: 3,
+    created_ms: 1_000_000,
+    updated_ms: 1_060_000,
+    reviewer_note: None,
+    check:,
+    last_check: last,
+    observed_at_ms: 1_120_000,
+  )
+}
+
 // --- the panel and the row --------------------------------------------------
 
 /// The absent cell says so in one line, and says how to pin one.
@@ -437,6 +538,109 @@ pub fn every_status_draws_its_word_and_its_cause_test() {
     goal_view.row(pinned(goal_view.Limited(by: goal_view.ByTokenBudget)))
   assert string.contains(row, "goal budget limited (token budget)")
   assert string.contains(row, "51200/400000 tokens")
+}
+
+/// A pinned check is drawn with what it last did, and the run names its own
+/// command — so an operator who has just changed the check reads what
+/// actually ran rather than what is pinned now.
+pub fn the_panel_draws_the_check_and_its_last_run_test() {
+  let failing =
+    checked(
+      Some("make check"),
+      Some(goal_view.CheckRun(
+        command: "make check",
+        status: Some(1),
+        not_finished: None,
+        output: "FAIL client\nsecond line",
+        ran_at_ms: 1_100_000,
+      )),
+    )
+
+  let assert [_status, _objective, _spend, _ages, check, last, output] =
+    goal_view.lines(failing)
+    as "a checked goal draws three more lines"
+  assert string.contains(check, "check: make check")
+  assert string.contains(last, "failed (exit status 1)")
+  assert string.contains(output, "FAIL client")
+
+  // Captured output is one line whatever the command printed: a panel row is
+  // one line, and the reviewer is the reader that gets the whole tail.
+  assert !string.contains(output, "\n")
+}
+
+/// A check with no run yet says so rather than drawing an empty result, and a
+/// goal with no check draws neither line.
+pub fn an_unrun_check_says_so_and_no_check_draws_nothing_test() {
+  let unrun = checked(Some("make check"), None)
+  let assert [_status, _objective, _spend, _ages, check] =
+    goal_view.lines(unrun)
+    as "a pinned but unrun check draws one line"
+  assert string.contains(check, "not run yet")
+
+  let assert [_status, _objective, _spend, _ages] =
+    goal_view.lines(pinned(goal_view.Active))
+    as "a goal with no check draws no check lines"
+}
+
+/// A run that produced no status says so in the server's words rather than
+/// printing a number nobody produced, and a passing one is named as passing
+/// rather than as a shell convention the reader has to know.
+pub fn a_check_result_without_a_status_is_worded_test() {
+  let unfinished =
+    checked(
+      Some("make check"),
+      Some(goal_view.CheckRun(
+        command: "make check",
+        status: None,
+        not_finished: Some("the check did not finish in time"),
+        output: "",
+        ran_at_ms: 1_100_000,
+      )),
+    )
+  let assert [_status, _objective, _spend, _ages, _check, last] =
+    goal_view.lines(unfinished)
+    as "an unfinished run draws no output line"
+  assert string.contains(last, "no result — the check did not finish in time")
+
+  let passed =
+    checked(
+      Some("make check"),
+      Some(goal_view.CheckRun(
+        command: "make check",
+        status: Some(0),
+        not_finished: None,
+        output: "",
+        ran_at_ms: 1_100_000,
+      )),
+    )
+  let assert [_status, _objective, _spend, _ages, _check, run] =
+    goal_view.lines(passed)
+    as "a passing run draws its own line"
+  assert string.contains(run, "passed (exit status 0)")
+}
+
+/// The board's check fields are read the way every other field is: a result
+/// carrying both a status and a reason, or neither, is a server disagreeing
+/// with this decoder and is refused rather than resolved in favour of one.
+pub fn a_malformed_check_result_is_refused_test() {
+  let both =
+    json.Object([
+      #("command", json.String("make check")),
+      #("status", json.Int(0)),
+      #("not_finished", json.String("also this")),
+      #("output", json.String("")),
+      #("ran_at_ms", json.Int(1000)),
+    ])
+  let assert Error(reason) =
+    goal_view.decode(with_field(wire("active", json.Null), "last_check", both))
+    as "a result with two endings must not decode"
+  assert string.contains(reason, "status or a reason")
+
+  // An absent `last_check` is no run, which is every board written before the
+  // check existed.
+  let assert Ok(goal_view.Pinned(last_check: None, check: None, ..)) =
+    goal_view.decode(wire("active", json.Null))
+    as "a board with no check fields decodes as no check"
 }
 
 /// The reviewer's note is drawn only when it wrote one, and model-written
