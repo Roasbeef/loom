@@ -87,8 +87,8 @@ pub const settle_grace_ms = 10_000
 /// (protocol 044 §8).
 pub const step_id = "goal-check"
 
-/// The seam the advisor actor holds: one blocking run, and the wall it
-/// runs under.
+/// The seam the advisor actor holds: one blocking run, the wall it runs
+/// under, and how long the caller waits before killing the task.
 ///
 /// The wall is carried rather than read from `client/goalloop` so a test
 /// can pin a short one; production passes `goalloop.check_timeout_ms`, and
@@ -101,6 +101,19 @@ pub type Wiring {
     run: fn(String) -> goalstate.CheckResult,
     /// How long one run may take, in milliseconds.
     timeout_ms: Int,
+    /// How long the caller lets the task that runs one check live, in
+    /// milliseconds.
+    ///
+    /// Strictly longer than the wall, and that is the point. A task killed
+    /// at the wall itself can never deliver a settlement the sandbox
+    /// reached at the wall: the caller's clock starts first, so it always
+    /// wins, and the timed-out result — the one carrying the tail of the
+    /// build that was killed, which is exactly what says why — was
+    /// unreachable in production and the feed waited for the next tick
+    /// instead. The room is the clearance a congested helper pool may cost
+    /// plus the grace the cancel ladder needs, which is the backstop
+    /// `client/jobs` computes for the same path.
+    backstop_ms: Int,
   )
 }
 
@@ -144,7 +157,11 @@ pub type Runner {
 /// ```
 ///
 pub fn wiring(runner: Runner, timeout_ms timeout_ms: Int) -> Wiring {
-  Wiring(run: fn(command) { execute(runner, command, timeout_ms) }, timeout_ms:)
+  Wiring(
+    run: fn(command) { execute(runner, command, timeout_ms) },
+    timeout_ms:,
+    backstop_ms: runner.clearance_ms + timeout_ms + settle_grace_ms,
+  )
 }
 
 // One check, start to settlement, on whatever process called this.

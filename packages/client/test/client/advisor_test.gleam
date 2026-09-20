@@ -1086,6 +1086,7 @@ fn no_check() -> goalcheck.Wiring {
       )
     },
     timeout_ms: 1000,
+    backstop_ms: 11_000,
   )
 }
 
@@ -2758,11 +2759,34 @@ pub fn a_check_that_never_returns_still_feeds_the_reviewer_test() {
   stop(rig)
 }
 
-// A check whose task dies reports nothing at all, which is the same level
-// the deadline repairs. This is the crash path rather than the hang path,
-// and it matters that they are one recovery rather than two.
+// A check whose task crashes does not take the advisor with it. The task is
+// linked to the weft scope rather than to the actor, so the crash is the
+// scope's to absorb, and the wall here has not passed: nothing but that link
+// is keeping the actor alive at the moment of the assertion.
+pub fn a_crashed_check_leaves_the_actor_serving_test() {
+  let assert Ok(rig) =
+    a_rig_checking(some_settings([]), a_dying_check(a_test_wall * 20))
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  a_goal_with_a_check(subject, "false")
+
+  assert process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    == Ok(Nil)
+    as "the actor survives a check that crashed"
+
+  stop(rig)
+}
+
+// And the crash reports nothing at all, which is the same level the deadline
+// repairs. This is the crash path rather than the hang path, and it matters
+// that they are one recovery rather than two — so the wall is zero, which is
+// how a test on a fixed clock says the deadline has passed.
 pub fn a_check_whose_task_dies_still_feeds_the_reviewer_test() {
-  let assert Ok(rig) = a_rig_checking(some_settings([]), a_dying_check())
+  let assert Ok(rig) = a_rig_checking(some_settings([]), a_dying_check(0))
     as "the advisor rig must open"
   let assert Ok(subject) = address.lookup(rig.name)
     as "the advisor actor must be registered"
@@ -2773,15 +2797,6 @@ pub fn a_check_whose_task_dies_still_feeds_the_reviewer_test() {
 
   let assert goalstate.DidNotFinish(..) = ending_of(fed)
     as "a dead task produces no exit status"
-
-  // The actor is still serving, which is the other half of the claim: the
-  // task is linked to the weft scope rather than to the actor, so a crash
-  // inside it is not a crash of the advisor.
-  assert process.call(subject, waiting: 5000, sending: fn(reply) {
-      advisor.PauseGoal(reply:)
-    })
-    == Ok(Nil)
-    as "the actor survives a check that crashed"
 
   stop(rig)
 }
@@ -2951,19 +2966,20 @@ fn scripted_check(status: Int) -> goalcheck.Wiring {
       )
     },
     timeout_ms: a_test_wall,
+    backstop_ms: a_test_wall * 20,
   )
 }
 
-// A check that never answers. The weft deadline kills the task; the durable
-// phase is what repairs the loop.
-// A check that never answers, under a wall of zero.
+// A check that never answers, under a wall of zero, with the task reaped at
+// once.
 //
 // Zero is how a test on a fixed clock says "the deadline has passed". The
 // rig's clock does not move, so a wall of any length would leave a deadline
 // permanently in the future and the repair permanently unobservable; zero
 // makes the deadline the instant the phase was written, which is exactly the
-// level a restarted actor reads after a real wall expired. It also reaps the
-// task at once, which is the other half of what a hanging check does.
+// level a restarted actor reads after a real wall expired. The backstop is
+// zero with it, which is the other half of what a hanging check does: the
+// worker is killed rather than left sleeping.
 fn a_hanging_check() -> goalcheck.Wiring {
   goalcheck.Wiring(
     run: fn(_command) {
@@ -2977,16 +2993,25 @@ fn a_hanging_check() -> goalcheck.Wiring {
       )
     },
     timeout_ms: 0,
+    backstop_ms: 0,
   )
 }
 
 // A check whose task dies where it stands. `panic` is a test's own tool —
 // `src` carries none — and it is the shape a jailed runner's own crash would
 // take from the actor's side: no message, ever.
-fn a_dying_check() -> goalcheck.Wiring {
+//
+// The wall is the caller's to choose, and the two tests that use this want
+// different ones: a crash under a wall that has not passed is the one that
+// says the actor survives on its own, and a crash under a wall of zero is the
+// one that says the deadline repairs the loop. One fixture with a wall of zero
+// answered both questions at once, so the survival test could have been
+// passing on the deadline path all along.
+fn a_dying_check(wall_ms: Int) -> goalcheck.Wiring {
   goalcheck.Wiring(
     run: fn(_command) { panic as "this check dies on purpose" },
-    timeout_ms: 0,
+    timeout_ms: wall_ms,
+    backstop_ms: wall_ms + a_test_wall,
   )
 }
 
@@ -3011,6 +3036,7 @@ fn a_held_check() -> #(
         )
       },
       timeout_ms: a_test_wall * 20,
+      backstop_ms: a_test_wall * 40,
     )
 
   let assert Ok(rig) = a_rig_checking(some_settings([]), held)
@@ -3203,6 +3229,7 @@ fn a_capped_check() -> #(
         }
       },
       timeout_ms: a_test_wall * 20,
+      backstop_ms: a_test_wall * 40,
     )
 
   let assert Ok(rig) = a_rig_checking(some_settings([]), capped)
@@ -3231,9 +3258,6 @@ fn a_capped_check() -> #(
   #(rig, subject, seam)
 }
 
-// A goal with a check, pinned onto a primary that has just stopped. The
-// `goal_set` evaluation itself is the occasion, so the check starts without
-// a run end having to be faked.
 // A goal with a check, pinned onto an idle primary. The `goal_set`
 // evaluation is itself the occasion, so the check starts without a run end
 // having to be faked — and the primary is left idle, because a busy one

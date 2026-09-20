@@ -1879,10 +1879,17 @@ fn perform(
 // happens in the borrower. So the borrower is a weft task, which is also
 // what makes the three failure modes cost nothing new. The scope is linked
 // to this actor, so an actor that dies takes an in-flight check with it; the
-// deadline kills and joins the worker, so a command that ignores its own
+// backstop kills and joins the worker, so a command that ignores its own
 // wall is still reaped; and the durable `Checking` deadline the phase
 // carries is what a replacement actor reads, so a result that never arrives
 // is repaired by the next evaluation rather than waited for.
+//
+// The backstop is the wall plus room to settle, never the wall itself. Both
+// clocks start here and the task's starts first, so a backstop equal to the
+// wall always killed the worker before the sandbox's own timed-out
+// settlement could arrive — the result carrying the tail of the build that
+// was killed, which is the part that says why, was unreachable, and the feed
+// waited for the next tick instead of going out with it.
 //
 // The handle is kept, because the slot it holds is not the jail's to give
 // back. Every check clears under the one attribution-only operation and the
@@ -1917,7 +1924,7 @@ fn run_check(
 
   let witnessed =
     weft.new([task])
-    |> weft.deadline(wiring.check.timeout_ms)
+    |> weft.deadline(wiring.check.backstop_ms)
     |> weft.start_witnessed
 
   log.debug(state.wiring.logger, "advisor.goal_check_started", [
