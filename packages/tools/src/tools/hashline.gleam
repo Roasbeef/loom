@@ -345,7 +345,26 @@ pub fn window(content: String, offset offset: Int, limit limit: Int) -> Window {
 /// ```
 ///
 pub fn render(window_value: Window) -> String {
-  window_value.lines
+  render_lines(window_value.lines)
+}
+
+/// Renders already-anchored lines the way `render` renders a window.
+///
+/// A caller that holds the file's anchored lines already — because it
+/// annotated once and is slicing several ranges out of the one list — goes
+/// through this rather than building a `Window` per range, which would
+/// re-split and re-annotate the whole file each time. It exists so there
+/// is one line renderer and one joining rule, not two that can drift.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hashline.render_lines(hashline.annotate("hi"))
+///   == "1:" <> hashline.anchor("hi") <> "|hi"
+/// ```
+///
+pub fn render_lines(lines: List(AnchoredLine)) -> String {
+  lines
   |> list.map(render_line)
   |> string.join(with: "\n")
 }
@@ -445,6 +464,143 @@ fn apply_hunks(split: Split, plan: Plan) -> Result(String, ApplyError) {
   case overlap(placed) {
     Ok(line) -> Error(OverlappingHunks(line:))
     Error(Nil) -> Ok(apply_placed(split, placed))
+  }
+}
+
+// --- where an applied plan landed ----------------------------------------
+
+/// One contiguous inclusive line range of post-edit content, 1-based.
+pub type Region {
+  Region(start: Int, end: Int)
+}
+
+/// How many context lines each applied hunk's region carries on either
+/// side.
+///
+/// Three is what a *next* hunk needs: the statement above and below a
+/// changed line — the closing brace, the signature, the neighbouring
+/// field — is what a following edit references when it wants a position
+/// beside the one just edited. The rejection path's `fresh_context_lines`
+/// is two because a rejection names one stale line and the caller is
+/// replanning that exact line; a success is read to plan something new,
+/// which is a wider question. Three also keeps a handful of hunks to a
+/// handful of lines, which is the whole budget argument for echoing them
+/// at all.
+pub const applied_context_lines = 3
+
+/// The post-edit line ranges that `apply` produced for `hunks`, each
+/// widened by `applied_context_lines`, clamped to `edited`, ordered, and
+/// merged where they overlap or touch.
+///
+/// This is the post-image mirror of the pre-image regions a rejection
+/// reports, and it exists so a successful edit can hand back the anchors
+/// of what it changed. The arithmetic reads only the hunks and the length
+/// of the result, which is exactly what `apply_placed` spliced by, so the
+/// two cannot disagree about where a hunk landed. It is defined for any
+/// hunks — a set `apply` would have rejected yields ranges clamped to
+/// `edited` rather than an error — because a caller that has not applied
+/// the plan has no post-image to ask about in the first place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let ref = hashline.Ref(line: 2, anchor: hashline.anchor("b"))
+/// assert hashline.applied_regions(
+///   hunks: [hashline.Replace(ref, ref, ["B"])],
+///   edited: "a\nB\nc",
+/// ) == [hashline.Region(start: 1, end: 3)]
+/// ```
+///
+pub fn applied_regions(
+  hunks hunks: List(Hunk),
+  edited edited: String,
+) -> List(Region) {
+  let total = list.length(split_lines(edited).lines)
+  hunks
+  |> list.map(place)
+  |> list.sort(fn(a, b) { int.compare(a.start, b.start) })
+  |> produced_ranges(0, [])
+  |> list.filter_map(with_context(_, total))
+  |> merge_regions
+}
+
+// The raw post-image range each hunk produced, in ascending pre-image
+// order.
+//
+// `apply_placed` splices bottom-up in pre-image coordinates, so a hunk's
+// post-image position is its pre-image position plus the net line change
+// of every hunk that starts before it — which is what `shift` carries.
+fn produced_ranges(
+  placed: List(Placed),
+  shift: Int,
+  built: List(Region),
+) -> List(Region) {
+  case placed {
+    [] -> list.reverse(built)
+    [hunk, ..rest] -> {
+      let produced = list.length(hunk.replacement)
+      let removed = case hunk.insert {
+        True -> 0
+        False -> hunk.end - hunk.start + 1
+      }
+
+      // An insertion lands *after* its anchor line; a replacement lands on
+      // the first line it removed.
+      let first = case hunk.insert {
+        True -> hunk.start + shift + 1
+        False -> hunk.start + shift
+      }
+
+      // A hunk that produced nothing is a deletion, and its range is
+      // empty. `first` still names the line that closed the seam, so
+      // widening by the context puts anchors on both sides of it — which
+      // is the only thing a deletion leaves to reference.
+      let region = Region(start: first, end: first + produced - 1)
+      produced_ranges(rest, shift + produced - removed, [region, ..built])
+    }
+  }
+}
+
+// One range widened by the context and clamped to the file. A range that
+// survives no part of the file — the whole of it deleted, say — drops out
+// rather than being reported as an inverted range.
+fn with_context(region: Region, total: Int) -> Result(Region, Nil) {
+  let start = int.max(region.start - applied_context_lines, 1)
+  let end = int.min(region.end + applied_context_lines, total)
+  case start <= end {
+    True -> Ok(Region(start:, end:))
+    False -> Error(Nil)
+  }
+}
+
+// Ranges that overlap or merely touch become one, so two hunks three
+// lines apart are rendered as one continuous stretch rather than as two
+// windows repeating the lines between them.
+//
+// `produced_ranges` already walked the hunks in ascending order and
+// `with_context` preserves that order, so the input is sorted and the sort
+// is a guard rather than work: `merge_loop` compares only against the
+// range it last kept, so an unsorted input would silently leave overlaps
+// behind instead of failing. The sort is what makes the merge correct for
+// any input rather than only for this one caller's.
+fn merge_regions(regions: List(Region)) -> List(Region) {
+  regions
+  |> list.sort(fn(a, b) { int.compare(a.start, b.start) })
+  |> merge_loop([])
+}
+
+fn merge_loop(regions: List(Region), merged: List(Region)) -> List(Region) {
+  case regions, merged {
+    [], _ -> list.reverse(merged)
+
+    // `current.end + 1` is what makes adjacency merge as well as overlap:
+    // ranges ending at 9 and starting at 10 have no gap between them.
+    [next, ..rest], [current, ..done] if next.start <= current.end + 1 ->
+      merge_loop(rest, [
+        Region(start: current.start, end: int.max(current.end, next.end)),
+        ..done
+      ])
+    [next, ..rest], _ -> merge_loop(rest, [next, ..merged])
   }
 }
 
