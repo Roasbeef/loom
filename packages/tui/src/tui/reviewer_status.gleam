@@ -93,7 +93,18 @@ pub fn observe(
   })
 }
 
-fn task_excerpt(
+/// Reads the accepted task from operation metadata and available prompt entries.
+///
+/// The agent workspace also calls this for a terminal operation, which is no
+/// longer in the live reviewer roster. An absent prompt returns no excerpt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert reviewer_status.task_excerpt([], [], "missing") == ""
+/// ```
+@internal
+pub fn task_excerpt(
   cells: List(snapshot_view.Cell),
   entries: List(entry.Entry),
   current: String,

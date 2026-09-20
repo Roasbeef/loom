@@ -735,6 +735,10 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
   // transition asks for nothing and nothing clears the board.
   assert tui.goal_action(idle, idle) == tui.HoldGoal
   assert tui.goal_action(running, running) == tui.HoldGoal
+
+  // A different session owns a different goal even when both primaries run.
+  let other = tui.Model(..running, session: "other session")
+  assert tui.goal_action(running, other) == tui.ReadGoal
 }
 
 // --- the command lane -------------------------------------------------------

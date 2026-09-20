@@ -44,7 +44,9 @@ import host/endpoint
 import machine/strand as machine_strand
 import simplifile
 import tui/advisor_pending
+import tui/agent_view
 import tui/agents
+import tui/appearance
 import tui/approval
 import tui/approval_panel
 import tui/attachment
@@ -234,7 +236,7 @@ pub type ToolTail {
 pub type Overlay {
   NoOverlay
   ModelSelector(model_selector.State)
-  AgentInspector(selected: Int)
+  AgentInspector(selected: agents.Inspector)
   SessionSelector(sessions.State)
   DaemonSelector(session_selector.State)
   ApprovalInspector(approval_panel.State)
@@ -517,6 +519,41 @@ pub type CacheNotice {
   )
 }
 
+/// Local editing and reading state belongs to an exact session and strand.
+///
+/// A parked workspace holds the editor itself, including its cursor, rather
+/// than only its text. Neither inspecting another agent nor reconnecting can
+/// turn that draft into input for another recipient.
+@internal
+pub type StrandWorkspace {
+  StrandWorkspace(
+    /// The complete editor, including cursor and selection state.
+    input: text_area.TextAreaState,
+    /// Exact unsent text and image attachments.
+    attachments: List(composer.Attachment),
+    /// Submitted command history for this recipient.
+    history: List(String),
+    /// Current position in the recipient's command history.
+    history_index: Int,
+    /// Draft displaced while browsing command history.
+    history_draft: String,
+    /// Whether this recipient's next message queues or steers.
+    submission_mode: SubmissionMode,
+    /// The bounded ancestry window and its live/reading mode.
+    scrollback: history_view.State,
+    /// Frozen transient content held while reading above the live tail.
+    reading_lines: Option(List(Line)),
+    /// Bottom-relative viewport offset at departure.
+    offset: Int,
+    /// Durable row identities used to restore the same reading position.
+    anchors: List(Option(transcript_anchor.Row)),
+    /// Unanchored row count below those durable identities.
+    prefix: Int,
+    /// Original viewport height for anchor relocation after a resize.
+    height: Int,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -528,7 +565,13 @@ pub type Model {
     quit: Bool,
     width: Int,
     height: Int,
+    /// Launch-time color capability, never read while rendering.
+    palette: appearance.Palette,
     input: text_area.TextAreaState,
+    /// Unsent drafts and reading endpoints never cross session identities.
+    strand_workspaces: Dict(#(String, String), StrandWorkspace),
+    /// The saved endpoint being restored on the next row-cache rebuild.
+    restored_workspace: Option(StrandWorkspace),
     attachments: List(composer.Attachment),
     history: List(String),
     history_index: Int,
@@ -566,19 +609,6 @@ pub type Model {
     cache_notices: List(CacheNotice),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
-    /// Retained scrollback of every strand other than the active one, keyed
-    /// by strand name. The window is per strand because ancestry is: the
-    /// projection walks one leaf's parent chain, and the six hundred
-    /// descriptors retained for `main` say nothing about a sub-agent. A
-    /// switch therefore has to put one window down and pick another up.
-    /// Parking here rather than holding a window per strand inside
-    /// `history_view` keeps that module owning exactly one reading endpoint,
-    /// which is what `freeze`, `older` and `accept` are written against;
-    /// only the switch knows that two endpoints exist. `history_view.capture`
-    /// still discards a window whose strand does not match, which remains the
-    /// safety net for every path that changes strands without coming through
-    /// here.
-    parked_scrollback: dict.Dict(String, history_view.State),
     notice: String,
     /// A complete queue draft never borrows the ordinary composer.
     queue_editor: queue_editor.State,
@@ -660,6 +690,8 @@ pub type Model {
     agent_summary: String,
     /// Current reviewer progress, with operation-owned task excerpts.
     reviewer_rows: List(reviewer_status.Row),
+    /// Stable, operation-owned summaries of the captured agent roster.
+    agent_rows: List(agent_view.Row),
     active_strand: String,
     session: String,
     /// One catalogue display name, paired with the identity that owns it.
@@ -1058,7 +1090,10 @@ pub fn new_model_with_clock(
     quit: False,
     width: 80,
     height: 24,
+    palette: appearance.Dark,
     input: text_area.state_new(),
+    strand_workspaces: dict.new(),
+    restored_workspace: None,
     attachments: [],
     history: [],
     history_index: 0,
@@ -1086,7 +1121,6 @@ pub fn new_model_with_clock(
     cache_watch: dict.new(),
     cache_notices: [],
     scrollback: history_view.empty(),
-    parked_scrollback: dict.new(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
     worktree: worktree_view.new(),
@@ -1127,6 +1161,7 @@ pub fn new_model_with_clock(
     strands:,
     agent_summary: agents.summary(strands),
     reviewer_rows: [],
+    agent_rows: [],
     active_strand: "main",
     session: "demo",
     session_label: None,
@@ -1251,7 +1286,19 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // Only here does a copy reach a terminal: every other way of running the
   // loop shares stdout with something that is not one.
   let initial =
-    open_recording(Model(..launched, clipboard: TerminalClipboard), record)
+    open_recording(
+      Model(
+        ..launched,
+        clipboard: TerminalClipboard,
+        palette: appearance.detect(
+          host_bootstrap.getenv("COLORTERM") |> result.unwrap(""),
+          host_bootstrap.getenv("TERM") |> result.unwrap(""),
+          host_bootstrap.getenv("COLORFGBG") |> result.unwrap(""),
+          host_bootstrap.getenv("NO_COLOR") |> option.from_result,
+        ),
+      ),
+      record,
+    )
     |> start_herdr_reporter
 
   let _ =
@@ -2679,7 +2726,7 @@ fn render_frame(
     |> render_panel_border(
       transcript_panel,
       transcript_title(model),
-      theme.quiet,
+      theme.divider,
     )
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
@@ -2697,7 +2744,7 @@ fn render_frame(
       agents.render_overlay(
         base,
         screen,
-        model.strands,
+        displayed_agents(model),
         model.active_strand,
         selected,
       )
@@ -2749,7 +2796,9 @@ fn render_frame(
     render_summary_surface(rendered, cursor, screen, model)
   let #(rendered, cursor) =
     render_context_surface(rendered, cursor, screen, model)
-  render_queue_surface(rendered, cursor, screen, model)
+  let #(rendered, cursor) =
+    render_queue_surface(rendered, cursor, screen, model)
+  #(appearance.apply(rendered, model.palette), cursor)
 }
 
 /// The area inside a one-cell rounded border.
@@ -2911,7 +2960,7 @@ fn render_changes_panel(
   case area.size.width > 0 {
     True ->
       buf
-      |> render_panel_border(area, diff_title(model), theme.quiet)
+      |> render_panel_border(area, diff_title(model), theme.divider)
       |> render_diff_view(panel_inner(area), model)
     False -> buf
   }
@@ -2923,7 +2972,13 @@ fn render_agent_rail(
   model: Model,
 ) -> buffer.Buffer {
   case area.size.width > 0 {
-    True -> agents.render_rail(buf, area, model.strands, model.active_strand)
+    True ->
+      agents.render_rail(
+        buf,
+        area,
+        displayed_agents(model),
+        model.active_strand,
+      )
     False -> buf
   }
 }
@@ -3083,7 +3138,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
-    ToolCall -> #("● ", theme.success_text())
+    ToolCall -> #("● ", theme.current_bold())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
@@ -3904,7 +3959,7 @@ fn composer_status_lines(model: Model) -> List(String) {
   // height when the advisor has nothing waiting.
   let nudges = case model.nudges {
     None -> []
-    Some(board) -> advisor_pending.lines(board)
+    Some(board) -> list.take(advisor_pending.lines(board), 1)
   }
 
   // A pinned goal keeps one row above the nudges for as long as it is
@@ -3979,6 +4034,25 @@ fn editor_content_width(model: Model) -> Int {
 }
 
 fn input_title(model: Model) -> String {
+  " To " <> recipient_label(model) <> " ·" <> input_behavior(model)
+}
+
+// A long child ID must not hide whether Enter sends, queues, or steers.
+// Its distinguishing suffix remains visible; the workspace shows it in full.
+fn recipient_label(model: Model) -> String {
+  model.active_strand
+  |> text_hygiene.single_line
+  |> string.reverse
+  |> text.truncate(int.max(8, int.min(32, model.width / 3)), "…")
+  |> string.reverse
+}
+
+fn input_behavior(model: Model) -> String {
+  use <- bool.guard(
+    model.captured != None
+      && !is_known_strand(model.strands, model.active_strand),
+    " recipient unavailable · draft retained · F2 agents ",
+  )
   use <- bool.guard(model.peer == Disconnected, case model.reconnect {
     ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
     ReconnectIdle | ReconnectSpent ->
@@ -3994,7 +4068,7 @@ fn input_title(model: Model) -> String {
     model.submission_mode
   {
     Some(_), _, _ -> " stopped · enter sends held input with your message "
-    None, None, _ -> " prompt · / commands "
+    None, None, _ -> " prompt · enter sends · / commands "
     None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
     None, Some(status), PromptNext ->
       " "
@@ -4485,20 +4559,23 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
       )
     attempt_replay.Rejected(reason) ->
       append_error(model, "open session: " <> reason)
-    attempt_replay.Adopt(cut, view) ->
+    attempt_replay.Adopt(cut, view) -> {
+      let model =
+        select_workspace(
+          model,
+          cut.attachment.expected.session,
+          case model.session == cut.attachment.expected.session {
+            True -> model.active_strand
+            False -> "main"
+          },
+        )
       Model(
         ..model,
         session: cut.attachment.expected.session,
         captured: None,
         scrollback: case model.session == cut.attachment.expected.session {
           True -> history_view.cancel(model.scrollback)
-          False -> history_view.empty()
-        },
-        parked_scrollback: case
-          model.session == cut.attachment.expected.session
-        {
-          True -> model.parked_scrollback
-          False -> dict.new()
+          False -> model.scrollback
         },
         note_board: None,
         approvals: [],
@@ -4523,14 +4600,14 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         interrupt: None,
       )
       |> apply_cut(cut, view)
-
-    // Every update, cuts included, goes through the live reducer. A cut used
-    // to be special-cased into `apply_cut`, which always invalidates the
-    // transcript and restarts the activity indicator; `reconcile_cut`'s
-    // equal-cut fast path is what the live client does instead, and a replay
-    // that rendered frames the live client did not is not a replay. The
-    // outbound half of that path is made inert by `request_decisions`, which
-    // sends nothing while the peer is `Replaying`.
+      // Every update, cuts included, goes through the live reducer. A cut used
+      // to be special-cased into `apply_cut`, which always invalidates the
+      // transcript and restarts the activity indicator; `reconcile_cut`'s
+      // equal-cut fast path is what the live client does instead, and a replay
+      // that rendered frames the live client did not is not a replay. The
+      // outbound half of that path is made inert by `request_decisions`, which
+      // sends nothing while the peer is `Replaying`.
+    }
     attempt_replay.Update(update) -> apply_channel_update(model, update)
   }
 }
@@ -4750,6 +4827,8 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
     || before.notes_open != after.notes_open
     || before.diff_view != after.diff_view
     || before.active_strand != after.active_strand
+    || before.session != after.session
+    || before.nudges != after.nudges
     || viewport_height_changed(
       transcript_viewport_height(before),
       transcript_viewport_height(after),
@@ -4757,16 +4836,19 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
-      let reading_lines = case reading_history(after) {
-        False -> None
-        True ->
-          case before.reading_lines {
-            Some(lines)
-              if before.active_strand == after.active_strand
-              && before.session == after.session
-            -> Some(lines)
-            Some(_) | None -> Some(transient_lines(before))
-          }
+      let same_workspace =
+        before.active_strand == after.active_strand
+        && before.session == after.session
+      let reading_lines = case
+        reading_history(after),
+        same_workspace,
+        before.reading_lines,
+        after.reading_lines
+      {
+        False, _, _, _ -> None
+        True, True, Some(lines), _ -> Some(lines)
+        True, _, _, Some(lines) -> Some(lines)
+        True, _, _, None -> Some(transient_lines(after))
       }
       let cached =
         refresh_diff_cache(before, Model(..after, reading_lines:))
@@ -4784,22 +4866,39 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       let rendered_anchors = case
         after.help_open || after.notes_open || !reading_history(after),
         record_cache_matches(after, width)
-        && list.is_empty(after.pending_records),
+        && list.is_empty(after.pending_records)
+        && before.active_strand == after.active_strand
+        && before.session == after.session,
         before.rendered_anchors
       {
         True, _, _ -> []
         False, True, [_, ..] -> before.rendered_anchors
         False, _, _ -> record_anchors_for(cached, width)
       }
+      let endpoint = case after.restored_workspace {
+        Some(saved) -> #(saved.anchors, saved.height, saved.prefix)
+        None ->
+          case
+            before.active_strand == after.active_strand
+            && before.session == after.session
+          {
+            True -> #(
+              before.rendered_anchors,
+              transcript_viewport_height(before),
+              before.rendered_row_count - list.length(before.rendered_anchors),
+            )
+            False -> #([], transcript_viewport_height(after), 0)
+          }
+      }
       let anchored = case reading_history(after) {
         False -> 0
         True ->
           transcript_anchor.relocate(
-            before.rendered_anchors,
+            endpoint.0,
             rendered_anchors,
             after.scroll_offset,
-            transcript_viewport_height(before),
-            before.rendered_row_count - list.length(before.rendered_anchors),
+            endpoint.1,
+            endpoint.2,
             rendered_row_count - list.length(rendered_anchors),
           )
           |> option.unwrap(after.scroll_offset)
@@ -4820,6 +4919,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       }
       Model(
         ..cached,
+        restored_workspace: None,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
         rendered_rows:,
@@ -5280,6 +5380,37 @@ fn transient_lines(model: Model) -> List(Line) {
   )
   |> list.append(tool_tail_lines(model))
   |> list.append(pending_input_lines(model))
+  |> list.append(pending_nudge_lines(model))
+}
+
+// Pending advice is a labeled, disposable observation in the scrollable tail.
+// It is never appended to durable records, and inspecting it does not deliver
+// it. Keeping its complete body here prevents a long queue from taking the
+// composer offscreen while still making every received line readable.
+fn pending_nudge_lines(model: Model) -> List(Line) {
+  case model.nudges {
+    Some(board) if board.strand == model.active_strand && board.pending != [] -> {
+      let heading =
+        "Advisor · pending, not delivered · "
+        <> int.to_string(board.total)
+        <> " nudges"
+      let rows =
+        list.flat_map(board.pending, fn(body) {
+          [Line(System, "Pending advisor nudge"), Line(ToolDetail, body)]
+        })
+      let omitted = case board.total > list.length(board.pending) {
+        True -> [
+          Line(
+            System,
+            "Additional nudges were not included in this observation",
+          ),
+        ]
+        False -> []
+      }
+      [Line(System, heading), ..list.append(rows, omitted)]
+    }
+    Some(_) | None -> []
+  }
 }
 
 // The rename overlay owns pasted text just as it owns character keys. It
@@ -5420,20 +5551,17 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // and a sent request keeps that identity rather than acquiring the new
       // session's.
       let model = retire_previous(model)
-
-      // Parked windows are keyed by strand name alone, and two sessions reuse
-      // the same names. Adopting a different session must drop them, or a
-      // later switch to `main` would restore another session's ancestry.
-      let model = case model.session == cut.attachment.expected.session {
-        True ->
-          Model(..model, scrollback: history_view.cancel(model.scrollback))
-        False ->
-          Model(
-            ..model,
-            scrollback: history_view.empty(),
-            parked_scrollback: dict.new(),
-          )
+      let target_strand = case
+        model.session == cut.attachment.expected.session
+      {
+        True -> model.active_strand
+        False -> "main"
       }
+      let model =
+        select_workspace(model, cut.attachment.expected.session, target_strand)
+
+      let model =
+        Model(..model, scrollback: history_view.cancel(model.scrollback))
 
       // Only then is the old inbox drained. Draining first would discard
       // frames the retirement is entitled to reduce.
@@ -5457,6 +5585,11 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             Some(_) | None -> model.creation_key
           },
           workspace: workspace,
+          active_strand: target_strand,
+          agent_rows: case model.session == cut.attachment.expected.session {
+            True -> model.agent_rows
+            False -> []
+          },
           session: cut.attachment.expected.session,
           session_label: Some(#(cut.attachment.expected.session, name)),
           records: [],
@@ -5832,14 +5965,9 @@ fn render_cut(
   view: snapshot_view.View,
   reviews: List(approval.Review),
 ) -> Model {
-  let active = case is_known_strand(view.strands, model.active_strand) {
-    True -> model.active_strand
-    False ->
-      case view.strands {
-        [first, ..] -> first.id
-        [] -> "main"
-      }
-  }
+  // A disappearing strand never retargets a draft. The composer keeps its
+  // identity and submission is refused until that target is available again.
+  let active = model.active_strand
   let model = observe_completion(model, cut, view, active)
   let model = retain_queue_selection(model, view, active)
   let same_operation = case model.captured {
@@ -5942,28 +6070,28 @@ fn render_cut(
       && !snapshot_view.has_result(view, tail.strand, tail.operation)
     })
 
-  // A strand the cut no longer carries cannot be selected again, so its
-  // parked window is unreachable. Dropping it here is what bounds the
-  // dictionary over a long session that retires sub-agents continuously.
-  let parked =
-    dict.filter(model.parked_scrollback, fn(strand, _) {
-      is_known_strand(view.strands, strand)
-    })
+  // Retired strands keep unsent drafts but release their bounded reading
+  // windows. A future appearance must rebuild history from its own capture.
+  let workspaces =
+    prune_workspace_history(
+      model.strand_workspaces,
+      model.session,
+      view.strands,
+    )
+  let reviewers = reviewer_status.observe(model.reviewer_rows, cut.window, view)
+  let rows = agent_view.observe(model.agent_rows, cut.window, view, reviewers)
   Model(
     ..model,
     captured: Some(#(cut, view)),
     approvals: reviews,
     active_strand: active,
     strands: view.strands,
-    agent_summary: agents.summary(view.strands),
-    reviewer_rows: reviewer_status.observe(
-      model.reviewer_rows,
-      cut.window,
-      view,
-    ),
+    agent_summary: agents.summary_rows(rows),
+    reviewer_rows: reviewers,
+    agent_rows: rows,
     records: branch.records,
     scrollback: history,
-    parked_scrollback: parked,
+    strand_workspaces: workspaces,
     activity_started_ms: case same_operation {
       True -> model.activity_started_ms
       False -> None
@@ -6235,6 +6363,7 @@ fn adopt_session(
   inbox: Subject(connection.Message),
   socket: connection.Connection,
 ) -> Model {
+  let model = select_workspace(model, target.session, "main")
   case model.peer {
     Attached(socket: previous) -> connection.close(previous)
     Preview | Replaying | Disconnected -> Nil
@@ -6390,10 +6519,16 @@ fn handle_presentation_message(
 
 fn apply_event(model: Model, event: protocol.Event) -> Model {
   let updated = case event {
-    protocol.FullSnapshot(session:, strands:, entries:, usage:) ->
+    protocol.FullSnapshot(session:, strands:, entries:, usage:) -> {
+      let target = case model.session == session {
+        True -> model.active_strand
+        False -> "main"
+      }
+      let model = select_workspace(model, session, target)
       Model(
         ..model,
         session:,
+        active_strand: target,
         strands:,
         agent_summary: agents.summary(strands),
         usage:,
@@ -6420,6 +6555,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         transcript: [Line(System, "attached to session " <> session)],
       )
       |> invalidate_transcript
+    }
     protocol.StrandsSnapshot(strands:) -> {
       let summary = agents.summary(strands)
       Model(..model, strands:, agent_summary: summary, notice: summary)
@@ -6731,10 +6867,23 @@ fn restore_returned_draft(
   text: String,
   attachment_count: Int,
 ) -> Model {
-  let current = text_area.value(model.input)
-  let restored = case string.trim(current) {
-    "" -> text
-    _ -> current <> "\n\n" <> text
+  // A return follows the prompt's original recipient even if the operator
+  // has opened another strand since submitting it. Only that owner's draft
+  // can accept the returned text.
+  let model = case strand == model.active_strand {
+    True -> Model(..model, input: append_returned_text(model.input, text))
+    False -> {
+      let owner = #(model.session, strand)
+      let saved =
+        dict.get(model.strand_workspaces, owner)
+        |> result.unwrap(empty_workspace())
+      let saved =
+        StrandWorkspace(..saved, input: append_returned_text(saved.input, text))
+      Model(
+        ..model,
+        strand_workspaces: dict.insert(model.strand_workspaces, owner, saved),
+      )
+    }
   }
   let images = case attachment_count {
     0 -> ""
@@ -6744,7 +6893,7 @@ fn restore_returned_draft(
       <> " attachment(s) stayed on the dead daemon — re-attach them"
   }
   append_notice(
-    Model(..model, input: text_area.state_from_string(restored)),
+    model,
     "daemon returned the "
       <> kind
       <> " prompt held for "
@@ -6752,6 +6901,19 @@ fn restore_returned_draft(
       <> " — restored as a draft"
       <> images,
   )
+}
+
+// Keep both copies when the owner has continued typing before custody returns.
+fn append_returned_text(
+  input: text_area.TextAreaState,
+  returned: String,
+) -> text_area.TextAreaState {
+  let current = text_area.value(input)
+  let restored = case string.trim(current) {
+    "" -> returned
+    _ -> current <> "\n\n" <> returned
+  }
+  text_area.state_from_string(restored)
 }
 
 // One line per schedule, in the listing's own order — the operator's
@@ -8231,12 +8393,16 @@ pub fn advisor_lines(
   // `System` rather than `User` in both: the row is context the harness put
   // on this branch, and the shaded `› User` block a user turn is drawn in
   // would say the operator typed it.
-  case extent {
-    notes_view.Excerpt -> [
+  case value, extent {
+    Nudges(..), _ -> [Line(System, heading), Line(ToolDetail, value.body)]
+    _, notes_view.Excerpt -> [
       Line(System, heading <> advisor_preview(value) <> composer.expand_hint),
     ]
 
-    notes_view.Complete -> [Line(System, heading), Line(ToolDetail, value.body)]
+    _, notes_view.Complete -> [
+      Line(System, heading),
+      Line(ToolDetail, value.body),
+    ]
   }
 }
 
@@ -9338,7 +9504,42 @@ fn update_model_selector(
   }
 }
 
-fn update_agent_inspector(key: keys.Key, model: Model, selected: Int) -> Model {
+// Legacy fixtures have no captured register cut. Their rows explicitly expose
+// unavailable task and result evidence instead of inventing successful work.
+fn displayed_agents(model: Model) -> List(agent_view.Row) {
+  let rows = case model.captured {
+    Some(_) -> model.agent_rows
+    None -> agent_view.legacy(model.strands)
+  }
+  case model.peer {
+    Disconnected ->
+      list.map(rows, fn(row) {
+        agent_view.Row(
+          ..row,
+          status: agent_view.Unavailable,
+          activity: "Disconnected · last observation may be stale",
+          approvals: [],
+        )
+      })
+    Attached(_) | Preview | Replaying -> rows
+  }
+}
+
+fn open_agents(model: Model) -> Model {
+  Model(
+    ..model,
+    overlay: AgentInspector(agents.inspect(model.active_strand)),
+    repaint_phase: !model.repaint_phase,
+    notice: "agent workspace",
+  )
+}
+
+fn update_agent_inspector(
+  key: keys.Key,
+  model: Model,
+  inspector: agents.Inspector,
+) -> Model {
+  let rows = displayed_agents(model)
   case key {
     keys.Escape | keys.Tab ->
       Model(
@@ -9350,46 +9551,75 @@ fn update_agent_inspector(key: keys.Key, model: Model, selected: Int) -> Model {
     keys.Up ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.move_selection(
-          selected,
-          list.length(model.strands),
-          False,
+        overlay: AgentInspector(agents.navigate(
+          inspector,
+          rows,
+          agents.Previous,
         )),
       )
     keys.Down ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.move_selection(
-          selected,
-          list.length(model.strands),
-          True,
-        )),
+        overlay: AgentInspector(agents.navigate(inspector, rows, agents.Next)),
       )
+    keys.Char("n") ->
+      Model(
+        ..model,
+        overlay: AgentInspector(agents.next_attention(inspector, rows)),
+      )
+    keys.PageUp ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            scroll: int.max(0, inspector.scroll - 5),
+          ),
+        ),
+      )
+    keys.PageDown ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(..inspector, scroll: inspector.scroll + 5),
+        ),
+      )
+    keys.Char("a") -> inspect_agent_approval(model, inspector.selected)
     keys.Enter ->
-      case agents.selected_strand(model.strands, selected) {
-        Some(strand) -> switch_active_strand(model, strand)
-        None -> model
+      case is_known_strand(model.strands, inspector.selected) {
+        True -> switch_active_strand(model, inspector.selected)
+        False ->
+          Model(
+            ..model,
+            notice: "Selected agent is unavailable; recipient unchanged",
+          )
       }
-    keys.PageUp
-    | keys.PageDown
-    | keys.Backspace
-    | keys.Left
-    | keys.Right
-    | keys.Delete
-    | keys.BackTab
-    | keys.Home
-    | keys.End
-    | keys.Alt(_)
-    | keys.Ctrl(_)
-    | keys.Char(_)
-    | keys.Insert
-    | keys.F(_)
-    | keys.Unknown(_) -> model
+    _ -> model
+  }
+}
+
+// Inspection opens the existing exact-request panel. It never chooses or sends
+// a decision, and a disappeared request cannot be replaced by a different one.
+fn inspect_agent_approval(model: Model, strand: String) -> Model {
+  let found =
+    displayed_agents(model)
+    |> list.find(fn(row) { row.id == strand })
+    |> result.try(fn(row) { list.first(row.approvals) })
+    |> result.try(fn(id) {
+      list.find(model.approvals, fn(review) {
+        review.id == id && review.status == approval.Pending
+      })
+    })
+  case found {
+    Ok(review) ->
+      Model(..model, overlay: ApprovalInspector(approval_panel.new(review)))
+    Error(Nil) -> Model(..model, notice: "No current approval for this agent")
   }
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
   case diff_shown(model), model.worktree.focus, key {
+    _, _, keys.F(2) -> open_agents(model)
     True, _, keys.Ctrl("d") ->
       Model(
         ..model,
@@ -10124,6 +10354,12 @@ fn submit(model: Model) -> Model {
 
 fn mutation_refusal(model: Model, command: command.Command) -> Option(String) {
   let mutates = mutating_submission(model, command)
+  use <- bool.guard(
+    mutates
+      && model.captured != None
+      && !is_known_strand(model.strands, model.active_strand),
+    Some("recipient unavailable; draft retained for " <> model.active_strand),
+  )
   case mutates, model.peer, model.channel {
     False, _, _ -> None
     True, Disconnected, _ -> Some("no conversation is attached; draft retained")
@@ -10355,16 +10591,7 @@ fn submit_text(model: Model) -> Model {
         ))
       append_system(switched, "active model changed to " <> name)
     }
-    command.Strands | command.Agents ->
-      Model(
-        ..cleared,
-        overlay: AgentInspector(active_strand_index(
-          cleared.strands,
-          cleared.active_strand,
-        )),
-        repaint_phase: !cleared.repaint_phase,
-        notice: "agent inspector",
-      )
+    command.Strands | command.Agents -> open_agents(cleared)
     command.Schedules ->
       send_frame(cleared, protocol.schedules(cleared.next_id))
     command.Unschedule(name:, target:) -> {
@@ -11379,34 +11606,130 @@ fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
   })
 }
 
+// Keep draft ownership across sessions while retaining history only for
+// strands still present in the current session. Draft text is never evicted.
+fn prune_workspace_history(
+  workspaces: Dict(#(String, String), StrandWorkspace),
+  session: String,
+  strands: List(protocol.Strand),
+) -> Dict(#(String, String), StrandWorkspace) {
+  dict.map_values(workspaces, fn(owner, saved) {
+    case owner.0 == session && is_known_strand(strands, owner.1) {
+      True -> saved
+      False ->
+        StrandWorkspace(
+          ..saved,
+          scrollback: history_view.empty(),
+          reading_lines: None,
+          offset: 0,
+          anchors: [],
+          prefix: 0,
+        )
+    }
+  })
+}
+
+// New destinations begin with their own editor and an empty history window.
+fn empty_workspace() -> StrandWorkspace {
+  StrandWorkspace(
+    text_area.state_new(),
+    [],
+    [],
+    0,
+    "",
+    PromptNext,
+    history_view.empty(),
+    None,
+    0,
+    [],
+    0,
+    1,
+  )
+}
+
+// Save before changing identity; both empty drafts and submission mode belong
+// to the destination, so a first visit starts with a fresh editor.
+fn select_workspace(model: Model, session: String, strand: String) -> Model {
+  use <- bool.guard(
+    model.session == session && model.active_strand == strand,
+    model,
+  )
+
+  // Session observations belong to the attachment that read them. Reusing
+  // the common strand name "main" cannot transfer advice or a goal.
+  let model = case model.session == session {
+    True -> model
+    False ->
+      Model(
+        ..model,
+        nudges: None,
+        nudges_refresh: worktree_view.Settled,
+        nudges_awaiting: None,
+        nudges_request: None,
+        goal: None,
+        goal_refresh: worktree_view.Settled,
+        goal_awaiting: None,
+        goal_request: None,
+        goal_report: HoldGoalReport,
+      )
+  }
+  let parked =
+    dict.insert(
+      model.strand_workspaces,
+      #(model.session, model.active_strand),
+      StrandWorkspace(
+        model.input,
+        model.attachments,
+        model.history,
+        model.history_index,
+        model.history_draft,
+        model.submission_mode,
+        model.scrollback,
+        model.reading_lines,
+        model.scroll_offset,
+        model.rendered_anchors,
+        model.rendered_row_count - list.length(model.rendered_anchors),
+        transcript_viewport_height(model),
+      ),
+    )
+  let saved = dict.get(parked, #(session, strand)) |> option.from_result
+  let restored = option.unwrap(saved, empty_workspace())
+  Model(
+    ..model,
+    strand_workspaces: dict.delete(parked, #(session, strand)),
+    agent_rows: case model.session == session {
+      True -> model.agent_rows
+      False -> []
+    },
+    reviewer_rows: case model.session == session {
+      True -> model.reviewer_rows
+      False -> []
+    },
+    restored_workspace: saved,
+    input: restored.input,
+    attachments: restored.attachments,
+    history: restored.history,
+    history_index: restored.history_index,
+    history_draft: restored.history_draft,
+    command_selected: 0,
+    submission_mode: restored.submission_mode,
+    scrollback: history_view.cancel(restored.scrollback),
+    reading_lines: restored.reading_lines,
+    scroll_offset: restored.offset,
+  )
+}
+
 fn switch_active_strand(model: Model, strand: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
-
-  // The outgoing strand's window is put down before the incoming one is
-  // picked up, so the switch never discards loaded history. Without this the
-  // only surviving history would be whatever `cut.window` holds, and that is
-  // the newest hundred records of the whole session across every strand: with
-  // two busy sub-agents running, a return to `main` would show one or two of
-  // its own entries and then spend the rest of the session scanning the
-  // global sequence space backwards to find the ancestry it already had.
-  let parked =
-    dict.insert(model.parked_scrollback, model.active_strand, model.scrollback)
-  let restored = dict.get(parked, strand) |> result.unwrap(history_view.empty())
-
-  // The incoming strand's window is held directly from here on, so its parked
-  // copy is removed rather than left to go stale behind the live one.
-  let parked = dict.delete(parked, strand)
+  let model = select_workspace(model, model.session, strand)
   let selected =
     Model(
       ..model,
       overlay: NoOverlay,
       active_strand: strand,
-      parked_scrollback: parked,
-      scrollback: restored,
       queued: [],
       awaiting_outcome: None,
       current_model: "loading…",
-      scroll_offset: 0,
       record_cache_valid: False,
       repaint_phase: !model.repaint_phase,
       notice: "active strand: " <> strand,
@@ -11415,25 +11738,6 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
   case model.captured {
     Some(#(cut, view)) -> apply_cut(selected, cut, view)
     None -> send_frame(selected, protocol.config(model.next_id, strand))
-  }
-}
-
-fn active_strand_index(strands: List(protocol.Strand), active: String) -> Int {
-  active_strand_index_loop(strands, active, 0)
-}
-
-fn active_strand_index_loop(
-  strands: List(protocol.Strand),
-  active: String,
-  index: Int,
-) -> Int {
-  case strands {
-    [] -> 0
-    [Strand(id:, ..), ..rest] ->
-      case id == active {
-        True -> index
-        False -> active_strand_index_loop(rest, active, index + 1)
-      }
   }
 }
 
@@ -12286,7 +12590,8 @@ fn idle_boundary(before: Model, after: Model) -> NudgeAction {
     !strand_listed(before, advisor_pending.primary_strand)
     && strand_listed(after, advisor_pending.primary_strand)
 
-  case primary_settled || review_settled || newly_listed {
+  let session_changed = before.session != after.session
+  case primary_settled || review_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges
   }
@@ -12371,6 +12676,7 @@ fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
             nudges_awaiting: None,
             nudges_request: None,
           )
+          |> invalidate_transcript
           |> invalidate_frame
 
         False -> model
@@ -12436,8 +12742,11 @@ pub type GoalAction {
 @internal
 pub fn goal_action(before: Model, after: Model) -> GoalAction {
   let started =
-    !strand_running(before, advisor_pending.primary_strand)
-    && strand_running(after, advisor_pending.primary_strand)
+    before.session != after.session
+    || {
+      !strand_running(before, advisor_pending.primary_strand)
+      && strand_running(after, advisor_pending.primary_strand)
+    }
 
   case started, advisor_nudges_action(before, after) {
     True, _ -> ReadGoal

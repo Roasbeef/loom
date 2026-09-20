@@ -19,6 +19,7 @@ import gleeunit
 import simplifile
 import snapshot_test
 import tui
+import tui/agent_view
 import tui/agents
 import tui/bootstrap
 import tui/command
@@ -821,9 +822,9 @@ pub fn agent_inspector_rows_stay_inside_the_overlay_test() {
     agents.render_overlay(
       buffer.buffer_new(screen),
       screen,
-      strands,
+      agent_view.legacy(strands),
       "sub:worker-0",
-      7,
+      agents.inspect("sub:worker-7"),
     )
 
   // The inspector reserves three rows per strand and two more for its
@@ -2288,7 +2289,7 @@ pub fn a_live_recording_replays_to_its_settled_frame_test() {
   // live strand paints the elapsed seconds of the *replay* into the
   // prompt border, so a fixture truncated mid-turn would flake under
   // load; the idle border title is that property, asserted.
-  assert string.contains(text, "prompt · / commands")
+  assert string.contains(text, "prompt · enter sends · / commands")
   assert !string.contains(text, "Design-preview echo received.")
   assert count_occurrences(text, "Reply with exactly this sentence") == 1
   snapshot_test.assert_snapshot("live-gemini-flash-reply", text)

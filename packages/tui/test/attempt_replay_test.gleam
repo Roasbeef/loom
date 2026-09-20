@@ -11,6 +11,7 @@ import core/message
 import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -20,12 +21,14 @@ import gleam/string
 import machine/codec as machine_codec
 import machine/strand
 import tui
+import tui/advisor_pending
 import tui/attachment
 import tui/attempt
 import tui/attempt_replay
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/goal_view
 import tui/history_view
 import tui/protocol
 import tui/recording
@@ -1031,7 +1034,17 @@ pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_
 
 pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() {
   let #(model, _) = waiting_model(tui.ComposerSubmission)
-  let model = tui.Model(..model, session: "A")
+  let model =
+    tui.Model(
+      ..model,
+      session: "A",
+      nudges: Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
+      nudges_awaiting: Some("old attachment"),
+      nudges_request: Some(42),
+      goal: Some(goal_view.NoGoal(1)),
+      goal_awaiting: Some("old attachment"),
+      goal_request: Some(43),
+    )
   let failed =
     tui.candidate_outcome(
       model,
@@ -1067,8 +1080,22 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
       )),
     )
   assert adopted.session == "B"
+  assert adopted.nudges == None
+  assert adopted.goal == None
+  assert adopted.nudges_awaiting == None
+  assert adopted.nudges_request == None
+  assert adopted.goal_awaiting == None
+  assert adopted.goal_request == None
+  assert tui.advisor_nudges_action(model, adopted) == tui.ReadNudges
+  assert tui.goal_action(model, adopted) == tui.ReadGoal
   assert adopted.pending_submission == None
-  assert textarea.value(adopted.input) == "visible draft"
+  assert textarea.value(adopted.input) == ""
+    as "a replacement session never inherits the previous recipient's draft"
+  let assert Ok(parked) =
+    dict.get(adopted.strand_workspaces, #("A", model.active_strand))
+    as "the original draft remains recoverable under its exact owner"
+  assert textarea.value(parked.input) == "visible draft"
+  assert parked.attachments == model.attachments
   let assert Some(channel) = adopted.channel
     as "the terminal adopted B's own channel"
   assert !session_channel.has_unsent(channel)
@@ -1085,6 +1112,32 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
     })
   let assert [notice] = notices as "the unsent draft is reported once"
   assert notice.text == "Not sent: target changed from A; draft retained"
+
+  let #(back, updates) =
+    read_channel(
+      session_channel.replay(snapshot.Expected("A", "epoch", "incarnation")),
+      events(3, "A"),
+    )
+  let assert [session_channel.Captured(cut, view, _)] = updates
+    as "the original session is independently captured again"
+  let returned =
+    tui.candidate_outcome(
+      adopted,
+      attachment.idle(),
+      Some(attachment.Adopted(
+        back,
+        cut,
+        view,
+        connection.new_inbox(),
+        workspace.Context("A", None),
+        "Session A",
+        None,
+      )),
+    )
+  assert returned.session == "A"
+  assert textarea.value(returned.input) == "visible draft"
+  assert returned.attachments == model.attachments
+  assert returned.pending_submission == None
 }
 
 pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_test() {

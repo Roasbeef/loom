@@ -130,7 +130,10 @@ pub fn hostile_agent_names_render_inert_test() {
 
   let overlay_inbox = connection.new_inbox()
   let opened =
-    tui.Model(..quiet_model(overlay_inbox), overlay: tui.AgentInspector(0))
+    tui.Model(
+      ..quiet_model(overlay_inbox),
+      overlay: tui.AgentInspector(agents.inspect("main")),
+    )
   let inspector = last_rows(opened, 120, 30, [deliver(names)])
   assert_shows(inspector, [
     "active-sentinel",

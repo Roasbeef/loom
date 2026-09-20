@@ -585,7 +585,12 @@ fn drive(ready: Ready) -> Nil {
   let assert Ok(Nil) = terminal.press(term, "Enter")
     as "Enter must reach the pane"
   let _metadata =
-    must_show(term, "0 live / 2 agents", 10_000, "fork metadata never painted")
+    must_show(
+      term,
+      "2 agents · 0 working · 0 attention",
+      10_000,
+      "fork metadata never painted",
+    )
   let fork_is_durable = fn() {
     api.strands(booted.instance.runtime)
     |> result.map(fn(strands) { list.contains(strands, "main-fork") })

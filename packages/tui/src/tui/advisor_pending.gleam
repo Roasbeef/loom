@@ -1,13 +1,11 @@
 //// The advisor's queued nudges, drawn beside the composer while the primary
 //// is idle.
 ////
-//// A queued nudge has not been delivered to anything. It waits in the
-//// advisor's guard cell until the primary stops, and once the turn's one
-//// unsolicited delivery is spent it waits for the operator's next prompt,
-//// so it is not on any branch and no transcript row describes it.
-//// That is why this panel exists and why it is deliberately *not* a
-//// transcript row: drawing undelivered advice where delivered messages go
-//// would tell the operator the model had already read it.
+//// A queued nudge has not been delivered to the primary. It waits in the
+//// advisor's guard cell until an eligible run start drains it. The composer
+//// shows this observation's heading; the transient scrollable tail shows
+//// every received body under an explicit pending/not-delivered label. Neither
+//// surface creates a durable entry or changes model context.
 ////
 //// It is also why the terminal pulls rather than being pushed. The queue is
 //// interesting at exactly one moment — the primary idle, with advice written
