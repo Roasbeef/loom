@@ -685,7 +685,9 @@ pub fn read_tool() -> tool.Tool {
   tool.Tool(
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
-      <> "Use offset/limit to window large files; anchors are what fs_edit "
+      <> "Use offset/limit to window large files; `limit` without `offset` "
+      <> "returns the first `limit` lines, so pass `offset` to read anywhere "
+      <> "but the start of the file. Anchors are what fs_edit "
       <> "hunks must reference, and the result text carries the file digest "
       <> "fs_edit requires. PNG, JPEG, GIF, and WebP files return images for "
       <> "visual inspection; offset/limit apply only to text.",
