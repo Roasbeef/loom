@@ -1812,21 +1812,57 @@ path is untouched — an open operation polls at exactly the period it always
 did — and the doorbell-drop suites still pass with their own short intervals
 configured, which is what they were always measuring.
 
+### The strand sleeps: `assembly_heap_census_test` at six sessions
+
+The same fixture, same rerun command, on this branch:
+
+| Cut | Total allocated | Total used | Hibernating |
+|---|---:|---:|---:|
+| Just worked | 60.54 MiB | 35.79 MiB | 0 |
+| Idle, before the interval | 58.79 MiB | 35.74 MiB | 0 |
+| **Hibernated** | **48.29 MiB** | **34.37 MiB** | **48** |
+| Woken, one message each | 37.70 MiB (weft row) | 14.85 MiB (weft row) | 0 |
+
+**Forty-eight sleepers, eight per session, against the previous section's
+forty-two at seven.** The sixth extra is one per session and it is the strand:
+nothing else was added, and the strand was the one weft actor in the row that
+could not sleep. The whole reduction is in that row, 35.82 MiB idle to 25.31
+MiB hibernated, which is **10.51 MiB of 58.79, or 17.9%** of what an idle
+six-session assembly holds — against 3 to 5% for the same fixture before. The
+one process per session that could not hibernate was holding most of what
+hibernation had to give.
+
+Waking forty-eight took 5 ms of suspend-and-resume, about 104 microseconds
+each, consistent with the previous section's sub-250.
+
+Two limits on reading this. The two runs' **absolute totals are not
+comparable** — 58.79 MiB here against 129.43 MiB there for nominally the same
+six sessions — so only the percentage and the sleeper count carry across, and
+even those are two separate runs rather than a matched pair on one machine
+state. And this remains the local fixture's small `Effects`, so the production
+share is different and, being more live, probably lower.
+
 ### What was not verified
 
-- **No before-and-after census is in this section.** The measurement the brief
-  asked for — hibernating processes per session, idle against hibernated
-  allocated memory, and wake latency — was not run, so the yield this change
-  adds to the previous section's forty-two sleepers is unmeasured. The
-  expectation from the tables above is one more sleeper per session holding the
-  assembly's largest `Effects` copy, which would be the largest single entry in
-  that column; that is an expectation and not a reading.
+- **The before side is the previous section's run, not a matched pair.** No
+  census was taken on `origin/main` beside this one, and the two runs' absolute
+  totals differ by more than a factor of two. The forty-two-to-forty-eight
+  sleeper count is the robust comparison; the 3-5% to 17.9% one assumes the
+  two runs are comparable in a way their totals say they are not.
 - **Scheduler wakeups and reductions for an idle assembly were not measured**
-  either way, so the CPU claim below is arithmetic from the interval and not an
+  either way, so the CPU claim is arithmetic from the interval and not an
   observation: five wakes per second per strand becomes one per two minutes, a
-  factor of six hundred.
+  factor of six hundred. No `process_info(reductions)` delta was taken.
+- The yield on the installed daemon is still unmeasured; nothing under
+  `~/.loom` or `~/.local` was touched.
 - The two-minute default has not been observed against a live drive, only
-  against the scripted turns in `runtime@idle_poll_test` and the existing
-  suites.
+  against the scripted turns in `runtime@idle_poll_test`, the census fixture
+  and the existing suites.
 - The writer-published doorbell that would let the idle backstop be dropped
   altogether is described here and not designed.
+- One `make check-client` run failed
+  `client@goal_e2e_test.a_scripted_reviewer_is_shown_the_checks_result_test` on
+  its 60-second wait; the same test passes alone in 0.4 seconds, and the run
+  was under a load average of 25 from unrelated builds on the same host. Read
+  as load, not as a liveness finding, but it was not reproduced clean under
+  load.
