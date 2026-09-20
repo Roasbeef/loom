@@ -1029,7 +1029,18 @@ pub fn abort(runtime: Runtime) -> Nil {
 /// ```
 ///
 pub fn abort_operation(runtime: Runtime, operation: OpId) -> Nil {
-  case addressed_strand_subject(runtime) {
+  abort_strand_operation(runtime.tree, runtime.strand, operation)
+}
+
+// The same request addressed by the tree and a strand name rather than by a
+// whole `Runtime`. A drain reaches a driver through these two references only,
+// which is what lets `Drain` hold nothing else.
+fn abort_strand_operation(
+  tree: SessionTree,
+  strand_name: String,
+  operation: OpId,
+) -> Nil {
+  case supervisor.strand_subject(tree, strand_name) {
     Ok(subject) -> strand_runtime.request_abort(subject, operation)
 
     // No live driver (mid-restart): nothing can serialize the marker
@@ -1103,13 +1114,30 @@ pub fn await_result(
   operation: OpId,
   within_ms timeout_ms: Int,
 ) -> Result(LastResult, Nil) {
+  await_stored_result(
+    runtime.session,
+    runtime.strand,
+    operation,
+    within_ms: timeout_ms,
+  )
+}
+
+// The same wait addressed by the session store and a strand name rather than
+// by a whole `Runtime`. A drain reaches a terminal through these two
+// references only, which is what lets `Drain` hold nothing else.
+fn await_stored_result(
+  store: Session,
+  strand_name: String,
+  operation: OpId,
+  within_ms timeout_ms: Int,
+) -> Result(LastResult, Nil) {
   // A bounded poll in the caller's own process: the result is durable
   // state, not a message, so there is nothing to select on. The first
   // attempt is immediate and a last one is made at the deadline, so a
   // result that lands exactly as the budget runs out is still found.
   let outcome =
     poll.until(within: timeout_ms, every: 10, attempt: fn() {
-      case settled_result(runtime, operation) {
+      case settled_result(store, strand_name, operation) {
         Some(last) -> poll.Done(last)
         None -> poll.Retry
       }
@@ -1128,11 +1156,15 @@ pub fn await_result(
 // when that cell names this very operation. The fallback is not a
 // substitute — an eager read would run it even when the operation-keyed
 // fact already answered — so it stays behind the first miss.
-fn settled_result(runtime: Runtime, operation: OpId) -> Option(LastResult) {
-  case operation_result(runtime, operation) {
+fn settled_result(
+  store: Session,
+  strand_name: String,
+  operation: OpId,
+) -> Option(LastResult) {
+  case operation_result(store, operation) {
     Some(last) -> Some(last)
     None ->
-      case session.last_result(runtime.session, runtime.strand) {
+      case session.last_result(store, strand_name) {
         Ok(Some(session.Cell(value: last, ..))) ->
           case result_operation(last) == operation {
             True -> Some(last)
@@ -1148,9 +1180,9 @@ fn settled_result(runtime: Runtime, operation: OpId) -> Option(LastResult) {
 // restarts. An unreadable or undecodable row reads as absent — the
 // caller keeps polling and times out rather than faulting, exactly as a
 // missing result behaves.
-fn operation_result(runtime: Runtime, op: OpId) -> Option(LastResult) {
+fn operation_result(store: Session, op: OpId) -> Option(LastResult) {
   let key = operation.result_fact_key(op)
-  case storage.get_register(runtime.session.store, register.FactCustom, key) {
+  case storage.get_register(store.store, register.FactCustom, key) {
     Ok(Some(storage.Register(value:, ..))) ->
       case codec.decode_last_result(value.payload) {
         Ok(last) -> Some(last)
@@ -1581,7 +1613,48 @@ pub fn await_strand_result(
 /// ```
 ///
 pub fn drain(runtime: Runtime, within_ms timeout_ms: Int) -> Nil {
-  case strands(runtime) {
+  drain_within(draining(runtime), within_ms: timeout_ms)
+}
+
+/// Everything `drain` reads, and nothing else: the tree it addresses strands
+/// through and the session it reads their state from.
+///
+/// A holder that must be able to drain a session later, but does nothing else
+/// with it, keeps one of these instead of the whole `Runtime`. The reason is
+/// memory rather than taste. `Runtime.effects` reaches the session's whole
+/// effect graph — megabytes of closures over its tool registry — and a
+/// `Runtime` held in another process, or sent to one, pays for a full copy of
+/// that graph. The daemon's session manager is exactly such a holder: it keeps
+/// one resident value per admitted session and needs only to drain it. Neither
+/// field here is duplicated per session; both are handles to processes and to
+/// a storage actor.
+pub opaque type Drain {
+  Drain(tree: SessionTree, session: Session)
+}
+
+/// Projects the two references a drain reads out of a whole runtime.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.drain_within(api.draining(runtime), within_ms: 5000)
+/// ```
+pub fn draining(runtime: Runtime) -> Drain {
+  Drain(tree: runtime.tree, session: runtime.session)
+}
+
+/// Drains a session addressed by its projection rather than by a whole
+/// runtime. `drain` is this function applied to `draining`, and the contract
+/// above — one shared budget, requests before waits, each strand awaiting the
+/// operation it was observed running — is this function's contract.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.drain_within(handle, within_ms: 5000)
+/// ```
+pub fn drain_within(handle: Drain, within_ms timeout_ms: Int) -> Nil {
+  case strand_names(handle.tree) {
     Error(_) -> Nil
     Ok(strands) -> {
       let deadline = poll.monotonic().now() + int.max(timeout_ms, 0)
@@ -1591,12 +1664,12 @@ pub fn drain(runtime: Runtime, within_ms timeout_ms: Int) -> Nil {
       // later strand's request past the deadline.
       let running =
         list.filter_map(strands, fn(strand) {
-          case session.strand_state(runtime.session, strand) {
+          case session.strand_state(handle.session, strand) {
             Ok(Some(session.Cell(
               value: strand.StrandState(current_operation: Some(op), ..),
               ..,
             ))) -> {
-              abort_operation(on_strand(runtime, strand), op)
+              abort_strand_operation(handle.tree, strand, op)
               Ok(#(strand, op))
             }
             Ok(None) | Ok(Some(_)) | Error(_) -> Error(Nil)
@@ -1610,7 +1683,12 @@ pub fn drain(runtime: Runtime, within_ms timeout_ms: Int) -> Nil {
         case remaining > 0 {
           True -> {
             let _ =
-              await_strand_result(runtime, strand, op, within_ms: remaining)
+              await_stored_result(
+                handle.session,
+                strand,
+                op,
+                within_ms: remaining,
+              )
             Nil
           }
           False -> Nil
@@ -1630,9 +1708,13 @@ pub fn drain(runtime: Runtime, within_ms timeout_ms: Int) -> Nil {
 /// ```
 ///
 pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
-  case
-    writer.list_registers(writer_subject(runtime), register.StrandConfig, None)
-  {
+  strand_names(runtime.tree)
+}
+
+// The same listing addressed by the tree alone. `Drain` holds the tree, so a
+// drain can enumerate strands without the `Runtime` that named one of them.
+fn strand_names(tree: SessionTree) -> Result(List(String), ApiError) {
+  case writer.list_registers(tree.writer, register.StrandConfig, None) {
     Error(error) -> Error(read_failure(error))
     Ok(cells) ->
       cells
