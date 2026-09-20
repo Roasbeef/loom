@@ -165,7 +165,9 @@ pub fn tool(advice: Advice) -> Tool {
       <> "`complete` only when the objective is actually achieved and "
       <> "verified against real evidence in the feed — tests run, files "
       <> "changed, commands executed — never because the budget is "
-      <> "nearly exhausted.",
+      <> "nearly exhausted. When a goal feed carries a Check block, the "
+      <> "harness ran that command itself: a failing check is strong "
+      <> "evidence against `complete`, and the judgement is still yours.",
     // No prose index line. The system prompt's available-tools index is
     // one string for the whole session, so a snippet here would tell the
     // primary about a tool it is never offered and about a reviewer it

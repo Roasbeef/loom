@@ -429,7 +429,11 @@ pub fn goal_commands_round_trip_and_validate_their_budgets_test() {
   let sets =
     protocol.CommandEnvelope(
       1,
-      protocol.GoalSet(objective: "land the migration", token_budget: 400_000),
+      protocol.GoalSet(
+        objective: "land the migration",
+        token_budget: 400_000,
+        check: None,
+      ),
     )
   assert protocol.decode_command(protocol.encode_command(sets)) == Ok(sets)
 
@@ -512,6 +516,77 @@ pub fn goal_commands_round_trip_and_validate_their_budgets_test() {
     )
     as "a whitespace objective is refused rather than pinned"
   assert blank == "objective must not be empty"
+
+  // The sixth command, in both of its forms: a command present pins the
+  // check, and a body with none clears it. Absence means two different
+  // things on the two commands and each is round-tripped, because that is
+  // the pairing a reader is most likely to get wrong.
+  let checks =
+    protocol.CommandEnvelope(
+      12,
+      protocol.GoalCheck(command: Some("make check")),
+    )
+  assert protocol.decode_command(protocol.encode_command(checks)) == Ok(checks)
+
+  let unchecks = protocol.CommandEnvelope(13, protocol.GoalCheck(command: None))
+  assert protocol.decode_command(protocol.encode_command(unchecks))
+    == Ok(unchecks)
+  assert protocol.encode_command(unchecks)
+    == "{\"v\":2,\"id\":13,\"cmd\":\"goal_check\",\"body\":{}}"
+
+  // An empty command is the same answer as an absent one, because a client
+  // clearing the check may send either.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalCheck(command: None),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":14,\"cmd\":\"goal_check\",\"body\":{\"command\":\"  \"}}",
+    )
+    as "an empty check command clears the check"
+
+  // `goal_set` carries the same argument, so an operator can pin both at
+  // once, and an absent one leaves whatever check the goal already had.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalSet(check: pinned_check, ..),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":15,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"land it\",\"token_budget\":400000,\"check\":\"make check\"}}",
+    )
+    as "goal_set carries the check"
+  assert pinned_check == Some("make check")
+
+  // The command's own bound, refused with both counts for the reason the
+  // objective's is: the command is rendered into every feed the reviewer
+  // reads and into the operator's panel.
+  let long_command = string.repeat("x", protocol.check_limit + 1)
+  let assert Error(protocol.BadBody(reason: command_too_long, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":16,\"cmd\":\"goal_check\",\"body\":{\"command\":\""
+      <> long_command
+      <> "\"}}",
+    )
+    as "a check command past the bound is refused rather than stored"
+  assert string.contains(
+    command_too_long,
+    int.to_string(protocol.check_limit + 1),
+  )
+  assert string.contains(command_too_long, int.to_string(protocol.check_limit))
+
+  // And the bound itself is admitted, so the refusal is off by nothing.
+  let allowed_command = string.repeat("x", protocol.check_limit)
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalCheck(command: Some(at_bound)),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":17,\"cmd\":\"goal_check\",\"body\":{\"command\":\""
+      <> allowed_command
+      <> "\"}}",
+    )
+    as "a check command at the bound is admitted"
+  assert at_bound == allowed_command
 
   // The snapshot reply round trips with its board.
   let board =

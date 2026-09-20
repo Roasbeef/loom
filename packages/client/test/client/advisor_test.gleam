@@ -12,7 +12,10 @@
 
 import client/advisor
 import client/advisorguard
+import client/advisorslice
 import client/agency
+import client/goalcheck
+import client/goalloop
 import client/goalstate
 import core/clock
 import core/entry.{type Entry}
@@ -41,6 +44,7 @@ import support/addresses
 import telemetry/log
 import tools/advise
 import tools/agent
+import weft/poll
 import weft/registry as address
 
 // --- the run-start slot ----------------------------------------------------
@@ -1067,10 +1071,35 @@ fn a_rig() -> Result(Rig, String) {
   a_rig_with(some_settings([]))
 }
 
+// A check nothing in these tests pins. Every goal here carries no check
+// unless the test says otherwise, so this closure is never called; it
+// answers a passing run rather than crashing, because a fixture that faulted
+// on an unexpected call would report the fault as an unrelated timeout.
+fn no_check() -> goalcheck.Wiring {
+  goalcheck.Wiring(
+    run: fn(command) {
+      goalstate.CheckResult(
+        command:,
+        ending: goalstate.Exited(status: 0),
+        output: "",
+        ran_at_ms: 1_756_000_000_000,
+      )
+    },
+    timeout_ms: 1000,
+  )
+}
+
+fn a_rig_with(settings: advisor.Settings) -> Result(Rig, String) {
+  a_rig_checking(settings, no_check())
+}
+
 // The rig with the advisor's settings chosen by the caller, which is how
 // the step-trigger tests vary `feed_every_steps` without every other test
-// having to name it.
-fn a_rig_with(settings: advisor.Settings) -> Result(Rig, String) {
+// having to name it, and with the check seam chosen the same way.
+fn a_rig_checking(
+  settings: advisor.Settings,
+  check: goalcheck.Wiring,
+) -> Result(Rig, String) {
   use opened <- result.try(
     session.open_memory(clock.fixed(at: 1_756_000_000_000))
     |> result.replace_error("the memory session did not open"),
@@ -1099,6 +1128,7 @@ fn a_rig_with(settings: advisor.Settings) -> Result(Rig, String) {
       session: opened,
       runtime: fn() { Ok(runtime) },
       settings:,
+      check:,
       clock: clock.fixed(at: 1_756_000_000_000),
       logger: log.discard(),
       name:,
@@ -1148,6 +1178,7 @@ fn a_rig_over_history() -> Result(#(Rig, OpId), String) {
     |> result.replace_error("the primary did not accept its history"),
   )
   let settings = some_settings([])
+  let check = no_check()
   use Nil <- result.try(advisor.ensure_strand(runtime, settings, [advise.name]))
 
   let name = addresses.new()
@@ -1156,6 +1187,7 @@ fn a_rig_over_history() -> Result(#(Rig, OpId), String) {
       session: opened,
       runtime: fn() { Ok(runtime) },
       settings:,
+      check:,
       clock: clock.fixed(at: 1_756_000_000_000),
       logger: log.discard(),
       name:,
@@ -1421,6 +1453,7 @@ fn a_wiring(opened: Session) -> advisor.Wiring {
     session: opened,
     runtime: fn() { Error(Nil) },
     settings: some_settings([]),
+    check: no_check(),
     clock: clock.fixed(at: 1_756_000_000_000),
     logger: log.discard(),
     name: addresses.new(),
@@ -1537,6 +1570,7 @@ pub fn a_goal_can_be_pinned_test() {
       advisor.SetGoal(
         objective: "make the failing storage race test pass",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -1558,7 +1592,7 @@ pub fn a_non_positive_budget_is_refused_test() {
 
   let refused =
     process.call(subject, waiting: 5000, sending: fn(reply) {
-      advisor.SetGoal(objective: "x", token_budget: 0, reply:)
+      advisor.SetGoal(objective: "x", token_budget: 0, check: None, reply:)
     })
   assert refused == Error("token_budget must be a positive number of tokens")
   assert api.fact(rig.runtime, advisor.goal_key) == Ok(None)
@@ -1578,6 +1612,7 @@ pub fn a_primary_run_end_with_a_goal_feeds_the_goal_question_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -1613,6 +1648,7 @@ pub fn a_continue_wakes_the_idle_primary_with_a_continuation_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -1660,6 +1696,7 @@ pub fn a_complete_flips_the_status_and_stops_the_loop_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -1706,6 +1743,7 @@ pub fn ordinary_words_cannot_answer_a_goal_feed_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -2023,7 +2061,12 @@ fn pin_goal(
 ) -> Nil {
   let assert Ok(_pinned) =
     process.call(subject, waiting: 5000, sending: fn(reply) {
-      advisor.SetGoal(objective: "land the migration", token_budget:, reply:)
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget:,
+        check: None,
+        reply:,
+      )
     })
     as "the goal must pin through the actor's own call"
   Nil
@@ -2091,6 +2134,7 @@ pub fn an_abort_of_a_goal_woken_run_pauses_the_goal_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -2215,6 +2259,7 @@ pub fn resume_refuses_a_complete_goal_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -2255,6 +2300,7 @@ pub fn a_cleared_goal_is_gone_and_a_late_verdict_says_so_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -2302,6 +2348,7 @@ pub fn an_abort_of_a_foreign_run_leaves_the_goal_active_test() {
       advisor.SetGoal(
         objective: "land the migration",
         token_budget: 400_000,
+        check: None,
         reply:,
       )
     })
@@ -2490,4 +2537,451 @@ pub fn a_wrap_up_wake_does_not_renew_the_operator_turn_test() {
     judge(subject, advise.Nudge(text: "and squash"))
     as "a wrap-up's wake must not renew the operator's turn"
   stop(rig)
+}
+
+// --- the operator's check ---------------------------------------------------
+//
+// The check is run through one injected closure (`client/goalcheck.Wiring`),
+// so these tests script a passing run, a failing one, one that never returns
+// and one that dies, without a broker, a helper pool or a jail. What the
+// jailed path itself does is `client/goalcheck`'s own business; what is
+// tested here is the actor: that a check precedes the feed, that its result
+// reaches the reviewer's frame, and that none of the four ways it can fail
+// leaves the loop with nothing to do.
+
+// A check that passes is recorded and the feed carries it as harness-run
+// evidence, above the primary's own account of its work.
+pub fn a_passing_check_reaches_the_reviewers_frame_test() {
+  let assert Ok(rig) = a_rig_checking(some_settings([]), scripted_check(0))
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  a_goal_with_a_check(subject, "make check")
+  let assert Ok(goal) = await_check_recorded(rig)
+    as "the check must be recorded in the cell"
+
+  assert goal.last_check
+    == Some(goalstate.CheckResult(
+      command: "make check",
+      ending: goalstate.Exited(status: 0),
+      output: "all green",
+      ran_at_ms: 1_756_000_000_000,
+    ))
+
+  assert list.any(advisor_texts(rig.opened), fn(text) {
+    string.contains(text, advisorslice.check_label)
+    && string.contains(text, "command: make check")
+    && string.contains(text, "exit status 0 (the check passed)")
+  })
+    as "the goal feed must carry the check as evidence"
+
+  stop(rig)
+}
+
+// A failing check reaches the same frame with the status the reviewer is
+// asked to weigh, and the feed still goes out: the harness does not decide
+// completion, so a failing check is evidence rather than a veto.
+pub fn a_failing_check_still_feeds_the_reviewer_test() {
+  let assert Ok(rig) = a_rig_checking(some_settings([]), scripted_check(1))
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  a_goal_with_a_check(subject, "make check")
+  let assert Ok(goal) = await_check_recorded(rig)
+    as "the check must be recorded in the cell"
+
+  assert goal.last_check
+    == Some(goalstate.CheckResult(
+      command: "make check",
+      ending: goalstate.Exited(status: 1),
+      output: "all green",
+      ran_at_ms: 1_756_000_000_000,
+    ))
+  assert list.any(advisor_texts(rig.opened), fn(text) {
+    string.contains(text, "exit status 1 (the check failed)")
+  })
+    as "the reviewer is shown the failing status"
+
+  stop(rig)
+}
+
+// A check that never returns is killed at the task's deadline, and the
+// durable phase is what repairs the loop: the next level read finds a
+// deadline that has passed, records the absence as the evidence and feeds
+// the reviewer with it.
+pub fn a_check_that_never_returns_still_feeds_the_reviewer_test() {
+  let assert Ok(rig) = a_rig_checking(some_settings([]), a_hanging_check())
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  a_goal_with_a_check(subject, "sleep forever")
+
+  // Nothing has been recorded while the check is in flight, and no feed has
+  // gone out: the phase says a check is owed.
+  let assert Ok(waiting) = goal_cell_if_any(rig)
+    as "the goal cell must be readable"
+  let assert goalstate.Checking(..) = waiting.phase
+    as "a check in flight leaves the checking phase"
+
+  // Past the wall, the level read a tick makes is enough. The tick is sent
+  // by hand rather than waited for, because the production interval is two
+  // minutes and what is under test is the repair, not the timer.
+  let assert Ok(fed) = await_check_recorded_after(rig, subject)
+    as "an abandoned check must be recorded and fed"
+
+  assert fed.last_check
+    == Some(goalstate.CheckResult(
+      command: "sleep forever",
+      ending: goalstate.DidNotFinish(reason: goalloop.check_did_not_finish(0)),
+      output: "",
+      ran_at_ms: 1_756_000_000_000,
+    ))
+  assert list.any(advisor_texts(rig.opened), fn(text) {
+    string.contains(text, "result: no exit status")
+  })
+    as "the reviewer is told the harness has no evidence"
+
+  stop(rig)
+}
+
+// A check whose task dies reports nothing at all, which is the same level
+// the deadline repairs. This is the crash path rather than the hang path,
+// and it matters that they are one recovery rather than two.
+pub fn a_check_whose_task_dies_still_feeds_the_reviewer_test() {
+  let assert Ok(rig) = a_rig_checking(some_settings([]), a_dying_check())
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  a_goal_with_a_check(subject, "false")
+  let assert Ok(fed) = await_check_recorded_after(rig, subject)
+    as "a dead check's task must be repaired by the deadline"
+
+  let assert goalstate.DidNotFinish(..) = ending_of(fed)
+    as "a dead task produces no exit status"
+
+  // The actor is still serving, which is the other half of the claim: the
+  // task is linked to the weft scope rather than to the actor, so a crash
+  // inside it is not a crash of the advisor.
+  assert process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    == Ok(Nil)
+    as "the actor survives a check that crashed"
+
+  stop(rig)
+}
+
+// A goal cleared while its check runs leaves nothing that acts later: the
+// result reports against a phase no cell carries any more, so it is ignored
+// and no feed is sent on a goal that is gone.
+pub fn a_goal_cleared_mid_check_ignores_the_result_test() {
+  let #(rig, subject, released) = a_held_check()
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.ClearGoal(reply:)
+    })
+    as "the operator must be able to clear a goal mid-check"
+
+  process.send(released, Nil)
+  let _settled = settle(subject)
+
+  assert api.fact(rig.runtime, advisor.goal_key) == Ok(None)
+    as "a cleared goal's cell is not rewritten by a late check"
+  stop(rig)
+}
+
+// The same for a pause. The goal stays paused with its cause, and the late
+// result neither records nor feeds: a paused goal rests whatever arrives.
+pub fn a_goal_paused_mid_check_ignores_the_result_test() {
+  let #(rig, subject, released) = a_held_check()
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    as "the operator must be able to pause a goal mid-check"
+
+  process.send(released, Nil)
+  let _settled = settle(subject)
+
+  let assert Ok(held) = goal_cell_if_any(rig)
+    as "the goal cell must be readable"
+  assert goalstate.status_of(held) == goalstate.Paused(by: goalstate.ByOperator)
+  assert held.last_check == None
+    as "a paused goal records no result from the check it abandoned"
+  stop(rig)
+}
+
+// The check is set and cleared on a pinned goal without touching the
+// objective, the budget or the accounting — which is why it is a command of
+// its own rather than a `goal_set` with an unchanged objective, since that is
+// defined as a refresh and clears the loop's bound counters.
+pub fn the_check_is_set_and_cleared_without_a_refresh_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        check: None,
+        reply:,
+      )
+    })
+    as "the goal must pin"
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoalCheck(command: Some("make check"), reply:)
+    })
+    as "the check must attach to the pinned goal"
+
+  let assert Ok(checked) = goal_cell_if_any(rig)
+    as "the goal cell must be readable"
+  assert checked.check == Some("make check")
+  assert checked.objective == "land the migration"
+  assert checked.token_budget == 400_000
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoalCheck(command: None, reply:)
+    })
+    as "the check must clear"
+
+  let assert Ok(cleared) = goal_cell_if_any(rig)
+    as "the goal cell must be readable"
+  assert cleared.check == None
+  assert cleared.last_check == None
+    as "a changed check drops the result that described the old one"
+  stop(rig)
+}
+
+// A check needs a goal to attach to, and the refusal says which command to
+// run first rather than silently pinning nothing.
+pub fn a_check_without_a_goal_is_refused_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Error(reason) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoalCheck(command: Some("make check"), reply:)
+    })
+    as "a check with no goal must be refused"
+
+  assert string.contains(reason, "no goal")
+  assert api.fact(rig.runtime, advisor.goal_key) == Ok(None)
+  stop(rig)
+}
+
+// --- the check fixtures -----------------------------------------------------
+
+// The wall these tests run checks under. Short, because two of them wait it
+// out: the production wall is five minutes, and what they are about is the
+// repair rather than the number.
+const a_test_wall = 300
+
+// A check that answers a scripted exit status at once.
+fn scripted_check(status: Int) -> goalcheck.Wiring {
+  goalcheck.Wiring(
+    run: fn(command) {
+      goalstate.CheckResult(
+        command:,
+        ending: goalstate.Exited(status:),
+        output: "all green",
+        ran_at_ms: 1_756_000_000_000,
+      )
+    },
+    timeout_ms: a_test_wall,
+  )
+}
+
+// A check that never answers. The weft deadline kills the task; the durable
+// phase is what repairs the loop.
+// A check that never answers, under a wall of zero.
+//
+// Zero is how a test on a fixed clock says "the deadline has passed". The
+// rig's clock does not move, so a wall of any length would leave a deadline
+// permanently in the future and the repair permanently unobservable; zero
+// makes the deadline the instant the phase was written, which is exactly the
+// level a restarted actor reads after a real wall expired. It also reaps the
+// task at once, which is the other half of what a hanging check does.
+fn a_hanging_check() -> goalcheck.Wiring {
+  goalcheck.Wiring(
+    run: fn(_command) {
+      process.sleep(a_test_wall * 20)
+
+      goalstate.CheckResult(
+        command: "never",
+        ending: goalstate.Exited(status: 0),
+        output: "",
+        ran_at_ms: 0,
+      )
+    },
+    timeout_ms: 0,
+  )
+}
+
+// A check whose task dies where it stands. `panic` is a test's own tool —
+// `src` carries none — and it is the shape a jailed runner's own crash would
+// take from the actor's side: no message, ever.
+fn a_dying_check() -> goalcheck.Wiring {
+  goalcheck.Wiring(
+    run: fn(_command) { panic as "this check dies on purpose" },
+    timeout_ms: 0,
+  )
+}
+
+// A check the test releases by hand, so a command can land while the check
+// is genuinely in flight. The subject it returns is what lets it finish.
+fn a_held_check() -> #(
+  Rig,
+  process.Subject(advisor.Message),
+  process.Subject(Nil),
+) {
+  let gate = process.new_subject()
+  let held =
+    goalcheck.Wiring(
+      run: fn(command) {
+        let _released = process.receive(gate, within: 5000)
+
+        goalstate.CheckResult(
+          command:,
+          ending: goalstate.Exited(status: 0),
+          output: "held",
+          ran_at_ms: 1_756_000_000_000,
+        )
+      },
+      timeout_ms: a_test_wall * 20,
+    )
+
+  let assert Ok(rig) = a_rig_checking(some_settings([]), held)
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        check: Some("make check"),
+        reply:,
+      )
+    })
+    as "the goal and its check must pin"
+
+  // The barrier is what makes "in flight" a fact rather than a hope: the
+  // command is answered before the evaluation that starts the check.
+  barrier(subject)
+
+  // The check is in flight before the command under test arrives, which is
+  // the whole point of the gate.
+  let assert Ok(waiting) = goal_cell_if_any(rig)
+    as "the goal cell must be readable"
+  let assert goalstate.Checking(..) = waiting.phase
+    as "the check must be in flight before the operator's command"
+
+  #(rig, subject, gate)
+}
+
+// A goal with a check, pinned onto a primary that has just stopped. The
+// `goal_set` evaluation itself is the occasion, so the check starts without
+// a run end having to be faked.
+// A goal with a check, pinned onto an idle primary. The `goal_set`
+// evaluation is itself the occasion, so the check starts without a run end
+// having to be faked — and the primary is left idle, because a busy one
+// defers the feed the check precedes.
+fn a_goal_with_a_check(
+  subject: process.Subject(advisor.Message),
+  command: String,
+) -> Nil {
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        check: Some(command),
+        reply:,
+      )
+    })
+    as "the goal and its check must pin"
+
+  // The operator's reply comes back before the evaluation that acts on the
+  // command, so a test that read the cell here would race the check's own
+  // start. The inert run-end drain is the barrier: the mailbox is FIFO per
+  // sender, so an answer to it means the evaluation has happened.
+  barrier(subject)
+}
+
+// The cell as a result rather than an assertion, for the check tests that
+// poll it: a cell that is not there yet is an ordinary retry, not a failure.
+fn goal_cell_if_any(rig: Rig) -> Result(goalstate.Goal, Nil) {
+  case api.fact(rig.runtime, advisor.goal_key) {
+    Ok(Some(payload)) -> goalstate.decode(payload) |> result.replace_error(Nil)
+    Ok(None) | Error(_unreadable) -> Error(Nil)
+  }
+}
+
+fn ending_of(goal: goalstate.Goal) -> goalstate.CheckEnding {
+  case goal.last_check {
+    Some(result) -> result.ending
+    None -> goalstate.Exited(status: -1)
+  }
+}
+
+// Waits for the cell to carry a check result. The check runs on a task of
+// its own, so the cast that records it arrives after the command that
+// started it has been answered; polling the cell is what makes the wait a
+// fact about the loop rather than a sleep.
+fn await_check_recorded(rig: Rig) -> Result(goalstate.Goal, Nil) {
+  case
+    poll.until(within: 5000, every: 25, attempt: fn() {
+      case goal_cell_if_any(rig) {
+        Ok(goal) ->
+          case goal.last_check {
+            Some(_recorded) -> poll.Done(goal)
+            None -> poll.Retry
+          }
+        Error(Nil) -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(value: goal) -> Ok(goal)
+    poll.Expired | poll.Failed(error: _reason) -> Error(Nil)
+  }
+}
+
+// The same wait for a check nobody will report on, with a level read sent on
+// every attempt: the repair is the tick's, and the tick's production
+// interval is two minutes.
+fn await_check_recorded_after(
+  rig: Rig,
+  subject: process.Subject(advisor.Message),
+) -> Result(goalstate.Goal, Nil) {
+  case
+    poll.until(within: 5000, every: 50, attempt: fn() {
+      process.send(subject, advisor.ReevaluateTick)
+      let _barrier = barrier(subject)
+
+      case goal_cell_if_any(rig) {
+        Ok(goal) ->
+          case goal.last_check {
+            Some(_recorded) -> poll.Done(goal)
+            None -> poll.Retry
+          }
+        Error(Nil) -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(value: goal) -> Ok(goal)
+    poll.Expired | poll.Failed(error: _reason) -> Error(Nil)
+  }
 }

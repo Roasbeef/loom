@@ -31,7 +31,7 @@
 //// ## Why the transitions are pure
 ////
 //// The states this loop can be in are the product of four statuses,
-//// three phases, three counters and what two strands are running, and
+//// five phases, three counters and what two strands are running, and
 //// the failure that matters is a combination nobody enumerated — an
 //// Active goal, an idle primary, an idle reviewer and nothing to do. A
 //// property test can walk that space in a second; an actor test cannot
@@ -52,6 +52,13 @@
 //// it opened. A crash in that window costs one redundant evaluation,
 //// never a stranded goal: the level read finds an idle phase with a busy
 //// strand and waits.
+////
+//// `RunCheck` is the third of those. The phase it comes with already
+//// records the deadline the caller must run the check under, so nothing
+//// has to be reported back to make the loop recoverable — the caller runs
+//// the command off its own process and casts the result as `Checked`, and
+//// a result that never arrives is repaired by the deadline the cell
+//// already carries.
 
 import client/advisorslice
 import client/goalstate.{
@@ -103,6 +110,26 @@ pub const zero_progress_limit = 2
 /// and short enough that a misconfigured reviewer is reported rather
 /// than paid for.
 pub const unanswered_feed_limit = 3
+
+/// How long the operator's check may run before the loop stops waiting for
+/// it and feeds the reviewer with "the check did not finish" instead.
+///
+/// Five minutes, and the number is argued rather than picked. The check is
+/// whatever an operator would type to find out whether the work is done, so
+/// the useful cases are a test binary, a build, a lint sweep — a few seconds
+/// at the fast end and a few minutes at the slow one. A wall shorter than a
+/// real `make check` would report "did not finish" on every feed of a
+/// perfectly ordinary project, and a reviewer shown that every cycle learns
+/// to discount the block, which is worse than pinning no check at all.
+/// Against that, the wall is dead time in the loop once per feed, and an
+/// operator whose check genuinely takes half an hour is better told it does
+/// not fit than made to wait for it on every cycle.
+///
+/// It bounds two things and deliberately so: the jailed process's own wall
+/// limit, so a runaway command is killed by the sandbox rather than merely
+/// abandoned by this loop, and the durable `Checking` deadline a restarted
+/// actor reads. Both are derived from this number, so they cannot drift.
+pub const check_timeout_ms = 300_000
 
 // --- what the caller observed ----------------------------------------------
 
@@ -196,6 +223,21 @@ pub type Event {
 
   /// The reviewer answered an open goal feed.
   Answered(answer: Answer)
+
+  /// A check run reported back. `deadline_ms` is the deadline of the
+  /// `Checking` phase the run was started for, and it is what tells the
+  /// result the loop is waiting for from a late one: the caller cannot
+  /// name the run any other way, because a check is a process rather than
+  /// an operation the store records.
+  ///
+  /// A result whose deadline is not the current phase's is ignored, which
+  /// is the whole of what "clearing or pausing mid-check leaves nothing
+  /// that acts later" rests on. Two checks started at the same instant
+  /// would be indistinguishable here; that needs a second check begun in
+  /// the same millisecond as the first, after the first has already been
+  /// abandoned, and what it costs is one feed carrying the earlier run of
+  /// the same command as its evidence.
+  Checked(deadline_ms: Int, result: goalstate.CheckResult)
 }
 
 /// How the woken run the phase names actually ended, as the caller read it
@@ -245,6 +287,16 @@ pub type Observed {
     event: Event,
     /// The caller's clock, stamped into `updated_ms` on every move.
     now_ms: Int,
+    /// How long the caller will actually let a check run, which is what
+    /// the `Checking` deadline is computed from.
+    ///
+    /// It is injected rather than read from `check_timeout_ms` here because
+    /// the wall the process runs under is the caller's — `client/goalcheck`
+    /// carries it, and production passes the constant. One number reaches
+    /// both, so the deadline a restart reads cannot outlive the process it
+    /// was waiting for, and a test can pin a short wall without waiting out
+    /// a production one.
+    check_timeout_ms: Int,
   )
 }
 
@@ -252,9 +304,10 @@ pub type Observed {
 
 /// What the loop asks the caller to do about the goal it just moved.
 ///
-/// Four actions, and the whole of the loop's contact with the world is
+/// Five actions, and the whole of the loop's contact with the world is
 /// in them. Two of them open a run whose operation the caller must
-/// report back through `feed_opened` or `primary_woken`.
+/// report back through `feed_opened` or `primary_woken`, and one runs a
+/// process whose result the caller reports back as `Checked`.
 pub type Action {
   /// Nothing. The goal is stopped, something is already running, or the
   /// occasion belongs to somebody else.
@@ -270,6 +323,16 @@ pub type Action {
   /// Wake the idle primary with this continuation text, or steer its run
   /// when one opened between the level read and the send.
   WakePrimary(text: String)
+
+  /// Run the operator's check and report what it did, as `Checked`
+  /// against the deadline the goal's `Checking` phase now carries.
+  ///
+  /// It is the step before a feed rather than a part of it, so the frame
+  /// the reviewer reads can carry the result as evidence. It is harness-
+  /// opened work on a process of its own: it opens no run, so it can
+  /// neither reset the continuation cap nor be mistaken for somebody
+  /// arriving with work of their own.
+  RunCheck(command: String)
 
   /// Tell the primary the loop has stopped and why, once. The status is
   /// already `Limited` in the goal this action comes with, and `Limited`
@@ -287,10 +350,15 @@ pub type Action {
 /// legitimately be in is `Rest` with the goal unchanged. The properties
 /// worth knowing, all of them tested in `goalloop_test`:
 ///
-/// - An Active goal in the `Idle` phase with an idle primary and an idle
-///   reviewer never rests. That combination is the stall the rework
-///   exists to remove, so it always answers `FeedReviewer` or, when a
-///   bound is reached, `WrapUp`.
+/// - An Active goal in the `Idle` or `ReadyToFeed` phase with an idle
+///   primary and an idle reviewer never rests. That combination is the
+///   stall the rework exists to remove, so it always answers
+///   `FeedReviewer`, `RunCheck` when a check is configured and has not
+///   run for this feed, or `WrapUp` when a bound is reached.
+/// - A `Checking` phase rests only while its deadline is in the future.
+///   At or past it the check is abandoned, recorded as evidence the
+///   harness does not have, and the feed goes out — so a check can no
+///   more strand the loop than an unanswered feed can.
 /// - `Complete` is terminal: no event moves a complete goal.
 /// - Only an operator command leaves `Paused` or `Limited`, and those
 ///   are the caller's, not this function's — every event here rests.
@@ -310,6 +378,7 @@ pub type Action {
 ///     woken_ending: goalloop.RanItsCourse,
 ///     event: goalloop.Level,
 ///     now_ms: 2000,
+///     check_timeout_ms: goalloop.check_timeout_ms,
 ///   )
 ///
 /// assert goalloop.next_action(goal, seen) == #(goal, goalloop.FeedReviewer)
@@ -325,7 +394,8 @@ pub fn next_action(goal: Goal, observed: Observed) -> #(Goal, Action) {
     | PrimaryStarted(..)
     | PrimaryEnded(..)
     | AdvisorEnded(..)
-    | Aborted(..) -> decide(record(goal, observed), observed)
+    | Aborted(..)
+    | Checked(..) -> decide(record(goal, observed), observed)
   }
 }
 
@@ -457,6 +527,8 @@ fn record(goal: Goal, observed: Observed) -> Goal {
     PrimaryEnded(operation:) -> ended(goal, operation, observed)
     AdvisorEnded(operation:) -> reviewed(goal, operation, observed)
     Aborted(operation:) -> aborted(goal, operation, observed.now_ms)
+    Checked(deadline_ms:, result:) ->
+      checked(goal, deadline_ms, result, observed.now_ms)
 
     // Answered never reaches here: `next_action` routes it to
     // `answer_feed`, which needs the answer's text.
@@ -469,7 +541,19 @@ fn record(goal: Goal, observed: Observed) -> Goal {
 // no longer shows that run open.
 fn relevel(goal: Goal, observed: Observed) -> Goal {
   case goal.phase {
-    Idle -> goal
+    Idle | goalstate.ReadyToFeed -> goal
+
+    // A check whose deadline has passed is the third lost notification, and
+    // it is repaired here rather than waited on: the task was killed at its
+    // own wall, or the actor it would have reported to was replaced, and
+    // either way no `Checked` is coming. The reviewer is fed with the
+    // absence recorded as the evidence, which is what keeps a check from
+    // stranding the loop.
+    goalstate.Checking(deadline_ms:) ->
+      case observed.now_ms >= deadline_ms {
+        True -> check_abandoned(goal, observed)
+        False -> goal
+      }
 
     goalstate.AwaitingVerdict(feed:) ->
       case observed.advisor == Some(feed) {
@@ -526,7 +610,10 @@ fn harness_opened(goal: Goal, operation: OpId, origin: Origin) -> Bool {
     Foreign ->
       case goal.phase {
         Continuing(woken:, ..) -> woken == operation
-        Idle | goalstate.AwaitingVerdict(..) -> False
+        Idle
+        | goalstate.Checking(..)
+        | goalstate.ReadyToFeed
+        | goalstate.AwaitingVerdict(..) -> False
       }
   }
 }
@@ -539,7 +626,11 @@ fn ended(goal: Goal, operation: OpId, observed: Observed) -> Goal {
     Continuing(woken:, ..) if woken == operation ->
       woken_finished(goal, observed)
 
-    Idle | goalstate.AwaitingVerdict(..) | Continuing(..) -> goal
+    Idle
+    | goalstate.Checking(..)
+    | goalstate.ReadyToFeed
+    | goalstate.AwaitingVerdict(..)
+    | Continuing(..) -> goal
   }
 }
 
@@ -577,7 +668,77 @@ fn reviewed(goal: Goal, operation: OpId, observed: Observed) -> Goal {
     goalstate.AwaitingVerdict(feed:) if feed == operation ->
       unanswered(goal, observed.now_ms)
 
-    Idle | goalstate.AwaitingVerdict(..) | Continuing(..) -> goal
+    Idle
+    | goalstate.Checking(..)
+    | goalstate.ReadyToFeed
+    | goalstate.AwaitingVerdict(..)
+    | Continuing(..) -> goal
+  }
+}
+
+/// What a check that produced no status is recorded as.
+///
+/// A named function because two readers depend on the words: the frame the
+/// reviewer reads, which must say plainly that the harness has no evidence
+/// rather than imply a failure, and the test that proves an abandoned check
+/// still feeds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // goalloop.check_did_not_finish(300_000) names the wall in seconds
+/// ```
+///
+pub fn check_did_not_finish(timeout_ms: Int) -> String {
+  "the check did not finish inside the "
+  <> int.to_string(timeout_ms / 1000)
+  <> " seconds the harness allows it"
+}
+
+// A `Checking` phase past its deadline. The result is recorded as the
+// absence it is, against the command the goal currently carries — the phase
+// does not name the command, and a goal whose check was changed mid-run has
+// already had its phase reset by that command, so this arm cannot be reached
+// with the wrong one.
+fn check_abandoned(goal: Goal, observed: Observed) -> Goal {
+  let result =
+    goalstate.CheckResult(
+      command: option.unwrap(goal.check, ""),
+      ending: goalstate.DidNotFinish(reason: check_did_not_finish(
+        observed.check_timeout_ms,
+      )),
+      output: "",
+      ran_at_ms: observed.now_ms,
+    )
+
+  Goal(
+    ..goal,
+    phase: goalstate.ReadyToFeed,
+    last_check: Some(result),
+    updated_ms: observed.now_ms,
+  )
+}
+
+// A check run that reported back. It counts only against the phase it was
+// started for: a result for any other deadline is a run this loop stopped
+// waiting for, and recording it would show the reviewer evidence about a
+// stretch of work that has since moved on.
+fn checked(
+  goal: Goal,
+  deadline_ms: Int,
+  result: goalstate.CheckResult,
+  now_ms: Int,
+) -> Goal {
+  case goal.phase == goalstate.Checking(deadline_ms:) {
+    True ->
+      Goal(
+        ..goal,
+        phase: goalstate.ReadyToFeed,
+        last_check: Some(result),
+        updated_ms: now_ms,
+      )
+
+    False -> goal
   }
 }
 
@@ -605,7 +766,11 @@ fn aborted(goal: Goal, operation: OpId, now_ms: Int) -> Goal {
   case goal.phase {
     Continuing(woken:, ..) if woken == operation -> hold_for_abort(goal, now_ms)
 
-    Idle | goalstate.AwaitingVerdict(..) | Continuing(..) -> goal
+    Idle
+    | goalstate.Checking(..)
+    | goalstate.ReadyToFeed
+    | goalstate.AwaitingVerdict(..)
+    | Continuing(..) -> goal
   }
 }
 
@@ -647,7 +812,14 @@ fn running(goal: Goal, observed: Observed) -> #(Goal, Action) {
 fn await(goal: Goal, observed: Observed) -> #(Goal, Action) {
   case goal.phase {
     goalstate.AwaitingVerdict(..) | Continuing(..) -> #(goal, Rest)
-    Idle -> offer(goal, observed)
+
+    // A check inside its deadline is work in flight, and the loop waits for
+    // it the way it waits for a review. `relevel` has already turned a
+    // deadline that passed into `ReadyToFeed`, so this arm rests only while
+    // there is genuinely something to wait for.
+    goalstate.Checking(..) -> #(goal, Rest)
+
+    Idle | goalstate.ReadyToFeed -> offer(goal, observed)
   }
 }
 
@@ -666,7 +838,48 @@ fn offer(goal: Goal, observed: Observed) -> #(Goal, Action) {
     // larger slice.
     None, Some(_reviewing) -> #(goal, Rest)
 
-    None, None -> #(goal, FeedReviewer)
+    None, None -> checked_or_fed(goal, observed)
+  }
+}
+
+// The feed, or the check that precedes it. An operator who pinned a check
+// wants the reviewer to see its result, so the check is run first and the
+// phase records that one is owed; a goal with no check feeds directly, which
+// is every goal before this feature and every goal after it whose operator
+// pinned no command.
+//
+// `ReadyToFeed` is what keeps the pair from looping: the check moves the
+// phase, and the evaluation that reads the moved phase feeds rather than
+// checking again.
+fn checked_or_fed(goal: Goal, observed: Observed) -> #(Goal, Action) {
+  case goal.phase, goal.check {
+    goalstate.Idle, Some(command) -> #(
+      Goal(
+        ..goal,
+        phase: goalstate.Checking(
+          deadline_ms: observed.now_ms + observed.check_timeout_ms,
+        ),
+        updated_ms: observed.now_ms,
+      ),
+      RunCheck(command:),
+    )
+
+    // Either the check has already run for this feed, or there is none to
+    // run. Both feed, and both carry whatever the cell's last result is —
+    // which for a goal with no check is nothing.
+    goalstate.ReadyToFeed, _either | goalstate.Idle, None -> #(
+      goal,
+      FeedReviewer,
+    )
+
+    // Unreachable: `await` reaches this function from the two phases above
+    // and from no other. The arm keeps the match total without a catch-all,
+    // and resting is the answer that cannot act on a phase this function
+    // does not understand.
+    goalstate.Checking(..), _any
+    | goalstate.AwaitingVerdict(..), _other
+    | Continuing(..), _third
+    -> #(goal, Rest)
   }
 }
 
@@ -694,6 +907,8 @@ fn answer_feed(
     goalstate.AwaitingVerdict(..), Active -> settle(goal, answer, observed)
 
     Idle, _any
+    | goalstate.Checking(..), _second
+    | goalstate.ReadyToFeed, _third
     | Continuing(..), _other
     | goalstate.AwaitingVerdict(..), Paused(..)
     | goalstate.AwaitingVerdict(..), Limited(..)

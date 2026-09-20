@@ -141,6 +141,8 @@ pub fn every_status_round_trips_through_the_cell_test() {
 pub fn every_phase_round_trips_test() {
   let phases = [
     goalstate.Idle,
+    goalstate.Checking(deadline_ms: 1_726_000_300_000),
+    goalstate.ReadyToFeed,
     goalstate.AwaitingVerdict(feed: a_feed_run()),
     goalstate.Continuing(woken: a_woken_run(), since_seq: 41),
   ]
@@ -156,6 +158,7 @@ pub fn every_phase_round_trips_test() {
       #("state", json.String("idle")),
       #("operation", json.Null),
       #("since_seq", json.Null),
+      #("deadline_ms", json.Null),
     ])
   assert goalstate.encode_phase(goalstate.Continuing(
       woken: a_woken_run(),
@@ -165,7 +168,36 @@ pub fn every_phase_round_trips_test() {
       #("state", json.String("continuing")),
       #("operation", json.String(ids.op_id_to_string(a_woken_run()))),
       #("since_seq", json.Int(41)),
+      #("deadline_ms", json.Null),
     ])
+}
+
+// A `checking` phase stored with no deadline reads as one already passed,
+// which the next evaluation turns into "the check did not finish" and a
+// feed. That is the safe direction, for the reason an absent `since_seq`
+// reads as zero: a cell the decoder refused would lose the goal, where this
+// costs the reviewer one feed with no evidence in it.
+pub fn an_absent_check_deadline_reads_as_already_passed_test() {
+  let stored = json.Object([#("state", json.String("checking"))])
+
+  assert goalstate.decode_phase(stored)
+    == Ok(goalstate.Checking(deadline_ms: 0))
+}
+
+// A `checking` phase with an operation beside it is a writer disagreeing
+// with this decoder: a check is a process rather than an operation the
+// store records, so nothing names one.
+pub fn a_checking_phase_names_no_operation_test() {
+  let stored =
+    json.Object([
+      #("state", json.String("checking")),
+      #("operation", json.String(ids.op_id_to_string(a_woken_run()))),
+    ])
+
+  let assert Error(reason) = goalstate.decode_phase(stored)
+    as "a checking phase with an operation must not decode"
+
+  assert string.contains(reason, "checking")
 }
 
 // A `continuing` phase stored before `since_seq` existed reads as zero,
@@ -213,7 +245,8 @@ pub fn the_stored_form_is_the_documented_object_test() {
     == [
       "objective", "status", "reason", "phase", "token_budget", "tokens_used",
       "accounted_through_seq", "cost_used", "continuations", "zero_progress",
-      "unanswered_feeds", "created_ms", "updated_ms", "reviewer_note",
+      "unanswered_feeds", "created_ms", "updated_ms", "reviewer_note", "check",
+      "last_check",
     ]
   assert list.key_find(fields, "status") == Ok(json.String("active"))
   assert list.key_find(fields, "reason") == Ok(json.Null)
@@ -879,6 +912,111 @@ pub fn the_cross_field_refusals_are_worded_test() {
   assert message
     == "client/goalstate.decode: phase state \"awaiting_verdict\" does not "
     <> "match the operation beside it"
+}
+
+// --- the operator's check ---------------------------------------------------
+
+// Both endings round trip through the cell, and the pair of fields that
+// carries them is exclusive: one of `status` and `not_finished` is null in
+// every result the encoder writes.
+pub fn a_check_result_round_trips_test() {
+  let results = [
+    goalstate.CheckResult(
+      command: "make check",
+      ending: goalstate.Exited(status: 0),
+      output: "",
+      ran_at_ms: 1_726_000_000_000,
+    ),
+    goalstate.CheckResult(
+      command: "make check",
+      ending: goalstate.Exited(status: 2),
+      output: "stdout:\nFAIL client",
+      ran_at_ms: 1_726_000_000_000,
+    ),
+    goalstate.CheckResult(
+      command: "make check",
+      ending: goalstate.DidNotFinish(reason: "it ran out of time"),
+      output: "",
+      ran_at_ms: 1_726_000_000_000,
+    ),
+  ]
+
+  list.each(results, fn(result) {
+    assert goalstate.decode_last_check(
+        goalstate.encode_last_check(option.Some(result)),
+      )
+      == Ok(option.Some(result))
+  })
+
+  assert goalstate.encode_last_check(option.None) == json.Null
+  assert goalstate.decode_last_check(json.Null) == Ok(option.None)
+}
+
+// A result carrying both a status and a not-finished reason, or neither, is
+// refused rather than resolved in favour of one: either shape would show the
+// reviewer evidence nobody produced.
+pub fn a_check_result_carries_exactly_one_ending_test() {
+  let both =
+    json.Object([
+      #("command", json.String("make check")),
+      #("status", json.Int(0)),
+      #("not_finished", json.String("it ran out of time")),
+      #("output", json.String("")),
+      #("ran_at_ms", json.Int(1000)),
+    ])
+  let neither =
+    json.Object([
+      #("command", json.String("make check")),
+      #("output", json.String("")),
+      #("ran_at_ms", json.Int(1000)),
+    ])
+
+  let assert Error(reason) = goalstate.decode_last_check(both)
+    as "a result with two endings must not decode"
+  assert string.contains(reason, "exactly one")
+
+  let assert Error(_missing) = goalstate.decode_last_check(neither)
+    as "a result with no ending must not decode"
+}
+
+// A cell written before the check existed decodes as a goal with no check
+// and no result, rather than as a refusal. There are no deployed goal cells,
+// so this is not a migration: it is the same leniency every other optional
+// field on this cell has, and it keeps one absent field from losing a goal.
+pub fn a_cell_with_no_check_fields_decodes_as_no_check_test() {
+  let stored =
+    json.Object([
+      #("objective", json.String("land the migration")),
+      #("status", json.String("active")),
+      #("phase", goalstate.encode_phase(goalstate.Idle)),
+      #("token_budget", json.Int(400_000)),
+      #("created_ms", json.Int(1_726_000_000_000)),
+      #("updated_ms", json.Int(1_726_000_000_000)),
+    ])
+
+  let assert Ok(carried) = goalstate.decode(stored)
+    as "a cell with no check fields still decodes"
+
+  assert carried.check == option.None
+  assert carried.last_check == option.None
+}
+
+// A check command and its result survive a round trip on the whole cell,
+// not just on the result's own codec.
+pub fn a_pinned_check_round_trips_through_the_cell_test() {
+  let pinned =
+    goalstate.Goal(
+      ..working_goal(),
+      check: option.Some("make check"),
+      last_check: option.Some(goalstate.CheckResult(
+        command: "make check",
+        ending: goalstate.Exited(status: 1),
+        output: "stderr:\nboom",
+        ran_at_ms: 1_726_000_000_000,
+      )),
+    )
+
+  assert goalstate.decode(goalstate.encode(pinned)) == Ok(pinned)
 }
 
 // --- the doc examples -------------------------------------------------------

@@ -50,7 +50,9 @@ import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/git_identity
+import client/goalcheck
 import client/goalcommand
+import client/goalloop
 import client/history
 import client/hookcompat
 import client/hookrunner
@@ -2921,6 +2923,14 @@ fn assemble_in(
         // so a captured runtime would be a value cycle.
         runtime: fn() { agency.borrow_runtime(agency_config) },
         settings: advisor_settings,
+        check: goal_check_wiring(
+          settings,
+          broker_actor,
+          base_policy,
+          environment,
+          clock,
+          entropy(),
+        ),
         clock:,
         logger:,
         name: advisor_name,
@@ -5708,6 +5718,47 @@ fn jobs_wiring(
 /// How long a background job's clearance may wait out a congested helper
 /// pool, matching the tool plane's own `broker_timeout_ms`.
 pub const jobs_clearance_ms = 30_000
+
+// How this session runs the operator's goal check.
+//
+// The seven fields are the jobs wiring's, for the same reason: the broker
+// seam is `tools/tool.broker_runner`, the closure the `bash` tool clears
+// through, so a check admits under exactly the rules a model-authored
+// command does. What differs is only the operation it is attributed to — an
+// attribution-only one of its own, minted here the way a hook's is, so
+// nothing can abort a check out from under the loop — and the step, which is
+// its own name so the pooled execution budget is not shared with the hooks'.
+//
+// The wall is `client/goalloop`'s constant, and the same number reaches the
+// process's own limit and the durable `Checking` deadline, so a restarted
+// actor cannot be waiting on a process the sandbox has already killed.
+fn goal_check_wiring(
+  settings: Settings,
+  broker_actor: Broker,
+  base_policy: policy.SandboxPolicy,
+  environment: List(#(String, String)),
+  clock: Clock,
+  seed: Int,
+) -> goalcheck.Wiring {
+  let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+
+  goalcheck.wiring(
+    goalcheck.Runner(
+      clear_call: tool.broker_runner(
+        broker: broker_actor,
+        waiting: jobs_clearance_ms,
+      ),
+      base_policy:,
+      demand: settings.demand,
+      env: environment,
+      workspace: settings.workspace,
+      clock:,
+      op_id:,
+      clearance_ms: jobs_clearance_ms,
+    ),
+    timeout_ms: goalloop.check_timeout_ms,
+  )
+}
 
 // How this session reaches its schedule store, or `None` when the
 // operator shut the door — which registers none of the three tools and

@@ -5028,6 +5028,7 @@ type GoalMessage {
 
 type GoalCommand {
   SetTheGoal(String, Int)
+  CheckTheGoal
   ClearTheGoal
   PauseTheGoal
   ResumeTheGoal
@@ -5057,7 +5058,8 @@ fn scripted_goal(initial: GoalScript) -> goalcommand.Seam {
   let name = started.data
 
   goalcommand.Seam(
-    set: fn(_objective, _budget) { ask_goal(name, SetTheGoal("", 0)) },
+    set: fn(_objective, _budget, _check) { ask_goal(name, SetTheGoal("", 0)) },
+    set_check: fn(_command) { ask_goal(name, CheckTheGoal) },
     clear: fn() { ask_goal(name, ClearTheGoal) },
     pause: fn() { ask_goal(name, PauseTheGoal) },
     resume: fn() { ask_goal(name, ResumeTheGoal) },
@@ -5091,7 +5093,11 @@ pub fn a_committed_goal_command_answers_with_the_fresh_board_test() {
   send(
     harness,
     401,
-    protocol.GoalSet(objective: "land the migration", token_budget: 400_000),
+    protocol.GoalSet(
+      objective: "land the migration",
+      token_budget: 400_000,
+      check: None,
+    ),
   )
   let envelope = next(harness)
   assert envelope.reply_to == Some(401)
@@ -5145,7 +5151,11 @@ pub fn goal_commands_without_an_advisor_are_unsupported_test() {
   send(
     harness,
     404,
-    protocol.GoalSet(objective: "land the migration", token_budget: 400_000),
+    protocol.GoalSet(
+      objective: "land the migration",
+      token_budget: 400_000,
+      check: None,
+    ),
   )
   expect_error(harness, 404, "code_unsupported")
   Nil
@@ -5182,7 +5192,7 @@ pub fn an_observer_may_read_the_goal_but_not_mutate_it_test() {
     handle,
     protocol.encode_command(protocol.CommandEnvelope(
       406,
-      protocol.GoalSet(objective: "x", token_budget: 100),
+      protocol.GoalSet(objective: "x", token_budget: 100, check: None),
     )),
   )
   let assert protocol.ErrorEvent(code: "forbidden", ..) =

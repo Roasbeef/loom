@@ -130,6 +130,7 @@
 
 import client/advisorguard
 import client/advisorslice
+import client/goalcheck
 import client/goalloop
 import client/goalstate
 import client/notes
@@ -158,6 +159,7 @@ import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
 import tools/advise
+import weft
 import weft/actor
 import weft/registry as address
 
@@ -333,6 +335,14 @@ pub type Wiring {
     runtime: fn() -> Result(Runtime, Nil),
     /// The advisor strand's identity and policy.
     settings: Settings,
+    /// How the operator's goal check is run, and the wall it runs under.
+    ///
+    /// One closure rather than the broker, the base policy and the five
+    /// other fields the jailed path needs: those are
+    /// `client/goalcheck`'s, and an actor test that had to compose them
+    /// would be emulating a helper pool to prove a state machine
+    /// (protocol 044 §8).
+    check: goalcheck.Wiring,
     /// The timestamp source for the messages this actor frames.
     clock: Clock,
     /// Where the loop's own events are reported.
@@ -442,8 +452,32 @@ pub type Message {
   SetGoal(
     objective: String,
     token_budget: Int,
+    /// The check to pin with the objective, or `None` to leave whatever
+    /// check the goal already carries. A fresh goal carries none, so
+    /// `None` on a new objective means no check; on a refresh of the same
+    /// objective it means the operator changed the budget and not the
+    /// command (protocol 044 §7).
+    check: Option(String),
     reply: Subject(Result(Nil, String)),
   )
+
+  /// The operator set or cleared the goal's check on its own, without
+  /// touching the objective.
+  ///
+  /// It is a command of its own rather than a `goal_set` argument because
+  /// `goal_set` with an unchanged objective is defined as a refresh, and a
+  /// refresh clears the bound counters and the phase. An operator who only
+  /// wants the reviewer to start seeing `make check` should not have to
+  /// reset the loop's accounting to ask for it.
+  SetGoalCheck(command: Option(String), reply: Subject(Result(Nil, String)))
+
+  /// A check run finished and reported what it did.
+  ///
+  /// A cast, from the task's own process: nobody is waiting, and a result
+  /// that never arrives is repaired by the durable `Checking` deadline the
+  /// phase carries, so losing this message costs the delay to the next
+  /// evaluation rather than the goal.
+  CheckFinished(deadline_ms: Int, result: goalstate.CheckResult)
 
   /// The operator cleared the goal, whatever its status.
   ClearGoal(reply: Subject(Result(Nil, String)))
@@ -734,6 +768,7 @@ fn unavailable(state: State, message: Message) -> Nil {
     // not a silent success, and `Ok(Nil)` here would tell the operator
     // a goal was pinned that no cell records.
     SetGoal(reply:, ..)
+    | SetGoalCheck(reply:, ..)
     | ClearGoal(reply:)
     | PauseGoal(reply:)
     | ResumeGoal(reply:) ->
@@ -754,7 +789,8 @@ fn unavailable(state: State, message: Message) -> Nil {
     | AdvisorRunEnded(..)
     | PrimarySpent
     | ReevaluateTick
-    | PrimaryAborted(..) -> Nil
+    | PrimaryAborted(..)
+    | CheckFinished(..) -> Nil
   }
 }
 
@@ -906,12 +942,34 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     // only writer: the gateway parses and validates the request, and the
     // status transitions happen here, where the loop's bookkeeping
     // lives (protocol 044 §1).
-    SetGoal(objective:, token_budget:, reply:) ->
+    SetGoal(objective:, token_budget:, check:, reply:) ->
       commanded(
         state,
         runtime,
         reply,
-        set_goal(state, runtime, memory, objective, token_budget),
+        set_goal(state, runtime, memory, objective, token_budget, check),
+      )
+
+    SetGoalCheck(command:, reply:) ->
+      commanded(
+        state,
+        runtime,
+        reply,
+        set_goal_check(state, runtime, memory, command),
+      )
+
+    // A check reported back. It is an ordinary occasion: the event carries
+    // the result, the loop decides whether it is the one it was waiting
+    // for, and a stale one falls through to the level read.
+    CheckFinished(deadline_ms:, result:) ->
+      remembering(
+        state,
+        evaluate(
+          state,
+          runtime,
+          memory,
+          goalloop.Checked(deadline_ms:, result:),
+        ),
       )
 
     ClearGoal(reply:) ->
@@ -1630,6 +1688,7 @@ fn observe(
     woken_ending: woken_ending(state, memory),
     event:,
     now_ms: now(state.wiring),
+    check_timeout_ms: state.wiring.check.timeout_ms,
   )
 }
 
@@ -1714,7 +1773,8 @@ fn ending(event: goalloop.Event) -> Option(OpId) {
     goalloop.Level
     | goalloop.PrimaryStarted(..)
     | goalloop.Aborted(..)
-    | goalloop.Answered(..) -> None
+    | goalloop.Answered(..)
+    | goalloop.Checked(..) -> None
   }
 }
 
@@ -1764,6 +1824,11 @@ type Performed {
   // woke nobody.
   GoalStopped(because: String)
 
+  // The operator's check was started. Nothing has been sent yet: the feed
+  // it precedes goes out when the result lands, or when the deadline the
+  // phase now carries passes.
+  GoalChecking
+
   // The send was refused. `reason` is the host's own words.
   GoalRefused(reason: String)
 }
@@ -1783,7 +1848,76 @@ fn perform(
     goalloop.WakePrimary(text:) ->
       wake_for_goal(state, runtime, memory, goal, text)
 
+    goalloop.RunCheck(command:) -> run_check(state, memory, goal, command)
+
     goalloop.WrapUp(text:) -> wrap_up(state, runtime, memory, goal, text)
+  }
+}
+
+// The operator's check, started off this actor's process and never on it.
+//
+// The actor must not block for a moment longer than `pending_timeout_ms`:
+// it answers the nudge drains on the strand driver's critical path, and the
+// broker's clearance is synchronous in the calling process by design — a
+// broker that parked on checkout would deadlock, so the wait for a pool slot
+// happens in the borrower. So the borrower is a weft task, which is also
+// what makes the three failure modes cost nothing new. The scope is linked
+// to this actor, so an actor that dies takes an in-flight check with it; the
+// deadline kills and joins the worker, so a command that ignores its own
+// wall is still reaped; and the durable `Checking` deadline the phase
+// carries is what a replacement actor reads, so a result that never arrives
+// is repaired by the next evaluation rather than waited for.
+//
+// The handle is deliberately not kept. Cancelling an abandoned check would
+// save the jail some work, and the jail already bounds it: the wall the
+// process runs under is the same number as this deadline, so a check whose
+// result nobody wants is killed by the sandbox within the same window an
+// explicit cancel would have used, and the loop ignores whatever it reports.
+fn run_check(
+  state: State,
+  memory: Memory,
+  goal: goalstate.Goal,
+  command: String,
+) -> #(Performed, Memory) {
+  let wiring = state.wiring
+  let deadline_ms = checking_deadline(goal)
+
+  // Everything the task touches is captured by value. It holds no runtime,
+  // no session and no store: it runs one command and casts one message to
+  // this actor's registered name, which resolves a replacement under the
+  // same address if this one has been restarted meanwhile.
+  let task = fn() {
+    let result = wiring.check.run(command)
+    let _sent = address.send(wiring.name, CheckFinished(deadline_ms:, result:))
+
+    Ok(Nil)
+  }
+
+  let _witnessed =
+    weft.new([task])
+    |> weft.deadline(wiring.check.timeout_ms)
+    |> weft.start_witnessed
+
+  log.debug(state.wiring.logger, "advisor.goal_check_started", [
+    field.count(key: "deadline_ms", value: deadline_ms),
+  ])
+
+  #(GoalChecking, memory)
+}
+
+// The deadline the phase this action came with carries. `next_action` moves
+// the phase to `Checking` in the same step as it asks for the check, so the
+// other arms are unreachable; zero is the value that makes an unreachable
+// one harmless, because a result reported against it matches no phase and a
+// phase carrying it is abandoned at the next evaluation.
+fn checking_deadline(goal: goalstate.Goal) -> Int {
+  case goal.phase {
+    goalstate.Checking(deadline_ms:) -> deadline_ms
+
+    goalstate.Idle
+    | goalstate.ReadyToFeed
+    | goalstate.AwaitingVerdict(..)
+    | goalstate.Continuing(..) -> 0
   }
 }
 
@@ -2011,7 +2145,7 @@ fn wrap_up(
 // acknowledgement instead; see `verdict_ack`.
 fn report(state: State, performed: Performed) -> Nil {
   case performed {
-    GoalQuiet | GoalReached(..) -> Nil
+    GoalQuiet | GoalReached(..) | GoalChecking -> Nil
 
     GoalStopped(because:) ->
       log.info(state.wiring.logger, "advisor.goal_stopped", [
@@ -2094,6 +2228,13 @@ fn verdict_ack(
     GoalReached(how:) -> Ok(advise.Delivered(how:))
     GoalRefused(reason:) -> Error(reason)
     GoalStopped(because:) -> Error("the goal did not continue: " <> because)
+
+    // Unreachable: a check is asked for from the idle phase, and a verdict
+    // only reaches this path with a feed open. The refusal is what the
+    // reviewer would need to read if it ever were reachable — its verdict
+    // moved nothing, and the loop is preparing the next feed.
+    GoalChecking ->
+      Error("the goal did not continue: the harness is running its check")
 
     // Nothing was sent. A `complete` is exactly that, and is the
     // acknowledgement the reviewer wants; any other status is the loop
@@ -2326,6 +2467,7 @@ fn set_goal(
   memory: Memory,
   objective: String,
   token_budget: Int,
+  check: Option(String),
 ) -> #(Result(Nil, String), Memory) {
   use <- bool.lazy_guard(when: token_budget <= 0, return: fn() {
     #(Error("token_budget must be a positive number of tokens"), memory)
@@ -2346,6 +2488,17 @@ fn set_goal(
 
     Some(_replaced) | None ->
       goalstate.new(objective, token_budget, now_ms, accounted_from:)
+  }
+
+  // A check named here is pinned with the objective; an absent one leaves
+  // whatever the goal already carried, which for a fresh goal is none. The
+  // recorded result is dropped whenever the command changes, because a
+  // result labelled with a command nobody pinned any more is evidence about
+  // work the reviewer is no longer being asked to judge.
+  let pinned = case check {
+    None -> pinned
+    Some(_named) if check == pinned.check -> pinned
+    Some(_changed) -> goalstate.Goal(..pinned, check:, last_check: None)
   }
 
   // A goal pinned onto an idle primary must start on its own: an idle
@@ -2383,6 +2536,46 @@ fn refreshed(
         unanswered_feeds: 0,
         updated_ms: now_ms,
       )
+  }
+}
+
+// Sets or clears the check on a goal that already exists, leaving the
+// objective, the budget and the accounting where they are.
+//
+// The phase returns to idle, and that is the whole of what "clearing or
+// pausing mid-check leaves nothing that acts later" needs: a check in flight
+// reports against the deadline its `Checking` phase carried, and a phase
+// that no longer carries it ignores the report. The process itself is left
+// to the wall it was started under.
+//
+// The recorded result goes with the command it described. An operator who
+// changes `make check` for `go test ./...` should not see the old command's
+// output in the next feed, and the reviewer should not be shown evidence
+// from a command the operator has stopped asking about.
+fn set_goal_check(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  command: Option(String),
+) -> #(Result(Nil, String), Memory) {
+  case memory.goal {
+    None -> #(
+      Error("there is no goal to attach a check to; pin one with /goal first"),
+      memory,
+    )
+
+    Some(goal) -> {
+      let pinned =
+        goalstate.Goal(
+          ..goal,
+          check: command,
+          last_check: None,
+          phase: goalstate.Idle,
+          updated_ms: now(state.wiring),
+        )
+
+      #(Ok(Nil), store_goal(state, runtime, memory, pinned))
+    }
   }
 }
 

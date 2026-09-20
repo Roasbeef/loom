@@ -1879,6 +1879,7 @@ fn network_command(
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
     | protocol.GoalSet(..)
+    | protocol.GoalCheck(..)
     | protocol.GoalGet
     | protocol.GoalClear
     | protocol.GoalPause
@@ -2630,6 +2631,7 @@ fn read_only(command: Command) {
     | protocol.CreateStrand(..)
     | protocol.SetConfig(..)
     | protocol.GoalSet(..)
+    | protocol.GoalCheck(..)
     | protocol.GoalClear
     | protocol.GoalPause
     | protocol.GoalResume
@@ -3868,7 +3870,9 @@ fn goal_command(
 
     Some(seam) -> {
       let outcome = case command {
-        GoalSet(objective:, token_budget:) -> seam.set(objective, token_budget)
+        GoalSet(objective:, token_budget:, check:) ->
+          seam.set(objective, token_budget, check)
+        GoalCheck(command:) -> seam.set_check(command)
         GoalClear -> seam.clear()
         GoalPause -> seam.pause()
         GoalResume -> seam.resume()
@@ -3891,10 +3895,11 @@ fn goal_command(
   }
 }
 
-// The four mutations the dispatch arms carry, named as a type so the
-// handler stays one function rather than four near-identical ones.
+// The five mutations the dispatch arms carry, named as a type so the
+// handler stays one function rather than five near-identical ones.
 type GoalCommand {
-  GoalSet(objective: String, token_budget: Int)
+  GoalSet(objective: String, token_budget: Int, check: Option(String))
+  GoalCheck(command: Option(String))
   GoalClear
   GoalPause
   GoalResume
@@ -4030,8 +4035,15 @@ fn run_command(
     protocol.AdvisorPendingGet, Subscribed ->
       read_advisor_pending(state, connection, id)
     protocol.GoalGet, Subscribed -> read_goal(state, connection, id)
-    protocol.GoalSet(objective:, token_budget:), Subscribed ->
-      goal_command(state, connection, id, GoalSet(objective:, token_budget:))
+    protocol.GoalSet(objective:, token_budget:, check:), Subscribed ->
+      goal_command(
+        state,
+        connection,
+        id,
+        GoalSet(objective:, token_budget:, check:),
+      )
+    protocol.GoalCheck(command:), Subscribed ->
+      goal_command(state, connection, id, GoalCheck(command:))
     protocol.GoalClear, Subscribed ->
       goal_command(state, connection, id, GoalClear)
     protocol.GoalPause, Subscribed ->

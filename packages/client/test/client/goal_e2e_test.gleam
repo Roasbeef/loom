@@ -144,7 +144,7 @@ pub fn an_always_continue_reviewer_stops_itself_test_() -> EunitTest {
     // listener.
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
-    let assert Ok(Nil) = goal_commands.set(objective, 100_000_000)
+    let assert Ok(Nil) = goal_commands.set(objective, 100_000_000, None)
       as "the goal must pin through the operator's own command door"
     // The operator's one turn ends; the goal feed replaces the ordinary
     // review, and the loop begins. Every subsequent primary run is the
@@ -246,7 +246,7 @@ pub fn an_always_continue_reviewer_stops_at_the_cap_test_() -> EunitTest {
     exec.checkin(instance.pool, helper)
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
-    let assert Ok(Nil) = goal_commands.set(objective, 100_000_000)
+    let assert Ok(Nil) = goal_commands.set(objective, 100_000_000, None)
       as "the goal must pin through the operator's own command door"
     complete(instance, "work on the migration")
 
@@ -309,7 +309,7 @@ pub fn an_aborted_continuation_pauses_the_goal_test_() -> EunitTest {
     exec.checkin(instance.pool, helper)
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
-    let assert Ok(Nil) = goal_commands.set(objective, 100_000_000)
+    let assert Ok(Nil) = goal_commands.set(objective, 100_000_000, None)
       as "the goal must pin through the operator's own command door"
     complete(instance, "work on the migration")
     // The first continuation wakes the primary; wait for its frame in a
@@ -1068,7 +1068,10 @@ pub fn the_five_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
     // reply protocol 044 §7 fixes. An unrouted seam would answer
     // `code_unsupported` here, which is the whole of the regression.
     let pinned =
-      command(701, protocol.GoalSet(objective:, token_budget: 400_000))
+      command(
+        701,
+        protocol.GoalSet(objective:, token_budget: 400_000, check: None),
+      )
     assert string.contains(pinned, "\"mode\":\"goal\"")
       as "goal_set must answer with the fresh board, not a refusal"
     assert string.contains(pinned, "\"status\":\"active\"")
@@ -1101,6 +1104,7 @@ pub fn the_five_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
         protocol.GoalSet(
           objective: string.repeat("a", protocol.objective_limit + 1),
           token_budget: 400_000,
+          check: None,
         ),
       )
     assert string.contains(oversized, "\"event\":\"error\"")

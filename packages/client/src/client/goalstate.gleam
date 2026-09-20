@@ -30,10 +30,13 @@
 //// cell is the mirror case: it is only ever written whole by its owner,
 //// so a payload missing `objective`, `status` or `phase` is a writer
 //// disagreeing with this decoder — an error, never a silent default. The
-//// fields that may be absent are the counters, the cost and the two
-//// nullable strings, each of which has a zero value that means "nothing
-//// recorded yet". A field that is *present* and mistyped is an error
-//// naming the field, whatever its seniority.
+//// fields that may be absent are the counters, the cost and the nullable
+//// ones, each of which has a zero value that means "nothing recorded
+//// yet": the reviewer's note, the operator's check command and the last
+//// check result among them, so a cell written before the check existed
+//// decodes as a goal with no check rather than as a refusal. A field that
+//// is *present* and mistyped is an error naming the field, whatever its
+//// seniority.
 ////
 //// ## What this module deliberately does not do
 ////
@@ -139,6 +142,29 @@ pub type Phase {
   /// is an Active goal in this phase with an idle primary.
   Idle
 
+  /// The operator's check is running in a jailed process and its result
+  /// is owed to this loop before the reviewer is fed.
+  ///
+  /// `deadline_ms` is the wall-clock instant past which the result will
+  /// not be waited for. It is durable because the wait must survive the
+  /// actor: the task is linked to the actor, so an actor that dies takes
+  /// an in-flight check with it, and what a replacement reads is this
+  /// phase. A deadline already passed is therefore not an error but the
+  /// repair — the next evaluation records "the check did not finish" as
+  /// the evidence and feeds the reviewer with it, which is why a check
+  /// can no more strand the loop than a feed can.
+  Checking(deadline_ms: Int)
+
+  /// A check has been recorded and the feed it was run for has not gone
+  /// out yet.
+  ///
+  /// It exists so the check runs once per feed rather than in a loop with
+  /// it: without a phase between the two, the evaluation that found an
+  /// Idle goal with a check configured would start another check every
+  /// time it read the same level. It is unreachable on a goal with no
+  /// check configured.
+  ReadyToFeed
+
   /// A goal feed is open on the advisor and one `continue` or `complete`
   /// is owed. `feed` is the advisor run the feed opened, so the loop can
   /// tell the verdict it is waiting for from a stale one, and can see
@@ -156,6 +182,47 @@ pub type Phase {
   /// the handful of entries after that feed and read as having done
   /// nothing. Two of those paused a goal that was working.
   Continuing(woken: OpId, since_seq: Int)
+}
+
+/// How a check run ended, which is the fact the reviewer weighs.
+///
+/// Two variants rather than an exit status and a nullable reason, because
+/// the two are different evidence: a status is what the operator's command
+/// said about the work, and a check that never finished says nothing about
+/// the work at all. A reviewer shown `exit 1` should weigh it against
+/// `complete`; a reviewer shown "the check did not finish" should weigh the
+/// transcript instead, and collapsing the pair into a status would hand it
+/// a number nobody produced.
+pub type CheckEnding {
+  /// The command ran to its own exit with this status. Zero is a pass.
+  Exited(status: Int)
+
+  /// The command produced no status. `reason` is the harness's own words
+  /// for why — the deadline passed, the task died, the sandbox refused the
+  /// command — and it is what the feed shows in the status's place.
+  DidNotFinish(reason: String)
+}
+
+/// What one run of the operator's check produced.
+///
+/// The command is recorded beside the result rather than read from the
+/// goal's own `check` field at render time, because the two can disagree:
+/// an operator who changes the check while a run is in flight would
+/// otherwise see the old run's output labelled with the new command, and so
+/// would the reviewer.
+pub type CheckResult {
+  CheckResult(
+    /// The command as it was run.
+    command: String,
+    /// How it ended.
+    ending: CheckEnding,
+    /// A bounded tail of what it printed, already clipped by the runner.
+    /// Untrusted data: it is process output, so it reaches a model only
+    /// inside a frame that has been made safe against its own tokens.
+    output: String,
+    /// When the run was recorded. Milliseconds since the epoch.
+    ran_at_ms: Int,
+  )
 }
 
 /// One session goal: the operator's objective, the loop's phase, and the
@@ -201,6 +268,17 @@ pub type Goal {
     /// The text the reviewer sent with its terminal verdict. `None`
     /// until a `complete` lands.
     reviewer_note: Option(String),
+    /// The operator's check command, or `None` when they pinned none.
+    ///
+    /// Operator-authored and therefore not model-influenced text — but it
+    /// still runs through the capability-checked jail an ordinary tool
+    /// command does, because Rule Zero is about where code runs rather than
+    /// about who wrote it (protocol 044 §8).
+    check: Option(String),
+    /// What the last run of the check produced, or `None` when none has
+    /// run under this goal yet. Recorded for the feed frame the reviewer
+    /// reads and for the operator's panel.
+    last_check: Option(CheckResult),
   )
 }
 
@@ -261,6 +339,8 @@ pub fn new(
     created_ms: now,
     updated_ms: now,
     reviewer_note: None,
+    check: None,
+    last_check: None,
   )
 }
 
@@ -483,7 +563,122 @@ pub fn encode(goal: Goal) -> JsonValue {
     #("created_ms", json.Int(goal.created_ms)),
     #("updated_ms", json.Int(goal.updated_ms)),
     #("reviewer_note", encode_optional(goal.reviewer_note)),
+    #("check", encode_optional(goal.check)),
+    #("last_check", encode_last_check(goal.last_check)),
   ])
+}
+
+/// The last check result as its wire object, or null when none has run.
+///
+/// The ending is two always-present fields, `status` and `not_finished`,
+/// exactly one of which is null. An object of its own rather than a status
+/// with a sentinel: there is no exit status that means "no status", and a
+/// reviewer shown `-1` would weigh a number the harness invented.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // goalstate.encode_last_check(option.None) == json.Null
+/// ```
+///
+pub fn encode_last_check(result: Option(CheckResult)) -> JsonValue {
+  case result {
+    None -> json.Null
+
+    Some(CheckResult(command:, ending:, output:, ran_at_ms:)) -> {
+      let #(status, not_finished) = case ending {
+        Exited(status:) -> #(json.Int(status), json.Null)
+        DidNotFinish(reason:) -> #(json.Null, json.String(reason))
+      }
+
+      json.Object([
+        #("command", json.String(command)),
+        #("status", status),
+        #("not_finished", not_finished),
+        #("output", json.String(output)),
+        #("ran_at_ms", json.Int(ran_at_ms)),
+      ])
+    }
+  }
+}
+
+/// A stored last-check object as a result. Total: absent and null are both
+/// "nothing has run", and a present payload that is not a well-formed
+/// result is an `Error` naming the field.
+///
+/// A result carrying both a status and a not-finished reason, or neither, is
+/// refused rather than resolved in favour of one. Either shape is a writer
+/// that disagrees with this decoder about what the pair means, and picking
+/// a winner would show the reviewer evidence nobody produced.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // goalstate.decode_last_check(json.Null) == Ok(option.None)
+/// ```
+///
+pub fn decode_last_check(
+  payload: JsonValue,
+) -> Result(Option(CheckResult), String) {
+  case payload {
+    json.Null -> Ok(None)
+
+    _present -> {
+      use fields <- result.try(object_fields(payload))
+      use command <- result.try(required_string(fields, "command"))
+      use ending <- result.try(decode_ending(fields))
+      use output <- result.try(check_output(fields))
+      use ran_at_ms <- result.try(required_ms(fields, "ran_at_ms"))
+
+      Ok(Some(CheckResult(command:, ending:, output:, ran_at_ms:)))
+    }
+  }
+}
+
+// The ending, read from the pair of always-present-sometimes-null fields.
+// Exactly one of the two carries a value; both and neither are refusals,
+// for the reason `decode_last_check` states.
+fn decode_ending(
+  fields: List(#(String, JsonValue)),
+) -> Result(CheckEnding, String) {
+  use status <- result.try(optional_status(fields))
+  use reason <- result.try(optional_text(fields, "not_finished"))
+
+  case status, reason {
+    Some(code), None -> Ok(Exited(status: code))
+    None, Some(words) -> Ok(DidNotFinish(reason: words))
+
+    Some(_both), Some(_of_them) | None, None ->
+      Error(
+        decode_where
+        <> ": a check result carries exactly one of status and not_finished",
+      )
+  }
+}
+
+// The exit status, absent or null when the run produced none. Any integer
+// is accepted: a jailed process that was signalled reports 128 plus the
+// signal, and a helper's own failure code is not this decoder's to bound.
+fn optional_status(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(Int), String) {
+  case list.key_find(fields, "status") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Int(value:)) -> Ok(Some(value))
+
+    Ok(other) -> Error(field_error("status", "an integer or null", other))
+  }
+}
+
+// The captured tail, which may legitimately be empty: a command that
+// printed nothing and exited zero is the commonest passing check there is.
+fn check_output(fields: List(#(String, JsonValue))) -> Result(String, String) {
+  case list.key_find(fields, "output") {
+    Error(Nil) | Ok(json.Null) -> Ok("")
+    Ok(json.String(value:)) -> Ok(value)
+
+    Ok(other) -> Error(field_error("output", "a string or null", other))
+  }
 }
 
 // Null is what "nothing recorded" looks like in a field that never
@@ -513,13 +708,16 @@ fn encode_optional(text: Option(String)) -> JsonValue {
 /// ```
 ///
 pub fn encode_phase(phase: Phase) -> JsonValue {
-  let #(word, operation, since) = case phase {
-    Idle -> #("idle", None, None)
-    AwaitingVerdict(feed:) -> #("awaiting_verdict", Some(feed), None)
+  let #(word, operation, since, deadline) = case phase {
+    Idle -> #("idle", None, None, None)
+    Checking(deadline_ms:) -> #("checking", None, None, Some(deadline_ms))
+    ReadyToFeed -> #("ready_to_feed", None, None, None)
+    AwaitingVerdict(feed:) -> #("awaiting_verdict", Some(feed), None, None)
     Continuing(woken:, since_seq:) -> #(
       "continuing",
       Some(woken),
       Some(since_seq),
+      None,
     )
   }
 
@@ -527,6 +725,7 @@ pub fn encode_phase(phase: Phase) -> JsonValue {
     #("state", json.String(word)),
     #("operation", encode_optional(option.map(operation, ids.op_id_to_string))),
     #("since_seq", encode_optional_int(since)),
+    #("deadline_ms", encode_optional_int(deadline)),
   ])
 }
 
@@ -553,9 +752,19 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
   use word <- result.try(required_string(fields, "state"))
   use operation <- result.try(optional_operation(fields))
   use since <- result.try(optional_since_seq(fields))
+  use deadline <- result.try(optional_deadline(fields))
 
   case word, operation {
     "idle", None -> Ok(Idle)
+    "ready_to_feed", None -> Ok(ReadyToFeed)
+
+    // An absent deadline on a `checking` phase reads as one already passed,
+    // which the next evaluation turns into "the check did not finish" and a
+    // feed. That is the safe direction, the same reasoning `since_seq`
+    // takes: a check whose deadline cannot be read costs the reviewer one
+    // feed with no evidence, where refusing the cell would lose the goal.
+    "checking", None -> Ok(Checking(deadline_ms: option.unwrap(deadline, 0)))
+
     "awaiting_verdict", Some(feed) -> Ok(AwaitingVerdict(feed:))
 
     // An absent `since_seq` on a `continuing` phase reads as zero, which
@@ -569,7 +778,12 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
     // A state word that needs an operation and has none, or the reverse.
     // Either is a writer disagreeing with this decoder about what the
     // phase means, and the caller reads a refused cell as no goal.
-    "idle", Some(_named) | "awaiting_verdict", None | "continuing", None ->
+    "idle", Some(_named)
+    | "ready_to_feed", Some(_other)
+    | "checking", Some(_third)
+    | "awaiting_verdict", None
+    | "continuing", None
+    ->
       Error(
         decode_where
         <> ": phase state "
@@ -580,10 +794,26 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
     _unknown, _any ->
       Error(
         decode_where
-        <> ": phase state must be one of \"idle\", \"awaiting_verdict\" or "
-        <> "\"continuing\", got "
+        <> ": phase state must be one of \"idle\", \"checking\", "
+        <> "\"ready_to_feed\", \"awaiting_verdict\" or \"continuing\", got "
         <> json.to_string(json.String(word)),
       )
+  }
+}
+
+// The instant a check in flight stops being waited for: absent or null
+// outside the checking state, a non-negative integer inside it. A present
+// value of the wrong type is an error rather than an absence, the
+// discipline every field in this codec keeps.
+fn optional_deadline(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(Int), String) {
+  case list.key_find(fields, "deadline_ms") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Int(value:)) if value >= 0 -> Ok(Some(value))
+
+    Ok(other) ->
+      Error(field_error("deadline_ms", "a non-negative integer or null", other))
   }
 }
 
@@ -664,6 +894,8 @@ pub fn decode(payload: JsonValue) -> Result(Goal, String) {
   use counts <- result.try(decode_counters(fields))
   use cost_used <- result.try(optional_cost(fields))
   use reviewer_note <- result.try(optional_text(fields, "reviewer_note"))
+  use check <- result.try(optional_text(fields, "check"))
+  use last_check <- result.try(optional_last_check(fields))
 
   // A negative age is always wrong: `updated_ms` is stamped by the same
   // writer as `created_ms`, so the pair can only move forward.
@@ -683,7 +915,22 @@ pub fn decode(payload: JsonValue) -> Result(Goal, String) {
     created_ms: created,
     updated_ms: updated,
     reviewer_note:,
+    check:,
+    last_check:,
   ))
+}
+
+// The last check result, absent on every cell written before the check
+// existed and on every goal whose check has not run yet. Both read as
+// nothing recorded, which is what makes a cell with none decode as "no
+// check" rather than as a refusal (protocol 044 §8).
+fn optional_last_check(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(CheckResult), String) {
+  case list.key_find(fields, "last_check") {
+    Error(Nil) -> Ok(None)
+    Ok(payload) -> decode_last_check(payload)
+  }
 }
 
 // The five counted fields, decoded together because they share one rule:

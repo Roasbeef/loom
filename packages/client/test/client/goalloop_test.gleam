@@ -43,8 +43,14 @@ fn idle(event: goalloop.Event) -> goalloop.Observed {
     woken_ending: goalloop.RanItsCourse,
     event:,
     now_ms: 2000,
+    check_timeout_ms: a_short_wall,
   )
 }
+
+// The wall these tests run checks under. Short, and short on purpose: the
+// deadline arithmetic is what the tests assert on, so a production-sized
+// number would only make the expected instants harder to read.
+const a_short_wall = 1000
 
 fn an_op(n: Int) -> OpId {
   let #(id, _later) = ids.mint_op(ids.generator(clock.fixed(at: 1000), seed: n))
@@ -555,6 +561,190 @@ pub fn a_busy_strand_defers_the_feed_test() {
   assert goalloop.next_action(a_goal(), reviewing) == #(a_goal(), goalloop.Rest)
 }
 
+// --- the operator's check ---------------------------------------------------
+
+// A goal with a check does not feed until the check has run: the occasion
+// that would have sent the feed asks for the check instead, and the phase
+// records the deadline the caller must run it under.
+pub fn a_configured_check_runs_before_the_feed_test() {
+  let #(moved, action) =
+    goalloop.next_action(a_checked_goal(), idle(goalloop.Level))
+
+  assert action == goalloop.RunCheck(command: "make check")
+  assert moved.phase == goalstate.Checking(deadline_ms: 2000 + a_short_wall)
+}
+
+// The result the loop was waiting for is recorded and the feed follows in
+// the same step, so a check costs one evaluation rather than a round of the
+// periodic tick.
+pub fn a_check_result_records_and_feeds_test() {
+  let owed =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 3000),
+    )
+  let result = a_failing_check()
+
+  let #(moved, action) =
+    goalloop.next_action(
+      owed,
+      idle(goalloop.Checked(deadline_ms: 3000, result:)),
+    )
+
+  assert moved.last_check == Some(result)
+  assert moved.phase == goalstate.ReadyToFeed
+  assert action == goalloop.FeedReviewer
+}
+
+// The check runs once per feed, not in a loop with it. The phase the result
+// moved the goal into feeds; it does not ask for the check again.
+pub fn a_recorded_check_is_not_run_again_test() {
+  let ready =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.ReadyToFeed,
+      last_check: Some(a_failing_check()),
+    )
+
+  let #(moved, action) = goalloop.next_action(ready, idle(goalloop.Level))
+
+  assert action == goalloop.FeedReviewer
+  assert moved.last_check == Some(a_failing_check())
+}
+
+// A check whose deadline has passed is abandoned rather than waited on, and
+// the reviewer is fed with the absence recorded as the evidence. This is the
+// repair for a task that was killed at its wall and for an actor that was
+// replaced while the check ran.
+pub fn a_check_past_its_deadline_feeds_anyway_test() {
+  let stuck =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 1500),
+    )
+
+  let #(moved, action) = goalloop.next_action(stuck, idle(goalloop.Level))
+
+  assert action == goalloop.FeedReviewer
+  assert moved.phase == goalstate.ReadyToFeed
+  assert moved.last_check
+    == Some(goalstate.CheckResult(
+      command: "make check",
+      ending: goalstate.DidNotFinish(reason: goalloop.check_did_not_finish(
+        a_short_wall,
+      )),
+      output: "",
+      ran_at_ms: 2000,
+    ))
+}
+
+// A check inside its deadline is work in flight, so the loop waits for it
+// the way it waits for a review.
+pub fn a_check_inside_its_deadline_waits_test() {
+  let running =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 9000),
+    )
+
+  let #(moved, action) = goalloop.next_action(running, idle(goalloop.Level))
+
+  assert action == goalloop.Rest
+  assert moved.phase == goalstate.Checking(deadline_ms: 9000)
+}
+
+// A result against a deadline the loop is no longer waiting for records
+// nothing: this is the check whose goal was cleared, paused or re-checked
+// while it ran.
+pub fn a_check_result_for_another_deadline_is_ignored_test() {
+  let owed =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 9000),
+    )
+
+  let #(moved, action) =
+    goalloop.next_action(
+      owed,
+      idle(goalloop.Checked(deadline_ms: 3000, result: a_failing_check())),
+    )
+
+  assert moved.last_check == None
+  assert moved.phase == goalstate.Checking(deadline_ms: 9000)
+  assert action == goalloop.Rest
+}
+
+// A paused goal's in-flight check reports into a goal that acts on nothing,
+// which is what "pausing mid-check leaves nothing that acts later" means
+// from the loop's side.
+pub fn a_check_result_for_a_paused_goal_does_nothing_test() {
+  let held =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      status: goalstate.Paused(by: goalstate.ByOperator),
+      phase: goalstate.Checking(deadline_ms: 3000),
+    )
+
+  let #(moved, action) =
+    goalloop.next_action(
+      held,
+      idle(goalloop.Checked(deadline_ms: 3000, result: a_failing_check())),
+    )
+
+  assert action == goalloop.Rest
+  assert moved.status == goalstate.Paused(by: goalstate.ByOperator)
+}
+
+// A check that always fails must not defeat the loop's own bounds. The
+// continuation cap is read before the phase, so a goal at the cap wraps up
+// rather than running its check again — an operator whose check can never
+// pass pays the cap, not an unbounded loop.
+pub fn an_always_failing_check_still_hits_the_cap_test() {
+  let capped =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      continuations: goalloop.continuation_cap,
+      last_check: Some(a_failing_check()),
+    )
+
+  let #(moved, action) = goalloop.next_action(capped, idle(goalloop.Level))
+
+  assert moved.status == goalstate.Limited(by: goalstate.ByContinuationCap)
+  assert action
+    == goalloop.WrapUp(text: goalloop.wrap_up_text(goalstate.ByContinuationCap))
+}
+
+// And a check in flight does not hold off an exhausted budget either: the
+// bound is read before the phase, so a goal that crossed its budget while
+// its check ran stops rather than feeding.
+pub fn a_check_in_flight_does_not_outlast_the_budget_test() {
+  let spent =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 9000),
+      tokens_used: 400_000,
+    )
+
+  let #(moved, action) = goalloop.next_action(spent, idle(goalloop.Level))
+
+  assert moved.status == goalstate.Limited(by: goalstate.ByTokenBudget)
+  assert action
+    == goalloop.WrapUp(text: goalloop.wrap_up_text(goalstate.ByTokenBudget))
+}
+
+fn a_checked_goal() -> goalstate.Goal {
+  goalstate.Goal(..a_goal(), check: Some("make check"))
+}
+
+fn a_failing_check() -> goalstate.CheckResult {
+  goalstate.CheckResult(
+    command: "make check",
+    ending: goalstate.Exited(status: 1),
+    output: "stdout:\nFAIL client",
+    ran_at_ms: 1900,
+  )
+}
+
 // --- the properties ---------------------------------------------------------
 
 // The stall, stated as a property over every reachable state the walk
@@ -571,7 +761,69 @@ pub fn the_loop_never_rests_in_the_stalled_combination_test() {
           as "an active goal with nothing owed and nothing running must act"
       }
 
+      // `ReadyToFeed` owes nothing either: the check has already run, so
+      // this is the stalled combination reached through the check's own
+      // path and it must act for the same reason.
+      goalstate.Active, goalstate.ReadyToFeed, None, None -> {
+        assert action != goalloop.Rest
+          as "an active goal whose check has run must feed the reviewer"
+      }
+
       _status, _phase, _primary, _advisor -> Nil
+    }
+  })
+}
+
+// A check in flight is the one phase that may rest, and the level read is
+// what bounds how long: whatever state the walk reaches, a level read never
+// leaves a `Checking` phase whose deadline has passed. That is what keeps a
+// check from becoming a sixth way to strand the goal — the periodic tick is
+// a level read, so a check nobody will report on is abandoned within one
+// tick of its deadline.
+//
+// It is stated against a level read rather than against every event for the
+// reason the feed's own repair is: a notification is about the thing that
+// happened, and repairing a state it says nothing about is the tick's job.
+pub fn a_level_read_never_leaves_a_check_past_its_deadline_test() {
+  walk(seed(47), 400, fn(reached) {
+    let #(goal, observed) = reached
+    let level = goalloop.Observed(..observed, event: goalloop.Level)
+    let #(moved, _action) = goalloop.next_action(goal, level)
+
+    case moved.phase {
+      goalstate.Checking(deadline_ms:) -> {
+        assert deadline_ms > level.now_ms
+          as "a level read never leaves a check past its deadline"
+      }
+
+      goalstate.Idle
+      | goalstate.ReadyToFeed
+      | goalstate.AwaitingVerdict(..)
+      | goalstate.Continuing(..) -> Nil
+    }
+  })
+}
+
+// A check result the loop was not waiting for moves nothing. The walk draws
+// both a matching deadline and one it never used, so this covers the late
+// report of a check the operator cleared or paused out from under.
+pub fn a_stale_check_result_is_inert_test() {
+  walk(seed(46), 400, fn(reached) {
+    let #(goal, observed) = reached
+
+    case observed.event, goal.phase {
+      goalloop.Checked(deadline_ms:, ..), goalstate.Checking(deadline_ms: owed)
+        if deadline_ms != owed
+      -> {
+        let #(moved, _action) = goalloop.next_action(goal, observed)
+
+        assert moved.last_check == goal.last_check
+          as "a stale check result is never recorded"
+      }
+
+      // Every other pairing is either the result the loop owed or an event
+      // this property is not about.
+      _event, _phase -> Nil
     }
   })
 }
@@ -713,11 +965,13 @@ fn draw_goal(from: Seed) -> #(goalstate.Goal, Seed) {
   // generator did.
   let #(zeros, from) = between(from, 0, goalloop.zero_progress_limit - 1)
   let #(unanswered, from) = between(from, 0, goalloop.unanswered_feed_limit - 1)
+  let #(check, from) = draw_check(from)
 
   #(
     goalstate.Goal(
       ..a_goal(),
       phase:,
+      check:,
       token_budget: budget,
       tokens_used: used,
       continuations:,
@@ -729,15 +983,34 @@ fn draw_goal(from: Seed) -> #(goalstate.Goal, Seed) {
 }
 
 fn draw_phase(from: Seed) -> #(goalstate.Phase, Seed) {
-  let #(which, from) = between(from, 0, 2)
+  let #(which, from) = between(from, 0, 4)
 
   case which {
     0 -> #(goalstate.Idle, from)
     1 -> #(goalstate.AwaitingVerdict(feed: walked_review()), from)
+
+    // Both sides of the check's deadline are drawn, because they are two
+    // different states: one rests and one must not. The walk's clock reads
+    // 5,000, so 4,000 is a deadline already passed and 6,000 is one in the
+    // future.
+    2 -> #(goalstate.Checking(deadline_ms: 4000), from)
+    3 -> #(goalstate.ReadyToFeed, from)
     _continuing -> #(
       goalstate.Continuing(woken: walked_woken(), since_seq: 0),
       from,
     )
+  }
+}
+
+// Whether the walked goal carries a check. Drawn, because the check changes
+// which action the un-stalled combination answers with and a walk that never
+// pinned one would leave `RunCheck` out of every property below.
+fn draw_check(from: Seed) -> #(Option(String), Seed) {
+  let #(which, from) = between(from, 0, 1)
+
+  case which {
+    0 -> #(None, from)
+    _pinned -> #(Some("make check"), from)
   }
 }
 
@@ -785,6 +1058,7 @@ fn draw_observed(
       },
       event:,
       now_ms: 5000,
+      check_timeout_ms: a_short_wall,
     ),
     from,
   )
@@ -801,7 +1075,7 @@ fn draw_run(from: Seed, named: OpId) -> #(Option(OpId), Seed) {
 }
 
 fn draw_event(from: Seed, _goal: goalstate.Goal) -> #(goalloop.Event, Seed) {
-  let #(which, from) = between(from, 0, 6)
+  let #(which, from) = between(from, 0, 8)
 
   case which {
     0 -> #(goalloop.Level, from)
@@ -823,11 +1097,26 @@ fn draw_event(from: Seed, _goal: goalstate.Goal) -> #(goalloop.Event, Seed) {
     3 -> #(goalloop.AdvisorEnded(operation: walked_review()), from)
     4 -> #(goalloop.Aborted(operation: walked_woken()), from)
     5 -> #(goalloop.Answered(answer: goalloop.Continued(text: "on")), from)
+
+    // A result for the phase the walk draws, and one for a deadline it
+    // never drew. The second is the stale report — a check the loop stopped
+    // waiting for, reporting after the fact — and it must move nothing.
+    6 -> #(goalloop.Checked(deadline_ms: 4000, result: walked_check()), from)
+    7 -> #(goalloop.Checked(deadline_ms: 99_000, result: walked_check()), from)
     _completed -> #(
       goalloop.Answered(answer: goalloop.Completed(text: "done")),
       from,
     )
   }
+}
+
+fn walked_check() -> goalstate.CheckResult {
+  goalstate.CheckResult(
+    command: "make check",
+    ending: goalstate.Exited(status: 1),
+    output: "one test failed",
+    ran_at_ms: 4900,
+  )
 }
 
 // --- the generator ----------------------------------------------------------

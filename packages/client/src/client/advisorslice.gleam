@@ -801,12 +801,83 @@ pub fn goal_feed_message(
     <> untrusted_close
     <> "\n"
     <> budget_line(goal)
+    <> check_block(goal)
     <> "\n\n"
     <> goal_feed_evidence(slice)
     <> "\n"
     <> goal_feed_footer
 
   user_message(text, now)
+}
+
+/// The label a goal feed's check block opens with.
+///
+/// A named constant because the reviewer's instruction depends on the exact
+/// words — the block is the one part of the feed the harness ran itself, and
+/// a reviewer that read it as part of the transcript would weigh it as the
+/// primary's account of its own tests — and because the e2e fixture asserts
+/// on it in the advisor's request bodies.
+pub const check_label = "Check (run by the harness, not by the primary):"
+
+// The check block, drawn only when a run has been recorded.
+//
+// Nothing is drawn for a goal whose operator pinned no check, which is every
+// goal that predates the feature: the block would be a line saying the
+// harness has no evidence, on every feed, for a question nobody asked.
+//
+// Both untrusted parts are made frame-safe. The command is operator data and
+// the output is process data, and either could contain this frame's own
+// header or footer, or the untrusted-objective delimiters: a check that
+// printed `</untrusted_objective>` must not be able to close a block it is
+// quoted after, and one that printed the footer must not be able to end the
+// feed and speak the rest in the harness's voice.
+fn check_block(goal: goalstate.Goal) -> String {
+  case goal.last_check {
+    None -> ""
+
+    Some(result) ->
+      "\n"
+      <> check_label
+      <> "\n  command: "
+      <> goal_frame_safe(result.command)
+      <> "\n  result: "
+      <> check_ending(result.ending)
+      <> check_output(result.output)
+  }
+}
+
+// How the run ended, in the reviewer's own terms. A status rather than a
+// verdict: whether a non-zero exit means the objective is unachieved is the
+// reviewer's judgement, and the footer is where it is asked for.
+fn check_ending(ending: goalstate.CheckEnding) -> String {
+  case ending {
+    goalstate.Exited(status: 0) -> "exit status 0 (the check passed)"
+
+    goalstate.Exited(status:) ->
+      "exit status " <> int.to_string(status) <> " (the check failed)"
+
+    goalstate.DidNotFinish(reason:) ->
+      "no exit status — " <> goal_frame_safe(reason)
+  }
+}
+
+fn check_output(output: String) -> String {
+  case output {
+    "" -> "\n  output: (the check printed nothing)"
+    printed -> "\n  output:\n" <> goal_frame_safe(printed)
+  }
+}
+
+// Breaks this frame's own tokens and both objective delimiters where they
+// occur inside a quoted body. One pass for the reason `frame_safe` documents:
+// every replacement drops the bracket that makes the literal, so a
+// replacement cannot combine with its surroundings to spell one again.
+fn goal_frame_safe(text: String) -> String {
+  text
+  |> string.replace(each: goal_feed_header, with: unframed(goal_feed_header))
+  |> string.replace(each: goal_feed_footer, with: unframed(goal_feed_footer))
+  |> string.replace(each: untrusted_open, with: defanged(untrusted_open))
+  |> string.replace(each: untrusted_close, with: defanged(untrusted_close))
 }
 
 /// What a goal feed shows in place of a slice when the primary's branch

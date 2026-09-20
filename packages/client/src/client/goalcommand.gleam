@@ -1,4 +1,4 @@
-//// The gateway's five goal commands over the advisor actor's address.
+//// The gateway's six goal commands over the advisor actor's address.
 ////
 //// The actor is the goal cell's only writer, so every operator command
 //// routes to it rather than to the store: the status transitions happen
@@ -16,6 +16,7 @@
 
 import client/advisor
 import gleam/erlang/process.{type Subject}
+import gleam/option.{type Option}
 import weft/registry as address
 
 /// How long one goal command waits for the actor. The status flips are
@@ -24,13 +25,19 @@ import weft/registry as address
 /// the gateway reports and the operator retries.
 const command_timeout_ms = 5000
 
-/// The five calls the gateway makes, filled from the advisor's wiring.
-/// One record rather than five fields because the wiring is one value
+/// The six calls the gateway makes, filled from the advisor's wiring.
+/// One record rather than six fields because the wiring is one value
 /// and the gateway holds one option of it.
 pub type Seam {
   Seam(
-    /// Pins or replaces the goal.
-    set: fn(String, Int) -> Result(Nil, String),
+    /// Pins or replaces the goal, optionally with the check to run before
+    /// each feed.
+    set: fn(String, Int, Option(String)) -> Result(Nil, String),
+    /// Sets the check on the goal that is already pinned, or clears it
+    /// with `None`. Its own call rather than a `set` with an unchanged
+    /// objective, because that is defined as a refresh and would clear the
+    /// loop's bound counters.
+    set_check: fn(Option(String)) -> Result(Nil, String),
     /// Clears the goal.
     clear: fn() -> Result(Nil, String),
     /// Holds the goal.
@@ -45,9 +52,14 @@ pub fn seam(wiring: advisor.Wiring) -> Seam {
   let named: address.Address(advisor.Message) = wiring.name
 
   Seam(
-    set: fn(objective, budget) {
+    set: fn(objective, budget, check) {
       call(named, fn(reply: Subject(Result(Nil, String))) {
-        advisor.SetGoal(objective:, token_budget: budget, reply:)
+        advisor.SetGoal(objective:, token_budget: budget, check:, reply:)
+      })
+    },
+    set_check: fn(command) {
+      call(named, fn(reply: Subject(Result(Nil, String))) {
+        advisor.SetGoalCheck(command:, reply:)
       })
     },
     clear: fn() {

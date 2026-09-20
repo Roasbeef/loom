@@ -100,6 +100,13 @@ fn board(goal: option.Option(goalstate.Goal), now: Int) -> json.JsonValue {
         #("created_ms", json.Int(goal.created_ms)),
         #("updated_ms", json.Int(goal.updated_ms)),
         #("reviewer_note", encode_note(goal.reviewer_note)),
+        // The operator's check and what it last did. The panel shows both,
+        // because a check the operator pinned and never sees the result of
+        // is a check they cannot tell is running — and the result is the
+        // same evidence the reviewer was shown, from the same cell, so the
+        // two cannot be told different stories.
+        #("check", encode_note(goal.check)),
+        #("last_check", goalstate.encode_last_check(goal.last_check)),
         #("observed_at_ms", json.Int(now)),
       ])
   }
