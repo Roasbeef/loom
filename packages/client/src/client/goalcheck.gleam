@@ -147,34 +147,6 @@ pub fn wiring(runner: Runner, timeout_ms timeout_ms: Int) -> Wiring {
   Wiring(run: fn(command) { execute(runner, command, timeout_ms) }, timeout_ms:)
 }
 
-/// A wiring that runs nothing and says so, for a host with no broker to
-/// clear through.
-///
-/// It exists so "no check can be run here" is a value rather than an
-/// absence: a goal whose check cannot run is fed with the reason as its
-/// evidence, which is the same shape a check that timed out takes, rather
-/// than being fed as though the operator had pinned no check at all.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // goalcheck.unavailable("this session runs no sandbox helper")
-/// ```
-///
-pub fn unavailable(reason: String, timeout_ms timeout_ms: Int) -> Wiring {
-  Wiring(
-    run: fn(command) {
-      goalstate.CheckResult(
-        command:,
-        ending: goalstate.DidNotFinish(reason:),
-        output: "",
-        ran_at_ms: 0,
-      )
-    },
-    timeout_ms:,
-  )
-}
-
 // One check, start to settlement, on whatever process called this.
 //
 // The order matters in one place: stdin is closed before the collector

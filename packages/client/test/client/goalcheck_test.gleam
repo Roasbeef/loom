@@ -227,16 +227,3 @@ pub fn the_cleared_call_is_the_bash_tools_own_test() {
   assert spec.base_policy == policy.workspace_default(workspace)
   assert spec.budget.deadline_ms == 6000
 }
-
-// A host with no broker to clear through answers with the reason rather than
-// with nothing, so a goal whose check cannot run is fed with that as its
-// evidence instead of being fed as though no check were pinned.
-pub fn an_unavailable_runner_answers_with_its_reason_test() {
-  let wiring = goalcheck.unavailable("this host runs no jail", timeout_ms: 10)
-  let result = wiring.run("make check")
-
-  assert result.command == "make check"
-  assert result.ending
-    == goalstate.DidNotFinish(reason: "this host runs no jail")
-  assert wiring.timeout_ms == 10
-}
