@@ -879,7 +879,14 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
         max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 25,
-      idle_poll_interval_ms: 25,
+      // The two periods are kept far apart rather than equal. Equal periods
+      // simulate one poll rate, so a scenario that only ever completes
+      // because a tick found work an idle strand was never told about would
+      // pass on the injected value: the doorbell it lost would be replaced
+      // within 25 ms. At two seconds no seed can finish on the idle tick
+      // inside its deadline, so a work source that has no doorbell fails
+      // here instead of in production.
+      idle_poll_interval_ms: 2000,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
       after_commit: fn(_ordinal) { post_commit(ctl, raw, script, schedule) },
       subscribers: [writer.Direct(events)],
