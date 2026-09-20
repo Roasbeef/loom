@@ -1,0 +1,1 @@
+{"v":2,"id":57,"cmd":"goal_set","body":{"objective":"land the fixture migration","token_budget":400000,"check":"make check"}}

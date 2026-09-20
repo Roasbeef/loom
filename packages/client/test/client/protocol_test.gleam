@@ -12,8 +12,10 @@ import broker/policy
 import client/protocol
 import core/json
 import core/message
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 
 fn network_grant() -> policy.Grant {
   policy.GrantNetwork(network: policy.NetworkProxy(
@@ -422,6 +424,186 @@ pub fn queued_input_protocol_round_trip_and_required_revision_test() {
 /// an older client's frame into an error.
 ///
 /// `scripts/test.sh client --match advisor_pending_protocol` runs these codecs.
+pub fn goal_commands_round_trip_and_validate_their_budgets_test() {
+  // The five commands round trip through the frozen envelope.
+  let sets =
+    protocol.CommandEnvelope(
+      1,
+      protocol.GoalSet(
+        objective: "land the migration",
+        token_budget: 400_000,
+        check: None,
+      ),
+    )
+  assert protocol.decode_command(protocol.encode_command(sets)) == Ok(sets)
+
+  let gets = protocol.CommandEnvelope(2, protocol.GoalGet)
+  assert protocol.decode_command(protocol.encode_command(gets)) == Ok(gets)
+
+  let clears = protocol.CommandEnvelope(3, protocol.GoalClear)
+  assert protocol.decode_command(protocol.encode_command(clears)) == Ok(clears)
+
+  let pauses = protocol.CommandEnvelope(4, protocol.GoalPause)
+  assert protocol.decode_command(protocol.encode_command(pauses)) == Ok(pauses)
+
+  let resumes = protocol.CommandEnvelope(5, protocol.GoalResume)
+  assert protocol.decode_command(protocol.encode_command(resumes))
+    == Ok(resumes)
+
+  // The reads tolerate a body field they do not define, for the reason
+  // `advisor_pending` does: a newer client's frame must not become an
+  // older server's refusal.
+  let assert Ok(protocol.CommandEnvelope(command: protocol.GoalGet, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":6,\"cmd\":\"goal_get\",\"body\":{\"strand\":\"main\"}}",
+    )
+
+  // v1 has no unbounded goals, so the budget is positive or refused at
+  // decode — worded, not clamped, because a zero budget is a typo
+  // rather than a wish.
+  let assert Error(protocol.BadBody(reason:, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":7,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"x\",\"token_budget\":0}}",
+    )
+    as "a zero budget is refused rather than stored"
+  assert reason == "token_budget must be a positive number of tokens"
+
+  // The objective's bound, refused here with both counts. It was enforced
+  // nowhere: a pasted twenty-kilobyte objective was accepted, written to
+  // the cell, and then refused by every client that tried to draw it, so
+  // the operator had a goal they could pin and never see.
+  let oversized = string.repeat("a", protocol.objective_limit + 1)
+  let assert Error(protocol.BadBody(reason: too_long, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":8,\"cmd\":\"goal_set\",\"body\":{\"objective\":\""
+      <> oversized
+      <> "\",\"token_budget\":400000}}",
+    )
+    as "an objective past the bound is refused rather than stored"
+  assert string.contains(too_long, int.to_string(protocol.objective_limit + 1))
+  assert string.contains(too_long, int.to_string(protocol.objective_limit))
+
+  // The bound itself is admitted, so the refusal is off by nothing.
+  let allowed = string.repeat("a", protocol.objective_limit)
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalSet(objective: pinned, ..),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":9,\"cmd\":\"goal_set\",\"body\":{\"objective\":\""
+      <> allowed
+      <> "\",\"token_budget\":400000}}",
+    )
+    as "an objective at the bound is admitted"
+  assert pinned == allowed
+
+  // Whitespace is trimmed, and an objective that is only whitespace names
+  // nothing: the cell's own decoder refuses the empty string, so accepting
+  // it here would pin a goal that cannot be read back.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalSet(objective: trimmed, ..),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":10,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"  land it  \",\"token_budget\":400000}}",
+    )
+    as "an objective is stored trimmed"
+  assert trimmed == "land it"
+
+  let assert Error(protocol.BadBody(reason: blank, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":11,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"   \",\"token_budget\":400000}}",
+    )
+    as "a whitespace objective is refused rather than pinned"
+  assert blank == "objective must not be empty"
+
+  // The sixth command, in both of its forms: a command present pins the
+  // check, and a body with none clears it. Absence means two different
+  // things on the two commands and each is round-tripped, because that is
+  // the pairing a reader is most likely to get wrong.
+  let checks =
+    protocol.CommandEnvelope(
+      12,
+      protocol.GoalCheck(command: Some("make check")),
+    )
+  assert protocol.decode_command(protocol.encode_command(checks)) == Ok(checks)
+
+  let unchecks = protocol.CommandEnvelope(13, protocol.GoalCheck(command: None))
+  assert protocol.decode_command(protocol.encode_command(unchecks))
+    == Ok(unchecks)
+  assert protocol.encode_command(unchecks)
+    == "{\"v\":2,\"id\":13,\"cmd\":\"goal_check\",\"body\":{}}"
+
+  // An empty command is the same answer as an absent one, because a client
+  // clearing the check may send either.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalCheck(command: None),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":14,\"cmd\":\"goal_check\",\"body\":{\"command\":\"  \"}}",
+    )
+    as "an empty check command clears the check"
+
+  // `goal_set` carries the same argument, so an operator can pin both at
+  // once, and an absent one leaves whatever check the goal already had.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalSet(check: pinned_check, ..),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":15,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"land it\",\"token_budget\":400000,\"check\":\"make check\"}}",
+    )
+    as "goal_set carries the check"
+  assert pinned_check == Some("make check")
+
+  // The command's own bound, refused with both counts for the reason the
+  // objective's is: the command is rendered into every feed the reviewer
+  // reads and into the operator's panel.
+  let long_command = string.repeat("x", protocol.check_limit + 1)
+  let assert Error(protocol.BadBody(reason: command_too_long, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":16,\"cmd\":\"goal_check\",\"body\":{\"command\":\""
+      <> long_command
+      <> "\"}}",
+    )
+    as "a check command past the bound is refused rather than stored"
+  assert string.contains(
+    command_too_long,
+    int.to_string(protocol.check_limit + 1),
+  )
+  assert string.contains(command_too_long, int.to_string(protocol.check_limit))
+
+  // And the bound itself is admitted, so the refusal is off by nothing.
+  let allowed_command = string.repeat("x", protocol.check_limit)
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalCheck(command: Some(at_bound)),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":17,\"cmd\":\"goal_check\",\"body\":{\"command\":\""
+      <> allowed_command
+      <> "\"}}",
+    )
+    as "a check command at the bound is admitted"
+  assert at_bound == allowed_command
+
+  // The snapshot reply round trips with its board.
+  let board =
+    json.Object([
+      #("status", json.String("active")),
+      #("objective", json.String("land the migration")),
+      #("observed_at_ms", json.Int(1000)),
+    ])
+  let observed =
+    protocol.EventEnvelope(
+      reply_to: Some(8),
+      seq: None,
+      event: protocol.SnapshotEvent(protocol.GoalSnapshot(board)),
+    )
+  assert protocol.decode_event(protocol.encode_event(observed)) == Ok(observed)
+}
+
 pub fn advisor_pending_protocol_round_trips_and_tolerates_a_body_test() {
   let envelope = protocol.CommandEnvelope(9, protocol.AdvisorPendingGet)
   assert protocol.decode_command(protocol.encode_command(envelope))

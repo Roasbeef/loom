@@ -529,6 +529,35 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   pins both pairs against each other so a rename on either side fails a
   test rather than quietly disarming the panel's read triggers.
 
+- `tui/goal_view.{Board, Status, PauseCause, LimitCause, CheckRun,
+  check_output_limit, decode, lines, row, refusal}` is the session goal's
+  surface (protocol 044). `Board` has
+  two variants rather than one record of options, because "no goal is
+  pinned" is a real state with nothing else to say about it: `NoGoal` is
+  one stamp and `Pinned` is the whole goal. `Status` carries its cause for
+  the two stopped statuses — `Paused(by:)` over four causes and
+  `Limited(by:)` over two — since `paused` alone names an operator pause,
+  an abort, zero-progress suppression and an unresponsive reviewer, which
+  are four different things to do next. `decode` is total over a board this
+  terminal did not write, with its own byte caps; an unknown *status* word
+  is a worded refusal, while an unknown *reason* word becomes
+  `UnknownPause`/`UnknownLimit` and the panel prints the server's `because`
+  sentence, which is what `docs/client-protocol.md` §4.9.27 asks of a
+  client. `CheckRun` is the operator's check as it last ran: the status is an
+  option rather than a number with a sentinel, because a run the harness
+  stopped has none and a printed `-1` would invent the command's verdict on
+  the work, and a run carrying both a status and a reason is refused rather
+  than resolved. `lines` is the block `/goal` prints into the transcript and `row`
+  is the single line drawn beside the composer.
+  `command.GoalStatus`, `GoalSet`, `GoalCheck`, `GoalClear`, `GoalPause`,
+  `GoalResume`, `GoalBudgetInvalid` and `GoalCheckTooLong` are the parsed
+  grammar; `command.goal_words` is
+  what the palette completes past `/goal `, and
+  `command.default_goal_budget` (200,000 tokens) is what a `/goal` with no
+  `--budget` pins. `tui.GoalReport` says whether the next board is the
+  operator's own question — printed — or an automatic refresh, which
+  updates the row silently.
+
 ## Relationships
 
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
@@ -563,7 +592,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
   `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`,
   standalone `compact`, `schedules`, `schedule_cancel`, `snapshot_next`,
-  `catch_up`, `history`, `escalations_get`, `approve`, and `deny`.
+  `catch_up`, `history`, `escalations_get`, `approve`, `deny`, and the six
+  goal commands `goal_get`, `goal_set`, `goal_check`, `goal_clear`,
+  `goal_pause` and `goal_resume`.
 - **Live events in**: correlated `snapshot_begin`, `snapshot_chunk`,
   `snapshot_end`, `mutation_outcome` (`admitted`, `committed` or `queued`),
   bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
@@ -696,6 +727,32 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   context for the prompt about to be written, never as a transcript row,
   since a transcript row would claim the model had already read advice it
   has not. It never enters model context.
+- **Session goal panel**: `/goal` shows the status block, `/goal <objective>`
+  pins one, and `/goal clear|pause|resume` are subcommands **only as the
+  whole argument**, so `/goal clear the failing test` is an objective. The
+  budget rides `--budget <tokens>` (or `--budget=<tokens>`) in the first
+  position and nowhere else: a trailing integer stays part of the objective,
+  because reading one as the budget fails silently on the common `fix issue
+  468` shape. `check` is the one subcommand that takes an argument, so it is a
+  whole-argument **prefix**: bare `/goal check` clears the check and `/goal
+  check make check` pins it, which reads an objective beginning with the word
+  "check" as the subcommand — and `--budget` is the escape, since it puts the
+  objective past the first position. A `/goal` with
+  no flag pins `command.default_goal_budget`, named in the row that confirms
+  it. `tui.goal_action` reads the board on the three edges
+  `advisor_nudges_action` reads on plus one the queue does not have — the
+  primary *starting* a run, which is what a goal continuation is, and the
+  transition that moves `continuations`, the accounting and the bounds.
+  Nothing clears the board: a goal is pinned until the operator unpins it.
+  Every goal command is answered with the fresh board — a mutation included,
+  the `schedule_cancel` shape — so `session_channel.matching_presentation`
+  lists `goal_get` as a `Read` and the four mutations against
+  `GoalSnapshot`, and no mutation needs a second read. A refusal is worded
+  through `goal_view.refusal` and skips the generic error row, because the
+  common one is an older daemon or a session with no advisor answering
+  `code_unsupported`, and a panel that silently fails to appear looks
+  exactly like a session with no goal. An automatic refresh refused stays
+  silent; the operator's own `/goal` and every mutation do not.
 - **A new observation command must be taught to every command-name table
   by hand — the compiler checks none of them.** `advisor_pending` needed
   three, and missing one is not cosmetic: `tui/session_channel`'s
@@ -768,6 +825,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   text under the failure summary, and `fs_edit` and `context_remaining` draw
   their own rows. What the rule removes is growth that carried no
   information.
+- **A harness-authored user turn is drawn in the system voice, and only on
+  both of its tokens.** `tui.advisor_payload` recognizes advice, nudges, the
+  feed, the goal feed (`goal_feed_header`/`goal_feed_footer`) and the goal
+  continuation (`continuation_header`/`continuation_footer`) — copies of
+  `client/advisorslice`'s literals, pinned against them by
+  `goal_view_test` and `advisor_view_test`. The header alone is never
+  enough: a model quoting a continuation header must not be able to promote
+  its own output into the system voice, and an operator pasting one back
+  keeps their own. The budget wrap-up rides the ordinary advice frame, so it
+  needs nothing of its own.
 - **A collapsed reasoning digest is one row at every width.** The row is
   clipped to the pane rather than wrapped, and `markdown.wrap_lines`
   recognises it by `markdown.digest_mark` and leaves it fixed. A character

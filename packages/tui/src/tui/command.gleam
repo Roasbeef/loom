@@ -4,8 +4,10 @@
 //// the operator meant, while the connection layer later decides which frozen
 //// ClientGateway envelope carries it.
 
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 
 /// One action entered at the prompt.
@@ -100,6 +102,68 @@ pub type Command {
     level: String,
   )
 
+  /// Show the session goal's status panel.
+  GoalStatus
+
+  /// Pin or replace the session goal.
+  GoalSet(
+    /// The operator's objective, verbatim, including any trailing number.
+    objective: String,
+    /// The primary tokens the goal may spend. The wire requires a positive
+    /// number, so a `/goal` without `--budget` carries
+    /// `default_goal_budget` rather than nothing.
+    token_budget: Int,
+  )
+
+  /// Set or clear the check the harness runs before each goal feed.
+  ///
+  /// `None` clears it. The command is not validated here beyond its length:
+  /// whether a shell command is one the operator meant is not a question a
+  /// terminal can answer, and the server's own bound is what refuses a
+  /// pasted script.
+  GoalCheck(command: Option(String))
+
+  /// Delete the session goal whatever its status.
+  GoalClear
+
+  /// Hold the session goal.
+  GoalPause
+
+  /// Continue a held or tripped session goal.
+  GoalResume
+
+  /// A `/goal --budget` whose token count is not a positive number.
+  ///
+  /// Its own variant rather than `MissingArgument` because the argument is
+  /// present and wrong, and the operator needs to be shown the word that
+  /// was rejected — a budget quietly defaulted here would pin a goal to a
+  /// spend nobody chose.
+  GoalBudgetInvalid(
+    /// The rejected word, as the operator typed it.
+    word: String,
+  )
+
+  /// A `/goal check` whose command is longer than the wire accepts.
+  ///
+  /// Its own variant rather than `GoalObjectiveTooLong` because the two
+  /// bounds are different numbers on different fields, and an operator told
+  /// the objective's limit while the command was refused would cut the wrong
+  /// text.
+  GoalCheckTooLong(
+    /// How many characters the command actually carried.
+    count: Int,
+  )
+
+  /// A `/goal` whose objective is longer than the wire accepts.
+  ///
+  /// Refused here rather than sent and refused there, because the operator
+  /// who pasted a document into the composer wants to know before the
+  /// round trip, and the count is what tells them how much to cut.
+  GoalObjectiveTooLong(
+    /// How many characters the objective actually carried.
+    count: Int,
+  )
+
   /// Compact the active strand.
   Compact
 
@@ -166,6 +230,14 @@ pub fn suggestions(input: String) -> List(Suggestion) {
     // past the space and offers the words themselves, so the operator
     // never has to remember them; Tab completes one and Enter submits.
     "/effort " <> partial -> level_suggestions(string.trim(partial))
+
+    // `/goal`'s argument is free text, so the palette can only offer the
+    // words that are subcommands when they stand alone. An objective that
+    // happens to begin with one of them is still an objective; the rows
+    // stop matching at the first character that differs, and an operator
+    // who wanted the subcommand would have submitted it by then.
+    "/goal " <> partial -> goal_suggestions(string.trim(partial))
+
     _ -> word_suggestions(string.trim(input))
   }
 }
@@ -198,6 +270,35 @@ fn level_suggestions(partial: String) -> List(Suggestion) {
   effort_levels
   |> list.filter(fn(level) { string.starts_with(level.0, partial) })
   |> list.map(fn(level) { Suggestion("/effort " <> level.0, level.1, False) })
+}
+
+/// The tokens `/goal` completes past its own space: the three subcommands,
+/// and the flag that sets the budget.
+///
+/// Each subcommand is a subcommand only as the whole argument, so these
+/// rows are a reminder of the vocabulary rather than a claim about what the
+/// operator is typing. `--budget` takes an argument; the other three do not.
+pub const goal_words = [
+  #("check", "run a command before each review: /goal check make check"),
+  #("clear", "unpin the session goal"),
+  #("pause", "hold the goal without unpinning it"),
+  #("resume", "continue a held or tripped goal"),
+  #("--budget", "set the token budget: /goal --budget 200000 <objective>"),
+]
+
+fn goal_suggestions(partial: String) -> List(Suggestion) {
+  goal_words
+  |> list.filter(fn(word) { string.starts_with(word.0, partial) })
+  |> list.map(fn(word) {
+    // Two of the words take an argument the operator keeps typing: the
+    // budget's number, and the check's command. The other three are whole
+    // commands, so the palette submits them rather than leaving the line open.
+    Suggestion(
+      "/goal " <> word.0,
+      word.1,
+      word.0 == "--budget" || word.0 == "check",
+    )
+  })
 }
 
 /// Moves a slash palette selection and wraps at either edge.
@@ -242,6 +343,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/summary", "inspect the latest completed operation", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
+    Suggestion("/goal", "pin a session goal; bare /goal shows its status", True),
     Suggestion("/strands", "list session strands", False),
     Suggestion("/strand", "switch the active strand", True),
     Suggestion("/schedules", "list session schedules", False),
@@ -320,6 +422,7 @@ pub fn parse(input: String) -> Command {
     "/context all" | "/contextall" -> ContextAll
     "/details" -> Details
     "/effort" -> MissingArgument("effort")
+    "/goal" -> GoalStatus
     "/compact" -> Compact
     "/abort" -> Abort
     "/steer" -> MissingArgument("steer")
@@ -347,6 +450,7 @@ pub fn parse(input: String) -> Command {
     "/strand " <> rest -> required_argument("strand", rest, Strand)
     "/fork " <> rest -> required_argument("fork", rest, Fork)
     "/effort " <> rest -> required_argument("effort", rest, Effort)
+    "/goal " <> rest -> goal(rest)
     "/steer " <> rest -> required_argument("steer", rest, Steer)
     "/queue " <> rest -> required_argument("queue", rest, Queue)
     "/unschedule " <> rest -> unschedule(rest)
@@ -364,6 +468,137 @@ fn unschedule(raw: String) -> Command {
     [] -> MissingArgument("unschedule")
     [name] -> Unschedule(name:, target: None)
     [name, target, ..] -> Unschedule(name:, target: Some(target))
+  }
+}
+
+/// The token budget a `/goal` without `--budget` pins.
+///
+/// The wire requires a positive budget — protocol 044 has no unbounded
+/// goals — so the terminal either refuses every `/goal` that omits one or
+/// supplies a number. It supplies this one, and says so in the row that
+/// confirms the goal, for two reasons. The loop has two harness bounds
+/// besides the budget (a cap of eight consecutive turns, and suppression
+/// after two turns that produce nothing), so a defaulted budget cannot run
+/// away unobserved; and the panel prints spend against budget from the
+/// first read, so an operator who wanted a different number sees this one
+/// immediately and re-pins with `--budget`.
+pub const default_goal_budget = 200_000
+
+/// The longest check command `/goal check` will send, in characters.
+///
+/// The server's own bound (`client/protocol.check_limit`, protocol 044 §8),
+/// mirrored for the reason the objective's bound is mirrored: the terminal
+/// can say so without a round trip, and a client that guessed a larger
+/// number would send a command the server refuses, which is the honest
+/// failure rather than a silent one.
+pub const check_limit = 1000
+
+/// The longest objective `/goal` will send, in characters.
+///
+/// The server's own bound (`client/protocol.objective_limit`, protocol 044
+/// §1), mirrored because the terminal can say so without a round trip.
+/// Mirrored rather than shared: the two packages do not depend on one
+/// another, and a client that guessed a *larger* number would send a
+/// command the server refuses — which is the honest failure and not a
+/// silent one.
+pub const objective_limit = 4000
+
+// `/goal [--budget <tokens>] <objective>`, or one of three subcommands.
+//
+// The subcommands are subcommands only as the *whole* argument, because the
+// objective is free text and `/goal clear the failing test` is work to do,
+// not a request to unpin. That leaves the budget, which must not be guessed
+// out of the objective: a trailing integer is a word of the objective — "fix
+// issue 468" pins that objective and not a 468-token budget — so the budget
+// is carried by an explicit flag in the first position and nowhere else.
+// One rule, no escape hatch needed, and an objective may end in any number.
+fn goal(raw: String) -> Command {
+  case string.trim(raw) {
+    "" -> GoalStatus
+    "clear" -> GoalClear
+    "pause" -> GoalPause
+    "resume" -> GoalResume
+
+    // `check` is the one subcommand that takes an argument of its own, so it
+    // is matched as a whole-argument *prefix* rather than as the whole
+    // argument: bare `/goal check` clears the check, and `/goal check make
+    // check` pins that command.
+    //
+    // The cost is an objective that begins with the word "check" — `/goal
+    // check the logs` pins no goal, it sets a check. That is a real
+    // ambiguity and it already has an escape that needs no new syntax:
+    // `--budget` puts the objective past the first position, so `/goal
+    // --budget 200000 check the logs` pins the objective. One rule, and the
+    // escape is a flag the operator is already being offered.
+    "check" -> GoalCheck(command: None)
+    "check " <> command -> checking(string.trim(command))
+
+    "--budget" -> MissingArgument("goal --budget")
+    "--budget " <> rest -> budgeted(rest)
+
+    // `--budget=200000` is the same statement as `--budget 200000`, and it is
+    // accepted rather than refused because an operator who writes the equals
+    // sign has said exactly what they meant. Reading it as objective text was
+    // the silent failure: the goal was pinned to the flag itself, under the
+    // default budget, and nothing said so.
+    "--budget=" <> rest -> budgeted(rest)
+
+    objective -> pinning(objective, default_goal_budget)
+  }
+}
+
+// The check command, bounded here so the operator is told the count without
+// a round trip. An argument of nothing but whitespace is the bare form: the
+// server reads an empty command as a clear, and so does this.
+fn checking(command: String) -> Command {
+  case command, string.length(command) > check_limit {
+    "", _empty -> GoalCheck(command: None)
+    _text, True -> GoalCheckTooLong(count: string.length(command))
+    text, False -> GoalCheck(command: Some(text))
+  }
+}
+
+// One place decides whether an objective may be sent, so the flagged form
+// and the bare form cannot disagree about the bound.
+fn pinning(objective: String, token_budget: Int) -> Command {
+  case string.length(objective) > objective_limit {
+    True -> GoalObjectiveTooLong(count: string.length(objective))
+    False -> GoalSet(objective:, token_budget:)
+  }
+}
+
+// The flag's own argument is the next whitespace-separated word, and
+// everything after it is the objective verbatim.
+fn budgeted(raw: String) -> Command {
+  case string.split_once(string.trim_start(raw), " ") {
+    // A budget with no objective pins nothing, and the word is still
+    // checked: `/goal --budget abc` is a rejected budget whether or not an
+    // objective followed it, and reporting only the missing objective sent
+    // the operator looking for the wrong mistake.
+    Error(Nil) -> objective_for(string.trim(raw), "")
+
+    Ok(#(word, rest)) -> objective_for(word, string.trim(rest))
+  }
+}
+
+fn objective_for(word: String, objective: String) -> Command {
+  case token_count(word), objective {
+    Error(Nil), _ -> GoalBudgetInvalid(word)
+    Ok(_), "" -> MissingArgument("goal")
+    Ok(budget), objective -> pinning(objective, budget)
+  }
+}
+
+// A positive token count, written in digits with optional `_` separators so
+// `200_000` reads the way the operator would write it. No `k` or `m`
+// suffix: the abbreviation would have to be documented in two places and
+// argued about in one, and an explicit number in a command that pins a
+// spend is worth the keystrokes.
+fn token_count(word: String) -> Result(Int, Nil) {
+  use count <- result.try(int.parse(string.replace(word, "_", "")))
+  case count > 0 {
+    True -> Ok(count)
+    False -> Error(Nil)
   }
 }
 
@@ -419,6 +654,10 @@ pub fn help_text() -> String {
   <> "/diff             observe current worktree changes\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
+  <> "/goal             show the session goal's status\n"
+  <> "/goal [--budget N] <objective>  pin a session goal (default 200000 tokens)\n"
+  <> "/goal clear|pause|resume  unpin, hold or continue the goal\n"
+  <> "/goal check [command]  run a command before each review, or clear it\n"
   <> "/strands          list session strands\n"
   <> "/schedules        list session schedules\n"
   <> "/add-dir [--write] <path>  add directory access for this session\n"

@@ -754,10 +754,35 @@ catalogue without opening runtimes. Explicit admission invokes
   reviews rather than runs because one run now holds many: `review_opened`
   is called when a slice is actually handed over, never on one coalesced
   away or one whose send failed.
-- `client/advisor.{strand, primary, cursor_key, guard_key, brief, Settings,
-  Wiring, Message, start, supervised, hooks, seam, ensure_strand,
-  active_tools}` — the actor that joins the two pure halves above to the
-  session. `ensure_strand` seeds the advisor through
+- `client/advisor.{strand, primary, cursor_key, guard_key, goal_key,
+  reevaluate_every_ms, brief, Settings, Wiring,
+  Message, ask, start, supervised, hooks, seam, abort_notice,
+  ensure_strand, active_tools}` — the actor that joins the two pure
+  halves above to the session, and **performs** the session's goal loop
+  (protocol 044) whose transitions are `client/goalloop`'s. Its goal code
+  is four steps and no decisions: gather what the two strands are doing,
+  call `goalloop.next_action`, perform the `Action`, store the cell. The
+  loop is level-triggered, so every goal-relevant message — a run end, a
+  run start, a review end, an abort, a verdict, a spend trigger, an
+  operator command, and `ReevaluateTick` every
+  `reevaluate_every_ms` (two minutes, armed once through `weft/actor`'s
+  `periodic`; it cannot be armed conditionally because `periodic` is a
+  builder field a handler cannot re-time, and the interval is long because
+  the tick is only the recovery path and an unconditional tick keeps this
+  actor out of hibernation) — is an occasion to read the level rather than an edge to
+  apply. The actions it performs are the goal feed (sendable with an
+  empty slice, which is what `/goal resume` on an already-reviewed idle
+  primary needs), the continuation wake through a door that spends no
+  operator-turn budget, and the one-shot wrap-up, which is one-shot
+  structurally because the goal is already `Limited` when the action
+  arrives and a `Limited` goal rests. It also owns the goal's accounting,
+  and there is exactly **one code path that adds**: `PrimarySpent` is a
+  trigger carrying nothing, and `account_recompute` scans the usage
+  ledger past `accounted_through_seq`, counting a row only when
+  `set.contains` says the entry it names is on the primary's branch — the
+  branch scan bounded by the accounting window rather than by a row cap,
+  because a capped set is a prefix of the chain and would drop the
+  primary's older rows as foreign. `ensure_strand` seeds the advisor through
   `api.create_idle_strand` and never through the Agency, so it carries no
   `lineage/` cell: the primary cannot address it, it can address nothing,
   and `strand.roster` does not list it. `hooks` wraps four slots —
@@ -785,7 +810,10 @@ catalogue without opening runtimes. Explicit admission invokes
   primary, read together at every run start so a run this actor itself
   woke cannot renew its own budget — the loop the duplicate ring cannot
   cut, since a paraphrase passes it. A restart forgetting both costs at
-  most one extra wake.
+  most one extra wake. **Nothing the goal loop decides from is heap
+  state**: the phase, the three bound counters and the accounting pair all
+  live in the cell, because an earlier draft kept the phase in the heap and
+  every way of losing it left an Active goal with nothing running.
   **The step trigger is what makes a long run legible.** A run is many
   steps and nothing bounds how many, so with the run end as the only
   occasion an agentic loop could work indefinitely unreviewed.
@@ -811,6 +839,143 @@ catalogue without opening runtimes. Explicit admission invokes
   for that claim. Backs the `advisor_pending` command; see the wire
   section below.
 - `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
+- `client/goalcommand.{Seam, seam}` — the gateway's six goal commands
+  over the advisor actor's registered address: one record of monitored
+  bounded calls (`set`, `set_check`, `clear`, `pause`, `resume`) built from the
+  advisor wiring, so the gateway holds an option of the seam rather
+  than a dependency on the actor's internals. The two call layers
+  flatten — an unavailable actor and the actor's own refusal are both
+  the operator's answer — because there is no case where a dead plane
+  should read as a committed command.
+- `client/goal_pending.{Error, read}` — the goal's one read that does
+  not go through the actor: an exact-key `fact.custom` selection for
+  `advisor.goal_key` through the bounded snapshot reader, decoded with
+  `goalstate`'s own decoder. A missing cell is a board whose `status` is
+  `none` — no goal is a real state — and a cell the decoder rejects is
+  `Malformed` and answers `unavailable`, never a positive empty. The
+  `goal_get` command and every committed mutation's fresh-board reply
+  project this read; the actor keeps the writes.
+- `client/goalstate.{PauseCause, LimitCause, Status, Phase, Goal, new,
+  status_of, tokens_used_of, reviewer_note_of, encode_status,
+  encode_reason, decode_status, encode_phase, decode_phase, encode,
+  decode}` — the session goal's durable shape as pure data, and the
+  cell's only codec. The `goal/state` field names are frozen by protocol
+  044 §1: `objective`, `status`, `reason`, `phase`, `token_budget`,
+  `tokens_used`, `accounted_through_seq`, `cost_used`, `continuations`,
+  `zero_progress`, `unanswered_feeds`, `created_ms`, `updated_ms`,
+  `reviewer_note`, `check`, `last_check`.
+
+  Two shapes here carry the design. `Status` is `Active | Paused(by:
+  PauseCause) | Limited(by: LimitCause) | Complete`, and the cause is
+  carried because the status word alone named four different pauses
+  (`operator`, `aborted`, `zero_progress`, `reviewer_unresponsive`) and
+  two different limits (`token_budget`, `continuation_cap`), which told
+  the operator the harness was holding their goal and refused to say why.
+  The four wire words do not move; `reason` rides beside them, and the
+  decoder **checks the pairing** rather than defaulting it — a `paused`
+  with no cause, or an `active` with one, is an error naming the field.
+  `Phase` is `Idle | Checking(deadline_ms: Int) | ReadyToFeed |
+  AwaitingVerdict(feed: OpId) | Continuing(woken: OpId, since_seq: Int)`,
+  stored as `{state, operation, since_seq, deadline_ms}` with each rider null
+  outside the state that names it, and it is what makes the loop recoverable:
+  a restart reads it and knows a verdict is owed and by which advisor run,
+  which primary run is the loop's own, and whether a check is in flight and
+  until when. `Checking`'s deadline is durable because the check runs in a
+  task linked to the actor, so an actor that dies takes it with it and a
+  deadline already passed is the repair rather than an error. Neither
+  `Checking` nor `ReadyToFeed` survives a primary that goes back to work:
+  both describe the tree as it stood before that run, so the loop returns the
+  phase to `Idle` and the check runs again for the stretch the feed is
+  actually about.
+
+  `CheckEnding` is `Exited(status: Int) | DidNotFinish(reason: String)` and
+  `CheckResult` carries the command that actually ran beside it, so an
+  operator who changed the check does not see the old run labelled with the
+  new command. The pair is stored as `status`/`not_finished` with exactly one
+  non-null, refused rather than resolved when both or neither is present.
+
+  The decoder is strict where the guard's is lenient, deliberately: this
+  cell is written whole by one owner, so an absent required field
+  (`objective`, `status`, `phase`, `token_budget`, `created_ms`,
+  `updated_ms`) is a writer/decoder disagreement rather than an older
+  writer. The five counters default to zero when absent and are refused
+  when negative — each counts something that only grows — `token_budget`
+  is required and positive (v1 has no unbounded goals), and an
+  `updated_ms` before `created_ms` is refused. **A cell written by the
+  feature's own earlier implementation does not decode**, and that is a
+  deliberate clean break: `phase` is required and the status pairing is
+  checked, there are no deployed goal cells, and tolerating the old shape
+  would mean accepting a goal with no recorded phase — the state the
+  rework exists to remove. No transitions live here; those are
+  `client/goalloop`'s, and the `goal_set` handler owns the objective's
+  4,000-character bound, which is why `new` is total and unvalidated.
+- `client/goalcheck.{output_tail_chars, output_bytes, settle_grace_ms,
+  step_id, Wiring, Runner, wiring, unavailable}` — the operator's goal check
+  as one jailed process. It clears through `tools/tool.broker_runner`, the
+  closure the `bash` tool itself clears through, under the session's own base
+  policy: operator-authored is not exempt from Rule Zero, which is about
+  where code runs rather than who wrote it, and a check is deliberately not
+  narrowed to a read-only workspace because the commands an operator pins
+  write build output. `Wiring` is one blocking closure, the wall it runs
+  under and the backstop the caller kills its task at, so an advisor test
+  stubs a check that passes, fails, hangs or dies without a broker, a helper
+  pool or a jail; `Runner` is the fields the production path needs, which are
+  `client/jobs.Wiring`'s own. The backstop is the wall plus the clearance a
+  congested helper pool may cost plus `settle_grace_ms`, never the wall
+  itself: both clocks start in the caller and the task's starts first, so a
+  task killed at the wall could never deliver the settlement the sandbox
+  reached there. The step id is its own name so the pooled execution budget
+  is not shared with the hooks' — and because that pair's ledger admits one
+  call at a time, an abandoned check is *cancelled* rather than left running:
+  `client/advisor` keeps the witnessed handle and cancels it whenever the
+  goal leaves `Checking`, which is what returns the slot through the broker
+  relay's caller-watch.
+  A settlement the wall stopped reports **no** exit status, because a number
+  invented for it would read to the reviewer as the command's verdict on the
+  work.
+- `client/goalloop.{continuation_cap, zero_progress_limit,
+  unanswered_feed_limit, check_timeout_ms, Progress, Answer, Event, Observed,
+  Action, next_action, defers_the_refeed, feed_opened, primary_woken,
+  progress_of, check_did_not_finish, wrap_up_text, stopped_because}` — the
+  goal loop's transitions, pure. `next_action(goal,
+  observed) -> #(Goal, Action)` takes the goal as stored plus a record of
+  fetched facts (each strand's open operation, whether the stretch since
+  the feed cursor did work, the occasion, the clock, the wall a check runs
+  under) and answers `Rest`, `RunCheck(command)`, `FeedReviewer`,
+  `WakePrimary(text)` or `WrapUp(text)`. It is a module
+  rather than a set of actor arms because the state space is the product
+  of four statuses, five phases, three counters and two strands'
+  liveness, and the failure that mattered was a combination nobody had
+  enumerated: an Active goal, an idle primary, an idle reviewer and
+  nothing to do. `goalloop_test` property-walks that space, and the
+  headline invariant is that the combination never answers `Rest`.
+
+  The three bounds live here with their constants. `continuation_cap` (8)
+  counts continuations **since the last primary run start the loop did not
+  open** — the reset is the bound, since without it the cap was a lifetime
+  cap and a resume after a trip tripped again at once. `zero_progress_limit`
+  (2) counts woken runs that committed no work, and `progress_of` is the
+  predicate: a tool result, or a user entry that is **not** one of the
+  harness's own frames, which it recognizes through `advisorslice`'s
+  two-token pairs. Counting any user message as progress is what made the
+  bound unfireable, because the continuation frame is a user message
+  committed after the cursor advances. `unanswered_feed_limit` (3) bounds
+  the re-feed of a goal feed whose reviewer run ended without a verdict,
+  so a provider that will never answer the goal words pauses the goal
+  instead of being paid to refuse forever — and the re-offer is the periodic
+  tick's rather than that run end's (`defers_the_refeed` names the one
+  occasion the loop deliberately answers with `Rest`), because offering again
+  at the run end spent all three tries inside one rate-limit window.
+  `check_timeout_ms` (five minutes) is the fourth bound and the only one a
+  process rather than a count: it is both the jailed command's own wall and
+  the durable `Checking` deadline, so a restarted actor cannot wait on a
+  process the sandbox has already killed. The task that runs the command is
+  killed later than that, by `goalcheck.Wiring`'s backstop, so the wall's own
+  settlement has room to arrive. `wrap_up_text` and
+  `stopped_because` are the per-cause wordings, rendered once so the
+  primary's wrap-up, the operator's panel and the reviewer's refusals
+  cannot word one status three ways.
+
   bounding the sidecar read, which the lifecycle producer moved onto the
   strand driver's hot path: `max_sidecar_bytes` (four times the render
   cap) is asked of the *file* by one `stat` before a byte is read, so a

@@ -41,10 +41,12 @@ pub const name = "advise"
 
 /// What the advisor concluded about the stretch of work it was fed.
 ///
-/// The three points are ordered by what they cost the primary: nothing,
-/// a paragraph at its next prompt, an interruption now. A verdict is a
-/// request rather than an instruction — see `Ack` for what the harness
-/// decided to do with it.
+/// Two vocabularies ride one type. The three ordinary points are ordered
+/// by what they cost the primary — nothing, a paragraph at its next
+/// prompt, an interruption now — and a verdict among them is a request
+/// rather than an instruction: see `Ack` for what the harness decided to
+/// do with it. The two goal words are a separate vocabulary, answerable
+/// only to a goal feed, and the seam refuses them anywhere else.
 pub type Verdict {
   /// The primary is on track and there is nothing worth saying. Emits
   /// nothing at all.
@@ -60,6 +62,14 @@ pub type Verdict {
   /// reach the primary immediately, which steers an open run and starts
   /// one on an idle primary.
   Block(text: String)
+
+  /// The goal is not achieved. Asks to wake the idle primary with a
+  /// framed continuation, and is answerable only to a goal feed.
+  Continue(text: String)
+
+  /// The goal is achieved. Flips the goal's status to complete and
+  /// stops the loop, and is answerable only to a goal feed.
+  Complete(text: String)
 }
 
 /// What the harness did with a verdict, as the advisor is told.
@@ -149,7 +159,15 @@ pub fn tool(advice: Advice) -> Tool {
       <> "it is a nudge. A block raised while an earlier block is still "
       <> "inside its cooldown is downgraded to a nudge, and advice the "
       <> "primary has already been given is dropped, so say a thing once. "
-      <> "The result tells you which of those happened.",
+      <> "The result tells you which of those happened. A goal feed asks "
+      <> "you to answer with `continue` or `complete` instead: `continue` when "
+      <> "the objective is not achieved, `complete` when it is. Answer "
+      <> "`complete` only when the objective is actually achieved and "
+      <> "verified against real evidence in the feed — tests run, files "
+      <> "changed, commands executed — never because the budget is "
+      <> "nearly exhausted. When a goal feed carries a Check block, the "
+      <> "harness ran that command itself: a failing check is strong "
+      <> "evidence against `complete`, and the judgement is still yours.",
     // No prose index line. The system prompt's available-tools index is
     // one string for the whole session, so a snippet here would tell the
     // primary about a tool it is never offered and about a reviewer it
@@ -161,9 +179,10 @@ pub fn tool(advice: Advice) -> Tool {
         #(
           "verdict",
           tool.enum_property(
-            ["quiet", "nudge", "block"],
+            ["quiet", "nudge", "block", "continue", "complete"],
             "quiet to say nothing, nudge to reach the primary when it next "
-              <> "stops, block to interrupt it now",
+              <> "stops, block to interrupt it now; continue and complete "
+              <> "answer a goal feed only",
           ),
         ),
         #(
@@ -252,11 +271,22 @@ fn verdict_of(word: String, text: String) -> Result(Verdict, String) {
     "block", "" -> Error("`text` is required when verdict is block")
     "block", said -> Ok(Block(text: said))
 
+    // The goal pair answers a goal feed only, and the seam — not this
+    // decoder — is where that is enforced, because only the far side
+    // knows whether a goal feed is open. Here the pair decision is the
+    // same one the nudge and block arms make.
+    "continue", "" -> Error("`text` is required when verdict is continue")
+    "continue", said -> Ok(Continue(text: said))
+
+    "complete", "" -> Error("`text` is required when verdict is complete")
+    "complete", said -> Ok(Complete(text: said))
+
     // `String` is open-ended, so this arm is a genuine default rather
     // than a flattened shape.
     other, _said ->
       Error(
-        "`verdict` must be \"quiet\", \"nudge\" or \"block\", got \""
+        "`verdict` must be \"quiet\", \"nudge\", \"block\", \"continue\" "
+        <> "or \"complete\", got \""
         <> other
         <> "\"",
       )

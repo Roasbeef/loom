@@ -136,10 +136,13 @@ import broker/escalation as broker_escalation
 import broker/framing
 import broker/internal/call
 import broker/policy.{type Grant}
+import client/advisor
 import client/advisor_pending
 import client/catalog
 import client/daemon/transfer
 import client/directories
+import client/goal_pending
+import client/goalcommand
 import client/grants
 import client/notes_view
 import client/permissions
@@ -303,6 +306,19 @@ pub type Options {
     /// `client/serve` fills it with `broker.abort`; a host assembled
     /// without an effect plane has nothing to sweep and passes `None`.
     effect_abort: Option(fn(OpId) -> Nil),
+    /// The operator's goal commands over the advisor actor, when the
+    /// host wired an advisor. `None` is the goal gate itself: the
+    /// commands answer `unsupported`, because no advisor means no
+    /// reviewer to judge the goal's completion.
+    goal_control: Option(goalcommand.Seam),
+    /// The advisor actor's own notice of an aborted primary run, called
+    /// by the `abort` command with the operation it just marked
+    /// cancelled. An aborted run never reaches the run-end hook the
+    /// advisor listens on, so this cast is the one channel the goal
+    /// loop has for learning the operator stopped a run (protocol 044
+    /// §4). `client/serve` fills it with the advisor's address; a host
+    /// with no advisor passes `None` and the cast is simply never made.
+    goal_abort: Option(fn(OpId) -> Nil),
     /// Host-supplied bounded observation capabilities.
     worktree_diff: Option(fn() -> Result(JsonValue, String)),
     /// Explicit live job reads, never invoked by ordinary transcript captures.
@@ -335,6 +351,8 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     schedules: None,
     directories: None,
     effect_abort: None,
+    goal_control: None,
+    goal_abort: None,
     worktree_diff: None,
     live_jobs: None,
     context: None,
@@ -493,6 +511,38 @@ pub fn with_schedules(options: Options, admin: scheduleadmin.Admin) -> Options {
 ///
 pub fn with_effect_abort(options: Options, sweep: fn(OpId) -> Nil) -> Options {
   Options(..options, effect_abort: Some(sweep))
+}
+
+/// Supplies the advisor actor's abort notice. A cast, never a call: the
+/// `abort` command is not held open for the goal loop, and a notice lost
+/// to a busy actor costs the loop nothing it cannot recover. It used to
+/// cost a goal that stayed active until the operator's next prompt, which
+/// is what the notice was for; the level read now consults the aborted
+/// run's own durable terminal record, so a dropped notice costs at most
+/// the delay to the next evaluation and the goal is held either way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_goal_abort(options, notice)
+/// ```
+///
+pub fn with_goal_abort(options: Options, notice: fn(OpId) -> Nil) -> Options {
+  Options(..options, goal_abort: Some(notice))
+}
+
+/// Supplies the operator's goal commands over the advisor actor. The
+/// session's one advisor owns the goal cell, so this seam is the whole
+/// write path for `goal_set` and its siblings (protocol 044 §7).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_goal_control(options, goalcommand.seam(wiring))
+/// ```
+///
+pub fn with_goal_control(options: Options, seam: goalcommand.Seam) -> Options {
+  Options(..options, goal_control: Some(seam))
 }
 
 /// Messages understood by the hub. Opaque in spirit: callers use the
@@ -665,6 +715,10 @@ type State {
     // The effect plane's sweep of an aborted operation, when the host
     // has an effect plane at all.
     effect_abort: Option(fn(OpId) -> Nil),
+    // The operator's goal commands, when the host wired an advisor.
+    goal_control: Option(goalcommand.Seam),
+    // The advisor actor's abort notice, when the host wired an advisor.
+    goal_abort: Option(fn(OpId) -> Nil),
     // The model catalogue, when the host configured one.
     catalog: Option(catalog.Catalog),
     // The tool registry, when the host configured one.
@@ -883,6 +937,8 @@ fn start_with_delivery(
         next_held: 1,
         entry_strand: dict.new(),
         effect_abort: options.effect_abort,
+        goal_control: options.goal_control,
+        goal_abort: options.goal_abort,
         catalog: options.catalog,
         registry: options.registry,
         skills: options.skills,
@@ -1728,7 +1784,22 @@ fn expire_transfers(state: State) -> State {
 
 fn network_dispatch(state: State, connection: Int, text: String) -> State {
   case protocol.decode_command(text) {
-    Error(_) -> {
+    // A body the decoder refused is a command the client sent and the
+    // server understood well enough to say what is wrong with it, so the
+    // refusal carries the decoder's own sentence and the request's own id.
+    // Answering "invalid v2 command" against id zero threw both away, and
+    // the sentences it threw away are the ones written for an operator to
+    // read: the objective's length with both counts, the budget's
+    // positivity, the fields an `approve` must echo.
+    Error(protocol.BadBody(id:, reason:, ..)) -> {
+      reply_error(state, connection, id, protocol.code_bad_request, reason)
+      state
+    }
+
+    // A frame this server cannot even place — unparseable, or with no id,
+    // no command name, not an object. There is nothing to be specific about
+    // and nothing to answer it against.
+    Error(protocol.BadEnvelope(..)) | Error(protocol.MalformedFrame(..)) -> {
       reply_error(
         state,
         connection,
@@ -1738,6 +1809,7 @@ fn network_dispatch(state: State, connection: Int, text: String) -> State {
       )
       state
     }
+
     Ok(protocol.CommandEnvelope(id, command)) ->
       network_command(state, connection, id, command)
   }
@@ -1806,6 +1878,12 @@ fn network_command(
     | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
+    | protocol.GoalSet(..)
+    | protocol.GoalCheck(..)
+    | protocol.GoalGet
+    | protocol.GoalClear
+    | protocol.GoalPause
+    | protocol.GoalResume
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
     | protocol.SetConfig(..)
@@ -2534,6 +2612,7 @@ fn read_only(command: Command) {
     | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
+    | protocol.GoalGet
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
     | protocol.ListSchedules -> True
@@ -2551,6 +2630,11 @@ fn read_only(command: Command) {
     | protocol.Compact(..)
     | protocol.CreateStrand(..)
     | protocol.SetConfig(..)
+    | protocol.GoalSet(..)
+    | protocol.GoalCheck(..)
+    | protocol.GoalClear
+    | protocol.GoalPause
+    | protocol.GoalResume
     | protocol.CancelSchedule(..)
     | protocol.UnknownCommand(..) -> False
   }
@@ -3734,6 +3818,93 @@ fn read_live_jobs(
 // empty board asserts that the advisor has nothing waiting. A refused capture
 // is the server's own reader failing on the server's own budget, so it takes
 // the same path every other capture here takes.
+// The goal status read: the exact-key observation, never a call to the
+// actor. A read that spoke to the actor could not answer while it is
+// mid-review, and the panel wants the current state, not the next one.
+fn read_goal(state: State, connection: Int, id: Int) -> State {
+  case goal_pending.read(state.runtime.session, bootstrap.system_time_ms()) {
+    Ok(board) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.GoalSnapshot(board)),
+      )
+      state
+    }
+
+    // A malformed cell is `unavailable` rather than an empty board: an
+    // empty board is the positive claim that no goal is pinned, and an
+    // unreadable cell is not evidence for it.
+    Error(goal_pending.Malformed(reason:)) -> {
+      reply_error(state, connection, id, "unavailable", reason)
+      state
+    }
+
+    Error(goal_pending.Unreadable(error:)) ->
+      reader_failed(state, connection, id, error, ReaderBudget)
+  }
+}
+
+// One goal mutation, answered with `committed` when the actor took it —
+// the reply protocol 044 §7 fixes — and refused worded when the seam is
+// absent: no advisor means no reviewer, and a goal without its judge is
+// not a state the operator can steer.
+fn goal_command(
+  state: State,
+  connection: Int,
+  id: Int,
+  command: GoalCommand,
+) -> State {
+  case state.goal_control {
+    None -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        "code_unsupported",
+        "this server has no advisor routed, so there is no reviewer to judge a goal",
+      )
+      state
+    }
+
+    Some(seam) -> {
+      let outcome = case command {
+        GoalSet(objective:, token_budget:, check:) ->
+          seam.set(objective, token_budget, check)
+        GoalCheck(command:) -> seam.set_check(command)
+        GoalClear -> seam.clear()
+        GoalPause -> seam.pause()
+        GoalResume -> seam.resume()
+      }
+
+      case outcome {
+        // The actor's refusal is the operator's answer, worded for the
+        // reader: a non-positive budget, a resume of a complete goal.
+        Error(reason) -> {
+          reply_error(state, connection, id, "bad_request", reason)
+          state
+        }
+
+        // A committed mutation answers with the fresh goal board, the
+        // `cancel_schedule` precedent: one round trip renders the
+        // panel's new state rather than a second read.
+        Ok(Nil) -> read_goal(state, connection, id)
+      }
+    }
+  }
+}
+
+// The five mutations the dispatch arms carry, named as a type so the
+// handler stays one function rather than five near-identical ones.
+type GoalCommand {
+  GoalSet(objective: String, token_budget: Int, check: Option(String))
+  GoalCheck(command: Option(String))
+  GoalClear
+  GoalPause
+  GoalResume
+}
+
 fn read_advisor_pending(state: State, connection: Int, id: Int) -> State {
   case advisor_pending.read(state.runtime.session, bootstrap.system_time_ms()) {
     Ok(board) -> {
@@ -3863,6 +4034,22 @@ fn run_command(
       read_live_jobs(state, connection, id, strand)
     protocol.AdvisorPendingGet, Subscribed ->
       read_advisor_pending(state, connection, id)
+    protocol.GoalGet, Subscribed -> read_goal(state, connection, id)
+    protocol.GoalSet(objective:, token_budget:, check:), Subscribed ->
+      goal_command(
+        state,
+        connection,
+        id,
+        GoalSet(objective:, token_budget:, check:),
+      )
+    protocol.GoalCheck(command:), Subscribed ->
+      goal_command(state, connection, id, GoalCheck(command:))
+    protocol.GoalClear, Subscribed ->
+      goal_command(state, connection, id, GoalClear)
+    protocol.GoalPause, Subscribed ->
+      goal_command(state, connection, id, GoalPause)
+    protocol.GoalResume, Subscribed ->
+      goal_command(state, connection, id, GoalResume)
     protocol.QueuedInputGet(strand:, id: input_id), Subscribed ->
       read_queued_input(state, connection, id, strand, input_id)
     protocol.EditQueuedInput(strand:, id: input_id, expected_revision:, text:),
@@ -5180,6 +5367,22 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       // this, so the sweep here is what makes an operator's abort mean
       // what an operator means by it.
       sweep_effects(state, op)
+
+      // And the advisor's goal loop, for the primary only: an aborted
+      // run never reaches the run-end hook the advisor listens on, so
+      // this cast is the one channel that tells it the operator stopped
+      // a run it may have woken (protocol 044 §4). The actor gates the
+      // notice on the runs it itself opened, so an abort of the
+      // operator's own run is never read as a goal event.
+      case strand == advisor.primary {
+        True ->
+          case state.goal_abort {
+            None -> Nil
+            Some(notice) -> notice(op)
+          }
+
+        False -> Nil
+      }
 
       // The durable cancel_requested transition broadcasts when its
       // commit lands; the ack is connection-scoped.
