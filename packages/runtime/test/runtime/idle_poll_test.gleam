@@ -41,8 +41,38 @@ const long_poll_ms = 2731
 // running at the short period, and well under the long one.
 const quiet_window_ms = 400
 
+// The idle period the occupied-chain test boots with. The chain only ever
+// replaces itself, so the first tick a newly occupied strand sees is the idle
+// one already pending; that test has to wait it out before it can watch the
+// short period at all, and `long_poll_ms` would make it a three-second test.
+// It is still far longer than the short period, which is the only relation
+// the test depends on.
+const brief_idle_poll_ms = 431
+
+// How long the occupied-chain test's provider blocks before it answers. It
+// must outlast `brief_idle_poll_ms` plus the window that test samples the
+// short chain over, because the assertion is about ticks that fire while the
+// operation is still open.
+const occupied_block_ms = 1500
+
+// The window the occupied-chain test samples the short chain over. Several
+// short periods, and short enough that `occupied_block_ms` still has room
+// left when it ends.
+const occupied_sample_ms = 200
+
 fn boot(
   provider: fn(effects.RequestSpec) -> fake.ProviderResult,
+) -> #(Session, api.Runtime, Subject(recorder.Message)) {
+  boot_with(provider, long_poll_ms)
+}
+
+// Boots a tree whose idle period is the caller's. Only the occupied-chain
+// test needs anything other than `long_poll_ms`, and it needs the counter to
+// key on the period it actually asked for, which is why the delay travels to
+// `counted_timers` rather than being read from a constant there.
+fn boot_with(
+  provider: fn(effects.RequestSpec) -> fake.ProviderResult,
+  idle_poll_ms: Int,
 ) -> #(Session, api.Runtime, Subject(recorder.Message)) {
   let rec = recorder.start()
   let assert Ok(sess) =
@@ -58,12 +88,12 @@ fn boot(
         fake.ToolReply(text: "unused", is_error: False, terminate: False)
       },
     )
-  let eff = effects.Effects(..base, timers: counted_timers(rec))
+  let eff = effects.Effects(..base, timers: counted_timers(rec, idle_poll_ms))
   let options =
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: short_poll_ms,
-      idle_poll_interval_ms: long_poll_ms,
+      idle_poll_interval_ms: idle_poll_ms,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -74,12 +104,15 @@ fn boot(
 // The real timer seam with a counter in front of it. Every arm still fires,
 // because these tests are about which period the strand chose and not about
 // withholding its wakes.
-fn counted_timers(rec: Subject(recorder.Message)) -> effects.Timers {
+fn counted_timers(
+  rec: Subject(recorder.Message),
+  idle_poll_ms: Int,
+) -> effects.Timers {
   let real = effects.real_timers()
   effects.Timers(after: fn(delay_ms, wake) {
     let _counted = case delay_ms {
       delay if delay == short_poll_ms -> recorder.bump(rec, "poll.short")
-      delay if delay == long_poll_ms -> recorder.bump(rec, "poll.long")
+      delay if delay == idle_poll_ms -> recorder.bump(rec, "poll.long")
       _ -> 0
     }
     real.after(delay_ms, wake)
@@ -103,14 +136,99 @@ pub fn a_finished_strand_stops_ticking_at_the_short_period_test() {
     as "the run must complete"
   harness.assert_completed(outcome)
 
-  // One short tick after the run settles is expected and is the tick that
-  // discovers the strand is idle; from there the chain must be the long one.
+  // The long tick this waits for is the one boot's own recovery drive armed:
+  // it found nothing to do, so the chain was on the long period before the
+  // prompt arrived and the whole run happened inside that one period. No tick
+  // fired, so the count of short arms here is zero rather than one.
   wait_for(fn() { recorder.read(rec, "poll.long") >= 1 }, 3000)
+  assert recorder.read(rec, "poll.long") >= 1
   let settled = recorder.read(rec, "poll.short")
   process.sleep(quiet_window_ms)
 
   // At the short period this window would have armed ten more.
   assert recorder.read(rec, "poll.short") == settled
+  process.kill(rt.tree.supervisor)
+}
+
+// A provider whose first generation holds the operation open for
+// `occupied_block_ms` before it answers. The sleep runs in the spawned effect
+// process, so the driver keeps handling ticks throughout it, which is the
+// whole point: a tick has to fire while an operation is open.
+fn answers_slowly(spec: effects.RequestSpec) -> fake.ProviderResult {
+  case fake.turn(spec) {
+    0 -> {
+      process.sleep(occupied_block_ms)
+      fake.Reply(fake.answer("Done", 3))
+    }
+    _ -> fake.Reply(fake.answer("Done again", 3))
+  }
+}
+
+/// A tick that fires while an operation is open arms the short period, and
+/// keeps arming it for as long as the operation stays open. This is the other
+/// half of the two-period rule, and the half a run that finishes inside one
+/// idle period never reaches: the deferred-permit rate is only the short one
+/// if an occupied drive says so.
+pub fn a_tick_over_an_open_operation_stays_short_test() {
+  let #(_sess, rt, rec) = boot_with(answers_slowly, brief_idle_poll_ms)
+  let assert Ok(op) = api.prompt(rt, [fake.user("Hello")]) as "prompt accepted"
+
+  // The doorbell drove the strand to `Occupied` but left the pending idle tick
+  // alone, so the first short arm cannot appear until that tick fires and
+  // finds the provider still working.
+  wait_for(fn() { recorder.read(rec, "poll.short") >= 1 }, 3000)
+  assert recorder.read(rec, "poll.short") >= 1
+
+  // While the operation stays open the chain must keep choosing the short
+  // period. One further arm is enough to say the chain did not fall back:
+  // this window is several short periods wide and well inside the block.
+  let occupied = recorder.read(rec, "poll.short")
+  process.sleep(occupied_sample_ms)
+  assert recorder.read(rec, "poll.short") > occupied
+
+  // And the run settling puts it back: the first tick after the operation
+  // closes finds the strand idle and arms the long period, after which the
+  // short count holds still.
+  let assert Ok(outcome) = api.await_result(rt, op, within_ms: 5000)
+    as "the slow run must complete"
+  harness.assert_completed(outcome)
+  wait_for(fn() { recorder.read(rec, "poll.long") >= 2 }, 3000)
+  assert recorder.read(rec, "poll.long") >= 2
+  let settled = recorder.read(rec, "poll.short")
+  process.sleep(quiet_window_ms)
+  assert recorder.read(rec, "poll.short") == settled
+  process.kill(rt.tree.supervisor)
+}
+
+/// A strand that restarts with an operation still open arms the short period,
+/// not the idle one. Recovery drives before it arms, so the replacement reads
+/// its period out of durable state; this is the restart that period is for,
+/// and it is the one a restart-while-idle test cannot distinguish.
+pub fn a_restart_with_an_open_operation_arms_the_short_period_test() {
+  let #(_sess, rt, rec) = boot(fn(_spec) { fake.Hang })
+  let assert Ok(_op) = api.prompt(rt, [fake.user("Hello")]) as "prompt accepted"
+  wait_for(fn() { recorder.read(rec, "provider") >= 1 }, 3000)
+  assert recorder.read(rec, "provider") >= 1
+
+  // Nothing has fired yet: the only pending tick is the long one boot armed,
+  // and it is `long_poll_ms` away. So every short arm counted after the kill
+  // belongs to the replacement.
+  assert recorder.read(rec, "poll.short") == 0
+  let assert Ok(subject) = supervisor.strand_subject(rt.tree, "main")
+    as "the strand driver must be registered"
+  let assert Ok(pid) = process.subject_owner(subject)
+    as "the strand driver must be alive"
+  process.kill(pid)
+
+  // The replacement's recovery drive loads the operation the provider is
+  // still hanging on, so the one tick it arms is the short one, and that
+  // chain goes on arming while the operation stays open. The deadline is far
+  // under `long_poll_ms` on purpose: a replacement that armed the idle period
+  // instead would reach the short one eventually, once that idle tick fired
+  // over the still-open operation, and a deadline past it would pass on the
+  // recovery this test exists to distinguish.
+  wait_for(fn() { recorder.read(rec, "poll.short") >= 3 }, 1200)
+  assert recorder.read(rec, "poll.short") >= 3
   process.kill(rt.tree.supervisor)
 }
 
@@ -126,6 +244,7 @@ pub fn a_second_turn_does_not_start_a_second_tick_chain_test() {
   let assert Ok(_settled) = api.await_result(rt, first, within_ms: 5000)
     as "the first run must complete"
   wait_for(fn() { recorder.read(rec, "poll.long") >= 1 }, 3000)
+  assert recorder.read(rec, "poll.long") >= 1
 
   // A second turn, whose doorbell arrives while the pending tick is the long
   // one. It drives on the doorbell, and the pending tick is left alone.
@@ -136,10 +255,12 @@ pub fn a_second_turn_does_not_start_a_second_tick_chain_test() {
     as "the second run must complete"
   assert recorder.read(rec, "poll.short") == armed_before
 
-  // The pending long tick is what discovers the second turn and puts the
-  // chain back onto the short period, and quiet puts it back onto the long
-  // one. One chain throughout: the short count holds still once idle.
+  // The second turn also finished inside the one pending long period, so that
+  // tick fires with the strand idle again and arms a second long one. The
+  // point is the count: one chain produced both long arms and no short arm,
+  // where a turn that started a chain of its own would have gone on arming.
   wait_for(fn() { recorder.read(rec, "poll.long") >= 2 }, 3 * long_poll_ms)
+  assert recorder.read(rec, "poll.long") >= 2
   let settled = recorder.read(rec, "poll.short")
   process.sleep(quiet_window_ms)
   assert recorder.read(rec, "poll.short") == settled
@@ -157,6 +278,7 @@ pub fn a_doorbell_wakes_a_strand_on_the_long_period_test() {
   let assert Ok(_settled) = api.await_result(rt, first, within_ms: 5000)
     as "the first run must complete"
   wait_for(fn() { recorder.read(rec, "poll.long") >= 1 }, 3000)
+  assert recorder.read(rec, "poll.long") >= 1
 
   // The pending tick is now `long_poll_ms` away, which is longer than this
   // deadline. The run can only start because the prompt rang the doorbell.
@@ -195,6 +317,7 @@ pub fn a_restarted_idle_strand_arms_the_long_period_test() {
   let assert Ok(_settled) = api.await_result(rt, op, within_ms: 5000)
     as "the run must complete"
   wait_for(fn() { recorder.read(rec, "poll.long") >= 1 }, 3000)
+  assert recorder.read(rec, "poll.long") >= 1
 
   let long_before = recorder.read(rec, "poll.long")
   let short_before = recorder.read(rec, "poll.short")
