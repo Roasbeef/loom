@@ -169,7 +169,7 @@ fn request(
       schedule,
       index,
       strand: on_strand,
-      loss_allowed: retryable(spec),
+      loss_allowed: loss_allowance(spec),
     )
   {
     Killed -> stream.immediate(events:, cancel: fn() { Nil })
@@ -668,7 +668,9 @@ fn execute(
   let index = control.bump(ctl, "effect")
   let _invocations =
     control.bump(ctl, "tool:" <> run.call.name <> ":" <> run.call.id)
-  case effect_fault(ctl, vc, schedule, index, strand:, loss_allowed: False) {
+  case
+    effect_fault(ctl, vc, schedule, index, strand:, loss_allowed: LossRefused)
+  {
     Killed | Starved ->
       effects.ToolFailed(reason: "the tree was killed mid-execution")
     Ran -> {
@@ -708,15 +710,26 @@ type EffectFate {
   Starved
 }
 
+/// Whether this dispatch's settlement may be lost outright.
+type LossAllowance {
+  /// A retry ladder stands behind this request, so losing it is
+  /// transparent.
+  LossAllowed
+
+  /// Nothing would retry this request, so losing it would change what the
+  /// session ends up having done.
+  LossRefused
+}
+
 // Losing a provider effect outright — the process dies, or it never
 // settles and the surface times it out — is transparent only where a
 // retry ladder stands behind it. A deferred poll has none: pi §3.2 gives
 // every poll error a response-provenance failure drain, so losing one is
 // a semantic change and the schedule skips it there.
-fn retryable(spec: effects.RequestSpec) -> Bool {
+fn loss_allowance(spec: effects.RequestSpec) -> LossAllowance {
   case spec {
-    effects.GenerationRequest(..) | effects.SummaryRequest(..) -> True
-    effects.PollRequest(..) -> False
+    effects.GenerationRequest(..) | effects.SummaryRequest(..) -> LossAllowed
+    effects.PollRequest(..) -> LossRefused
   }
 }
 
@@ -735,13 +748,45 @@ fn strand_of_spec(spec: effects.RequestSpec, main: String) -> String {
   }
 }
 
+// Applies this dispatch's faults, in a precedence the taxonomy fixes
+// rather than in the order the generator happened to draw them.
+//
+// Whether the effect survives is decided first, and only an effect that
+// survives is then delayed. The two questions are not independent: an
+// effect the schedule has starved or killed never settles, so "settles
+// only after `delay_ms` of logical time" says nothing about it, and
+// parking it anyway is not merely wasted work. The park blocks the
+// provider seam — the request worker sits inside `ProviderSurface.request`
+// until the runner advances the logical clock — while the runtime's
+// request deadline and its cancellation grace are bounded in *real* time.
+// A 2000ms logical park therefore raced a 2000ms real grace, and whichever
+// won decided whether a starved effect answered its cancellation with a
+// retryable transport failure or with the non-retryable
+// `CancellationUnconfirmed`. The second answer fails the operation with no
+// retry, which is a different outcome from the same script — exactly what
+// every fault in the taxonomy promises not to be (seed 1493).
 fn effect_fault(
   ctl: Control,
   vc: Clockwork,
   schedule: Schedule,
   index: Int,
   strand strand: String,
-  loss_allowed loss_allowed: Bool,
+  loss_allowed loss_allowed: LossAllowance,
+) -> EffectFate {
+  case effect_survival(ctl, schedule, index, strand:, loss_allowed:) {
+    Ran -> effect_delay(ctl, vc, schedule, index)
+    decided -> decided
+  }
+}
+
+// The faults that decide whether this dispatch produces a settlement at
+// all: the two tree kills, and the two ways an effect is lost.
+fn effect_survival(
+  ctl: Control,
+  schedule: Schedule,
+  index: Int,
+  strand strand: String,
+  loss_allowed loss_allowed: LossAllowance,
 ) -> EffectFate {
   list.fold(schedule.faults, Ran, fn(fate, item) {
     case fate, item {
@@ -766,8 +811,8 @@ fn effect_fault(
         })
       Ran, fault.ProviderEffectDies(index: at) if at == index ->
         case loss_allowed {
-          False -> Ran
-          True ->
+          LossRefused -> Ran
+          LossAllowed ->
             claimed_effect(ctl, "died@e" <> int.to_string(index), fn() {
               control.mark(ctl, "effect-process-died")
               process.kill(process.self())
@@ -776,13 +821,29 @@ fn effect_fault(
         }
       Ran, fault.ProviderEffectTimesOut(index: at) if at == index ->
         case loss_allowed {
-          False -> Ran
-          True ->
+          LossRefused -> Ran
+          LossAllowed ->
             claimed_effect(ctl, "timeout@e" <> int.to_string(index), fn() {
               control.mark(ctl, "effect-timed-out")
               Starved
             })
         }
+      _, _ -> fate
+    }
+  })
+}
+
+// The delay a surviving dispatch settles behind. Reached only once the
+// effect is known to settle, so the park it performs can always be
+// released by the runner's next clock advance.
+fn effect_delay(
+  ctl: Control,
+  vc: Clockwork,
+  schedule: Schedule,
+  index: Int,
+) -> EffectFate {
+  list.fold(schedule.faults, Ran, fn(fate, item) {
+    case fate, item {
       Ran, fault.SlowEffect(index: at, delay_ms:) if at == index ->
         claimed_effect(ctl, "slow@e" <> int.to_string(index), fn() {
           control.mark(ctl, "slow-effect")
