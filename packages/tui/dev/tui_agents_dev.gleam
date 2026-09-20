@@ -21,6 +21,7 @@ import machine/codec
 import machine/operation
 import machine/strand
 import tui
+import tui/advisor_pending
 import tui/agents
 import tui/appearance
 import tui/connection
@@ -63,7 +64,7 @@ pub fn run(palette: String) -> Nil {
       "main",
       "Integrate the agent workspace and preserve message targeting.",
       "Drafts now stay with their original session and strand. Checking the native layouts next.",
-      Active("fs_read"),
+      Active("agent_wait"),
     ),
     Agent(
       "sub:viewport-review",
@@ -80,7 +81,13 @@ pub fn run(palette: String) -> Nil {
     Agent(
       "sub:protocol-review",
       "Verify exact-request approval ownership across refreshes.",
-      "Review paused. The next message will resume this strand.",
+      "Ready to write the review report. Waiting for permission to write the requested file.",
+      Active("fs_write"),
+    ),
+    Agent(
+      "sub:paused-review",
+      "Review restart behavior without changing the running daemon.",
+      "Stopped before touching the running daemon. The next message will resume this strand.",
       Held,
     ),
     Agent(
@@ -152,6 +159,14 @@ pub fn run(palette: String) -> Nil {
       overlay: tui.AgentInspector(agents.inspect("main")),
       notice: "illustrative fixture · no provider calls",
       diff_view: tui.DiffHidden,
+      nudges: Some(advisor_pending.Board(
+        "main",
+        1,
+        [
+          "Keep exact approval ownership intact.\nThe selected preview is not permission to broaden the request.",
+        ],
+        1,
+      )),
     )
   let _ =
     app.run_buffered_cursor_adaptive(
@@ -215,7 +230,15 @@ fn agent_cells(agent: Agent, n: Int) -> List(json.JsonValue) {
       register.StrandLeaf,
       agent.name,
       n + 1,
-      json.String(ids.entry_id_to_string(entry_id(n + 1))),
+      json.String(
+        ids.entry_id_to_string(entry_id(
+          n
+          + case agent.work {
+            Complete | Failed -> 2
+            Active(_) | Held -> 1
+          },
+        )),
+      ),
     ),
     cell(
       register.StrandState,
@@ -281,7 +304,38 @@ fn agent_cells(agent: Agent, n: Int) -> List(json.JsonValue) {
         )),
       )
   }
-  [lifecycle, ..common]
+  let pending = case agent.work {
+    Active("fs_write") -> [
+      cell(
+        register.FactCustom,
+        "escalation/fixture-permission",
+        n + 2,
+        json.Object([
+          #("id", json.String("fixture-permission")),
+          #("status", json.String("pending")),
+          #("tool", json.String("fs_write")),
+          #(
+            "preview",
+            json.String(
+              "Write docs/review/native-layout.md with the native layout findings.\nNo other files are included in this request.",
+            ),
+          ),
+          #("action", json.String("fixture-action")),
+          #("origin", json.Null),
+          #("denial", json.Object([#("wanted", json.Array([]))])),
+          #(
+            "scope",
+            json.Object([
+              #("strand", json.String(agent.name)),
+              #("operation", json.String(ids.op_id_to_string(op_id(n)))),
+            ]),
+          ),
+        ]),
+      ),
+    ]
+    _ -> []
+  }
+  list.append([lifecycle, ..common], pending)
 }
 
 fn outcome(work: Work) -> operation.RunOutcome {
@@ -317,12 +371,37 @@ fn agent_entries(
       message.AssistantToolCall(message.ToolCall(
         "fixture-call",
         tool,
-        json.Object([#("path", json.String("packages/tui/src/tui.gleam"))]),
+        case tool {
+          "agent_wait" ->
+            json.Object([
+              #(
+                "handles",
+                json.Array([
+                  json.String(
+                    "sub:terminal-checks#" <> ids.op_id_to_string(op_id(21)),
+                  ),
+                ]),
+              ),
+            ])
+          "fs_write" ->
+            json.Object([#("path", json.String("docs/review/native-layout.md"))])
+          _ ->
+            json.Object([#("path", json.String("packages/tui/src/tui.gleam"))])
+        },
         None,
         None,
       )),
     ]
-    Complete | Failed | Held -> []
+    Complete | Failed -> [
+      message.AssistantToolCall(message.ToolCall(
+        "fixture-call",
+        "bash",
+        json.Object([#("command", json.String("make check-tui"))]),
+        None,
+        None,
+      )),
+    ]
+    Held -> []
   }
   let response =
     entry.MessageEntry(
@@ -348,5 +427,42 @@ fn agent_entries(
       ),
       False,
     )
-  [snapshot.Loaded(prompt, 0), snapshot.Loaded(response, 0)]
+  let results = case agent.work {
+    Complete | Failed -> [
+      snapshot.Loaded(
+        entry.MessageEntry(
+          entry_id(n + 2),
+          Some(entry_id(n + 1)),
+          n + 2,
+          n + 2,
+          message.ToolResultMessage(
+            "fixture-call",
+            "bash",
+            [
+              message.ToolResultText(
+                case agent.work {
+                  Failed ->
+                    "Layout assertion failed at 40 columns.\nThe approval action label was clipped."
+                  _ -> "The viewport and reading-position checks passed."
+                },
+                None,
+              ),
+            ],
+            None,
+            None,
+            None,
+            agent.work == Failed,
+            n + 2,
+          ),
+          False,
+        ),
+        0,
+      ),
+    ]
+    Active(_) | Held -> []
+  }
+  list.append(
+    [snapshot.Loaded(prompt, 0), snapshot.Loaded(response, 0)],
+    results,
+  )
 }
