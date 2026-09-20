@@ -131,6 +131,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - `tui/file_read_view` removes recognized edit digests and hashline anchors
   only from successful file-read presentation. Line numbers and source text
   remain; stored results and model-facing edit prerequisites are unchanged.
+  `edit_summary` applies the same rule to a successful `fs_edit`, dropping
+  the `Fresh anchors:` block the result carries for the model — the patch
+  preview beside the row is what shows the operator what changed. A
+  rejection's fresh anchors stay visible, being the reason it failed. The
+  heading is produced in `tools`, which the terminal has no dependency edge
+  to, so the literal is repeated there and a divergence draws the block
+  rather than breaking anything.
   Terminal hygiene expands tabs to four spaces while keeping other controls
   inert. Markdown equality operators remain visible instead of coloring the
   prose between two comparisons. Completion details remain in `/summary`,

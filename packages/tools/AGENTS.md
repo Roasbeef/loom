@@ -453,7 +453,31 @@ was asked.
   digest, and stale-content or stale-anchor errors include the current digest.
   Presentation-only `details` retain these fields too, but provider adapters
   do not send that object to the model. Digest and anchor validation remain
-  unchanged; a stale plan still rejects before writing.
+  unchanged; a stale plan still rejects before writing. A windowed `fs_read`
+  states its range and the offset that continues it for the same reason:
+  `has_more` and `total_lines` are in `details` and never reach the wire, so
+  without the statement a first window reads exactly like a whole file.
+- **A successful edit returns the anchors of what it changed.** The digest
+  alone is half an edit prerequisite: every applied hunk shifts the anchors
+  around it, so a caller holding a fresh digest and no fresh `{line, anchor}`
+  pair has to read the file again before it can plan the next hunk.
+  `hashline.applied_regions` computes the post-image ranges each hunk landed
+  on — the pre-image position plus the net line change of every hunk starting
+  before it, which is exactly what `apply_placed` splices by — and
+  `edit_outcome` renders them under the same `Fresh anchors:` heading a
+  rejection uses. The two lines a success opens with are fixed: the hunk
+  count, then `digest:`, in that order. Bounded three ways: contexts that
+  touch are merged, a block over `max_fresh_anchor_bytes` becomes one line
+  naming the offset to read from, and an edit that leaves no lines says so.
+- **Annotate the post-image once, then slice it.** `edit_outcome` takes
+  `hashline.annotate(edited)` once and each region is a `drop`/`take` over
+  that list rendered by `hashline.render_lines` — the renderer `render` uses
+  for a window, so the text stays byte-identical to `fs_read`'s. Building a
+  `Window` per region instead re-split and re-annotated the whole file each
+  time, which cost about eight seconds on 199 hunks over a 648 KB file. The
+  cap is checked as the regions are rendered rather than on the finished
+  block, so an oversized edit stops at the region that crosses it instead of
+  rendering every region to discard them all.
 - **Anchors depend only on line content** — first 8 hex of FNV-1a 64 over
   the line's UTF-8 bytes, `anchor_version` 1, package-internal and never
   stored durably. Unrelated edits never change a line's anchor, though they
