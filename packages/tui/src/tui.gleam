@@ -4258,8 +4258,13 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
       begin_selection(model, geometry.Position(x, y))
       |> mark_activity
       |> invalidate_frame
+
+    // A held drag is the other gesture that outruns the poll timeout, for as
+    // long as the button is down. The selection reads the frame it began
+    // on, so the traffic applied here cannot move the cells under it.
     backend.MouseDrag(x, y, backend.MouseLeft) ->
-      extend_selection(model, geometry.Position(x, y))
+      drain_connection(model, 64)
+      |> extend_selection(geometry.Position(x, y))
       |> mark_activity
       |> invalidate_frame
     backend.MouseRelease(x, y, backend.MouseLeft) ->

@@ -911,8 +911,8 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   wake etui's terminal poll, the first external event after quiet may wait up to
   the 400 ms quiet timeout before the client drains it and returns to 40 ms.
   A tick exists only when a poll times out with no input, and a wheel flick
-  delivers notches faster than any timeout, so a key and a wheel notch each
-  drain up to sixty-four queued socket messages before they are interpreted.
+  delivers notches faster than any timeout, so a key, a wheel notch and a
+  held drag each drain up to sixty-four queued socket messages before they are interpreted.
   Without that a history page waits for the hand to pause and then lands with
   every capture queued behind it.
 - **Durable and transient output do not alias.** Stream fragments live
