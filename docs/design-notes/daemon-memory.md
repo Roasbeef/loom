@@ -1672,23 +1672,23 @@ Every source of work, and what wakes the strand for it. `S` is
 
 | Source | What wakes the strand | Reliable? |
 |---|---|---|
-| Operator prompt | `api.prompt` commits, then `nudge` (`A:453`) | Doorbell, at-most-once |
-| Steer, follow-up | `api.steer` (`A:848`), `api.follow_up` (`A:943`) | Doorbell, at-most-once |
-| Quiet acceptance | `api.accept_quietly` (`A:467`), `steer_quietly` (`A:861`): commit, no ring | **Poll only** |
-| Marked injection | `api.steer_marking` (`A:913`), used by `client/rulescan:590` and `client/schedulescan:1207` | **Poll only**, onto an open run, so at the short period |
-| Inter-strand send | `send_attempts` nudges both the steer and the accept arm (`A:1502`, `A:1508`) | Doorbell |
-| Send to child | `send_child_attempts` nudges both arms (`A:1469`, `A:1479`) | Doorbell |
-| Subagent adoption | `adopt_strand` nudges after the brief (`A:1293`) | Doorbell |
-| Provider settlement | `ProviderDone` from the effect process (`S:191`) | Message |
-| Tool settlement | `ToolDone` (`S:194`) | Message |
-| Effect process death | `EffectExit` through a monitor installed at spawn (`S:197`) | Message, and a monitor cannot be lost |
-| Retry deadline | `park_retry` arms `RetryDue` at the planner's `at` (`S:1217`) | Own timer |
-| Deferred poll due | `planner.Wait(DeferredPollDue)` (`S:1069`): the permit *is* the tick | **Poll only, by design** |
-| Abort | `request_abort` casts `RequestAbort` (`S:474`); a lost stale-race retry re-sends to itself (`S:913`) | Message |
-| Predecessors draining | `AwaitPredecessors` is weft's guaranteed-first message (`S:167`) | In-process, before the mailbox |
-| Restart, crash recovery | the recovery handler drives before it arms anything (`S:577`) | In-process |
-| Writer lease loss | `commit` answers `LeaseLost` and the strand halts (`S:1163`) | Not a wake at all |
-| Escalation decision | `decide_escalation_with_fact_at` commits and rings nothing (`A:2814`) | Not a wake: the planner has no escalation state, and grants are read at the next clearance |
+| Operator prompt | `api.prompt` commits, then `nudge` (`A:462`) | Doorbell, at-most-once |
+| Steer, follow-up | `api.steer` (`A:867`), `api.follow_up` (`A:964`) | Doorbell, at-most-once |
+| Quiet acceptance | `api.accept_quietly` (`A:482`), `steer_quietly` (`A:886`): commit, no ring | **Poll only** |
+| Marked injection | `api.steer_marking` (`A:943`), used by `client/rulescan:590` and `client/schedulescan:1207` | **Poll only**, onto an open run, so at the short period |
+| Inter-strand send | `send_attempts` nudges both the steer and the accept arm (`A:1523`, `A:1529`) | Doorbell |
+| Send to child | `send_child_attempts` nudges both arms (`A:1490`, `A:1500`) | Doorbell |
+| Subagent adoption | `adopt_strand` nudges after the brief (`A:1314`) | Doorbell |
+| Provider settlement | `ProviderDone` from the effect process (`S:212`) | Message |
+| Tool settlement | `ToolDone` (`S:215`) | Message |
+| Effect process death | `EffectExit` through a monitor installed at spawn (`S:218`) | Message, and a monitor cannot be lost |
+| Retry deadline | `park_retry` arms `RetryDue` at the planner's `at` (`S:1258`) | Own timer |
+| Deferred poll due | `planner.Wait(DeferredPollDue)` (`S:1110`): the permit *is* the tick | **Poll only, by design** |
+| Abort | `request_abort` casts `RequestAbort` (`S:513`); a lost stale-race retry re-sends to itself (`S:950`) | Message |
+| Predecessors draining | `AwaitPredecessors` is weft's guaranteed-first message (`S:189`) | In-process, before the mailbox |
+| Restart, crash recovery | the recovery handler drives before it arms anything (`S:603`) | In-process |
+| Writer lease loss | `commit` answers `LeaseLost` and the strand halts (`S:1204`) | Not a wake at all |
+| Escalation decision | `decide_escalation_with_fact_at` commits and rings nothing (`A:2836`) | Not a wake: the planner has no escalation state, and grants are read at the next clearance |
 
 Two of these are genuinely time-based and need a timer whatever else changes.
 `RetryNotBefore` names a wall-clock instant and arms its own. `DeferredPollDue`
