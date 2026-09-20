@@ -10176,6 +10176,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Strand(_)
     | command.GoalStatus
     | command.GoalBudgetInvalid(_)
+    | command.GoalObjectiveTooLong(_)
     | command.Clear
     | command.Quit
     | command.Unknown(_)
@@ -10469,6 +10470,18 @@ fn submit_text(model: Model) -> Model {
           <> word
           <> "\" · /goal <objective> pins the default budget instead",
       )
+
+    // The count is shown because the operator has to know how much to cut,
+    // and the objective is not sent: the server refuses it on the same
+    // bound, and a round trip to be told so is a round trip wasted.
+    command.GoalObjectiveTooLong(count) ->
+      append_error(
+        cleared,
+        "/goal objective is "
+          <> int.to_string(count)
+          <> " characters; the most a goal may carry is "
+          <> int.to_string(command.objective_limit),
+      )
     command.Compact ->
       send_frame(
         append_system(
@@ -10536,6 +10549,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.GoalPause
     | command.GoalResume
     | command.GoalBudgetInvalid(_)
+    | command.GoalObjectiveTooLong(_)
     | command.Compact
     | command.Abort
     | command.Steer(_)

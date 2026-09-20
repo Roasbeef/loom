@@ -1782,7 +1782,22 @@ fn expire_transfers(state: State) -> State {
 
 fn network_dispatch(state: State, connection: Int, text: String) -> State {
   case protocol.decode_command(text) {
-    Error(_) -> {
+    // A body the decoder refused is a command the client sent and the
+    // server understood well enough to say what is wrong with it, so the
+    // refusal carries the decoder's own sentence and the request's own id.
+    // Answering "invalid v2 command" against id zero threw both away, and
+    // the sentences it threw away are the ones written for an operator to
+    // read: the objective's length with both counts, the budget's
+    // positivity, the fields an `approve` must echo.
+    Error(protocol.BadBody(id:, reason:, ..)) -> {
+      reply_error(state, connection, id, protocol.code_bad_request, reason)
+      state
+    }
+
+    // A frame this server cannot even place — unparseable, or with no id,
+    // no command name, not an object. There is nothing to be specific about
+    // and nothing to answer it against.
+    Error(protocol.BadEnvelope(..)) | Error(protocol.MalformedFrame(..)) -> {
       reply_error(
         state,
         connection,
@@ -1792,6 +1807,7 @@ fn network_dispatch(state: State, connection: Int, text: String) -> State {
       )
       state
     }
+
     Ok(protocol.CommandEnvelope(id, command)) ->
       network_command(state, connection, id, command)
   }

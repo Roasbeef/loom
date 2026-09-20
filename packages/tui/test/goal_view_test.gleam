@@ -189,6 +189,40 @@ pub fn a_missing_budget_defaults_and_a_bad_one_refuses_test() {
     == command.MissingArgument("goal --budget")
   assert command.parse("/goal --budget 50000")
     == command.MissingArgument("goal")
+
+  // A rejected budget with no objective after it names the budget, not the
+  // objective. Reporting only the missing objective sent the operator
+  // looking for the wrong mistake: their budget word is the thing that will
+  // still be wrong the second time.
+  assert command.parse("/goal --budget soon")
+    == command.GoalBudgetInvalid("soon")
+}
+
+/// An objective longer than the wire accepts is refused here, with the count
+/// the operator needs, rather than sent and refused there.
+///
+/// The bound is the server's own (`client/protocol.objective_limit`), and it
+/// was enforced in neither place: a pasted document was accepted by the
+/// server, written to the cell, and then refused by the very terminal that
+/// asked for it, so the operator had a goal they could pin and never see.
+pub fn an_oversized_objective_is_refused_before_it_is_sent_test() {
+  assert command.objective_limit == 4000
+
+  let allowed = string.repeat("a", command.objective_limit)
+  assert command.parse("/goal " <> allowed)
+    == command.GoalSet(
+      objective: allowed,
+      token_budget: command.default_goal_budget,
+    )
+
+  let oversized = string.repeat("a", command.objective_limit + 1)
+  assert command.parse("/goal " <> oversized)
+    == command.GoalObjectiveTooLong(count: command.objective_limit + 1)
+
+  // The flagged form is held to the same bound, because one rule that two
+  // call sites share is a rule neither can forget.
+  assert command.parse("/goal --budget 50000 " <> oversized)
+    == command.GoalObjectiveTooLong(count: command.objective_limit + 1)
 }
 
 /// The palette offers `/goal` with room for its argument, and past the space

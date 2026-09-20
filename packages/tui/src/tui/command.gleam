@@ -135,6 +135,16 @@ pub type Command {
     word: String,
   )
 
+  /// A `/goal` whose objective is longer than the wire accepts.
+  ///
+  /// Refused here rather than sent and refused there, because the operator
+  /// who pasted a document into the composer wants to know before the
+  /// round trip, and the count is what tells them how much to cut.
+  GoalObjectiveTooLong(
+    /// How many characters the objective actually carried.
+    count: Int,
+  )
+
   /// Compact the active strand.
   Compact
 
@@ -447,6 +457,16 @@ fn unschedule(raw: String) -> Command {
 /// immediately and re-pins with `--budget`.
 pub const default_goal_budget = 200_000
 
+/// The longest objective `/goal` will send, in characters.
+///
+/// The server's own bound (`client/protocol.objective_limit`, protocol 044
+/// §1), mirrored because the terminal can say so without a round trip.
+/// Mirrored rather than shared: the two packages do not depend on one
+/// another, and a client that guessed a *larger* number would send a
+/// command the server refuses — which is the honest failure and not a
+/// silent one.
+pub const objective_limit = 4000
+
 // `/goal [--budget <tokens>] <objective>`, or one of three subcommands.
 //
 // The subcommands are subcommands only as the *whole* argument, because the
@@ -466,7 +486,16 @@ fn goal(raw: String) -> Command {
     "--budget" -> MissingArgument("goal --budget")
     "--budget " <> rest -> budgeted(rest)
 
-    objective -> GoalSet(objective:, token_budget: default_goal_budget)
+    objective -> pinning(objective, default_goal_budget)
+  }
+}
+
+// One place decides whether an objective may be sent, so the flagged form
+// and the bare form cannot disagree about the bound.
+fn pinning(objective: String, token_budget: Int) -> Command {
+  case string.length(objective) > objective_limit {
+    True -> GoalObjectiveTooLong(count: string.length(objective))
+    False -> GoalSet(objective:, token_budget:)
   }
 }
 
@@ -474,9 +503,11 @@ fn goal(raw: String) -> Command {
 // everything after it is the objective verbatim.
 fn budgeted(raw: String) -> Command {
   case string.split_once(string.trim_start(raw), " ") {
-    // A budget with no objective pins nothing, so the objective is the
-    // argument that is missing.
-    Error(Nil) -> MissingArgument("goal")
+    // A budget with no objective pins nothing, and the word is still
+    // checked: `/goal --budget abc` is a rejected budget whether or not an
+    // objective followed it, and reporting only the missing objective sent
+    // the operator looking for the wrong mistake.
+    Error(Nil) -> objective_for(string.trim(raw), "")
 
     Ok(#(word, rest)) -> objective_for(word, string.trim(rest))
   }
@@ -486,7 +517,7 @@ fn objective_for(word: String, objective: String) -> Command {
   case token_count(word), objective {
     Error(Nil), _ -> GoalBudgetInvalid(word)
     Ok(_), "" -> MissingArgument("goal")
-    Ok(budget), objective -> GoalSet(objective:, token_budget: budget)
+    Ok(budget), objective -> pinning(objective, budget)
   }
 }
 

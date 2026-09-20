@@ -41,9 +41,10 @@
 //// a feed is owed and when the loop rests are `client/goalloop`'s, which
 //// is pure for the same reasons this module is and is property-tested
 //// because of it. `new` does not validate the objective's length either
-//// — the 4,000-character bound is the `goal_set` handler's refusal,
-//// worded for the operator, because a codec error naming a bound is not
-//// a message the operator ever reads.
+//// — the 4,000-character bound is `client/protocol`'s own refusal on the
+//// `goal_set` body (`objective_limit`), worded for the operator with both
+//// counts, because a codec error naming a bound is not a message the
+//// operator ever reads.
 
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -162,8 +163,8 @@ pub type Phase {
 pub type Goal {
   Goal(
     /// The operator-pinned objective text. Untrusted data: it reaches
-    /// models only inside a frame, and its length bound is enforced at
-    /// `goal_set`, not here.
+    /// models only inside a frame, and its length bound is enforced by the
+    /// `goal_set` decoder in `client/protocol`, not here.
     objective: String,
     /// Where the goal is in the state machine above.
     status: Status,

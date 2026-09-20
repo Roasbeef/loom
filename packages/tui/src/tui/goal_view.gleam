@@ -31,16 +31,18 @@ import tui/text_hygiene
 
 /// How many bytes of board this terminal will accept.
 ///
-/// The objective is operator-authored text with no server-side bound, so
-/// the cap belongs somewhere; refusing here keeps a pathological cell out
-/// of the wrapping cache rather than letting it reach the screen.
+/// The server bounds the objective at 4,000 characters, so a board inside
+/// the contract fits this several times over; the cap is the terminal's
+/// defence against a board that is *outside* it, and refusing here keeps a
+/// pathological cell out of the wrapping cache rather than letting it reach
+/// the screen.
 pub const board_limit = 48_000
 
 /// How many bytes of objective text one board may carry.
 ///
-/// The wire bounds the objective at 4,000 characters, which is four times
-/// that many bytes at worst, so this cap refuses only a board that is
-/// already outside the contract.
+/// `client/protocol` bounds the objective at 4,000 characters, which is
+/// four times that many bytes at worst, so this cap refuses only a board
+/// that is already outside the contract.
 pub const objective_limit = 16_384
 
 /// How much of the objective the one-line composer row shows before it is

@@ -1074,7 +1074,8 @@ fn decode_command_body(
     }
     "goal_set" -> {
       use fields <- result.try(body_fields(body))
-      use objective <- result.try(required_string(fields, "objective"))
+      use raw <- result.try(required_string(fields, "objective"))
+      use objective <- result.try(bounded_objective(raw))
       use budget <- result.try(nonnegative_field(fields, "token_budget"))
       case budget > 0 {
         True -> Ok(GoalSet(objective:, token_budget: budget))
@@ -2390,6 +2391,41 @@ fn body_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), String) {
   case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("a json object body")
+  }
+}
+
+/// The longest objective `goal_set` accepts, in characters (protocol 044
+/// §1).
+///
+/// It is enforced here rather than left to the cell, and that is the point
+/// of having a number at all: the objective is rendered into every goal
+/// feed the reviewer reads and into every board the terminal draws, and a
+/// pasted twenty-kilobyte objective was accepted by the server and then
+/// refused by every client that tried to show it — a goal the operator
+/// could pin and never see.
+pub const objective_limit = 4000
+
+// The objective, trimmed and bounded. Trimmed because a goal whose
+// objective is whitespace names nothing and the cell's own decoder refuses
+// the empty string, so accepting it here would pin a goal that cannot be
+// read back. The refusal carries both counts, because "too long" without
+// the numbers leaves the operator trimming by guesswork.
+fn bounded_objective(raw: String) -> Result(String, String) {
+  let objective = string.trim(raw)
+  let length = string.length(objective)
+
+  case objective, length > objective_limit {
+    "", _empty -> Error("objective must not be empty")
+
+    _text, True ->
+      Error(
+        "objective is "
+        <> int.to_string(length)
+        <> " characters; the most a goal may carry is "
+        <> int.to_string(objective_limit),
+      )
+
+    _text, False -> Ok(objective)
   }
 }
 

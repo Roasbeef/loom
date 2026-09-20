@@ -12,8 +12,10 @@ import broker/policy
 import client/protocol
 import core/json
 import core/message
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 
 fn network_grant() -> policy.Grant {
   policy.GrantNetwork(network: policy.NetworkProxy(
@@ -461,6 +463,55 @@ pub fn goal_commands_round_trip_and_validate_their_budgets_test() {
     )
     as "a zero budget is refused rather than stored"
   assert reason == "token_budget must be a positive number of tokens"
+
+  // The objective's bound, refused here with both counts. It was enforced
+  // nowhere: a pasted twenty-kilobyte objective was accepted, written to
+  // the cell, and then refused by every client that tried to draw it, so
+  // the operator had a goal they could pin and never see.
+  let oversized = string.repeat("a", protocol.objective_limit + 1)
+  let assert Error(protocol.BadBody(reason: too_long, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":8,\"cmd\":\"goal_set\",\"body\":{\"objective\":\""
+      <> oversized
+      <> "\",\"token_budget\":400000}}",
+    )
+    as "an objective past the bound is refused rather than stored"
+  assert string.contains(too_long, int.to_string(protocol.objective_limit + 1))
+  assert string.contains(too_long, int.to_string(protocol.objective_limit))
+
+  // The bound itself is admitted, so the refusal is off by nothing.
+  let allowed = string.repeat("a", protocol.objective_limit)
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalSet(objective: pinned, ..),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":9,\"cmd\":\"goal_set\",\"body\":{\"objective\":\""
+      <> allowed
+      <> "\",\"token_budget\":400000}}",
+    )
+    as "an objective at the bound is admitted"
+  assert pinned == allowed
+
+  // Whitespace is trimmed, and an objective that is only whitespace names
+  // nothing: the cell's own decoder refuses the empty string, so accepting
+  // it here would pin a goal that cannot be read back.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.GoalSet(objective: trimmed, ..),
+    ..,
+  )) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":10,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"  land it  \",\"token_budget\":400000}}",
+    )
+    as "an objective is stored trimmed"
+  assert trimmed == "land it"
+
+  let assert Error(protocol.BadBody(reason: blank, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":11,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"   \",\"token_budget\":400000}}",
+    )
+    as "a whitespace objective is refused rather than pinned"
+  assert blank == "objective must not be empty"
 
   // The snapshot reply round trips with its board.
   let board =
