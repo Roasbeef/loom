@@ -880,10 +880,22 @@ fn check_ending(ending: goalstate.CheckEnding) -> String {
   }
 }
 
+/// What closes a check block's output.
+///
+/// The output is the one part of the feed with no bound on its shape — it is
+/// whatever a build printed — so it needs an end the reviewer can see. Without
+/// one, text that reproduced the label read as a second block opening, and
+/// everything after it read as a second check's result. It is broken inside a
+/// quoted body like every other token of this frame, so output cannot forge
+/// its own ending either.
+pub const check_output_end = "[end check output]"
+
 fn check_output(output: String) -> String {
   case output {
     "" -> "\n  output: (the check printed nothing)"
-    printed -> "\n  output:\n" <> goal_frame_safe(printed)
+
+    printed ->
+      "\n  output:\n" <> goal_frame_safe(printed) <> "\n" <> check_output_end
   }
 }
 
@@ -897,6 +909,31 @@ fn goal_frame_safe(text: String) -> String {
   |> string.replace(each: goal_feed_footer, with: unframed(goal_feed_footer))
   |> string.replace(each: untrusted_open, with: defanged(untrusted_open))
   |> string.replace(each: untrusted_close, with: defanged(untrusted_close))
+  |> check_tokens_safe
+}
+
+// Breaks the check block's own two tokens.
+//
+// They belong on the same footing as the frame's header and footer, and were
+// not: a check whose output contained the label could print a whole second
+// block beneath the real one — its own command, its own `exit status 0`, its
+// own output — and the reviewer had nothing to tell the harness's block from
+// the quoted one. The label is the harness saying "I ran this myself", so it
+// is the most valuable sentence in the feed to be able to forge.
+//
+// The label carries no bracket to drop, so the parenthesis is what breaks,
+// which is the same trick `unframed` plays on a bracketed token: the
+// replacement cannot combine with its surroundings to spell the literal again.
+fn check_tokens_safe(text: String) -> String {
+  text
+  |> string.replace(each: check_label, with: unlabelled(check_label))
+  |> string.replace(each: check_output_end, with: unframed(check_output_end))
+}
+
+fn unlabelled(label: String) -> String {
+  label
+  |> string.replace(each: "(", with: "{")
+  |> string.replace(each: ")", with: "}")
 }
 
 /// What a goal feed shows in place of a slice when the primary's branch
@@ -907,9 +944,20 @@ fn goal_frame_safe(text: String) -> String {
 /// and the test that proves an empty feed is still sendable.
 pub const goal_feed_no_work = "(no new work on the primary's branch since your last review; judge the objective on what you have already been shown.)"
 
+// The primary's own account of its work, with the check block's tokens broken
+// in it.
+//
+// The slice is a rendering of the primary's transcript, so anything the
+// primary said or any tool printed reaches this frame. Only the check block's
+// tokens are broken here and not the whole of `goal_frame_safe`: the slice
+// already arrives bounded and labelled by `render`, and the header and footer
+// it might quote are this frame's own, which `render` does not write. What it
+// could not do is speak in the harness's voice about a check — including on a
+// goal with no check configured, where the operator pinned no command and the
+// reviewer would otherwise read a passing one.
 fn goal_feed_evidence(slice: Option(Slice)) -> String {
   case slice {
-    Some(shown) -> shown.text
+    Some(shown) -> check_tokens_safe(shown.text)
     None -> goal_feed_no_work
   }
 }
