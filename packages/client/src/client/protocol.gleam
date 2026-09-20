@@ -202,6 +202,27 @@ pub type Command {
   /// only repeat the answer or contradict it.
   AdvisorPendingGet
 
+  /// Pins or replaces the session's goal (protocol 044). The objective
+  /// is the operator's text; `token_budget` is a required positive
+  /// number of primary tokens, because v1 has no unbounded goals — the
+  /// loop's other bounds are harness constants, not operator choices.
+  GoalSet(objective: String, token_budget: Int)
+
+  /// Reads the session's goal without touching it. Answered by a
+  /// `goal` snapshot; a session with no goal answers an empty board
+  /// rather than a refusal, because "nothing pinned" is a real state.
+  GoalGet
+
+  /// Clears the goal whatever its status.
+  GoalClear
+
+  /// Holds the goal. Pausing a paused goal is a committed no-op.
+  GoalPause
+
+  /// Continues a held or tripped goal. A complete goal refuses, because
+  /// completion is the reviewer's verdict, not a status to undo.
+  GoalResume
+
   /// Observes one strand's context without running hooks or a model.
   ContextGet(strand: String)
 
@@ -277,6 +298,9 @@ pub type Snapshot {
 
   /// The advisor's queued nudges, observed without delivering them.
   AdvisorPendingSnapshot(board: JsonValue)
+
+  /// The session's goal, observed without touching it (protocol 044).
+  GoalSnapshot(board: JsonValue)
 
   /// Bounded asynchronous context accounting.
   ContextSnapshot(board: JsonValue)
@@ -784,6 +808,17 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       json.Object([#("strand", json.String(strand))]),
     )
     AdvisorPendingGet -> #("advisor_pending", json.Object([]))
+    GoalSet(objective:, token_budget:) -> #(
+      "goal_set",
+      json.Object([
+        #("objective", json.String(objective)),
+        #("token_budget", json.Int(token_budget)),
+      ]),
+    )
+    GoalGet -> #("goal_get", json.Object([]))
+    GoalClear -> #("goal_clear", json.Object([]))
+    GoalPause -> #("goal_pause", json.Object([]))
+    GoalResume -> #("goal_resume", json.Object([]))
     ListModels -> #("models", json.Object([]))
     ListSkills(offset) -> #(
       "skills",
@@ -1036,6 +1071,38 @@ fn decode_command_body(
     "advisor_pending" -> {
       use _ <- result.try(body_fields(body))
       Ok(AdvisorPendingGet)
+    }
+    "goal_set" -> {
+      use fields <- result.try(body_fields(body))
+      use objective <- result.try(required_string(fields, "objective"))
+      use budget <- result.try(nonnegative_field(fields, "token_budget"))
+      case budget > 0 {
+        True -> Ok(GoalSet(objective:, token_budget: budget))
+
+        // v1 has no unbounded goals, so a zero budget is a typo rather
+        // than a wish, and the refusal says so rather than clamping.
+        False -> Error("token_budget must be a positive number of tokens")
+      }
+    }
+
+    // Empty-bodied reads and status flips, tolerant of a later field for
+    // the reason `advisor_pending` is: a newer client's frame must not
+    // become an older server's refusal.
+    "goal_get" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalGet)
+    }
+    "goal_clear" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalClear)
+    }
+    "goal_pause" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalPause)
+    }
+    "goal_resume" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalResume)
     }
     "context" -> {
       use fields <- result.try(body_fields(body))
@@ -1309,6 +1376,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
         #("mode", json.String("advisor_pending")),
         #("board", board),
       ])
+    GoalSnapshot(board:) ->
+      json.Object([#("mode", json.String("goal")), #("board", board)])
     QueuedInputSnapshot(board:) ->
       json.Object([
         #("mode", json.String("queued_input")),
@@ -1876,6 +1945,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing advisor_pending board"),
       )
       Ok(SnapshotEvent(AdvisorPendingSnapshot(board:)))
+    }
+    "goal" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing goal board"),
+      )
+      Ok(SnapshotEvent(GoalSnapshot(board:)))
     }
     "queued_input" -> {
       use board <- result.try(

@@ -50,6 +50,7 @@ import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/git_identity
+import client/goalcommand
 import client/history
 import client/hookcompat
 import client/hookrunner
@@ -81,7 +82,7 @@ import client/system_prompt
 import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
-import core/ids
+import core/ids.{type OpId}
 import events/bus
 import filepath
 import gleam/bit_array
@@ -501,6 +502,18 @@ pub type Instance {
     /// by a commit hint — so its name has nothing to do with
     /// `subscribers:` the way `rulescan`'s does.
     schedulescan: Option(address.Address(schedulescan.Message)),
+    /// The operator's goal commands over the advisor actor, or `None` on
+    /// a boot that routes no advisor — the same gate the gateway's
+    /// `goal_control` seam answers `unsupported` through. Carried so a
+    /// host fixture can drive the goal the way the gateway does without
+    /// booting the listener, and so the daemon's attach path can fill
+    /// the gateway's option from the one place the wiring exists.
+    goal: Option(goalcommand.Seam),
+    /// The advisor's abort notice, or `None` on a boot that routes no
+    /// advisor. The gateway's abort handler casts it for the TUI's abort
+    /// command; a host with its own abort door holds the same notice so
+    /// its runtime-level aborts reach the goal loop the same way.
+    goal_abort: Option(fn(OpId) -> Nil),
     /// The distillation worker's name, or `None` on a boot that runs no
     /// pass — `memory.distill = "off"`, or a catalogue that routes
     /// nothing the pipeline could ask. A name for the reason
@@ -3387,6 +3400,13 @@ fn assemble_in(
             // looking for it. The host owns both halves, so the host
             // joins them.
             |> hub.with_effect_abort(fn(op) { broker.abort(broker_actor, op) })
+            // The operator's abort reaches the advisor's goal loop the
+            // same way it reaches the effect plane: the gateway is the
+            // one place an abort enters, and an aborted run never fires
+            // the run-end hook the advisor listens on. The cast is
+            // dropped if the actor is absent, which is the same loss the
+            // advisor's own run-end casts already tolerate.
+            |> with_goal_abort(advisor_wiring)
             |> with_schedule_admin(schedule_admin),
           name,
         )
@@ -3430,6 +3450,8 @@ fn assemble_in(
     broker: broker_actor,
     pool:,
     gateway: hub.Gateway(name:),
+    goal: option.map(advisor_wiring, goalcommand.seam),
+    goal_abort: option.map(advisor_wiring, advisor.abort_notice),
     services: started_services.pid,
     namespace:,
     stops:,
@@ -5733,6 +5755,20 @@ fn with_advisor(
   case wiring {
     None -> hooks
     Some(wiring) -> advisor.hooks(hooks, wiring)
+  }
+}
+
+// The gateway's goal-abort seam, filled only when this session wires
+// an advisor — the same posture `with_advisor` takes, because a host
+// with no advisor has no goal loop to notify and the seam's `None` is
+// what makes the gateway skip the cast entirely.
+fn with_goal_abort(
+  options: hub.Options,
+  wiring: Option(advisor.Wiring),
+) -> hub.Options {
+  case wiring {
+    None -> options
+    Some(wiring) -> hub.with_goal_abort(options, advisor.abort_notice(wiring))
   }
 }
 

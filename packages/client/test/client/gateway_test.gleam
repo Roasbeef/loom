@@ -10,6 +10,7 @@ import client/advisorguard
 import client/catalog
 import client/directories
 import client/gateway
+import client/goalcommand
 import client/grants
 import client/permissions
 import client/protocol
@@ -232,6 +233,30 @@ fn start_harness_reserved(
   provider: Provider,
   on_bus: Option(bus.Bus),
 ) -> Harness {
+  start_harness_reserved_goal(
+    catalogue,
+    registry,
+    schedules,
+    reserved,
+    provider,
+    on_bus,
+    None,
+  )
+}
+
+// The same harness with the operator's goal seam wired, which is the
+// door the goal commands dispatch through. The seam is scripted at the
+// harness level because the gateway's coverage is the command surface —
+// the actor behind it has its own suite.
+fn start_harness_reserved_goal(
+  catalogue,
+  registry,
+  schedules,
+  reserved,
+  provider: Provider,
+  on_bus: Option(bus.Bus),
+  goal: Option(goalcommand.Seam),
+) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
   case reserved {
@@ -359,6 +384,10 @@ fn start_harness_reserved(
   }
   let options = case on_bus {
     Some(events_bus) -> gateway.with_bus(options, events_bus)
+    None -> options
+  }
+  let options = case goal {
+    Some(seam) -> gateway.with_goal_control(options, seam)
     None -> options
   }
   let assert Ok(_started) = case reserved {
@@ -4978,4 +5007,190 @@ pub fn provider_wrappers_have_linear_copy_cost_test() {
   assert second_growth < 1024
   assert third_growth < 1024
   assert ffi_memory.flat_words(thrice) >= ffi_memory.flat_words(base)
+}
+
+// --- the goal commands --------------------------------------------------------
+
+// A scripted goal seam: the harness answers each command with the
+// outcome the test wants, so the gateway's coverage is the command
+// surface — the dispatch arms, the read-only table, the no-advisor gate
+// and the committed-mutation reply — against a scripted door the way
+// `advisor_pending`'s suite reads the guard cell.
+type GoalScript {
+  Accept
+  Refuse(String)
+}
+
+type GoalMessage {
+  GoalAsk(GoalCommand, Subject(Result(Nil, String)))
+  GoalScriptGet(reply: Subject(GoalScript))
+}
+
+type GoalCommand {
+  SetTheGoal(String, Int)
+  ClearTheGoal
+  PauseTheGoal
+  ResumeTheGoal
+}
+
+fn scripted_goal(initial: GoalScript) -> goalcommand.Seam {
+  let assert Ok(started) =
+    actor.new(initial)
+    |> actor.on_message(fn(script, message) {
+      case message {
+        GoalScriptGet(reply:) -> {
+          process.send(reply, script)
+          actor.continue(script)
+        }
+
+        GoalAsk(_command, reply) -> {
+          case script {
+            Accept -> process.send(reply, Ok(Nil))
+            Refuse(reason) -> process.send(reply, Error(reason))
+          }
+          actor.continue(script)
+        }
+      }
+    })
+    |> actor.start
+    as "the scripted goal seam must start"
+  let name = started.data
+
+  goalcommand.Seam(
+    set: fn(_objective, _budget) { ask_goal(name, SetTheGoal("", 0)) },
+    clear: fn() { ask_goal(name, ClearTheGoal) },
+    pause: fn() { ask_goal(name, PauseTheGoal) },
+    resume: fn() { ask_goal(name, ResumeTheGoal) },
+  )
+}
+
+fn ask_goal(
+  name: Subject(GoalMessage),
+  command: GoalCommand,
+) -> Result(Nil, String) {
+  process.call(name, waiting: 5000, sending: fn(reply) {
+    GoalAsk(command, reply)
+  })
+}
+
+// A goal mutation answered `committed` reads back the fresh goal board
+// in the same reply, the `cancel_schedule` precedent: one round trip
+// renders the panel's new state rather than a second read.
+pub fn a_committed_goal_command_answers_with_the_fresh_board_test() {
+  let harness =
+    start_harness_reserved_goal(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      Some(scripted_goal(Accept)),
+    )
+  subscribe(harness)
+  send(
+    harness,
+    401,
+    protocol.GoalSet(objective: "land the migration", token_budget: 400_000),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(401)
+  let assert protocol.SnapshotEvent(protocol.GoalSnapshot(board)) =
+    envelope.event
+    as "a committed goal mutation answers with the goal board"
+  let assert json.Object(fields) = board
+  assert list.key_find(fields, "status") == Ok(json.String("none"))
+    as "an empty session's fresh board carries no goal yet"
+
+  // The read command observes without touching the seam.
+  send(harness, 402, protocol.GoalGet)
+  let observed = next(harness)
+  assert observed.reply_to == Some(402)
+  let assert protocol.SnapshotEvent(protocol.GoalSnapshot(_)) = observed.event
+  Nil
+}
+
+// The actor's refusal is the operator's answer: a worded `bad_request`,
+// because the budget bound and the complete-goal resume refusal are
+// the actor's own words, and the gateway relays rather than rewrites.
+pub fn a_refused_goal_command_answers_worded_test() {
+  let harness =
+    start_harness_reserved_goal(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      Some(
+        scripted_goal(Refuse("a complete goal cannot be resumed; set a new one")),
+      ),
+    )
+  subscribe(harness)
+  send(harness, 403, protocol.GoalResume)
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(403)
+  let assert protocol.ErrorEvent(code:, message:, ..) = envelope.event
+  assert code == "bad_request"
+  assert message == "a complete goal cannot be resumed; set a new one"
+  Nil
+}
+
+// No advisor routed is the goal gate itself: every mutation answers
+// `code_unsupported`, worded, because no advisor means no reviewer and
+// a goal without its judge is not a state the operator can steer.
+pub fn goal_commands_without_an_advisor_are_unsupported_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    404,
+    protocol.GoalSet(objective: "land the migration", token_budget: 400_000),
+  )
+  expect_error(harness, 404, "code_unsupported")
+  Nil
+}
+
+// The goal reads are read-only: an observer may ask for the board, and
+// the drain gate holds only mutations.
+pub fn an_observer_may_read_the_goal_but_not_mutate_it_test() {
+  let harness =
+    start_harness_reserved_goal(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      Some(scripted_goal(Accept)),
+    )
+  // An authenticated observer connection, the same fixture shape the
+  // set_config observer test uses. The observer reads the board — the
+  // `read_only` table admits `goal_get` — and is refused the mutation
+  // by the observer gate before the seam is ever asked.
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(405, protocol.GoalGet)),
+  )
+  let assert protocol.SnapshotEvent(protocol.GoalSnapshot(_)) =
+    next_reply(harness, 405, 8).event
+    as "an observer may read the goal board"
+
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      406,
+      protocol.GoalSet(objective: "x", token_budget: 100),
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    next_reply(harness, 406, 8).event
+    as "observers cannot pin a goal"
+
+  // The seam was never asked: the gate refused before dispatch.
+  send(harness, 407, protocol.GoalGet)
+  let _ = next(harness)
+  Nil
 }

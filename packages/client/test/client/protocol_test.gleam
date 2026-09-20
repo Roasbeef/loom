@@ -422,6 +422,62 @@ pub fn queued_input_protocol_round_trip_and_required_revision_test() {
 /// an older client's frame into an error.
 ///
 /// `scripts/test.sh client --match advisor_pending_protocol` runs these codecs.
+pub fn goal_commands_round_trip_and_validate_their_budgets_test() {
+  // The five commands round trip through the frozen envelope.
+  let sets =
+    protocol.CommandEnvelope(
+      1,
+      protocol.GoalSet(objective: "land the migration", token_budget: 400_000),
+    )
+  assert protocol.decode_command(protocol.encode_command(sets)) == Ok(sets)
+
+  let gets = protocol.CommandEnvelope(2, protocol.GoalGet)
+  assert protocol.decode_command(protocol.encode_command(gets)) == Ok(gets)
+
+  let clears = protocol.CommandEnvelope(3, protocol.GoalClear)
+  assert protocol.decode_command(protocol.encode_command(clears)) == Ok(clears)
+
+  let pauses = protocol.CommandEnvelope(4, protocol.GoalPause)
+  assert protocol.decode_command(protocol.encode_command(pauses)) == Ok(pauses)
+
+  let resumes = protocol.CommandEnvelope(5, protocol.GoalResume)
+  assert protocol.decode_command(protocol.encode_command(resumes))
+    == Ok(resumes)
+
+  // The reads tolerate a body field they do not define, for the reason
+  // `advisor_pending` does: a newer client's frame must not become an
+  // older server's refusal.
+  let assert Ok(protocol.CommandEnvelope(command: protocol.GoalGet, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":6,\"cmd\":\"goal_get\",\"body\":{\"strand\":\"main\"}}",
+    )
+
+  // v1 has no unbounded goals, so the budget is positive or refused at
+  // decode — worded, not clamped, because a zero budget is a typo
+  // rather than a wish.
+  let assert Error(protocol.BadBody(reason:, ..)) =
+    protocol.decode_command(
+      "{\"v\":2,\"id\":7,\"cmd\":\"goal_set\",\"body\":{\"objective\":\"x\",\"token_budget\":0}}",
+    )
+    as "a zero budget is refused rather than stored"
+  assert reason == "token_budget must be a positive number of tokens"
+
+  // The snapshot reply round trips with its board.
+  let board =
+    json.Object([
+      #("status", json.String("active")),
+      #("objective", json.String("land the migration")),
+      #("observed_at_ms", json.Int(1000)),
+    ])
+  let observed =
+    protocol.EventEnvelope(
+      reply_to: Some(8),
+      seq: None,
+      event: protocol.SnapshotEvent(protocol.GoalSnapshot(board)),
+    )
+  assert protocol.decode_event(protocol.encode_event(observed)) == Ok(observed)
+}
+
 pub fn advisor_pending_protocol_round_trips_and_tolerates_a_body_test() {
   let envelope = protocol.CommandEnvelope(9, protocol.AdvisorPendingGet)
   assert protocol.decode_command(protocol.encode_command(envelope))
