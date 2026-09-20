@@ -189,6 +189,88 @@ pub fn read_window_test() {
   assert list.key_find(fields, "total_lines") == Ok(json.Int(5))
 }
 
+// The window notice is the only model-visible statement that a read was
+// windowed: `details` carries `has_more`, `total_lines` and `offset`, and
+// no provider adapter puts that object on the wire. Without the notice a
+// first window is indistinguishable from a whole file, which is what makes
+// a model read the same first window again instead of paging on.
+fn windowed_read(ctx: tool.Ctx, offset: Int, limit: Int) -> String {
+  let outcome =
+    fs.read_tool().run(
+      ctx,
+      args([
+        #("path", json.String("a.txt")),
+        #("offset", json.Int(offset)),
+        #("limit", json.Int(limit)),
+      ]),
+    )
+  assert outcome.is_error == False
+  first_text(outcome)
+}
+
+pub fn read_first_window_states_continuation_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "l1\nl2\nl3\nl4\nl5")
+  assert string.ends_with(
+    windowed_read(ctx, 1, 2),
+    "\n(lines 1-2 of 5; read the rest with offset 3)",
+  )
+}
+
+pub fn read_middle_window_states_continuation_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "l1\nl2\nl3\nl4\nl5")
+  assert string.ends_with(
+    windowed_read(ctx, 2, 2),
+    "\n(lines 2-3 of 5; read the rest with offset 4)",
+  )
+}
+
+// The last window has nothing after it, so it states the range it covers
+// and names no continuing offset.
+pub fn read_last_window_states_range_only_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "l1\nl2\nl3\nl4\nl5")
+  let text = windowed_read(ctx, 4, 2)
+  assert string.ends_with(text, "\n(lines 4-5 of 5)")
+  assert !string.contains(text, "read the rest with offset")
+}
+
+// The whole-file read is the common case and gains nothing from a note
+// about lines that do not exist, so it keeps its exact previous text.
+pub fn read_complete_file_states_no_window_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "l1\nl2\nl3")
+  let outcome =
+    fs.read_tool().run(
+      ctx,
+      args([#("path", json.String("a.txt")), #("limit", json.Int(3))]),
+    )
+  assert outcome.is_error == False
+  assert first_text(outcome)
+    == "digest: "
+    <> hashline.digest("l1\nl2\nl3")
+    <> "\n1:"
+    <> hashline.anchor("l1")
+    <> "|l1\n2:"
+    <> hashline.anchor("l2")
+    <> "|l2\n3:"
+    <> hashline.anchor("l3")
+    <> "|l3"
+}
+
+// An offset past the end has no lines to name a range over, and
+// `empty_window_text` already reports the file's length there.
+pub fn read_past_end_states_no_window_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "a.txt", "l1\nl2")
+  let text = windowed_read(ctx, 9, 1)
+  assert text
+    == "digest: "
+    <> hashline.digest("l1\nl2")
+    <> "\n(no lines at offset 9; the file has 2 lines)"
+}
+
 pub fn read_missing_file_test() {
   let #(ctx, _filesystem) = memory_ctx()
   let outcome =
