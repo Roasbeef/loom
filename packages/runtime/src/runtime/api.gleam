@@ -508,11 +508,13 @@ pub fn compact(
   custom_instructions custom_instructions: Option(String),
   preparation preparation: Option(StructuralPreparation),
 ) -> Result(OpId, ApiError) {
-  accept_request(
+  use operation <- result.map(accept_request(
     runtime,
     AcceptCompaction(custom_instructions:, preparation:),
     None,
-  )
+  ))
+  nudge(runtime)
+  operation
 }
 
 /// Accepts a navigation request and rings the doorbell: moves the
@@ -537,7 +539,7 @@ pub fn navigate(
   preparation preparation: Option(StructuralPreparation),
 ) -> Result(OpId, ApiError) {
   use target_known <- result.try(target_exists(runtime, to))
-  accept_request(
+  use operation <- result.map(accept_request(
     runtime,
     AcceptNavigation(
       target: to,
@@ -548,7 +550,9 @@ pub fn navigate(
       target_known:,
     ),
     None,
-  )
+  ))
+  nudge(runtime)
+  operation
 }
 
 // The retry-admission body shared by every acceptance: read the
