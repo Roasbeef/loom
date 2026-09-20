@@ -1443,8 +1443,9 @@ collect and freeze another module's actors, and a sibling actor dying between
 the census and the suspension would answer `noproc` and redden the gate.
 `scripts/serial-tests` therefore lists it, which keeps it out of the parallel
 group that signoff runs with `LOOM_TEST_PARALLEL=8`, and
-`LOOM_ASSEMBLY_HEAP_CENSUS` is what admits it at all — unset, it prints a skip
-and returns, because fifty seconds of residency wait does not belong in every
+`LOOM_ASSEMBLY_HEAP_CENSUS` is what admits it at all — unset, it says it was
+not requested and returns (worded so the signoff's skip census does not read
+an opt-in measurement as a dropped suite), because fifty seconds of residency wait does not belong in every
 `make check-client`.
 
 Rerun it with:
