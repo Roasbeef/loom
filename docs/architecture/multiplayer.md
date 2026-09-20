@@ -94,10 +94,10 @@ gateway also pushes three things:
   check per peer.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
-binary. It starts one `commit_forwarder` (`client/gateway.gleam:1185`) per
+binary. It starts one `commit_forwarder` (`client/gateway.gleam:1241`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:3096`), so
+`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:3109`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
 answer.
@@ -153,7 +153,7 @@ Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
 through `deliver` (`client/gateway.gleam:3240`). Both paths call
-`check_binding` (`client/gateway.gleam:2296`) immediately before the
+`check_binding` (`client/gateway.gleam:2342`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -198,7 +198,7 @@ prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
 `client/gateway.gleam:3486`). The queue is gateway memory and holds four
-prompts per strand (`held_per_strand`, `client/gateway.gleam:786`). A
+prompts per strand (`held_per_strand`, `client/gateway.gleam:840`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
 
@@ -232,8 +232,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4937`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2558`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:4849`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2623`) after `state.live` has
 been refreshed from the registers and before any frame leaves. Ordinarily only
 the head is submitted. An explicit abort marks the existing `HeldQueue` as
 `Halted`, and `drain_strand` admits nothing from it while the mark holds. The
@@ -306,7 +306,7 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`tui/session_channel.gleam:1189`) starts the catch-up at the
+`send_queued` (`tui/session_channel.gleam:1206`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in `tick`
 (`tui/session_channel.gleam:732`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number

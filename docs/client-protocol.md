@@ -1076,7 +1076,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1767`).
+`wrong_session`. Source: (`client/gateway.gleam:1822`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:939`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:974`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1344,7 +1344,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5301`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5475`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -1695,6 +1695,77 @@ total includes output and already includes static context. See
 [protocol 030](../protocol-change/030-context-observation.md) for the complete
 accounting contract and limits.
 
+
+#### 4.9.22 `goal_set`
+
+Body is `{objective: string, token_budget: integer}`. This mutation pins or
+replaces the session's goal; the reply on success is the `goal` snapshot of
+section 4.9.26 carrying the fresh board, which is the committed outcome —
+one round trip, the way `schedule_cancel` answers with the schedule listing
+rather than with a bare `mutation_outcome` and a second read. The `objective` is non-empty after trimming and at most
+4,000 characters; `token_budget` is a positive integer, because the goal
+has no unbudgeted form and a zero is a typo rather than a wish. Setting the
+same objective again replaces the budget and keeps the accounting; a changed
+objective starts the accounting over. A server that routes no advisor
+answers `code_unsupported`, because a goal without its reviewer is not a
+state the operator can steer. See [protocol
+044](../protocol-change/044-session-goals.md).
+
+```json
+{"v":2,"id":31,"cmd":"goal_set","body":{"objective":"land the migration","token_budget":400000}}
+{"v":2,"reply_to":31,"event":"snapshot","body":{"mode":"goal","board":{"status":"active","reason":null,"...":"..."}}}
+```
+
+#### 4.9.23 `goal_get`
+
+Body is `{}`. Read-only, so an observer MAY send it. The reply is a
+`snapshot` with mode `goal`. A session with no goal answers a board whose
+`status` is `"none"`; a store that will not answer is `unavailable`, never a
+positive empty. The read never changes the goal.
+
+#### 4.9.24 `goal_clear`
+
+Body is `{}`. This mutation clears the goal whatever its status and answers
+with the fresh board, which is its committed outcome. A late verdict against a cleared goal is
+refused in its tool result rather than acted on.
+
+#### 4.9.25 `goal_pause`, `goal_resume`
+
+Both take `{}`. `goal_pause` holds the goal; pausing a paused goal is a
+committed no-op. `goal_resume` continues a paused or budget-tripped goal and
+answers with the fresh board; on an idle primary the resumed loop offers its reviewer
+the goal feed again, so a resume does not wait on the operator's next
+prompt. A complete goal refuses `conflict`-classed `bad_request`, because
+completion is the reviewer's verdict, not a status to undo.
+
+#### 4.9.26 The `goal` snapshot
+
+Every committed mutation and every `goal_get` answers with this board.
+
+```json
+{"v":2,"reply_to":31,"event":"snapshot","body":{"mode":"goal","board":{"status":"paused","reason":"aborted","because":"you aborted the run the goal loop had started","objective":"land the migration","token_budget":400000,"tokens_used":51200,"cost_used":0.41,"continuations":3,"created_ms":1726000000000,"updated_ms":1726003600000,"reviewer_note":null,"observed_at_ms":1000}}}
+```
+
+`status` is one of `none`, `active`, `paused`, `budget_limited` or
+`complete`.
+
+`reason` is why a stopped goal stopped, and it is present because the status
+word alone does not say. A `paused` goal carries `operator`, `aborted`,
+`zero_progress` or `reviewer_unresponsive`; a `budget_limited` one carries
+`token_budget` or `continuation_cap`; `active`, `complete` and `none` carry
+null. `because` is the same fact as one sentence, rendered server-side so a
+client does not have to word six cases and so the operator's panel, the
+wrap-up the primary reads and the refusals the reviewer reads cannot disagree.
+A client that does not recognize a reason word should show `because`.
+
+`tokens_used` is the primary strand's accounted spend, and `cost_used` is its
+dollar cost; the reviewer's own spend is never in either. `reviewer_note` is
+the text the reviewer sent with its terminal verdict, null until one lands.
+The board deliberately does not carry the loop's phase or its other bound
+counters: those are the harness's own bookkeeping, and an observer has no
+transition for them. See [protocol
+044](../protocol-change/044-session-goals.md) for the loop these fields
+report and the bounds that trip `budget_limited`.
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -1735,7 +1806,7 @@ Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
 Mode `schedules` carries `schedules`. Modes `queued_input`, `worktree_diff`,
-`live_jobs`, `skills`, and `context` carry `board` (sections 4.9.17 through 4.9.21).
+`live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.26).
 Source: (`client/protocol.gleam:1013-1050`).
 
 ```json
@@ -2786,7 +2857,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3101`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3166`) and `navigating`
    (`client/gateway.gleam:3027`).
 
 9. **The spec's control command list is incomplete.**

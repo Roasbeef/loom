@@ -84,7 +84,7 @@ model's request, and carries a `lineage/` cell naming its parent. That
 cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
-`ensure_strand` (`client/advisor.gleam:1714`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:2896`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1227`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
@@ -269,7 +269,7 @@ promote its own output to advice by quoting the header.
 ## Advisor to primary: the verdict
 
 The advisor answers a feed with one `advise` call. The tool value is
-built by `tool` (`tools/advise.gleam:137`), and it decides nothing: it
+built by `tool` (`tools/advise.gleam:144`), and it decides nothing: it
 decodes the arguments and hands the pair to a single closure on an
 `Advice` record the host fills, the same arrangement `tools/agent`'s
 `Agency` and `tools/context`'s `Context` use, and for the same reason:
@@ -278,10 +278,10 @@ decodes the arguments and hands the pair to a single closure on an
 Two things the model does not supply. The first is its own identity:
 `judge` is handed `Ctx.strand`, which the driver set from its own
 durable name, so a verdict cannot be attributed to a strand that did not
-produce it. `judge` (`client/advisor.gleam:1134`) refuses any caller
+produce it. `judge` (`client/advisor.gleam:1437`) refuses any caller
 whose name is not `advisor`. The second is what a verdict costs.
 
-`decode_verdict` (`tools/advise.gleam:222`) is total and decodes the
+`decode_verdict` (`tools/advise.gleam:230`) is total and decodes the
 verdict and its text as one pair, because half the failure modes are
 disagreements between them: a `nudge` with nothing to say has no advice
 in it, and a `quiet` carrying text is a model that decided to say
@@ -416,7 +416,7 @@ is that the primary was *not* stopped for it, and either of those acks
 would claim otherwise; the wake is instead appended to the downgrade's
 own reason.
 
-The actor's `decide` (`client/advisor.gleam:1154`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:1489`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the send
 costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -465,7 +465,7 @@ cannot combine with the surrounding text to spell the literal again.
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:495`).
+The constant is `brief` (`client/advisor.gleam:612`).
 
 Three properties follow from the prepend. A durable first message would
 be summarized away by the advisor's own compaction and would sit in the
@@ -633,7 +633,7 @@ whole effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2671`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2688`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That is deliberate: the isolation is between the two
 models, not between the harness and the person running it.
@@ -668,10 +668,11 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:8042`) extracts one of three
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8133`) renders
+`advisor_payload` (`tui.gleam:7998`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8221`) renders
 it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
-`advisor feed`) with an opening excerpt and the expand hint; expanded,
+`advisor feed`, `advisor goal feed`, `goal continuation`) with an opening
+excerpt and the expand hint; expanded,
 the body under the same heading with the frame lines dropped, since
 those address the model rather than the operator. Each frame is
 recognized by its first line *and* its body delimiter, the same
@@ -1035,6 +1036,40 @@ the host answers, and while the by-position script absorbs that, a
 fixture is a poor place to learn it: the step trigger's own coverage is
 in `advisor_test`, where the steps are cast by hand and the count is
 exact.
+
+**`goal_e2e_test`** is the goal loop's acceptance fixture, the two
+shapes the design review named as the ones that would prove its own
+findings wrong. The assembly is `advisor_e2e_test`'s — two catalogue
+entries on two base URLs, the scripted transport keyed on the request
+URL — and the goal is pinned through the instance's goal seam, the
+five calls the gateway's commands forward to. The first fixture
+answers `continue` to every goal feed with a budget no scripted usage
+can spend, so the assertion reads the harness's continuation cap
+tripping: the cell flips to `budget_limited` and the wrap-up reaches
+the primary in a request body. The second holds the first
+continuation's provider reply so the run is live when the abort
+lands, and the goal reads back paused with `aborted` as its reason —
+held, because a paused goal occasions no further goal feeds, and
+resumable, because the resumed loop accepts a completion. The reason is
+part of the assertion now: the first implementation wrote a bare
+`paused` for an operator pause, an abort and a zero-progress
+suppression alike, so a fixture that asserted only the status word
+could not tell which transition it had exercised. Its abort drives the gateway handler's two
+steps through the instance's notice rather than the websocket, and
+the actor-level `PrimaryAborted` fixtures cover the cast path the
+handler itself makes.
+
+The goal loop's own transitions are not tested here at all, and that is
+the point of the split. They are a pure function, `client/goalloop`, and
+`goalloop_test` property-walks its state space — four statuses, three
+phases, three bound counters, and what each strand has open — for the
+combination that cannot be written as a fixture: an Active goal with
+nothing owed, an idle primary, an idle reviewer, and no next action. That
+combination was reachable five ways in the edge-triggered draft, and a
+fixture can only ever demonstrate the ways somebody thought of. What the
+e2e fixtures prove is the wiring the pure function cannot see: that a
+real verdict reaches the actor, that the cell is written, and that the
+wrap-up reaches the primary in a request body.
 
 Beyond the gate, the live proof this repository expects: a drive of
 `docs/examples/loom-advisor.toml` against a real provider, watching a
