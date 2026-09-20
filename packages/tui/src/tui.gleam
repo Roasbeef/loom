@@ -10434,9 +10434,15 @@ fn submit_text(model: Model) -> Model {
         protocol.set_thinking(cleared.next_id, cleared.active_strand, level),
       )
     command.GoalStatus -> request_goal_status(cleared)
+
+    // Each mutation's confirmation waits for the board that commits it.
+    // The server answers every goal mutation with the fresh board or with
+    // a refusal, so the line belongs on the reply: printed on the way out
+    // it claimed a goal was pinned and was then followed by the sentence
+    // saying no advisor is routed.
     command.GoalSet(objective:, token_budget:) ->
       send_frame(
-        append_system(
+        confirming(
           cleared,
           "goal pinned · budget "
             <> int.to_string(token_budget)
@@ -10446,17 +10452,17 @@ fn submit_text(model: Model) -> Model {
       )
     command.GoalClear ->
       send_frame(
-        append_system(cleared, "clearing the session goal"),
+        confirming(cleared, "the session goal is cleared"),
         protocol.goal_clear(cleared.next_id),
       )
     command.GoalPause ->
       send_frame(
-        append_system(cleared, "holding the session goal"),
+        confirming(cleared, "the session goal is held"),
         protocol.goal_pause(cleared.next_id),
       )
     command.GoalResume ->
       send_frame(
-        append_system(cleared, "continuing the session goal"),
+        confirming(cleared, "the session goal continues"),
         protocol.goal_resume(cleared.next_id),
       )
 
@@ -12345,13 +12351,21 @@ fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
 
 /// Whether the board that arrives next is the operator's own question.
 ///
-/// A named pair rather than a boolean field, because the two cases are two
+/// A named set rather than a boolean field, because the cases are
 /// different events: the operator asked `/goal` and is owed a block in the
-/// transcript, or the terminal refreshed the row beside the composer on its
-/// own and owes them nothing.
+/// transcript, the operator asked for a change and is owed one line once it
+/// is committed, or the terminal refreshed the row beside the composer on
+/// its own and owes them nothing.
 pub type GoalReport {
   /// The operator typed `/goal`; the next board is printed for them.
   ReportGoal
+
+  /// The operator asked for a mutation and this line confirms it. The line
+  /// is held until the board arrives rather than printed at send time,
+  /// because a server that refuses the command answers with a refusal: a
+  /// confirmation printed on the way out would sit above the sentence
+  /// saying it did not happen.
+  ConfirmGoal(line: String)
 
   /// An automatic refresh. The row is updated and nothing is printed.
   HoldGoalReport
@@ -12410,6 +12424,13 @@ fn sync_goal(before: Model, after: Model) -> Model {
 // rather than from whatever is held, because a status the operator asked
 // for must be the current one and the row beside the composer may be as
 // old as the last edge.
+// Arms the one line a committed goal mutation prints. The board that
+// commits it is the mutation's own reply, so nothing else has to be
+// scheduled: `report_goal` finds the line where `receive_goal` leaves it.
+fn confirming(model: Model, line: String) -> Model {
+  Model(..model, goal_report: ConfirmGoal(line:))
+}
+
 fn request_goal_status(model: Model) -> Model {
   Model(..model, goal_refresh: worktree_view.Requested, goal_report: ReportGoal)
 }
@@ -12440,7 +12461,8 @@ fn unreachable_goal(model: Model) -> Model {
   let settled = Model(..model, goal_refresh: worktree_view.Settled)
   case model.goal_report {
     HoldGoalReport -> settled
-    ReportGoal ->
+
+    ReportGoal | ConfirmGoal(..) ->
       append_error(
         Model(..settled, goal_report: HoldGoalReport),
         "the session goal cannot be read: no conversation is attached",
@@ -12474,6 +12496,14 @@ fn receive_goal(model: Model, board: goal_view.Board) -> Model {
 fn report_goal(model: Model, board: goal_view.Board) -> Model {
   case model.goal_report {
     HoldGoalReport -> invalidate_frame(model)
+
+    // A committed mutation prints its one line here and nothing else. The
+    // fresh board is already in the model, so the row beside the composer
+    // carries the new state and a second block would repeat it.
+    ConfirmGoal(line:) ->
+      Model(..model, goal_report: HoldGoalReport)
+      |> append_system(line)
+      |> invalidate_frame
 
     ReportGoal ->
       goal_view.lines(board)

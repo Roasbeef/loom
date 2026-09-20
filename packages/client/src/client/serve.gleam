@@ -3407,6 +3407,12 @@ fn assemble_in(
             // dropped if the actor is absent, which is the same loss the
             // advisor's own run-end casts already tolerate.
             |> with_goal_abort(advisor_wiring)
+            // The operator's five goal commands, over the same wiring
+            // the abort notice rides. Without this the gateway holds no
+            // seam and every goal mutation answers `code_unsupported` —
+            // a session with a routed advisor telling its operator it
+            // has no reviewer.
+            |> with_goal_control(advisor_wiring)
             |> with_schedule_admin(schedule_admin),
           name,
         )
@@ -5769,6 +5775,21 @@ fn with_goal_abort(
   case wiring {
     None -> options
     Some(wiring) -> hub.with_goal_abort(options, advisor.abort_notice(wiring))
+  }
+}
+
+// The gateway's goal command seam, on the same posture `with_goal_abort`
+// takes and for the same reason: the actor that answers these calls
+// exists only where an advisor is routed, and the seam's `None` is what
+// makes the gateway refuse the commands in words rather than send them
+// to an address nobody holds.
+fn with_goal_control(
+  options: hub.Options,
+  wiring: Option(advisor.Wiring),
+) -> hub.Options {
+  case wiring {
+    None -> options
+    Some(wiring) -> hub.with_goal_control(options, goalcommand.seam(wiring))
   }
 }
 

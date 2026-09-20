@@ -612,6 +612,58 @@ pub fn an_older_daemon_refusing_the_read_is_worded_in_the_transcript_test() {
   assert refused.goal == None as "a refusal is never a positive empty board"
 }
 
+/// A mutation's confirmation waits for the board that commits it.
+///
+/// The line used to be printed on the way out, which made every refusal read
+/// as a contradiction: "goal pinned · budget 200000 tokens" followed by the
+/// sentence saying this server has no advisor to judge one. The committed
+/// board is what the server answers a mutation with, so that is where the
+/// line belongs.
+pub fn a_mutation_is_confirmed_only_once_it_commits_test() {
+  let #(sent, id) = outstanding(protocol.goal_clear(99), "goal_clear")
+  let waiting =
+    tui.Model(
+      ..sent,
+      goal_report: tui.ConfirmGoal(line: "the session goal is cleared"),
+    )
+
+  assert !string.contains(painted(waiting), "the session goal is cleared")
+    as "nothing is claimed before the server has answered"
+
+  let committed = deliver(waiting, pushed.reply(id, "snapshot", snapshot()))
+  assert string.contains(painted(committed), "the session goal is cleared")
+  assert committed.goal_report == tui.HoldGoalReport
+    as "one mutation is confirmed once"
+}
+
+/// The same mutation refused prints the refusal and never the confirmation.
+pub fn a_refused_mutation_is_not_confirmed_test() {
+  let #(sent, id) = outstanding(protocol.goal_pause(99), "goal_pause")
+  let waiting =
+    tui.Model(
+      ..sent,
+      goal_report: tui.ConfirmGoal(line: "the session goal is held"),
+    )
+
+  let refused =
+    deliver(
+      waiting,
+      pushed.reply(
+        id,
+        "error",
+        json.Object([
+          #("code", json.String("code_unsupported")),
+          #("message", json.String("this server has no advisor routed")),
+        ]),
+      ),
+    )
+
+  let text = painted(refused)
+  assert string.contains(text, "/goal is unavailable on this session")
+  assert !string.contains(text, "the session goal is held")
+    as "a refused mutation must not also read as a success"
+}
+
 /// An automatic refresh is silent. An older daemon refuses one at every idle
 /// boundary, and a row apiece would be a scrolling complaint about a feature
 /// the session does not have.

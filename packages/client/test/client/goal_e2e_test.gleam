@@ -34,11 +34,13 @@ import client/advisorslice
 import client/catalog
 import client/codemode
 import client/distillpass
+import client/gateway
 import client/goal_pending
 import client/goalloop
 import client/goalstate
 import client/internal/ffi_os
 import client/jobs
+import client/protocol
 import client/retryconf
 import client/schedule
 import client/serve
@@ -64,6 +66,7 @@ import provider/secret
 import runtime/api
 import session/session
 import simplifile
+import storage/access
 import support/provider as provider_test
 import telemetry/log
 import tools/advise
@@ -91,6 +94,10 @@ const remaining = "the tests still fail"
 
 /// The reviewer's note on the completion the abort fixture ends with.
 const done_note = "the migration is merged"
+
+/// The session id the fixture's instance is assembled under, and so the
+/// name its hub answers `subscribe` for.
+const fixture_session = "goal-e2e"
 
 /// The host that answers for the primary's model.
 const primary_host = "acme.test"
@@ -261,11 +268,15 @@ pub fn an_always_continue_reviewer_stops_at_the_cap_test_() -> EunitTest {
     // which is a false statement half the time.
     // The wording is the harness's own rather than a copy of it here, so
     // the assertion cannot drift away from what the primary is sent.
+    //
+    // It is awaited rather than read at once, because the cell is written
+    // before the wrap-up is sent: the evaluation stores the `Limited` goal
+    // and only then performs the action, so the status this fixture polled
+    // for is always visible a moment before the send that follows it. An
+    // immediate read here raced that send and passed on the host's
+    // scheduling rather than on the behaviour.
     let capped = goalloop.wrap_up_text(goalstate.ByContinuationCap)
-    assert list.any(seen(script).primary, fn(body) {
-      string.contains(body, capped)
-    })
-      as "the wrap-up the primary reads must name the turns, not the tokens"
+    let _wrapped = await_primary(script, capped)
     assert !list.any(seen(script).primary, fn(body) {
       string.contains(body, goalloop.wrap_up_text(goalstate.ByTokenBudget))
     })
@@ -952,7 +963,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     base_policy: serve.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
-    session_id: "goal-e2e",
+    session_id: fixture_session,
     demand: exec.BestEffort,
     gateway: gateway_of(script),
     catalog: scripted_catalog(),
@@ -994,4 +1005,149 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
       block_cooldown_reviews: 2,
     )),
   )
+}
+
+// --- the acceptance case: the operator's own door ---------------------------
+// Every fixture above drives `instance.goal` directly, which is the seam the
+// gateway forwards to — and that is exactly why none of them noticed that the
+// gateway was never given it. `hub.with_goal_control` had one caller, a unit
+// test that injected the seam by hand, so on a real server every goal
+// mutation answered `code_unsupported`: a session with a routed advisor
+// telling its operator it had no reviewer.
+//
+// This fixture issues the five commands as frames over the instance's own
+// hub, which is the production assembly, and reads the boards back.
+pub fn the_five_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let root = fixture_root("gateway")
+    let script = script(SaysNothing)
+    let assert Ok(instance) =
+      serve.open_instance(settings(root, script), log.discard())
+      as "the goal fixture must open a real instance"
+    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+      as "the instance must have a real, handshaken helper"
+    exec.checkin(instance.pool, helper)
+
+    // A real, authenticated attachment. The instance's hub is a *network*
+    // hub, which disconnects a client that sends frames on the unauthenticated
+    // door, so the fixture goes through the same admission the websocket
+    // listener uses.
+    let inbox = process.new_subject()
+    let handle = authenticated(instance, inbox)
+
+    // One frame in, one answer out. A network hub answers a command through
+    // the request's own reply capability and reserves the pushed-frame sink
+    // for frames it raised itself, so this is the door the websocket
+    // listener uses and the only one that answers.
+    let command = fn(id: Int, cmd: protocol.Command) -> String {
+      let assert Ok(answer) =
+        gateway.connection_request(
+          handle,
+          protocol.encode_command(protocol.CommandEnvelope(id:, command: cmd)),
+        )
+        as "the hub must answer the operator's command"
+      answer
+    }
+
+    // Commands are answered only for a subscribed connection, so the
+    // subscription is part of the operator's door rather than a detail. An
+    // authenticated connection subscribes with the session its own binding
+    // names, which is the canonical id.
+    let subscribed =
+      command(
+        700,
+        protocol.Subscribe(
+          ids.session_id_to_string(api.session_id(instance.runtime)),
+          None,
+        ),
+      )
+    assert string.contains(subscribed, "snapshot")
+      as "the fixture connection must be subscribed before it commands"
+
+    // `goal_set` commits and answers with the fresh board, which is the
+    // reply protocol 044 §7 fixes. An unrouted seam would answer
+    // `code_unsupported` here, which is the whole of the regression.
+    let pinned =
+      command(701, protocol.GoalSet(objective:, token_budget: 400_000))
+    assert string.contains(pinned, "\"mode\":\"goal\"")
+      as "goal_set must answer with the fresh board, not a refusal"
+    assert string.contains(pinned, "\"status\":\"active\"")
+    assert string.contains(pinned, objective)
+
+    // The read is the same board, observed without touching the goal.
+    let read = command(702, protocol.GoalGet)
+    assert string.contains(read, "\"status\":\"active\"")
+    assert string.contains(read, "\"token_budget\":400000")
+
+    // The pause carries its cause, because the status word alone names four
+    // different pauses.
+    let held = command(703, protocol.GoalPause)
+    assert string.contains(held, "\"status\":\"paused\"")
+    assert string.contains(held, "\"reason\":\"operator\"")
+
+    let resumed = command(704, protocol.GoalResume)
+    assert string.contains(resumed, "\"status\":\"active\"")
+
+    // And the clear retires the cell, so the board is the positive empty one
+    // rather than a refusal.
+    let cleared = command(705, protocol.GoalClear)
+    assert string.contains(cleared, "\"status\":\"none\"")
+
+    // The objective's bound is the server's, refused in words with both
+    // counts rather than written to a cell no client can draw.
+    let oversized =
+      command(
+        706,
+        protocol.GoalSet(
+          objective: string.repeat("a", protocol.objective_limit + 1),
+          token_budget: 400_000,
+        ),
+      )
+    assert string.contains(oversized, "\"event\":\"error\"")
+    assert string.contains(oversized, "\"reply_to\":706")
+      as "a refused body is answered against the request that carried it"
+    assert string.contains(oversized, int.to_string(protocol.objective_limit))
+      as "the operator is told the bound, not just that something was wrong"
+
+    serve.close_instance(instance)
+  })
+}
+
+// One authenticated attachment on the instance's own hub, with the owner's
+// authority. The credential digest and the principal are the fixture's; what
+// matters is that the frames travel the authenticated door, because that is
+// the only door a network hub serves.
+fn authenticated(
+  instance: serve.Instance,
+  inbox: Subject(String),
+) -> gateway.ConnectionHandle {
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture credential digest must be well formed"
+  let principal =
+    access.Principal("operator", "Operator", access.MemberPrincipal)
+  let role = access.Owner
+  let assert Ok(handle) =
+    gateway.attach_authenticated(
+      instance.gateway,
+      gateway.Binding(
+        // The *canonical* session id, which is what the hub admits a
+        // binding against; the display name the hub was started under is a
+        // different key space (protocol-change/008) and is what `subscribe`
+        // asks for.
+        ids.session_id_to_string(api.session_id(instance.runtime)),
+        "epoch",
+        "incarnation",
+        "connection-operator",
+        principal,
+        role,
+        digest,
+      ),
+      fn() { Ok(#(principal, role)) },
+      fn(frame) { process.send(inbox, frame) },
+      fn() { Nil },
+      fn() { Nil },
+      process.self(),
+    )
+    as "the fixture client must attach to the instance's own hub"
+  handle
 }
