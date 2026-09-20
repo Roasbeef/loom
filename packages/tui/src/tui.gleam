@@ -8431,11 +8431,13 @@ pub fn tool_call_summary(
         None ->
           generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
-    "read", json.Object(fields)
-    | "fs_read", json.Object(fields)
-    | "fs_write", json.Object(fields)
-    | "fs_edit", json.Object(fields)
-    ->
+    "read", json.Object(fields) | "fs_read", json.Object(fields) ->
+      case string_field(fields, "path") {
+        Some(path) -> name <> " · " <> compact(path, 112) <> read_window(fields)
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
+      }
+    "fs_write", json.Object(fields) | "fs_edit", json.Object(fields) ->
       case string_field(fields, "path") {
         Some(path) -> name <> " · " <> compact(path, 112)
         None ->
@@ -8622,6 +8624,34 @@ fn context_remaining_boundary(
   }
   let notes = int_field(fields, "notes") |> option.unwrap(0)
   checkpoint <> " · " <> int.to_string(notes) <> " saved notes"
+}
+
+// The window a read asked for, appended to its row, and nothing at all for
+// a read that asked for the whole file.
+//
+// The arguments are shown as they were given rather than as a derived line
+// range, because the fact worth seeing is which of them the model sent. A
+// stretch of rows reading one file collapses to a column of identical
+// labels when the row carries only the path, and eight of those rows —
+// differing only in a `limit` that shrank each time, with no `offset` at
+// all — is what a real read loop looked like from here. A rendered
+// `45-89` would have hidden the missing `offset` that caused it.
+fn read_window(fields: List(#(String, json.JsonValue))) -> String {
+  let parts =
+    [
+      #("offset", int_field(fields, "offset")),
+      #("limit", int_field(fields, "limit")),
+    ]
+    |> list.filter_map(fn(pair) {
+      case pair.1 {
+        Some(value) -> Ok(pair.0 <> " " <> int.to_string(value))
+        None -> Error(Nil)
+      }
+    })
+  case parts {
+    [] -> ""
+    _ -> " · " <> string.join(parts, " ")
+  }
 }
 
 fn int_field(
