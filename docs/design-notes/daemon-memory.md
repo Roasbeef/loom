@@ -592,6 +592,11 @@ Six assemblies hold 2,324.358 MiB over 289 processes. Six further
 byte — the clearest single sign that these are per-instance copies of one value
 rather than divergent state.
 
+**Corrected on 2026-09-20.** There are twelve of those, not six: two per
+session, and they are two different modules that happen to retain the same
+value. Six are `client/internal/instance_owner` and six are
+`client/schedulescan`. The 2026-09-20 section names the field in each.
+
 ### The cost is concentrated in 85 processes
 
 Per-process memory does not spread evenly, and an average over a session's
@@ -719,6 +724,12 @@ shutdown callback, selectors and timers, which is where an actor's retention
 lives, so the interface that would name it returns the wrong part of the
 process.
 
+**Withdrawn on 2026-09-20.** That process is now attributed: it is the session
+admission registry, and `sys:get_state` names it outright, because 77.152 MiB of
+its 117.5 MiB is the `#(state, data)` pair that the call does return. The
+caution about the omitted fields is correct in general and was wrong about this
+process in particular. The 2026-09-20 section below has the measurement.
+
 The live-versus-uncollected split of the 424 awake processes holding
 1,970.107 MiB is unknown. Settling it needs a forced collection, which was
 deliberately not performed on a daemon holding real sessions.
@@ -771,3 +782,274 @@ reached their old generations over 22 hours of real model turns. Sizing this
 option therefore needs a local daemon driven through many real provider turns,
 not an idle one, and that is a longer experiment than a census. Until it is
 run, an idle-hibernate policy in `weft/actor` is not justified by measurement.
+
+## 2026-09-20: the largest process is the admission registry
+
+The 117.5 MiB `weft@state_machine` that the previous section left unattributed
+is the daemon's session admission registry, `client/daemon/manager`. Its
+`Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:651`)
+holds one `Slot` per resident session, and each slot's `phase` field
+(`manager.gleam:257`) carries `Occupancy.Running(instance)`
+(`manager.gleam:234`), where `instance` is a whole `client/serve.Instance`
+(`packages/client/src/client/serve.gleam:464`) and therefore a whole
+`api.Runtime` and the `Effects` graph beneath it. Six resident sessions put six
+of those in one process. Nothing about the registry is unusual: it is the
+largest process in the daemon because it is the only one that holds one copy per
+session rather than one copy, which is also why the per-assembly grouping could
+not place it — it belongs to all six assemblies at once.
+
+This is the same value the 2026-09-19 section already named, counted six times
+in one heap. It is not a further capture to narrow, and no new retention bug is
+reported here.
+
+### How it was observed
+
+The daemon was the same incarnation as the 2026-09-19 census: PID 53978, build
+`a65aa2f0`, started 2026-09-18 18:40, 1d05h41m resident at the first read, six
+sessions attached. Observation only. No collection was forced on it, no module
+was loaded into it, and every measurement is an `rpc` call of a standard OTP
+function from a separate hidden probe node attached through the release's own
+`loom-profile` arrangement, which puts the profile cookie in the probe's `HOME`
+so that it never appears on a command line.
+
+The VM at this observation, beside the day before:
+
+| Quantity | 2026-09-19 | 2026-09-20 |
+|---|---:|---:|
+| `erlang:memory` processes | 2,531.528 MiB | 2,643.775 MiB (`processes_used`) |
+| `system` | 67.475 MiB | 78.349 MiB |
+| `binary` | 29.043 MiB | 39.953 MiB |
+| `code` | 17.018 MiB | 17.018 MiB |
+| `ets` | 1.304 MiB | 1.302 MiB |
+| live processes | 437 | 455 |
+| process heaps | 2,518.178 MiB | 2,629.825 MiB |
+
+Grouped by `proc_lib` initial call, `weft@actor` holds 1,497.314 MiB over 108
+processes, `gleam@otp@static_supervisor` 575.629 MiB over 15,
+`weft@state_machine`'s loop 309.131 MiB over 37, and
+`gleam@otp@factory_supervisor` 193.022 MiB over 14. The shape of the daemon has
+not changed in a day; it grew by about 112 MiB, all of it in process heaps.
+
+### The process
+
+| Quantity | Value |
+|---|---|
+| pid | `<0.131.0>`, so created at daemon boot, before any session |
+| `registered_name` | none |
+| `initial_call` | `{proc_lib, init_p, 3}` |
+| `$initial_call` | `{weft@state_machine, '-start/1-anonymous-1-', 0}` |
+| process dictionary keys | `'$initial_call'`, `'$ancestors'` |
+| `current_function` | `gleam_erlang_ffi:select/2` |
+| `current_stacktrace` | `weft@state_machine:run/1`, under `proc_lib:init_p/3` |
+| `status` | `waiting` |
+| `trap_exit` | `true` |
+| `message_queue_len` | 0 |
+| `stack_size` | 10 words |
+| `reductions` | 641,721,867, rising 181,964 over 30 seconds |
+| `memory` | 117.508 MiB |
+| `heap_block_size` | 15,401,305 words (117.524 MiB) |
+| `heap_size` | 13,519,608 to 14,422,717 words (103.1 to 110.0 MiB across reads) |
+| `old_heap_size`, `old_heap_block_size` | 0 |
+| `mbuf_size` | 232 to 638 words |
+| `minor_gcs` | 0 |
+| `fullsweep_after` | 65535 |
+| `min_heap_size` | 233 words |
+| links | 13 |
+| monitors | 12 |
+| `monitored_by` | 26 |
+
+The spawn chain in `$ancestors` is pids 130, 129, 125 and 86, all daemon-boot
+processes of a few kilobytes, so the chain records weft's startup rather than a
+supervision path. The thirteen links are twelve weft witnesses, one per live
+slot, plus the spawn parent, and the twelve monitors are those same witnesses.
+That fan-out of twelve identified this as a per-slot registry before its state
+was read at all.
+
+### The field
+
+One `sys:get_state`, reduced to sizes and constructor names in the expression
+that received it. The state element of the pair is the atom `ready`, which is
+`manager.Phase.Ready`; the data element is the eleven-field `Book`
+(`manager.gleam:644`):
+
+| `Book` field | Shape | Flat size |
+|---|---|---:|
+| `catalogue` | `tuple/2` | 0.000 MiB |
+| `assembly` | `tuple/5 assembly` | 0.001 MiB |
+| `limit` | integer | — |
+| `epoch` | 64-byte binary | — |
+| `next` | integer | — |
+| `slots` | `map/6` | **77.138 MiB** |
+| `failed_operations` | `map/0` | 0.000 MiB |
+| `domains` | `map/6` | 0.011 MiB |
+| `commands` | `tuple/3 subject` | 0.000 MiB |
+| `parent` | pid | — |
+| `authority` | `map/6` | 0.002 MiB |
+
+The whole pair flattens to 77.152 MiB, of which `slots` is 77.138 MiB. Every
+other field is at most 0.011 MiB, `assembly` among them: the four assembly
+closures cost about a kilobyte, so the capture narrowing of PRs #438 and #441 is
+holding here.
+
+The six slots are 12.880, 12.879, 12.877, 12.851, 12.836 and 12.814 MiB, mean
+12.856 MiB, and within each one the size sits in a single field:
+
+| `Slot` field | Shape | Flat size |
+|---|---|---:|
+| `domain_id` | 41 to 80-byte binary | 0.000 MiB |
+| `host` | `tuple/4 host` | 0.000 MiB |
+| `operation` | 66 to 67-byte binary | 0.000 MiB |
+| `phase` | `tuple/2 running` | **12.813 to 12.879 MiB** |
+| `watch` | reference | 0.000 MiB |
+| `results`, `faults`, `failures` | `tuple/3 subject` | 0.000 MiB each |
+
+Descending the heaviest slot reaches the graph the earlier sections describe,
+this time through the registry rather than through a supervisor's child
+specification:
+
+```
+map/6 (six slots)                        77.138 MiB
+ tuple/9 slot                            12.880 MiB
+  tuple/2 running                        12.879 MiB
+   tuple/16 instance                     12.879 MiB
+    tuple/7 runtime                      12.878 MiB
+     tuple/7 effects                     12.872 MiB
+      tuple/12 hooks                      6.965 MiB
+      tuple/5 tool_surface                3.943 MiB
+      tuple/4 prepared_provider_surface   1.964 MiB
+```
+
+The registry holds the instance because `Resolve` hands it back: `resolve` reads
+`Slot(phase: Running(instance), ..)` out of the dictionary and replies with it
+(`manager.gleam:1473`).
+
+### The memory is live, and it is not binaries
+
+Two readings that these numbers rule out, both of which a census can reach for
+by default.
+
+It is not garbage waiting for a major collection. `minor_gcs` is 0 while
+`old_heap_size` and `old_heap_block_size` are both 0 and `min_heap_size` is 233
+words against a 15,401,305-word block. A process heap only grows during a
+collection, so this heap has been collected many times, and `minor_gcs` counts
+minor collections *since the last full sweep* — zero means the most recent
+collection was a full sweep, which is also why there is no old generation to
+report. Between 103.1 and 110.0 MiB survived that sweep, and 77.152 MiB of it is
+the reachable `#(state, data)` pair. Forcing a collection on the operator's
+daemon would not have added to this, and it was not done.
+
+It is not off-heap binary pinned by a small reference, and the key that suggests
+otherwise is a trap worth recording. `process_info(Pid, binary)` reports 664,553
+references totalling 71.946 MiB for this process, which reads like 72 MiB of
+pinned payload. Those references point at **982 distinct underlying binaries**:
+the mean reference count from this one process is 676.7, the median is 54,486 and
+the maximum is 256,557, so the key sums each binary's size once per reference and
+overcounts by roughly three orders of magnitude. The whole VM's `binary` figure
+of 39.953 MiB bounds the real payload. The sizes are small — 8 bytes minimum, 21
+median, 38 at the ninetieth percentile, 113.5 mean, 44,572 maximum, with 615,551
+of the references at 64 bytes or less. What the heap holds is a structure
+containing about 664,000 references to a few hundred short strings, which is the
+expected shape of six copies of a tool registry, a hook registry and an assembled
+prompt. **Sum `process_info(Pid, binary)` by distinct pointer, never by
+reference.**
+
+### It grows per resident session, not per turn
+
+| Cut | Process memory |
+|---|---:|
+| 2026-09-19 census | 117.533 MiB |
+| 2026-09-20, three separate attaches | 117.508 to 117.512 MiB |
+| 2026-09-20, 30 seconds apart on one attach | 117.509 MiB, then 117.509 MiB, over 181,964 reductions |
+
+Over 23 hours of real model turns, during which the daemon's process heaps grew
+by about 112 MiB, this process did not move. The growth law is one `Slot` of
+about 12.86 MiB flat per resident session, inserted at admission
+(`manager.gleam:2071`) and deleted when the reservation drains
+(`manager.gleam:2818`), or about 19.6 MiB of process heap per session once the
+heap block is counted. It is constant in turns, constant in conversation length,
+and linear in resident sessions.
+
+That makes it capacity-bounded rather than a leak. `Book.limit` is the daemon's
+`--capacity`, which defaults to 8
+(`packages/client/src/client/daemon/main.gleam:203`) and is refused outside 1 to
+1024 (`main.gleam:230`). The operator's `~/.loom/loom.toml` sets no capacity, so
+the default applies: this process's ceiling on the running configuration is about
+8 × 12.86 MiB of state, and the six observed slots are three quarters of it. A
+daemon configured near the maximum would give this one process room for about
+13 GiB.
+
+### The twelve processes beside it
+
+Reading three of the twelve state machines at 15.81 to 15.82 MiB settles what
+the 2026-09-19 section guessed at, and shows they are two modules rather than
+one:
+
+- **`client/internal/instance_owner`**, six of them. The data is the three-field
+  `Book` (`packages/client/src/client/internal/instance_owner.gleam:96`) and its
+  whole size is `cleanups`, a `map/7` keyed by the seven `Part` variants
+  (`instance_owner.gleam:30`). One of the seven cleanup closures, a
+  `client/serve` function, is 12.834 to 12.848 MiB of the 12.836 to 12.850 MiB
+  total, because it captures the whole `api.Runtime` in order to drain it. The
+  other six cleanups are free. This is the one shape among today's readings that
+  looks narrowable: a closure that retires the runtime needs the drain door, not
+  the runtime graph. It was not patched, and it is worth about one `Effects` copy
+  per session.
+- **`client/schedulescan`**, six of them. The data is the two-field `State`
+  (`packages/client/src/client/schedulescan.gleam:362`) whose `runtime` field is
+  an `api.Runtime` of 12.811 MiB, reached with no closure in between. The scanner
+  runs scheduled turns, so it needs the runtime; this is ownership, as the
+  module's own documentation says.
+
+Both are per-session, so the daemon holds a per-session `Effects` copy in the
+registry's slot, in the instance owner's cleanup closure, in the schedule
+scanner's state, in the session supervisor's child specifications twice over, and
+in the `client/gateway` weft actors. The registry is where all six sessions'
+copies land together.
+
+### What would bound it
+
+Described, not implemented, and none of it justified by this measurement alone.
+
+The narrowest change is to stop storing the value in the registry.
+`Occupancy.Running` could carry the instance's owning pid or a `Subject` rather
+than the `serve.Instance`, and `Resolve` (`manager.gleam:1473`) would ask that
+owner instead of reading a map. The reference already exists: the slot holds
+`host` and a monitor on the builder. The costs are real and on a hot path.
+`resolve` becomes a call with a deadline where it is now a dictionary read, a
+dead owner turns a prompt `Unavailable` into a timeout, and every caller that
+wants one field of the instance gains a round trip. This is the narrow form of
+the per-session `Effects` owner the previous section describes, scoped to one
+consumer.
+
+A weaker variant is to store a projection: if the callers of `resolve` need only
+some of `serve.Instance`'s fifteen fields, the slot can hold that subset. This
+needs a survey of those callers first, and it removes nothing if any one of them
+wants the `api.Runtime`.
+
+The general option the previous section sets out — one owner per session for
+`Effects`, with handles resolved on use — subsumes both, and would collapse the
+registry's six copies along with every other copy without touching the
+registry's shape. Nothing here changes the argument for or against it.
+
+### What this does not settle
+
+The gap between the 77.152 MiB reachable pair and the 103.1 to 110.0 MiB of used
+heap is about 30 MiB, and it was not split. Three things contribute and none can
+be separated from outside the daemon: the fields of weft's `Self` that
+`sys:get_state` does not return, which for this machine are the selector, the
+event handler, the injected queue, the postponed list and the timer book;
+garbage allocated since the last full sweep; and a representation difference,
+because the daemon holds those 664,000 short strings as reference-counted
+binaries while a copy over distribution rebuilds each one on the receiving heap,
+so a flat size measured on the probe node is not the daemon's own layout. The
+first could be sized with a probe module inside the daemon, which was not run
+against a daemon holding real sessions.
+
+No local reproduction was built. The growth law was measured directly on the
+installed daemon — six slots, sized individually, varying by 0.5%, with the
+process flat over 23 hours of turns — so the local step was not needed to settle
+it. What a local daemon would still add is the slope measured at one and two
+sessions rather than inferred from six slots plus the insert and delete sites,
+and a forced collection to split the 30 MiB gap. Both want a daemon driven
+through many real provider turns, which is the same experiment the previous
+section says an idle-hibernate policy needs.
