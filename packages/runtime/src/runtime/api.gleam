@@ -2056,17 +2056,31 @@ pub const job_fact_prefix = "job/"
 /// session.
 pub const advisor_fact_prefix = "advisor/"
 
+/// The reserved `fact.custom` key prefix the goal loop keeps its one
+/// cell under: `goal/state`, the session's persistent objective —
+/// objective, status, token budget and accounting (protocol 044).
+///
+/// Reserved because the cell is what decides whether an idle primary
+/// is woken again toward the objective, and it carries the budget the
+/// loop is bounded by. A forged write of a reset `tokens_used`, or of
+/// a `status` the model chose itself, is a model faking its own budget
+/// or waking itself in a loop — the same attack the `advisor/`
+/// reservation exists to stop.
+pub const goal_fact_prefix = "goal/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The eleven corners, and what each would let a forged write do:
+/// The thirteen corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
-/// assumption the wait graph's acyclicity rests on; `prompt/` — rewrite
-/// the operator's channel; `session/` — re-point the session's own
+/// assumption the wait graph's acyclicity rests on; `child-run/` —
+/// rewrite a run's stop record or budget on a reusable child strand,
+/// erasing a spent deadline or hiding an earlier operation's result;
+/// `prompt/` — rewrite the operator's channel; `session/` — re-point
 /// identity, and with it every stream keyed by it; `rule/` — mark an
 /// operator's project rule as already fired, so it never fires;
 /// `schedule/` — mark a scheduled heartbeat's occurrence as already
@@ -2080,7 +2094,9 @@ pub const advisor_fact_prefix = "advisor/"
 /// job from the poll that is the only way a model or an operator learns
 /// one exists; `advisor/` — move the advisor's feed cursor past
 /// everything the primary will ever append, which silences the session's
-/// reviewer without raising anything.
+/// reviewer without raising anything; `goal/` — fake the goal cell's
+/// status or accounting, waking the primary toward an objective the
+/// operator retired or spending past the budget the loop is bounded by.
 ///
 /// ## Examples
 ///
@@ -2105,6 +2121,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, ext_fact_prefix)
   || string.starts_with(key, job_fact_prefix)
   || string.starts_with(key, advisor_fact_prefix)
+  || string.starts_with(key, goal_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion
