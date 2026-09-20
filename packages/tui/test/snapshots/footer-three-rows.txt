@@ -1,12 +1,12 @@
- ◆      session demo      baseten-kimi-k3 · 50×12
-╭ transcript / main ─────────────────────────────╮
-│                                                │
-│                                                │
-│                                                │
-╰────────────────────────────────────────────────╯
-╭ To main · prompt · enter sends · / commands ───╮
-│                                                │
-╰────────────────────────────────────────────────╯
- /w/demo                          baseten-kimi-k3
- ctx — · Total est $0.00 · in 0 · out 0 · cache …
- 0 live / 0 agents · ready
+ ◆ loom       demo · /w/demo       baseten-kimi-k…
+ transcript / main
+
+
+
+
+
+─ To main · prompt · enter sends · / commands    ─
+
+──────────────────────────────────────────────────
+ ready · baseten-kimi-k3 · ctx — · est $0.00
+ 0 agents · 0 working · 0 attention

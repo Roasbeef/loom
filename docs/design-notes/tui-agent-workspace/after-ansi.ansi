@@ -1,38 +1,42 @@
+[1m[33m ◆ loom [0m                             native-fixture · native UI fixture                              fixture-model · Ctrl+g details
 
- [36m╭[1m AGENT WORKSPACE [0m5 agents · 2 working · 2 attention [36m────────────────────────────────────────────────────────────╮[39m
- [36m│[39m [1m[33m▸ main · to                       [0m[36m  [1mmain[0m[36m                                                                      [39m [36m│[39m
- [36m│[39m   Integrate the agent workspace a…[36m  ● Working                                                                 [39m [36m│[39m
- [36m│[39m [36m  ● Working · fs_read                                                                                         [39m [36m│[39m
- [36m│[39m [36m                                    [39mTASK[36m                                                                      [39m [36m│[39m
- [36m│[39m [1m[36m  sub:viewport-review             [0m[36m  [39mIntegrate the agent workspace and preserve message targeting.[36m             [39m [36m│[39m
- [36m│[39m   Review scroll anchors and per-s…[36m                                                                            [39m [36m│[39m
- [36m│[39m [32m  ✓ Finished · Finished           [36m  [39mCURRENT STATE[36m                                                             [39m [36m│[39m
- [36m│[39m [36m                                    [39mfs_read[36m                                                                   [39m [36m│[39m
- [36m│[39m [1m[36m  sub:terminal-checks             [0m[36m                                                                            [39m [36m│[39m
- [36m│[39m   Exercise small terminals, Unico…[36m  [39mLATEST UPDATE[36m                                                             [39m [36m│[39m
- [36m│[39m [31m  × Failed · …n-label check failed[36m  [39mDrafts now stay with their original session and strand. Checking the[36m      [39m [36m│[39m
- [36m│[39m [36m                                    [39mnative layouts next.[36m                                                      [39m [36m│[39m
- [36m│[39m [1m[36m  sub:protocol-review             [0m[36m                                                                            [39m [36m│[39m
- [36m│[39m   Verify exact-request approval o…[36m  [39mINPUT[36m                                                                     [39m [36m│[39m
- [36m│[39m [33m  ! Halted · Operation aborted    [36m  [39mNo pending input[36m                                                          [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [1m[35m  advisor                         [0m[36m  [39mIDENTITY[36m                                                                  [39m [36m│[39m
- [36m│[39m   Review the primary strand's imp…[36m  [39mmain · fixture-model[36m                                                      [39m [36m│[39m
- [36m│[39m [36m  ● Working · fs_read                                                                                         [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [36m                                                                                                              [39m [36m│[39m
- [36m│[39m [1m[33mTo: main · Enter opens selected transcript[0m[36m                                                                    [39m [36m│[39m
- [36m│[39m ↑/↓ inspect · n attention · a approval · PgUp/PgDn detail[36m                                                     [39m [36m│[39m
- [36m│[39m Esc conversation · drafts stay with their strand[36m                                                              [39m [36m│[39m
- [36m╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[39m
+ [36m╭[1m AGENT WORKSPACE [0m6 agents · 2 working · 3 attention [36m────────────────────────────────────────────────────────────────────────────╮[39m
+ [36m│[39m SESSION[36m                             [1mmain[0m[36m                                                                                      [39m [36m│[39m
+ [36m│[39m [1m[33m▸ main · to                       [0m[36m  [33m◷ Waiting[36m                                                                                 [39m [36m│[39m
+ [36m│[39m   Integrate the agent workspace a…[36m                                                                                            [39m [36m│[39m
+ [36m│[39m [33m  ◷ Waiting · …sub:terminal-checks[36m  [39mTASK[36m                                                                                      [39m [36m│[39m
+ [36m│[39m [36m                                    [39mIntegrate the agent workspace and preserve message targeting.[36m                             [39m [36m│[39m
+ [36m│[39m STRANDS[36m                                                                                                                       [39m [36m│[39m
+ [36m│[39m [1m[36m  sub:viewport-review             [0m[36m  [39mCURRENT STATE[36m                                                                             [39m [36m│[39m
+ [36m│[39m   Review scroll anchors and per-s…[36m  [39mWaiting for sub:terminal-checks[36m                                                           [39m [36m│[39m
+ [36m│[39m [32m  ✓ Finished · Finished           [36m                                                                                            [39m [36m│[39m
+ [36m│[39m [36m                                    [39mLATEST UPDATE[36m                                                                             [39m [36m│[39m
+ [36m│[39m [1m[36m  sub:terminal-checks             [0m[36m  [39mDrafts now stay with their original session and strand. Checking the native layouts next.[36m [39m [36m│[39m
+ [36m│[39m   Exercise small terminals, Unico…[36m                                                                                            [39m [36m│[39m
+ [36m│[39m [31m  × Failed · …n-label check failed[36m  [39mRECENT ACTIVITY[36m                                                                           [39m [36m│[39m
+ [36m│[39m [36m                                    [39m· Result unavailable · agent_wait[36m                                                         [39m [36m│[39m
+ [36m│[39m [1m[36m  sub:protocol-review             [0m[36m                                                                                            [39m [36m│[39m
+ [36m│[39m   Verify exact-request approval o…[36m  [39mINPUT[36m                                                                                     [39m [36m│[39m
+ [36m│[39m [33m  ? Needs input · …proval required[36m  [39mNo pending input[36m                                                                          [39m [36m│[39m
+ [36m│[39m [36m                                                                                                                              [39m [36m│[39m
+ [36m│[39m [1m[36m  sub:paused-review               [0m[36m  [39mIDENTITY[36m                                                                                  [39m [36m│[39m
+ [36m│[39m   Review restart behavior without…[36m  [39mmain · fixture-model[36m                                                                      [39m [36m│[39m
+ [36m│[39m [33m  ! Halted · Operation aborted    [36m                                                                                            [39m [36m│[39m
+ [36m│[39m [36m                                                                                                                              [39m [36m│[39m
+ [36m│[39m ADVISOR · independent review[36m                                                                                                  [39m [36m│[39m
+ [36m│[39m [1m[35m  advisor                         [0m[36m                                                                                            [39m [36m│[39m
+ [36m│[39m   Review the primary strand's imp…[36m                                                                                            [39m [36m│[39m
+ [36m│[39m [36m  ● Working · …s/tui/src/tui.gleam                                                                                            [39m [36m│[39m
+ [36m│[39m [36m                                                                                                                              [39m [36m│[39m
+ [36m│[39m [36m                                                                                                                              [39m [36m│[39m
+ [36m│[39m [36m                                                                                                                              [39m [36m│[39m
+ [36m│[39m [1m[33mTo: main · Enter opens selected transcript[0m[36m                                                                                    [39m [36m│[39m
+ [36m│[39m ↑/↓ inspect · n attention · a approval · PgUp/PgDn detail[36m                                                                     [39m [36m│[39m
+ [36m│[39m Tab write to main · Esc conversation[36m                                                                                          [39m [36m│[39m
+ [36m╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[39m
 
+[33m─ To main · Tab writes · Enter opens agent                                                                                         ─
+[39m ◒ agent_wait · 1 subagent (30s)
+ [1m [0m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ illustrative fixture · no provider calls · fixture-model · ctx — · est $0.00                     6 agents · 2 working · 3 attention
