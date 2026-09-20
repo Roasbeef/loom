@@ -1158,7 +1158,8 @@ Neither projection can go stale: the registry a session runs under is fixed
 for the life of the `Effects` record built from it, and `client/serve` builds
 both together in one assembly with no path that replaces one under the other.
 
-This is a type change and six call sites. It adds no process, no
+This is a type change and six call sites, plus two one-line bindings for the
+two captures outside `Effects` described below. It adds no process, no
 serialisation point, no restart relationship, no `@external`, and no change to
 any interface frozen in spec Part 1 — `effects.Effects`, `effects.ToolSurface`
 and `effects.Hooks` are untouched.
@@ -1172,21 +1173,44 @@ KiB, so they are allocated memory rather than a reachable-term size.
 
 | Sessions | `processes` before | after | total before | after | RSS before | after |
 |---:|---:|---:|---:|---:|---:|---:|
-| 0 (listening) | 15.68 | 15.68 | 56.02 | 56.03 | 103,808 | 101,984 |
-| 1 | 85.13 | 41.30 | 132.31 | 88.82 | 169,008 | 124,864 |
-| 3 | 236.86 | 106.50 | 284.46 | 154.44 | 290,320 | 173,504 |
-| 6 | 436.22 | 199.40 | 484.78 | 247.67 | 483,376 | 246,336 |
+| 0 (listening) | 15.68 | 15.68 | 56.02 | 56.06 | 103,808 | 100,256 |
+| 1 | 85.13 | 39.84 | 132.31 | 87.00 | 169,008 | 123,920 |
+| 3 | 236.86 | 101.94 | 284.46 | 149.49 | 290,320 | 169,952 |
+| 6 | 436.22 | 189.74 | 484.78 | 238.28 | 483,376 | 237,296 |
 
 Per resident session, process memory falls from 69.5–73.7 MiB to
-25.6–30.6 MiB: a 63.1%, 58.9% and 56.3% reduction at one, three and six
-sessions. At six sessions the whole VM falls 48.9% and RSS 49.0%.
+24.2–29.0 MiB: a 65.2%, 61.0% and 58.6% reduction at one, three and six
+sessions. At six sessions the whole VM falls 57.5% above the listening
+baseline, and RSS falls 50.9%.
 
-The `Effects` value behind that: 3.797 MiB flattened before, 1.309 MiB after.
-`hooks` falls from 1.264 to 0.037 MiB and `tools` from 1.688 to 0.427;
-`provider` is unchanged at 0.845, the two remaining copies that dispatch a
-request.
+The `Effects` value behind most of that: 3.797 MiB flattened before,
+1.309 MiB after. `hooks` falls from 1.264 to 0.037 MiB and `tools` from 1.688
+to 0.427; `provider` is unchanged at 0.845, the two remaining copies that
+dispatch a request.
 
-The repository's own `scripts/daemon_memory_probe.sh` agrees. Run against both
+The last 1.5 MiB per session comes from two captures of the same shape found
+outside `Effects` itself, and the first of the two was measured directly. The
+custody drain closure in `client/serve` captured the whole `api.Runtime` to
+read `runtime.tree`, and `custody.publish` sends that closure to the instance
+owner, which holds it in `cleanups` for the life of the session. At three
+resident sessions, with the wide capture and with the narrowed one:
+
+| Instance owner | `cleanups` flat | `Effects` reachable | process |
+|---|---:|---:|---:|
+| capturing `runtime` | 1.315 MiB | 1 | 1.504 MiB |
+| capturing `runtime.tree` | 0.002 MiB | 0 | 0.008 MiB |
+
+Three owners, one per session, identical to the byte in each column. That is
+the measurement in place of a unit test: the closure is built inside
+`api.open_published`'s callback in `serve.assemble_in`, which no cheap fixture
+reaches, and what matters is not the closure's size in isolation but what the
+owner's ledger holds after publication, which is what the table reads. The
+second capture is the first poll-clock arm in `runtime/strand_runtime`, which
+closed over the strand `State` where every later arm already binds
+`state.internal` first; `real_timers` hands that callback to a timer process,
+so the state was copied there too.
+
+The repository's own `scripts/daemon_memory_probe.sh` agrees. Run against two
 builds with its two-admitted-one-stopped acceptance, one resident session's
 process memory went from 93.583 MiB to 52.016 MiB at the intermediate stage
 where `tools.clear` had not yet been narrowed.
@@ -1237,6 +1261,29 @@ and recovery and interleaving scenarios for an owner that dies mid-dispatch.
 Against a remaining 1.309 MiB it is not justified. It becomes worth
 re-examining only if the registry-internal narrowing above is taken and the
 residue still dominates a census.
+
+### Three copy holders left for their own change
+
+Each of these was found and confirmed in the code during this work and
+deliberately not touched, because each is a different subsystem from the one
+this change is about. They are recorded here rather than left to be
+rediscovered.
+
+- **The daemon manager's reply to a socket upgrade.** `daemon/manager`'s
+  `ResolveIncarnation` answers with a whole `serve.Instance`, and so a whole
+  `Effects`, while the upgrade path reads only `attachment.instance.gateway`
+  (`daemon/server.gleam:178`). A reply is a message, so this is a copy per
+  upgrade rather than a resident one, and the narrower reply is a projection of
+  the same shape as this change. Separately, `Book.slots` holding one
+  `Occupancy.Running(instance)` per resident session is why the manager is the
+  single heaviest process in every census taken here: at one session its state
+  reaches one `Effects`, at six it reaches six.
+- **The six `agent_*` tools each capture a whole `Agency`** — 0.028 MiB each in
+  the local registry, so about 0.17 MiB of the registry's 0.410.
+- **The three `schedule_*` tools each capture a whole `Schedules`** — 0.044 MiB
+  each, about 0.13 MiB. These two together are most of the leaf that all three
+  remaining `Effects` copies pay for, which is why the section above ranks them
+  ahead of an owner process.
 
 ### Rerunning this
 
