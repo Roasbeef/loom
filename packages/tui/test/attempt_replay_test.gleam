@@ -1656,3 +1656,52 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
   let assert Some(channel) = sent.channel as "the read keeps the same channel"
   assert !session_channel.ready_for_read(channel)
 }
+
+// A draft written before choosing the first session has no previous owner.
+// Adoption binds it once; later session changes still restore separate drafts.
+pub fn first_session_binds_the_unassigned_draft_once_test() {
+  let initial =
+    tui.Model(
+      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
+      session: "",
+      input: textarea.state_from_string("retained draft"),
+      attachments: [composer.Attachment("initial context", 7)],
+      submission_mode: tui.SteerNow,
+    )
+  let first = receive_session(initial, "first")
+  assert textarea.value(first.input) == "retained draft"
+  assert first.attachments == initial.attachments
+  assert first.submission_mode == tui.SteerNow
+  assert !dict.has_key(first.strand_workspaces, #("", "main"))
+  let second = receive_session(first, "second")
+  assert textarea.value(second.input) == ""
+  assert second.attachments == []
+  assert second.submission_mode == tui.PromptNext
+  let restored = receive_session(second, "first")
+  assert textarea.value(restored.input) == "retained draft"
+  assert restored.attachments == initial.attachments
+  assert restored.submission_mode == tui.SteerNow
+}
+
+fn receive_session(model, session) {
+  let #(replacement, updates) =
+    read_channel(
+      session_channel.replay(snapshot.Expected(session, "epoch", "incarnation")),
+      events(2, session),
+    )
+  let assert [session_channel.Captured(cut, view, _)] = updates
+    as "the selected session provides a fully credited cut"
+  tui.candidate_outcome(
+    model,
+    attachment.idle(),
+    Some(attachment.Adopted(
+      replacement,
+      cut,
+      view,
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      session,
+      None,
+    )),
+  )
+}

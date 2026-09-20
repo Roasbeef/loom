@@ -11949,10 +11949,18 @@ fn select_workspace(model: Model, session: String, strand: String) -> Model {
         goal_report: HoldGoalReport,
       )
   }
+
+  // Before the first attachment there is no previous session to park in.
+  // Bind that unassigned editor to the explicitly chosen session once;
+  // later switches keep their existing session identities and own drafts.
+  let draft_session = case model.session {
+    "" -> session
+    previous -> previous
+  }
   let parked =
     dict.insert(
       model.strand_workspaces,
-      #(model.session, model.active_strand),
+      #(draft_session, model.active_strand),
       StrandWorkspace(
         model.input,
         model.attachments,
