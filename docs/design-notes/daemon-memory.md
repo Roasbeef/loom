@@ -531,3 +531,243 @@ the first. Both host types pass after projection. All 27 manager tests pass,
 including publication and retirement coverage. This establishes independence from earlier resident payloads. It does not
 measure installed RSS or total VM savings; the production daemon has not been
 updated for this repair.
+
+
+## 2026-09-19: the remaining cost is copies of `Effects`, not one bad capture
+
+An observation of the installed daemon (build `a65aa2f0`, 22h41m resident, six
+sessions attached) was taken through the profiled node's attach line with
+`scripts/mem_report.erl`. No collection was forced, no probe module was loaded
+into the daemon, and every measurement is an `rpc` call of a standard OTP
+function.
+
+| Quantity | Value |
+|---|---:|
+| RSS (`ps`) | 2,242,736 KiB |
+| `footprint` untagged `VM_ALLOCATE` | 2,120 MB |
+| `footprint` all `MALLOC` classes | about 45 MB |
+| `erlang:memory` total | 2,599.003 MiB |
+| of which `processes` | 2,531.528 MiB |
+| `system` | 67.475 MiB |
+| `binary` | 29.043 MiB |
+| `code` | 17.018 MiB |
+| `ets` | 1.304 MiB |
+
+`instrument:carriers/0` was available in this build: `eheap_alloc` held
+2,577.766 MiB of carriers against 2,552.325 MiB of scanned allocation, and all
+allocators together held 2,700.078 MiB. ETS was 63 tables and 1.131 MiB, there
+were 28 ports, and 437 live processes carried 2,518.178 MiB of heaps. Nothing
+outside process heaps is material at this scale.
+
+Grouped by initial call, heaviest first:
+
+| Group | Total | Processes |
+|---|---:|---:|
+| `weft@actor` loop | 1,365.037 MiB | 104 |
+| `gleam@otp@static_supervisor` | 575.629 MiB | 15 |
+| `weft@state_machine` loop | 311.397 MiB | 38 |
+| `gleam@otp@factory_supervisor` | 192.948 MiB | 12 |
+| `gleam@otp@actor` | 28.033 MiB | 65 |
+
+### Which sessions own it
+
+That table names shapes of process, not owners, so the processes were regrouped
+by the ancestor just below the daemon's own supervision spine, which partitions
+them by session assembly. The figures below are one cut, taken about thirteen
+minutes after the `erlang:memory` numbers above; an earlier cut of the same six
+assemblies totalled 2,322.687 MiB against this one's 2,324.358 MiB, so the
+workload moved them by well under one percent.
+
+| Session | Heap | Processes | Heaviest roles |
+|---|---:|---:|---|
+| 1 | 514.451 MiB | 76 | weft actors 314.302 over 19; static supervisors 96.046 over 2; factory supervisors 31.631 over 2 |
+| 2 | 415.257 MiB | 51 | weft actors 259.289 over 18; static supervisors 95.896 over 2; factory supervisors 34.794 over 2 |
+| 3 | 409.874 MiB | 46 | weft actors 253.397 over 16; static supervisors 95.733 over 2; factory supervisors 31.631 over 2 |
+| 4 | 375.437 MiB | 40 | weft actors 229.060 over 15; static supervisors 96.053 over 2; factory supervisors 31.631 over 2 |
+| 5 | 316.142 MiB | 38 | weft actors 168.234 over 15; static supervisors 95.792 over 2; factory supervisors 31.631 over 2 |
+| 6 | 293.197 MiB | 38 | weft actors 149.458 over 15; static supervisors 96.082 over 2; factory supervisors 31.631 over 2 |
+
+Six assemblies hold 2,324.358 MiB over 289 processes. Six further
+`weft@state_machine` processes, one per session, are 15.818 MiB each to the
+byte — the clearest single sign that these are per-instance copies of one value
+rather than divergent state.
+
+### The cost is concentrated in 85 processes
+
+Per-process memory does not spread evenly, and an average over a session's
+processes misleads:
+
+| Bucket | Processes | Heap |
+|---|---:|---:|
+| at least 100 MiB | 1 | 117.533 MiB |
+| 50 to 100 MiB | 10 | 560.265 MiB |
+| 20 to 50 MiB | 36 | 1,182.665 MiB |
+| 10 to 20 MiB | 38 | 607.361 MiB |
+| 5 to 10 MiB | 4 | 34.860 MiB |
+| 1 to 5 MiB | 10 | 27.729 MiB |
+| under 1 MiB | 360 | 15.357 MiB |
+
+The 85 processes above 10 MiB carry 2,467.8 MiB, which is 96.9% of the total,
+while the median process is 0.011 MiB.
+
+### How much of that is live
+
+A forced collection was not run on the installed daemon, so live and merely
+uncollected heap cannot be separated outright. One distinction is available
+without collecting anything: a hibernating process has already been compacted
+by the VM, so for those processes the reported memory is live data. Thirty-five
+processes were hibernating and held 575.663 MiB; 424 were awake and held
+1,970.107 MiB.
+
+The generational split says more, and reading it correctly matters.
+`process_info(Pid, garbage_collection)` does **not** carry `old_heap_size`; that
+key is in `garbage_collection_info`. Asking the first one reports a zero old
+generation for every process, which inverts the conclusion, since the old
+generation is exactly the part a minor collection never examines. Over all 440
+processes in a later cut totalling 2,611.821 MiB:
+
+| Region | Size |
+|---|---:|
+| young generation | 1,532.316 MiB |
+| old generation | 546.674 MiB |
+| heap fragments | 532.390 MiB |
+
+Mailboxes were empty and stacks negligible throughout, so none of this is
+backlog. The six hibernating supervisors have their whole heap in the young
+generation with no old generation and no fragments, which is what compaction
+leaves behind. A representative awake `weft@actor` at 53.727 MiB, by contrast,
+holds 6.355 MiB young, 29.219 MiB old and 18.152 MiB of fragments.
+
+What this does and does not license: a full sweep would examine the 1,079 MiB
+of old generation and fragments that minor collections leave alone, and the
+fragments in particular are merged at the next collection. But data reaches the
+old generation by surviving a minor collection, so much of that 547 MiB is
+likely live. The 1,079 MiB is the heap a full sweep would look at, not a
+reduction it would deliver.
+
+### What one assembly process retains
+
+One bounded `sys:get_state` on a single hibernating session supervisor, with
+every measurement taken on the probe node rather than in the daemon, names the
+value. Only one such copy was taken for the whole investigation: an earlier
+probe that walked a second large state exceeded its own heap.
+
+```
+tuple/16 state                          105.144 MiB
+ map/11 (eleven children)                52.572 MiB
+  child -> fun client@serve index 143    13.898 MiB
+   tuple/7 runtime                       12.874 MiB
+    tuple/7 effects                      12.869 MiB
+     tuple/12 hooks                        6.963 MiB
+      fun client@wiring index 8            1.946 MiB
+       fun client@wiring index 6           0.981 MiB
+        tuple/23 config                    0.981 MiB
+         tuple/3 registry                  0.961 MiB
+```
+
+The state flattens to 105.144 MiB against 52.572 MiB of children because OTP
+keeps both the initial child specifications and the active child map. The
+heaviest child specification is 13.898 MiB, descending through a `client/serve`
+startup closure into a 12.874 MiB `Runtime` and a 12.869 MiB `Effects`. Within
+that, `Hooks` is 6.963 MiB and **no single slot dominates it**: the heaviest is
+1.946 MiB of 6.963. That even spread is what a record looks like after the
+earlier repairs have done their work, and it is why no further capture
+narrowing was taken here.
+
+The `wiring.Config` that PR #456 stops capturing is 0.981 MiB of that
+descent, almost all of it a 0.961 MiB tool registry. The repair is correctly
+shaped and worth having; it is also about 7.6% of one `Effects` copy, so it was
+never going to move a 2.6 GB total on its own.
+
+The heavy `weft@actor` processes were identified from their backtraces, read
+over `rpc` with `process_info(Pid, backtrace)` rather than by copying their
+states. They are `client/gateway` actors, and the `runtime` field of
+`gateway.State` holds an `api.Runtime`, which carries the session, the session
+id and the whole `Effects` graph. The gateway dispatches operations, so it
+needs that runtime; this is ownership, not a mis-scoped capture.
+
+### The candidates this closes
+
+The 0.961 MiB registry figure settles the list the R12 audit carried forward,
+because all three candidates live inside that registry:
+
+- **Extension routing.** The observed daemon had one installed extension
+  declaring one tool, so `extension/dispatch.tool_for`'s capture of the whole
+  dispatch configuration is multiplied by one, and its registry entry is a
+  fraction of 0.961 MiB. The shape is real and would matter to a host with many
+  extension tools. It cannot contribute materially here.
+- **Job and schedule door layers.** The multiplication factors are real — five
+  copies of `jobseam.Wiring` per door, nine of `scheduleseam.Wiring` — but both
+  records are a few dozen words over operator configuration, and both sit
+  inside the same 0.961 MiB. They multiply kilobytes.
+- **Code-mode workspace closures.** `client/codemode.workspace_seam_with_access`
+  captures its `Config` in three schedule closures and its `Access` in four
+  filesystem closures where a projection would do. The resulting `Workspace`
+  belongs to one code-mode execution and is dropped with it, so it is absent
+  from a census of resident sessions by construction.
+
+None of the three was patched. Each is dismissed by a measurement rather than
+by argument.
+
+### What is still unattributed
+
+Two things in this census are not explained.
+
+The single largest process, a `weft@state_machine` at 117.533 MiB, has no
+attribution. In pinned weft 0.4.4 `sys:get_state` omits the loop handler,
+shutdown callback, selectors and timers, which is where an actor's retention
+lives, so the interface that would name it returns the wrong part of the
+process.
+
+The live-versus-uncollected split of the 424 awake processes holding
+1,970.107 MiB is unknown. Settling it needs a forced collection, which was
+deliberately not performed on a daemon holding real sessions.
+
+### Two options, neither yet justified
+
+The next reduction has to remove copies rather than shrink them. Two shapes
+would do that, and the measurement above supports neither over the other.
+
+The first is a per-session owner for `Effects`: hold the graph in one process
+and hand each child a handle it resolves on use. This reaches
+`runtime/effects.Effects` and `runtime/api.Runtime`, which are WP-E's assembly
+surface as consumed by the client. **Neither type is enumerated among the
+frozen contracts of spec Part 1** — Part 1 freezes the core types, the storage
+behaviour, the pure machine signatures, the effect-plane wire protocol, the
+provider gateway and the client protocol. A `protocol-change/NNN.md` would
+still be the right way to propose this, as a matter of judgment, because the
+value crosses a package boundary that every session assembly depends on, not
+because Part 1 compels it. Its costs: every effect call gains a message round
+trip or a table read on a hot path, the owner becomes a per-session
+serialization point and a new failure domain needing its own restart custody,
+and recovery plus the interleaving harness need scenarios for an owner dying
+mid-dispatch.
+
+The second is an idle-hibernate policy in `weft/actor`, which needs no
+interface change at all. The evidence for it is the generational split: awake
+assembly actors carry most of their heap outside the young generation, and
+hibernation is a full sweep followed by a shrink. Its costs: hibernation forces
+a full sweep on every wake, so a frequently messaged actor would thrash; the
+policy needs an idle threshold nobody has chosen; and weft is a sibling
+repository, making this a cross-repo change with its own release.
+
+An attempt to size that option on a locally built daemon did not succeed, and
+the reason is worth recording. A release daemon was started with its own state
+directory and an overridden `HOME`, one session was admitted through the
+release's own control-plane acceptance and left idle for 45 seconds, and the
+same 152 processes were measured before and after a major collection of every
+one of them. Memory went from 73.969 MiB to 78.590 MiB — a collection that cost
+4.6 MiB rather than returning any. Per role: the five static supervisors were
+unchanged at 22.331 MiB, already compact; seven weft state machines fell from
+17.200 to 14.249 MiB; thirteen weft actors *rose* from 23.428 to 28.282 MiB,
+because a full sweep sizes a fresh heap by a growth policy rather than to the
+live data exactly.
+
+The experiment measured the wrong condition rather than refuting the option.
+A freshly admitted offline session has run almost no minor collections, so it
+has promoted almost nothing into an old generation and has no accumulated
+fragments; there is nothing for a sweep to find. The installed daemon's actors
+reached their old generations over 22 hours of real model turns. Sizing this
+option therefore needs a local daemon driven through many real provider turns,
+not an idle one, and that is a longer experiment than a census. Until it is
+run, an idle-hibernate policy in `weft/actor` is not justified by measurement.
