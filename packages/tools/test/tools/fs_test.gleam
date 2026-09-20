@@ -1680,6 +1680,139 @@ pub fn edit_chains_onto_a_just_written_line_test() {
   )
 }
 
+// --- a successful write's digest and fresh anchors -----------------------
+//
+// A write knew the exact content at the moment it wrote it, so making the
+// caller read the file back before it could edit it was a round trip for
+// information the harness already had.
+
+fn write(ctx: tool.Ctx, path: String, content: String) -> tool.ToolOutcome {
+  fs.write_tool().run(
+    ctx,
+    args([#("path", json.String(path)), #("content", json.String(content))]),
+  )
+}
+
+// The block a write returns must be what an `fs_read` of the file returns,
+// since a caller that used to read is now reading this instead.
+pub fn write_returns_the_same_anchors_a_read_would_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2\nl3\n"
+  let outcome = write(ctx, "w.txt", content)
+  assert outcome.is_error == False
+  let assert [summary, digest_line, heading, ..] =
+    string.split(first_text(outcome), "\n")
+  assert summary == "wrote 9 bytes to w.txt"
+  assert digest_line == "digest: " <> hashline.digest(content)
+  assert heading == "Fresh anchors:"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(content, offset: 1, limit: 3))
+
+  // And byte-identical to the anchored lines of a read of the same file.
+  let read = fs.read_tool().run(ctx, args([#("path", json.String("w.txt"))]))
+  assert string.contains(first_text(read), fresh_block(outcome))
+}
+
+pub fn write_without_a_trailing_newline_anchors_its_last_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2\nno newline here"
+  let outcome = write(ctx, "w.txt", content)
+  assert outcome.is_error == False
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(content, offset: 1, limit: 3))
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/w.txt")
+    == Ok(<<"l1\nl2\nno newline here":utf8>>)
+}
+
+pub fn write_of_an_empty_file_reports_it_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome = write(ctx, "w.txt", "")
+  assert outcome.is_error == False
+  assert first_text(outcome)
+    == "wrote 0 bytes to w.txt\ndigest: "
+    <> hashline.digest("")
+    <> "\n(the file is now empty)"
+}
+
+// An overwrite has to report the content it just wrote, not the content it
+// replaced — a stale digest here would reject every following edit.
+pub fn write_overwrite_returns_the_new_digest_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let first = write(ctx, "w.txt", "old\n")
+  let second = write(ctx, "w.txt", "new content\n")
+  assert second.is_error == False
+  assert visible_digest(second) == hashline.digest("new content\n")
+  assert visible_digest(second) != visible_digest(first)
+  assert string.contains(fresh_block(second), "|new content")
+}
+
+// The size check answers on its own here: anchored rendering is strictly
+// larger than the content, so a file already past the cap is never
+// annotated to discover it does not fit.
+pub fn write_of_a_large_file_falls_back_to_a_read_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let wide = string.repeat("z", 120)
+  let content =
+    list.map(upto_count(400), fn(i) { int.to_string(i) <> " " <> wide })
+    |> string.join("\n")
+    <> "\n"
+  let outcome = write(ctx, "big.txt", content)
+  assert outcome.is_error == False
+  assert string.ends_with(
+    first_text(outcome),
+    "Fresh anchors: the file is too large to echo; read the region you "
+      <> "intend to edit with fs_read, passing offset and limit",
+  )
+  assert string.byte_size(first_text(outcome)) < fs.max_fresh_anchor_bytes
+  assert fresh_block(outcome) == ""
+}
+
+// The property the write half exists for: an edit planned from nothing but
+// the write's own success text, with no read between them. The target is
+// the last line, which is also the case a caller most often wants after
+// writing a file.
+pub fn write_chains_into_an_edit_of_its_last_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "one\ntwo\nthree\n"
+  let written = write(ctx, "c.txt", content)
+  assert written.is_error == False
+  let assert Ok(#(line, anchor)) = anchored_pair(fresh_block(written), 3)
+    as "the write block must carry the last line"
+  let edited =
+    edit(
+      ctx,
+      "c.txt",
+      visible_digest(written),
+      replace_at(line, anchor, [
+        "THREE",
+      ]),
+    )
+  assert edited.is_error == False
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/c.txt") == Ok(<<"one\ntwo\nTHREE\n":utf8>>)
+}
+
+// The same chain over content with no trailing newline, since that is
+// where the last line's anchor and the file's ending byte interact.
+pub fn write_chains_into_an_edit_without_a_trailing_newline_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let written = write(ctx, "c.txt", "one\ntwo")
+  assert written.is_error == False
+  let assert Ok(#(line, anchor)) = anchored_pair(fresh_block(written), 2)
+    as "the write block must carry the unterminated last line"
+  let edited =
+    edit(
+      ctx,
+      "c.txt",
+      visible_digest(written),
+      replace_at(line, anchor, ["TWO"]),
+    )
+  assert edited.is_error == False
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/c.txt") == Ok(<<"one\nTWO":utf8>>)
+}
+
 // One `line:anchor|text` row of a rendered block, parsed the way a model
 // would have to parse it.
 fn anchored_pair(block: String, line: Int) -> Result(#(Int, String), Nil) {
