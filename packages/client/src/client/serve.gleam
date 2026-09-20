@@ -3209,14 +3209,19 @@ fn assemble_in(
         subagent: agency.is_subagent,
       ),
       fn(runtime) {
+        // A drain needs the supervision tree and nothing else, so it is
+        // handed the tree rather than the runtime it hangs off. This
+        // closure is not called here: `custody.publish` sends it to the
+        // instance owner, which holds it in `cleanups` for the life of the
+        // session. A closure over `runtime` therefore put a whole
+        // `Effects` graph into that owner's heap, one per session.
+        let tree = runtime.tree
+
         retain(
           owner,
           custody.Runtime,
           fn() {
-            runtime_supervisor.shutdown(
-              runtime.tree,
-              grace_ms: service_grace_ms,
-            )
+            runtime_supervisor.shutdown(tree, grace_ms: service_grace_ms)
             |> result.replace_error("runtime drain was not confirmed")
           },
           fn() { process.unlink(builder) },
