@@ -401,6 +401,14 @@ replay-simulation: ## Replay one session simulation seed (SIM_SEED=n)
 	@LOOM_SOAK_FROM=$(SIM_SEED) LOOM_SOAK_SEEDS=1 \
 		bash scripts/test.sh conformance --match conformance@simulation_test:soak_test
 
+# Every chunk names the soak test, for the same reason `replay-simulation`
+# does. `LOOM_SOAK_SEEDS` is read by exactly one test, so an unmatched
+# invocation ran the whole conformance package once per chunk — forty times
+# a night across the nightly's four shards — and charged whatever any of
+# those eighty-odd seed-independent tests did to the seed window the chunk
+# was on. A `soak FAILED in seeds 1851..1900` that was really an `e2e_test`
+# timeout is the failure mode: the report names a seed range that had
+# nothing to do with it, and the same tests already run in `make check`.
 .PHONY: soak
 soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=n)
 	@from=$(SOAK_FROM); left=$(SOAK_SEEDS); \
@@ -408,7 +416,8 @@ soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=
 		n=$$( [ $$left -lt $(SOAK_CHUNK) ] && echo $$left || echo $(SOAK_CHUNK) ); \
 		echo "==> seeds $$from..$$(( from + n - 1 ))"; \
 		( LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from \
-			bash scripts/test.sh conformance ) || \
+			bash scripts/test.sh conformance \
+				--match conformance@simulation_test:soak_test ) || \
 			{ echo "soak FAILED in seeds $$from..$$(( from + n - 1 ))"; exit 1; }; \
 		from=$$(( from + n )); left=$$(( left - n )); \
 	done; \
