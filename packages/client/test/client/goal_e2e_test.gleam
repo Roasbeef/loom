@@ -385,6 +385,88 @@ pub fn an_aborted_continuation_pauses_the_goal_test_() -> EunitTest {
   })
 }
 
+// --- the acceptance case: the reviewer is shown a check it did not run ------
+// The check is the first evidence in the loop the reviewer can weigh that the
+// primary did not write, so what this fixture proves is that it reaches the
+// reviewer's own request body — the place a claim about what a model was shown
+// has to land — and that it reaches it having actually run in the session's
+// jail rather than having been rendered from the cell alone.
+//
+// It runs the check twice, failing and then passing, because the pair is the
+// claim: a reviewer that sees `exit status 1` is being given evidence against
+// `complete`, and one that sees `exit status 0` is being given evidence for
+// it. The commands are shell builtins under the same `bash` invocation the
+// tool plane uses, so what is under test is the harness's plumbing rather than
+// whatever the host happens to have on its PATH.
+//
+// The primary calls a tool on every woken run, so every stretch is work and
+// the zero-progress bound cannot end the fixture before the second round.
+pub fn a_scripted_reviewer_is_shown_the_checks_result_test_() -> EunitTest {
+  Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
+    let root = fixture_root("check")
+    let script = script(CallsATool)
+    let assert Ok(instance) =
+      serve.open_instance(settings(root, script), log.discard())
+      as "the goal fixture must open a real instance"
+    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+      as "the instance must have a real, handshaken helper"
+    exec.checkin(instance.pool, helper)
+    let assert Some(goal_commands) = instance.goal
+      as "an instance with a routed advisor must expose the goal seam"
+
+    // The goal and its check pin in one command, which is the form an
+    // operator uses when they know both up front.
+    let assert Ok(Nil) =
+      goal_commands.set(objective, 100_000_000, Some("exit 1"))
+      as "the goal and its failing check must pin through the operator's door"
+    complete(instance, "work on the migration")
+
+    // The failing check reaches the reviewer's request body, labelled as the
+    // harness's own evidence rather than as part of the transcript.
+    let failing = await_advisor(script, "exit status 1")
+    assert string.contains(failing, advisorslice.check_label)
+    assert string.contains(failing, "command: exit 1")
+    assert string.contains(failing, "(the check failed)")
+      as "the reviewer is told what a non-zero status means"
+    assert string.contains(failing, advisorslice.goal_feed_footer)
+      as "the check rides inside the goal feed frame"
+
+    // The reviewer answered `continue` to that, which is the default this
+    // script gives until told otherwise, and the loop woke the primary.
+    let _carrying = await_primary(script, advisorslice.continuation_header)
+
+    // Now the check passes. The completion is armed first, because setting the
+    // check returns the phase to idle and the evaluation that follows sends
+    // the next feed at once — a completion armed after would race it.
+    actor.call(script, waiting: 5000, sending: fn(reply) {
+      AnswerComplete(reply)
+    })
+    let assert Ok(Nil) = goal_commands.set_check(Some("exit 0"))
+      as "the operator must be able to change the check without a refresh"
+
+    let passing = await_advisor(script, "exit status 0")
+    assert string.contains(passing, "command: exit 0")
+    assert string.contains(passing, "(the check passed)")
+
+    let assert poll.Answered(done) = poll_goal(instance, "complete")
+      as "a reviewer shown a passing check must be able to complete the goal"
+    assert done.reviewer_note == Some(done_note)
+
+    // And the operator reads the same evidence the reviewer was shown, from
+    // the same cell: one recorded run, not two renderings of one fact.
+    let assert Ok(board) = goal_pending.read(instance.runtime.session, 0)
+    let assert json.Object(board_fields) = board
+    assert list.key_find(board_fields, "check") == Ok(json.String("exit 0"))
+    let assert Ok(json.Object(run)) = list.key_find(board_fields, "last_check")
+      as "the board carries the run the reviewer was shown"
+    assert list.key_find(run, "command") == Ok(json.String("exit 0"))
+    assert list.key_find(run, "status") == Ok(json.Int(0))
+    assert list.key_find(run, "not_finished") == Ok(json.Null)
+
+    serve.close_instance(instance)
+  })
+}
+
 // --- the scripted session ----------------------------------------------------
 // The goal cell, polled until its status is the one the fixture waits
 // on. The poll reads the durable cell directly — the same read the
@@ -864,6 +946,21 @@ fn sse(event: String, data: String) -> String {
 }
 
 // --- waiting on the loop ------------------------------------------------------
+// The same wait against the reviewer's own requests, which is where a claim
+// about what the reviewer was shown has to land: a body is what was sent.
+fn await_advisor(script: Subject(ScriptMessage), marker: String) -> String {
+  let found: poll.Outcome(String, Nil) =
+    poll.until(within: await_ms, every: 100, attempt: fn() {
+      case latest_with(seen(script).advisor, marker) {
+        Ok(body) -> poll.Done(body)
+        Error(Nil) -> poll.Retry
+      }
+    })
+  let assert poll.Answered(value: body) = found
+    as "the marker must reach an advisor request inside the wait"
+  body
+}
+
 fn await_primary(script: Subject(ScriptMessage), marker: String) -> String {
   let found: poll.Outcome(String, Nil) =
     poll.until(within: await_ms, every: 100, attempt: fn() {
@@ -1015,9 +1112,9 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
 // mutation answered `code_unsupported`: a session with a routed advisor
 // telling its operator it had no reviewer.
 //
-// This fixture issues the five commands as frames over the instance's own
+// This fixture issues the six commands as frames over the instance's own
 // hub, which is the production assembly, and reads the boards back.
-pub fn the_five_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
+pub fn the_six_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
   Timeout(test_timeout_seconds / gleeunit_timeout_scale, fn() {
     let root = fixture_root("gateway")
     let script = script(SaysNothing)
@@ -1091,16 +1188,29 @@ pub fn the_five_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
     let resumed = command(704, protocol.GoalResume)
     assert string.contains(resumed, "\"status\":\"active\"")
 
+    // The sixth command sets the check without touching the objective, and
+    // answers with the same board every other goal mutation answers with.
+    let checked = command(706, protocol.GoalCheck(command: Some("make check")))
+    assert string.contains(checked, "\"check\":\"make check\"")
+      as "goal_check must answer with the fresh board carrying the command"
+    assert string.contains(checked, objective)
+      as "setting the check leaves the objective where it was"
+
+    // And a body with no command clears it, which is the one spelling the
+    // wire has for that.
+    let unchecked = command(707, protocol.GoalCheck(command: None))
+    assert string.contains(unchecked, "\"check\":null")
+
     // And the clear retires the cell, so the board is the positive empty one
     // rather than a refusal.
-    let cleared = command(705, protocol.GoalClear)
+    let cleared = command(708, protocol.GoalClear)
     assert string.contains(cleared, "\"status\":\"none\"")
 
     // The objective's bound is the server's, refused in words with both
     // counts rather than written to a cell no client can draw.
     let oversized =
       command(
-        706,
+        709,
         protocol.GoalSet(
           objective: string.repeat("a", protocol.objective_limit + 1),
           token_budget: 400_000,
@@ -1108,7 +1218,7 @@ pub fn the_five_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
         ),
       )
     assert string.contains(oversized, "\"event\":\"error\"")
-    assert string.contains(oversized, "\"reply_to\":706")
+    assert string.contains(oversized, "\"reply_to\":709")
       as "a refused body is answered against the request that carried it"
     assert string.contains(oversized, int.to_string(protocol.objective_limit))
       as "the operator is told the bound, not just that something was wrong"
