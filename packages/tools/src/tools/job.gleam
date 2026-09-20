@@ -344,12 +344,20 @@ pub fn unavailable() -> Jobs {
 /// ```
 ///
 pub fn tools(jobs: Jobs) -> List(Tool) {
-  [poll_tool(jobs), kill_tool(jobs), send_tool(jobs)]
+  [
+    poll_tool(jobs.poll, jobs.list, jobs.max_wait_ms),
+    kill_tool(jobs.kill, jobs.poll),
+    send_tool(jobs.send),
+  ]
 }
 
 // --- job_poll ---------------------------------------------------------------
 
-fn poll_tool(jobs: Jobs) -> Tool {
+fn poll_tool(
+  poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
+  list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
+  max_wait_ms: Int,
+) -> Tool {
   tool.Tool(
     name: poll_tool_name,
     description: "Read a background job: its state, and whatever it has "
@@ -357,7 +365,7 @@ fn poll_tool(jobs: Jobs) -> Tool {
       <> "every job this strand owns. A job that is still running is a "
       <> "**successful** answer, not a failure — do other work and poll "
       <> "again, or pass `wait_ms` to block for a while first (clamped to "
-      <> int.to_string(jobs.max_wait_ms)
+      <> int.to_string(max_wait_ms)
       <> "). Pass the `cursor` from the previous poll back as `since` to "
       <> "get only what is new; the cursor is an opaque token, so hand it "
       <> "back unread rather than computing one.",
@@ -379,7 +387,7 @@ fn poll_tool(jobs: Jobs) -> Tool {
           tool.integer_property(
             "block up to this many milliseconds for the job to finish "
             <> "before answering; clamped to "
-            <> int.to_string(jobs.max_wait_ms)
+            <> int.to_string(max_wait_ms)
             <> ". Defaults to 0, which answers with whatever is true now. "
             <> "Ignored when no `job_id` is given",
           ),
@@ -401,11 +409,17 @@ fn poll_tool(jobs: Jobs) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_poll(jobs, ctx, args) },
+    run: fn(ctx, args) { run_poll(poll, list_jobs, max_wait_ms, ctx, args) },
   )
 }
 
-fn run_poll(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_poll(
+  poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
+  list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
+  max_wait_ms: Int,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use job_id <- tool.with_arg(tool.optional_string(args, "job_id"))
   use wait_ms <- tool.with_arg(tool.optional_int(args, "wait_ms"))
   use since <- tool.with_arg(tool.optional_string(args, "since"))
@@ -416,30 +430,33 @@ fn run_poll(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   // them all is doing something sensible, and a refusal over a leftover
   // argument would teach it not to.
   case job_id {
-    None -> run_list(jobs, ctx)
-    Some(id) -> run_poll_one(jobs, ctx, id, wait_ms, since)
+    None -> run_list(list_jobs, ctx)
+    Some(id) -> run_poll_one(poll, max_wait_ms, ctx, id, wait_ms, since)
   }
 }
 
 fn run_poll_one(
-  jobs: Jobs,
+  poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
+  max_wait_ms: Int,
   ctx: Ctx,
   id: String,
   wait_ms: Option(Int),
   since: Option(String),
 ) -> ToolOutcome {
   use cursors <- tool.with_arg(parse_cursor(since))
-  let wait_ms =
-    int.clamp(option.unwrap(wait_ms, 0), min: 0, max: jobs.max_wait_ms)
+  let wait_ms = int.clamp(option.unwrap(wait_ms, 0), min: 0, max: max_wait_ms)
   use polled <- tool.or_outcome(
-    jobs.poll(ctx, id, wait_ms, cursors),
+    poll(ctx, id, wait_ms, cursors),
     refusal_outcome,
   )
   polled_outcome(polled)
 }
 
-fn run_list(jobs: Jobs, ctx: Ctx) -> ToolOutcome {
-  use listed <- tool.or_outcome(jobs.list(ctx), refusal_outcome)
+fn run_list(
+  list_jobs: fn(Ctx) -> Result(List(Listed), Refusal),
+  ctx: Ctx,
+) -> ToolOutcome {
+  use listed <- tool.or_outcome(list_jobs(ctx), refusal_outcome)
   case listed {
     [] ->
       tool.success(
@@ -602,7 +619,10 @@ fn result_json(result: ExecResult) -> List(#(String, JsonValue)) {
 
 // --- job_kill ---------------------------------------------------------------
 
-fn kill_tool(jobs: Jobs) -> Tool {
+fn kill_tool(
+  kill: fn(Ctx, String) -> Result(Nil, Refusal),
+  poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
+) -> Tool {
   tool.Tool(
     name: kill_tool_name,
     description: "Stop a background job. It is sent TERM and then KILL, "
@@ -623,7 +643,7 @@ fn kill_tool(jobs: Jobs) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_kill(jobs, ctx, args) },
+    run: fn(ctx, args) { run_kill(kill, poll, ctx, args) },
   )
 }
 
@@ -636,10 +656,15 @@ fn kill_tool(jobs: Jobs) -> Tool {
 // that claimed a terminal state would be claiming something the harness
 // has not observed. A poll that fails after a kill that succeeded is
 // still a successful stop, so the refusal is not propagated.
-fn run_kill(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_kill(
+  kill: fn(Ctx, String) -> Result(Nil, Refusal),
+  poll: fn(Ctx, String, Int, Cursors) -> Result(Polled, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use id <- tool.with_arg(tool.required_string(args, "job_id"))
-  use Nil <- tool.or_outcome(jobs.kill(ctx, id), refusal_outcome)
-  let settled = jobs.poll(ctx, id, 0, Cursors(stdout: 0, stderr: 0))
+  use Nil <- tool.or_outcome(kill(ctx, id), refusal_outcome)
+  let settled = poll(ctx, id, 0, Cursors(stdout: 0, stderr: 0))
   let state =
     result.map(settled, fn(polled: Polled) { polled.state })
     |> result.unwrap(or: Draining(by: ByOwner))
@@ -657,7 +682,9 @@ fn run_kill(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
 
 // --- job_send ---------------------------------------------------------------
 
-fn send_tool(jobs: Jobs) -> Tool {
+fn send_tool(
+  send: fn(Ctx, String, BitArray, StdinEnd) -> Result(Nil, Refusal),
+) -> Tool {
   tool.Tool(
     name: send_tool_name,
     description: "Write text to a background job's standard input. This is "
@@ -697,16 +724,20 @@ fn send_tool(jobs: Jobs) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_send(jobs, ctx, args) },
+    run: fn(ctx, args) { run_send(send, ctx, args) },
   )
 }
 
-fn run_send(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_send(
+  send: fn(Ctx, String, BitArray, StdinEnd) -> Result(Nil, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use id <- tool.with_arg(tool.required_string(args, "job_id"))
   use data <- tool.with_arg(tool.required_string(args, "data"))
   use end <- tool.with_arg(requested_end(args))
   let bytes = bit_array.from_string(data)
-  use Nil <- tool.or_outcome(jobs.send(ctx, id, bytes, end), refusal_outcome)
+  use Nil <- tool.or_outcome(send(ctx, id, bytes, end), refusal_outcome)
 
   let closed = case end {
     CloseStdin -> " Its stdin is now closed."
