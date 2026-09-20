@@ -10,8 +10,14 @@ import etui/style
 /// The background shared by the header and command rail.
 pub const graphite = style.Rgb(24, 27, 31)
 
+/// The selected row in an agent workspace.
+pub const raised = style.Rgb(37, 48, 63)
+
+/// Advisor-authored context has its own semantic accent.
+pub const advisor = style.Rgb(192, 166, 245)
+
 /// The foreground shared by the header and command rail.
-pub const paper = style.Rgb(226, 224, 216)
+pub const paper = style.Rgb(231, 237, 245)
 
 /// The subtle background identifying user-authored transcript blocks.
 pub const user_background = style.Rgb(38, 34, 29)
@@ -20,23 +26,26 @@ pub const user_background = style.Rgb(38, 34, 29)
 pub const assistant_background = style.Rgb(20, 32, 35)
 
 /// Operator-controlled actions and prompts.
-pub const signal = style.Rgb(240, 164, 70)
+pub const signal = style.Rgb(255, 189, 105)
 
 /// Agent output and live activity.
-pub const current = style.Rgb(91, 203, 217)
+pub const current = style.Rgb(110, 219, 232)
+
+/// Structural dividers, deliberately quieter than readable annotations.
+pub const divider = style.Rgb(60, 74, 91)
 
 /// Secondary annotations and inactive controls.
-pub const quiet = style.Rgb(118, 124, 130)
+pub const quiet = style.Rgb(160, 171, 184)
 
 /// The footer's grey: `quiet` lifted for legibility against a dark
 /// terminal at a glance.
 pub const muted = style.Rgb(170, 176, 182)
 
 /// Failures and refused actions.
-pub const danger = style.Rgb(235, 102, 112)
+pub const danger = style.Rgb(255, 142, 155)
 
 /// Added source in a structured edit preview.
-pub const added = style.Rgb(116, 201, 138)
+pub const added = style.Rgb(142, 214, 161)
 
 /// The subdued background behind added source.
 pub const added_bg = style.Rgb(24, 52, 35)
@@ -82,7 +91,7 @@ pub fn inline_code() -> style.Style {
   style.new(current, style.Default, style.none())
 }
 
-/// A dim annotation style for metadata.
+/// A readable annotation style for metadata.
 ///
 /// ## Examples
 ///
@@ -90,7 +99,7 @@ pub fn inline_code() -> style.Style {
 /// span.span_styled("thinking", theme.quiet_text())
 /// ```
 pub fn quiet_text() -> style.Style {
-  style.new(quiet, style.Default, style.dim())
+  style.new(quiet, style.Default, style.none())
 }
 
 /// The footer's text: the same quiet hue as the transcript's asides, one
