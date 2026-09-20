@@ -3,8 +3,10 @@ import core/json
 import core/message
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import gleam/string
 import simplifile
 import support/fake_broker
@@ -1241,4 +1243,596 @@ pub fn native_file_approval_is_call_scoped_and_precedes_write_test() {
   assert list.contains(wanted, policy.GrantWritableRoot("/shared/a"))
   assert filesystem.read("/shared/a") == Ok(<<"written":utf8>>)
   assert fs.write_tool().run(ctx, arguments).is_error == True
+}
+
+// --- a successful edit's fresh anchors -----------------------------------
+//
+// Every applied hunk shifts the anchors around it, so before this the only
+// way to plan a second edit of a region was to read the file again. These
+// pin the block a success now carries: the two lines it always opened with,
+// unchanged and in order, then the changed regions rendered exactly as
+// `fs_read` renders a window.
+
+// The `line:anchor|text` block after the heading, or the empty string when
+// the success carried none.
+fn fresh_block(outcome: tool.ToolOutcome) -> String {
+  case string.split_once(first_text(outcome), "\nFresh anchors:\n") {
+    Ok(#(_summary, block)) -> block
+    Error(Nil) -> ""
+  }
+}
+
+fn edit(
+  ctx: tool.Ctx,
+  path: String,
+  digest: String,
+  hunks: json.JsonValue,
+) -> tool.ToolOutcome {
+  fs.edit_tool().run(
+    ctx,
+    args([
+      #("path", json.String(path)),
+      #("digest", json.String(digest)),
+      #("hunks", hunks),
+    ]),
+  )
+}
+
+fn replace_hunk(
+  content: String,
+  line: Int,
+  lines: List(String),
+) -> json.JsonValue {
+  json.Array([
+    json.Object([
+      #("op", json.String("replace")),
+      #("from", anchor_ref(content, line)),
+      #("to", anchor_ref(content, line)),
+      #("lines", json.Array(list.map(lines, json.String))),
+    ]),
+  ])
+}
+
+const ten = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n"
+
+pub fn edit_success_keeps_its_first_two_lines_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let outcome =
+    edit(ctx, "e.txt", hashline.digest(ten), replace_hunk(ten, 5, ["L5"]))
+  assert outcome.is_error == False
+
+  // The summary and the digest line, in that order, are what the model and
+  // the terminal already read off a success; the block comes after them.
+  let assert [summary, digest_line, heading, ..] =
+    string.split(first_text(outcome), "\n")
+  assert summary == "applied 1 hunk(s) to e.txt"
+  assert digest_line
+    == "digest: "
+    <> hashline.digest("l1\nl2\nl3\nl4\nL5\nl6\nl7\nl8\nl9\nl10\n")
+  assert heading == "Fresh anchors:"
+}
+
+pub fn edit_success_echoes_a_replaced_region_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let outcome =
+    edit(ctx, "e.txt", hashline.digest(ten), replace_hunk(ten, 5, ["L5"]))
+  let edited = "l1\nl2\nl3\nl4\nL5\nl6\nl7\nl8\nl9\nl10\n"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(edited, offset: 2, limit: 7))
+}
+
+pub fn edit_success_echoes_an_insert_only_region_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let hunks =
+    json.Array([
+      json.Object([
+        #("op", json.String("insert_after")),
+        #("at", anchor_ref(ten, 5)),
+        #("lines", json.Array([json.String("X")])),
+      ]),
+    ])
+  let outcome = edit(ctx, "e.txt", hashline.digest(ten), hunks)
+  assert outcome.is_error == False
+  let edited = "l1\nl2\nl3\nl4\nl5\nX\nl6\nl7\nl8\nl9\nl10\n"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(edited, offset: 3, limit: 7))
+}
+
+// A deletion produces no lines of its own, so the context around the seam
+// is all there is to anchor, and it must still be there.
+pub fn edit_success_echoes_a_delete_seam_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let hunks =
+    json.Array([
+      json.Object([
+        #("op", json.String("delete")),
+        #("from", anchor_ref(ten, 5)),
+        #("to", anchor_ref(ten, 5)),
+      ]),
+    ])
+  let outcome = edit(ctx, "e.txt", hashline.digest(ten), hunks)
+  assert outcome.is_error == False
+  let edited = "l1\nl2\nl3\nl4\nl6\nl7\nl8\nl9\nl10\n"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(edited, offset: 2, limit: 6))
+}
+
+// The second region's anchors have to be at their shifted lines: the first
+// hunk added two lines, so what was line 9 is line 11 in the result.
+pub fn edit_success_shifts_a_later_region_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let hunks =
+    json.Array([
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(ten, 2)),
+        #("to", anchor_ref(ten, 2)),
+        #(
+          "lines",
+          json.Array([json.String("A"), json.String("B"), json.String("C")]),
+        ),
+      ]),
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(ten, 9)),
+        #("to", anchor_ref(ten, 9)),
+        #("lines", json.Array([json.String("L9")])),
+      ]),
+    ])
+  let outcome = edit(ctx, "e.txt", hashline.digest(ten), hunks)
+  assert outcome.is_error == False
+  let edited = "l1\nA\nB\nC\nl3\nl4\nl5\nl6\nl7\nl8\nL9\nl10\n"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(edited, offset: 1, limit: 7))
+    <> "\n"
+    <> hashline.render(hashline.window(edited, offset: 8, limit: 5))
+}
+
+// Two hunks three lines apart have overlapping contexts, so they are one
+// stretch rather than two windows repeating the lines between them.
+pub fn edit_success_merges_adjacent_regions_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let hunks =
+    json.Array([
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(ten, 3)),
+        #("to", anchor_ref(ten, 3)),
+        #("lines", json.Array([json.String("L3")])),
+      ]),
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(ten, 6)),
+        #("to", anchor_ref(ten, 6)),
+        #("lines", json.Array([json.String("L6")])),
+      ]),
+    ])
+  let outcome = edit(ctx, "e.txt", hashline.digest(ten), hunks)
+  assert outcome.is_error == False
+  let edited = "l1\nl2\nL3\nl4\nl5\nL6\nl7\nl8\nl9\nl10\n"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(edited, offset: 1, limit: 9))
+}
+
+pub fn edit_success_clamps_at_the_file_edges_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", ten)
+  let first =
+    edit(ctx, "e.txt", hashline.digest(ten), replace_hunk(ten, 1, ["L1"]))
+  let after_first = "L1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n"
+  assert fresh_block(first)
+    == hashline.render(hashline.window(after_first, offset: 1, limit: 4))
+
+  let last =
+    edit(
+      ctx,
+      "e.txt",
+      hashline.digest(after_first),
+      replace_hunk(after_first, 10, ["L10"]),
+    )
+  let after_last = "L1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nL10\n"
+  assert fresh_block(last)
+    == hashline.render(hashline.window(after_last, offset: 7, limit: 4))
+}
+
+pub fn edit_success_handles_no_trailing_newline_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2\nl3"
+  write_file(ctx, "e.txt", content)
+  let outcome =
+    edit(
+      ctx,
+      "e.txt",
+      hashline.digest(content),
+      replace_hunk(content, 3, ["L3"]),
+    )
+  assert outcome.is_error == False
+  let edited = "l1\nl2\nL3"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(edited, offset: 1, limit: 3))
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/e.txt") == Ok(<<"l1\nl2\nL3":utf8>>)
+}
+
+fn delete_all(content: String, last: Int) -> json.JsonValue {
+  json.Array([
+    json.Object([
+      #("op", json.String("delete")),
+      #("from", anchor_ref(content, 1)),
+      #("to", anchor_ref(content, last)),
+    ]),
+  ])
+}
+
+// An edit that leaves no lines at all has nothing to anchor, and saying so
+// is more use to the model than an empty block.
+pub fn edit_success_reports_an_emptied_file_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2"
+  write_file(ctx, "e.txt", content)
+  let outcome =
+    edit(ctx, "e.txt", hashline.digest(content), delete_all(content, 2))
+  assert outcome.is_error == False
+  assert string.ends_with(first_text(outcome), "\n(the file is now empty)")
+  assert fresh_block(outcome) == ""
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/e.txt") == Ok(<<"":utf8>>)
+}
+
+// Deleting every line of a newline-terminated file leaves the terminator,
+// so one blank line survives — `apply_placed`'s existing behaviour — and
+// the block anchors it rather than claiming the file is empty.
+pub fn edit_success_anchors_a_surviving_blank_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2\n"
+  write_file(ctx, "e.txt", content)
+  let outcome =
+    edit(ctx, "e.txt", hashline.digest(content), delete_all(content, 2))
+  assert outcome.is_error == False
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window("\n", offset: 1, limit: 1))
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/e.txt") == Ok(<<"\n":utf8>>)
+}
+
+// Past the cap the offset is worth more than the lines: a read of the
+// caller's own choosing is cheaper than echoing most of a file back.
+pub fn edit_success_falls_back_to_an_offset_when_oversized_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let wide = string.repeat("x", 200)
+  let content =
+    list.map(upto_count(200), fn(i) { int.to_string(i) <> wide })
+    |> string.join("\n")
+  write_file(ctx, "w.txt", content <> "\n")
+  // The replacement must be wide as well as long: the cap measures the
+  // post-image region, which is what would be echoed.
+  let replacement =
+    list.map(upto_count(200), fn(i) { "new" <> int.to_string(i) <> wide })
+  let hunks =
+    json.Array([
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(content <> "\n", 1)),
+        #("to", anchor_ref(content <> "\n", 200)),
+        #("lines", json.Array(list.map(replacement, json.String))),
+      ]),
+    ])
+  let outcome = edit(ctx, "w.txt", hashline.digest(content <> "\n"), hunks)
+  assert outcome.is_error == False
+  assert string.contains(
+    first_text(outcome),
+    "Fresh anchors: the changed regions are too large to echo; read them "
+      <> "with fs_read offset 1",
+  )
+  assert string.length(first_text(outcome)) < fs.max_fresh_anchor_bytes
+}
+
+// Many scattered hunks are the shape the cap was reached by the expensive
+// route: one region per hunk, each formerly windowed out of the whole file
+// afresh and all of them discarded once the block was measured. The check
+// here is the bound and the fallback, not a wall-clock number — the walk
+// now stops at the region that crosses the cap, so the rest are never
+// rendered at all.
+pub fn edit_success_bounds_many_scattered_regions_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let wide = string.repeat("y", 60)
+  let line_count = 3000
+  let content =
+    list.map(upto_count(line_count), fn(i) {
+      "line " <> int.to_string(i) <> " " <> wide
+    })
+    |> string.join("\n")
+    <> "\n"
+  write_file(ctx, "many.txt", content)
+  let hunks =
+    list.map(upto_count(100), fn(n) {
+      let line = n * 25
+      json.Object([
+        #("op", json.String("replace")),
+        #("from", anchor_ref(content, line)),
+        #("to", anchor_ref(content, line)),
+        #("lines", json.Array([json.String("replaced " <> int.to_string(n))])),
+      ])
+    })
+  let outcome =
+    edit(ctx, "many.txt", hashline.digest(content), json.Array(hunks))
+  assert outcome.is_error == False
+  assert string.contains(
+    first_text(outcome),
+    "the changed regions are too large to echo",
+  )
+
+  // The whole result, not just the block, stays far under the cap — and so
+  // an order of magnitude under the tool-output overflow threshold.
+  assert string.byte_size(first_text(outcome)) < fs.max_fresh_anchor_bytes
+}
+
+// --- chaining off a success, with no read between ------------------------
+//
+// The property the whole change exists for. Both cases below chain off a
+// first edit that grows the file by five lines, so every line after it has
+// moved: a block rendered from the pre-image, or from post-image ranges
+// with the shift left out, does not carry the rows these ask for, and the
+// chain cannot be completed from it.
+
+const twenty = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\nl16\nl17\nl18\nl19\nl20\n"
+
+// Replace line 2 with six lines (+5) and line 15 with one. In the result
+// `H15` is line 20 and the old line 16 is line 21; the two regions are far
+// enough apart not to merge, so only the shifted arithmetic puts either
+// row in the block.
+fn grow_and_touch() -> json.JsonValue {
+  json.Array([
+    json.Object([
+      #("op", json.String("replace")),
+      #("from", anchor_ref(twenty, 2)),
+      #("to", anchor_ref(twenty, 2)),
+      #(
+        "lines",
+        json.Array(list.map(["A1", "A2", "A3", "A4", "A5", "A6"], json.String)),
+      ),
+    ]),
+    json.Object([
+      #("op", json.String("replace")),
+      #("from", anchor_ref(twenty, 15)),
+      #("to", anchor_ref(twenty, 15)),
+      #("lines", json.Array([json.String("H15")])),
+    ]),
+  ])
+}
+
+// One replace hunk built from a `{line, anchor}` pair parsed out of a
+// success block, which is all a chaining caller has.
+fn replace_at(
+  line: Int,
+  anchor: String,
+  lines: List(String),
+) -> json.JsonValue {
+  let reference =
+    json.Object([#("line", json.Int(line)), #("anchor", json.String(anchor))])
+  json.Array([
+    json.Object([
+      #("op", json.String("replace")),
+      #("from", reference),
+      #("to", reference),
+      #("lines", json.Array(list.map(lines, json.String))),
+    ]),
+  ])
+}
+
+// The old line 16 is line 21 now. Editing it proves the block numbered the
+// context around a later hunk at its shifted position.
+pub fn edit_chains_onto_a_line_whose_number_moved_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", twenty)
+  let first = edit(ctx, "e.txt", hashline.digest(twenty), grow_and_touch())
+  assert first.is_error == False
+
+  // Everything below comes off the model-visible text of the first edit:
+  // the digest line and one anchored row out of the block.
+  let assert Ok(#(line, anchor)) = anchored_pair(fresh_block(first), 21)
+    as "the success block must carry the moved line 21"
+  let second =
+    edit(ctx, "e.txt", visible_digest(first), replace_at(line, anchor, ["L16"]))
+  assert second.is_error == False
+  let filesystem = ctx.filesystem
+  let assert Ok(bytes) = filesystem.read("/work/e.txt")
+  assert bytes
+    == <<
+      "l1\nA1\nA2\nA3\nA4\nA5\nA6\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nH15\nL16\nl17\nl18\nl19\nl20\n":utf8,
+    >>
+}
+
+// Editing a line the first edit itself wrote is the tighter case: `H15`
+// exists only in the post-image, at line 20, so no pre-image rendering and
+// no unshifted range can supply its row.
+pub fn edit_chains_onto_a_just_written_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", twenty)
+  let first = edit(ctx, "e.txt", hashline.digest(twenty), grow_and_touch())
+  assert first.is_error == False
+
+  let assert Ok(#(line, anchor)) = anchored_pair(fresh_block(first), 20)
+    as "the success block must carry the just-written line 20"
+  assert anchor == hashline.anchor("H15")
+  let second =
+    edit(
+      ctx,
+      "e.txt",
+      visible_digest(first),
+      replace_at(line, anchor, ["H15b"]),
+    )
+  assert second.is_error == False
+  let filesystem = ctx.filesystem
+  let assert Ok(bytes) = filesystem.read("/work/e.txt")
+  assert string.contains(
+    case bit_array.to_string(bytes) {
+      Ok(text) -> text
+      Error(Nil) -> ""
+    },
+    "\nH15b\nl16\n",
+  )
+}
+
+// --- a successful write's digest and fresh anchors -----------------------
+//
+// A write knew the exact content at the moment it wrote it, so making the
+// caller read the file back before it could edit it was a round trip for
+// information the harness already had.
+
+fn write(ctx: tool.Ctx, path: String, content: String) -> tool.ToolOutcome {
+  fs.write_tool().run(
+    ctx,
+    args([#("path", json.String(path)), #("content", json.String(content))]),
+  )
+}
+
+// The block a write returns must be what an `fs_read` of the file returns,
+// since a caller that used to read is now reading this instead.
+pub fn write_returns_the_same_anchors_a_read_would_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2\nl3\n"
+  let outcome = write(ctx, "w.txt", content)
+  assert outcome.is_error == False
+  let assert [summary, digest_line, heading, ..] =
+    string.split(first_text(outcome), "\n")
+  assert summary == "wrote 9 bytes to w.txt"
+  assert digest_line == "digest: " <> hashline.digest(content)
+  assert heading == "Fresh anchors:"
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(content, offset: 1, limit: 3))
+
+  // And byte-identical to the anchored lines of a read of the same file.
+  let read = fs.read_tool().run(ctx, args([#("path", json.String("w.txt"))]))
+  assert string.contains(first_text(read), fresh_block(outcome))
+}
+
+pub fn write_without_a_trailing_newline_anchors_its_last_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "l1\nl2\nno newline here"
+  let outcome = write(ctx, "w.txt", content)
+  assert outcome.is_error == False
+  assert fresh_block(outcome)
+    == hashline.render(hashline.window(content, offset: 1, limit: 3))
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/w.txt")
+    == Ok(<<"l1\nl2\nno newline here":utf8>>)
+}
+
+pub fn write_of_an_empty_file_reports_it_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let outcome = write(ctx, "w.txt", "")
+  assert outcome.is_error == False
+  assert first_text(outcome)
+    == "wrote 0 bytes to w.txt\ndigest: "
+    <> hashline.digest("")
+    <> "\n(the file is now empty)"
+}
+
+// An overwrite has to report the content it just wrote, not the content it
+// replaced — a stale digest here would reject every following edit.
+pub fn write_overwrite_returns_the_new_digest_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let first = write(ctx, "w.txt", "old\n")
+  let second = write(ctx, "w.txt", "new content\n")
+  assert second.is_error == False
+  assert visible_digest(second) == hashline.digest("new content\n")
+  assert visible_digest(second) != visible_digest(first)
+  assert string.contains(fresh_block(second), "|new content")
+}
+
+// The size check answers on its own here: anchored rendering is strictly
+// larger than the content, so a file already past the cap is never
+// annotated to discover it does not fit.
+pub fn write_of_a_large_file_falls_back_to_a_read_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let wide = string.repeat("z", 120)
+  let content =
+    list.map(upto_count(400), fn(i) { int.to_string(i) <> " " <> wide })
+    |> string.join("\n")
+    <> "\n"
+  let outcome = write(ctx, "big.txt", content)
+  assert outcome.is_error == False
+  assert string.ends_with(
+    first_text(outcome),
+    "Fresh anchors: the file is too large to echo; read the region you "
+      <> "intend to edit with fs_read, passing offset and limit",
+  )
+  assert string.byte_size(first_text(outcome)) < fs.max_fresh_anchor_bytes
+  assert fresh_block(outcome) == ""
+}
+
+// The property the write half exists for: an edit planned from nothing but
+// the write's own success text, with no read between them. The target is
+// the last line, which is also the case a caller most often wants after
+// writing a file.
+pub fn write_chains_into_an_edit_of_its_last_line_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "one\ntwo\nthree\n"
+  let written = write(ctx, "c.txt", content)
+  assert written.is_error == False
+  let assert Ok(#(line, anchor)) = anchored_pair(fresh_block(written), 3)
+    as "the write block must carry the last line"
+  let edited =
+    edit(
+      ctx,
+      "c.txt",
+      visible_digest(written),
+      replace_at(line, anchor, [
+        "THREE",
+      ]),
+    )
+  assert edited.is_error == False
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/c.txt") == Ok(<<"one\ntwo\nTHREE\n":utf8>>)
+}
+
+// The same chain over content with no trailing newline, since that is
+// where the last line's anchor and the file's ending byte interact.
+pub fn write_chains_into_an_edit_without_a_trailing_newline_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let written = write(ctx, "c.txt", "one\ntwo")
+  assert written.is_error == False
+  let assert Ok(#(line, anchor)) = anchored_pair(fresh_block(written), 2)
+    as "the write block must carry the unterminated last line"
+  let edited =
+    edit(
+      ctx,
+      "c.txt",
+      visible_digest(written),
+      replace_at(line, anchor, ["TWO"]),
+    )
+  assert edited.is_error == False
+  let filesystem = ctx.filesystem
+  assert filesystem.read("/work/c.txt") == Ok(<<"one\nTWO":utf8>>)
+}
+
+// One `line:anchor|text` row of a rendered block, parsed the way a model
+// would have to parse it.
+fn anchored_pair(block: String, line: Int) -> Result(#(Int, String), Nil) {
+  let wanted = int.to_string(line) <> ":"
+  use row <- result.try(
+    string.split(block, "\n")
+    |> list.find(fn(row) { string.starts_with(row, wanted) }),
+  )
+  use #(_number, rest) <- result.try(string.split_once(row, ":"))
+  use #(anchor, _text) <- result.try(string.split_once(rest, "|"))
+  Ok(#(line, anchor))
+}
+
+fn upto_count(n: Int) -> List(Int) {
+  upto_count_loop(n, [])
+}
+
+fn upto_count_loop(n: Int, built: List(Int)) -> List(Int) {
+  case n < 1 {
+    True -> built
+    False -> upto_count_loop(n - 1, [n, ..built])
+  }
 }

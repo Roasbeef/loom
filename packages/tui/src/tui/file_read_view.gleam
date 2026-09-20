@@ -1,4 +1,4 @@
-//// Human-readable projection of successful file reads.
+//// Human-readable projection of successful file reads and edits.
 //// Edit digests and line anchors stay in the recorded model result. Only the
 //// terminal projection removes them, retaining line numbers and source text.
 
@@ -30,6 +30,39 @@ pub fn render(text: String) -> String {
   lines
   |> list.map(fn(line) { result.unwrap(source_line(line), line) })
   |> string.join("\n")
+}
+
+// The heading a successful `fs_edit` opens its fresh-anchor block with.
+//
+// The producer is `tools/fs.fresh_anchors_heading`, in a package the
+// terminal has no dependency edge to, so the literal is repeated here
+// rather than shared. The coupling is deliberately weak: if the heading
+// ever changes on the producing side, the block stops being recognised
+// and is drawn instead of hidden, which is untidy rather than wrong.
+const fresh_anchors_heading = "Fresh anchors:"
+
+/// A successful edit's or write's summary without the fresh-anchor block
+/// it carries for the model.
+///
+/// The block is anchors and source text, the same payload `render` strips
+/// from a read, and the operator is reading this row to see that the tool
+/// landed — for an edit the patch preview beside it already shows what
+/// changed, and for a write the content came from the model in the first
+/// place. The recorded result keeps the block; only this projection drops
+/// it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert file_read_view.without_fresh_anchors(
+///   "applied 1 hunk(s) to a\ndigest: d\nFresh anchors:\n1:aaaaaaaa|x",
+/// ) == "applied 1 hunk(s) to a\ndigest: d"
+/// ```
+pub fn without_fresh_anchors(text: String) -> String {
+  case string.split_once(text, "\n" <> fresh_anchors_heading) {
+    Ok(#(summary, _block)) -> summary
+    Error(Nil) -> text
+  }
 }
 
 // Split only the framing delimiters. Colons, pipes and whitespace after the

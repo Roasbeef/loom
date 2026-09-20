@@ -1489,6 +1489,18 @@ fn ux_turns(
     4,
     "the first held provider request must be number four",
   ))
+
+  // A successful `fs_edit` returns the changed regions' anchors for the
+  // model. The transcript row says the edit landed and the patch preview
+  // below it shows what changed, so those anchors must not reach the
+  // screen — this is the one place both packages are loaded and the real
+  // tool has run, so it is where the two spellings of the heading meet.
+  use _ <- result.try(
+    ux_await(driver, "edit row without its fresh anchors", fn(sample) {
+      string.contains(sample.frame, "fs_edit")
+      && !string.contains(sample.frame, "Fresh anchors")
+    }),
+  )
   let _ =
     tui_driver.play(driver, [
       backend.Paste(ux_original()),

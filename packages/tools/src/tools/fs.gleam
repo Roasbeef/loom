@@ -983,8 +983,13 @@ pub fn write_tool() -> tool.Tool {
   tool.Tool(
     name: "fs_write",
     description: "Create or overwrite a whole file with the given content. "
-      <> "Parent directories are created as needed.",
-    prompt_snippet: Some("`fs_write` creates or replaces a whole file."),
+      <> "Parent directories are created as needed. A successful write "
+      <> "returns the file's digest and the anchors of what it wrote, so a "
+      <> "following fs_edit of the file needs no fs_read.",
+    prompt_snippet: Some(
+      "`fs_write` creates or replaces a whole file, and returns its digest "
+      <> "and anchors so a following edit needs no read.",
+    ),
     schema: tool.object_schema(
       [
         #(
@@ -1016,7 +1021,7 @@ fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     write_whole(filesystem: ctx.filesystem, resolved:, bytes:),
     fs_error_outcome,
   )
-  write_outcome(path, bytes)
+  write_outcome(path, content, bytes)
 }
 
 /// Creates any missing parent directories, then writes the whole file —
@@ -1050,18 +1055,61 @@ pub fn write_whole(
   filesystem.write(resolved, bytes)
 }
 
-fn write_outcome(path: String, bytes: BitArray) -> ToolOutcome {
+// A write's result carries what the next edit of the file needs.
+//
+// The first line is unchanged. After it comes the digest, always, because
+// it is one short line and `fs_edit` cannot be planned without it; then the
+// whole file's anchors under the same heading, through the same renderer
+// and the same cap as an edit's. Before this, a write followed by an edit
+// of the file just written always cost an `fs_read` in between, even though
+// the harness had the exact content in hand at the moment it wrote it.
+//
+// `fs_write`'s `content` is a required *string*, so a write is always text
+// and there is no binary or image payload for anchors to be wrong about.
+fn write_outcome(
+  path: String,
+  content: String,
+  bytes: BitArray,
+) -> ToolOutcome {
+  let size = bit_array.byte_size(bytes)
   tool.success(
     "wrote "
-    <> int.to_string(bit_array.byte_size(bytes))
+    <> int.to_string(size)
     <> " bytes to "
-    <> path,
+    <> path
+    <> "\ndigest: "
+    <> hashline.digest(content)
+    <> written_anchor_text(content, size),
   )
   |> tool.with_details(
-    json.Object([
-      #("path", json.String(path)),
-      #("bytes", json.Int(bit_array.byte_size(bytes))),
-    ]),
+    json.Object([#("path", json.String(path)), #("bytes", json.Int(size))]),
+  )
+}
+
+// The whole written file as one region, or the standing-in line when it is
+// too large.
+//
+// The size check comes first and decides on its own wherever it can:
+// anchored rendering is strictly larger than the content it renders, since
+// every line gains its number, its anchor and two delimiters, so a file
+// already at the cap cannot fit inside the block and there is no reason to
+// annotate it to find that out. Under the cap, the ordinary path runs and
+// the early-stop fold still has the final say — a file of very many very
+// short lines pays more in anchors than in content.
+fn written_anchor_text(content: String, size: Int) -> String {
+  use <- bool.lazy_guard(when: size >= max_fresh_anchor_bytes, return: fn() {
+    oversized_text(write_too_large(hashline.Region(start: 1, end: 1)))
+  })
+  let annotated = hashline.annotate(content)
+  let total_lines = list.length(annotated)
+
+  // An empty file yields `Region(1, 0)`, which `fresh_anchor_text` never
+  // renders: it answers the empty-file notice from `total_lines` first.
+  fresh_anchor_text(
+    [hashline.Region(start: 1, end: total_lines)],
+    annotated,
+    total_lines,
+    oversized: write_too_large,
   )
 }
 
@@ -1086,10 +1134,15 @@ pub fn edit_tool() -> tool.Tool {
     description: "Apply anchored edit hunks to a file. Pass the digest from "
       <> "fs_read's result text; each hunk references lines by the {line, anchor} "
       <> "pairs from fs_read. A stale anchor or a changed file rejects the "
-      <> "whole edit and returns fresh anchors and the fresh digest.",
+      <> "whole edit and returns fresh anchors and the fresh digest. A "
+      <> "successful edit returns the fresh digest and the fresh anchors of "
+      <> "the regions it changed, so a following edit of the same region "
+      <> "needs no fs_read.",
     prompt_snippet: Some(
       "`fs_edit` applies anchored hunks to a file, and rejects the patch "
-      <> "rather than corrupting a file that moved under you.",
+      <> "rather than corrupting a file that moved under you. A successful "
+      <> "edit returns the fresh digest and the changed regions' anchors, so "
+      <> "chained edits of one file need one read.",
     ),
     schema: edit_schema(),
     replay: tool.Safe,
@@ -1211,25 +1264,56 @@ fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   edit_outcome(path, content, hunks, edited)
 }
 
+/// The most the fresh-anchor block appended to a successful edit may
+/// occupy.
+///
+/// Eight kibibytes is roughly two thousand tokens, and it is the point
+/// where echoing the changed regions stops being cheaper than the
+/// windowed read it saves: past it the model is better served by the
+/// offset and a read of its own. A handful of hunks at three lines of
+/// context is a few hundred bytes, so the cap binds only on a rewrite
+/// that replaced most of a file — and it keeps the whole result an order
+/// of magnitude under `blob.overflow_threshold_bytes`, which the result
+/// must never reach.
+pub const max_fresh_anchor_bytes = 8192
+
 // The details carry the edit as a unified diff against the pre-image, so
-// a client can show what changed rather than how many hunks it took; the
-// model's own result text stays the one-line summary, since the model
-// wrote the hunks and does not need them read back.
+// a client can show what changed rather than how many hunks it took.
+//
+// The model's own result text opens with the same two lines it always
+// has — the hunk count and the new digest, in that order, which is what
+// the model and the terminal both already read off it — and then carries
+// the fresh anchors of the regions the edit changed. Without them a
+// success is a dead end for anchored editing: every applied hunk shifts
+// the anchors around it, so the next edit of the same region has no
+// current `{line, anchor}` pair to reference and the only way to get one
+// is to read the file again. Echoing them is what makes a chain of edits
+// on one file cost one read instead of one read per edit.
 fn edit_outcome(
   path: String,
   before: String,
   hunks: List(hashline.Hunk),
   edited: String,
 ) -> ToolOutcome {
-  let total_lines = list.length(hashline.split_lines(edited).lines)
+  // One annotation of the written content serves the line count, the
+  // regions' rendering, and nothing else re-walks the file.
+  let annotated = hashline.annotate(edited)
+  let total_lines = list.length(annotated)
   let digest = hashline.digest(edited)
+  let regions = hashline.applied_regions(hunks:, edited:)
   tool.success(
     "applied "
     <> int.to_string(list.length(hunks))
     <> " hunk(s) to "
     <> path
     <> "\ndigest: "
-    <> digest,
+    <> digest
+    <> fresh_anchor_text(
+      regions,
+      annotated,
+      total_lines,
+      oversized: edit_too_large,
+    ),
   )
   |> tool.with_details(
     json.Object([
@@ -1241,6 +1325,101 @@ fn edit_outcome(
       #("diff", json.String(hashline.render_diff(before, hunks))),
     ]),
   )
+}
+
+// The literal heading the fresh-anchor block opens with. The rejection
+// path spells it too, so `tools` has one spelling of it.
+const fresh_anchors_heading = "Fresh anchors:"
+
+// The changed regions rendered as anchored lines, or the one line that
+// stands in for them when they are too large to be worth echoing.
+//
+// `Fresh anchors:` is the heading a rejection already uses for the same
+// kind of payload, so a success and a failure read the same way and a
+// caller learns one shape rather than two. The lines are sliced out of the
+// file's own anchored lines and joined by `hashline.render_lines`, the
+// renderer `fs_read` renders a window with, so the block is
+// interchangeable with a windowed read of the same range and there is no
+// second renderer to drift.
+// `oversized` builds the one line that stands in for the block, given the
+// first region: an edit names the offset its own regions begin at, a write
+// has the whole file and so names the choice instead. It is a function
+// because it is the branch not taken on nearly every call.
+fn fresh_anchor_text(
+  regions: List(hashline.Region),
+  annotated: List(hashline.AnchoredLine),
+  total_lines: Int,
+  oversized oversized: fn(hashline.Region) -> String,
+) -> String {
+  let heading = "\n" <> fresh_anchors_heading <> "\n"
+  case regions, total_lines {
+    // A file with no lines has nothing to anchor. Saying so is the useful
+    // answer: the next write to it cannot reference a line, and
+    // `InsertAtStart` needs no anchor.
+    _, 0 -> "\n(the file is now empty)"
+    [], _ -> ""
+    [first, ..], _ ->
+      case rendered_regions(regions, annotated, string.byte_size(heading), []) {
+        Ok(blocks) -> heading <> string.join(blocks, with: "\n")
+        Error(Nil) -> oversized_text(oversized(first))
+      }
+  }
+}
+
+// The heading and the standing-in sentence, so both callers and the
+// size-only shortcut in `write_outcome` spell the fallback one way.
+fn oversized_text(sentence: String) -> String {
+  "\n" <> fresh_anchors_heading <> sentence
+}
+
+// What an edit says when its regions will not fit: the offset its own
+// first region starts at, which is the read that would return them.
+fn edit_too_large(first: hashline.Region) -> String {
+  " the changed regions are too large to echo; read them with fs_read offset "
+  <> int.to_string(first.start)
+}
+
+// What a write says when the file will not fit. Naming offset 1 would be
+// useless advice — the whole file is the changed region, and reading it
+// from the top is the read that did not fit — so this names the choice the
+// caller has to make instead.
+fn write_too_large(_first: hashline.Region) -> String {
+  " the file is too large to echo; read the region you intend to edit with "
+  <> "fs_read, passing offset and limit"
+}
+
+// The regions rendered in order, or `Error(Nil)` at the first one that
+// takes the running size past the cap.
+//
+// Stopping at the cap rather than after it is what keeps a large rewrite
+// cheap. Rendering every region and then measuring the whole block meant an
+// edit with two hundred hunks rendered two hundred regions in order to
+// throw all of them away — and when each region was built by windowing the
+// file afresh, that was a re-split and a re-annotate of the whole file per
+// region. Both costs are gone: the caller annotates once and this slices,
+// and the walk ends as soon as the answer is known to be the offset.
+fn rendered_regions(
+  regions: List(hashline.Region),
+  annotated: List(hashline.AnchoredLine),
+  size: Int,
+  built: List(String),
+) -> Result(List(String), Nil) {
+  case regions {
+    [] -> Ok(list.reverse(built))
+    [region, ..rest] -> {
+      let text =
+        annotated
+        |> list.drop(region.start - 1)
+        |> list.take(region.end - region.start + 1)
+        |> hashline.render_lines
+
+      // The joining newline counts against the cap too, so the size here
+      // is the size of the block this region would end up inside.
+      let size = size + string.byte_size(text) + 1
+      use <- bool.guard(when: size > max_fresh_anchor_bytes, return: Error(Nil))
+      rendered_regions(rest, annotated, size, [text, ..built])
+    }
+  }
 }
 
 fn decode_hunks(args: JsonValue) -> Result(List(hashline.Hunk), String) {
@@ -1368,7 +1547,9 @@ fn apply_error_outcome(
         <> "was planned against (or the edit already applied); re-plan "
         <> "against the fresh file.\ndigest: "
         <> digest
-        <> "\nFresh anchors:\n"
+        <> "\n"
+        <> fresh_anchors_heading
+        <> "\n"
         <> fresh_lines_text(fresh),
       )
       |> tool.with_details(

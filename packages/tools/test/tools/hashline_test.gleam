@@ -4,7 +4,8 @@ import gleam/string
 import support/generate
 import tools/hashline.{
   type Ref, AnchoredLine, Delete, InsertAfter, InsertAtStart, MalformedPlan,
-  OverlappingHunks, Plan, Ref, Replace, Split, StaleAnchors, StaleContent,
+  OverlappingHunks, Plan, Ref, Region, Replace, Split, StaleAnchors,
+  StaleContent,
 }
 
 // --- golden anchor vectors ----------------------------------------------
@@ -671,4 +672,242 @@ pub fn render_diff_handles_the_file_edges_test() {
       hashline.Delete(from: ref(1), to: ref(2)),
     ])
     == "@@ -1,2 +1,0 @@\n-a\n-b"
+}
+
+// --- applied_regions ------------------------------------------------------
+//
+// The arithmetic these pin is the one thing a successful edit's fresh
+// anchors rest on: where each hunk landed in the content that was written.
+// Every case states the post-image range with its three context lines
+// already applied and clamped, because that is what callers render.
+
+fn regions(
+  hunks: List(hashline.Hunk),
+  edited: String,
+) -> List(hashline.Region) {
+  hashline.applied_regions(hunks:, edited:)
+}
+
+pub fn applied_regions_covers_a_single_replace_test() {
+  let edited = "l1\nl2\nl3\nl4\nL5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n"
+  assert regions([Replace(from: ref(5), to: ref(5), lines: ["L5"])], edited)
+    == [Region(start: 2, end: 8)]
+}
+
+pub fn applied_regions_covers_an_insert_after_its_anchor_test() {
+  let edited = "l1\nl2\nl3\nl4\nl5\nX\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n"
+  assert regions([InsertAfter(at: ref(5), lines: ["X"])], edited)
+    == [Region(start: 3, end: 9)]
+}
+
+pub fn applied_regions_covers_a_delete_seam_test() {
+  let edited = "l1\nl2\nl3\nl4\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n"
+  assert regions([Delete(from: ref(5), to: ref(5))], edited)
+    == [Region(start: 2, end: 7)]
+}
+
+// The second hunk's anchors must sit at its *shifted* lines: the first
+// hunk added two lines, so what was line 11 is line 13 in the result.
+pub fn applied_regions_shifts_a_later_hunk_by_an_earlier_ones_delta_test() {
+  let edited = "l1\nA\nB\nC\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nL11\nl12\n"
+  assert regions(
+      [
+        Replace(from: ref(2), to: ref(2), lines: ["A", "B", "C"]),
+        Replace(from: ref(11), to: ref(11), lines: ["L11"]),
+      ],
+      edited,
+    )
+    == [Region(start: 1, end: 7), Region(start: 10, end: 14)]
+}
+
+pub fn applied_regions_merges_contexts_that_touch_test() {
+  let edited = "l1\nl2\nL3\nl4\nl5\nl6\nL7\nl8\nl9\nl10\nl11\nl12\n"
+  assert regions(
+      [
+        Replace(from: ref(3), to: ref(3), lines: ["L3"]),
+        Replace(from: ref(7), to: ref(7), lines: ["L7"]),
+      ],
+      edited,
+    )
+    == [Region(start: 1, end: 10)]
+}
+
+pub fn applied_regions_clamps_at_both_file_edges_test() {
+  let first = "L1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n"
+  assert regions([Replace(from: ref(1), to: ref(1), lines: ["L1"])], first)
+    == [Region(start: 1, end: 4)]
+
+  let last = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nL12\n"
+  assert regions([Replace(from: ref(12), to: ref(12), lines: ["L12"])], last)
+    == [Region(start: 9, end: 12)]
+}
+
+pub fn applied_regions_covers_an_insert_at_start_test() {
+  let edited = "Z\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n"
+  assert regions([InsertAtStart(lines: ["Z"])], edited)
+    == [Region(start: 1, end: 4)]
+}
+
+// A file whose every line went away has nothing left to anchor, and an
+// inverted range would be worse than none.
+pub fn applied_regions_of_an_emptied_file_is_empty_test() {
+  assert regions([Delete(from: ref(1), to: ref(12))], "") == []
+}
+
+pub fn applied_regions_handles_content_without_a_trailing_newline_test() {
+  let edited = "l1\nl2\nL3"
+  assert regions([Replace(from: ref(3), to: ref(3), lines: ["L3"])], edited)
+    == [Region(start: 1, end: 3)]
+}
+
+// --- applied_regions, swept ----------------------------------------------
+//
+// The three properties that make the ranges usable as anchors, over a
+// generated sweep of non-overlapping hunk sets. `support/generate` is the
+// package's own seeded generator, so no property-testing dependency is
+// introduced for this.
+
+pub fn applied_regions_sweep_holds_its_invariants_test() {
+  upto(200)
+  |> list.each(fn(n) {
+    let #(hunks, edited, total) = sweep_case(n)
+    let result = regions(hunks, edited)
+
+    // Every range lies inside the file that was written.
+    list.each(result, fn(region) {
+      assert region.start >= 1
+        && region.start <= region.end
+        && region.end <= total
+        as "a region left the file"
+    })
+
+    // Ranges come out ordered, and adjacency is merged away as well as
+    // overlap, so none begins where the previous ended or one line after.
+    assert list.sort(result, fn(a, b) { int.compare(a.start, b.start) })
+      == result
+      as "regions came back out of order"
+    assert separated(result) as "regions overlap or touch after merging"
+
+    // The ranges are inside the file, so a window read at each one comes
+    // back the full width asked for.
+    list.each(result, fn(region) {
+      let limit = region.end - region.start + 1
+      let window = hashline.window(edited, offset: region.start, limit:)
+      assert list.length(window.lines) == limit as "a window came back short"
+    })
+
+    // Coverage is the property that actually constrains the arithmetic:
+    // every line the hunks wrote has to fall inside some returned range.
+    // Without this the sweep passes for ranges that ignore the shift
+    // entirely, since unshifted ranges are still inside the file, still
+    // ordered and still separated — they simply point at the wrong lines.
+    let written =
+      list.filter(hashline.annotate(edited), fn(anchored) {
+        string.starts_with(anchored.text, sweep_marker)
+      })
+    assert written != [] as "the sweep generated a case that wrote nothing"
+    assert list.all(written, fn(anchored) {
+      list.any(result, fn(region) {
+        anchored.line >= region.start && anchored.line <= region.end
+      })
+    })
+      as "a written line fell outside every returned region"
+  })
+}
+
+// One generated case: a file, a set of non-overlapping single-line hunks
+// over it whose replacement lengths vary, and the content applying them
+// produces. `apply` does the splicing, so the sweep checks the arithmetic
+// against the real post-image rather than a second prediction of it.
+fn sweep_case(n: Int) -> #(List(hashline.Hunk), String, Int) {
+  let seed = generate.seed(n)
+  let #(requested, seed) = generate.int_between(seed, 4, 40)
+  let #(content, seed) = generate.content(seed, requested)
+
+  // The generator's line count is what it was asked for, not necessarily
+  // what the content splits into, and a reference past the end would be a
+  // bug in the sweep rather than in what it measures.
+  let line_count = list.length(hashline.split_lines(content).lines)
+  let #(hunks, _seed) = sweep_hunks(content, line_count, seed, 1, [])
+  let assert Ok(edited) =
+    hashline.apply(content, Plan(digest: hashline.digest(content), hunks:))
+    as "the sweep built a plan that did not apply"
+  #(hunks, edited, list.length(hashline.split_lines(edited).lines))
+}
+
+// The prefix every generated replacement line carries, so the coverage
+// check can find the written lines in the post-image. No fragment in
+// `support/generate`'s alphabet can produce it.
+const sweep_marker = "SWEEPWROTE"
+
+// Walks the file forwards taking at most every third line, so the hunks
+// cannot overlap however the coin lands.
+//
+// Line 1 is always a replacement of at least one line. That is what keeps
+// the coverage assertion from being vacuous: a case whose every hunk was a
+// deletion, or whose every coin came up tails, would write nothing and
+// have nothing to cover.
+fn sweep_hunks(
+  content: String,
+  line_count: Int,
+  seed: generate.Seed,
+  line: Int,
+  built: List(hashline.Hunk),
+) -> #(List(hashline.Hunk), generate.Seed) {
+  case line > line_count {
+    True -> #(built, seed)
+    False -> {
+      let #(take, seed) = generate.bool(seed)
+      let #(width, seed) = generate.int_between(seed, 0, 3)
+      let hunks = case line == 1 || take {
+        False -> built
+        True -> [sweep_hunk(content, line, forced_width(line, width)), ..built]
+      }
+      sweep_hunks(content, line_count, seed, line + 3, hunks)
+    }
+  }
+}
+
+fn forced_width(line: Int, width: Int) -> Int {
+  case line == 1 {
+    True -> int.max(width, 1)
+    False -> width
+  }
+}
+
+// Width 0 is a deletion, the case with no post-image lines of its own and
+// therefore the one worth generating often.
+fn sweep_hunk(content: String, line: Int, width: Int) -> hashline.Hunk {
+  let reference = ref_to(content, line)
+  case width {
+    0 -> Delete(from: reference, to: reference)
+    _ ->
+      Replace(
+        from: reference,
+        to: reference,
+        lines: list.map(upto(width), fn(i) {
+          sweep_marker <> " " <> int.to_string(line) <> "." <> int.to_string(i)
+        }),
+      )
+  }
+}
+
+// `1..n` inclusive; this stdlib has no `list.range`.
+fn upto(n: Int) -> List(Int) {
+  upto_loop(n, [])
+}
+
+fn upto_loop(n: Int, built: List(Int)) -> List(Int) {
+  case n < 1 {
+    True -> built
+    False -> upto_loop(n - 1, [n, ..built])
+  }
+}
+
+fn separated(regions: List(hashline.Region)) -> Bool {
+  case regions {
+    [] | [_] -> True
+    [first, second, ..rest] ->
+      second.start > first.end + 1 && separated([second, ..rest])
+  }
 }
