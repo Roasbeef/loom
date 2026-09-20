@@ -66,3 +66,11 @@ provider|provider@http_test|kills the node-wide httpc_manager and httpc_handler_
 # These tests set, clear and read the same process environment variables.
 # Concurrent test functions otherwise observe another test's identity.
 host|host@build_identity_test|sets and clears LOOM_BUILD_VERSION and LOOM_BUILD_COMMIT in the VM-wide process environment
+
+# --- the node-wide process list --------------------------------------------
+# This module differences `erlang:processes/0` and then forces a collection
+# and a suspension on everything the difference contains. A concurrent
+# sibling's processes are in that difference, so beside one it would collect
+# and freeze another module's actors — and a sibling actor that dies between
+# the census and the suspension answers `noproc`.
+client|client@assembly_heap_census_test|differences erlang:processes/0 and suspends what it finds; node-wide

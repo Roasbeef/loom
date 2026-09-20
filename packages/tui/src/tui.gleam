@@ -62,6 +62,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/file_read_view
 import tui/frame
+import tui/goal_view
 import tui/herdr
 import tui/history_view
 import tui/image_drop
@@ -615,6 +616,19 @@ pub type Model {
     nudges_awaiting: Option(String),
     /// Actual lane request ID, so an unrelated refusal cannot settle it.
     nudges_request: Option(Int),
+    /// The session goal as the server last rendered it. `None` is "nothing
+    /// observed", never "no goal is pinned" — that claim is a `NoGoal`
+    /// board, and only the server can make it.
+    goal: Option(goal_view.Board),
+    /// One goal read waiting for a free command lane.
+    goal_refresh: worktree_view.Refresh,
+    /// Attachment which owns the one issued goal command, read or mutation
+    /// alike, since both are answered with a board.
+    goal_awaiting: Option(String),
+    /// Actual lane request ID, so an unrelated refusal cannot settle it.
+    goal_request: Option(Int),
+    /// Whether the next board is the operator's own `/goal` question.
+    goal_report: GoalReport,
     help_open: Bool,
     notes_open: Bool,
     /// A dedicated view of captured edit diffs, without tool retries.
@@ -1091,6 +1105,11 @@ pub fn new_model_with_clock(
     nudges_refresh: worktree_view.Settled,
     nudges_awaiting: None,
     nudges_request: None,
+    goal: None,
+    goal_refresh: worktree_view.Settled,
+    goal_awaiting: None,
+    goal_request: None,
+    goal_report: HoldGoalReport,
     help_open: False,
     notes_open: False,
     diff_view: DiffAutomatic,
@@ -3887,9 +3906,18 @@ fn composer_status_lines(model: Model) -> List(String) {
     None -> []
     Some(board) -> advisor_pending.lines(board)
   }
+
+  // A pinned goal keeps one row above the nudges for as long as it is
+  // pinned. It is the standing objective the next prompt is written
+  // against, so unlike the nudge queue it is not consumed by a run start
+  // and does not disappear while the session works.
+  let goal = case model.goal {
+    None -> []
+    Some(board) -> goal_view.row(board)
+  }
   list.append(
     reviewer_status.lines(model.reviewer_rows, model.active_strand),
-    list.append(nudges, pending),
+    list.append(goal, list.append(nudges, pending)),
   )
 }
 
@@ -4296,6 +4324,7 @@ fn settle_update(
   }
   let updated = sync_context(model, updated)
   let updated = sync_advisor_nudges(model, updated)
+  let updated = sync_goal(model, updated)
   let published = publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
@@ -4405,9 +4434,13 @@ fn update_tick(model: Model) -> Model {
   let drained = drain_connection(switched, 64)
   let drained =
     tick_channel(
-      service_advisor_nudges_read(
-        service_context_read(
-          service_jobs_read(service_worktree_read(service_queue_read(drained))),
+      service_goal_read(
+        service_advisor_nudges_read(
+          service_context_read(
+            service_jobs_read(
+              service_worktree_read(service_queue_read(drained)),
+            ),
+          ),
         ),
       ),
     )
@@ -5665,6 +5698,11 @@ pub fn apply_channel_update(
           nudges_refresh: worktree_view.Settled,
           nudges_awaiting: None,
           nudges_request: None,
+          goal: None,
+          goal_refresh: worktree_view.Settled,
+          goal_awaiting: None,
+          goal_request: None,
+          goal_report: HoldGoalReport,
           worktree: case model.worktree.awaiting {
             Some(id) ->
               worktree_view.receive(
@@ -6446,6 +6484,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
     protocol.AdvisorPendingSnapshot(board) ->
       receive_advisor_nudges(model, board)
+    protocol.GoalSnapshot(board) -> receive_goal(model, board)
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
@@ -6660,6 +6699,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
     | protocol.AdvisorPendingSnapshot(..)
+    | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -7998,6 +8038,31 @@ pub const feed_header = "[advisor feed: what the primary did since your last rev
 @internal
 pub const feed_footer = "[end feed. Review it and answer with exactly one advise call.]"
 
+/// The first line of a goal feed — the slice the advisor judges an
+/// objective against (protocol 044 §3). It lands on the advisor's branch,
+/// beside the ordinary feed and recognized for the same reason.
+@internal
+pub const goal_feed_header = "[advisor goal feed: the primary stopped with the session's goal still open]"
+
+/// The last line of a goal feed.
+@internal
+pub const goal_feed_footer = "[end goal feed. Judge the objective against the evidence above and answer with exactly one advise call: continue, or complete when the objective is actually achieved.]"
+
+/// The first line of a goal continuation — the harness-authored turn that
+/// wakes the primary to keep working on the objective (protocol 044 §6).
+///
+/// It is a user message on the primary's own branch, so without this
+/// recognition it would draw as though the operator had typed it. Both this
+/// and the footer are required, like every other frame here: a model that
+/// quotes the header must not be able to promote its own output into the
+/// system voice.
+@internal
+pub const continuation_header = "[goal continuation]"
+
+/// The last line of a goal continuation.
+@internal
+pub const continuation_footer = "[end goal continuation. Continue the work; do not reply about the frame.]"
+
 // How much of a body the collapsed row shows. The same bound `composer`
 // previews an oversized paste with, and for the same reason: the pane wraps
 // what it is given, so this only has to keep one pathological line from
@@ -8018,6 +8083,15 @@ pub type AdvisorMessage {
   /// A window of the primary's branch, rendered for the advisor to review.
   /// It appears on the advisor's own branch and nowhere else.
   Feed(body: String)
+
+  /// The same window under the goal frame, which additionally names the
+  /// objective and the budget. Also the advisor's branch only.
+  GoalFeed(body: String)
+
+  /// The harness-authored turn that wakes the primary to continue a goal.
+  /// The one frame here that is neither advice nor a review: it is work to
+  /// do, drawn in the system voice because the operator did not type it.
+  Continuation(body: String)
 }
 
 /// Extracts advisor traffic from a durable message.
@@ -8063,8 +8137,10 @@ fn advisor_frame(text: String) -> Option(AdvisorMessage) {
   // order they are tried in decides nothing.
   use <- option.lazy_or(advice_frame(text))
   use <- option.lazy_or(nudges_frame(text))
+  use <- option.lazy_or(feed_frame(text))
+  use <- option.lazy_or(goal_feed_frame(text))
 
-  feed_frame(text)
+  continuation_frame(text)
 }
 
 fn advice_frame(text: String) -> Option(AdvisorMessage) {
@@ -8077,6 +8153,18 @@ fn nudges_frame(text: String) -> Option(AdvisorMessage) {
 
 fn feed_frame(text: String) -> Option(AdvisorMessage) {
   text |> framed_body(feed_header, feed_footer) |> option.map(Feed)
+}
+
+fn goal_feed_frame(text: String) -> Option(AdvisorMessage) {
+  text
+  |> framed_body(goal_feed_header, goal_feed_footer)
+  |> option.map(GoalFeed)
+}
+
+fn continuation_frame(text: String) -> Option(AdvisorMessage) {
+  text
+  |> framed_body(continuation_header, continuation_footer)
+  |> option.map(Continuation)
 }
 
 // The body between a header line and its footer, or nothing when the text
@@ -8163,6 +8251,10 @@ fn advisor_heading(value: AdvisorMessage) -> String {
       "advisor nudges (" <> int.to_string(nudge_count(body)) <> ")"
 
     Feed(..) -> "advisor feed"
+
+    GoalFeed(..) -> "advisor goal feed"
+
+    Continuation(..) -> "goal continuation"
   }
 }
 
@@ -8171,7 +8263,7 @@ fn advisor_heading(value: AdvisorMessage) -> String {
 // heading.
 fn advisor_preview(value: AdvisorMessage) -> String {
   case value {
-    Advice(body:) | Feed(body:) ->
+    Advice(body:) | Feed(body:) | GoalFeed(body:) | Continuation(body:) ->
       ": " <> compact(opening_line(body), advisor_preview_limit)
 
     Nudges(..) -> ""
@@ -10056,6 +10148,11 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Unschedule(..)
     | command.Fork(_)
     | command.Effort(_)
+    | command.GoalSet(..)
+    | command.GoalCheck(..)
+    | command.GoalClear
+    | command.GoalPause
+    | command.GoalResume
     | command.Compact
     | command.Abort
     | command.Steer(_)
@@ -10078,6 +10175,10 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.ContextAll
     | command.Details
     | command.Strand(_)
+    | command.GoalStatus
+    | command.GoalBudgetInvalid(_)
+    | command.GoalObjectiveTooLong(_)
+    | command.GoalCheckTooLong(_)
     | command.Clear
     | command.Quit
     | command.Unknown(_)
@@ -10334,6 +10435,85 @@ fn submit_text(model: Model) -> Model {
         ),
         protocol.set_thinking(cleared.next_id, cleared.active_strand, level),
       )
+    command.GoalStatus -> request_goal_status(cleared)
+
+    // Each mutation's confirmation waits for the board that commits it.
+    // The server answers every goal mutation with the fresh board or with
+    // a refusal, so the line belongs on the reply: printed on the way out
+    // it claimed a goal was pinned and was then followed by the sentence
+    // saying no advisor is routed.
+    command.GoalSet(objective:, token_budget:) ->
+      send_frame(
+        confirming(
+          cleared,
+          "goal pinned · budget "
+            <> int.to_string(token_budget)
+            <> " tokens · /goal --budget N sets it",
+        ),
+        protocol.goal_set(cleared.next_id, objective, token_budget),
+      )
+
+    // The confirmation names the command back, because an operator who
+    // mistyped it should see what the harness will run before the reviewer
+    // is shown its result.
+    command.GoalCheck(command: Some(check)) ->
+      send_frame(
+        confirming(cleared, "the goal check is " <> check),
+        protocol.goal_check(cleared.next_id, Some(check)),
+      )
+    command.GoalCheck(command: None) ->
+      send_frame(
+        confirming(cleared, "the goal check is cleared"),
+        protocol.goal_check(cleared.next_id, None),
+      )
+    command.GoalClear ->
+      send_frame(
+        confirming(cleared, "the session goal is cleared"),
+        protocol.goal_clear(cleared.next_id),
+      )
+    command.GoalPause ->
+      send_frame(
+        confirming(cleared, "the session goal is held"),
+        protocol.goal_pause(cleared.next_id),
+      )
+    command.GoalResume ->
+      send_frame(
+        confirming(cleared, "the session goal continues"),
+        protocol.goal_resume(cleared.next_id),
+      )
+
+    // The word is shown back because the operator has to see which of
+    // their words was read as the budget, and a goal must never be pinned
+    // to a spend nobody chose.
+    command.GoalBudgetInvalid(word) ->
+      append_error(
+        cleared,
+        "/goal --budget needs a positive token count, not \""
+          <> word
+          <> "\" · /goal <objective> pins the default budget instead",
+      )
+
+    // The count is shown because the operator has to know how much to cut,
+    // and the objective is not sent: the server refuses it on the same
+    // bound, and a round trip to be told so is a round trip wasted.
+    // The count is shown for the reason the objective's is: the operator has
+    // to know how much to cut, and the two bounds are different numbers.
+    command.GoalCheckTooLong(count) ->
+      append_error(
+        cleared,
+        "/goal check command is "
+          <> int.to_string(count)
+          <> " characters; the most a goal check may carry is "
+          <> int.to_string(command.check_limit),
+      )
+    command.GoalObjectiveTooLong(count) ->
+      append_error(
+        cleared,
+        "/goal objective is "
+          <> int.to_string(count)
+          <> " characters; the most a goal may carry is "
+          <> int.to_string(command.objective_limit),
+      )
     command.Compact ->
       send_frame(
         append_system(
@@ -10395,6 +10575,15 @@ fn submit_with_images(model: Model) -> Model {
     | command.Strand(_)
     | command.Fork(_)
     | command.Effort(_)
+    | command.GoalStatus
+    | command.GoalSet(..)
+    | command.GoalCheck(..)
+    | command.GoalClear
+    | command.GoalPause
+    | command.GoalResume
+    | command.GoalBudgetInvalid(_)
+    | command.GoalObjectiveTooLong(_)
+    | command.GoalCheckTooLong(_)
     | command.Compact
     | command.Abort
     | command.Steer(_)
@@ -11051,6 +11240,21 @@ fn apply_submission(
           Model(..model, context: context_view.sent(model.context, request_id))
         "live_jobs" -> Model(..model, jobs_request: Some(request_id))
         "advisor_pending" -> Model(..model, nudges_request: Some(request_id))
+
+        // Every goal command is answered with a board, so a mutation owns
+        // the same slot its read does: the server renders the fresh panel
+        // into the mutation's reply rather than making the terminal ask.
+        "goal_get"
+        | "goal_set"
+        | "goal_check"
+        | "goal_clear"
+        | "goal_pause"
+        | "goal_resume" ->
+          Model(
+            ..model,
+            goal_request: Some(request_id),
+            goal_awaiting: Some(queue_owner(model)),
+          )
         "worktree_diff" ->
           Model(
             ..model,
@@ -12176,6 +12380,202 @@ fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
   }
 }
 
+// --- the session goal -------------------------------------------------------
+
+/// Whether the board that arrives next is the operator's own question.
+///
+/// A named set rather than a boolean field, because the cases are
+/// different events: the operator asked `/goal` and is owed a block in the
+/// transcript, the operator asked for a change and is owed one line once it
+/// is committed, or the terminal refreshed the row beside the composer on
+/// its own and owes them nothing.
+pub type GoalReport {
+  /// The operator typed `/goal`; the next board is printed for them.
+  ReportGoal
+
+  /// The operator asked for a mutation and this line confirms it. The line
+  /// is held until the board arrives rather than printed at send time,
+  /// because a server that refuses the command answers with a refusal: a
+  /// confirmation printed on the way out would sit above the sentence
+  /// saying it did not happen.
+  ConfirmGoal(line: String)
+
+  /// An automatic refresh. The row is updated and nothing is printed.
+  HoldGoalReport
+}
+
+/// What one model transition asks of the goal panel.
+pub type GoalAction {
+  /// The goal may have moved; one read is worth its round trip.
+  ReadGoal
+
+  /// Nothing the panel depends on moved.
+  HoldGoal
+}
+
+/// Whether this transition is worth one goal read.
+///
+/// The three edges the pending-nudge panel reads on are all goal edges too:
+/// the primary settling is where a continuation is decided, a review
+/// settling is where the `complete` verdict lands, and the primary first
+/// appearing in the roster is the attachment edge where nothing is known
+/// yet. The goal adds one the queue does not have — the primary *starting*
+/// a run — because a goal continuation is exactly such a start, and it is
+/// the transition that moves `continuations`, the accounting and, at the
+/// bounds, the status.
+///
+/// Unlike the nudge queue, no transition clears the board: a goal is pinned
+/// until the operator unpins it, and a run in flight is the goal working
+/// rather than evidence that it is gone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.goal_action(before, after)
+/// ```
+@internal
+pub fn goal_action(before: Model, after: Model) -> GoalAction {
+  let started =
+    !strand_running(before, advisor_pending.primary_strand)
+    && strand_running(after, advisor_pending.primary_strand)
+
+  case started, advisor_nudges_action(before, after) {
+    True, _ -> ReadGoal
+    False, ReadNudges -> ReadGoal
+    False, DropNudges | False, HoldNudges -> HoldGoal
+  }
+}
+
+fn sync_goal(before: Model, after: Model) -> Model {
+  case goal_action(before, after) {
+    HoldGoal -> after
+    ReadGoal -> Model(..after, goal_refresh: worktree_view.Requested)
+  }
+}
+
+// The operator's own `/goal`. The panel is printed when the board arrives
+// rather than from whatever is held, because a status the operator asked
+// for must be the current one and the row beside the composer may be as
+// old as the last edge.
+// Arms the one line a committed goal mutation prints. The board that
+// commits it is the mutation's own reply, so nothing else has to be
+// scheduled: `report_goal` finds the line where `receive_goal` leaves it.
+fn confirming(model: Model, line: String) -> Model {
+  Model(..model, goal_report: ConfirmGoal(line:))
+}
+
+fn request_goal_status(model: Model) -> Model {
+  Model(..model, goal_refresh: worktree_view.Requested, goal_report: ReportGoal)
+}
+
+// The read waits for a free command lane like every other observation.
+fn service_goal_read(model: Model) -> Model {
+  case model.channel, model.goal_refresh, model.peer {
+    Some(channel), worktree_view.Requested, Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_frame(
+            Model(..model, goal_refresh: worktree_view.Settled),
+            protocol.goal_get(model.next_id),
+          )
+        False -> model
+      }
+
+    // A request that cannot be sent is dropped rather than left standing,
+    // and an operator who asked for the panel is told why it is not coming
+    // instead of watching for it.
+    _, worktree_view.Requested, _ -> unreachable_goal(model)
+
+    _, worktree_view.Settled, _ -> model
+  }
+}
+
+fn unreachable_goal(model: Model) -> Model {
+  let settled = Model(..model, goal_refresh: worktree_view.Settled)
+  case model.goal_report {
+    HoldGoalReport -> settled
+
+    ReportGoal | ConfirmGoal(..) ->
+      append_error(
+        Model(..settled, goal_report: HoldGoalReport),
+        "the session goal cannot be read: no conversation is attached",
+      )
+  }
+}
+
+// Only the attachment that asked may be answered. Request ids restart with
+// an attachment, so the owner is what tells a fresh board from a stale one.
+fn receive_goal(model: Model, board: goal_view.Board) -> Model {
+  case model.goal_awaiting == Some(queue_owner(model)) {
+    False -> model
+
+    True ->
+      report_goal(
+        Model(
+          ..model,
+          goal: Some(board),
+          goal_awaiting: None,
+          goal_request: None,
+        ),
+        board,
+      )
+  }
+}
+
+// The operator's own question is answered in the transcript, in the system
+// voice, because the status block is several lines and the band beside the
+// composer holds one. An automatic refresh updates the row and prints
+// nothing.
+fn report_goal(model: Model, board: goal_view.Board) -> Model {
+  case model.goal_report {
+    HoldGoalReport -> invalidate_frame(model)
+
+    // A committed mutation prints its one line here and nothing else. The
+    // fresh board is already in the model, so the row beside the composer
+    // carries the new state and a second block would repeat it.
+    ConfirmGoal(line:) ->
+      Model(..model, goal_report: HoldGoalReport)
+      |> append_system(line)
+      |> invalidate_frame
+
+    ReportGoal ->
+      goal_view.lines(board)
+      |> list.fold(Model(..model, goal_report: HoldGoalReport), append_system)
+      |> invalidate_frame
+  }
+}
+
+// A refused goal command, worded once. A refusal answering a request this
+// terminal no longer owns says nothing about the goal it is watching now.
+fn refuse_goal(
+  model: Model,
+  command: String,
+  request_id: Int,
+  code: String,
+  message: String,
+) -> Model {
+  use <- bool.guard(model.goal_request != Some(request_id), model)
+  let cleared =
+    Model(
+      ..model,
+      goal: None,
+      goal_request: None,
+      goal_awaiting: None,
+      goal_report: HoldGoalReport,
+    )
+
+  // An automatic refresh the operator never asked for stays silent: an
+  // older daemon refuses every one of them, and a row per idle boundary
+  // would be a scrolling complaint about a feature this session lacks. A
+  // mutation and an explicit `/goal` are always the operator's own.
+  use <- bool.guard(
+    model.goal_report == HoldGoalReport && command == "goal_get",
+    cleared,
+  )
+
+  append_error(cleared, goal_view.refusal(code, message))
+}
+
 fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
@@ -12409,6 +12809,13 @@ fn apply_request_refused(
       context: context_view.refused(model.context, request_id, code, message),
     )
     |> invalidate_frame
+  })
+
+  // Every goal command is refused worded and nowhere else: an older daemon
+  // refuses all five, and an operator watching a panel fail to appear has
+  // no way to tell that from a session with no goal.
+  use <- bool.lazy_guard(string.starts_with(command, "goal_"), fn() {
+    refuse_goal(model, command, request_id, code, message)
   })
   let reason = code <> ": " <> message
   let updated = case command {

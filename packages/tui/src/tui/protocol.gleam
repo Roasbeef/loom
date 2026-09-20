@@ -14,6 +14,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import tui/advisor_pending
 import tui/context_view
+import tui/goal_view
 import tui/live_jobs
 import tui/notes_view
 import tui/queue_editor
@@ -137,6 +138,12 @@ pub type Event {
   /// The advisor's undelivered nudge queue, observed while the primary is
   /// idle. Not a transcript row: nothing here has reached the model.
   AdvisorPendingSnapshot(board: advisor_pending.Board)
+
+  /// The session goal, observed without touching it (protocol 044). It
+  /// answers `goal_get` and every goal mutation alike: the server renders
+  /// the fresh board into the mutation's own reply, so a status flip costs
+  /// one round trip rather than two.
+  GoalSnapshot(board: goal_view.Board)
 
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
@@ -586,6 +593,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ContextSnapshot(_)
     | LiveJobsSnapshot(_)
     | AdvisorPendingSnapshot(_)
+    | GoalSnapshot(_)
     | SchedulesSnapshot(_)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
@@ -731,6 +739,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "advisor_pending" -> {
       use board <- result.try(required_value(fields, "board"))
       advisor_pending.decode(board) |> result.map(AdvisorPendingSnapshot)
+    }
+    "goal" -> {
+      use board <- result.try(required_value(fields, "board"))
+      goal_view.decode(board) |> result.map(GoalSnapshot)
     }
     "context" -> {
       use board <- result.try(required_value(fields, "board"))
@@ -1191,6 +1203,90 @@ pub fn live_jobs(id: Int, strand: String) -> String {
 /// ```
 pub fn advisor_pending(id: Int) -> String {
   command(id, "advisor_pending", [])
+}
+
+/// Reads the session goal without touching it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_get(11)
+/// ```
+pub fn goal_get(id: Int) -> String {
+  command(id, "goal_get", [])
+}
+
+/// Pins or replaces the session goal.
+///
+/// The budget is required by the wire, so the terminal always sends one:
+/// `command.default_goal_budget` when the operator named no number.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_set(12, "get the branch green", 200_000)
+/// ```
+pub fn goal_set(id: Int, objective: String, token_budget: Int) -> String {
+  command(id, "goal_set", [
+    #("objective", json.String(objective)),
+    #("token_budget", json.Int(token_budget)),
+  ])
+}
+
+/// Sets the check the harness runs before each goal feed, or clears it.
+///
+/// An absent `command` is how the wire spells a clear, so `None` sends a
+/// body with no field in it rather than a null: the server reads absence as
+/// the clear, and a second spelling of one state is a second thing to keep in
+/// step (protocol 044 §8).
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_check(13, option.Some("make check"))
+/// ```
+///
+/// ```gleam
+/// protocol.goal_check(13, option.None)
+/// ```
+pub fn goal_check(id: Int, command_text: Option(String)) -> String {
+  command(id, "goal_check", case command_text {
+    None -> []
+    Some(text) -> [#("command", json.String(text))]
+  })
+}
+
+/// Unpins the session goal whatever its status.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_clear(13)
+/// ```
+pub fn goal_clear(id: Int) -> String {
+  command(id, "goal_clear", [])
+}
+
+/// Holds the session goal without unpinning it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_pause(14)
+/// ```
+pub fn goal_pause(id: Int) -> String {
+  command(id, "goal_pause", [])
+}
+
+/// Continues a held or tripped session goal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.goal_resume(15)
+/// ```
+pub fn goal_resume(id: Int) -> String {
+  command(id, "goal_resume", [])
 }
 
 /// Requests one page of loaded skill commands from the attached daemon.

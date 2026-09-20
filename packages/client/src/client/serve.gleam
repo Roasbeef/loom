@@ -50,6 +50,9 @@ import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/git_identity
+import client/goalcheck
+import client/goalcommand
+import client/goalloop
 import client/history
 import client/hookcompat
 import client/hookrunner
@@ -81,7 +84,7 @@ import client/system_prompt
 import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
-import core/ids
+import core/ids.{type OpId}
 import events/bus
 import filepath
 import gleam/bit_array
@@ -501,6 +504,18 @@ pub type Instance {
     /// by a commit hint — so its name has nothing to do with
     /// `subscribers:` the way `rulescan`'s does.
     schedulescan: Option(address.Address(schedulescan.Message)),
+    /// The operator's goal commands over the advisor actor, or `None` on
+    /// a boot that routes no advisor — the same gate the gateway's
+    /// `goal_control` seam answers `unsupported` through. Carried so a
+    /// host fixture can drive the goal the way the gateway does without
+    /// booting the listener, and so the daemon's attach path can fill
+    /// the gateway's option from the one place the wiring exists.
+    goal: Option(goalcommand.Seam),
+    /// The advisor's abort notice, or `None` on a boot that routes no
+    /// advisor. The gateway's abort handler casts it for the TUI's abort
+    /// command; a host with its own abort door holds the same notice so
+    /// its runtime-level aborts reach the goal loop the same way.
+    goal_abort: Option(fn(OpId) -> Nil),
     /// The distillation worker's name, or `None` on a boot that runs no
     /// pass — `memory.distill = "off"`, or a catalogue that routes
     /// nothing the pipeline could ask. A name for the reason
@@ -2908,6 +2923,14 @@ fn assemble_in(
         // so a captured runtime would be a value cycle.
         runtime: fn() { agency.borrow_runtime(agency_config) },
         settings: advisor_settings,
+        check: goal_check_wiring(
+          settings,
+          broker_actor,
+          base_policy,
+          environment,
+          clock,
+          entropy(),
+        ),
         clock:,
         logger:,
         name: advisor_name,
@@ -3209,14 +3232,19 @@ fn assemble_in(
         subagent: agency.is_subagent,
       ),
       fn(runtime) {
+        // A drain needs the supervision tree and nothing else, so it is
+        // handed the tree rather than the runtime it hangs off. This
+        // closure is not called here: `custody.publish` sends it to the
+        // instance owner, which holds it in `cleanups` for the life of the
+        // session. A closure over `runtime` therefore put a whole
+        // `Effects` graph into that owner's heap, one per session.
+        let tree = runtime.tree
+
         retain(
           owner,
           custody.Runtime,
           fn() {
-            runtime_supervisor.shutdown(
-              runtime.tree,
-              grace_ms: service_grace_ms,
-            )
+            runtime_supervisor.shutdown(tree, grace_ms: service_grace_ms)
             |> result.replace_error("runtime drain was not confirmed")
           },
           fn() { process.unlink(builder) },
@@ -3387,6 +3415,19 @@ fn assemble_in(
             // looking for it. The host owns both halves, so the host
             // joins them.
             |> hub.with_effect_abort(fn(op) { broker.abort(broker_actor, op) })
+            // The operator's abort reaches the advisor's goal loop the
+            // same way it reaches the effect plane: the gateway is the
+            // one place an abort enters, and an aborted run never fires
+            // the run-end hook the advisor listens on. The cast is
+            // dropped if the actor is absent, which is the same loss the
+            // advisor's own run-end casts already tolerate.
+            |> with_goal_abort(advisor_wiring)
+            // The operator's five goal commands, over the same wiring
+            // the abort notice rides. Without this the gateway holds no
+            // seam and every goal mutation answers `code_unsupported` —
+            // a session with a routed advisor telling its operator it
+            // has no reviewer.
+            |> with_goal_control(advisor_wiring)
             |> with_schedule_admin(schedule_admin),
           name,
         )
@@ -3430,6 +3471,8 @@ fn assemble_in(
     broker: broker_actor,
     pool:,
     gateway: hub.Gateway(name:),
+    goal: option.map(advisor_wiring, goalcommand.seam),
+    goal_abort: option.map(advisor_wiring, advisor.abort_notice),
     services: started_services.pid,
     namespace:,
     stops:,
@@ -5681,6 +5724,47 @@ fn jobs_wiring(
 /// pool, matching the tool plane's own `broker_timeout_ms`.
 pub const jobs_clearance_ms = 30_000
 
+// How this session runs the operator's goal check.
+//
+// The seven fields are the jobs wiring's, for the same reason: the broker
+// seam is `tools/tool.broker_runner`, the closure the `bash` tool clears
+// through, so a check admits under exactly the rules a model-authored
+// command does. What differs is only the operation it is attributed to — an
+// attribution-only one of its own, minted here the way a hook's is, so
+// nothing can abort a check out from under the loop — and the step, which is
+// its own name so the pooled execution budget is not shared with the hooks'.
+//
+// The wall is `client/goalloop`'s constant, and the same number reaches the
+// process's own limit and the durable `Checking` deadline, so a restarted
+// actor cannot be waiting on a process the sandbox has already killed.
+fn goal_check_wiring(
+  settings: Settings,
+  broker_actor: Broker,
+  base_policy: policy.SandboxPolicy,
+  environment: List(#(String, String)),
+  clock: Clock,
+  seed: Int,
+) -> goalcheck.Wiring {
+  let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+
+  goalcheck.wiring(
+    goalcheck.Runner(
+      clear_call: tool.broker_runner(
+        broker: broker_actor,
+        waiting: jobs_clearance_ms,
+      ),
+      base_policy:,
+      demand: settings.demand,
+      env: environment,
+      workspace: settings.workspace,
+      clock:,
+      op_id:,
+      clearance_ms: jobs_clearance_ms,
+    ),
+    timeout_ms: goalloop.check_timeout_ms,
+  )
+}
+
 // How this session reaches its schedule store, or `None` when the
 // operator shut the door — which registers none of the three tools and
 // routes none of the three capabilities, rather than offering doors that
@@ -5733,6 +5817,35 @@ fn with_advisor(
   case wiring {
     None -> hooks
     Some(wiring) -> advisor.hooks(hooks, wiring)
+  }
+}
+
+// The gateway's goal-abort seam, filled only when this session wires
+// an advisor — the same posture `with_advisor` takes, because a host
+// with no advisor has no goal loop to notify and the seam's `None` is
+// what makes the gateway skip the cast entirely.
+fn with_goal_abort(
+  options: hub.Options,
+  wiring: Option(advisor.Wiring),
+) -> hub.Options {
+  case wiring {
+    None -> options
+    Some(wiring) -> hub.with_goal_abort(options, advisor.abort_notice(wiring))
+  }
+}
+
+// The gateway's goal command seam, on the same posture `with_goal_abort`
+// takes and for the same reason: the actor that answers these calls
+// exists only where an advisor is routed, and the seam's `None` is what
+// makes the gateway refuse the commands in words rather than send them
+// to an address nobody holds.
+fn with_goal_control(
+  options: hub.Options,
+  wiring: Option(advisor.Wiring),
+) -> hub.Options {
+  case wiring {
+    None -> options
+    Some(wiring) -> hub.with_goal_control(options, goalcommand.seam(wiring))
   }
 }
 

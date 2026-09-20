@@ -133,6 +133,7 @@ import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
+import runtime/residency
 import simplifile
 import tom
 import tools/bash
@@ -768,6 +769,7 @@ pub fn start(
     let _stopped = stop_every_job(state)
     Nil
   })
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

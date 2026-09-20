@@ -63,6 +63,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import runtime/effects.{type Effects}
+import runtime/residency
 import simplifile
 import weft/actor
 
@@ -653,6 +654,7 @@ pub fn wire(
         }
       }
     })
+    |> actor.hibernate_after(residency.hibernate_after_ms)
     |> actor.start
     |> result.map(fn(started) { started.data })
   use counters <- result.try(

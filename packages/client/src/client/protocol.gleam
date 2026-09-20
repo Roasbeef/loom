@@ -202,6 +202,43 @@ pub type Command {
   /// only repeat the answer or contradict it.
   AdvisorPendingGet
 
+  /// Pins or replaces the session's goal (protocol 044). The objective
+  /// is the operator's text; `token_budget` is a required positive
+  /// number of primary tokens, because v1 has no unbounded goals — the
+  /// loop's other bounds are harness constants, not operator choices.
+  GoalSet(
+    objective: String,
+    token_budget: Int,
+    /// The check to pin with the objective, or `None` to leave whatever
+    /// check the goal already carries (protocol 044 §8).
+    check: Option(String),
+  )
+
+  /// Sets or clears the check the harness runs before each goal feed,
+  /// without touching the objective.
+  ///
+  /// Its own command rather than a `goal_set` argument because `goal_set`
+  /// with an unchanged objective is defined as a refresh, and a refresh
+  /// clears the loop's bound counters and its phase: an operator who wants
+  /// the reviewer to start seeing `make check` should not have to reset the
+  /// loop to ask for it. An absent or empty `command` clears the check.
+  GoalCheck(command: Option(String))
+
+  /// Reads the session's goal without touching it. Answered by a
+  /// `goal` snapshot; a session with no goal answers an empty board
+  /// rather than a refusal, because "nothing pinned" is a real state.
+  GoalGet
+
+  /// Clears the goal whatever its status.
+  GoalClear
+
+  /// Holds the goal. Pausing a paused goal is a committed no-op.
+  GoalPause
+
+  /// Continues a held or tripped goal. A complete goal refuses, because
+  /// completion is the reviewer's verdict, not a status to undo.
+  GoalResume
+
   /// Observes one strand's context without running hooks or a model.
   ContextGet(strand: String)
 
@@ -277,6 +314,9 @@ pub type Snapshot {
 
   /// The advisor's queued nudges, observed without delivering them.
   AdvisorPendingSnapshot(board: JsonValue)
+
+  /// The session's goal, observed without touching it (protocol 044).
+  GoalSnapshot(board: JsonValue)
 
   /// Bounded asynchronous context accounting.
   ContextSnapshot(board: JsonValue)
@@ -784,6 +824,25 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       json.Object([#("strand", json.String(strand))]),
     )
     AdvisorPendingGet -> #("advisor_pending", json.Object([]))
+    GoalSet(objective:, token_budget:, check:) -> #(
+      "goal_set",
+      json.Object([
+        #("objective", json.String(objective)),
+        #("token_budget", json.Int(token_budget)),
+        // Absent rather than null when the operator named none, because
+        // absent is what the decoder reads as "leave the check alone" and
+        // a null would have to mean the same thing twice.
+        ..named_check("check", check)
+      ]),
+    )
+    GoalCheck(command:) -> #(
+      "goal_check",
+      json.Object(named_check("command", command)),
+    )
+    GoalGet -> #("goal_get", json.Object([]))
+    GoalClear -> #("goal_clear", json.Object([]))
+    GoalPause -> #("goal_pause", json.Object([]))
+    GoalResume -> #("goal_resume", json.Object([]))
     ListModels -> #("models", json.Object([]))
     ListSkills(offset) -> #(
       "skills",
@@ -1036,6 +1095,45 @@ fn decode_command_body(
     "advisor_pending" -> {
       use _ <- result.try(body_fields(body))
       Ok(AdvisorPendingGet)
+    }
+    "goal_set" -> {
+      use fields <- result.try(body_fields(body))
+      use raw <- result.try(required_string(fields, "objective"))
+      use objective <- result.try(bounded_objective(raw))
+      use check <- result.try(optional_bounded_check(fields, "check"))
+      use budget <- result.try(nonnegative_field(fields, "token_budget"))
+      case budget > 0 {
+        True -> Ok(GoalSet(objective:, token_budget: budget, check:))
+
+        // v1 has no unbounded goals, so a zero budget is a typo rather
+        // than a wish, and the refusal says so rather than clamping.
+        False -> Error("token_budget must be a positive number of tokens")
+      }
+    }
+
+    // Empty-bodied reads and status flips, tolerant of a later field for
+    // the reason `advisor_pending` is: a newer client's frame must not
+    // become an older server's refusal.
+    "goal_get" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalGet)
+    }
+    "goal_check" -> {
+      use fields <- result.try(body_fields(body))
+      use command <- result.try(optional_bounded_check(fields, "command"))
+      Ok(GoalCheck(command:))
+    }
+    "goal_clear" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalClear)
+    }
+    "goal_pause" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalPause)
+    }
+    "goal_resume" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(GoalResume)
     }
     "context" -> {
       use fields <- result.try(body_fields(body))
@@ -1309,6 +1407,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
         #("mode", json.String("advisor_pending")),
         #("board", board),
       ])
+    GoalSnapshot(board:) ->
+      json.Object([#("mode", json.String("goal")), #("board", board)])
     QueuedInputSnapshot(board:) ->
       json.Object([
         #("mode", json.String("queued_input")),
@@ -1877,6 +1977,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       )
       Ok(SnapshotEvent(AdvisorPendingSnapshot(board:)))
     }
+    "goal" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing goal board"),
+      )
+      Ok(SnapshotEvent(GoalSnapshot(board:)))
+    }
     "queued_input" -> {
       use board <- result.try(
         list.key_find(fields, "board")
@@ -2314,6 +2421,100 @@ fn body_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), String) {
   case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("a json object body")
+  }
+}
+
+/// The longest objective `goal_set` accepts, in characters (protocol 044
+/// §1).
+///
+/// It is enforced here rather than left to the cell, and that is the point
+/// of having a number at all: the objective is rendered into every goal
+/// feed the reviewer reads and into every board the terminal draws, and a
+/// pasted twenty-kilobyte objective was accepted by the server and then
+/// refused by every client that tried to show it — a goal the operator
+/// could pin and never see.
+pub const objective_limit = 4000
+
+// The objective, trimmed and bounded. Trimmed because a goal whose
+// objective is whitespace names nothing and the cell's own decoder refuses
+// the empty string, so accepting it here would pin a goal that cannot be
+// read back. The refusal carries both counts, because "too long" without
+// the numbers leaves the operator trimming by guesswork.
+fn bounded_objective(raw: String) -> Result(String, String) {
+  let objective = string.trim(raw)
+  let length = string.length(objective)
+
+  case objective, length > objective_limit {
+    "", _empty -> Error("objective must not be empty")
+
+    _text, True ->
+      Error(
+        "objective is "
+        <> int.to_string(length)
+        <> " characters; the most a goal may carry is "
+        <> int.to_string(objective_limit),
+      )
+
+    _text, False -> Ok(objective)
+  }
+}
+
+// The check command as a body field, present only when there is one. An
+// absent field is what both decoders read as "the operator named none",
+// which `goal_set` takes as leave-it-alone and `goal_check` as clear-it, so
+// a null would be a third spelling of a state that already has one.
+fn named_check(
+  key: String,
+  command: Option(String),
+) -> List(#(String, JsonValue)) {
+  case command {
+    None -> []
+    Some(text) -> [#(key, json.String(text))]
+  }
+}
+
+/// The longest check command `goal_set` and `goal_check` accept, in
+/// characters (protocol 044 §8).
+///
+/// A shell command an operator would type to find out whether the work is
+/// done is a line or two — `make check`, `go test ./... 2>&1 | tail -40` —
+/// so this is generous by an order of magnitude and still small enough that
+/// the cell, the panel row and the feed frame can each carry it whole. It is
+/// bounded server-side for the reason the objective is: the command is
+/// rendered into every goal feed the reviewer reads, and a pasted script
+/// accepted here would be a check the operator could pin and never see.
+pub const check_limit = 1000
+
+// The check command, trimmed and bounded, absent or empty being no check.
+//
+// Empty and absent are the same answer deliberately: a terminal clearing the
+// check sends the command away, and a terminal that sends an empty string
+// means the same thing. The refusal carries both counts, because "too long"
+// without the numbers leaves the operator trimming by guesswork.
+fn optional_bounded_check(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Option(String), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+
+    Ok(json.String(raw)) ->
+      case string.trim(raw), string.length(string.trim(raw)) > check_limit {
+        "", _empty -> Ok(None)
+
+        command, True ->
+          Error(
+            key
+            <> " is "
+            <> int.to_string(string.length(command))
+            <> " characters; the most a goal check may carry is "
+            <> int.to_string(check_limit),
+          )
+
+        command, False -> Ok(Some(command))
+      }
+
+    Ok(_other) -> Error(key <> " must be a string")
   }
 }
 

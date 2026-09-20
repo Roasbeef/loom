@@ -4,12 +4,19 @@
 %% inside the daemon: every measurement is an rpc:call of a standard OTP MFA,
 %% so the daemon needs no probe code loaded and no diagnostics endpoint. See
 %% docs/design-notes/daemon-memory.md for what the numbers were used to decide.
+%%
+%% The reach is net_kernel:connect_node/1 rather than net_adm:ping/1. Ping
+%% resolves the node's host through inet, and on a macOS host whose short
+%% hostname resolves to an address the machine does not answer on it returns
+%% pang for a node that is running and reachable. That failure is silent in the
+%% enclosing script: every BEAM cut is lost while the OS numbers beside it look
+%% fine. Name both nodes <name>@127.0.0.1 and the connection succeeds.
 -module(mem_report).
 -export([main/1]).
 
 main([NodeStr, Label, Mode]) ->
     Node = list_to_atom(NodeStr),
-    pong = net_adm:ping(Node),
+    true = net_kernel:connect_node(Node),
     collect(Node, Mode),
     io:format("### cut: ~s  (~s)~n", [Label, NodeStr]),
     memory(Node),

@@ -69,6 +69,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
+import runtime/residency
 import runtime/writer
 import simplifile
 import storage/sqlite
@@ -413,6 +414,7 @@ pub fn start(
   })
   |> actor.addressed(config.name)
   |> actor.on_message(handle)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

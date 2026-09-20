@@ -335,6 +335,46 @@ pub fn put_fact_refuses_the_advisor_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// The goal loop's one cell is closed to the model's own door.
+//
+// `goal/state` is the session's persistent objective with its status
+// and accounting (protocol 044). A forged write of a reset
+// `tokens_used`, or of a `status` the model chose itself, is a model
+// faking its own budget or waking itself in a loop — the same attack
+// the advisor prefix stops, and the same two locks.
+pub fn put_fact_refuses_the_goal_prefix_test() {
+  let rt = fact_runtime()
+  assert api.reserved_fact_key("goal/state")
+  assert api.reserved_fact_key(api.goal_fact_prefix)
+  assert !api.reserved_fact_key("agent/main/goal")
+
+  let assert Error(api.ReservedFactKey(key: "goal/state")) =
+    api.put_fact(rt, "goal/state", json.String("forged"))
+    as "the goal cell is not the model's to write"
+
+  // Nor by the compare-and-set door, which is the same reservation read
+  // from the other side.
+  let assert Error(api.ReservedFactKey(key: "goal/state")) =
+    api.put_fact_expecting(
+      rt,
+      "goal/state",
+      json.String("forged"),
+      expected: None,
+    )
+    as "the compare-and-set door is not a way into the namespace either"
+
+  // And what the advisor actor wrote there is not listed to a reader of
+  // the ordinary blackboard, so a model cannot find the cell through
+  // its own view of the cells either.
+  let assert Ok(Nil) =
+    api.put_reserved_fact(rt, "goal/state", json.String("kept"))
+    as "the harness door writes the same key"
+  let assert Ok(listed) = api.facts(rt, prefix: None)
+    as "the blackboard must list"
+  assert !list.any(listed, fn(cell) { cell.0 == "goal/state" })
+  process.kill(rt.tree.supervisor)
+}
+
 // And the door that makes the concurrent case expressible: the same
 // write with the seq it was read at asserted, so the loser is told it
 // lost instead of never finding out.

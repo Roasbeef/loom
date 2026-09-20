@@ -32,6 +32,7 @@ import session/session
 import simplifile
 import support/rig
 import support/script
+import tools/tool
 
 // --- fixtures -------------------------------------------------------------
 
@@ -437,7 +438,7 @@ pub fn clearance_maps_replay_declarations_test() {
       grants: [],
     )
   // bash: replay Never, arguments pass through unchanged.
-  assert wiring.clear(config, query)
+  assert wiring.clear(tool.declarations(config.registry), query)
     == effects.Cleared(
       effective_arguments: arguments,
       replay: machine_operation.ReplayNever,
@@ -449,7 +450,7 @@ pub fn clearance_maps_replay_declarations_test() {
       call: call("fs_read", json.Object([#("path", json.String("a"))])),
     )
   let assert effects.Cleared(replay: machine_operation.ReplaySafe, ..) =
-    wiring.clear(config, read_query)
+    wiring.clear(tool.declarations(config.registry), read_query)
 }
 
 pub fn clearance_refuses_unregistered_tool_test() {
@@ -463,7 +464,8 @@ pub fn clearance_refuses_unregistered_tool_test() {
       configuration: configuration_for("acme", "loom-1"),
       grants: [],
     )
-  let assert effects.ClearanceRefused(reason:) = wiring.clear(config, query)
+  let assert effects.ClearanceRefused(reason:) =
+    wiring.clear(tool.declarations(config.registry), query)
   assert string.contains(reason, "ghost")
 }
 
@@ -479,16 +481,25 @@ pub fn clearance_refuses_inactive_tool_test() {
       configuration: configuration_for("acme", "loom-1"),
       grants: [],
     )
-  let assert effects.ClearanceRefused(reason:) = wiring.clear(config, query)
+  let assert effects.ClearanceRefused(reason:) =
+    wiring.clear(tool.declarations(config.registry), query)
   assert string.contains(reason, "not active")
 }
 
-pub fn replay_still_safe_consults_live_registry_test() {
-  let config = wide_config()
-  assert wiring.replay_still_safe(config, "fs_read")
-  assert wiring.replay_still_safe(config, "fs_edit")
-  assert !wiring.replay_still_safe(config, "bash")
-  assert !wiring.replay_still_safe(config, "ghost")
+pub fn replay_still_safe_reads_the_registration_test() {
+  let declared = tool.declarations(wide_config().registry)
+  assert wiring.replay_still_safe(declared, "fs_read")
+  assert wiring.replay_still_safe(declared, "fs_edit")
+  assert !wiring.replay_still_safe(declared, "bash")
+  assert !wiring.replay_still_safe(declared, "ghost")
+}
+
+pub fn execution_mode_reads_the_registration_test() {
+  let declared = tool.declarations(wide_config().registry)
+  assert wiring.execution_mode(declared, "fs_read")
+    == effects.ConcurrentExecution
+  assert wiring.execution_mode(declared, "bash") == effects.ExclusiveExecution
+  assert wiring.execution_mode(declared, "ghost") == effects.ExclusiveExecution
 }
 
 // --- ToolRun -> Ctx -------------------------------------------------------
