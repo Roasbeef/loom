@@ -345,6 +345,7 @@ fn harness(
       api.Options(
         ..options,
         poll_interval_ms: 20,
+        idle_poll_interval_ms: 20,
         // By name, exactly as production wires it: the writer skips a
         // subscriber whose name is momentarily unregistered, which is
         // what lets the scanner be started after the runtime it watches

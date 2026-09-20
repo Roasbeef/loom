@@ -879,6 +879,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
         max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
       after_commit: fn(_ordinal) { post_commit(ctl, raw, script, schedule) },
       subscribers: [writer.Direct(events)],

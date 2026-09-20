@@ -33,6 +33,34 @@
 //// queued work anyway, and any commit racing the strand's own commits
 //// surfaces as a stale expectation, forcing a reload that sees the new
 //// state.
+////
+//// The poll runs at two periods, and which one the next tick takes is
+//// decided by what the drive it follows found. A drive that loaded an
+//// open operation re-arms at `poll_interval_ms`, because an open
+//// operation is what the poll's short period is for: it is the rate at
+//// which a deferred suspension is granted its next permit, and the
+//// backstop behind every in-flight step. A drive that found no open
+//// operation re-arms at `idle_poll_interval_ms` instead, which is longer
+//// than `runtime/residency.hibernate_after_ms`, so the mailbox of a
+//// strand nobody is talking to falls quiet for long enough to hibernate
+//// and the strand sheds a heap it is only holding because of the last
+//// turn. The backstop is kept in both states rather than dropped in one:
+//// a doorbell lost against an idle strand still costs latency alone, and
+//// the latency it costs is the idle period rather than never.
+////
+//// The chain replaces itself and nothing else joins it, so a strand has
+//// exactly one checkpoint deadline outstanding at any moment. A message
+//// that opens work on an idle strand therefore does not shorten the tick
+//// already pending; it drives at once, as every message does, and the
+//// period only changes when that pending tick arms its successor. What
+//// that costs is bounded and worth naming: the first deferred poll after
+//// a strand has been idle may wait out the idle period for its permit,
+//// because the permit is what a tick grants. Every later one is at the
+//// short period, since by then the drive has found the operation open.
+//// The alternative — arming on the transition — would leave the tick it
+//// replaced pending until its own delay elapsed, since the `Timers` seam
+//// arranges a wake and hands back nothing to cancel it with, and one
+//// outstanding deadline per strand is worth more than that first permit.
 
 import core/clock.{type Clock}
 import core/corruption
@@ -74,6 +102,7 @@ import runtime/hooks
 import runtime/internal/ffi_sup
 import runtime/internal/provider_custodian
 import runtime/projection
+import runtime/residency
 import runtime/writer
 import storage/storage
 import telemetry/context
@@ -89,7 +118,11 @@ import weft/registry as address
 /// (a reference address, resolved for each call); `stream_options`
 /// is the runtime-owned opaque options bag snapshotted into generation
 /// steps; `retry_policy` is the normalized policy snapshotted likewise;
-/// `poll_interval_ms` is the checkpoint-poll period (positive);
+/// `poll_interval_ms` is the checkpoint-poll period while an operation is
+/// open (positive); `idle_poll_interval_ms` is the period the poll falls
+/// back to once a drive finds no open operation (positive, and longer
+/// than `runtime/residency.hibernate_after_ms` if the strand is to
+/// hibernate between turns);
 /// `claim_reaper` publishes this incarnation's effect reaper and does not
 /// return until the ledger has acknowledged older generations as drained;
 /// `logger` is injected (§0.2) and need not carry a strand — `start`
@@ -102,6 +135,7 @@ pub type Options {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    idle_poll_interval_ms: Int,
     claim_reaper: fn(String, Pid) -> List(Pid),
     logger: Logger,
   )
@@ -217,6 +251,14 @@ type State {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    idle_poll_interval_ms: Int,
+    /// What the most recent completed drive found in durable state, which
+    /// is what the next checkpoint poll's period is chosen from. A path
+    /// that continues without loading — a superseded settlement, an abort
+    /// aimed at an operation that has ended — leaves the last reading
+    /// standing, because that reading is still the most recent answer
+    /// anybody has.
+    occupancy: Occupancy,
     /// This driver's logger, already scoped to the strand. Every log
     /// call narrows *from* this value rather than reading ambient
     /// state, which is what carries `{session, strand, op, step}` into
@@ -250,6 +292,23 @@ type State {
     /// re-plans, a fault) can never widen a *different* call.
     cleared: Option(Cleared),
   )
+}
+
+// Whether the strand has an operation to make progress on. It is the
+// question the checkpoint poll's period is chosen from, and it is a type
+// rather than a flag because the two answers name two different jobs for
+// the poll, not one condition and its negation.
+type Occupancy {
+  /// A drive loaded an open operation. The poll's short period is the
+  /// deferred-permit rate and the backstop behind every in-flight step,
+  /// so it is what the next tick takes.
+  Occupied
+
+  /// A drive found no open operation. Nothing the strand holds can make
+  /// progress until an admission arrives, and every admission rings the
+  /// doorbell, so the poll drops to its long period and the mailbox falls
+  /// quiet for long enough to hibernate.
+  Unoccupied
 }
 
 // The carry between one clearance and the dispatch it authorizes: whose
@@ -343,6 +402,12 @@ pub fn start(
       stream_options: options.stream_options,
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
+      idle_poll_interval_ms: options.idle_poll_interval_ms,
+      // Assumed occupied until the first drive answers. A cold start that
+      // restores an open operation is the case this protects: reading the
+      // idle period from an unread register would put the recovery of a
+      // suspended operation a whole idle interval away.
+      occupancy: Occupied,
       logger:,
       reaper:,
       live: [],
@@ -359,6 +424,13 @@ pub fn start(
   })
   |> actor.addressed(address)
   |> actor.on_message(handle)
+  // The strand holds the largest `Effects` heap in a session assembly and
+  // does no work between turns, so it is the assembly's most valuable
+  // hibernation target. It can take the interval because an idle drive
+  // re-arms the poll at `idle_poll_interval_ms`, which is longer than the
+  // interval: the mailbox of a strand nobody is talking to really is
+  // quiet for it.
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 
@@ -425,19 +497,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
   case message {
     AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
+
+    // The tick arm is the only one that arms a tick, which is what keeps
+    // exactly one deadline outstanding for this strand at any moment.
+    PollTick -> polled(logger, state)
+
+    // No other message touches the chain. A drive one of these caused can
+    // change the period the *next* tick will take, by moving `occupancy`,
+    // and that tick reads the period when it arms its successor.
     Nudge -> finish(logger, drive(state))
-    PollTick -> {
-      let internal = state.internal
-      state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(internal, PollTick)
-      })
-      let out = drive(State(..state, poll_permit: True))
-      case out {
-        Continue(next) ->
-          finish(logger, Continue(State(..next, poll_permit: False)))
-        Halt(reason) -> finish(logger, Halt(reason))
-      }
-    }
     RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
     RequestAbort(operation:) -> finish(logger, abort(state, operation))
     ProviderDone(token:, terminal:) ->
@@ -445,6 +513,24 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     ToolDone(token:, outcome:) ->
       finish(logger, tool_done(state, token, outcome))
     EffectExit(down:) -> finish(logger, effect_exit(state, down))
+  }
+}
+
+// One checkpoint tick: drive holding the one deferred poll permit the tick
+// grants, then arm the successor at the period that drive earned. The
+// permit never outlives the drive that was offered it.
+//
+// The arming follows the drive rather than opening the arm, which is what
+// lets the period be read from what the drive found, and which also stops a
+// halting strand from leaving a timer behind for a process about to be gone.
+fn polled(logger: Logger, state: State) -> actor.Next(State, Message) {
+  case drive(State(..state, poll_permit: True)) {
+    Halt(reason) -> finish(logger, Halt(reason))
+    Continue(next) -> {
+      let next = State(..next, poll_permit: False)
+      arm_poll(next)
+      finish(logger, Continue(next))
+    }
   }
 }
 
@@ -465,20 +551,43 @@ fn await_predecessors(
       // Recovery and its poll clock both begin after the ledger-authored
       // acknowledgement. Before this point, queued doorbells are harmless
       // because no durable work has crossed the effect boundary.
-      //
-      // The subject is bound before the closure for the reason every other
-      // arm of this clock binds it: `real_timers` hands the callback to a
-      // timer process, and a closure over `state` would copy the whole
-      // strand state — `Effects` included — into that process.
-      let internal = state.internal
-      state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(internal, PollTick)
-      })
       log.info(logger, "strand.started", [])
-      finish(logger, drive(state))
+      let out = drive(state)
+
+      // The recovery drive is what starts the only tick chain this
+      // incarnation has, and it starts it at the period that drive earned:
+      // a restored open operation keeps the short poll, and a strand that
+      // rebooted with nothing to do goes straight to the idle period
+      // instead of spending a turn's worth of ticks proving it.
+      case out {
+        Halt(reason) -> finish(logger, Halt(reason))
+        Continue(next) -> {
+          arm_poll(next)
+          finish(logger, Continue(next))
+        }
+      }
     }
     Error(reason) -> finish(logger, Halt(reason))
   }
+}
+
+// Arms the successor tick at the period the state's occupancy names. The one
+// caller per path is deliberate: the chain replaces itself and nothing else
+// joins it, so a strand has exactly one checkpoint deadline outstanding at
+// any moment and a tick can never arrive from a chain the strand has
+// forgotten.
+//
+// The subject is bound before the closure for the reason every other timer
+// here binds it: `real_timers` hands the callback to a timer process, and a
+// closure over `state` would copy the whole strand state — `Effects`
+// included — into that process.
+fn arm_poll(state: State) -> Nil {
+  let internal = state.internal
+  let delay = case state.occupancy {
+    Occupied -> state.poll_interval_ms
+    Unoccupied -> state.idle_poll_interval_ms
+  }
+  state.effects.timers.after(delay, fn() { wake(internal, PollTick) })
 }
 
 // A halt is the one thing the strand cannot recover from on its own —
@@ -878,10 +987,16 @@ fn drive(state: State) -> Outcome {
 
 fn drive_loop(state: State, fuel: Int) -> Outcome {
   use <- bool.guard(when: fuel <= 0, return: out_of_fuel)
+
+  // This load is the only place that knows whether the strand has work,
+  // and recording its answer here rather than asking again is what keeps
+  // the poll's period and the drive's decision the same reading of the
+  // same registers.
   case load(state) {
     Error(reason) -> Halt(reason)
-    Ok(Idle) -> Continue(state)
+    Ok(Idle) -> Continue(State(..state, occupancy: Unoccupied))
     Ok(Open(loaded)) -> {
+      let state = State(..state, occupancy: Occupied)
       let #(observation, state) = pop_observation(state)
       plan(state, loaded, observation, fuel)
     }

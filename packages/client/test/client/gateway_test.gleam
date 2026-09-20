@@ -320,9 +320,14 @@ fn start_harness_reserved_goal(
     api.open(
       session,
       effects,
-      api.Options(..options, poll_interval_ms: 25, subscribers: [
-        writer.Routed(forwarder_name),
-      ]),
+      api.Options(
+        ..options,
+        poll_interval_ms: 25,
+        idle_poll_interval_ms: 25,
+        subscribers: [
+          writer.Routed(forwarder_name),
+        ],
+      ),
     )
   // Network fixtures make every old whole-history path an executable
   // failure. What "whole" means is the bound, not the call: since

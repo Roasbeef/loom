@@ -139,6 +139,7 @@ fn attempt_run(
         max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 250,
+      idle_poll_interval_ms: 250,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
       after_commit: fn(_) {
         before_count(sess)

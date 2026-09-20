@@ -323,7 +323,11 @@ fn harness_with(
     api.open(
       opened,
       effects_record,
-      api.Options(..options_of_api, poll_interval_ms: driver_poll_ms),
+      api.Options(
+        ..options_of_api,
+        poll_interval_ms: driver_poll_ms,
+        idle_poll_interval_ms: driver_poll_ms,
+      ),
     )
     |> result.map_error(string.inspect),
   )

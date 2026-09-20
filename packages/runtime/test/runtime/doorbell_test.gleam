@@ -36,6 +36,7 @@ fn boot(
     api.Options(
       ..base,
       poll_interval_ms: 40,
+      idle_poll_interval_ms: 40,
       tolerance: supervisor.Tolerance(intensity: 100, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)

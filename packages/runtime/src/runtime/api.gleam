@@ -125,7 +125,11 @@ pub type Runtime {
 /// first open; `settings` is the run-settings snapshot captured into
 /// accepted runs; `after_commit` and `subscribers` instrument the writer
 /// (see `runtime/writer`); `poll_interval_ms` is every strand's
-/// checkpoint-poll period; `subagent` names, by strand name alone, the
+/// checkpoint-poll period while it has an operation open and
+/// `idle_poll_interval_ms` the period it falls back to between turns,
+/// which is longer than `runtime/residency.hibernate_after_ms` so that a
+/// parked strand's mailbox is quiet long enough to hibernate; `subagent`
+/// names, by strand name alone, the
 /// strands that belong under the tree's second strand factory, so a
 /// model-spawned strand in a crash loop cannot reboot the strand a human
 /// is talking to (`runtime/supervisor`), and `subagent_tolerance` is that
@@ -138,6 +142,7 @@ pub type Options {
     retry_policy: NormalizedRetryPolicy,
     stream_options: JsonValue,
     poll_interval_ms: Int,
+    idle_poll_interval_ms: Int,
     tolerance: Tolerance,
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
@@ -168,7 +173,20 @@ pub const default_retry_policy = NormalizedRetryPolicy(
 
 /// Sensible defaults: strand `"main"`, parallel tools, consume-all
 /// queues, compaction off, an unbounded retry ladder from a 1 s base to a
-/// 60 s cap, a 200 ms checkpoint poll, and a conservative restart tolerance.
+/// 60 s cap, a 200 ms checkpoint poll while a run is open against a two
+/// minute one between turns, and a conservative restart tolerance.
+///
+/// The two poll periods are one decision. The short one is the rate a
+/// deferred suspension is granted its next permit at and the backstop
+/// behind every in-flight step, so it belongs to an open operation. Between
+/// turns there is nothing for it to find that an admission's own doorbell
+/// does not announce, and holding it at 200 ms costs five wakes a second
+/// per resident session forever and keeps the strand — which holds the
+/// largest `Effects` heap in a session assembly — above
+/// `runtime/residency.hibernate_after_ms` and so permanently awake. Two
+/// minutes is long enough to clear that interval four times over and short
+/// enough that a doorbell lost to a caller dying between its commit and its
+/// nudge still costs latency rather than the work.
 ///
 /// `tool_execution: Parallel` is the default because a batch the model
 /// issued as one batch is a batch it expects to run as one: under
@@ -204,6 +222,7 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
     retry_policy: default_retry_policy,
     stream_options: json.Object([]),
     poll_interval_ms: 200,
+    idle_poll_interval_ms: 120_000,
     tolerance: Tolerance(intensity: 5, period: 5),
     // No strand is a subagent unless a host says so: the runtime cannot
     // tell a model-spawned strand from an operator-spawned one, and the
@@ -346,6 +365,7 @@ pub fn open_published(
   let stream_options = options.stream_options
   let retry_policy = options.retry_policy
   let poll_interval_ms = options.poll_interval_ms
+  let idle_poll_interval_ms = options.idle_poll_interval_ms
   let logger = options.logger
 
   let describe_runtime = fn(tree) {
@@ -368,6 +388,7 @@ pub fn open_published(
           stream_options:,
           retry_policy:,
           poll_interval_ms:,
+          idle_poll_interval_ms:,
           claim_reaper:,
           logger:,
         )

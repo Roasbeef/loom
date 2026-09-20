@@ -236,6 +236,7 @@ fn open_session(
     api.Options(
       ..options,
       poll_interval_ms: 20,
+      idle_poll_interval_ms: 20,
       settings: operation.RunSettings(
         ..options.settings,
         compaction: compaction_settings(),

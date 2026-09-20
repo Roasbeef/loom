@@ -71,6 +71,7 @@ pub fn parallel_batch_overlaps_tool_effects_test() {
         tool_execution: Parallel,
       ),
       poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -161,6 +162,7 @@ pub fn exclusive_tool_serializes_a_parallel_batch_test() {
         tool_execution: Parallel,
       ),
       poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -230,6 +232,7 @@ pub fn the_shipped_default_overlaps_tool_effects_test() {
     api.Options(
       ..base,
       poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)

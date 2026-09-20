@@ -148,7 +148,12 @@ fn start_harness_with(
         ),
         hooks: agency.reaping_hooks(effects.default_hooks(), config),
       ),
-      api.Options(..base, poll_interval_ms: 25, subagent: agency.is_subagent),
+      api.Options(
+        ..base,
+        poll_interval_ms: 25,
+        idle_poll_interval_ms: 25,
+        subagent: agency.is_subagent,
+      ),
     )
     as "the runtime must open"
   let assert Ok(_holder) = agency.start(config, runtime)

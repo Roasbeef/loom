@@ -44,6 +44,7 @@ fn boot(
     api.Options(
       ..base,
       poll_interval_ms: 40,
+      idle_poll_interval_ms: 40,
       tolerance: supervisor.Tolerance(intensity: 100, period: 10),
       logger: log.new(sink: log.to_subject(inbox), threshold: level.Debug),
     )
@@ -144,6 +145,7 @@ pub fn nothing_is_logged_below_the_threshold_test() {
     api.Options(
       ..base,
       poll_interval_ms: 40,
+      idle_poll_interval_ms: 40,
       tolerance: supervisor.Tolerance(intensity: 100, period: 10),
       logger: log.new(sink: log.to_subject(inbox), threshold: level.Info),
     )
