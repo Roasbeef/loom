@@ -10452,6 +10452,7 @@ fn submit_text(model: Model) -> Model {
         ),
         protocol.goal_set(cleared.next_id, objective, token_budget),
       )
+
     // The confirmation names the command back, because an operator who
     // mistyped it should see what the harness will run before the reviewer
     // is shown its result.

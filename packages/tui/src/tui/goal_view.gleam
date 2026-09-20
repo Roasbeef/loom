@@ -508,6 +508,7 @@ fn check_result(run: CheckRun) -> String {
 fn check_output(output: String) -> List(String) {
   case output {
     "" -> []
+
     // One line, because a captured build log is many and a panel row is one.
     // The reviewer is shown the whole tail; the operator is shown that there
     // was output and what its shape is.

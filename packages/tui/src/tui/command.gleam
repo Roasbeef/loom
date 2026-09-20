@@ -536,6 +536,13 @@ fn goal(raw: String) -> Command {
     "--budget" -> MissingArgument("goal --budget")
     "--budget " <> rest -> budgeted(rest)
 
+    // `--budget=200000` is the same statement as `--budget 200000`, and it is
+    // accepted rather than refused because an operator who writes the equals
+    // sign has said exactly what they meant. Reading it as objective text was
+    // the silent failure: the goal was pinned to the flag itself, under the
+    // default budget, and nothing said so.
+    "--budget=" <> rest -> budgeted(rest)
+
     objective -> pinning(objective, default_goal_budget)
   }
 }

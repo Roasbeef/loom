@@ -230,6 +230,23 @@ pub fn the_budget_flag_owns_the_budget_test() {
     == command.GoalSet(objective: "get the branch green", token_budget: 200_000)
 }
 
+/// The equals form says the same thing as the spaced one, and is accepted
+/// rather than read as objective text: a `/goal --budget=200000 land it` that
+/// pinned the flag as the objective under the default budget was the silent
+/// failure the operator had no way to see.
+pub fn the_budget_flag_accepts_the_equals_form_test() {
+  assert command.parse("/goal --budget=50000 fix issue 468")
+    == command.GoalSet(objective: "fix issue 468", token_budget: 50_000)
+  assert command.parse("/goal --budget=200_000 get the branch green")
+    == command.GoalSet(objective: "get the branch green", token_budget: 200_000)
+
+  // And its bad arguments are refused the same way, with the word shown back.
+  assert command.parse("/goal --budget=soon get the branch green")
+    == command.GoalBudgetInvalid("soon")
+  assert command.parse("/goal --budget=0 get the branch green")
+    == command.GoalBudgetInvalid("0")
+}
+
 /// A `/goal` with no budget pins the documented default rather than being
 /// refused, and the flag's bad arguments are refused rather than defaulted.
 pub fn a_missing_budget_defaults_and_a_bad_one_refuses_test() {
