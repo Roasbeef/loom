@@ -98,7 +98,37 @@ pub fn a_reviewer_run_that_ends_owing_a_verdict_refeeds_test() {
 
   assert moved.phase == goalstate.Idle
   assert moved.unanswered_feeds == 1
+
+  // The re-offer is the tick's, not this run end's. Offering again here spent
+  // three tries inside the time it takes a provider to refuse three requests,
+  // so a thirty-second rate limit paused the goal for a reviewer that would
+  // have answered a minute later.
+  assert action == goalloop.Rest
+  assert goalloop.defers_the_refeed(
+    owed,
+    goalloop.AdvisorEnded(operation: review),
+  )
+
+  // And the very next level read offers it, which is what makes the deferral
+  // a delay rather than a stall.
+  let #(again, offered) = goalloop.next_action(moved, idle(goalloop.Level))
+  assert offered == goalloop.FeedReviewer
+  assert again.unanswered_feeds == 1
+    as "the level read that re-offers does not count a second failure"
+}
+
+// A review that ended owing nothing is not the deferred case: an ordinary
+// review's end is an occasion like any other, and a goal waiting to be fed is
+// fed there.
+pub fn an_unrelated_review_end_still_offers_the_feed_test() {
+  let #(moved, action) =
+    goalloop.next_action(
+      a_goal(),
+      idle(goalloop.AdvisorEnded(operation: an_op(99))),
+    )
+
   assert action == goalloop.FeedReviewer
+  assert moved.unanswered_feeds == 0
 }
 
 // The same repair from the level alone, which is what covers a lost
@@ -755,6 +785,14 @@ pub fn the_loop_never_rests_in_the_stalled_combination_test() {
     let #(goal, observed) = reached
     let #(moved, action) = goalloop.next_action(goal, observed)
 
+    // One occasion is deliberately quiet and the property excludes it by
+    // name: the run end of a reviewer that owed a verdict leaves the re-offer
+    // to the periodic tick, so a provider refusing three times inside one
+    // rate-limit window does not spend the whole bound. The goal is not
+    // stranded, because the tick is unconditional — and the property below
+    // holds for the level read that tick makes.
+    use <- skipping(goalloop.defers_the_refeed(goal, observed.event))
+
     case moved.status, moved.phase, observed.primary, observed.advisor {
       goalstate.Active, goalstate.Idle, None, None -> {
         assert action != goalloop.Rest
@@ -905,6 +943,16 @@ pub fn only_the_operator_leaves_a_stopped_status_test() {
       assert action == goalloop.Rest as "a stopped goal asks for nothing"
     })
   })
+}
+
+// A guard for a property's excluded case, written as a `use` so the excluded
+// arm reads as one line at the top rather than as a nested `case` around the
+// whole assertion.
+fn skipping(excluded: Bool, check: fn() -> Nil) -> Nil {
+  case excluded {
+    True -> Nil
+    False -> check()
+  }
 }
 
 fn stopped_statuses() -> List(goalstate.Status) {

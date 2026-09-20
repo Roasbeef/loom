@@ -109,6 +109,15 @@ pub const zero_progress_limit = 2
 /// the operator for it. Three is enough to ride out a transient refusal
 /// and short enough that a misconfigured reviewer is reported rather
 /// than paid for.
+///
+/// Three *occasions*, and which occasions they are is the half of this
+/// number that took a correction. The re-offer is the periodic tick's rather
+/// than the run end's, so the three tries are spread across three intervals
+/// of `client/advisor.reevaluate_every_ms` — six minutes, at two minutes
+/// each. Offering again at the run end instead made them three tries inside
+/// the time it takes a provider to refuse three requests, which spent the
+/// whole bound on one rate-limit window and paused the goal for a reviewer
+/// that would have answered a minute later.
 pub const unanswered_feed_limit = 3
 
 /// How long the operator's check may run before the loop stops waiting for
@@ -390,12 +399,82 @@ pub fn next_action(goal: Goal, observed: Observed) -> #(Goal, Action) {
     // so it is answered before the level read rather than through it.
     Answered(answer:) -> answer_feed(goal, answer, observed)
 
-    Level
-    | PrimaryStarted(..)
-    | PrimaryEnded(..)
-    | AdvisorEnded(..)
-    | Aborted(..)
-    | Checked(..) -> decide(record(goal, observed), observed)
+    // A feed whose reviewer run just ended without a verdict is recorded
+    // and then left for the periodic tick, rather than offered again in
+    // this same evaluation.
+    AdvisorEnded(..) -> after_review(goal, observed)
+
+    Level | PrimaryStarted(..) | PrimaryEnded(..) | Aborted(..) | Checked(..) ->
+      decide(record(goal, observed), observed)
+  }
+}
+
+/// Whether this occasion is the one the loop deliberately answers with
+/// `Rest` although a feed is owed.
+///
+/// The no-stall invariant holds for every other event, so the exception is
+/// named here rather than left for a reader to infer from the transition:
+/// the property test excludes exactly this pairing and nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // goalloop.defers_the_refeed(goal, goalloop.Level) == False
+/// ```
+///
+pub fn defers_the_refeed(goal: Goal, event: Event) -> Bool {
+  case event, goal.phase {
+    AdvisorEnded(operation:), goalstate.AwaitingVerdict(feed:) ->
+      feed == operation
+
+    AdvisorEnded(..), _other
+    | Level, _any
+    | PrimaryStarted(..), _second
+    | PrimaryEnded(..), _third
+    | Aborted(..), _fourth
+    | Checked(..), _fifth
+    | Answered(..), _sixth
+    -> False
+  }
+}
+
+// The reviewer's run ended. When it is the run that owed a verdict, the feed
+// went unanswered and the *next* occasion offers it again rather than this
+// one.
+//
+// The immediate re-offer was the obvious reading of a level-triggered loop and
+// it was wrong about time. A provider refusing on a rate limit ends its run in
+// the time it takes to refuse a request, so three refusals inside one
+// thirty-second window spent the whole `unanswered_feed_limit` on a single
+// outage and paused the goal for a reviewer that would have answered a minute
+// later. The bound is meant to count occasions spread across the tick's
+// interval, and this is what spreads them: the tick re-offers, which is the
+// occasion the bound was sized against.
+//
+// It does not strand the goal, and that is why it is safe to rest here. The
+// tick is armed for the actor's whole life and is unconditional, so the feed is
+// re-offered within one interval whatever else happens — the same guarantee
+// every other repair in this module rests on.
+// What the deferral does *not* defer is the bounds. A goal that crossed its
+// token budget while the verdict was owed must stop where it stands, not at
+// the next tick, and the wrap-up it sends is the same one-shot it would have
+// sent from any other occasion. Only the feed waits.
+fn after_review(goal: Goal, observed: Observed) -> #(Goal, Action) {
+  let recorded = record(goal, observed)
+
+  case defers_the_refeed(goal, observed.event) {
+    False -> decide(recorded, observed)
+
+    True ->
+      case recorded.status, bound(recorded) {
+        Active, Some(cause) -> stop(recorded, cause, observed.now_ms)
+
+        Active, None
+        | Paused(..), _either
+        | Limited(..), _second
+        | Complete, _third
+        -> #(recorded, Rest)
+      }
   }
 }
 
