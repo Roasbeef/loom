@@ -96,6 +96,8 @@ fn verdict_text(verdict: advise.Verdict) -> String {
     advise.Quiet -> "quiet"
     advise.Nudge(text:) -> "nudge:" <> text
     advise.Block(text:) -> "block:" <> text
+    advise.Continue(text:) -> "continue:" <> text
+    advise.Complete(text:) -> "complete:" <> text
   }
 }
 
@@ -173,10 +175,43 @@ pub fn block_without_text_is_refused_test() {
     == Error("`text` is required when verdict is block")
 }
 
+pub fn continue_decodes_with_text_test() {
+  assert advise.decode_verdict(verdict_and_text("continue", "the race remains"))
+    == Ok(advise.Continue(text: "the race remains"))
+}
+
+pub fn continue_without_text_is_refused_test() {
+  assert advise.decode_verdict(verdict_arguments("continue"))
+    == Error("`text` is required when verdict is continue")
+}
+
+pub fn continue_with_empty_text_is_refused_test() {
+  assert advise.decode_verdict(verdict_and_text("continue", ""))
+    == Error("`text` is required when verdict is continue")
+}
+
+pub fn complete_decodes_with_text_test() {
+  assert advise.decode_verdict(verdict_and_text("complete", "the race passes"))
+    == Ok(advise.Complete(text: "the race passes"))
+}
+
+pub fn complete_without_text_is_refused_test() {
+  assert advise.decode_verdict(verdict_arguments("complete"))
+    == Error("`text` is required when verdict is complete")
+}
+
+pub fn complete_with_empty_text_is_refused_test() {
+  assert advise.decode_verdict(verdict_and_text("complete", ""))
+    == Error("`text` is required when verdict is complete")
+}
+
 pub fn an_unknown_verdict_is_refused_by_name_test() {
   let assert Error(reason) = advise.decode_verdict(verdict_arguments("halt"))
-    as "a fourth word must be refused rather than guessed at"
-  assert string.contains(reason, "\"quiet\", \"nudge\" or \"block\"")
+    as "a sixth word must be refused rather than guessed at"
+  assert string.contains(
+    reason,
+    "\"quiet\", \"nudge\", \"block\", \"continue\" or \"complete\"",
+  )
   assert string.contains(reason, "halt")
 }
 
@@ -213,6 +248,21 @@ pub fn a_quiet_verdict_reaches_the_seam_too_test() {
   // guard both move on an answered feed, whatever the answer was.
   let outcome = run(echoing_advice(), "advisor", verdict_arguments("quiet"))
   assert text_of(outcome) == "block delivered: advisor/quiet"
+}
+
+// The goal verdicts cross the seam exactly as decoded: whether a goal
+// feed is open is the far side's decision, and the tool's job is only to
+// hand the verdict over unaltered.
+pub fn the_goal_verdicts_reach_the_seam_test() {
+  let continued =
+    run(echoing_advice(), "advisor", verdict_and_text("continue", "keep going"))
+  assert text_of(continued) == "block delivered: advisor/continue:keep going"
+  assert !continued.is_error
+
+  let completed =
+    run(echoing_advice(), "advisor", verdict_and_text("complete", "all green"))
+  assert text_of(completed) == "block delivered: advisor/complete:all green"
+  assert !completed.is_error
 }
 
 pub fn each_acknowledgement_renders_its_own_line_test() {

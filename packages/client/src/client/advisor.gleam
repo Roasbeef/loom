@@ -130,6 +130,8 @@
 
 import client/advisorguard
 import client/advisorslice
+import client/goalloop
+import client/goalstate
 import client/notes
 import core/clock.{type Clock}
 import core/entry.{type Entry}
@@ -143,6 +145,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import machine/strand as machine_strand
 import runtime/api.{type Runtime}
@@ -176,6 +179,55 @@ pub const cursor_key = api.advisor_fact_prefix <> "feed/cursor"
 /// The cell holding the emission guard, as `advisorguard.encode` writes
 /// it. Composed from the reserved prefix for the reason `cursor_key` is.
 pub const guard_key = api.advisor_fact_prefix <> "guard"
+
+/// The cell holding the session's goal, as `client/goalstate.encode`
+/// writes it. Composed from `api.goal_fact_prefix` so the key and the
+/// reservation cannot drift apart, for the reason `cursor_key` names.
+///
+/// This actor is the cell's only writer: the operator's goal commands
+/// arrive as call messages, so no second writer ever races a status
+/// transition (protocol 044 §1).
+pub const goal_key = api.goal_fact_prefix <> "state"
+
+/// How often the actor re-reads the goal's level while it is alive.
+///
+/// The loop is level-triggered, which means every notification it acts
+/// on is also derivable from what the store shows running — but only if
+/// something asks. This tick is what asks. Without it a lost cast, a
+/// reviewer run that ended without a verdict or a failed send would each
+/// leave an Active goal waiting for an occasion that an idle primary
+/// cannot produce, which is exactly the class of stall the rework
+/// removes.
+///
+/// The timer is `weft/actor`'s own periodic — armed once in `start` for
+/// the actor's whole life, re-armed by weft on the far side of each
+/// handler, and therefore with no stale-fire check to get wrong. Arming it
+/// unconditionally is what makes "an Active goal with no evaluation
+/// pending" unrepresentable: the tick exists whether a goal does or not,
+/// and a session with none pays one message that reads a cached `None`.
+///
+/// **Why it is not armed only while a goal is active.** That would be the
+/// better shape and `weft/actor` cannot express it: `periodic` is a field
+/// on the builder rather than something a `Next` carries, so a handler can
+/// neither cancel it nor re-time it, and the public surface offers no
+/// one-shot a handler could arm instead (`idle_timeout` is a builder
+/// property too). The primitive that can is `weft/state_machine`'s
+/// `with_periodic_timeout`/`cancel_timeout` pair, which would mean porting
+/// this actor to a state machine — a change worth making on its own terms,
+/// not folded into the goal loop. A hand-rolled timer is a standing
+/// rejection in `docs/weft.md` and is not the alternative.
+///
+/// **Why two minutes rather than thirty seconds.** The tick is only the
+/// recovery path. Every real occasion — a run end, a run start, a review
+/// end, an abort, a verdict, a spend — evaluates the level at once, so
+/// this interval bounds only the cases where a notification was lost, and
+/// it needs to be sooner than an operator would notice a goal sitting
+/// still rather than sooner than the loop can act. Against that, an
+/// unconditional tick keeps this actor out of hibernation: with
+/// `hibernate_after` set at thirty seconds, a thirty-second tick would
+/// defeat it on every session's advisor whether or not a goal exists, and
+/// two minutes leaves the actor hibernating for most of each interval.
+pub const reevaluate_every_ms = 120_000
 
 /// How long the primary's run-start and run-end hooks wait for the
 /// pending nudges.
@@ -350,6 +402,57 @@ pub type Message {
   /// left to carry them; past the deadline the actor answers with nothing
   /// and touches no state, so the queue waits for the next occasion.
   TakeAtRunEnd(deadline: Int, reply: Subject(List(String)))
+
+  /// The primary committed a cost row — a trigger, carrying nothing.
+  ///
+  /// It deliberately does not carry the row. An earlier draft did, and
+  /// added the row's tokens on arrival while moving
+  /// `accounted_through_seq` to that row's own seq, which turned a lost
+  /// cast into a permanent undercount: a cast lost for seq 101 followed
+  /// by a delivered one for 105 moved the cursor past 101 forever. There
+  /// is now one code path that adds — the ledger scan past the cursor —
+  /// and this message's only job is to make it run promptly. Losing it
+  /// costs the delay to the next evaluation, which is what the cell's
+  /// cursor and the periodic tick exist to bound (protocol 044 §5).
+  PrimarySpent
+
+  /// The periodic re-evaluation. Reads the goal's level and acts on it,
+  /// which is how every notification above becomes optional for
+  /// correctness rather than load-bearing.
+  ReevaluateTick
+
+  /// The operator aborted a run on the primary. An aborted run never
+  /// reaches the run-end hook — cancelled control reconciles through the
+  /// machine's abort drain and finishes directly — so the gateway's own
+  /// abort handler, the one place an operator abort enters, casts this.
+  /// The actor gates it on `woke`: it only ever pauses a goal for a run
+  /// it itself opened, which is what makes "a goal-woken run" precise
+  /// rather than inferred (protocol 044 §4, the review's finding 2).
+  PrimaryAborted(operation: OpId)
+
+  /// The operator set or replaced the goal. A call, because the
+  /// operator is waiting for the verdict and the actor is the cell's
+  /// only writer. `expected` is the objective as the operator typed it,
+  /// already validated for length by the gateway handler — the actor
+  /// trusts nothing else about it and re-checks the budget's
+  /// positivity, the one bound the cell itself carries.
+  SetGoal(
+    objective: String,
+    token_budget: Int,
+    reply: Subject(Result(Nil, String)),
+  )
+
+  /// The operator cleared the goal, whatever its status.
+  ClearGoal(reply: Subject(Result(Nil, String)))
+
+  /// The operator paused the goal. Pausing an already-paused goal is a
+  /// committed no-op rather than an error, because the operator's
+  /// intent is the same either way.
+  PauseGoal(reply: Subject(Result(Nil, String)))
+
+  /// The operator resumed the goal. A `complete` goal refuses —
+  /// completion is the reviewer's verdict, not a status to undo.
+  ResumeGoal(reply: Subject(Result(Nil, String)))
 }
 
 // What the actor remembers between messages: the two cells, whether a
@@ -392,6 +495,20 @@ type Memory {
     stepped: Int,
     turn: Turn,
     woke: Option(OpId),
+    /// The goal cell's cached value, read lazily beside the other two.
+    /// `None` is no goal — an absent cell and an unreadable one both, for
+    /// the reason the guard's decoder is lenient about absence: a goal the
+    /// actor cannot read is a goal it cannot steer, and refusing to run
+    /// the loop over unreadable bookkeeping would cost the session its
+    /// reviewer over nothing the loop depends on.
+    ///
+    /// Everything the loop *decides* from lives inside this value rather
+    /// than beside it. Whether a verdict is owed and by which run, which
+    /// primary run the loop opened, and the three counters that bound it
+    /// are all `goalstate` fields, so a restart inherits them. The one
+    /// goal fact that is still heap state is none: there is no goal field
+    /// in `Memory` outside this cache.
+    goal: Option(goalstate.Goal),
   )
 }
 
@@ -557,6 +674,11 @@ pub fn start(wiring: Wiring) -> actor.StartResult(Subject(Message)) {
   ))
   |> actor.on_message(handle)
   |> actor.addressed(wiring.name)
+  // The goal loop's repair tick, armed here and nowhere else. It is a
+  // property of the actor rather than of a state, which is the point:
+  // there is no code path that can forget to arm it and no state in
+  // which an Active goal has no next evaluation pending.
+  |> actor.periodic(every: reevaluate_every_ms, sending: ReevaluateTick)
   |> actor.start
 }
 
@@ -604,17 +726,32 @@ fn unavailable(state: State, message: Message) -> Nil {
         Error("the advisor plane is unavailable; nothing was emitted"),
       )
 
+    // The goal commands are calls the operator is waiting on, and each
+    // answers with the refusal that names why: an unavailable plane is
+    // not a silent success, and `Ok(Nil)` here would tell the operator
+    // a goal was pinned that no cell records.
+    SetGoal(reply:, ..)
+    | ClearGoal(reply:)
+    | PauseGoal(reply:)
+    | ResumeGoal(reply:) ->
+      process.send(reply, Error("the goal plane is unavailable"))
+
     // Both drains answer with no nudges, which is what their callers
     // read as "nothing was queued". A run boundary is never held open
     // for a plane that is restarting.
     TakePending(reply:, ..) | TakeAtRunEnd(reply:, ..) ->
       process.send(reply, [])
 
-    // The three casts. Nobody is waiting, and a step lost this way is a
+    // The casts. Nobody is waiting, and a step lost this way is a
     // step the counter never sees: the threshold is reached later than it
     // would have been rather than not at all, which is the same price
     // every one of these notifications already pays for being a cast.
-    PrimaryRunEnded(..) | PrimaryStepped(..) | AdvisorRunEnded(..) -> Nil
+    PrimaryRunEnded(..)
+    | PrimaryStepped(..)
+    | AdvisorRunEnded(..)
+    | PrimarySpent
+    | ReevaluateTick
+    | PrimaryAborted(..) -> Nil
   }
 }
 
@@ -622,8 +759,25 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
   let memory = recall(state, runtime)
 
   case message {
-    PrimaryRunEnded(operation:) ->
-      feed(state, runtime, memory, operation, PrimaryFinished)
+    // A primary run end is one occasion with two readings. An active
+    // goal that finds the primary idle replaces the ordinary run-end
+    // review with the goal feed — one frame, carrying the same slice
+    // inside the objective and budget, owing one verdict (protocol 044
+    // §4): two frames would ask the advisor two questions, and the
+    // second would wait on the first's answer. Without a live goal the
+    // ordinary review runs exactly as before, and a busy advisor keeps
+    // the ordinary coalescing: the goal feed waits with it.
+    PrimaryRunEnded(operation:) -> {
+      case goal_replaces_review(memory) {
+        True ->
+          remembering(
+            state,
+            evaluate(state, runtime, memory, goalloop.PrimaryEnded(operation:)),
+          )
+
+        False -> feed(state, runtime, memory, operation, PrimaryFinished)
+      }
+    }
 
     // A step is counted first and read second, so the threshold is met by
     // the step that reaches it rather than by the one after. A session
@@ -639,14 +793,32 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
       }
     }
 
-    AdvisorRunEnded(operation:) ->
-      feed(
-        state,
-        runtime,
-        Memory(..memory, reviewed: Some(operation)),
-        operation,
-        ReviewFinished,
-      )
+    // A review that ends while a goal feed is open forgot its verdict:
+    // the advisor's run finished without an `advise` answer, which is
+    // the provider's failure shape — a refusal, a rate limit — not the
+    // loop's. The goal evaluation counts the feed unanswered and returns
+    // the phase to idle, so the *next* evaluation offers it again rather
+    // than waiting on an idle primary's next run end, which cannot come.
+    // A bound on those re-offers pauses the goal instead of paying a
+    // reviewer that will never answer.
+    // The occasion is the goal's or the ordinary review's, never both. A
+    // goal feed carries the same stretch an ordinary catch-up would, so
+    // sending both would ask the advisor two questions about one slice
+    // and the ordinary one could only be answered with a word the goal
+    // feed refuses.
+    AdvisorRunEnded(operation:) -> {
+      let memory = Memory(..memory, reviewed: Some(operation))
+
+      case goal_replaces_review(memory) {
+        True ->
+          remembering(
+            state,
+            evaluate(state, runtime, memory, goalloop.AdvisorEnded(operation:)),
+          )
+
+        False -> feed(state, runtime, memory, operation, ReviewFinished)
+      }
+    }
 
     Judge(strand: caller, verdict:, reply:) ->
       judge(state, runtime, memory, caller, verdict, reply)
@@ -667,7 +839,17 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
         _queued -> store_guard(state, runtime, renewed, drained)
       }
       process.send(reply, nudges)
-      remembering(state, memory)
+
+      // The drain is answered before the goal is evaluated, because the
+      // driver is waiting on this reply inside a bounded timeout and the
+      // evaluation reads a branch. What the goal takes from a run start
+      // is the continuation cap's reset: a run this actor did not open is
+      // the operator, a schedule or another layer arriving with work of
+      // their own, which is what the cap counts from.
+      remembering(
+        state,
+        evaluate(state, runtime, memory, goalloop.PrimaryStarted(operation:)),
+      )
     }
 
     // A run on the primary has reached a finishable boundary and no
@@ -679,6 +861,56 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
       process.send(reply, nudges)
       remembering(state, spent)
     }
+
+    // The primary spent tokens. The arithmetic is the evaluation's own
+    // ledger scan, so this arm carries nothing into it: the trigger only
+    // makes the scan prompt, which is what lets the budget trip at the
+    // row that crosses it rather than at the primary's next idle
+    // boundary (protocol 044 §5).
+    PrimarySpent ->
+      remembering(state, evaluate(state, runtime, memory, goalloop.Level))
+
+    // The repair tick. Nothing happened in particular, which is exactly
+    // when a level read earns its keep — it is the occasion that finds a
+    // feed nobody answered, a woken run whose end was never announced,
+    // and a goal left Active with nothing running.
+    ReevaluateTick ->
+      remembering(state, evaluate(state, runtime, memory, goalloop.Level))
+
+    // The operator aborted a run on the primary. The loop holds the goal
+    // only for a run it itself opened, which the durable phase names —
+    // `Continuing(woken)` — because an abort of a run somebody else
+    // opened is the operator changing their mind about their own work,
+    // not about the goal. Held, never cleared, and the pause now carries
+    // `aborted` as its reason so the panel says which of the four pauses
+    // this was (protocol 044 §4).
+    PrimaryAborted(operation:) ->
+      remembering(
+        state,
+        evaluate(state, runtime, memory, goalloop.Aborted(operation:)),
+      )
+
+    // The operator's goal commands. Each is a call the actor answers on
+    // every path, and each lands here because the actor is the cell's
+    // only writer: the gateway parses and validates the request, and the
+    // status transitions happen here, where the loop's bookkeeping
+    // lives (protocol 044 §1).
+    SetGoal(objective:, token_budget:, reply:) ->
+      commanded(
+        state,
+        runtime,
+        reply,
+        set_goal(state, runtime, memory, objective, token_budget),
+      )
+
+    ClearGoal(reply:) ->
+      commanded(state, runtime, reply, clear_goal(state, runtime, memory))
+
+    PauseGoal(reply:) ->
+      commanded(state, runtime, reply, pause_goal(state, runtime, memory))
+
+    ResumeGoal(reply:) ->
+      commanded(state, runtime, reply, resume_goal(state, runtime, memory))
   }
 }
 
@@ -771,6 +1003,7 @@ fn recall(state: State, runtime: Runtime) -> Memory {
         stepped: 0,
         turn: Unspent,
         woke: None,
+        goal: read_goal(state, runtime),
       )
   }
 }
@@ -826,6 +1059,43 @@ fn read_cell(state: State, runtime: Runtime, key: String) -> Option(JsonValue) {
   }
 }
 
+// The goal cell, or no goal. Unreadable is the same as absent here — the
+// guard's decoder asymmetry, applied to a cell the loop must survive
+// finding unreadable: refusing to review over a corrupt goal cell would
+// cost the session its reviewer over bookkeeping nothing else depends on,
+// and the operator's `goal_set` rewrites the cell whole.
+fn read_goal(state: State, runtime: Runtime) -> Option(goalstate.Goal) {
+  case read_cell(state, runtime, goal_key) {
+    None -> None
+
+    Some(payload) ->
+      case goalstate.decode(payload) {
+        Ok(goal) -> Some(goal)
+
+        Error(reason) -> {
+          log.warn(state.wiring.logger, "advisor.goal_unreadable", [
+            field.text(key: "detail", value: reason),
+          ])
+          None
+        }
+      }
+  }
+}
+
+// The goal cell is written before anything is sent or woken, the same
+// ordering `store_guard` takes: a crash between the write and the wake
+// costs one continuation, while the reverse ordering could wake a
+// primary toward a goal the cell no longer records.
+fn store_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+) -> Memory {
+  write_cell(state, runtime, goal_key, goalstate.encode(goal))
+  Memory(..memory, goal: Some(goal))
+}
+
 // A guard that would not commit is still the guard this actor acts on:
 // the cell exists so a restart inherits the cooldown, and losing that
 // costs one window rather than the loop.
@@ -864,6 +1134,22 @@ fn write_cell(
 
     Error(error) ->
       log.warn(state.wiring.logger, "advisor.cell_unwritable", [
+        field.ident(key: "key", value: key),
+        field.text(key: "detail", value: string.inspect(error)),
+      ])
+  }
+}
+
+// The reserved door's other half: clearing the goal retires the cell
+// rather than writing an empty one, so an absent cell is the one
+// durable representation of no goal and the codec never meets a
+// payload it would have to read as absence.
+fn delete_cell(state: State, runtime: Runtime, key: String) -> Nil {
+  case api.delete_reserved_fact(runtime, key) {
+    Ok(Nil) -> Nil
+
+    Error(error) ->
+      log.warn(state.wiring.logger, "advisor.cell_undeletable", [
         field.ident(key: "key", value: key),
         field.text(key: "detail", value: string.inspect(error)),
       ])
@@ -1045,6 +1331,19 @@ fn reviewing(opened: Session, reviewed: Option(OpId)) -> Bool {
   }
 }
 
+// Whether the goal feed replaces the ordinary review at this run end:
+// the goal must be active. The primary's idleness and the advisor's
+// busyness are checked inside `goal_occasion`, which reads the store;
+// a paused or tripped goal is the operator's business, not the
+// loop's, so its run ends get the ordinary review the session always
+// had.
+fn goal_replaces_review(memory: Memory) -> Bool {
+  case memory.goal {
+    Some(goalstate.Goal(status: goalstate.Active, ..)) -> True
+    Some(_stopped) | None -> False
+  }
+}
+
 // The operation a strand currently has open, if the store will say. An
 // unreadable cell answers `None`, which both callers want and for
 // related reasons: the busy check then costs one redundant feed rather
@@ -1139,20 +1438,865 @@ fn judge(
   verdict: advise.Verdict,
   reply: Subject(Result(advise.Ack, String)),
 ) -> State {
-  case caller == strand {
+  case caller == strand, verdict {
     // Nothing a model can do reaches here today: the primary's active
     // list withholds `advise`, and `agent_spawn` may only grant a child
     // a subset of its parent's tools. This is the second lock on that
     // door, and the one that does not depend on a grant staying right —
     // the name it judges is the driver's own durable coordinate, never
     // anything the model wrote.
-    False -> {
+    False, _ -> {
       process.send(reply, Error("only the advisor strand may advise"))
       remembering(state, memory)
     }
 
-    True -> decide(state, runtime, memory, verdict, reply)
+    // A goal verdict, answered while a goal feed is open: the loop's
+    // own path, never the emission guard's (protocol 044 §2, the
+    // review's finding 5). The cooldown, the duplicate ring and the
+    // queue bound the advice channels; a goal continuation is a
+    // sanctioned wake with bounds of its own — the budget, the cap,
+    // and the zero-progress predicate — and a Continue routed through
+    // the guard would be silently swallowed by the turn gate or dropped
+    // as a duplicate, which is a loop that dies without an error.
+    True, advise.Continue(text:) ->
+      goal_word(state, runtime, memory, goalloop.Continued(text:), reply)
+
+    True, advise.Complete(text:) ->
+      goal_word(state, runtime, memory, goalloop.Completed(text:), reply)
+
+    // The ordinary words cannot answer a goal feed. An idle primary has
+    // no next run end, so "ask again later" would stall the loop forever
+    // — the review's finding 3 — and the honest answer is the in-band
+    // error naming the two words that are legal here, which the
+    // reviewer reads and can correct within the same run.
+    True, advise.Quiet | True, advise.Nudge(_) | True, advise.Block(_) ->
+      case goal_feed_open(memory) {
+        True -> {
+          process.send(
+            reply,
+            Error(
+              "this feed asks for continue or complete; quiet, nudge and "
+              <> "block answer an ordinary feed",
+            ),
+          )
+          remembering(state, memory)
+        }
+
+        False -> decide(state, runtime, memory, verdict, reply)
+      }
   }
+}
+
+// Whether a goal feed is open and its verdict owed, read from the
+// durable phase rather than from the actor's heap. That is the whole of
+// the difference a restart sees: an actor that has just replaced a dead
+// one knows a verdict is owed, so the reviewer's answer is acted on
+// instead of being refused as answering no open feed.
+fn goal_feed_open(memory: Memory) -> Bool {
+  case memory.goal {
+    Some(goalstate.Goal(phase: goalstate.AwaitingVerdict(..), ..)) -> True
+    Some(_otherwise) | None -> False
+  }
+}
+
+// --- the goal loop ---------------------------------------------------------
+
+// One evaluation of the goal's level: gather what the session is doing,
+// ask the pure loop what should happen, perform it, store the result.
+//
+// This is the whole of the actor's goal logic, and its shape is the
+// rework's point. The actor decides nothing — `client/goalloop` owns
+// every transition, so the state space is property-testable without
+// spawning a process — and the actor performs everything, because
+// sending a frame and opening a run are effects a pure function must not
+// have.
+fn evaluate(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  event: goalloop.Event,
+) -> Memory {
+  case memory.goal {
+    // No goal, or a goal cell this actor could not read. Either way
+    // there is nothing to steer, and the tick that found it costs one
+    // cached read.
+    None -> memory
+
+    Some(goal) -> {
+      let fresh = account_recompute(state, goal)
+      let #(moved, action) =
+        goalloop.next_action(fresh, observe(state, memory, event))
+      let memory = stored_if_moved(state, runtime, memory, goal, moved)
+      let #(performed, memory) = perform(state, runtime, memory, moved, action)
+
+      report(state, performed)
+      memory
+    }
+  }
+}
+
+// The cell is written only when the goal actually moved. A level read
+// that finds nothing to do is the common case — every tick on a session
+// whose primary is working — and committing an unchanged record there
+// would be a durable write per tick per session for no change.
+fn stored_if_moved(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  before: goalstate.Goal,
+  after: goalstate.Goal,
+) -> Memory {
+  case before == after {
+    True -> Memory(..memory, goal: Some(after))
+    False -> store_goal(state, runtime, memory, after)
+  }
+}
+
+// The facts one evaluation reads, with the one-commit lag disbelieved
+// for the run the occasion just ended.
+//
+// The driver resolves a run-end hook before the settlement that clears
+// `current_operation`, so for one commit the store still shows a
+// finished run as open. A level read that believed the cell would never
+// see the primary idle at the only moment a goal feed exists to be sent,
+// so the operation the occasion names is disbelieved here — and nothing
+// else is, because any other open run means the strand is genuinely
+// busy.
+fn observe(
+  state: State,
+  memory: Memory,
+  event: goalloop.Event,
+) -> goalloop.Observed {
+  let ended = ending(event)
+
+  goalloop.Observed(
+    primary: open_run(state.wiring.session, primary, ended),
+    advisor: open_run(state.wiring.session, strand, ended),
+    progress: goalloop.progress_of(stretch(state, memory)),
+    event:,
+    now_ms: now(state.wiring),
+  )
+}
+
+// Which run, if any, this occasion reports as finished.
+fn ending(event: goalloop.Event) -> Option(OpId) {
+  case event {
+    goalloop.PrimaryEnded(operation:) | goalloop.AdvisorEnded(operation:) ->
+      Some(operation)
+
+    goalloop.Level
+    | goalloop.PrimaryStarted(..)
+    | goalloop.Aborted(..)
+    | goalloop.Answered(..) -> None
+  }
+}
+
+fn open_run(
+  opened: Session,
+  name: String,
+  ended: Option(OpId),
+) -> Option(OpId) {
+  case running(opened, name) {
+    None -> None
+
+    Some(open) ->
+      case Some(open) == ended {
+        True -> None
+        False -> Some(open)
+      }
+  }
+}
+
+// The stretch of the primary's branch since the feed cursor, which is
+// both what a feed renders and what the zero-progress predicate is
+// measured on. One scan serves both.
+fn stretch(state: State, memory: Memory) -> List(Entry) {
+  case primary_leaf(state.wiring.session) {
+    Error(Nil) -> []
+    Ok(leaf) -> new_entries(state.wiring.session, leaf, memory.cursor)
+  }
+}
+
+// --- performing what the loop asked for ------------------------------------
+
+// What performing an action did, in the words the reviewer reads when
+// the action came from its own verdict.
+//
+// A type rather than a `Result(String, String)` because three of these
+// are not failures: nothing to do, something delivered, and the loop
+// having stopped are all ordinary outcomes, and only `GoalRefused` is a
+// host that would not take the message.
+type Performed {
+  // Nothing was sent.
+  GoalQuiet
+
+  // A message reached a strand. `how` names the door it went through.
+  GoalReached(how: String)
+
+  // A bound stopped the loop. `because` is the operator's wording for
+  // the status, which the reviewer reads as the reason its `continue`
+  // woke nobody.
+  GoalStopped(because: String)
+
+  // The send was refused. `reason` is the host's own words.
+  GoalRefused(reason: String)
+}
+
+fn perform(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+  action: goalloop.Action,
+) -> #(Performed, Memory) {
+  case action {
+    goalloop.Rest -> #(GoalQuiet, memory)
+
+    goalloop.FeedReviewer -> feed_goal(state, runtime, memory, goal)
+
+    goalloop.WakePrimary(text:) ->
+      wake_for_goal(state, runtime, memory, goal, text)
+
+    goalloop.WrapUp(text:) -> wrap_up(state, runtime, memory, goal, text)
+  }
+}
+
+// The goal feed: the stretch since the cursor inside the frame that
+// names the objective and the budget (protocol 044 §3).
+//
+// The slice is optional and a feed with no new entries still goes out.
+// That is the resume path: an idle primary whose last stretch was
+// already reviewed has nothing new on its branch, and the earlier draft
+// returned without sending there — so `/goal resume` flipped the status
+// to active and started nothing, which is the same silent stall read
+// from a third direction.
+fn feed_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+) -> #(Performed, Memory) {
+  let shown = feed_slice(state, memory)
+  let frame =
+    advisorslice.goal_feed_message(
+      option.map(shown, fn(pair) { pair.0 }),
+      goal,
+      now(state.wiring),
+    )
+
+  case api.send_to_strand(runtime, to: strand, message: frame) {
+    Error(error) -> {
+      log.warn(state.wiring.logger, "advisor.goal_feed_failed", [
+        field.text(key: "detail", value: string.inspect(error)),
+      ])
+
+      // The phase stays idle, so the next evaluation offers the same
+      // stretch again — the earlier draft logged this line and returned,
+      // which left an Active goal with a verdict nobody was ever going to
+      // be asked for. The retry is bounded by the same counter an
+      // unanswered feed moves, because a host whose send keeps failing
+      // should pause the goal rather than be re-offered it forever.
+      #(
+        GoalRefused(reason: "the goal feed could not be delivered"),
+        store_goal(
+          state,
+          runtime,
+          memory,
+          goalloop.feed_refused(goal, now(state.wiring)),
+        ),
+      )
+    }
+
+    Ok(delivery) -> fed(state, runtime, memory, goal, shown, delivery)
+  }
+}
+
+// The cursor advances only when a slice went out, and the phase records
+// which review owes the verdict. Both writes happen after the send,
+// because both describe what the send did.
+fn fed(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+  shown: Option(#(advisorslice.Slice, Seq)),
+  delivery: api.Delivery,
+) -> #(Performed, Memory) {
+  log.debug(state.wiring.logger, "advisor.goal_fed", [
+    field.count(key: "slice", value: slice_size(shown)),
+  ])
+
+  // A goal feed that carried a slice has shown that stretch, exactly as
+  // an ordinary review would; one that carried none has nothing to mark.
+  let marked = case shown {
+    Some(#(_rendered, newest)) -> store_cursor(state, runtime, memory, newest)
+    None -> memory
+  }
+
+  case owing_review(state, delivery) {
+    Some(feed) -> #(
+      GoalReached(how: "offered the session's goal to the reviewer"),
+      store_goal(
+        state,
+        runtime,
+        marked,
+        goalloop.feed_opened(goal, feed, now(state.wiring)),
+      ),
+    )
+
+    // The send steered a review this actor cannot name — the store would
+    // not say which run is open. Leaving the phase idle costs one
+    // duplicate feed at the next evaluation, where recording a run that
+    // may not be the right one would wait on a verdict nobody owes.
+    None -> #(
+      GoalReached(how: "offered the session's goal to the reviewer"),
+      marked,
+    )
+  }
+}
+
+// Which advisor run owes the verdict. A send that started a run names
+// it; a send that steered one joined a review that opened between the
+// level read and the send, and the store is asked which.
+fn owing_review(state: State, delivery: api.Delivery) -> Option(OpId) {
+  case delivery {
+    api.Started(operation:) -> Some(operation)
+    api.Steered(..) -> running(state.wiring.session, strand)
+  }
+}
+
+fn slice_size(shown: Option(#(advisorslice.Slice, Seq))) -> Int {
+  case shown {
+    Some(#(rendered, _newest)) -> rendered.dropped
+    None -> 0
+  }
+}
+
+// The goal continuation's own door onto the primary — not the nudge wake
+// door, whose turn gate and queue drain are both wrong for a
+// continuation (protocol 044 §4). No turn gate and no `take_pending`, so
+// the nudge channel keeps its one wake per operator turn through an
+// arbitrarily long goal loop; the loop is closed by its own bounds
+// instead.
+fn wake_for_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+  remaining: String,
+) -> #(Performed, Memory) {
+  let frame =
+    advisorslice.continuation_message(goal, remaining, now(state.wiring))
+
+  case send_advice(state, runtime, frame) {
+    Ok(api.Started(operation:)) ->
+      woken_for_goal(state, runtime, memory, goal, operation)
+
+    // A run opened between the level read and the send: the continuation
+    // rides it as a steer, which is where it would have gone had the read
+    // been one commit later. The phase stays idle, so that run's end is
+    // not measured for zero progress — the loop did not open it.
+    Ok(api.Steered(..)) -> #(
+      GoalReached(how: "steered the primary's open run"),
+      memory,
+    )
+
+    Error(reason) -> #(GoalRefused(reason:), memory)
+  }
+}
+
+// The woken run recorded twice, in the two places that read it for
+// different questions: the durable phase, which the abort notice and the
+// zero-progress measurement key on, and the heap `woke`, which keeps the
+// nudge channel from reading this actor's own wake as the operator
+// arriving with fresh work.
+fn woken_for_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+  operation: OpId,
+) -> #(Performed, Memory) {
+  log.debug(state.wiring.logger, "advisor.goal_continued", [
+    field.ident(key: "operation", value: ids.op_id_to_string(operation)),
+  ])
+
+  let continuing = goalloop.primary_woken(goal, operation, now(state.wiring))
+  let stored = store_goal(state, runtime, memory, continuing)
+
+  #(
+    GoalReached(
+      how: "started a run on the idle primary, carrying the goal continuation",
+    ),
+    Memory(..stored, woke: Some(operation)),
+  )
+}
+
+// The one-shot wrap-up a tripped bound sends, worded for the bound that
+// tripped. It rides the block door — steer a working primary, wake an
+// idle one — because a bound reached is exactly a "stop soon".
+//
+// One-shot without a guard: the goal this action comes with is already
+// `Limited`, and a `Limited` goal rests, so no later evaluation can
+// reach this action again until the operator resumes. The earlier draft
+// leaned on the guard's duplicate ring for the same property and told
+// the primary its token budget was exhausted whichever bound had
+// tripped.
+fn wrap_up(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+  text: String,
+) -> #(Performed, Memory) {
+  let because = goalloop.stopped_because(goal.status)
+
+  case emit(state, runtime, text) {
+    Ok(_delivered) -> Nil
+
+    Error(reason) ->
+      log.warn(state.wiring.logger, "advisor.goal_wrapup_failed", [
+        field.text(key: "detail", value: reason),
+      ])
+  }
+
+  #(GoalStopped(because:), memory)
+}
+
+// What a performed action is worth saying about on an occasion nobody is
+// waiting on. A verdict's own caller reads the same value as an
+// acknowledgement instead; see `verdict_ack`.
+fn report(state: State, performed: Performed) -> Nil {
+  case performed {
+    GoalQuiet | GoalReached(..) -> Nil
+
+    GoalStopped(because:) ->
+      log.info(state.wiring.logger, "advisor.goal_stopped", [
+        field.text(key: "detail", value: because),
+      ])
+
+    GoalRefused(reason:) ->
+      log.warn(state.wiring.logger, "advisor.goal_action_refused", [
+        field.text(key: "detail", value: reason),
+      ])
+  }
+}
+
+// --- answering a goal feed -------------------------------------------------
+
+// A goal word from the reviewer. It is the same evaluation every other
+// occasion makes, with the answer as the event, and the reviewer reads
+// what the action did as its acknowledgement.
+fn goal_word(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  answer: goalloop.Answer,
+  reply: Subject(Result(advise.Ack, String)),
+) -> State {
+  use <- bool.lazy_guard(when: !goal_feed_open(memory), return: fn() {
+    process.send(
+      reply,
+      Error(
+        "no goal feed is open; continue and complete answer the "
+        <> "session's goal feeds only",
+      ),
+    )
+    remembering(state, memory)
+  })
+
+  case memory.goal {
+    // Unreachable while `goal_feed_open` is the guard above: a phase
+    // cannot be `AwaitingVerdict` without a goal to carry it. The arm
+    // keeps the match total and answers the caller rather than crashing.
+    None -> {
+      process.send(
+        reply,
+        Error("the goal is gone; it was cleared while you were judging"),
+      )
+      remembering(state, memory)
+    }
+
+    Some(goal) -> answered(state, runtime, memory, goal, answer, reply)
+  }
+}
+
+fn answered(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  goal: goalstate.Goal,
+  answer: goalloop.Answer,
+  reply: Subject(Result(advise.Ack, String)),
+) -> State {
+  let fresh = account_recompute(state, goal)
+  let #(moved, action) =
+    goalloop.next_action(
+      fresh,
+      observe(state, memory, goalloop.Answered(answer:)),
+    )
+  let memory = stored_if_moved(state, runtime, memory, goal, moved)
+  let #(performed, memory) = perform(state, runtime, memory, moved, action)
+
+  process.send(reply, verdict_ack(performed, moved))
+  remembering(state, memory)
+}
+
+// What the reviewer is told its verdict did.
+fn verdict_ack(
+  performed: Performed,
+  goal: goalstate.Goal,
+) -> Result(advise.Ack, String) {
+  case performed {
+    GoalReached(how:) -> Ok(advise.Delivered(how:))
+    GoalRefused(reason:) -> Error(reason)
+    GoalStopped(because:) -> Error("the goal did not continue: " <> because)
+
+    // Nothing was sent. A `complete` is exactly that, and is the
+    // acknowledgement the reviewer wants; any other status is the loop
+    // having stopped while the reviewer judged, and the refusal names
+    // which status stopped it.
+    GoalQuiet ->
+      case goal.status {
+        goalstate.Complete -> Ok(advise.Acknowledged)
+
+        goalstate.Active | goalstate.Paused(..) | goalstate.Limited(..) ->
+          Error(
+            "the goal did not continue: "
+            <> goalloop.stopped_because(goal.status),
+          )
+      }
+  }
+}
+
+// --- accounting -----------------------------------------------------------
+
+// The one code path that adds to the goal's token total.
+//
+// There used to be two, and both were wrong. One added on the arrival of
+// a cast and moved `accounted_through_seq` to that cast's row, so a lost
+// cast for an earlier seq was skipped forever — the permanent undercount
+// the design says cannot happen. The other filtered the ledger with a
+// predicate that was always true, so the reviewer's own spend, which
+// lands after the primary's last row on every cycle, was charged to the
+// primary's budget.
+//
+// Now the ledger is the only adder. Rows past the cursor are attributed
+// the way the gateway attributes them: the row names an entry, and the
+// entry is the primary's when it is on the primary's branch. The branch
+// scan is bounded by the accounting window rather than by a row cap,
+// because a capped set is a *prefix* of the chain and would drop the
+// primary's older rows as foreign — the failure a truncated set produces
+// once membership is actually tested.
+//
+// Two under-counts are stated rather than guessed at. A row whose
+// `entry_id` is `None` — a structural summary's own spend — is not
+// counted, because which strand a compaction belonged to is a guess. And
+// a row whose entry was committed at or below the cursor is not counted:
+// entries and usage rows share one session-wide seq counter and a row is
+// written in the same transaction as its entry, so this needs two
+// strands committing across one another, and the loss is one row of a
+// budget the bound reads as a floor.
+fn account_recompute(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+  let store = state.wiring.session.store
+  let window =
+    storage.usage_scan()
+    |> storage.usage_seq_range(Some(goal.accounted_through_seq + 1), None)
+
+  case storage.scan_usage(store, window) {
+    // A ledger that will not answer leaves the cursor where it is, so
+    // the next evaluation asks for the same window again.
+    Error(_unreadable) -> goal
+
+    Ok(rows) ->
+      summed(goal, rows, primary_entries(state, goal.accounted_through_seq))
+  }
+}
+
+// The primary's own entry ids inside the accounting window.
+fn primary_entries(state: State, through: Seq) -> Set(EntryId) {
+  case primary_leaf(state.wiring.session) {
+    Error(Nil) -> set.new()
+
+    Ok(leaf) ->
+      storage.branch_scan(from: leaf)
+      |> storage.branch_order(storage.OldestFirst)
+      |> storage.branch_cursor(through)
+      |> storage.scan_branch(state.wiring.session.store, _)
+      |> result.map(entry_ids)
+      |> result.lazy_unwrap(set.new)
+  }
+}
+
+fn entry_ids(entries: List(Entry)) -> Set(EntryId) {
+  entries
+  |> list.map(fn(the_entry: Entry) { the_entry.id })
+  |> set.from_list
+}
+
+fn summed(
+  goal: goalstate.Goal,
+  rows: List(entry.UsageRow),
+  primaries: Set(EntryId),
+) -> goalstate.Goal {
+  let #(tokens, cost, through) =
+    tally(rows, primaries, 0, 0.0, goal.accounted_through_seq)
+
+  goalstate.Goal(
+    ..goal,
+    tokens_used: goal.tokens_used + tokens,
+    cost_used: goal.cost_used +. cost,
+    accounted_through_seq: through,
+  )
+}
+
+// One pass over the window, oldest first. Every row advances the cursor
+// whether or not it is counted — a row this sum refuses is a row it must
+// never re-examine — and only the primary's rows add.
+fn tally(
+  rows: List(entry.UsageRow),
+  primaries: Set(EntryId),
+  tokens: Int,
+  cost: Float,
+  through: Int,
+) -> #(Int, Float, Int) {
+  case rows {
+    [] -> #(tokens, cost, through)
+
+    [row, ..rest] ->
+      case the_primarys(row, primaries) {
+        True ->
+          tally(
+            rest,
+            primaries,
+            tokens + non_cached(row),
+            cost +. row.usage.cost.total,
+            int.max(through, row.seq),
+          )
+
+        False -> tally(rest, primaries, tokens, cost, int.max(through, row.seq))
+      }
+  }
+}
+
+// Whether one row is the primary's own spend. The reviewer's rows and a
+// sub-agent's rows both reach here — the usage ledger is not
+// strand-scoped — and both answer `False`, which is the whole of the
+// primary-only rule read from the ledger side.
+fn the_primarys(row: entry.UsageRow, primaries: Set(EntryId)) -> Bool {
+  case row.entry_id {
+    Some(id) -> set.contains(primaries, id)
+    None -> False
+  }
+}
+
+// --- the operator's commands ----------------------------------------------
+
+// The tail every operator goal command shares: answer the caller, then
+// read the level once.
+//
+// The evaluation is not optional on any of the four, and routing all of
+// them through one tail is what makes a command that forgets it
+// unwriteable rather than merely absent. `/goal resume` was that
+// omission: it wrote `Active` into the cell, answered `Ok`, and
+// returned, so an idle primary — which has no next occasion — sat with
+// an Active goal, nothing running and nothing scheduled until the repair
+// tick two minutes later. That is the stall the rework exists to remove,
+// reached through the operator's own door.
+//
+// A command that moved nothing pays a level read that answers `Rest`: a
+// cleared goal evaluates against `None` and returns at once, and a
+// paused one rests on its status.
+fn commanded(
+  state: State,
+  runtime: Runtime,
+  reply: Subject(Result(Nil, String)),
+  outcome: #(Result(Nil, String), Memory),
+) -> State {
+  let #(answered, moved) = outcome
+
+  // The operator is answered before the evaluation, because what the
+  // evaluation does — render a slice, commit a frame, open a run — is
+  // not what the command promised, and a terminal waiting on the reply
+  // should not wait on a provider.
+  process.send(reply, answered)
+
+  remembering(state, evaluate(state, runtime, moved, goalloop.Level))
+}
+
+// Clearing the goal retires the cell: absence is the one durable
+// representation of no goal, so the codec never meets a tombstone.
+fn clear_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(Result(Nil, String), Memory) {
+  delete_cell(state, runtime, goal_key)
+
+  #(Ok(Nil), Memory(..memory, goal: None))
+}
+
+// Sets or replaces the goal. The same objective under any status but
+// `complete` is a refresh — accounting kept, budget replaced — because
+// the operator re-pinning the work they meant is not a new goal (the
+// distinction protocol 044 §7 makes). A changed objective, or any
+// complete goal, starts fresh.
+//
+// A refresh clears the loop's bound counters and its phase whatever it
+// kept. The operator arriving with a larger budget means the goal should
+// run, and a refresh that inherited a spent continuation cap would trip
+// again on its first evaluation.
+fn set_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  objective: String,
+  token_budget: Int,
+) -> #(Result(Nil, String), Memory) {
+  use <- bool.lazy_guard(when: token_budget <= 0, return: fn() {
+    #(Error("token_budget must be a positive number of tokens"), memory)
+  })
+
+  let now_ms = now(state.wiring)
+  let pinned = case memory.goal {
+    Some(goal) if goal.objective == objective ->
+      refreshed(goal, token_budget, now_ms)
+
+    Some(_replaced) | None -> goalstate.new(objective, token_budget, now_ms)
+  }
+
+  // A goal pinned onto an idle primary must start on its own: an idle
+  // primary has no next run end to occasion a feed, so a `goal_set` that
+  // only wrote the cell would hold the loop until the operator typed
+  // again. The evaluation that starts it is `commanded`'s, which every
+  // one of the four commands returns through.
+  #(Ok(Nil), store_goal(state, runtime, memory, pinned))
+}
+
+// The refresh, which keeps what the operator did not change and clears
+// what the loop spent. A complete goal is not refreshed: completion is
+// terminal, so re-pinning the same objective starts a fresh cell.
+fn refreshed(
+  goal: goalstate.Goal,
+  token_budget: Int,
+  now_ms: Int,
+) -> goalstate.Goal {
+  case goal.status {
+    goalstate.Complete -> goalstate.new(goal.objective, token_budget, now_ms)
+
+    goalstate.Active | goalstate.Paused(..) | goalstate.Limited(..) ->
+      goalstate.Goal(
+        ..goal,
+        status: goalstate.Active,
+        phase: goalstate.Idle,
+        token_budget:,
+        continuations: 0,
+        zero_progress: 0,
+        unanswered_feeds: 0,
+        updated_ms: now_ms,
+      )
+  }
+}
+
+// Pauses and resumes, as the operator asks. Pausing an already-paused
+// goal is a committed no-op; resuming a complete goal refuses —
+// completion is the reviewer's verdict, not a status to undo (protocol
+// 044 §7).
+fn pause_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(Result(Nil, String), Memory) {
+  case memory.goal {
+    None -> #(Error("there is no goal to pause"), memory)
+
+    Some(goal) -> {
+      let held =
+        goalstate.Goal(
+          ..goal,
+          status: goalstate.Paused(by: goalstate.ByOperator),
+          phase: goalstate.Idle,
+          updated_ms: now(state.wiring),
+        )
+
+      #(Ok(Nil), store_goal(state, runtime, memory, held))
+    }
+  }
+}
+
+fn resume_goal(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(Result(Nil, String), Memory) {
+  case memory.goal {
+    None -> #(Error("there is no goal to resume"), memory)
+
+    Some(goal) ->
+      case goal.status {
+        goalstate.Active -> #(Ok(Nil), memory)
+
+        goalstate.Complete -> #(
+          Error("a complete goal cannot be resumed; set a new one"),
+          memory,
+        )
+
+        goalstate.Paused(..) | goalstate.Limited(..) -> #(
+          Ok(Nil),
+          store_goal(state, runtime, memory, continued(state, goal)),
+        )
+      }
+  }
+}
+
+// A resume clears the bound counters as well as the status, because the
+// operator arriving is what the continuation cap counts from and a
+// resume that inherited a spent cap would trip again at once. The
+// evaluation that starts the loop again is `commanded`'s, which is what
+// makes a resume onto an idle primary send a feed rather than wait for
+// an occasion that cannot come.
+fn continued(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+  goalstate.Goal(
+    ..goal,
+    status: goalstate.Active,
+    phase: goalstate.Idle,
+    continuations: 0,
+    zero_progress: 0,
+    unanswered_feeds: 0,
+    updated_ms: now(state.wiring),
+  )
+}
+
+// The stretch of primary work since the cursor, rendered for the goal
+// feed — the same scan the ordinary feed uses, factored out because the
+// goal occasion wants the slice and its newest seq together.
+fn feed_slice(
+  state: State,
+  memory: Memory,
+) -> Option(#(advisorslice.Slice, Seq)) {
+  case primary_leaf(state.wiring.session) {
+    Error(Nil) -> None
+
+    Ok(leaf) ->
+      case new_entries(state.wiring.session, leaf, memory.cursor) {
+        [] -> None
+
+        entries ->
+          case advisorslice.render(entries, advisorslice.default_bounds) {
+            Some(slice) -> Some(#(slice, slice.newest))
+            None -> None
+          }
+      }
+  }
+}
+
+// The delta a primary row adds: non-cached input plus output, floored
+// at zero. `reasoning` is a subset of `output` and is not added on top
+// (the double-count the proposal's formula avoids); `cache_write_1h`
+// is a subset of `cache_write` and folds into it (protocol 044 §5).
+fn non_cached(row: entry.UsageRow) -> Int {
+  int.max(row.usage.input - row.usage.cache_read - row.usage.cache_write, 0)
+  + row.usage.output
 }
 
 fn decide(
@@ -1454,12 +2598,26 @@ fn send_advice(
 
 // The two vocabularies are separate on purpose: `tools/advise` names
 // what a model may ask for and `client/advisorguard` names what the
-// harness decides, and neither package depends on the other.
+// harness decides, and neither package depends on the other. The goal
+// words have no advisorguard counterpart and never reach this function:
+// `judge` answers them before `decide` runs, because a goal verdict is
+// not advice — the emission guard's cooldown, duplicate ring and queue
+// bound the advice channels, and a goal continuation is a sanctioned
+// wake with bounds of its own. The arms below keep the function total
+// so a later change cannot route a goal word through the guard by
+// forgetting an arm here.
 fn translate(verdict: advise.Verdict) -> advisorguard.Verdict {
   case verdict {
     advise.Quiet -> advisorguard.Quiet
     advise.Nudge(text:) -> advisorguard.Nudge(text:)
     advise.Block(text:) -> advisorguard.Block(text:)
+
+    // Unreachable in fact: `judge` refuses both words before `decide`
+    // is reached, with the error that names the goal feeds they answer.
+    // Mapping them to `Quiet` is the least-wrong total answer — the
+    // guard records nothing and nothing is emitted — and the only one
+    // a reader of this arm needs to trust.
+    advise.Continue(_) | advise.Complete(_) -> advisorguard.Quiet
   }
 }
 
@@ -1487,6 +2645,21 @@ pub fn seam(wiring: Wiring) -> advise.Advice {
         Error("the advisor plane did not answer; nothing was emitted")
     }
   })
+}
+
+/// The gateway's abort notice over the same address the seam uses: a
+/// cast, so an operator's abort is never held open behind a busy actor,
+/// and the send to an absent actor is dropped the same way the loop's
+/// own run-end casts are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_goal_abort(options, advisor.abort_notice(wiring))
+/// ```
+///
+pub fn abort_notice(wiring: Wiring) -> fn(OpId) -> Nil {
+  fn(operation) { cast(wiring, Some(PrimaryAborted(operation: operation))) }
 }
 
 // --- the hooks -------------------------------------------------------------
@@ -1545,7 +2718,7 @@ pub fn hooks(built: effects.Hooks, wiring: Wiring) -> effects.Hooks {
     // and it fires before the request, so a feed there would describe the
     // step it was announcing as work not yet done.
     usage: fn(operation, row) {
-      stepped(wiring, operation)
+      spent(wiring, operation, row)
       metered(operation, row)
     },
   )
@@ -1570,13 +2743,19 @@ fn notify(wiring: Wiring, operation: OpId) -> Nil {
 // and counting those would let a long review trip the threshold it is
 // itself the reason for, feeding the reviewer on the strength of its own
 // token spend.
-fn stepped(wiring: Wiring, operation: OpId) -> Nil {
+//
+// The goal's accounting trigger rides the same slot behind the same
+// strand filter, and carries nothing. One `strand_of` read serves both
+// casts. The row deliberately does not travel: the arithmetic is the
+// evaluation's own ledger scan (see `account_recompute`), so a lost cast
+// delays a refresh instead of skipping a row forever.
+fn spent(wiring: Wiring, operation: OpId, _row: entry.UsageRow) -> Nil {
   case notes.strand_of(wiring.session, operation) {
-    Ok(name) if name == primary -> cast(wiring, Some(PrimaryStepped(operation:)))
+    Ok(name) if name == primary -> {
+      cast(wiring, Some(PrimaryStepped(operation:)))
+      cast(wiring, Some(PrimarySpent))
+    }
 
-    // Another strand's step, or metadata the store would not answer for.
-    // Neither is the primary working, and a run is never held up to find
-    // out which.
     Ok(_other) | Error(Nil) -> Nil
   }
 }
@@ -1806,7 +2985,7 @@ fn describe_create(error: api.CreateStrandError) -> String {
 // same reason: `process.call` exits its *caller* on a timeout or a dead
 // callee, and both callers here are a strand driver or a live tool
 // effect, where a dead caller is a run that never settles.
-fn ask(
+pub fn ask(
   name: address.Address(Message),
   timeout_ms: Int,
   message: fn(Subject(answer)) -> Message,

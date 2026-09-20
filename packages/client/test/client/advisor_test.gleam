@@ -13,13 +13,14 @@
 import client/advisor
 import client/advisorguard
 import client/agency
+import client/goalstate
 import core/clock
 import core/entry.{type Entry}
-import core/ids.{type EntryId, type OpId}
+import core/ids.{type EntryId, type OpId, type UsageId}
 import core/json
 import core/message
 import core/register
-import core/tx.{SetRegister, Tx}
+import core/tx.{InsertUsage, SetRegister, Tx}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -634,6 +635,36 @@ pub fn only_the_advisor_may_advise_test() {
     })
 
   assert refused == Error("only the advisor strand may advise")
+  stop(rig)
+}
+
+// The goal words answer goal feeds only (protocol 044 §2). No goal feed
+// is open in this rig — the goal loop is a later change — so both words
+// are refused with the error that says so, which the advisor reads and
+// can correct within the same run. The refusal is in-band rather than a
+// crash for the same reason the caller check is: a model that answers
+// the wrong feed still gets an answer it can act on.
+pub fn goal_words_without_a_goal_feed_are_refused_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let refused = fn(verdict) {
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(strand: advisor.strand, verdict:, reply:)
+    })
+  }
+
+  assert refused(advise.Continue(text: "the race remains"))
+    == Error(
+      "no goal feed is open; continue and complete answer the "
+      <> "session's goal feeds only",
+    )
+  assert refused(advise.Complete(text: "the race passes"))
+    == Error(
+      "no goal feed is open; continue and complete answer the "
+      <> "session's goal feeds only",
+    )
   stop(rig)
 }
 
@@ -1452,4 +1483,795 @@ fn start_entropy() -> Result(fn() -> Int, String) {
     fn() { process.call(counter.data, waiting: 1000, sending: fn(r) { r }) }
   })
   |> result.replace_error("the entropy counter did not start")
+}
+
+// --- the goal loop ---------------------------------------------------------
+
+// A goal is pinned through the same call the operator's gateway command
+// will ride: the actor is the cell's only writer, and the call's `Ok` is
+// what a `goal_set` replies on.
+pub fn a_goal_can_be_pinned_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let pinned =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "make the failing storage race test pass",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+  assert pinned == Ok(Nil)
+
+  let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
+  let assert Ok(goal) = goalstate.decode(cell)
+  assert goalstate.status_of(goal) == goalstate.Active
+  assert goal.tokens_used == 0
+  stop(rig)
+}
+
+// A non-positive budget is refused worded, because v1 has no unbounded
+// goals and a zero budget is a typo rather than a wish.
+pub fn a_non_positive_budget_is_refused_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let refused =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(objective: "x", token_budget: 0, reply:)
+    })
+  assert refused == Error("token_budget must be a positive number of tokens")
+  assert api.fact(rig.runtime, advisor.goal_key) == Ok(None)
+  stop(rig)
+}
+
+// A primary run end with an active goal and an idle primary sends the
+// advisor a goal feed, not an ordinary one: the frame names the
+// objective and the budget, and the footer asks for the goal words.
+pub fn a_primary_run_end_with_a_goal_feeds_the_goal_question_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  assert list.any(advisor_texts(rig.opened), fn(text) {
+    string.contains(
+      text,
+      "[advisor goal feed: the primary stopped with the session's goal still open]",
+    )
+    && string.contains(
+      text,
+      "<untrusted_objective>\nland the migration\n</untrusted_objective>",
+    )
+  })
+  stop(rig)
+}
+
+// A continue wakes the idle primary with the continuation frame, spends
+// no operator-turn budget, and counts the continuation in the cell.
+pub fn a_continue_wakes_the_idle_primary_with_a_continuation_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  let assert Ok(advise.Delivered(_how)) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Continue(text: "the tests still fail"),
+        reply:,
+      )
+    })
+    as "the continuation must be delivered"
+
+  assert list.any(primary_texts(rig.opened), fn(text) {
+    string.contains(text, "[goal continuation]")
+    && string.contains(
+      text,
+      "The reviewer's note on what remains:\nthe tests still fail",
+    )
+  })
+
+  // The continuation was counted: the cell's continuations moved.
+  let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
+  let assert Ok(goal) = goalstate.decode(cell)
+  assert goal.continuations == 1
+  stop(rig)
+}
+
+// A complete flips the status, records the reviewer's note, and stops the
+// loop: no continuation lands on the primary.
+pub fn a_complete_flips_the_status_and_stops_the_loop_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  let assert Ok(advise.Acknowledged) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Complete(text: "the migration is merged"),
+        reply:,
+      )
+    })
+
+  let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
+  let assert Ok(goal) = goalstate.decode(cell)
+  assert goalstate.status_of(goal) == goalstate.Complete
+  assert goalstate.reviewer_note_of(goal) == Some("the migration is merged")
+
+  // No continuation reached the primary: completion is the loop's end,
+  // not a message the worker reads. The fixture's own prompt is the only
+  // thing on the primary's branch.
+  assert !list.any(primary_texts(rig.opened), fn(text) {
+    string.contains(text, "[goal continuation]")
+  })
+  stop(rig)
+}
+
+// The ordinary words cannot answer a goal feed: the in-band error names
+// the two goal words, because an idle primary has no next occasion and
+// a misread answer would stall the loop silently.
+pub fn ordinary_words_cannot_answer_a_goal_feed_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  let refused =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(strand: advisor.strand, verdict: advise.Quiet, reply:)
+    })
+  assert refused
+    == Error(
+      "this feed asks for continue or complete; quiet, nudge and block answer an ordinary feed",
+    )
+  stop(rig)
+}
+
+// The goal verdicts answered with no goal feed open are refused with the
+// error that says so — the same arm the pre-loop actor had, now the
+// refusal a stale or stray goal word meets.
+pub fn goal_words_with_no_open_goal_feed_are_refused_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let refused =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Continue(text: "the race remains"),
+        reply:,
+      )
+    })
+  assert refused
+    == Error(
+      "no goal feed is open; continue and complete answer the session's goal feeds only",
+    )
+  stop(rig)
+}
+
+// A reviewer run that ends without a verdict does not strand the goal.
+// That is the failure the level-triggered rework exists to remove: the
+// earlier draft closed the feed on the run end and then waited for an
+// occasion that could not occur — an idle primary has no next one. Now
+// the abandoned feed is counted and offered again, and the count is what
+// bounds the retry so a provider that never answers pauses the goal
+// rather than being paid to refuse it forever.
+pub fn an_unanswered_review_is_counted_and_offered_again_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  // The run that actually owed the verdict is the one the feed opened,
+  // read from the store rather than invented: an end on any other
+  // advisor run is somebody else's review and leaves the feed open.
+  let assert Some(feed) = strand_operation(rig.opened, advisor.strand)
+    as "the goal feed must have opened a run on the advisor"
+
+  // The advisor's own run ends without a verdict — the provider's
+  // failure shape.
+  process.send(subject, advisor.AdvisorRunEnded(operation: feed))
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  assert goal.unanswered_feeds == 1
+  assert goalstate.status_of(goal) == goalstate.Active
+
+  // Offered again rather than abandoned, and the phase is the durable
+  // evidence: the level read found the idle phase, sent a feed, and
+  // recorded a verdict owed again. The second frame is not a second
+  // committed entry here because this rig's advisor never settles — the
+  // store still shows its run open, so the send steers that run rather
+  // than starting one, and a steered message sits on the run's queue. The
+  // earlier draft left this state with no verdict owed and nothing
+  // scheduled, which is exactly what this assertion refutes.
+  assert goal.phase == goalstate.AwaitingVerdict(feed:)
+  stop(rig)
+}
+
+// A run end on the advisor that is not the run owing the verdict is
+// somebody else's review ending, and leaves the open feed alone: the
+// phase names the run, which is what makes the difference readable
+// rather than guessed.
+pub fn a_foreign_advisor_run_end_leaves_the_feed_open_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  process.send(subject, advisor.AdvisorRunEnded(operation: an_op_id(4)))
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  assert goal.unanswered_feeds == 0
+  assert goal_feeds_on(rig.opened) == 1
+
+  // The feed is still open, so the verdict it was waiting for lands.
+  let assert Ok(advise.Delivered(_how)) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Continue(text: "the race remains"),
+        reply:,
+      )
+    })
+    as "the verdict the open feed asked for must be accepted"
+  stop(rig)
+}
+
+// How many goal feeds are on the advisor's branch, counted off the
+// durable tree: a feed that was never committed cannot be counted here,
+// which is why this rather than a log line is the evidence.
+fn goal_feeds_on(opened: Session) -> Int {
+  advisor_texts(opened)
+  |> list.filter(fn(text) {
+    string.contains(
+      text,
+      "[advisor goal feed: the primary stopped with the session's goal still open]",
+    )
+  })
+  |> list.length
+}
+
+// --- accounting -------------------------------------------------------------
+//
+// The four fixtures below share one shape, and the shape is the point of
+// the rework. `PrimarySpent` carries nothing: it is a trigger, and the
+// total is computed by scanning the session's own usage ledger past the
+// goal's cursor and counting the rows whose entry is on the primary's
+// branch. So every fixture commits real rows into the real ledger — a
+// synthetic row cast at the actor would now account nothing, which is
+// exactly the property that makes the ledger the single adder.
+
+// Accounting: one committed primary row adds its non-cached input and
+// output to the goal's spend, and the cursor advances past it.
+pub fn a_primary_row_accounts_against_the_goal_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  let worked = a_primary_entry(rig)
+  let spent = commit_usage(rig, worked, 101)
+
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  // Non-cached input 11 - 3 - 4 = 4, plus output 22: 26. Reasoning is
+  // inside output and not added again.
+  assert goal.tokens_used == 26
+  assert goal.accounted_through_seq == spent
+  stop(rig)
+}
+
+// The row no trigger ever announced is still counted. Two rows are
+// committed and exactly one trigger fires afterwards, so the older row is
+// the cast that was lost. The accounting this replaced moved the cursor
+// to the announcing row's own seq, which skipped the older row forever —
+// the permanent undercount the design says cannot happen.
+pub fn a_lost_row_is_recovered_by_the_next_scan_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  let worked = a_primary_entry(rig)
+  let older = commit_usage(rig, worked, 101)
+  let newer = commit_usage(rig, worked, 105)
+  assert older < newer as "the ledger stamps the second row above the first"
+
+  // One trigger for two rows: the cast that would have announced the
+  // older row is the one this fixture never sends.
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  assert goal.tokens_used == 52
+  assert goal.accounted_through_seq == newer
+  stop(rig)
+}
+
+// The accounting counts only the primary's spend, read from the ledger
+// side. The reviewer's rows land before and after the primary's on every
+// cycle, so a foreign row is committed in both positions, and neither
+// adds: the filter is `set.contains` against the primary's own branch,
+// not a size check that answers yes to everything.
+pub fn the_accounting_counts_only_the_primary_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  // The run end sends the goal feed, which commits a real entry on the
+  // advisor's branch: the foreign entry these rows name is the reviewer's
+  // own turn, not an id invented by the fixture.
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  let assert Some(reviewed) = strand_leaf(rig.opened, advisor.strand)
+    as "the goal feed must leave a leaf on the advisor's branch"
+  let assert Some(worked) = strand_leaf(rig.opened, advisor.primary)
+    as "the operator's turn must leave a leaf on the primary's branch"
+
+  let _before = commit_usage(rig, reviewed, 201)
+  let _own = commit_usage(rig, worked, 202)
+  let trailing = commit_usage(rig, reviewed, 203)
+
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  // One row of the three counted, and the cursor past all three: a row
+  // the sum refuses is a row it must never re-examine.
+  assert goal.tokens_used == 26
+  assert goal.accounted_through_seq == trailing
+  stop(rig)
+}
+
+// A counted row does not count twice: the seq cursor is the guard, so a
+// second trigger over the same ledger is inert.
+pub fn a_replayed_row_does_not_count_twice_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  let worked = a_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 101)
+
+  process.send(subject, advisor.PrimarySpent)
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  assert goal.tokens_used == 26
+  stop(rig)
+}
+
+// The accounting that crosses the budget is the one that trips the bound:
+// the status flips to the token-budget limit, told apart from the
+// continuation cap by its cause.
+pub fn an_exhausted_budget_trips_the_bound_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 10)
+
+  let worked = a_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 101)
+
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  assert goalstate.status_of(goal)
+    == goalstate.Limited(by: goalstate.ByTokenBudget)
+  stop(rig)
+}
+
+// Nothing in the ledger is nothing accounted. The trigger carries no
+// payload, so a trigger with no row behind it must leave the goal exactly
+// where it was — which is also what a cast for a row another strand wrote
+// now costs.
+pub fn a_trigger_with_an_empty_ledger_accounts_nothing_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let goal = goal_cell(rig)
+  assert goal.tokens_used == 0
+  assert goal.accounted_through_seq == 0
+  stop(rig)
+}
+
+// --- the accounting fixtures' own rig ---------------------------------------
+
+// Pins the goal through the operator's own call, which every accounting
+// fixture starts with.
+fn pin_goal(
+  subject: process.Subject(advisor.Message),
+  token_budget: Int,
+) -> Nil {
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(objective: "land the migration", token_budget:, reply:)
+    })
+    as "the goal must pin through the actor's own call"
+  Nil
+}
+
+// One real entry on the primary's branch, which is what a usage row has
+// to name to be the primary's spend. Accepted through the runtime's own
+// writer, because branch membership is tested against the chain the store
+// actually holds.
+fn a_primary_entry(rig: Rig) -> EntryId {
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture turn"
+  let assert Some(leaf) = strand_leaf(rig.opened, advisor.primary)
+    as "the accepted turn must leave a leaf on the primary's branch"
+  leaf
+}
+
+// Commits one usage row against a named entry and answers the seq the
+// ledger stamped it with. The store assigns the seq from the session's
+// own counter, so a fixture never claims a number: it claims which rows
+// exist, which entry each names, and the order they were written in.
+fn commit_usage(rig: Rig, entry_id: EntryId, seed: Int) -> Int {
+  let row =
+    entry.UsageRow(
+      ..usage_row(),
+      id: a_usage_id(seed),
+      entry_id: Some(entry_id),
+    )
+  let assert Ok(committed) =
+    storage.commit(
+      rig.opened.store,
+      Tx(writes: [InsertUsage(row:)], expected: []),
+    )
+    as "the fixture usage row must commit"
+  committed.first_seq
+}
+
+// A fresh usage id per row: the store refuses a row whose id it has
+// already seen, so the seed is what tells two otherwise identical rows
+// apart.
+fn a_usage_id(seed: Int) -> UsageId {
+  let #(id, _generator) =
+    ids.mint_usage(ids.generator(clock.fixed(at: 0), seed:))
+  id
+}
+
+fn goal_cell(rig: Rig) -> goalstate.Goal {
+  let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
+    as "the goal cell must be readable"
+  let assert Ok(goal) = goalstate.decode(cell) as "the goal cell must decode"
+  goal
+}
+
+// An operator abort of a goal-woken run pauses the goal; an abort of a
+// run the actor did not wake leaves it alone. The `woke` gate is what
+// makes "a goal-woken run" precise.
+pub fn an_abort_of_a_goal_woken_run_pauses_the_goal_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  // The continuation opens a run on the primary, which the actor records
+  // in `woke`.
+  let assert Ok(advise.Delivered(_how)) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Continue(text: "the tests still fail"),
+        reply:,
+      )
+    })
+
+  // The abort of the woken run pauses the goal. The operation is the
+  // one the continuation opened — read from the store, the same place
+  // the gateway's abort handler reads it from.
+  let assert Some(woken) = strand_operation(rig.opened, advisor.primary)
+    as "the continuation must have opened a run on the primary"
+  process.send(subject, advisor.PrimaryAborted(operation: woken))
+  let _drained = settle(subject)
+
+  let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
+  let assert Ok(goal) = goalstate.decode(cell)
+  // The cause is the abort's own, not the operator's pause command: a
+  // Ctrl-C on the loop's run is "not now", and the panel says which.
+  assert goalstate.status_of(goal) == goalstate.Paused(by: goalstate.ByAbort)
+  stop(rig)
+}
+
+// A resume offers the goal feed where it stands, rather than waiting for
+// an occasion the session will not produce.
+//
+// This is the operator's own door onto the stall the rework exists to
+// remove. A resume writes `Active` into the cell, and an idle primary has
+// no next run end, so a resume that only wrote the cell left the goal
+// active with nothing running and nothing scheduled until the repair tick
+// — two minutes in which the panel says the goal is working and nothing
+// is. The evidence is the durable phase: a verdict is owed, by the run the
+// resume's own feed opened.
+//
+// The goal is pinned while the primary is working, so the pin's own
+// evaluation rests and neither strand has a run open by the time the
+// resume asks. That isolates the resume as the only occasion in the
+// fixture that could have sent anything.
+pub fn a_resume_offers_the_goal_feed_at_once_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+  pin_goal(subject, 400_000)
+  let _drained = settle(subject)
+
+  // The pin found the primary working, so it rested: nothing has been
+  // offered to the reviewer yet.
+  assert goal_feeds_on(rig.opened) == 0
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    as "the operator's pause must commit"
+  let _drained = settle(subject)
+  assert goalstate.status_of(goal_cell(rig))
+    == goalstate.Paused(by: goalstate.ByOperator)
+
+  // Both strands go idle while the goal is held, which is the state a
+  // resume finds after an abort or an operator pause.
+  idle_again(rig, run)
+  assert strand_operation(rig.opened, advisor.primary) == None
+    as "the settled abort must leave the primary idle in the store"
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.ResumeGoal(reply:)
+    })
+    as "the operator's resume must commit"
+
+  // The command answers before its own evaluation, so that a terminal
+  // waiting on the reply does not wait on a provider. The barrier is the
+  // drain every test here synchronizes with: an answer to a call sent
+  // after the command means the command's work is finished, because the
+  // mailbox is FIFO per sender.
+  let _drained = settle(subject)
+
+  // The resume sent the feed itself. The phase names the advisor run the
+  // feed opened, which is what a verdict is matched against and what a
+  // replacement actor would read to know one is owed.
+  let resumed = goal_cell(rig)
+  assert goalstate.status_of(resumed) == goalstate.Active
+  assert goal_feeds_on(rig.opened) == 1
+    as "the resume itself must offer the goal to the reviewer"
+  let assert Some(feed) = strand_operation(rig.opened, advisor.strand)
+    as "the resumed goal's feed must have opened a run on the advisor"
+  assert resumed.phase == goalstate.AwaitingVerdict(feed:)
+  stop(rig)
+}
+
+// Pause and resume, as the operator asks. Resuming a complete goal
+// refuses: completion is the reviewer's verdict, not a status to undo.
+pub fn resume_refuses_a_complete_goal_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  let assert Ok(advise.Acknowledged) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Complete(text: "merged"),
+        reply:,
+      )
+    })
+
+  let refused =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.ResumeGoal(reply:)
+    })
+  assert refused == Error("a complete goal cannot be resumed; set a new one")
+  stop(rig)
+}
+
+// Clearing the goal retires the cell: absence is the one durable
+// representation of no goal, and a late verdict against the cleared goal
+// says the goal is gone.
+pub fn a_cleared_goal_is_gone_and_a_late_verdict_says_so_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  let assert Ok(run) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+  process.send(subject, advisor.PrimaryRunEnded(operation: run))
+  let _drained = settle(subject)
+  idle_again(rig, run)
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.ClearGoal(reply:)
+    })
+  assert api.fact(rig.runtime, advisor.goal_key) == Ok(None)
+
+  // A goal verdict that raced the clear is refused: the goal it would
+  // have continued is gone.
+  let refused =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.Judge(
+        strand: advisor.strand,
+        verdict: advise.Continue(text: "the race remains"),
+        reply:,
+      )
+    })
+  assert refused
+    == Error(
+      "no goal feed is open; continue and complete answer the session's goal feeds only",
+    )
+  stop(rig)
+}
+
+// The gate's other half: an abort of a run the actor did not wake is the
+// operator changing their own mind about their own work, and the goal
+// is none the wiser. The `woke` check is what makes a goal-woken run
+// precise rather than inferred.
+pub fn an_abort_of_a_foreign_run_leaves_the_goal_active_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(_pinned) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        reply:,
+      )
+    })
+
+  // An abort the actor has no woken run for: nobody's continuation is
+  // involved, so the goal keeps running.
+  process.send(subject, advisor.PrimaryAborted(operation: an_op_id(5)))
+  let _drained = settle(subject)
+
+  let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
+  let assert Ok(goal) = goalstate.decode(cell)
+  assert goalstate.status_of(goal) == goalstate.Active
+  stop(rig)
 }
