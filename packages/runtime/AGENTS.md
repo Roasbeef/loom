@@ -46,6 +46,16 @@ extended by the M3 runtime wave.
   (`protocol-change/008`).
   It addresses **one strand at a time**; `api.on_strand` rebinds the same
   tree to a sibling, so every operation works for subagents too.
+- `runtime/api.{Drain, draining, drain_within}` — everything `api.drain`
+  reads, and nothing else: the tree it addresses strands through and the
+  session it reads their state from. `drain` is `drain_within` applied to
+  `draining`, and the contract is one shared budget, every abort requested
+  before any terminal is awaited, and each strand awaiting the operation it
+  was observed running. The projection exists for holders that must be able
+  to drain a session later and do nothing else with it — the daemon's session
+  manager keeps one per admitted session — because a held or copied `Runtime`
+  pays for a full copy of `Effects`, and neither field here is duplicated per
+  session.
 - `runtime/api.open_published` and `runtime/supervisor.start_published`
   expose an internal publication boundary before recovery. The first
   child-start callback publishes the exact root and direct drain witness

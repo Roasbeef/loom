@@ -1653,3 +1653,177 @@ now has a measured reason to prefer it rather than a tie.
   `weft_managed_test`, all timing assertions unrelated to the added tests; a
   rerun passed 184 tests with exit status zero. That file's timing assertions
   are flaky under load.
+
+## 2026-09-20: the session manager now holds a handle, not an instance
+
+The previous section's list of copy holders left for their own change opened
+with the daemon's session manager. This section takes that one. The manager no
+longer holds a `serve.Instance` per resident session and no longer replies with
+one on attach; both are now a three-field projection that does not reach the
+session's `Effects`. Per resident session, what the manager's slot holds fell
+from 84,029 words to 599 — 656 KiB to 4.7 KiB on a locally assembled session,
+99.3% — and a websocket upgrade no longer copies an effect graph into the
+connection's process at all.
+
+### What the manager actually reads
+
+The manager is generic in its resident value: `manager.Manager(instance)`,
+`Assembly(instance)`, `Occupancy.Running(instance)`. It reads no field of that
+value anywhere in its 2,900 lines. It calls exactly two assembly callbacks on
+it, `fatal` once at publication and `drain` on a shutdown or a `DrainHeld`
+snapshot, and the value is otherwise opaque to the slot lifecycle, to the
+witnesses and monitors per slot, and to the retirement proofs. The daemon
+manager tests already prove this by instantiating the registry with `String`.
+
+So the whole cost was a choice made in one place: `daemon/main.prepare`
+instantiated the registry with `serve.Instance` because that is what
+`serve.assemble_in_domain` returns. The consumers agreed with the manager. The
+upgrade path reads `attachment.instance.gateway` and nothing else
+(`client/daemon/main.gleam`, in `run`), and `session_socket.upgrade` already
+takes that gateway as its own argument rather than reaching into the
+attachment. No admin or diagnostic path in `src` reads an instance obtained
+from the manager; every other reader of `Instance` fields is a test holding one
+it assembled itself, or `serve`'s own embedded-host path.
+
+### Inventory
+
+| Reader | Site | Fields read |
+|---|---|---|
+| the manager itself | `daemon/manager.gleam`, `Running(instance)` in `resolve`, `ResolveIncarnation`, `DrainHeld`, `summary`, `stop_slot` | none; the value is opaque |
+| the assembly host, at publication | `internal/instance_host.assemble`, via `fatal` | `runtime.tree.supervisor`, `services`, `storage_owner`, `pool`, `broker` — five pids |
+| a graceful drain | `serve.drain_instance`, via `drain` | `gateway`, and `runtime.tree` and `runtime.session` transitively |
+| the websocket upgrade | `daemon/server.session_upgrade` → `daemon/main.run` | `gateway` |
+| admin, diagnostics | none in `src` | — |
+
+The reviewer's reading was right on both counts, and the drain needed checking
+rather than trusting: `api.drain` reads `runtime.tree` and `runtime.session`
+and reaches nothing else. It enumerates strands through the tree's writer
+address, reads each strand's state and its terminal from the session store, and
+addresses each driver through the tree. It never touches `effects`, `settings`,
+`session_id` or the strand name the surrounding `Runtime` carries.
+
+### The change
+
+`runtime/api` gained the projection that fact allows:
+`api.Drain`, an opaque pair of the tree and the session; `api.draining`, which
+takes it from a runtime; and `api.drain_within`, which is the existing drain
+expressed over it. `api.drain(runtime, within_ms:)` is now `drain_within`
+applied to `draining`, so there is one drain, not two. Three private helpers
+inside `api` — a strand listing over a tree, an abort over a tree and a strand
+name, a terminal await over a session and a strand name — carry what the public
+`Runtime`-taking functions used to do inline, and those keep their signatures.
+No interface frozen in spec Part 1 changed, and no `@external` was added.
+
+`client/serve` gained `Resident`, the value the daemon instantiates the manager
+with: the hub `gateway`, the fatal `children` as a list computed at
+publication, and an `api.Drain`. `resident` projects it, `resident_children`
+and `drain_resident` are the two assembly callbacks over it, and
+`drain_instance` is now `drain_resident` applied to `resident`, so the embedded
+and daemon drains remain one path. `daemon/main.prepare` maps the build result
+through `resident` and returns `root.Root(serve.Resident)`.
+
+Nothing else moved. The manager is untouched. `server.Attachment` is untouched,
+because it was already generic in the resident value and its `instance` field
+now carries the narrow one. No test's assembly changed: every daemon fixture
+instantiates its own registry, with `String` or with `serve.Instance`, and both
+still typecheck because the manager never cared.
+
+Three properties make the projection safe to take once, at publication, rather
+than re-read per use. The fatal roots are by definition the handles that cannot
+be replaced in place — that is what puts them on that list rather than under
+`Instance.services`. The gateway is a registered name precisely so the hub can
+be restarted under it. And neither the tree nor the session store behind a
+drain is ever swapped under a resident session; a whole-tree reboot ends the
+session instead.
+
+### The numbers
+
+Six real sessions assembled through `serve.assemble_owned` under real custody,
+on this host, with `owned_assembly_test`'s configuration — the same smoke-shaped
+host as the September 20 sections above, so its registry is far smaller than an
+installed daemon's. Figures are `erts_debug:flat_size` of the list of held
+values, in words, which is what `Book.slots` contributes to the manager's
+reachable state.
+
+| Residents | held as `Instance` | as `Resident` | KiB before | KiB after |
+|---:|---:|---:|---:|---:|
+| 1 | 84,043 | 599 | 656 | 4 |
+| 3 | 252,129 | 1,797 | 1,969 | 14 |
+| 6 | 504,256 | 3,594 | 3,939 | 28 |
+
+Per resident session the slot payload is 84,029 words before and 599 after, and
+it is linear in both, as the census of the production daemon said it would be.
+The attach reply is the same value, so a websocket upgrade copies 599 words
+instead of 84,029 — and on the installed daemon, where one `Effects` is
+12.872 MiB rather than the 1.3 MiB a local build carries, it is that graph per
+upgrade that stops being copied.
+
+`DrainHeld` benefits by the same arithmetic without any change of its own. It
+builds one closure per resident slot over the held value and sends the list to
+its caller, so it was sending N effect graphs out of the manager; the closures
+now capture the projection.
+
+### What was left wide, and why
+
+- **The assembly host still builds a whole `Instance`.** It must: the
+  projection is taken from one. It does not retain it — `instance_host`'s book
+  holds the build and fatal callbacks, not their result — so this costs one
+  transient value per admission rather than a resident one.
+- **`serve.Booted` and the embedded host path keep the whole `Instance`.** They
+  are the per-session entry point rather than daemon admission, and their
+  holder is the process that opened the session and closes it.
+- **`Instance` itself was not narrowed.** Twelve of its fields are read only by
+  the code that assembles or closes a session; nothing in this change makes a
+  case for splitting the record, and a narrower `Instance` would touch every
+  test that assembles one.
+- **The three remaining `Effects` copies inside a session are untouched.**
+  `provider.request`, `provider.prepare` and `tools.run` are ownership, as the
+  section above argued. The registry-internal multiplication named there — the
+  six `agent_*` tools over an `Agency`, the three `schedule_*` tools over a
+  `Schedules` — is still the higher-leverage next change, and it is now the
+  larger of what is left.
+
+### Tests
+
+`runtime/drain_test.a_drain_projection_does_not_grow_with_the_effects_test`
+opens two real sessions whose effect graphs differ by an 8,192-word payload,
+and asserts that the runtimes differ by at least that much while their
+`draining` projections are the same size to the word. It then drains a parked
+turn through the projection alone and reads the `Aborted` terminal, so the
+narrow value is shown to work rather than only to be small.
+
+`owned_assembly_test.a_resident_projection_excludes_the_session_runtime_test`
+pins the client half against a real assembly: the projection is under an eighth
+of the instance it came from, it names the same fatal roots, and the graceful
+drain runs through it. The growth property is proved on the runtime side, where
+an effect graph can be varied cheaply; here the bound is a ratio, because a real
+assembly's absolute size depends on the host it ran on.
+
+### What was not verified
+
+- **No release daemon was built for this.** `scripts/daemon_memory_probe.sh`
+  wants a `make release`, and a before-and-after wants two of them; two other
+  agents were building on this host and the Hex API was rate-limiting
+  dependency resolution for about fifteen minutes during the work. The
+  measurement above is the test-level one this note's own precedent allows: the
+  reachable size of what the manager's slots hold, before and after, in one
+  run. What it does not give is the manager process's allocated memory, the
+  VM's `processes` total, or RSS.
+- The installed daemon's reduction is unmeasured, for the same reason as every
+  section above: nothing under `~/.loom` was touched. Its slot payload is one
+  `Effects` per resident session at 12.872 MiB, so the 99.3% figure is expected
+  to transfer as a percentage and the absolute saving there is expected to be
+  far larger than 656 KiB per session.
+- The whole shipped-fixture lane was run against a `bin/loomd` built from this
+  branch, with `HOME` overridden to a scratch directory. It has to be: under the
+  operator's own `HOME` the first fixture,
+  `tui_shipped_multiplayer_test`, times out waiting for a terminal because the
+  shipped daemon loads the operator's `~/.claude`. That is the known local
+  macOS failure recorded before this work, not a property of this change; the
+  same fixture passes under a clean `HOME`. Under it,
+  `tui_shipped_multiplayer`, `tui_shipped_live_delivery`, `daemon_shipped_stop`,
+  `daemon_shipped_schedule`, `daemon_shipped_confinement`,
+  `daemon_shipped_recovery` and `daemon_shipped_identity_recovery` all pass, as
+  do `make e2e-multiplayer`'s five filters — including `tui_e2e_test`, which
+  drives a real TUI against a real daemon over a real websocket upgrade — and
+  `make soak-daemon`.

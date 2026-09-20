@@ -322,7 +322,7 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
 pub fn prepare(
   config: Config,
   logger: Logger,
-) -> Result(root.Root(serve.Instance), String) {
+) -> Result(root.Root(serve.Resident), String) {
   use configuration <- result.try(captured_domain_configuration(
     config.session_defaults,
     "",
@@ -375,9 +375,10 @@ pub fn prepare(
         )
         serve.assemble_in_domain(settings, identity, logger, owner, services)
         |> diagnose_start(logger, identity, RuntimeAssembly)
+        |> result.map(serve.resident)
       },
-      fatal: serve.instance_children,
-      drain: serve.drain_instance,
+      fatal: serve.resident_children,
+      drain: serve.drain_resident,
     ),
   )
 }
@@ -579,7 +580,7 @@ fn run(
   config: Config,
   paths: endpoint.Paths,
   fence: endpoint.Fence,
-  daemon: root.Root(serve.Instance),
+  daemon: root.Root(serve.Resident),
   logger: Logger,
 ) -> Nil {
   let watch = process.monitor(root.pid(daemon))

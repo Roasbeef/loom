@@ -18,6 +18,7 @@ import core/clock
 import core/ids
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import machine/operation
 import machine/strand
@@ -28,6 +29,7 @@ import runtime/api
 import session/session
 import simplifile
 import storage/sqlite
+import support/internal/ffi_memory
 import support/provider as provider_test
 import telemetry/level
 import telemetry/log
@@ -182,6 +184,38 @@ pub fn two_owned_instances_keep_reserved_ids_and_close_independently_test() {
 
 pub fn builder_kill_mid_assembly_keeps_lease_until_published_effect_drains_test() {
   interrupted_assembly(Ok(Nil))
+}
+
+/// The daemon's registry holds a projection of a published session, not the
+/// session itself.
+///
+/// `serve.Resident` is the value the daemon instantiates the session manager
+/// with, so it is both what the manager keeps for every admitted session and
+/// what it replies to every websocket upgrade with. One measurement pins both
+/// holders, because they are the same value. What it must not contain is the
+/// instance's `api.Runtime`, and behind it the session's whole `Effects` graph.
+///
+/// The bound is a ratio rather than a word count, because a real assembly's
+/// size depends on the host it ran on. That the projection does not *grow*
+/// with the effect graph is proved where the graph can be varied cheaply, in
+/// `runtime/drain_test`.
+pub fn a_resident_projection_excludes_the_session_runtime_test() {
+  let settings = settings()
+  let #(prepared, instance, watch) = opened(settings, identity(9))
+  let resident = serve.resident(instance)
+
+  assert ffi_memory.flat_words(resident) * 8 < ffi_memory.flat_words(instance)
+    as "the projection must be a small fraction of the instance"
+  assert list.length(resident.children)
+    == list.length(serve.instance_children(instance))
+    as "the projection must name the same fatal roots"
+
+  // The narrow value is also the working one: the graceful drain the root runs
+  // on every resident slot goes through it and nothing else.
+  serve.drain_resident(resident, 1000)
+  assert host.close(prepared, within_ms: 5000) == custody.Closed
+  lease_is_released(settings)
+  process.demonitor_process(watch)
 }
 
 pub fn failed_effect_cleanup_keeps_interrupted_assembly_reserved_test() {
