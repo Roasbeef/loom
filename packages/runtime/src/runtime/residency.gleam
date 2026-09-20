@@ -34,6 +34,13 @@
 //// period *shorter* than this interval defeats hibernation outright, and one
 //// longer than it costs only the wake it pays at each tick. Any future
 //// periodic tick on an assembly actor is held to the same comparison.
+////
+//// Which period a strand runs at follows its occupancy immediately, because
+//// every drive re-arms. That is what makes the short period reachable at all:
+//// a turn is shorter than the idle period, so a strand that could only change
+//// period at the next tick would run whole turns on the idle one. It costs one
+//// stale timer wake per occupancy change, which is what the generation stamp
+//// on `PollTick` exists to make harmless.
 
 /// The quiet interval after which a session assembly's actor hibernates.
 ///

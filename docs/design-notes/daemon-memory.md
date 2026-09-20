@@ -1675,7 +1675,7 @@ Every source of work, and what wakes the strand for it. `S` is
 | Operator prompt | `api.prompt` commits, then `nudge` (`A:453`) | Doorbell, at-most-once |
 | Steer, follow-up | `api.steer` (`A:848`), `api.follow_up` (`A:943`) | Doorbell, at-most-once |
 | Quiet acceptance | `api.accept_quietly` (`A:467`), `steer_quietly` (`A:861`): commit, no ring | **Poll only** |
-| Marked injection | `api.steer_marking` (`A:913`), used by `client/rulescan:590` and `client/schedulescan:1207` | **Poll only**, and only onto an open run |
+| Marked injection | `api.steer_marking` (`A:913`), used by `client/rulescan:590` and `client/schedulescan:1207` | **Poll only**, onto an open run, so at the short period |
 | Inter-strand send | `send_attempts` nudges both the steer and the accept arm (`A:1502`, `A:1508`) | Doorbell |
 | Send to child | `send_child_attempts` nudges both arms (`A:1469`, `A:1479`) | Doorbell |
 | Subagent adoption | `adopt_strand` nudges after the brief (`A:1293`) | Doorbell |
@@ -1735,47 +1735,59 @@ at the period that drive earned: `Occupied` keeps 200 ms, `Unoccupied` takes
 two minutes.
 
 The brief named two hazards for this shape — a stale tick arriving after the
-strand went idle, and two chains ticking side by side — and the design answers
-both by not creating them. The chain replaces itself and nothing else joins it:
-`polled` and the recovery drive are the only things that arm, so a strand has
-exactly one checkpoint deadline outstanding at any moment, no tick can arrive
-from a chain the strand has forgotten, and there is no second chain to start.
+strand went idle, and two chains ticking side by side. The first version of the
+change answered both by arming from one place only: `polled` and the recovery
+drive, so the chain replaced itself and nothing joined it. That was wrong, and
+the subsection below records how it was caught and what replaced it. Arming now
+happens after every drive, under two rules that keep one live chain: a drive
+whose occupancy names the period already outstanding arms nothing, and a drive
+that wants the other period arms it under a new generation so the tick it
+superseded is dropped on arrival.
 
-That was not the first attempt, and the reason it is worth writing down is that
-the first attempt was measurably wrong. Arming on the `Unoccupied` →
-`Occupied` transition, with a generation stamp to tell the superseded tick
-apart on arrival, is the obvious way to give a newly opened run the short
-period at once. It fails because superseding is not cancelling: the `Timers`
-seam arranges a wake and returns no handle, so the tick that was replaced stays
-pending until its own delay elapses. `client@schedulescan_test` asserts that a
-strand has exactly one deadline in the wheel — "the one deadline still in the
-wheel is the strand driver's own checkpoint poll" — and three of its tests fail
-against a second one. That assertion is right, and it is worth more than what
-the transition arming bought.
+### Correction, same day: one arming site made the short period unreachable
 
-What not arming costs is bounded and belongs in the record, precisely. When a
-doorbell wakes an `Unoccupied` strand, the drive runs at once and the strand
-becomes `Occupied`, but the one deadline already pending is the idle one. So
-for up to `idle_poll_interval_ms` an occupied strand has no fast tick. Nothing
-in the table above needs one: every in-flight step is answered by its own
-monitor or its own timer. The single exception is `DeferredPollDue`, where the
-tick *is* the permit, so the first deferred poll after a strand has been idle
-may wait out the idle period. Every later one is at the short period, since by
-then a drive has found the operation open.
+Arming only from the tick arm means the period a strand runs at cannot change
+until the next tick. A strand is idle between turns, so the deadline pending
+when a turn is admitted is the idle one, and a turn that finishes inside it
+never arms a short tick at all. Since a turn is almost always shorter than two
+minutes, **the short period was unreachable in ordinary use** rather than
+merely delayed for one permit, which is what the first version of this section
+claimed.
 
-Today that costs nothing observable, because nothing in production emits a
-deferred handle: the only producer of `message.DeferredHandle` anywhere under a
-`src` tree is the simulation's own provider surface
-(`packages/conformance/src/conformance/simulation/surface.gleam:462`), and it
-injects both periods itself. **The day a provider adapter emits a deferred
-handle, this window becomes a user-visible stall of up to two minutes before
-the first poll of that handle.** The fix at that point is to arm one short tick
-from the `DeferredPollDue` arm when the occupancy the drive replaced was
-`Unoccupied` — and the cost of that fix is the invariant above: it leaves the
-idle tick pending beside the new one, so it needs either
-`client@schedulescan_test`'s one-deadline assertion relaxed, or a cancel handle
-added to `effects.Timers` so the superseded tick can be withdrawn instead of
-tolerated. It is not taken now because there is no handle to poll.
+Two rows of the table above wait on that, not one. `DeferredPollDue` is the
+designed one and nothing in production emits a handle yet. The other is
+`api.steer_marking`, the quiet marked injection `client/rulescan` and
+`client/schedulescan` use: it lands on an *open* run, so its own doc comment
+says the poll behind it is the short one. It was not. A rule-fired injection
+committed onto an open run had to wait out the idle period — two minutes on
+production's defaults, where it had been 200 ms.
+
+A Linux signoff found it as a timing failure rather than as a stall.
+`conformance@routing_test.a_mid_wait_switch_leaves_the_steps_admission_alone_test`
+drives a retry ladder against `clock.stepping(by: 25)`, a logical clock that
+advances only when the driver reads it, so the drives the poll supplies are
+what carry the ladder to its deadline. Measured on one machine, one test: 7.0 s
+with the idle period pinned at 200 ms (which is `main`), 21.9 s with the idle
+period at its two-minute default, 28.0 s with it at an hour, against the test's
+own 30 s ceiling. It failed on the signoff and passed without the branch.
+
+The fix is the transition arming the first version rejected, and the reason it
+was rejected does not hold. Superseding is still not cancelling — `Timers`
+arranges a wake and returns no handle — so the replaced tick stays pending; a
+generation stamp on `PollTick` is what makes it harmless, since `polled` drops
+a tick whose generation is not the strand's current one. `client@schedulescan_test`'s
+one-deadline assertion survives untouched because the re-arm is conditional on
+the period *changing*: that fixture configures `poll_interval_ms` and
+`idle_poll_interval_ms` to the same value, so it arms exactly one deadline for
+its whole life. A fixture with two different periods pays one stale wake per
+period change, two per turn.
+
+The routing test runs in 5.8 s with the fix. No fixture was changed for it.
+
+A full sweep was run to find anything else sitting on the poll: `runtime`,
+`conformance` and `client` all pass with the idle period set to an hour, and
+`client`'s 2025 tests pass with *both* periods set to an hour, which is the
+poll disabled outright. Nothing else in the suite depends on a tick.
 
 ### What the relation between the two numbers is for
 
@@ -1823,11 +1835,13 @@ path that admits work to a parked strand.
 
 ### What this costs
 
-One number: the latency of a lost doorbell against an idle strand, which was
-up to 200 ms and is now up to two minutes. Nothing else regresses. The hot
-path is untouched — an open operation polls at exactly the period it always
-did — and the doorbell-drop suites still pass with their own short intervals
-configured, which is what they were always measuring.
+One number: the latency of a lost doorbell against an *idle* strand, which was
+up to 200 ms and is now up to two minutes. Nothing else regresses. The hot path
+is untouched — an open operation polls at exactly the period it always did,
+which is what the correction above had to restore — and the doorbell-drop
+suites still pass with their own short intervals configured, which is what they
+were always measuring. The cost of keeping that true is one stale timer wake
+per occupancy change, two per turn.
 
 ### The strand sleeps: `assembly_heap_census_test` at six sessions
 

@@ -183,8 +183,11 @@ pub const default_retry_policy = NormalizedRetryPolicy(
 /// minute one between turns, and a conservative restart tolerance.
 ///
 /// The two poll periods are one decision. The short one is the rate a
-/// deferred suspension is granted its next permit at and the backstop
-/// behind every in-flight step, so it belongs to an open operation. Between
+/// deferred suspension is granted its next permit at, the rate a quiet
+/// admission onto an open run (`steer_marking`) is found at, and the backstop
+/// behind every in-flight step, so it belongs to an open operation — and a
+/// strand takes it as soon as a drive finds an operation open, rather than at
+/// the next tick. Between
 /// turns there is nothing for it to find that an admission's own doorbell
 /// does not announce, and holding it at 200 ms costs five wakes a second
 /// per resident session forever and keeps the strand — which holds the

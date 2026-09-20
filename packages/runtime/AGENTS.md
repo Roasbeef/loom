@@ -348,9 +348,10 @@ extended by the M3 runtime wave.
   - `strand_runtime.Message` (all casts): `AwaitPredecessors(resolution)`
     (the guaranteed-first barrier message weft's `continuing` injects at
     init — opaque, so nothing else can construct it), `Nudge` (the
-    doorbell), `PollTick` (the checkpoint poll, which also grants one
-    deferred poll permit, and whose handler is the only thing that arms the
-    next one), `RetryDue`, `RequestAbort`,
+    doorbell), `PollTick(generation)` (the checkpoint poll, which also grants
+    one deferred poll permit; the generation names the arming it belongs to,
+    and a tick from a superseded arming is dropped), `RetryDue`,
+    `RequestAbort`,
     `ProviderDone(token, terminal)`, `ToolDone(token, outcome)`,
     `EffectExit(down)`. Callers use the stable
     address resolved to the current subject, while the reaper, effect workers,
@@ -452,26 +453,31 @@ extended by the M3 runtime wave.
   dropped in one, so the doctrine of design §4.6 still holds verbatim: a
   doorbell lost between a caller's commit and its nudge costs latency, and
   the latency it costs an idle strand is the idle period rather than never.
-  The chain replaces itself and nothing else joins it — `polled` and the
-  recovery drive are the only callers of `arm_poll` — so a strand has exactly
-  one checkpoint deadline outstanding at any moment. That is the reason a
-  message does *not* re-arm when it opens work on an idle strand: the `Timers`
-  seam arranges a wake and hands back nothing to cancel it with, so arming on
-  that transition would leave the tick it replaced pending until its own delay
-  elapsed, and `client@schedulescan_test` asserts a strand has one deadline in
-  the wheel. What it costs is bounded and exactly one thing: an occupied
-  strand can go up to `idle_poll_interval_ms` without a fast tick, so the
-  first deferred poll after a strand has been idle may wait out the idle
-  period for its permit; every later one is at the short period. Nothing in
-  production emits a deferred handle yet — the only producer under any `src`
-  is `conformance/simulation/surface.gleam:462` — so the window costs nothing
-  observable today, and the day an adapter emits one it is a stall of up to
-  two minutes. `docs/design-notes/daemon-memory.md` records the fix and what
-  relaxing the one-deadline invariant would cost. The arming
+  Every drive re-arms, through the single `arm_poll` call in `finish`, so the
+  period follows the occupancy immediately: a message that opens work on an
+  idle strand arms the short tick while handling that message. That is
+  load-bearing rather than a nicety. A turn is almost always shorter than the
+  idle period, so a strand that had to wait for the pending idle tick before
+  its period could change would run the whole turn without a short tick, and
+  the short period would be unreachable in ordinary use — which is what it
+  was until the correction recorded in
+  `docs/design-notes/daemon-memory.md`. Two things wait on it: a deferred
+  suspension's permit, and `api.steer_marking`, the quiet marked injection
+  `client/rulescan` and `client/schedulescan` commit onto an *open* run
+  without ringing.
+  Two rules keep one live chain. A drive whose occupancy names the period
+  already outstanding (`State.armed_poll_ms`) arms nothing, so a session
+  configured with one period for both occupancies arms exactly one deadline
+  for its whole life — which is what `client@schedulescan_test`'s
+  one-deadline assertion reads. A drive that wants the other period arms it
+  under a new `State.poll_generation`, and the tick it superseded — which the
+  `Timers` seam gives nothing to cancel with — is dropped by `polled` on
+  arrival for carrying the older number. The price is one stale wake per
+  period change, two per turn. The arming
   also follows the drive rather than opening it, which is what lets the period
   be read from what that drive found and stops a halting strand leaving a
-  timer behind. `runtime/idle_poll_test` asserts the single chain and both
-  periods.
+  timer behind. `runtime/idle_poll_test` asserts both periods, the single
+  chain, and that becoming occupied arms the short period without waiting.
 
 - **One writer, structurally.** All commits are calls into one actor, so
   "transactions on one session are serialized" is a property of the process
