@@ -38,5 +38,29 @@ not run tests; the implementation session ran the gates documented in
 Draft preservation spans session changes; frozen history and reading-position
 restoration span strand switches within one session. Session changes release
 old history buffers. Native fixture captures demonstrate renderer behavior,
-not real provider outcomes. A shared-daemon admission refusal blocked the
-provider-backed smoke attempt.
+not real provider outcomes. The client now attaches after other clients released admission. A provider-backed request has not run; local fixtures do not establish real provider behavior.
+
+## Complete layout follow-up
+
+The second implementation pass adds Focus framing, compact tool disclosure,
+Studio sections, workspace typing, named wait dependencies, recent tools, and
+exact pending-decision previews. A fresh independent review found three
+reachable presentation/input paths:
+
+1. **Hidden diff keyboard ownership. Fixed.** Entering the workspace composer
+   now transfers ownership from the diff navigator. Choosing the navigator
+   again exposes the diff surface instead of concealing it behind inspection.
+2. **Commands opened behind inspection. Fixed.** Help, notes, context, queue,
+   summary, diff, and overlays retain their ordinary surface ownership. The
+   workspace returns only after an ordinary editor action. Reducer regressions
+   cover both transitions and opening from previously visible help.
+3. **Generic failures lost multiline diagnostics. Fixed.** Narrative-bearing
+   calls and orphan results now use the same bounded diagnostic preview as
+   grouped results. The regression failed on the old generic branch and checks
+   both paths, the expansion hint, and exact full diagnostics after expansion.
+
+The reviewer verified both input regressions and found no additional issue in
+roster omission or shared composer measurement. Implementation validation also
+updated the stale-cell regression's terminal height: compact failures now keep
+eight diagnostic lines, so its 72-row pane again has an asserted blank tail.
+It still verifies the expanded pane is full and every vacated cell is blank.

@@ -1,31 +1,35 @@
 # Next
 
-## Native agent workspace, September 20
+## Native TUI overhaul, September 20
 
-The agent workspace slice for [#473](https://github.com/Roasbeef/loom/issues/473)
-is based on `9c9bb576`. The compact rail and `F2` inspector now show accepted
-tasks, captured activity, terminal outcomes, and exact approval attention.
-Inspection retains its own strand identity; only `Enter` changes the explicitly
-named composer recipient. Drafts, attachments, mode, and command history belong
-to `(session, strand)`; reading windows and anchors restore across strand
-switches in the current session. Cross-session history buffers are released.
+The native implementation for [#473](https://github.com/Roasbeef/loom/issues/473)
+starts at `9c9bb576`. Focus has quieter framing, a compact attention-aware footer,
+six-line pending code previews, summarized successes, and expandable multiline
+failures. Studio separates session, strands, advisor, and available changes.
+Agents keeps the real composer visible while inspection retains its own strand
+identity. Tab edits the existing recipient; Enter in the roster explicitly
+opens a strand. Commands expose the surface that owns the next key.
 
-Pending and delivered advisor nudges retain their full text in compact mode.
-Session switches clear advice and goal observations, then request the new
-session's state. Dark/light/indexed/color-free palettes preserve cell content,
-selection, and links. The implementation note records
-[native captures, reproduction, and validation](design-notes/tui-agent-workspace.md).
-The [independent review](review/tui-agent-workspace.md) found three ownership
-paths; each has a repair and regression coverage.
+Task, current action, named dependencies, recent tools, result, and exact pending
+permission all follow captured operation evidence. Missing data stays unknown.
+Drafts and command history remain keyed by session/strand; history buffers and
+reading positions restore across strand switches within the current session.
+Session changes deliberately release those old history buffers. Full compact
+advisor nudges and the existing exact-request approval authority remain intact.
 
-The TUI gate passes 625 tests and package lint has zero errors. Broader gates
-were resumed after a Hex rate limit; their exact results and built-in skips
-are in the implementation note. Provider-backed validation remains open:
-creating a smoke session received the shared daemon's connection-admission
-`503`, and the daemon was not restarted. Next, exercise normal and parallel
-provider runs, live exact approvals, held input, advice, and reconnect once
-admission is available. Do not infer those outcomes from the illustrative
-native fixture or close all of #473 on this slice alone.
+The [implementation note](design-notes/tui-agent-workspace.md) maps every issue
+acceptance item to native behavior and regression evidence, and contains the
+updated terminal captures. The [review record](review/tui-agent-workspace.md)
+explains both independent review passes and each verified repair. The final TUI suite passes 634 tests and the client gate passes 2,025.
+House lint and documentation checks have zero errors. A full gate was
+interrupted by Hex rate limiting; the implementation note records the complete
+component results without claiming an uninterrupted full-command success.
+
+The new client attaches to a fresh session with code mode available. Actual
+provider parallelism and a live approval decision remain untested; local fixture
+screenshots do not establish those outcomes. Check hosted Linux CI at the final
+head before merge. The independent main/advisor split in #448 is still an
+exploration, not a default-layout decision made by this change.
 
 The older handoffs below describe their own revisions. Their counts are not
 validation evidence for this workspace change.

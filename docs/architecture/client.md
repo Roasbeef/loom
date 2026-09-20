@@ -937,14 +937,27 @@ view with bounded task and designated-assistant excerpts. It never derives
 success from an absent phase or a failed operation from a single tool failure.
 Exact pending approvals are scoped to the captured strand and operation; opening
 one delegates to the existing `approval_panel` with no decision selected.
+`agent_activity` adds current `agent_wait` dependencies and a bounded recent-tool
+history from the same operation's accepted-prompt boundary. Questions without a
+separate runtime fact remain assistant text; the client does not infer a pending
+question from prose.
 
 `agents.Inspector` stores selection by strand ID independently of the active
-recipient. Explicitly opening a transcript transfers the editor and reader to
+recipient. The composer remains visible below it; Tab enters ordinary editing
+without changing either identity, and Escape returns keyboard ownership to the
+roster. Explicitly opening a transcript transfers the editor and reader to
 that strand's `(session, strand)` workspace. Snapshot refreshes cannot redirect a
 missing recipient. Each saved reading endpoint carries the anchors used to
 relocate it after width changes, and retired reading windows are released
 without evicting unsent drafts. Pending advisor observations stay transient and
 are labeled separately from durable delivered advice.
+
+Ordinary conversation uses a heading and gutter, with horizontal input rules.
+Compact mode replaces successful code source with an activity/result summary;
+unresolved source is six lines, diagnostics stay multiline, and Ctrl+G retains
+full source, results and accounting. The Studio rail keeps Advisor distinct from
+worker tasks and labels Git observations as observations. Scrollback controls
+occupy the existing reading heading rather than changing the composer height.
 
 Palette adaptation is pure and occurs before a completed frame is cached.
 Light and ANSI terminals preserve the same content, links and wide-character

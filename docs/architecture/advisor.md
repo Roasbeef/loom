@@ -668,8 +668,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:8282`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8387`) renders
+`advisor_payload` (`tui.gleam:8488`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8593`) renders
 them. Nudges always show their complete body, including in compact mode.
 The other variants collapse to one attribution row (`advisor`, `advisor feed`,
 `advisor goal feed`, or `goal continuation`) with an opening excerpt and expand

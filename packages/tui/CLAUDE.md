@@ -7,8 +7,13 @@ Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
 state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
-only the detail. The ordinary `Shift+Tab` rail shares the same task summaries.
-A `sub:` prefix is an identity convention, not evidence of a parent relation.
+only the detail. The real composer stays visible below the workspace. Tab
+transfers keyboard ownership to it without changing the inspected ID or recipient;
+Escape returns to the roster. Editing uses the existing submission and command
+completion paths, including the visible command palette. The ordinary
+`Shift+Tab` rail shares the same task summaries, with a reserved Advisor section
+and a separately labelled worktree observation. A missing Git observation is
+never a clean-worktree claim. A `sub:` prefix is an identity convention, not evidence of a parent relation.
 
 `agent_view.Row` is projected from one coherent `snapshot_view.View` and window.
 It reuses `reviewer_status` for accepted task excerpts and effect-pending tools,
@@ -20,6 +25,14 @@ cannot replace a terminal outcome. Update excerpts retain their
 exact assistant entry ID as well as operation identity; successors and missing
 newer answers cannot inherit a misleading old update. Disconnect makes current
 state unavailable while leaving the previous observation readable.
+
+`agent_activity` names dependency waits only from current effect-pending
+`agent_wait` calls with valid run handles. Recent tool summaries join invocation
+and result identity on the captured branch after the operation's accepted prompt.
+An absent prompt boundary yields unavailable history rather than older-run tools.
+Approval previews show the captured action before opening the exact decision
+surface; they never choose a grant. General assistant questions remain in their
+update and transcript because the protocol has no separate pending-question fact.
 
 `StrandWorkspace` parks the complete editor, attachments, command history,
 submission mode and bounded reader under `(session, strand)`. Navigation restores
@@ -234,8 +247,12 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   once it settles — and `Ctrl+G` shows the block itself; a redacted block is
   its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
-  Code-mode calls retain a syntax-highlighted preview of up to 60 submitted
-  source lines, with an omission marker; Ctrl+G shows the complete program.
+  Unresolved code-mode calls retain a syntax-highlighted preview of six
+  submitted source lines, with an omission marker. Confirmed success replaces
+  source bulk with an activity/result summary; Ctrl+G shows the complete program
+  and exact output. Failed diagnostics remain multiline in compact mode, bounded
+  to eight lines and 1,600 characters with an explicit full-error expansion hint.
+  Success marks derive from matched results rather than generic invocations.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
   worktree observation.
@@ -821,21 +838,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
-- **Footer**: completed coherent cuts establish cumulative input, output,
-  cache-read, cache-write, and cost fields. The
-  footer never infers a price from a model name. It discovers the surrounding
-  repository once before the event loop, then shows workspace and branch beside
-  the model. Repository marker and HEAD reads validate and read one descriptor,
-  accept only regular files up to 4 KiB, and keep displayed refs shape- and
-  length-bounded. When all sections
-  cannot share one row, usage and agent status move to a second row; if those
-  collide, status takes a third row so the usage tail remains visible. The
-  row count comes from fixed caps so it cannot flap with the notice text,
-  but the status section grows into every column a wider terminal has past
-  the single-row threshold (`footer_status_limit`), and on the stacked
-  layouts the workspace label grows into the primary row it shares with
-  the model alone (`footer_project_limit`), so a long notice or path is cut
-  only when the screen is actually short of room.
+- **Conversation and footer**: the reading surface has a heading and gutter;
+  horizontal rules separate the composer. Scrollback controls replace the
+  transcript heading, so Enter's send mode remains visible and entering history
+  does not change the viewport height. Compact mode shows model, context estimate,
+  estimated session cost, notices and an attention summary in one row, or two
+  below 100 columns. The attention summary reserves its own space. Ctrl+G exposes
+  the complete input/output/cache/rate accounting in the existing adaptive footer.
+  Coherent cuts supply usage and cost; model names never imply prices. Workspace
+  and branch discovery still runs once before the event loop, through bounded
+  regular-file reads, and the header shows the resulting workspace label.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.
@@ -1006,7 +1018,8 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   recording timestamps retain their real clocks. `test/clock_test.gleam`
   exercises the event handler at negative epochs and pins repeated scripted
   intermediate frames with a fixed clock.
-- **Panels draw borders, not interiors.** `render_panel_border` puts the same
+- **Auxiliary panels draw borders, not interiors.** The ordinary conversation
+  has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
   pins that, but it skips the block's area-dependent interior clear over cells
   the canvas already painted. `make bench-tui` compares both paths over the

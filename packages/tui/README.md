@@ -128,9 +128,11 @@ opens the same workspace. The task roster shows accepted work, current activity,
 recorded outcomes, and attention states. Arrows inspect another agent; only
 Enter opens its transcript and changes the recipient. `n` visits the next
 attention state, `a` opens that agent's exact pending approval, PgUp/PgDn scroll
-the detail, and Escape returns to the conversation. The composer names its
-recipient and whether Enter sends, queues, or steers. `Shift+Tab` toggles a
-compact rail when the terminal is wide enough.
+the detail, and Escape returns to the conversation. The composer remains visible:
+Tab moves from inspection into editing the existing recipient's draft, and
+Escape returns to inspection. Its title names the recipient and actual Enter/Tab
+behavior. `Shift+Tab` toggles the Studio rail when the terminal is wide enough;
+Advisor has its own section and changes retain their observation status.
 
 Drafts, attachments, and command history belong to a session and strand.
 Reading windows and positions restore across strand switches within the current
@@ -179,9 +181,9 @@ line into styled spans without rewriting its text, so indentation and invalid
 syntax remain exactly as the model emitted them. Other fenced languages retain
 the code-rail treatment without pretending that Loom has parsed them.
 
-A structured `code_mode` call takes this same path: the `program` field is
-shown as fenced Gleam rather than escaped JSON. The normal view bounds long
-programs to twelve source rows, while `/details` reveals the full call. Code
+An unresolved `code_mode` call shows up to six fenced Gleam source rows.
+Confirmed success shows a compact result summary; Ctrl+G or `/details` reveals
+the complete submitted source and exact result. Code
 rows bypass etui's prose word wrapper so leading indentation survives the
 terminal projection. Its result is labelled separately from the sandbox
 enforcement summary, so report values such as file counts cannot be mistaken
@@ -189,7 +191,10 @@ for client metadata.
 
 Tool activity uses a call-and-result hierarchy rather than a flat stream of
 JSON. Bash calls expose the command, structured patch calls render a bounded
-unified diff, and failures retain a distinct mark. Incremental tool-call JSON is
+unified diff, and failures retain a distinct mark and multiline diagnostics.
+Long errors show an explicit Ctrl+G expansion hint after eight lines or 1,600
+characters. Ordinary conversation has an open reading surface and a separate
+composer; detailed token/cache accounting appears with the expanded view. Incremental tool-call JSON is
 not rendered as text while it is incomplete, which prevents repeated partial
 keys from bleeding together during streaming.
 
@@ -307,7 +312,8 @@ opens and reads with a monitored one-second deadline.
 | `src/tui/connection.gleam` | The websocket-owning Stratus actor and terminal inbox. |
 | `src/tui/markdown.gleam` | Mork `Document` to styled etui line rendering. |
 | `src/tui/model_selector.gleam` | Search ranking, selection state, and modal rendering. |
-| `src/tui/agents.gleam` | Strand projection, hidden rail, and topology inspector. |
+| `src/tui/agents.gleam` | Stable inspection, role sections, and responsive task/detail rendering. |
+| `src/tui/agent_activity.gleam` | Captured dependency waits and operation-owned recent tools. |
 | `src/tui/text_hygiene.gleam` | The terminal-control boundary shared by every visible field. |
 | `test/` | Command, selector, markdown, and text-hygiene regression tests. |
 
