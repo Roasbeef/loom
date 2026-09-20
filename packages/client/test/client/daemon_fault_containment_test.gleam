@@ -7,6 +7,7 @@
 
 import client/catalog
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/history
@@ -239,6 +240,7 @@ fn exercise(ledger: weft.Ledger) -> Result(Nil, String) {
         filepath.directory_name(settings.session_path) <> "/daemon",
         "Containment owner",
         2,
+        limits.defaults,
       ),
       assembly(
         settings,

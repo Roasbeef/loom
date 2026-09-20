@@ -5,6 +5,7 @@
 
 import broker/token
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/main as entrypoint
 import client/daemon/manager
 import client/daemon/root
@@ -17,6 +18,7 @@ import gleam/option.{None, Some}
 import host/bootstrap as host
 import host/endpoint
 import mist
+import simplifile
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
@@ -42,7 +44,7 @@ fn claimed_listener() {
   assert !host.path_exists(paths.catalogue)
   let assert Ok(daemon) =
     root.start(
-      root.Config(paths.root, "Owner", 2),
+      root.Config(paths.root, "Owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _) { Ok(record.id) },
@@ -150,6 +152,12 @@ pub fn daemon_bootstrap_mismatched_epoch_preserves_record_test() {
 }
 
 fn native_launch(paths: endpoint.Paths) {
+  // Daemon settings need readable TOML, but an invalid model catalogue and
+  // absent helper remain irrelevant until an actual session is opened.
+  let configuration = paths.root <> ".toml"
+  assert simplifile.write(configuration, "[models]\nnot_a_model = true\n")
+    == Ok(Nil)
+
   let assert Ok(erl) = host.find_executable("erl")
     as "this test executes the same installed Erlang as its parent VM"
   let assert Ok(build) = host.canonical_directory("build/dev/erlang")
@@ -161,8 +169,8 @@ fn native_launch(paths: endpoint.Paths) {
   let arguments =
     list.append(["-pa", ..code_paths], [
       "-noshell", "-eval", "client@@main:run(client)", "-extra", "--state-dir",
-      paths.root, "--bind", "127.0.0.1:0", "--config", "/missing/lazy/config",
-      "--helper", "/missing/lazy/helper",
+      paths.root, "--bind", "127.0.0.1:0", "--config", configuration, "--helper",
+      "/missing/lazy/helper",
     ])
   Ok(daemon_bootstrap.Launch(erl, arguments))
 }

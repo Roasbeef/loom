@@ -10,6 +10,7 @@ import client/advisor
 import client/catalog
 import client/codemode
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/daemon/root as daemon_root
@@ -327,7 +328,7 @@ fn with_daemon_instance(run) {
     as "the fixture selects one fresh daemon directory"
   let assert Ok(daemon) =
     daemon_root.start(
-      daemon_root.Config(config.state_root, "Fixture owner", 2),
+      daemon_root.Config(config.state_root, "Fixture owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, owner) {

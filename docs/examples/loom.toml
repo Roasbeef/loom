@@ -426,3 +426,10 @@ network = "full"
 #
 # [secrets]
 # GH_TOKEN = { command = ["gh", "auth", "token"] }
+
+# Connection limits belong to the daemon started with this file, not a session.
+# Apply changes by restarting the daemon. These reserve potential payload
+# capacity; they do not allocate this memory in advance or bound total RSS.
+[daemon]
+max_connections = 64
+max_reserved_message_bytes = 536870912 # 512 MiB; twelve normal terminal pairs.

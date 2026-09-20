@@ -1,5 +1,36 @@
 # Next
 
+## Configurable daemon connection admission, September 18
+
+The connection-limit change is based on `a65aa2f0` and its implementation is
+`4b9b74e2`. The old 160 MiB budget admitted only three ordinary terminal pairs:
+each operator reserved 40 MiB and its control socket reserved another 64 KiB.
+The default is now 512 MiB with a separate 64-connection ceiling, enough for
+twelve such pairs. The operator can set `daemon.max_connections` and
+`daemon.max_reserved_message_bytes` in the startup configuration; both must be
+positive integers. [Running Loom](running.md#connection-admission) records the
+units and restart requirement.
+
+Startup captures the limits once, advertises the values it enforces, and keeps
+the existing socket transfer, cancellation and DOWN accounting. A session's
+configuration cannot change a live daemon's limits. The startup file must now
+be readable, valid TOML before readiness, but model catalogue validation and
+helper initialization remain deferred until a session opens. Capacity refusals
+name the exhausted setting in HTTP; the terminal's 503 guidance names both
+settings because the transport does not expose the response body.
+
+The full `make check` gate passed on macOS with exit zero: 1,878 client, 563
+TUI and 306 seeded code-mode tests, with zero lint errors and 814 warnings.
+All 141 focused daemon tests passed, and the four-terminal regression failed
+with the original budget before passing with the new default. Independent
+review found two old-budget fixture assumptions, now made explicit; it found
+no production issue. Opt-in shipped-daemon fixtures and Linux execution were
+not part of these local checks.
+
+Next, check hosted CI and Linux signoff at the proposed head before merge.
+No installed daemon or operator configuration was changed by this work.
+Older sections retain their own historical baselines.
+
 ## Stock compiler source builds, September 18
 
 This dependency update is based on `83facc0f`; the executable and build changes

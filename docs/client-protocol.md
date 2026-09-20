@@ -299,7 +299,7 @@ Immediately after admission the server sends one `hello` event with no
 carries the daemon epoch that most control commands must echo.
 
 ```json
-{"v":2,"event":"hello","body":{"protocol":2,"epoch":"ep-7f3a","principal":"owner-1a2b","limits":{"control_bytes":65536,"observer_bytes":65536,"operator_bytes":33554432,"connections":64,"reserved_message_bytes":167772160}}}
+{"v":2,"event":"hello","body":{"protocol":2,"epoch":"ep-7f3a","principal":"owner-1a2b","limits":{"control_bytes":65536,"observer_bytes":65536,"operator_bytes":33554432,"connections":64,"reserved_message_bytes":536870912}}}
 ```
 
 | Field | Type | Presence | Meaning |
@@ -2526,8 +2526,8 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Tool output tail | 4096 bytes per stream | `tool_output.tail` |
 | Escalation preview | 2048 bytes | `escalation.preview` |
 | Session listing page | 60000 bytes | `sessions.list` |
-| Simultaneous connections | 64 | The daemon |
-| Aggregate admission budget | 167772160 bytes | The daemon |
+| Simultaneous connections | 64 by default; `daemon.max_connections` | The daemon |
+| Aggregate admission budget | 536870912 bytes by default; `daemon.max_reserved_message_bytes` | The daemon |
 
 | Timeout | Value | Meaning |
 |---|---|---|
@@ -2671,7 +2671,7 @@ transcript omits nothing except the WebSocket handshake bytes.
 # Control socket: GET /v2/control
 #   Authorization: Bearer 4f1c9a2e...  (from $HOME/.loom/owner.token)
 
-< {"v":2,"event":"hello","body":{"protocol":2,"epoch":"ep-7f3a","principal":"owner-1a2b","limits":{"control_bytes":65536,"observer_bytes":65536,"operator_bytes":33554432,"connections":64,"reserved_message_bytes":167772160}}}
+< {"v":2,"event":"hello","body":{"protocol":2,"epoch":"ep-7f3a","principal":"owner-1a2b","limits":{"control_bytes":65536,"observer_bytes":65536,"operator_bytes":33554432,"connections":64,"reserved_message_bytes":536870912}}}
 
 > {"v":2,"id":1,"cmd":"sessions.list","body":{"after":""}}
 < {"v":2,"reply_to":1,"event":"sessions.list","body":{"revision":19,"sessions":[{"session_id":"0198c0de-0000-7000-8000-000000000001","workspace":"/src/loom","name":"retry work","created_at":1756000000000,"status":{"state":"saved"}}],"after":"0198c0de-0000-7000-8000-000000000001"}}

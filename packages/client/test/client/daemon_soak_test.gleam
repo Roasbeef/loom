@@ -12,6 +12,7 @@
 import broker/exec
 import client/catalog
 import client/daemon/domain
+import client/daemon/limits
 import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/daemon/root
@@ -173,7 +174,7 @@ fn start(settings: serve.Settings) {
     as "one private catalogue and listener are selected"
   let assert Ok(daemon) =
     root.start(
-      root.Config(config.state_root, "Soak owner", 2),
+      root.Config(config.state_root, "Soak owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(selected, sources, owner) {
           let assert Ok(Nil) =

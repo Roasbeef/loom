@@ -190,7 +190,7 @@ fn session_upgrade(
         access.Owner | access.Participant(access.Operator) -> root.Operator
       }
       case root.acquire(config.daemon, class, within: 1000) {
-        Error(_) -> plain(503, "connection capacity unavailable")
+        Error(reason) -> plain(503, reason)
         Ok(permit) -> {
           let #(connection_id, _) = ids.mint_op(config.generator())
           let response =
@@ -241,7 +241,7 @@ fn control_upgrade(
   // keeps the hello's shape built from one value.
   let hello_identity = build_identity.current()
   case root.acquire(config.daemon, root.Control, within: 1000) {
-    Error(_) -> plain(503, "connection capacity unavailable")
+    Error(reason) -> plain(503, reason)
     Ok(permit) -> {
       // The barrier that keeps the permit's custody transfer ordered against
       // the release below. This process owns it; the websocket process signals
@@ -299,10 +299,17 @@ fn control_upgrade(
                               "operator_bytes",
                               json.Int(root.message_limit(root.Operator)),
                             ),
-                            #("connections", json.Int(root.max_connections)),
+                            #(
+                              "connections",
+                              json.Int(
+                                root.connection_limits(config.daemon).connections,
+                              ),
+                            ),
                             #(
                               "reserved_message_bytes",
-                              json.Int(root.max_reserved_message_bytes),
+                              json.Int(
+                                root.connection_limits(config.daemon).reserved_message_bytes,
+                              ),
                             ),
                           ]),
                         ),

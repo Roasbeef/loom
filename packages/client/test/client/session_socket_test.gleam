@@ -5,6 +5,7 @@
 
 import broker/token
 import client/daemon/domain as domain_service
+import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
@@ -81,7 +82,7 @@ fn fixture_with(
     as "the wire fixture has a private state root"
   let assert Ok(daemon) =
     root.start(
-      root.Config(directory, "Owner", 2),
+      root.Config(directory, "Owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
         build: fn(record, _domain, _services, _) {
