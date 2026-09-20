@@ -235,6 +235,97 @@ pub fn compaction_callbacks_do_not_copy_tool_environment_test() {
     == ffi_memory.flat_words(small.resolution)
 }
 
+// A tool whose behaviour carries a payload built at run time, which is the
+// only kind of payload a copy actually duplicates: a literal schema or a
+// long description is shared across process boundaries, so growing one
+// would prove nothing about copy cost.
+fn padded_tool(name: String, words: Int) -> tool.Tool {
+  let payload = list.repeat(#(name, name), times: words)
+  tool.Tool(
+    name:,
+    description: "a tool whose environment is deliberately heavy",
+    prompt_snippet: None,
+    schema: tool.object_schema([], []),
+    replay: tool.Safe,
+    execution_mode: tool.Concurrent,
+    requirements: policy.workspace_default,
+    run: fn(_ctx, _args) {
+      tool.ToolOutcome(
+        content: [
+          message.ToolResultText(
+            text: string.inspect(payload),
+            text_signature: None,
+          ),
+        ],
+        details: None,
+        is_error: False,
+        terminate: tool.ContinueRun,
+      )
+    },
+  )
+}
+
+// The registry a session runs under, with two extra tools whose payload the
+// caller sizes. Only the payload varies between the two registries a test
+// compares: the tool *count* is what a name-keyed projection is allowed to
+// scale with, so holding it fixed is what makes an exact equality the right
+// assertion rather than a tolerance nobody can justify.
+fn registry_padded_to(words: Int) -> tool.Registry {
+  tool.registry(
+    list.append(
+      tool.registered(tool_registry.built_in(None, None, None, None, None)),
+      [padded_tool("padded_one", words), padded_tool("padded_two", words)],
+    ),
+  )
+}
+
+/// The declaration slots answer from a projection, so growing the registry
+/// they were projected from does not grow what they cost to copy.
+///
+/// This is the regression for the copy that dominated a resident session's
+/// heap: `Effects` is a record of closures copied into every process a
+/// session assembly starts, and a slot that held the configuration to read
+/// one registration out of it duplicated the whole tool table per copy.
+pub fn declaration_slots_do_not_copy_the_registry_test() {
+  let light = wiring.Config(..config(), registry: registry_padded_to(1))
+  let heavy = wiring.Config(..config(), registry: registry_padded_to(4096))
+  let small = wiring.build_effects(light)
+  let large = wiring.build_effects(heavy)
+
+  // The premise: the heavy registry really is the larger term. Without
+  // this the assertions below would pass on two identical inputs.
+  assert ffi_memory.flat_words(heavy.registry)
+    > ffi_memory.flat_words(light.registry) + 8192
+
+  assert ffi_memory.flat_words(large.tools.replay_still_safe)
+    == ffi_memory.flat_words(small.tools.replay_still_safe)
+  assert ffi_memory.flat_words(large.tools.execution_mode)
+    == ffi_memory.flat_words(small.tools.execution_mode)
+
+  // The registration is still reachable through the slots that answer about
+  // it, so this measures a narrower capture rather than a lost tool.
+  assert wiring.replay_still_safe(
+    tool.declarations(heavy.registry),
+    "padded_one",
+  )
+}
+
+/// The three compaction slots ask the registry one question — whether this
+/// host offers history search — so a larger registry does not enlarge them.
+pub fn compaction_slots_do_not_copy_the_registry_test() {
+  let light = wiring.Config(..config(), registry: registry_padded_to(1))
+  let heavy = wiring.Config(..config(), registry: registry_padded_to(4096))
+  let small = wiring.compaction_hooks(light)
+  let large = wiring.compaction_hooks(heavy)
+
+  assert ffi_memory.flat_words(large.threshold)
+    == ffi_memory.flat_words(small.threshold)
+  assert ffi_memory.flat_words(large.overflow_preparation)
+    == ffi_memory.flat_words(small.overflow_preparation)
+  assert ffi_memory.flat_words(large.structural_decision)
+    == ffi_memory.flat_words(small.structural_decision)
+}
+
 /// A collector's output callback carries identity independently of arguments.
 pub fn output_observer_does_not_copy_run_payload_test() {
   let opened = memory_session()

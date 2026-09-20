@@ -32,6 +32,7 @@ import session/session
 import simplifile
 import support/rig
 import support/script
+import tools/tool
 
 // --- fixtures -------------------------------------------------------------
 
@@ -483,12 +484,20 @@ pub fn clearance_refuses_inactive_tool_test() {
   assert string.contains(reason, "not active")
 }
 
-pub fn replay_still_safe_consults_live_registry_test() {
-  let config = wide_config()
-  assert wiring.replay_still_safe(config, "fs_read")
-  assert wiring.replay_still_safe(config, "fs_edit")
-  assert !wiring.replay_still_safe(config, "bash")
-  assert !wiring.replay_still_safe(config, "ghost")
+pub fn replay_still_safe_reads_the_registration_test() {
+  let declared = tool.declarations(wide_config().registry)
+  assert wiring.replay_still_safe(declared, "fs_read")
+  assert wiring.replay_still_safe(declared, "fs_edit")
+  assert !wiring.replay_still_safe(declared, "bash")
+  assert !wiring.replay_still_safe(declared, "ghost")
+}
+
+pub fn execution_mode_reads_the_registration_test() {
+  let declared = tool.declarations(wide_config().registry)
+  assert wiring.execution_mode(declared, "fs_read")
+    == effects.ConcurrentExecution
+  assert wiring.execution_mode(declared, "bash") == effects.ExclusiveExecution
+  assert wiring.execution_mode(declared, "ghost") == effects.ExclusiveExecution
 }
 
 // --- ToolRun -> Ctx -------------------------------------------------------

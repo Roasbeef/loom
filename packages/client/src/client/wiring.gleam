@@ -297,6 +297,17 @@ pub fn unobserved() -> fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
 /// ```
 ///
 pub fn build_effects(config: Config) -> Effects {
+  // The two declaration slots below read two words out of a registration
+  // and nothing else, so they are given the projected declaration table
+  // rather than the configuration the registry hangs off. `Effects` is a
+  // record of closures and it is copied into every process a session
+  // assembly starts; BEAM drops sharing when it copies, so a closure that
+  // held `config` to answer a declaration question put a second and a
+  // third copy of the whole tool registry into each of those heaps. The
+  // registry a session runs under does not change while this record
+  // exists, so the projection answers what a lookup would have.
+  let declared = tool.declarations(config.registry)
+
   effects.Effects(
     clock: config.clock,
     entropy: config.entropy,
@@ -309,8 +320,8 @@ pub fn build_effects(config: Config) -> Effects {
     tools: effects.ToolSurface(
       clear: fn(query) { clear(config, query) },
       run: fn(run) { run_tool(config, run) },
-      replay_still_safe: fn(name) { replay_still_safe(config, name) },
-      execution_mode: fn(name) { execution_mode(config, name) },
+      replay_still_safe: fn(name) { replay_still_safe(declared, name) },
+      execution_mode: fn(name) { execution_mode(declared, name) },
     ),
     hooks: compaction_hooks(config),
   )
@@ -337,7 +348,6 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   // Reference preparation needs the session and registered tool surface.
   // Capture those fields rather than the entire wiring configuration.
   let opened = config.session
-  let registry = config.registry
   let compaction = config.compaction
   let gateway = config.gateway
   let role = config.role
@@ -346,7 +356,18 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   let fallback_context_window = config.fallback_context_window
   let fallback_max_output_tokens = config.fallback_max_output_tokens
   let clock = config.clock
-  let projection = fn(strand) { reference_projection(opened, registry, strand) }
+
+  // Compaction asks the registry one question — whether this host offers
+  // history search at all — and three of the hook closures below would
+  // otherwise capture the whole registry to ask it. Answering it once here
+  // is what keeps those three closures small, and the answer cannot go
+  // stale: the registry a session runs under is fixed for the life of the
+  // `Effects` record these hooks belong to.
+  let searchable = history_registration(config.registry)
+
+  let projection = fn(strand) {
+    reference_projection(opened, searchable, strand)
+  }
 
   // The threshold's window is the *strand's*, not the session's. One
   // `Effects` record serves every strand, and a strand switched to a
@@ -402,7 +423,7 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   // `client/checkpoint` builds from the strand's own notes. Nothing
   // selects generation: no summarizer serves this host.
   |> hooks.with_structural_decision(fn(operation, _task) {
-    structural_decision_projected(opened, registry, operation)
+    structural_decision_projected(opened, searchable, operation)
   })
   // The checkpoint's other half: the reminder a request carries once the
   // context is within a reserve of the compaction point, so the model
@@ -427,13 +448,44 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   |> hooks.build
 }
 
+// Whether this host registered the history-search tool at all. It is the
+// only thing compaction asks the tool registry, so it travels as its own
+// answer: the three hook closures that need it would otherwise each hold
+// the registry, and `Effects` is copied into every process a session
+// assembly starts.
+type HistoryRegistration {
+  /// The host offers history search, so a reference may be handed out if
+  /// the strand has the tool active as well.
+  HistorySearchRegistered
+
+  /// No history search on this host, so no reference can be useful.
+  HistorySearchAbsent
+}
+
+// Read once, where the registry already is.
+fn history_registration(registry: Registry) -> HistoryRegistration {
+  case tool.lookup(registry, history.tool_name) {
+    Ok(_registered) -> HistorySearchRegistered
+    Error(Nil) -> HistorySearchAbsent
+  }
+}
+
+// The registration question as a `Result`, so it chains with the durable
+// reads beside it instead of branching around them.
+fn registered(registration: HistoryRegistration) -> Result(Nil, Nil) {
+  case registration {
+    HistorySearchRegistered -> Ok(Nil)
+    HistorySearchAbsent -> Error(Nil)
+  }
+}
+
 // A pointer is useful only if this strand can ask for its contents. Require
 // both host registration and strand activation, plus the canonical session
 // identity. Missing configuration keeps the original messages; compaction
 // must never grant a tool or expose a database path to make recall possible.
 fn reference_projection(
   opened: Session,
-  registry: Registry,
+  searchable: HistoryRegistration,
   strand: String,
 ) -> hooks.Projected {
   let projected = hooks.project(opened, strand)
@@ -443,7 +495,7 @@ fn reference_projection(
       |> result.replace_error(Nil),
     )
     use configuration <- result.try(option.to_result(cell, Nil))
-    use _registered <- result.try(tool.lookup(registry, history.tool_name))
+    use _registered <- result.try(registered(searchable))
     use session_cell <- result.try(
       session.id(opened) |> result.replace_error(Nil),
     )
@@ -473,14 +525,14 @@ fn reference_projection(
 // overflow's — never a published claim that the strand wrote nothing.
 fn structural_decision_projected(
   opened: Session,
-  registry: Registry,
+  searchable: HistoryRegistration,
   operation: OpId,
 ) -> StructuralVerdict {
   case
     checkpoint.for_operation(
       opened,
       operation,
-      recall_projected(opened, registry, operation),
+      recall_projected(opened, searchable, operation),
       instructions_for_session(opened, operation),
     )
   {
@@ -495,7 +547,7 @@ fn structural_decision_projected(
 // durable active-tool list used to build generation requests.
 fn recall_projected(
   opened: Session,
-  registry: Registry,
+  searchable: HistoryRegistration,
   operation: OpId,
 ) -> checkpoint.Recall {
   let available = {
@@ -505,7 +557,7 @@ fn recall_projected(
       |> result.replace_error(Nil),
     )
     use configuration <- result.try(option.to_result(cell, Nil))
-    use _registered <- result.try(tool.lookup(registry, history.tool_name))
+    use _registered <- result.try(registered(searchable))
     Ok(list.contains(configuration.value.active_tool_names, history.tool_name))
   }
   case available {
@@ -1691,20 +1743,26 @@ fn run_grants(run: effects.ToolRun) -> List(Grant) {
   })
 }
 
-/// Whether the named tool's current registration declares safe replay
-/// (pi §4.5: stored and current must both say safe). Unregistered names
-/// are never safe.
+/// Whether the named tool's registration declares safe replay (pi §4.5:
+/// stored and current must both say safe). Unregistered names are never
+/// safe.
+///
+/// It takes the declaration projection rather than the configuration
+/// because that is all it reads, and because the difference is a copy of
+/// the tool registry in every process of a session assembly — see
+/// `build_effects`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // wiring.replay_still_safe(config, "fs_read") == True
+/// // wiring.replay_still_safe(tool.declarations(registry), "fs_read")
+/// //   == True
 /// ```
 ///
-pub fn replay_still_safe(config: Config, name: String) -> Bool {
-  case tool.lookup(config.registry, name) {
-    Ok(registered) ->
-      case registered.replay {
+pub fn replay_still_safe(declared: tool.Declarations, name: String) -> Bool {
+  case tool.declared(declared, name) {
+    Ok(declaration) ->
+      case declaration.replay {
         tool.Safe -> True
         tool.Never -> False
       }
@@ -1712,21 +1770,24 @@ pub fn replay_still_safe(config: Config, name: String) -> Bool {
   }
 }
 
-/// The named tool's current scheduling constraint, mapped from its
-/// registration. Unregistered names report exclusive — the safe
-/// direction, and the clearance that follows refuses them anyway.
+/// The named tool's scheduling constraint, mapped from its registration.
+/// Unregistered names report exclusive — the safe direction, and the
+/// clearance that follows refuses them anyway.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // wiring.execution_mode(config, "fs_read")
+/// // wiring.execution_mode(tool.declarations(registry), "fs_read")
 /// //   == effects.ConcurrentExecution
 /// ```
 ///
-pub fn execution_mode(config: Config, name: String) -> effects.ExecutionMode {
-  case tool.lookup(config.registry, name) {
-    Ok(registered) ->
-      case registered.execution_mode {
+pub fn execution_mode(
+  declared: tool.Declarations,
+  name: String,
+) -> effects.ExecutionMode {
+  case tool.declared(declared, name) {
+    Ok(declaration) ->
+      case declaration.execution_mode {
         tool.Exclusive -> effects.ExclusiveExecution
         tool.Concurrent -> effects.ConcurrentExecution
       }
