@@ -138,6 +138,7 @@ import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import core/register
 import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -147,6 +148,8 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
+import machine/codec
+import machine/operation as operation_mod
 import machine/strand as machine_strand
 import runtime/api.{type Runtime}
 import runtime/effects
@@ -846,9 +849,17 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
       // is the continuation cap's reset: a run this actor did not open is
       // the operator, a schedule or another layer arriving with work of
       // their own, which is what the cap counts from.
+      //
+      // Which is why the event carries an origin rather than leaving the
+      // loop to infer one. This actor opens runs for three reasons — a
+      // goal continuation, a nudge wake, a bound's wrap-up — and only the
+      // continuation shows up in the goal's phase, so the other two read
+      // as somebody arriving with work of their own and cleared the cap.
+      // A reviewer that nudged between continuations could hold the bound
+      // off for as long as it kept nudging.
       remembering(
         state,
-        evaluate(state, runtime, memory, goalloop.PrimaryStarted(operation:)),
+        evaluate(state, runtime, memory, run_start(memory, operation)),
       )
     }
 
@@ -933,6 +944,27 @@ fn renew(memory: Memory, operation: OpId) -> Memory {
   case memory.woke == Some(operation) {
     True -> memory
     False -> Memory(..memory, turn: Unspent)
+  }
+}
+
+// What a run start on the primary is, as the goal loop's occasion.
+//
+// `memory.woke` is this actor's record of the newest run it opened, and it
+// is the only thing that knows about the two wakes the goal's phase does
+// not carry: the nudge channel's, and a tripped bound's wrap-up. The event
+// itself is always a run start — degrading it to `Level` would be wrong,
+// because a level read at a run start finds `current_operation` not yet set
+// and would take the opening run for a finished one.
+//
+// A run start arranged by the *model* — a schedule it created, a background
+// job's wake, a sub-agent's result — is deliberately `Foreign`, because
+// nothing here can tell it from the operator's own prompt. Under those the
+// token budget is the binding bound, which protocol 044 §4 and
+// `docs/design-notes/goals.md` both say in as many words.
+fn run_start(memory: Memory, operation: OpId) -> goalloop.Event {
+  case memory.woke == Some(operation) {
+    True -> goalloop.PrimaryStarted(operation:, origin: goalloop.Harness)
+    False -> goalloop.PrimaryStarted(operation:, origin: goalloop.Foreign)
   }
 }
 
@@ -1572,10 +1604,83 @@ fn observe(
   goalloop.Observed(
     primary: open_run(state.wiring.session, primary, ended),
     advisor: open_run(state.wiring.session, strand, ended),
-    progress: goalloop.progress_of(stretch(state, memory)),
+    progress: measured(state, memory),
+    woken_ending: woken_ending(state, memory),
     event:,
     now_ms: now(state.wiring),
   )
+}
+
+// Whether the stretch the loop's own wake started did any work.
+//
+// Two things are decided here and both were findings. The stretch is
+// measured from the seq the wake recorded rather than from the feed cursor,
+// because an ordinary mid-run review advances the cursor: a woken run whose
+// last step tripped `feed_every_steps` was then judged over whatever came
+// after that review, which for a run that was about to stop is nothing, and
+// two of those paused a goal that was working. And the question is asked
+// only in the phase that has a stretch to judge, so a paused, limited or
+// complete goal pays no branch scan for an answer nothing reads.
+fn measured(state: State, memory: Memory) -> goalloop.Progress {
+  case memory.goal {
+    Some(goalstate.Goal(phase: goalstate.Continuing(since_seq:, ..), ..)) ->
+      goalloop.progress_of(stretch(state, Some(since_seq)))
+
+    // No woken run, so there is no stretch. `Stalled` is a value the loop
+    // never reads here: `woken_run_ended` is its only consumer and is
+    // reachable from the `Continuing` phase alone.
+    Some(_other) | None -> goalloop.Stalled
+  }
+}
+
+// How the run the phase names ended, read from the durable record the
+// terminal transaction writes.
+//
+// The abort notice is a cast, and a cast is dropped when the actor is
+// absent — a supervisor restart between the operator's Ctrl-C and the run's
+// finish loses it. The level read then finds a `Continuing` phase whose run
+// is gone and, without this, calls it a finished stretch and wakes the
+// primary again: the operator's abort answered with a continuation inside
+// the tick's interval. The result is written atomically with the settlement
+// that clears `current_operation`, so at the moment the store stops showing
+// the run open its outcome is already there to read.
+//
+// A phase naming no run answers `RanItsCourse` without a read. Nothing
+// consults the value in those phases, and the store call is not worth
+// making to say so.
+fn woken_ending(state: State, memory: Memory) -> goalloop.Ending {
+  case memory.goal {
+    Some(goalstate.Goal(phase: goalstate.Continuing(woken:, ..), ..)) ->
+      case aborted_run(state, woken) {
+        True -> goalloop.Cancelled
+        False -> goalloop.RanItsCourse
+      }
+
+    Some(_other) | None -> goalloop.RanItsCourse
+  }
+}
+
+// Whether one operation's durable terminal record says the operator
+// aborted it. An absent or undecodable record answers `False`: a run whose
+// outcome cannot be read is a run this loop treats as having ended on its
+// own, which costs one continuation rather than a goal stuck paused on a
+// record nobody can parse.
+fn aborted_run(state: State, operation: OpId) -> Bool {
+  let key = operation_mod.result_fact_key(operation)
+
+  case
+    storage.get_register(state.wiring.session.store, register.FactCustom, key)
+  {
+    Ok(Some(storage.Register(value:, ..))) ->
+      case codec.decode_last_result(value.payload) {
+        Ok(operation_mod.RunLastResult(outcome: operation_mod.RunAborted, ..)) ->
+          True
+
+        Ok(_other) | Error(_undecodable) -> False
+      }
+
+    Ok(None) | Error(_unreadable) -> False
+  }
 }
 
 // Which run, if any, this occasion reports as finished.
@@ -1607,13 +1712,12 @@ fn open_run(
   }
 }
 
-// The stretch of the primary's branch since the feed cursor, which is
-// both what a feed renders and what the zero-progress predicate is
-// measured on. One scan serves both.
-fn stretch(state: State, memory: Memory) -> List(Entry) {
+// The stretch of the primary's branch past one seq. `None` is the whole
+// branch, which is what a session with no cursor yet means.
+fn stretch(state: State, from: Option(Seq)) -> List(Entry) {
   case primary_leaf(state.wiring.session) {
     Error(Nil) -> []
-    Ok(leaf) -> new_entries(state.wiring.session, leaf, memory.cursor)
+    Ok(leaf) -> new_entries(state.wiring.session, leaf, from)
   }
 }
 
@@ -1821,7 +1925,14 @@ fn woken_for_goal(
     field.ident(key: "operation", value: ids.op_id_to_string(operation)),
   ])
 
-  let continuing = goalloop.primary_woken(goal, operation, now(state.wiring))
+  // Where the branch stands as the wake goes out. The stretch this run is
+  // judged on starts here, so the continuation frame the wake just
+  // committed falls inside it — which is correct and deliberate: the frame
+  // is the harness's own and `progress_of` does not count it, so a run that
+  // does nothing else reads as the zero progress it was.
+  let since_seq = option.unwrap(present_seq(state.wiring.session), 0)
+  let continuing =
+    goalloop.primary_woken(goal, operation, now(state.wiring), since_seq:)
   let stored = store_goal(state, runtime, memory, continuing)
 
   #(
@@ -1850,8 +1961,9 @@ fn wrap_up(
   text: String,
 ) -> #(Performed, Memory) {
   let because = goalloop.stopped_because(goal.status)
+  let sent = emit(state, runtime, text)
 
-  case emit(state, runtime, text) {
+  case sent {
     Ok(_delivered) -> Nil
 
     Error(reason) ->
@@ -1860,7 +1972,16 @@ fn wrap_up(
       ])
   }
 
-  #(GoalStopped(because:), memory)
+  // A wrap-up that woke an idle primary opened a run, and that run is
+  // this actor's own. Recording it in `woke` is what stops the run start
+  // it is about to fire from reading as the operator arriving with fresh
+  // work — which would renew the nudge channel's turn and, before
+  // `run_start` gated the event, clear the very cap that sent this
+  // wrap-up.
+  #(
+    GoalStopped(because:),
+    Memory(..memory, woke: option.or(opened_run(sent), memory.woke)),
+  )
 }
 
 // What a performed action is worth saying about on an occasion nobody is

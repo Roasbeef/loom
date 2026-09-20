@@ -146,9 +146,15 @@ pub type Phase {
 
   /// The loop woke the primary with a continuation and that run is
   /// working. `woken` is the run, which is what makes "a goal-woken run"
-  /// precise rather than inferred: the abort notice and the zero-progress
-  /// measurement both key on it.
-  Continuing(woken: OpId)
+  /// precise rather than inferred: the abort notice keys on it.
+  ///
+  /// `since_seq` is where the primary's branch stood when the wake went
+  /// out, and it is what the zero-progress predicate measures from. The
+  /// feed cursor cannot serve: a mid-run feed advances it, so a working run
+  /// whose last step happened to trip `feed_every_steps` was measured over
+  /// the handful of entries after that feed and read as having done
+  /// nothing. Two of those paused a goal that was working.
+  Continuing(woken: OpId, since_seq: Int)
 }
 
 /// One session goal: the operator's objective, the loop's phase, and the
@@ -488,33 +494,46 @@ fn encode_optional(text: Option(String)) -> JsonValue {
   }
 }
 
-/// The phase as its wire object: a state word and the operation it names,
-/// null in the one state that names none.
+/// The phase as its wire object: a state word, the operation it names and
+/// the seq it measures from, each null in the states that name none.
 ///
-/// An object rather than two sibling fields, because the word and the
-/// operation are one fact: a phase word with somebody else's operation
-/// beside it is not a state this loop can be in, and keeping the pair in
-/// one value is what lets the decoder refuse that.
+/// An object rather than sibling fields on the goal, because the word and
+/// what rides with it are one fact: a phase word with somebody else's
+/// operation beside it is not a state this loop can be in, and keeping the
+/// pair in one value is what lets the decoder refuse that.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // goalstate.encode_phase(goalstate.Idle)
 /// //   == json.Object([#("state", json.String("idle")),
-/// //                   #("operation", json.Null)])
+/// //                   #("operation", json.Null),
+/// //                   #("since_seq", json.Null)])
 /// ```
 ///
 pub fn encode_phase(phase: Phase) -> JsonValue {
-  let #(word, operation) = case phase {
-    Idle -> #("idle", None)
-    AwaitingVerdict(feed:) -> #("awaiting_verdict", Some(feed))
-    Continuing(woken:) -> #("continuing", Some(woken))
+  let #(word, operation, since) = case phase {
+    Idle -> #("idle", None, None)
+    AwaitingVerdict(feed:) -> #("awaiting_verdict", Some(feed), None)
+    Continuing(woken:, since_seq:) -> #(
+      "continuing",
+      Some(woken),
+      Some(since_seq),
+    )
   }
 
   json.Object([
     #("state", json.String(word)),
     #("operation", encode_optional(option.map(operation, ids.op_id_to_string))),
+    #("since_seq", encode_optional_int(since)),
   ])
+}
+
+fn encode_optional_int(value: Option(Int)) -> JsonValue {
+  case value {
+    None -> json.Null
+    Some(number) -> json.Int(number)
+  }
 }
 
 /// A stored phase object as a phase. Total: an unknown word, a missing
@@ -532,11 +551,19 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
   use fields <- result.try(object_fields(payload))
   use word <- result.try(required_string(fields, "state"))
   use operation <- result.try(optional_operation(fields))
+  use since <- result.try(optional_since_seq(fields))
 
   case word, operation {
     "idle", None -> Ok(Idle)
     "awaiting_verdict", Some(feed) -> Ok(AwaitingVerdict(feed:))
-    "continuing", Some(woken) -> Ok(Continuing(woken:))
+
+    // An absent `since_seq` on a `continuing` phase reads as zero, which
+    // measures the woken stretch from the start of the branch. That is the
+    // safe direction: a wider stretch can only read as *more* progress, and
+    // reading progress where there was none costs one continuation, where
+    // reading none where there was some pauses a working goal.
+    "continuing", Some(woken) ->
+      Ok(Continuing(woken:, since_seq: option.unwrap(since, 0)))
 
     // A state word that needs an operation and has none, or the reverse.
     // Either is a writer disagreeing with this decoder about what the
@@ -556,6 +583,22 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
         <> "\"continuing\", got "
         <> json.to_string(json.String(word)),
       )
+  }
+}
+
+// The seq a woken stretch is measured from: absent or null outside the
+// continuing state, a non-negative integer inside it. A present value of
+// the wrong type is an error rather than an absence, the discipline every
+// field in this codec keeps.
+fn optional_since_seq(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(Int), String) {
+  case list.key_find(fields, "since_seq") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Int(value:)) if value >= 0 -> Ok(Some(value))
+
+    Ok(other) ->
+      Error(field_error("since_seq", "a non-negative integer or null", other))
   }
 }
 

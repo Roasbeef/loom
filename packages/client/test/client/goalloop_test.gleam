@@ -40,6 +40,7 @@ fn idle(event: goalloop.Event) -> goalloop.Observed {
     primary: None,
     advisor: None,
     progress: goalloop.Progressed,
+    woken_ending: goalloop.RanItsCourse,
     event:,
     now_ms: 2000,
   )
@@ -152,7 +153,10 @@ pub fn a_foreign_run_start_resets_the_continuation_count_test() {
     goalloop.next_action(
       spent,
       goalloop.Observed(
-        ..idle(goalloop.PrimaryStarted(operation: operators_run)),
+        ..idle(goalloop.PrimaryStarted(
+          operation: operators_run,
+          origin: goalloop.Foreign,
+        )),
         primary: Some(operators_run),
       ),
     )
@@ -162,25 +166,67 @@ pub fn a_foreign_run_start_resets_the_continuation_count_test() {
 
 // The loop's own woken run coming back around is not somebody arriving
 // with work, so it resets nothing.
+//
+// The origin here is `Foreign` on purpose: this is the restarted actor,
+// which has forgotten what it woke and reads the run only from the phase.
+// The phase is the second answer `harness_opened` gives, and this is the
+// test that holds it.
 pub fn the_loops_own_run_start_resets_nothing_test() {
   let woken = an_op(12)
   let mid =
     goalstate.Goal(
       ..a_goal(),
       continuations: 3,
-      phase: goalstate.Continuing(woken:),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
     )
 
   let #(moved, _action) =
     goalloop.next_action(
       mid,
       goalloop.Observed(
-        ..idle(goalloop.PrimaryStarted(operation: woken)),
+        ..idle(goalloop.PrimaryStarted(
+          operation: woken,
+          origin: goalloop.Foreign,
+        )),
         primary: Some(woken),
       ),
     )
 
   assert moved.continuations == 3
+}
+
+// A run the harness opened that the *phase* does not name resets nothing
+// either, and this is the finding the origin exists for: a reviewer's nudge
+// wake and a tripped bound's wrap-up both open runs on an idle primary, and
+// neither shows up as `Continuing`. Read as somebody arriving with work they
+// cleared the cap, so a reviewer that nudged between continuations could
+// hold the bound off for as long as it kept nudging.
+pub fn a_harness_wake_the_phase_does_not_name_resets_nothing_test() {
+  let nudge_wake = an_op(14)
+  let spent =
+    goalstate.Goal(
+      ..a_goal(),
+      continuations: goalloop.continuation_cap - 1,
+      zero_progress: 1,
+      phase: goalstate.Idle,
+    )
+
+  let #(moved, _action) =
+    goalloop.next_action(
+      spent,
+      goalloop.Observed(
+        ..idle(goalloop.PrimaryStarted(
+          operation: nudge_wake,
+          origin: goalloop.Harness,
+        )),
+        primary: Some(nudge_wake),
+      ),
+    )
+
+  assert moved.continuations == goalloop.continuation_cap - 1
+    as "a harness wake must not forgive the continuation cap"
+  assert moved.zero_progress == 1
+    as "a harness wake must not forgive the zero-progress count"
 }
 
 // A cap already reached stops the loop instead of continuing it, and the
@@ -220,7 +266,7 @@ pub fn two_stalled_woken_runs_pause_the_goal_test() {
   let once =
     goalstate.Goal(
       ..a_goal(),
-      phase: goalstate.Continuing(woken:),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
       zero_progress: goalloop.zero_progress_limit - 1,
     )
   let stalled =
@@ -242,7 +288,7 @@ pub fn real_work_clears_the_zero_progress_count_test() {
   let once =
     goalstate.Goal(
       ..a_goal(),
-      phase: goalstate.Continuing(woken:),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
       zero_progress: 1,
     )
 
@@ -413,7 +459,7 @@ pub fn a_budget_crossed_mid_run_stops_the_loop_test() {
   let spent =
     goalstate.Goal(
       ..a_goal(),
-      phase: goalstate.Continuing(woken:),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
       token_budget: 100,
       tokens_used: 250,
     )
@@ -433,7 +479,11 @@ pub fn a_budget_crossed_mid_run_stops_the_loop_test() {
 // causes.
 pub fn an_abort_of_the_loops_run_holds_the_goal_test() {
   let woken = an_op(13)
-  let mid = goalstate.Goal(..a_goal(), phase: goalstate.Continuing(woken:))
+  let mid =
+    goalstate.Goal(
+      ..a_goal(),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
+    )
 
   let #(moved, action) =
     goalloop.next_action(mid, idle(goalloop.Aborted(operation: woken)))
@@ -442,11 +492,47 @@ pub fn an_abort_of_the_loops_run_holds_the_goal_test() {
   assert action == goalloop.Rest
 }
 
+// The same pause from the durable ending alone, which is what covers a
+// dropped abort notice: the phase names a run the store no longer shows open,
+// and its terminal record says the operator cancelled it.
+//
+// Without this the level read called it a finished stretch, returned the goal
+// to idle and fed the reviewer, so the operator's Ctrl-C was answered with
+// another continuation within the repair tick's interval. The notice is a
+// cast and a cast is dropped when the actor is absent, so a supervisor
+// restart between the abort and the run's finish is all it took.
+pub fn an_aborted_woken_run_pauses_from_the_level_alone_test() {
+  let woken = an_op(13)
+  let mid =
+    goalstate.Goal(
+      ..a_goal(),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
+    )
+  let cancelled =
+    goalloop.Observed(..idle(goalloop.Level), woken_ending: goalloop.Cancelled)
+
+  let #(moved, action) = goalloop.next_action(mid, cancelled)
+
+  assert moved.status == goalstate.Paused(by: goalstate.ByAbort)
+    as "a cancelled woken run holds the goal, notice or no notice"
+  assert action == goalloop.Rest as "a held goal wakes nobody"
+
+  // The same level with an ordinary ending is the finished stretch it was,
+  // so the repair does not swallow a run that simply ended.
+  let #(ended, offered) = goalloop.next_action(mid, idle(goalloop.Level))
+  assert ended.status == goalstate.Active
+  assert offered == goalloop.FeedReviewer
+}
+
 // An abort of somebody else's run is the operator changing their mind
 // about their own work.
 pub fn an_abort_of_another_run_leaves_the_goal_test() {
   let woken = an_op(13)
-  let mid = goalstate.Goal(..a_goal(), phase: goalstate.Continuing(woken:))
+  let mid =
+    goalstate.Goal(
+      ..a_goal(),
+      phase: goalstate.Continuing(woken:, since_seq: 0),
+    )
 
   let #(moved, _action) =
     goalloop.next_action(mid, idle(goalloop.Aborted(operation: an_op(99))))
@@ -648,7 +734,10 @@ fn draw_phase(from: Seed) -> #(goalstate.Phase, Seed) {
   case which {
     0 -> #(goalstate.Idle, from)
     1 -> #(goalstate.AwaitingVerdict(feed: walked_review()), from)
-    _continuing -> #(goalstate.Continuing(woken: walked_woken()), from)
+    _continuing -> #(
+      goalstate.Continuing(woken: walked_woken(), since_seq: 0),
+      from,
+    )
   }
 }
 
@@ -675,6 +764,7 @@ fn draw_observed(
   let #(primary, from) = draw_run(from, walked_woken())
   let #(advisor, from) = draw_run(from, walked_review())
   let #(progressed, from) = between(from, 0, 1)
+  let #(cancelled, from) = between(from, 0, 1)
   let #(event, from) = draw_event(from, goal)
 
   #(
@@ -684,6 +774,14 @@ fn draw_observed(
       progress: case progressed {
         0 -> goalloop.Progressed
         _stalled -> goalloop.Stalled
+      },
+      // Drawn rather than fixed, because the durable ending is a second
+      // way out of the `Continuing` phase and a walk that never produced
+      // one would leave the abort-repair path untested by every property
+      // below.
+      woken_ending: case cancelled {
+        0 -> goalloop.RanItsCourse
+        _aborted -> goalloop.Cancelled
       },
       event:,
       now_ms: 5000,
@@ -707,7 +805,20 @@ fn draw_event(from: Seed, _goal: goalstate.Goal) -> #(goalloop.Event, Seed) {
 
   case which {
     0 -> #(goalloop.Level, from)
-    1 -> #(goalloop.PrimaryStarted(operation: walked_woken()), from)
+    1 -> {
+      let #(harness, from) = between(from, 0, 1)
+
+      #(
+        goalloop.PrimaryStarted(
+          operation: walked_woken(),
+          origin: case harness {
+            0 -> goalloop.Foreign
+            _opened -> goalloop.Harness
+          },
+        ),
+        from,
+      )
+    }
     2 -> #(goalloop.PrimaryEnded(operation: walked_woken()), from)
     3 -> #(goalloop.AdvisorEnded(operation: walked_review()), from)
     4 -> #(goalloop.Aborted(operation: walked_woken()), from)

@@ -142,7 +142,7 @@ pub fn every_phase_round_trips_test() {
   let phases = [
     goalstate.Idle,
     goalstate.AwaitingVerdict(feed: a_feed_run()),
-    goalstate.Continuing(woken: a_woken_run()),
+    goalstate.Continuing(woken: a_woken_run(), since_seq: 41),
   ]
 
   list.each(phases, fn(phase) {
@@ -155,12 +155,51 @@ pub fn every_phase_round_trips_test() {
     == json.Object([
       #("state", json.String("idle")),
       #("operation", json.Null),
+      #("since_seq", json.Null),
     ])
-  assert goalstate.encode_phase(goalstate.Continuing(woken: a_woken_run()))
+  assert goalstate.encode_phase(goalstate.Continuing(
+      woken: a_woken_run(),
+      since_seq: 41,
+    ))
     == json.Object([
       #("state", json.String("continuing")),
       #("operation", json.String(ids.op_id_to_string(a_woken_run()))),
+      #("since_seq", json.Int(41)),
     ])
+}
+
+// A `continuing` phase stored before `since_seq` existed reads as zero,
+// which measures the woken stretch from the start of the branch.
+//
+// That direction is the safe one and it is the reason the field is optional
+// rather than required: a wider stretch can only read as *more* progress,
+// and reading progress where there was none costs one continuation, where
+// reading none where there was some pauses a goal that was working.
+pub fn an_absent_since_seq_reads_as_the_whole_branch_test() {
+  let stored =
+    json.Object([
+      #("state", json.String("continuing")),
+      #("operation", json.String(ids.op_id_to_string(a_woken_run()))),
+    ])
+
+  assert goalstate.decode_phase(stored)
+    == Ok(goalstate.Continuing(woken: a_woken_run(), since_seq: 0))
+}
+
+// A `since_seq` that is present and not a non-negative integer is a writer
+// this decoder does not trust, named rather than defaulted.
+pub fn a_bad_since_seq_is_refused_test() {
+  let stored =
+    json.Object([
+      #("state", json.String("continuing")),
+      #("operation", json.String(ids.op_id_to_string(a_woken_run()))),
+      #("since_seq", json.Int(-1)),
+    ])
+
+  let assert Error(reason) = goalstate.decode_phase(stored)
+    as "a negative since_seq must not decode"
+
+  assert string.contains(reason, "since_seq")
 }
 
 // The stored form written out rather than computed, so a change to the

@@ -2374,3 +2374,53 @@ pub fn spend_before_the_pin_is_not_charged_to_the_goal_test() {
     as "spend after the pin is charged to the goal"
   stop(rig)
 }
+
+// --- the harness's own wakes do not renew the operator turn ----------------
+
+// A wrap-up wakes the idle primary, and that run is the harness's own: it
+// must not hand the nudge channel a fresh unsolicited delivery.
+//
+// `wrap_up` used to discard what its send returned, so `woke` never learned
+// about the run it opened. The run's own start then read as the operator
+// arriving with work, which renewed the turn and — before the run-start
+// origin was carried — cleared the very cap that had sent the wrap-up.
+pub fn a_wrap_up_wake_does_not_renew_the_operator_turn_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  // An ordinary nudge spends this operator turn's one unsolicited delivery.
+  // It is judged before the goal is pinned, because the goal words are the
+  // only answer to an open goal feed.
+  let assert Ok(advise.Woke(..)) = judge(subject, advise.Nudge(text: "rebase"))
+    as "the first nudge wakes the idle primary and spends the turn"
+  let assert Some(nudged) = strand_operation(rig.opened, advisor.primary)
+    as "the nudge's wake must have opened a run on the primary"
+  idle_again(rig, nudged)
+  assert take_pending(subject, nudged) == []
+    as "the nudge's own run start is the actor's wake coming back"
+
+  // A goal whose budget the next row crosses. Both the entry and its row
+  // are committed after the pin, which is where the accounting's cursor now
+  // starts.
+  pin_goal(subject, 1)
+  let worked = a_settled_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 221)
+  process.send(subject, advisor.PrimarySpent)
+  barrier(subject)
+  assert goal_cell(rig).status == goalstate.Limited(by: goalstate.ByTokenBudget)
+    as "the budget must have tripped and sent the wrap-up"
+
+  let assert Some(wrapped) = strand_operation(rig.opened, advisor.primary)
+    as "the wrap-up must have opened a run on the idle primary"
+  idle_again(rig, wrapped)
+
+  // The wrap-up's own run start. It is the harness's wake, so the turn stays
+  // spent and the next nudge is held rather than delivered. A tripped goal
+  // rests in the `Idle` phase, so nothing here is answering a goal feed.
+  assert take_pending(subject, wrapped) == []
+  let assert Ok(advise.Queued) =
+    judge(subject, advise.Nudge(text: "and squash"))
+    as "a wrap-up's wake must not renew the operator's turn"
+  stop(rig)
+}

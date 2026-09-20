@@ -77,9 +77,9 @@ import gleam/option.{type Option, None, Some}
 /// configuration because a budget the operator sets generously still
 /// deserves a bound the operator cannot configure away (protocol 044
 /// §4). It counts *since the operator, a schedule or another layer last
-/// arrived with work of their own*, which is what `PrimaryStarted` on a
-/// run this loop did not open resets — without that reset the cap is a
-/// lifetime cap, and `/goal resume` after a trip trips again at once.
+/// arrived with work of their own*, which is what a `PrimaryStarted` whose
+/// `Origin` is `Foreign` resets — without that reset the cap is a lifetime
+/// cap, and `/goal resume` after a trip trips again at once.
 pub const continuation_cap = 8
 
 /// How many consecutive zero-progress continuations the harness allows
@@ -137,6 +137,33 @@ pub type Answer {
   Completed(text: String)
 }
 
+/// Who opened a run that has just started on the primary.
+///
+/// The continuation cap counts continuations *since somebody else arrived
+/// with work of their own*, so the reset turns on this and on nothing else.
+/// The goal's phase cannot answer it alone: the harness opens runs for three
+/// reasons and only one of them — the goal continuation — is in the phase.
+/// A reviewer's nudge wake and a tripped bound's wrap-up are the other two,
+/// and reading either as somebody arriving cleared the cap, which let a
+/// reviewer that nudged between continuations hold the bound off for as long
+/// as it kept nudging.
+pub type Origin {
+  /// Somebody arrived with work of their own: the operator's prompt, a
+  /// schedule, a background job's wake, a sub-agent's result. The cap
+  /// counts from here.
+  ///
+  /// A run the *model* arranged is deliberately foreign too, because
+  /// nothing can tell it from the operator's own prompt. Under a primary
+  /// that schedules its own wakes the token budget is the binding bound,
+  /// which protocol 044 §4 says in as many words.
+  Foreign
+
+  /// The harness opened it — a goal continuation, a nudge wake, a bound's
+  /// wrap-up. It resets nothing, because the harness arriving with work is
+  /// the loop's own behaviour rather than a reason to forgive it.
+  Harness
+}
+
 /// The occasion that prompted this evaluation.
 ///
 /// Every variant but `Level` is a notification that may be lost, and
@@ -152,10 +179,10 @@ pub type Event {
   /// the store alone.
   Level
 
-  /// A run opened on the primary. The loop cares because a run it did
-  /// not open is somebody arriving with work of their own, which is what
-  /// resets the continuation cap.
-  PrimaryStarted(operation: OpId)
+  /// A run opened on the primary. The loop cares because a run the
+  /// harness did not open is somebody arriving with work of their own,
+  /// which is what resets the continuation cap.
+  PrimaryStarted(operation: OpId, origin: Origin)
 
   /// A run on the primary ended.
   PrimaryEnded(operation: OpId)
@@ -169,6 +196,27 @@ pub type Event {
 
   /// The reviewer answered an open goal feed.
   Answered(answer: Answer)
+}
+
+/// How the woken run the phase names actually ended, as the caller read it
+/// from the durable record rather than from a notification.
+///
+/// It exists because the abort notice is a cast and a cast can be dropped —
+/// an actor that restarted between the operator's Ctrl-C and the run's
+/// finish never hears it. Without this the level read would find a
+/// `Continuing` phase whose run is gone, call it a finished stretch, and
+/// wake the primary again within the tick's interval: the operator's abort
+/// answered with a continuation. The terminal transaction writes the
+/// operation's result atomically with the settlement that clears
+/// `current_operation`, so a run the store no longer shows open is a run
+/// whose outcome is already durable, which is what makes this readable at
+/// exactly the moment it is needed.
+pub type Ending {
+  /// The run ended on its own terms, or has not ended at all.
+  RanItsCourse
+
+  /// The operator's abort ended it.
+  Cancelled
 }
 
 /// The facts the caller fetched for one evaluation.
@@ -186,8 +234,13 @@ pub type Observed {
     primary: Option(OpId),
     /// The run the advisor has open, if any.
     advisor: Option(OpId),
-    /// Whether the stretch since the feed cursor did work.
+    /// Whether the stretch since the wake's own seq did work. Read only
+    /// when the phase is `Continuing`, which is the only phase that names a
+    /// stretch to judge.
     progress: Progress,
+    /// How the run the phase names ended, read from its durable terminal
+    /// record. `RanItsCourse` for every phase that names no run.
+    woken_ending: Ending,
     /// The occasion asking.
     event: Event,
     /// The caller's clock, stamped into `updated_ms` on every move.
@@ -248,12 +301,13 @@ pub type Action {
 /// ## Examples
 ///
 /// ```gleam
-/// let goal = goalstate.new("get the branch green", 400_000, 1000)
+/// let goal = goalstate.new("get the branch green", 400_000, 1000, accounted_from: 0)
 /// let seen =
 ///   goalloop.Observed(
 ///     primary: option.None,
 ///     advisor: option.None,
 ///     progress: goalloop.Progressed,
+///     woken_ending: goalloop.RanItsCourse,
 ///     event: goalloop.Level,
 ///     now_ms: 2000,
 ///   )
@@ -310,18 +364,27 @@ pub fn feed_refused(goal: Goal, now_ms: Int) -> Goal {
 }
 
 /// The goal with a woken run recorded, which is what makes "a goal-woken
-/// run" precise: the abort notice and the zero-progress measurement both
-/// key on this operation.
+/// run" precise: the abort notice keys on this operation.
+///
+/// `since_seq` is where the primary's branch stood when the wake went out,
+/// and it is the other half of the same precision — the zero-progress
+/// predicate measures the stretch from here rather than from the feed
+/// cursor, which a mid-run review moves.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // goalloop.primary_woken(goal, woken_run, 2000).phase
-/// //   == goalstate.Continuing(woken: woken_run)
+/// // goalloop.primary_woken(goal, woken_run, 2000, since_seq: 41).phase
+/// //   == goalstate.Continuing(woken: woken_run, since_seq: 41)
 /// ```
 ///
-pub fn primary_woken(goal: Goal, woken: OpId, now_ms: Int) -> Goal {
-  Goal(..goal, phase: Continuing(woken:), updated_ms: now_ms)
+pub fn primary_woken(
+  goal: Goal,
+  woken: OpId,
+  now_ms: Int,
+  since_seq since_seq: Int,
+) -> Goal {
+  Goal(..goal, phase: Continuing(woken:, since_seq:), updated_ms: now_ms)
 }
 
 /// Whether a stretch of the primary's branch did work toward an
@@ -331,8 +394,8 @@ pub fn primary_woken(goal: Goal, woken: OpId, now_ms: Int) -> Goal {
 /// because somebody steered. The harness's own frames are not: the
 /// continuation the loop just delivered is a user message on the
 /// primary's branch, and an earlier draft counted it, which is why the
-/// zero-progress bound could never fire — the frame is committed after
-/// the cursor advances, so every woken stretch contained one and every
+/// zero-progress bound could never fire — the frame lands inside the
+/// stretch the wake starts, so every woken stretch contained one and every
 /// stretch "progressed". The frames are recognized by the two-token
 /// discipline `client/advisorslice` owns, so a model cannot promote its
 /// own output into work by quoting a header.
@@ -389,7 +452,8 @@ fn record(goal: Goal, observed: Observed) -> Goal {
   case observed.event {
     Level -> relevel(goal, observed)
 
-    PrimaryStarted(operation:) -> started(goal, operation, observed.now_ms)
+    PrimaryStarted(operation:, origin:) ->
+      started(goal, operation, origin, observed.now_ms)
     PrimaryEnded(operation:) -> ended(goal, operation, observed)
     AdvisorEnded(operation:) -> reviewed(goal, operation, observed)
     Aborted(operation:) -> aborted(goal, operation, observed.now_ms)
@@ -413,11 +477,23 @@ fn relevel(goal: Goal, observed: Observed) -> Goal {
         False -> unanswered(goal, observed.now_ms)
       }
 
-    Continuing(woken:) ->
+    Continuing(woken:, ..) ->
       case observed.primary == Some(woken) {
         True -> goal
-        False -> woken_run_ended(goal, observed)
+        False -> woken_finished(goal, observed)
       }
+  }
+}
+
+// The woken run is over, and how it ended decides what that means. An
+// abort is the operator's "not now" about the loop's own run, and it must
+// reach the same pause here as it does through the notice: this is the path
+// a dropped `Aborted` cast leaves behind, and treating it as an ordinary
+// finish is what turned a Ctrl-C into another continuation.
+fn woken_finished(goal: Goal, observed: Observed) -> Goal {
+  case observed.woken_ending {
+    Cancelled -> hold_for_abort(goal, observed.now_ms)
+    RanItsCourse -> woken_run_ended(goal, observed)
   }
 }
 
@@ -426,12 +502,32 @@ fn relevel(goal: Goal, observed: Observed) -> Goal {
 // counts from. Without this reset the cap is a lifetime cap: the count
 // only ever rose, so a resume after a trip tripped again on its first
 // evaluation.
-fn started(goal: Goal, operation: OpId, now_ms: Int) -> Goal {
-  case goal.phase {
-    Continuing(woken:) if woken == operation -> goal
+fn started(goal: Goal, operation: OpId, origin: Origin, now_ms: Int) -> Goal {
+  case harness_opened(goal, operation, origin) {
+    True -> goal
 
-    Idle | goalstate.AwaitingVerdict(..) | Continuing(..) ->
+    False ->
       Goal(..goal, continuations: 0, zero_progress: 0, updated_ms: now_ms)
+  }
+}
+
+// Whether the run that just opened is one the harness opened itself.
+//
+// Two answers, and both are needed. `origin` is the caller's record of what
+// it woke, which is the only thing that knows about a nudge wake or a
+// wrap-up. The phase is the second, because an actor that has just replaced
+// a dead one has forgotten its heap and still reads `Continuing(woken)` from
+// the cell — without it a restart mid-continuation would read the loop's own
+// run as the operator arriving and forgive the cap.
+fn harness_opened(goal: Goal, operation: OpId, origin: Origin) -> Bool {
+  case origin {
+    Harness -> True
+
+    Foreign ->
+      case goal.phase {
+        Continuing(woken:, ..) -> woken == operation
+        Idle | goalstate.AwaitingVerdict(..) -> False
+      }
   }
 }
 
@@ -440,7 +536,8 @@ fn started(goal: Goal, operation: OpId, now_ms: Int) -> Goal {
 // is about.
 fn ended(goal: Goal, operation: OpId, observed: Observed) -> Goal {
   case goal.phase {
-    Continuing(woken:) if woken == operation -> woken_run_ended(goal, observed)
+    Continuing(woken:, ..) if woken == operation ->
+      woken_finished(goal, observed)
 
     Idle | goalstate.AwaitingVerdict(..) | Continuing(..) -> goal
   }
@@ -506,7 +603,7 @@ fn unanswered(goal: Goal, now_ms: Int) -> Goal {
 // difference readable rather than inferred.
 fn aborted(goal: Goal, operation: OpId, now_ms: Int) -> Goal {
   case goal.phase {
-    Continuing(woken:) if woken == operation -> hold_for_abort(goal, now_ms)
+    Continuing(woken:, ..) if woken == operation -> hold_for_abort(goal, now_ms)
 
     Idle | goalstate.AwaitingVerdict(..) | Continuing(..) -> goal
   }
