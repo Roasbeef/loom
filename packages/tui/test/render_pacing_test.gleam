@@ -181,9 +181,12 @@ fn blank(rows: List(String)) -> Bool {
 // rather than content and comparing them would read an append as a scroll.
 fn transcript_rows(drawn: buffer.Buffer) -> List(String) {
   frame.buffer_to_lines(drawn)
-  |> list.drop_while(fn(row) { !string.starts_with(row, "╭ transcript") })
+  |> list.drop_while(fn(row) {
+    !string.starts_with(row, " transcript")
+    && !string.starts_with(row, " ↓ Scrollback")
+  })
   |> list.drop(1)
-  |> list.take_while(fn(row) { string.starts_with(row, "│") })
+  |> list.take_while(fn(row) { !string.starts_with(row, "─ To ") })
   |> list.reverse
   |> list.drop_while(empty_row)
   |> list.reverse

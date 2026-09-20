@@ -31,6 +31,7 @@ import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
+import tui/worktree_view
 
 fn model() {
   tui.new_model_with_clock(
@@ -569,4 +570,134 @@ pub fn returned_input_keeps_its_owner_while_another_draft_is_open_test() {
   assert returned.active_strand == "worker"
   let main = returned |> press("f2") |> press("up") |> press("enter")
   assert textarea.value(main.input) == "main draft\n\nreturned main prompt"
+}
+
+pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
+  let initial =
+    tui.Model(
+      ..model(),
+      strands: roster(),
+      input: textarea.state_from_string("main draft"),
+    )
+  let inspected =
+    initial |> press("f2") |> press("down") |> press("tab") |> press("!")
+  assert inspected.active_strand == "main"
+  assert textarea.value(inspected.input) == "main draft!"
+  let assert tui.AgentInspector(inspector) = inspected.overlay
+    as "the composer remains inside the agent workspace"
+  assert inspector.selected == "worker"
+  assert inspector.focus == agents.Composing
+  let navigated = inspected |> press("esc") |> press("up")
+  assert navigated.active_strand == "main"
+  assert textarea.value(navigated.input) == "main draft!"
+  let assert tui.AgentInspector(inspector) = navigated.overlay
+    as "Escape returned keyboard ownership to inspection"
+  assert inspector.selected == "main"
+}
+
+pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test() {
+  list.each(
+    [#(40, 12), #(80, 24), #(100, 30), #(116, 38), #(160, 50)],
+    fn(size) {
+      let initial =
+        tui.Model(
+          ..model(),
+          strands: roster(),
+          input: textarea.state_from_string("retained draft"),
+        )
+        |> tui.update(backend.Resize(size.0, size.1), _)
+        |> press("f2")
+      let rendered =
+        tui.view(initial, geometry.rect_new(0, 0, size.0, size.1)).0
+        |> frame.buffer_to_text
+      assert string.contains(rendered, "To main")
+      assert string.contains(rendered, "attention")
+      assert string.contains(rendered, "retained draft")
+      let editing = initial |> press("tab")
+      let rendered =
+        tui.view(editing, geometry.rect_new(0, 0, size.0, size.1)).0
+        |> frame.buffer_to_text
+      assert string.contains(rendered, "enter")
+      assert editing.active_strand == "main"
+    },
+  )
+}
+
+pub fn approval_detail_keeps_its_captured_preview_and_no_default_decision_test() {
+  let view = live_view(operation.Running, None)
+  let current = ids.op_id_to_string(op_id(1))
+  let own =
+    snapshot_view.View(..view, cells: [
+      permission("main", current),
+      ..view.cells
+    ])
+  let row = only(observe([], own, []))
+  assert row.decision == "fs_write · write report"
+  let screen = geometry.rect_new(0, 0, 116, 38)
+  let rendered =
+    agents.render_overlay(
+      buffer.buffer_new(screen),
+      screen,
+      [row],
+      "main",
+      agents.inspect("main"),
+    )
+    |> frame.buffer_to_text
+  assert string.contains(rendered, "PERMISSION NEEDED")
+  assert string.contains(rendered, "write report")
+  assert string.contains(rendered, "Nothing is approved here")
+}
+
+// Tab transfers keyboard ownership out of any previously visible surface.
+pub fn workspace_typing_leaves_the_hidden_diff_navigator_test() {
+  let initial =
+    tui.Model(..model(), strands: roster(), diff_view: tui.DiffVisible)
+    |> press("ctrl+d")
+  assert initial.worktree.focus == worktree_view.Navigator
+  let editing = initial |> press("f2") |> press("tab") |> press("x")
+  assert editing.worktree.focus == worktree_view.Composer
+  assert textarea.value(editing.input) == "x"
+  let navigating = editing |> press("ctrl+d")
+  assert navigating.overlay == tui.NoOverlay
+  assert navigating.worktree.focus == worktree_view.Navigator
+}
+
+pub fn workspace_commands_expose_the_surface_that_owns_the_next_key_test() {
+  list.each(
+    ["/help", "/notes", "/diff", "/context", "/queue", "/summary"],
+    fn(command) {
+      let editing = model() |> press("f2") |> press("tab")
+      let opened =
+        tui.Model(..editing, input: textarea.state_from_string(command))
+        |> press("enter")
+      assert opened.overlay == tui.NoOverlay as command
+    },
+  )
+  let previous = tui.Model(..model(), help_open: True)
+  let editing = previous |> press("f2") |> press("tab") |> press("x")
+  assert !editing.help_open
+  assert textarea.value(editing.input) == "x"
+}
+
+// The identity row must remain useful in a deeply nested worktree.
+pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
+  let initial =
+    tui.Model(
+      ..model(),
+      workspace: workspace.Context(
+        "/work/" <> string.repeat("nested/", 30),
+        None,
+      ),
+      session: "review-session",
+      current_model: "provider/model",
+    )
+    |> tui.update(backend.Resize(80, 24), _)
+  let header =
+    tui.view(initial, geometry.rect_new(0, 0, 80, 24)).0
+    |> frame.buffer_to_text
+    |> string.split("\n")
+    |> list.first
+  let assert Ok(header) = header as "a terminal has a header"
+  assert string.contains(header, "review-session")
+  assert string.contains(header, "provider/model")
 }

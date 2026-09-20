@@ -20,12 +20,14 @@ import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
+import tui/agent_activity
 import tui/approval
 import tui/protocol
 import tui/reviewer_status
 import tui/snapshot
 import tui/snapshot_view
 import tui/text_hygiene
+import tui/tool_activity
 
 /// Presentation vocabulary, never a second operation state machine.
 @internal
@@ -81,6 +83,10 @@ pub type Row {
     approvals: List(String),
     /// Effective model from this same capture, when available.
     model: String,
+    /// Bounded recent tools from this operation's loaded branch.
+    recent: List(String),
+    /// Captured pending approval preview, never permission to grant it.
+    decision: String,
   )
 }
 
@@ -112,6 +118,8 @@ pub fn legacy(strands: List(protocol.Strand)) -> List(Row) {
       "Pending input unknown",
       [],
       "Model unavailable",
+      [],
+      "",
     )
   })
 }
@@ -218,6 +226,39 @@ pub fn observe(
       _, _ -> activity
     }
 
+    let calls = case current {
+      Some(id) -> tool_activity.running(view.cells, dict.values(entries), id)
+      None -> []
+    }
+    let #(status, activity) = case
+      status,
+      activity,
+      agent_activity.waiting(calls)
+    {
+      Working, "Stopping", _ -> #(status, activity)
+      Working, _, Some(wait) -> #(Waiting, wait)
+      Working, _, None ->
+        case calls {
+          [call, ..rest] -> #(
+            status,
+            agent_activity.invocation(call)
+              <> case rest {
+              [] -> ""
+              more -> " + " <> int.to_string(list.length(more)) <> " active"
+            },
+          )
+          [] -> #(status, activity)
+        }
+      _, _, _ -> #(status, activity)
+    }
+    let decision =
+      reviews
+      |> list.filter(fn(review) { list.contains(approvals, review.id) })
+      |> list.map(fn(review) { review.tool <> " · " <> review.preview })
+      |> string.join("\n")
+      |> text_hygiene.multiline
+      |> string.slice(0, 640)
+
     Row(
       strand.id,
       text_hygiene.single_line(option.unwrap(strand.name, strand.id)),
@@ -233,6 +274,8 @@ pub fn observe(
         |> result.map(fn(config) { config.configuration.model.model_id })
         |> result.unwrap("Model unavailable")
         |> text_hygiene.single_line,
+      agent_activity.recent(view, window, strand.id, current),
+      decision,
     )
   })
 }

@@ -30,7 +30,19 @@ pub type Inspector {
     selected: String,
     /// Independent scroll position within the selected detail.
     scroll: Int,
+    /// Keyboard owner; inspection never consumes composer text.
+    focus: Focus,
   )
+}
+
+/// The workspace keeps navigation and ordinary text entry unambiguous.
+@internal
+pub type Focus {
+  /// Arrows inspect; Enter opens the selected transcript.
+  Browsing
+
+  /// Keys edit and submit the unchanged active recipient's draft.
+  Composing
 }
 
 /// Direction is explicit at navigation call sites.
@@ -48,11 +60,11 @@ pub type Direction {
 /// ## Examples
 ///
 /// ```gleam
-/// assert agents.inspect("main") == agents.Inspector("main", 0)
+/// assert agents.inspect("main") == agents.Inspector("main", 0, agents.Browsing)
 /// ```
 @internal
 pub fn inspect(active: String) -> Inspector {
-  Inspector(active, 0)
+  Inspector(active, 0, Browsing)
 }
 
 /// Moves by identity; a missing selection starts at the next available row.
@@ -126,18 +138,52 @@ pub fn render_rail(
       block.Top,
     )
   let inside = block.inner(area, frame)
-  let visible_count = int.max(1, { inside.size.height - 2 } / 4)
-  let #(visible, _) =
-    selection_window(rows, row_index(rows, active), visible_count)
-  let lines = [
-    line(
-      summary_rows(rows) |> string.replace(" agents · ", " · "),
-      theme.quiet_text(),
-    ),
-    span.line_plain(""),
-    ..roster_lines(visible, active, active, inside.size.width, style.Default)
-  ]
-  buf |> block.render(area, frame) |> paragraph.render_styled(inside, lines)
+  let workers = list.filter(rows, fn(row) { row.id != "advisor" })
+  let advisor = list.filter(rows, fn(row) { row.id == "advisor" })
+  let parts =
+    geometry.split_v(inside, [
+      Length(2),
+      Fill,
+      Length(case advisor {
+        [] -> 0
+        _ -> 5
+      }),
+    ])
+  let painted = block.render(buf, area, frame)
+  case parts {
+    [summary, roster, review] -> {
+      let visible_count = int.max(1, { roster.size.height - 2 } / 4)
+      let #(visible, _) =
+        selection_window(workers, row_index(workers, active), visible_count)
+      let advisor_lines = case advisor {
+        [] -> [
+          line("ADVISOR", theme.quiet_text()),
+          line("Not captured", theme.quiet_text()),
+        ]
+        _ ->
+          roster_lines(
+            advisor,
+            active,
+            active,
+            review.size.width,
+            style.Default,
+          )
+      }
+      painted
+      |> paragraph.render_styled(summary, [
+        line(
+          summary_rows(rows) |> string.replace(" agents · ", " · "),
+          theme.quiet_text(),
+        ),
+      ])
+      |> paragraph.render_styled(
+        roster,
+        roster_lines(visible, active, active, roster.size.width, style.Default),
+      )
+      |> paragraph.render_styled(review, advisor_lines)
+    }
+    _ -> painted
+  }
 }
 
 /// Renders a roster/detail workspace whose footer names the unchanged recipient.
@@ -178,6 +224,9 @@ pub fn render_overlay(
     [content, footer] -> #(content, footer)
     _ -> #(inside, geometry.rect_zero())
   }
+
+  // Clearing this body rectangle leaves the real composer and footer intact.
+  // The inset padding must be opaque too when underlying text is longer.
   let painted =
     buf
     |> buffer.clear(screen)
@@ -187,15 +236,25 @@ pub fn render_overlay(
     line(
       "To: "
         <> text_hygiene.single_line(active)
-        <> " · Enter opens selected transcript",
+        <> case inspector.focus {
+        Browsing -> " · Enter opens selected transcript"
+        Composing -> " · typing in the composer below"
+      },
       theme.overlay_signal(),
     ),
     line(
-      "↑/↓ inspect · n attention · a approval · PgUp/PgDn detail",
+      case inspector.focus {
+        Browsing -> "↑/↓ inspect · n attention · a approval · PgUp/PgDn detail"
+        Composing ->
+          "Enter submits to the named recipient · Tab changes delivery"
+      },
       theme.overlay_quiet(),
     ),
     line(
-      "Esc conversation · drafts stay with their strand",
+      case inspector.focus {
+        Browsing -> "Tab write to " <> active <> " · Esc conversation"
+        Composing -> "Editing To " <> active <> " · Esc returns to roster"
+      },
       theme.overlay_quiet(),
     ),
   ]
@@ -222,7 +281,7 @@ fn render_workspace(
             selection_window(
               rows,
               row_index(rows, inspector.selected),
-              int.max(1, roster.size.height / 4),
+              int.max(1, { roster.size.height - 3 } / 4),
             )
           buf
           |> paragraph.render_styled(
@@ -302,15 +361,29 @@ fn detail_lines(row: Row, width: Int) -> List(span.Line) {
   let activity = section("CURRENT STATE", row.activity, width)
   let update = section("LATEST UPDATE", row.update, width)
   let pending = section("INPUT", row.pending, width)
+  let recent = case row.recent {
+    [] ->
+      section(
+        "RECENT ACTIVITY",
+        "Tool history unavailable in this capture. Enter opens the transcript.",
+        width,
+      )
+    rows -> section("RECENT ACTIVITY", string.join(rows, "\n"), width)
+  }
   let approvals = case row.approvals {
     [] -> []
     [_, ..] ->
       wrapped(
-        "Press a to review the exact pending permission request.",
+        "? PERMISSION NEEDED\n"
+          <> row.decision
+          <> "\nPress a to review this exact request. Nothing is approved here.",
         width,
         theme.overlay_signal(),
       )
   }
+
+  // Provenance follows the actionable content so small terminals reach the
+  // task and exact pending decision before accounting and identity metadata.
   let identity = section("IDENTITY", row.id <> " · " <> row.model, width)
   let role = case row.id {
     "advisor" ->
@@ -325,9 +398,10 @@ fn detail_lines(row: Row, width: Int) -> List(span.Line) {
     title,
     task,
     activity,
-    update,
-    pending,
     approvals,
+    update,
+    recent,
+    pending,
     identity,
     role,
   ])
@@ -369,7 +443,7 @@ fn roster_lines(
       ),
     ]
     _ ->
-      list.flat_map(rows, fn(row) {
+      list.index_map(rows, fn(row, index) {
         let focus = case row.id == selected {
           True -> "▸ "
           False -> "  "
@@ -390,7 +464,21 @@ fn roster_lines(
           "  " <> status_mark(row.status) <> " " <> agent_view.label(row.status)
         let progress =
           " · " <> fit_tail(row.activity, width - text.cell_width(state) - 3)
-        [
+
+        // Section headings distinguish roles without reordering live rows.
+        let section = role_heading(row.id)
+        let previous =
+          list.drop(rows, index - 1)
+          |> list.first
+          |> result.map(fn(previous) { role_heading(previous.id) })
+          |> result.unwrap("")
+        let heading = case index == 0 || section != previous {
+          True -> [
+            line(section, style.new(theme.quiet, background, style.none())),
+          ]
+          False -> []
+        }
+        list.append(heading, [
           line(
             focus
               <> fit_tail(row.name, width - text.cell_width(focus <> target))
@@ -406,8 +494,17 @@ fn roster_lines(
             status_style(row.status, background),
           ),
           span.line_plain(""),
-        ]
+        ])
       })
+      |> list.flatten
+  }
+}
+
+fn role_heading(id: String) -> String {
+  case id {
+    "main" -> "SESSION"
+    "advisor" -> "ADVISOR · independent review"
+    _ -> "STRANDS"
   }
 }
 

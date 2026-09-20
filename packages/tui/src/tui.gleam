@@ -179,7 +179,7 @@ pub const live_stream_limit = 24_576
 const patch_preview_lines = 60
 
 // Submitted code stays readable in compact mode; expansion retains every line.
-const code_preview_lines = 60
+const code_preview_lines = 6
 
 /// The undurable fragments of one strand-and-kind generation.
 ///
@@ -2723,15 +2723,11 @@ fn render_frame(
   let base =
     repaint_canvas(screen, model.repaint_phase)
     |> render_header(header_area, model)
-    |> render_panel_border(
-      transcript_panel,
-      transcript_title(model),
-      theme.divider,
-    )
+    |> render_conversation_heading(transcript_panel, model)
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
-    |> render_panel_border(input_area, input_title(model), theme.signal)
+    |> render_composer_chrome(input_area, input_title(model))
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, input_view)
@@ -2743,7 +2739,7 @@ fn render_frame(
     AgentInspector(selected) ->
       agents.render_overlay(
         base,
-        screen,
+        body_area,
         displayed_agents(model),
         model.active_strand,
         selected,
@@ -2751,6 +2747,16 @@ fn render_frame(
     SessionSelector(selector) -> sessions.render(base, screen, selector)
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
+  }
+
+  let rendered = case model.overlay {
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+      render_command_palette(
+        rendered,
+        body_area,
+        Model(..model, overlay: NoOverlay),
+      )
+    _ -> rendered
   }
 
   // Selected cells keep their original contents. A growing pending/reviewer
@@ -2786,6 +2792,8 @@ fn render_frame(
   }
   let cursor = case model.overlay {
     NoOverlay -> text_area.cursor_screen_pos(input_view, editor_area)
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+      text_area.cursor_screen_pos(input_view, editor_area)
     ModelSelector(_)
     | AgentInspector(_)
     | SessionSelector(_)
@@ -2909,7 +2917,7 @@ fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
       Length(1),
       Fill,
       Length(input_height(model)),
-      Length(footer_height(screen.size.width)),
+      Length(footer_height(model)),
     ])
   {
     [header, body, input, footer] -> #(header, body, input, footer)
@@ -2972,15 +2980,72 @@ fn render_agent_rail(
   model: Model,
 ) -> buffer.Buffer {
   case area.size.width > 0 {
-    True ->
-      agents.render_rail(
-        buf,
-        area,
-        displayed_agents(model),
-        model.active_strand,
-      )
+    True -> {
+      let extra = studio_observation_lines(model)
+      let panes =
+        geometry.split_v(area, [
+          Fill,
+          Length(int.min(6, list.length(extra) + 1)),
+        ])
+      case panes {
+        [roster, observations] ->
+          buf
+          |> agents.render_rail(
+            roster,
+            displayed_agents(model),
+            model.active_strand,
+          )
+          |> paragraph.render_styled(
+            observations,
+            list.map(extra, fn(row) {
+              span.line_new([
+                span.span_styled(
+                  text.truncate(" " <> row, observations.size.width, "…"),
+                  theme.quiet_text(),
+                ),
+              ])
+            }),
+          )
+        _ ->
+          agents.render_rail(
+            buf,
+            area,
+            displayed_agents(model),
+            model.active_strand,
+          )
+      }
+    }
     False -> buf
   }
+}
+
+// The rail reports captured observations. Opening /diff owns refreshing Git;
+// a missing or stale observation must not become a fabricated clean worktree.
+fn studio_observation_lines(model: Model) -> List(String) {
+  let advice = case model.nudges {
+    Some(board) -> list.take(advisor_pending.lines(board), 1)
+    None ->
+      case list.any(model.strands, fn(strand) { strand.id == "advisor" }) {
+        True -> ["Advisor nudges · not observed"]
+        False -> []
+      }
+  }
+  let changes = case model.worktree.board {
+    None -> ["CHANGES · /diff (not observed)"]
+    Some(board) -> [
+      "CHANGES · " <> int.to_string(board.total) <> " files · /diff",
+      ..board.files
+      |> list.take(2)
+      |> list.map(fn(file) {
+        file.index_status
+        <> file.worktree_status
+        <> " "
+        <> text_hygiene.single_line(file.path)
+      })
+      |> list.append([model.worktree.message])
+    ]
+  }
+  list.append(advice, changes)
 }
 
 // Names are presentation only. Pairing one with its identity prevents a
@@ -2997,33 +3062,86 @@ fn render_header(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  let identity = " ◆ loom "
+  let details =
+    text.truncate(
+      " "
+        <> text_hygiene.single_line(model.current_model)
+        <> " · Ctrl+g details ",
+      int.max(0, area.size.width / 3),
+      "…",
+    )
+
+  // A long checkout path must not hide which session owns this terminal.
+  // Reserve the two fixed ends before fitting the session and its context.
+  let room =
+    int.max(
+      0,
+      area.size.width - text.cell_width(identity) - text.cell_width(details),
+    )
+  let context =
+    text.truncate(
+      text_hygiene.single_line(session_title(model))
+        <> " · "
+        <> text_hygiene.single_line(workspace.label(model.workspace)),
+      room,
+      "…",
+    )
   let bar =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([
-      span.line_new([span.span_styled(" ◆ ", theme.signal_bold())]),
+      span.line_new([span.span_styled(identity, theme.signal_bold())]),
     ])
-    |> statusbar.with_center([
-      span.line_new([
-        span.span_styled("session ", theme.quiet_text()),
-        span.span_plain(text_hygiene.single_line(session_title(model))),
-      ]),
-    ])
+    |> statusbar.with_center([span.line_plain(context)])
     |> statusbar.with_right([
-      span.line_new([
-        span.span_styled(
-          " "
-            <> text_hygiene.single_line(model.current_model)
-            <> " · "
-            <> int.to_string(model.width)
-            <> "×"
-            <> int.to_string(model.height)
-            <> " ",
-          theme.quiet_text(),
-        ),
-      ]),
+      span.line_new([span.span_styled(details, theme.quiet_text())]),
     ])
   statusbar.render(buf, area, bar)
+}
+
+// A reading surface needs a heading and gutter, not four persistent edges.
+// Keeping its interior geometry preserves selection and semantic anchors.
+fn render_conversation_heading(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  buffer.set_string(
+    buf,
+    area.position,
+    text.truncate(
+      case reading_history(model) {
+        True -> " ↓ Scrollback · click for latest · End with empty prompt "
+        False -> transcript_title(model)
+      },
+      area.size.width,
+      "…",
+    ),
+    theme.quiet_text(),
+  )
+}
+
+// Horizontal rules distinguish input from output without boxing the whole
+// conversation. The editor keeps its established inset for selection/copy.
+fn render_composer_chrome(
+  buf: buffer.Buffer,
+  area: Rect,
+  title: String,
+) -> buffer.Buffer {
+  let width = int.max(0, area.size.width - 2)
+  let border = style.new(theme.signal, style.Default, style.none())
+  buf
+  |> buffer.set_string(
+    area.position,
+    "─" <> text.pad_right(text.truncate(title, width, "…"), width) <> "─",
+    border,
+  )
+  |> buffer.set_string(
+    geometry.Position(area.position.x, geometry.bottom(area) - 1),
+    string.repeat("─", area.size.width),
+    style.new(theme.divider, style.Default, style.none()),
+  )
 }
 
 fn render_transcript(
@@ -3138,12 +3256,22 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
-    ToolCall -> #("● ", theme.current_bold())
+    ToolCall ->
+      case string.starts_with(line.text, "✓ ") {
+        True -> #("✓ ", theme.success_text())
+        False -> #("● ", theme.current_bold())
+      }
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error ", theme.danger_text())
     Spacer -> #("", theme.quiet_text())
+  }
+  let body = case
+    line.speaker == ToolCall && string.starts_with(line.text, "✓ ")
+  {
+    True -> string.drop_start(line.text, 2)
+    False -> line.text
   }
   case line.speaker {
     User -> {
@@ -3194,7 +3322,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
       markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     System | ToolCall | ToolResult | ToolFailure | Failure ->
-      line.text
+      body
       |> text_hygiene.multiline
       |> string.split("\n")
       |> list.index_map(fn(text, index) {
@@ -3504,11 +3632,60 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  use <- bool.lazy_guard(!model.details_expanded, fn() {
+    render_compact_footer(buf, area, model)
+  })
   let #(project, model_name, usage, status, combined) = footer_sections(model)
   case area.size.height {
     1 -> render_single_footer(buf, area, project, usage, combined)
     2 -> render_stacked_footer(buf, area, project, model_name, usage, status)
     _ -> render_split_footer(buf, area, project, model_name, usage, status)
+  }
+}
+
+// Billing detail is available with Ctrl+g. Everyday work needs the model,
+// context estimate, session cost, and attention state rather than cache totals.
+fn render_compact_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  let info =
+    text_hygiene.single_line(model.current_model)
+    <> " · "
+    <> context_view.footer(model.context)
+    <> " · est $"
+    <> money(model.usage.cost.total)
+  let status = agents.summary_rows(displayed_agents(model))
+  let context = case model.notice {
+    "" -> info
+    notice -> text_hygiene.single_line(notice) <> " · " <> info
+  }
+  case area.size.height > 1 {
+    True ->
+      paragraph.render_styled(
+        buf,
+        area,
+        list.map([context, status], fn(row) {
+          span.line_new([
+            span.span_styled(
+              text.truncate(" " <> row, area.size.width, "…"),
+              theme.footer_text(),
+            ),
+          ])
+        }),
+      )
+    False -> {
+      let left_width = int.max(0, area.size.width - text.cell_width(status) - 3)
+      let row =
+        " "
+        <> text.pad_right(text.truncate(context, left_width, "…"), left_width)
+        <> "  "
+        <> status
+      paragraph.render_styled(buf, area, [
+        span.line_new([span.span_styled(row, theme.footer_text())]),
+      ])
+    }
   }
 }
 
@@ -3666,8 +3843,15 @@ pub fn footer_usage_limit(width: Int) -> Int {
   }
 }
 
-fn footer_height(width: Int) -> Int {
-  footer_rows(width)
+fn footer_height(model: Model) -> Int {
+  case model.details_expanded {
+    True -> footer_rows(model.width)
+    False ->
+      case model.width < 100 {
+        True -> 2
+        False -> 1
+      }
+  }
 }
 
 /// The most cells each footer section may take, including the space each
@@ -3970,9 +4154,33 @@ fn composer_status_lines(model: Model) -> List(String) {
     None -> []
     Some(board) -> goal_view.row(board)
   }
+  let active = case active_status_label(model) {
+    None -> []
+    Some(status) -> [
+      activity_glyph(model.activity_frame)
+      <> " "
+      <> text_hygiene.single_line(status)
+      <> elapsed_label(model.activity_elapsed_s),
+    ]
+  }
+
+  // The workspace and visible rail already own the roster. Repeating it
+  // above the editor would spend its typing space on the same observation.
+  let reviewers = case model.overlay {
+    AgentInspector(_) -> []
+    _ ->
+      case
+        model.agent_rail_visible
+        && model.width >= 100
+        && diff_pane_width(model) == 0
+      {
+        True -> []
+        False -> reviewer_status.lines(model.reviewer_rows, model.active_strand)
+      }
+  }
   list.append(
-    reviewer_status.lines(model.reviewer_rows, model.active_strand),
-    list.append(goal, list.append(nudges, pending)),
+    active,
+    list.append(reviewers, list.append(goal, list.append(nudges, pending))),
   )
 }
 
@@ -4034,7 +4242,12 @@ fn editor_content_width(model: Model) -> Int {
 }
 
 fn input_title(model: Model) -> String {
-  " To " <> recipient_label(model) <> " ·" <> input_behavior(model)
+  let behavior = case model.overlay {
+    AgentInspector(agents.Inspector(focus: agents.Browsing, ..)) ->
+      " Tab writes · Enter opens agent "
+    _ -> input_behavior(model)
+  }
+  " To " <> recipient_label(model) <> " ·" <> behavior
 }
 
 // A long child ID must not hide whether Enter sends, queues, or steers.
@@ -4058,10 +4271,6 @@ fn input_behavior(model: Model) -> String {
     ReconnectIdle | ReconnectSpent ->
       " Disconnected · /sessions to reconnect · draft retained "
   })
-  use <- bool.guard(
-    reading_history(model),
-    " ↓ Scrollback · click for latest · End with empty prompt ",
-  )
   case
     active_interrupt(model),
     active_status_label(model),
@@ -4070,14 +4279,7 @@ fn input_behavior(model: Model) -> String {
     Some(_), _, _ -> " stopped · enter sends held input with your message "
     None, None, _ -> " prompt · enter sends · / commands "
     None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
-    None, Some(status), PromptNext ->
-      " "
-      <> activity_glyph(model.activity_frame)
-      <> " "
-      <> status
-      <> " · turn"
-      <> elapsed_label(model.activity_elapsed_s)
-      <> " · enter queues · tab steers "
+    None, Some(_), PromptNext -> " enter queues · tab steers "
   }
 }
 
@@ -7936,7 +8138,7 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
         content
           |> list.map(tool_result_text)
           |> string.join("\n")
-          |> compact(110),
+          |> failure_preview,
       ),
     ]
     Some(message.ToolResultMessage(
@@ -7969,6 +8171,10 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     Some(message.UserMessage(..))
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+  let program = case call.outcome {
+    Some(message.ToolResultMessage(is_error: False, ..)) -> None
+    _ -> program
   }
   let rows = case rows, program {
     [heading, ..details], Some(source) -> [
@@ -8783,6 +8989,19 @@ fn string_field(
   }
 }
 
+// Diagnostics stay multiline and prominent. Extremely long errors have an
+// explicit expansion path rather than retaining an unbounded compact layout.
+fn failure_preview(value: String) -> String {
+  let clipped = string.slice(value, 0, 1600)
+  let lines = string.split(clipped, "\n")
+  case list.drop(lines, 8) == [] && clipped == value {
+    True -> value
+    False ->
+      string.join(list.take(lines, 8), "\n")
+      <> "\n… Ctrl+g shows the full error"
+  }
+}
+
 fn tool_result_lines(
   tool_name: String,
   content: List(message.ToolResultBlock),
@@ -8817,10 +9036,15 @@ fn tool_result_lines(
         details_extent(details_expanded),
       )
     _, True, _ -> [
-      Line(ToolFailure, case details_expanded {
-        True -> tool_name <> "\n" <> result
-        False -> tool_name <> " · " <> compact(result, 120)
-      }),
+      Line(
+        ToolFailure,
+        tool_name
+          <> "\n"
+          <> case details_expanded {
+          True -> result
+          False -> failure_preview(result)
+        },
+      ),
     ]
     _, False, _ -> [
       Line(ToolResult, case details_expanded {
@@ -9539,9 +9763,25 @@ fn update_agent_inspector(
   model: Model,
   inspector: agents.Inspector,
 ) -> Model {
+  use <- bool.lazy_guard(inspector.focus == agents.Composing, fn() {
+    update_workspace_composer(key, model, inspector)
+  })
   let rows = displayed_agents(model)
   case key {
-    keys.Escape | keys.Tab ->
+    keys.Tab ->
+      Model(
+        ..model,
+        help_open: False,
+        notes_open: False,
+        worktree: worktree_view.State(
+          ..model.worktree,
+          focus: worktree_view.Composer,
+        ),
+        overlay: AgentInspector(
+          agents.Inspector(..inspector, focus: agents.Composing),
+        ),
+      )
+    keys.Escape | keys.F(2) ->
       Model(
         ..model,
         overlay: NoOverlay,
@@ -9595,6 +9835,43 @@ fn update_agent_inspector(
           )
       }
     _ -> model
+  }
+}
+
+// The editor uses the ordinary submission path and its existing owner. A
+// command may open another surface; only an ordinary edit returns to inspection.
+fn update_workspace_composer(
+  key: keys.Key,
+  model: Model,
+  inspector: agents.Inspector,
+) -> Model {
+  case key {
+    keys.Escape | keys.F(2) ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(..inspector, focus: agents.Browsing),
+        ),
+      )
+    _ -> {
+      let next = update_main_key(key, Model(..model, overlay: NoOverlay))
+
+      // Commands transfer keyboard ownership to their visible destination.
+      // Retaining inspection would conceal help or a diff navigator while
+      // that surface was already consuming the next key.
+      let editing =
+        !next.help_open
+        && !next.notes_open
+        && next.worktree.focus == worktree_view.Composer
+        && next.diff_view == model.diff_view
+        && next.context.surface == context_view.Hidden
+        && next.queue_editor.surface == queue_editor.Closed
+        && next.summary_surface == queue_editor.Closed
+      case next.overlay, editing {
+        NoOverlay, True -> Model(..next, overlay: AgentInspector(inspector))
+        _, _ -> next
+      }
+    }
   }
 }
 
@@ -9855,9 +10132,12 @@ fn clear_selection(model: Model) -> Model {
 // selection in the area the press landed in.
 fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let #(_, _, input_area, _) = layout(screen, model)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(transcript, _, _) = body_layout(body, model)
   use <- bool.lazy_guard(
-    reading_history(model) && at.y == input_area.position.y,
+    reading_history(model)
+      && at.y == transcript.position.y
+      && at.x < geometry.right(transcript),
     fn() {
       scroll_transcript(clear_selection(model), False, model.rendered_row_count)
     },
@@ -10234,11 +10514,7 @@ fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
 }
 
 fn transcript_viewport_height(model: Model) -> Int {
-  transcript_height(
-    model.height,
-    input_height(model),
-    footer_height(model.width),
-  )
+  transcript_height(model.height, input_height(model), footer_height(model))
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.
