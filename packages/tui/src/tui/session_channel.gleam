@@ -651,6 +651,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     | protocol.QueuedInputSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
     | protocol.AdvisorPendingSnapshot(..)
+    | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -908,6 +909,17 @@ fn matching_presentation(name, intent, event) {
     "context", Read, protocol.ContextSnapshot(_) -> True
     "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
     "advisor_pending", Read, protocol.AdvisorPendingSnapshot(_) -> True
+    "goal_get", Read, protocol.GoalSnapshot(_) -> True
+
+    // A goal mutation answers with the fresh board rather than a bare
+    // `committed`, the way `schedule_cancel` answers with the schedule
+    // listing: the panel's new state is what the operator asked for, and a
+    // second read would show it a round trip later.
+    "goal_set", Mutation, protocol.GoalSnapshot(_) -> True
+    "goal_clear", Mutation, protocol.GoalSnapshot(_) -> True
+    "goal_pause", Mutation, protocol.GoalSnapshot(_) -> True
+    "goal_resume", Mutation, protocol.GoalSnapshot(_) -> True
+
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
     _, _, _ -> False
@@ -1300,7 +1312,8 @@ fn outbound(frame: String) {
         | "context"
         | "worktree_diff"
         | "live_jobs"
-        | "advisor_pending" -> Read
+        | "advisor_pending"
+        | "goal_get" -> Read
         _ -> Mutation
       }
       Ok(Outbound(name, suffix, intent))
