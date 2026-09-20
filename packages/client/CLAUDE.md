@@ -3882,15 +3882,22 @@ constant, thirty seconds — and no site overrides it: `escalate`, `agency`,
 `erlang:hibernate/3` sweeps and then shrinks the heap block to the live data,
 so a parked session gives back the working heap of its last turn.
 
-Three kinds of actor are deliberately left awake, and the reasons are
+`runtime/strand_runtime` takes it too, and it is the one worth the most: it
+holds the largest `Effects` heap in the assembly. It used to be out of reach
+because it re-armed its checkpoint poll every 200 ms unconditionally. The poll
+now runs at two periods — 200 ms while an operation is open, two minutes
+between turns — so a parked strand's mailbox is quiet for four times the
+residency interval while the doorbell-loss backstop is kept at the longer
+period. `packages/runtime/CLAUDE.md` has the liveness argument and the reason
+the chain only ever replaces itself.
+
+Two kinds of actor are deliberately left awake, and the reasons are
 load-bearing rather than oversights. The **gateway hub** ticks
-`MaintainTransfers` every second, so its mailbox is never quiet for any
-threshold at or above a second and the receive timeout can never expire;
-changing that means arming the tick conditionally, which is a separate
-decision with its own missed-tick argument. `runtime/strand_runtime` is out
-of reach for the same reason and is the costlier loss: it re-arms its
-checkpoint poll every 200 ms unconditionally and holds the largest `Effects`
-heap in the assembly. The **commit forwarders**
+`MaintainTransfers` every second through `actor.periodic`, which is a property
+of the actor rather than of a `Next`, so a handler can neither cancel nor
+re-time it and the receive timeout can never expire; reaching it needs either a
+cancellable tick in weft or a `weft/state_machine` whose periodic timeout
+belongs to the step. The **commit forwarders**
 (`gateway.commit_forwarder`, `history.commit_pull`,
 `history.supervised_shared_commit_pull`) and `serve`'s owned publication child
 are stateless `Nil` processes: nothing to reclaim, and a wake sweep would land

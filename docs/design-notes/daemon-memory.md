@@ -1653,3 +1653,180 @@ now has a measured reason to prefer it rather than a tie.
   `weft_managed_test`, all timing assertions unrelated to the added tests; a
   rerun passed 184 tests with exit status zero. That file's timing assertions
   are flaky under load.
+
+## 2026-09-20: the strand hibernates, by giving the poll a second period
+
+The previous section left the strand runtime as the one hibernation target
+worth having and out of reach, and asked for a liveness proof before anything
+touched its checkpoint poll. This section is that proof and the change it
+licensed. The strand now takes `residency.hibernate_after_ms`, and it takes it
+without weakening the doorbell doctrine: the poll was not made conditional, it
+was given a second, longer period for the state in which it has nothing to
+find.
+
+### Where a strand's work comes from
+
+Every source of work, and what wakes the strand for it. `S` is
+`packages/runtime/src/runtime/strand_runtime.gleam`, `A` is
+`packages/runtime/src/runtime/api.gleam`.
+
+| Source | What wakes the strand | Reliable? |
+|---|---|---|
+| Operator prompt | `api.prompt` commits, then `nudge` (`A:453`) | Doorbell, at-most-once |
+| Steer, follow-up | `api.steer` (`A:848`), `api.follow_up` (`A:943`) | Doorbell, at-most-once |
+| Quiet acceptance | `api.accept_quietly` (`A:467`), `steer_quietly` (`A:861`): commit, no ring | **Poll only** |
+| Marked injection | `api.steer_marking` (`A:913`), used by `client/rulescan:590` and `client/schedulescan:1207` | **Poll only**, and only onto an open run |
+| Inter-strand send | `send_attempts` nudges both the steer and the accept arm (`A:1502`, `A:1508`) | Doorbell |
+| Send to child | `send_child_attempts` nudges both arms (`A:1469`, `A:1479`) | Doorbell |
+| Subagent adoption | `adopt_strand` nudges after the brief (`A:1293`) | Doorbell |
+| Provider settlement | `ProviderDone` from the effect process (`S:191`) | Message |
+| Tool settlement | `ToolDone` (`S:194`) | Message |
+| Effect process death | `EffectExit` through a monitor installed at spawn (`S:197`) | Message, and a monitor cannot be lost |
+| Retry deadline | `park_retry` arms `RetryDue` at the planner's `at` (`S:1217`) | Own timer |
+| Deferred poll due | `planner.Wait(DeferredPollDue)` (`S:1069`): the permit *is* the tick | **Poll only, by design** |
+| Abort | `request_abort` casts `RequestAbort` (`S:474`); a lost stale-race retry re-sends to itself (`S:913`) | Message |
+| Predecessors draining | `AwaitPredecessors` is weft's guaranteed-first message (`S:167`) | In-process, before the mailbox |
+| Restart, crash recovery | the recovery handler drives before it arms anything (`S:577`) | In-process |
+| Writer lease loss | `commit` answers `LeaseLost` and the strand halts (`S:1163`) | Not a wake at all |
+| Escalation decision | `decide_escalation_with_fact_at` commits and rings nothing (`A:2814`) | Not a wake: the planner has no escalation state, and grants are read at the next clearance |
+
+Two of these are genuinely time-based and need a timer whatever else changes.
+`RetryNotBefore` names a wall-clock instant and arms its own. `DeferredPollDue`
+is the other and it is the reason the poll cannot simply be deleted: the permit
+a tick grants *is* the rate limiter on polling a deferred handle
+(`packages/machine/src/machine/planner.gleam:2286` and `:2366` both return it
+when `!in.poll_permit`), so the tick interval is that feature's polling
+interval.
+
+### Why the poll was not made conditional
+
+The parked states are enumerable, and that is what made the analysis tractable.
+With an operation open, a drive ends in exactly one of: a retry timer armed, a
+deferred poll due, or a live effect outstanding. With no operation open it ends
+in `LoadOutcome.Idle`. So a conditional poll — one that ticks only for the
+deferred-poll state — would have been correct against every source in the table
+except the two marked poll-only, and the analysis of those two is what decided
+the design.
+
+`steer_marking` is refused on an idle strand
+(`packages/runtime/test/runtime/api_test.gleam:516`), so it only ever lands on
+an open run, where a settlement or a retry will re-plan. That one is covered.
+
+The quiet acceptance is not, and the reason is worth stating plainly because it
+is a production path and not only a test seam. A doorbell is a local
+`process.send` after the commit returns, and the two are separate steps *in the
+caller's process*. A caller that dies in between — a host request handler whose
+connection dropped, a scan killed mid-tick — leaves durable work on an idle
+strand with nothing scheduled to find it. Closing that at the source means
+ringing the doorbell from inside the writer's post-commit publication rather
+than from the caller, which is a new edge in the durability plane and a larger
+change than this one. Until that exists, the poll is the only thing standing
+behind it, and spec line 353 requires exactly that: "doorbell loss must be
+harmless by construction — the checkpoint poll must find the item."
+
+So the backstop stays. What changed is its period.
+
+### The change
+
+`api.Options` gained `idle_poll_interval_ms`, two minutes by default beside the
+existing 200 ms. `strand_runtime.State` gained `occupancy`, set from the same
+`load` the drive already performs, and the tick is re-armed *after* the drive
+at the period that drive earned: `Occupied` keeps 200 ms, `Unoccupied` takes
+two minutes.
+
+The brief named two hazards for this shape — a stale tick arriving after the
+strand went idle, and two chains ticking side by side — and the design answers
+both by not creating them. The chain replaces itself and nothing else joins it:
+`polled` and the recovery drive are the only things that arm, so a strand has
+exactly one checkpoint deadline outstanding at any moment, no tick can arrive
+from a chain the strand has forgotten, and there is no second chain to start.
+
+That was not the first attempt, and the reason it is worth writing down is that
+the first attempt was measurably wrong. Arming on the `Unoccupied` →
+`Occupied` transition, with a generation stamp to tell the superseded tick
+apart on arrival, is the obvious way to give a newly opened run the short
+period at once. It fails because superseding is not cancelling: the `Timers`
+seam arranges a wake and returns no handle, so the tick that was replaced stays
+pending until its own delay elapses. `client@schedulescan_test` asserts that a
+strand has exactly one deadline in the wheel — "the one deadline still in the
+wheel is the strand driver's own checkpoint poll" — and three of its tests fail
+against a second one. That assertion is right, and it is worth more than what
+the transition arming bought.
+
+What not arming costs is bounded and belongs in the record: the first deferred
+poll after a strand has been idle may wait out the idle period for its permit,
+because a permit is what a tick grants. Every later one is at the short period,
+since by then a drive has found the operation open. A deferred handle is a
+batch request measured in minutes, so a one-off two-minute granularity on its
+first poll is inside the noise of the thing being polled.
+
+### What the relation between the two numbers is for
+
+The brief's option (b) was described as helping CPU only, on the reasoning that
+an interval above the thirty-second hibernation threshold would defeat
+hibernation. **That is backwards, and it is the reason this change is option
+(b) rather than option (a).** `weft/actor.hibernate_after` is a receive
+timeout: it expires when the mailbox has been quiet for the interval. A poll
+period *shorter* than the interval is what defeats hibernation, because the
+mailbox is never quiet that long — which is exactly why 200 ms did. A period
+*longer* than it does not defeat anything: the strand hibernates after thirty
+seconds of quiet, sleeps until the tick, drives once, and hibernates again.
+Two minutes against thirty seconds means a parked strand is hibernating for
+about three quarters of every cycle, and pays one wake sweep per two minutes
+for the privilege.
+
+That relation is asserted rather than left in prose:
+`runtime@idle_poll_test.the_default_idle_period_outlasts_the_residency_interval_test`
+compares the two constants, and `residency`'s own module doc now states the
+comparison as the rule any future periodic tick on an assembly actor is held
+to.
+
+### Two doors that documented a doorbell they did not ring
+
+Lengthening the idle period turned a latent defect into a visible one, which is
+the useful kind of change. `api.compact` and `api.navigate` both open an
+operation on a strand that is usually idle, both say "and rings the doorbell"
+in their own doc comments, and neither did: each returned straight out of
+`accept_request` with no `nudge`. Under a 200 ms poll that cost 200 ms and
+nobody noticed. Under a two-minute idle poll a manual compaction would have sat
+for two minutes, and
+`client@compaction_test.production_threshold_references_a_retrievable_result_test`
+failed on its 5-second deadline and said so.
+
+Both now ring, which is the "add the missing doorbell at the source" arm rather
+than the "keep polling in that state" one: three lines each, and each function
+now does what it always claimed. That test is the standing guard, because it
+runs at `poll_interval_ms: 20` against the *default* two-minute idle period, so
+it can only pass through the doorbell.
+
+This is worth generalizing. A poll short enough to hide a missing doorbell is a
+poll that hides missing doorbells, and there is no reason to think these were
+the only two. The idle period makes that class of defect fail loudly on any
+path that admits work to a parked strand.
+
+### What this costs
+
+One number: the latency of a lost doorbell against an idle strand, which was
+up to 200 ms and is now up to two minutes. Nothing else regresses. The hot
+path is untouched — an open operation polls at exactly the period it always
+did — and the doorbell-drop suites still pass with their own short intervals
+configured, which is what they were always measuring.
+
+### What was not verified
+
+- **No before-and-after census is in this section.** The measurement the brief
+  asked for — hibernating processes per session, idle against hibernated
+  allocated memory, and wake latency — was not run, so the yield this change
+  adds to the previous section's forty-two sleepers is unmeasured. The
+  expectation from the tables above is one more sleeper per session holding the
+  assembly's largest `Effects` copy, which would be the largest single entry in
+  that column; that is an expectation and not a reading.
+- **Scheduler wakeups and reductions for an idle assembly were not measured**
+  either way, so the CPU claim below is arithmetic from the interval and not an
+  observation: five wakes per second per strand becomes one per two minutes, a
+  factor of six hundred.
+- The two-minute default has not been observed against a live drive, only
+  against the scripted turns in `runtime@idle_poll_test` and the existing
+  suites.
+- The writer-published doorbell that would let the idle backstop be dropped
+  altogether is described here and not designed.
