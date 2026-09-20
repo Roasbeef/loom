@@ -41,22 +41,24 @@ pub fn render(text: String) -> String {
 // and is drawn instead of hidden, which is untidy rather than wrong.
 const fresh_anchors_heading = "Fresh anchors:"
 
-/// A successful edit's summary without the fresh-anchor block it carries
-/// for the model.
+/// A successful edit's or write's summary without the fresh-anchor block
+/// it carries for the model.
 ///
 /// The block is anchors and source text, the same payload `render` strips
-/// from a read, and the operator is reading this row to see that an edit
-/// landed — the patch preview beside it already shows what changed. The
-/// model's recorded result keeps the block; only this projection drops it.
+/// from a read, and the operator is reading this row to see that the tool
+/// landed — for an edit the patch preview beside it already shows what
+/// changed, and for a write the content came from the model in the first
+/// place. The recorded result keeps the block; only this projection drops
+/// it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert file_read_view.edit_summary(
+/// assert file_read_view.without_fresh_anchors(
 ///   "applied 1 hunk(s) to a\ndigest: d\nFresh anchors:\n1:aaaaaaaa|x",
 /// ) == "applied 1 hunk(s) to a\ndigest: d"
 /// ```
-pub fn edit_summary(text: String) -> String {
+pub fn without_fresh_anchors(text: String) -> String {
   case string.split_once(text, "\n" <> fresh_anchors_heading) {
     Ok(#(summary, _block)) -> summary
     Error(Nil) -> text

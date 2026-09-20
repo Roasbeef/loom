@@ -15,8 +15,15 @@ pub fn anchored_source_keeps_numbers_indentation_and_delimiters_test() {
 // row shows that the edit landed and the patch preview shows what changed,
 // so the anchors are dropped from the projection the way a read's are —
 // while the recorded result the model reads keeps them.
+pub fn without_fresh_anchors_drops_a_writes_block_too_test() {
+  assert file_read_view.without_fresh_anchors(
+      "wrote 9 bytes to a/b.gleam\ndigest: abcdef0123456789-9\nFresh anchors:\n1:0662f68e|let x = 1",
+    )
+    == "wrote 9 bytes to a/b.gleam\ndigest: abcdef0123456789-9"
+}
+
 pub fn edit_summary_drops_the_fresh_anchor_block_test() {
-  assert file_read_view.edit_summary(
+  assert file_read_view.without_fresh_anchors(
       "applied 2 hunk(s) to a/b.gleam\ndigest: abcdef0123456789-42\nFresh anchors:\n7:0662f68e|  let x = 1\n8:cbf29ce4|",
     )
     == "applied 2 hunk(s) to a/b.gleam\ndigest: abcdef0123456789-42"
@@ -26,11 +33,11 @@ pub fn edit_summary_drops_the_fresh_anchor_block_test() {
 // offset on the same line, and an emptied file carries no heading at all.
 // Neither may lose the summary.
 pub fn edit_summary_keeps_a_success_without_a_block_test() {
-  assert file_read_view.edit_summary(
+  assert file_read_view.without_fresh_anchors(
       "applied 1 hunk(s) to a\ndigest: abcdef0123456789-1\n(the file is now empty)",
     )
     == "applied 1 hunk(s) to a\ndigest: abcdef0123456789-1\n(the file is now empty)"
-  assert file_read_view.edit_summary(
+  assert file_read_view.without_fresh_anchors(
       "applied 1 hunk(s) to a\ndigest: abcdef0123456789-9\nFresh anchors: the changed regions are too large to echo; read them with fs_read offset 1",
     )
     == "applied 1 hunk(s) to a\ndigest: abcdef0123456789-9"

@@ -8533,22 +8533,23 @@ fn tool_result_lines(
   details_expanded details_expanded: Bool,
 ) -> List(Line) {
   let result = content |> list.map(tool_result_text) |> string.join("\n")
+
+  // Hashline presentation belongs to the model, not the screen: a read's
+  // digest and anchors go, and so does the fresh-anchor block an edit or a
+  // write now carries. A failure keeps its text, since a rejection's fresh
+  // anchors are the reason it failed.
   let result = case tool_name, is_error {
     "fs_read", False -> file_read_view.render(result)
+    "fs_edit", False | "fs_write", False ->
+      file_read_view.without_fresh_anchors(result)
     _, _ -> result
   }
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
 
-    // The fresh-anchor block a successful edit carries is for the model;
-    // the patch preview below is what shows the operator what changed, so
-    // the anchors are stripped here the way a read's are.
     "fs_edit", False, Some(json.Object(fields)) -> [
-      Line(
-        ToolResult,
-        "fs_edit · " <> compact(file_read_view.edit_summary(result), 120),
-      ),
+      Line(ToolResult, "fs_edit · " <> compact(result, 120)),
       ..edit_patch_lines(fields, details_expanded)
     ]
     "context_remaining", False, Some(json.Object(fields)) ->
