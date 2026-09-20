@@ -2892,6 +2892,46 @@ pub fn a_check_without_a_goal_is_refused_test() {
   stop(rig)
 }
 
+// A check replaced while one is in flight does not refuse: the actor cancels
+// the run it abandoned, and the slot the abandoned run held goes back.
+//
+// Every check clears under one operation and the `goal-check` step, and that
+// ledger admits one at a time, so an abandoned check holds the pair for as
+// long as it keeps running — five minutes, under the production wall. The
+// replacement was refused with `OutstandingCapReached`, and that refusal
+// arrives as the result for the *current* deadline: the reviewer was shown a
+// check with no exit status and no output, on a goal whose command had just
+// been pinned. The seam's one-at-a-time rule is what makes that visible
+// without a broker, and the caller-watch is what makes the cancel enough — a
+// check whose task is gone is cancelled and drained by the relay, which
+// returns the slot.
+pub fn a_replaced_check_is_not_refused_as_outstanding_test() {
+  let #(rig, subject, released) = a_capped_check()
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoalCheck(command: Some("go test ./..."), reply:)
+    })
+    as "the operator must be able to replace the check mid-run"
+
+  // Both runs hold at the same gate, so releasing it answers whichever one is
+  // still alive: the replacement, if the abandoned run was cancelled.
+  process.send(released, Release)
+
+  let assert Ok(recorded) = await_check_recorded(rig)
+    as "the replacement check must report"
+
+  assert recorded.last_check
+    == Some(goalstate.CheckResult(
+      command: "go test ./...",
+      ending: goalstate.Exited(status: 0),
+      output: "held",
+      ran_at_ms: 1_756_000_000_000,
+    ))
+    as "the replacement runs rather than being refused as outstanding"
+  stop(rig)
+}
+
 // --- the check fixtures -----------------------------------------------------
 
 // The wall these tests run checks under. Short, because two of them wait it
@@ -3001,6 +3041,194 @@ fn a_held_check() -> #(
     as "the check must be in flight before the operator's command"
 
   #(rig, subject, gate)
+}
+
+// The seam with the production ledger's one rule: at most one check in the
+// jail at a time.
+//
+// The broker decides this for the real runner — one operation, one step, and
+// `max_outstanding: 1` — and the injected closure has no broker, so a test
+// could not see a refusal at all. Here the rule is a process holding the pid
+// that has the slot, which is exactly what the slot's release keys on: the
+// relay watches the caller, and a caller that died is cancelled, drained and
+// settled.
+type Admission {
+  Admitted
+
+  // What the broker answers a second call under the same pair, worded the way
+  // the loop records it: a check with no exit status and no output.
+  RefusedAsOutstanding
+}
+
+type CheckSeam {
+  // One check asking for the slot, naming the process that would hold it.
+  Claim(who: process.Pid, reply: process.Subject(Admission))
+
+  // An admitted check waiting to be let finish, so a test can hold one in
+  // flight while the operator's command arrives.
+  Hold(reply: process.Subject(Nil))
+
+  // The test letting every held check finish.
+  Release
+}
+
+// Whether the gate has been opened, which a check admitted afterwards must
+// read rather than wait for.
+type Gate {
+  Closed
+  Opened
+}
+
+fn check_seam() -> process.Subject(CheckSeam) {
+  let ready = process.new_subject()
+
+  let _server =
+    process.spawn(fn() {
+      let seam = process.new_subject()
+      process.send(ready, seam)
+      seam_loop(seam, None, [], Closed)
+    })
+
+  let assert Ok(seam) = process.receive(ready, within: 5000)
+    as "the check seam must hand back its subject"
+  seam
+}
+
+fn seam_loop(
+  seam: process.Subject(CheckSeam),
+  holder: Option(process.Pid),
+  waiting: List(process.Subject(Nil)),
+  gate: Gate,
+) -> Nil {
+  case process.receive(seam, within: 30_000) {
+    // Nothing more is coming: the test that owns this seam has finished.
+    Error(Nil) -> Nil
+
+    Ok(Claim(who:, reply:)) ->
+      case outstanding(holder) {
+        True -> {
+          process.send(reply, RefusedAsOutstanding)
+          seam_loop(seam, holder, waiting, gate)
+        }
+
+        False -> {
+          process.send(reply, Admitted)
+          seam_loop(seam, Some(who), waiting, gate)
+        }
+      }
+
+    Ok(Hold(reply:)) ->
+      case gate {
+        Opened -> {
+          process.send(reply, Nil)
+          seam_loop(seam, holder, waiting, gate)
+        }
+
+        Closed -> seam_loop(seam, holder, [reply, ..waiting], gate)
+      }
+
+    Ok(Release) -> {
+      list.each(waiting, fn(held) { process.send(held, Nil) })
+      seam_loop(seam, holder, [], Opened)
+    }
+  }
+}
+
+// Whether the slot is still held, which is a question about the holder's life
+// rather than about the cancel that was sent to it.
+//
+// The wait is the point. A cancelled check's slot comes back when the relay
+// has drained the execution it was watching, not at the instant the cancel is
+// sent, so a seam that answered from `is_alive` on the first reading would
+// call a check outstanding that is already on its way out — and a test built
+// on that answer would pass or fail on scheduling. Two seconds is far longer
+// than a killed task takes to die and far shorter than the abandoned check's
+// own wall, so the two answers stay distinguishable.
+fn outstanding(holder: Option(process.Pid)) -> Bool {
+  case holder {
+    None -> False
+
+    Some(pid) ->
+      case
+        poll.until(within: 2000, every: 10, attempt: fn() {
+          case process.is_alive(pid) {
+            True -> poll.Retry
+            False -> poll.Done(Nil)
+          }
+        })
+      {
+        poll.Answered(value: _gone) -> False
+        poll.Expired | poll.Failed(error: _reason) -> True
+      }
+  }
+}
+
+// A goal whose check is in flight against a seam that admits one at a time.
+// The subject it returns is what releases whichever check is still alive.
+fn a_capped_check() -> #(
+  Rig,
+  process.Subject(advisor.Message),
+  process.Subject(CheckSeam),
+) {
+  let seam = check_seam()
+  let capped =
+    goalcheck.Wiring(
+      run: fn(command) {
+        let claim = process.new_subject()
+        process.send(seam, Claim(who: process.self(), reply: claim))
+
+        case process.receive(claim, within: 5000) {
+          Ok(Admitted) -> {
+            let let_go = process.new_subject()
+            process.send(seam, Hold(reply: let_go))
+            let _released = process.receive(let_go, within: 30_000)
+
+            goalstate.CheckResult(
+              command:,
+              ending: goalstate.Exited(status: 0),
+              output: "held",
+              ran_at_ms: 1_756_000_000_000,
+            )
+          }
+
+          Ok(RefusedAsOutstanding) | Error(Nil) ->
+            goalstate.CheckResult(
+              command:,
+              ending: goalstate.DidNotFinish(
+                reason: "the sandbox refused the check: one is already running",
+              ),
+              output: "",
+              ran_at_ms: 1_756_000_000_000,
+            )
+        }
+      },
+      timeout_ms: a_test_wall * 20,
+    )
+
+  let assert Ok(rig) = a_rig_checking(some_settings([]), capped)
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.SetGoal(
+        objective: "land the migration",
+        token_budget: 400_000,
+        check: Some("make check"),
+        reply:,
+      )
+    })
+    as "the goal and its check must pin"
+
+  barrier(subject)
+
+  let assert Ok(waiting) = goal_cell_if_any(rig)
+    as "the goal cell must be readable"
+  let assert goalstate.Checking(..) = waiting.phase
+    as "the first check must be in flight before the operator's command"
+
+  #(rig, subject, seam)
 }
 
 // A goal with a check, pinned onto a primary that has just stopped. The

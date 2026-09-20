@@ -546,6 +546,21 @@ type Memory {
     /// goal fact that is still heap state is none: there is no goal field
     /// in `Memory` outside this cache.
     goal: Option(goalstate.Goal),
+    /// The check this actor has in flight, if any, kept so it can be
+    /// cancelled.
+    ///
+    /// It is heap state because it has to be: a witnessed run's handle names
+    /// a process on this node, and a durable copy would name a process a
+    /// restart cannot reach. Losing it to a restart costs what it cost
+    /// before the handle was kept at all — one jailed command running on to
+    /// its wall with nobody waiting — and the replacement actor's own first
+    /// evaluation repairs the phase from the cell.
+    ///
+    /// At most one is ever held, and the `Checking` phase is what says so:
+    /// the handle is taken when the loop asks for a check and cancelled
+    /// whenever the stored goal leaves that phase, which is every way a
+    /// check can be abandoned.
+    checking: Option(weft.Witnessed),
   )
 }
 
@@ -1094,6 +1109,7 @@ fn recall(state: State, runtime: Runtime) -> Memory {
         turn: Unspent,
         woke: None,
         goal: read_goal(state, runtime),
+        checking: None,
       )
   }
 }
@@ -1197,7 +1213,7 @@ fn store_goal(
     )
 
   write_cell(state, runtime, goal_key, goalstate.encode(ordered))
-  Memory(..memory, goal: Some(ordered))
+  only_while_checking(Memory(..memory, goal: Some(ordered)))
 }
 
 // A guard that would not commit is still the guard this actor acts on:
@@ -1868,11 +1884,17 @@ fn perform(
 // carries is what a replacement actor reads, so a result that never arrives
 // is repaired by the next evaluation rather than waited for.
 //
-// The handle is deliberately not kept. Cancelling an abandoned check would
-// save the jail some work, and the jail already bounds it: the wall the
-// process runs under is the same number as this deadline, so a check whose
-// result nobody wants is killed by the sandbox within the same window an
-// explicit cancel would have used, and the loop ignores whatever it reports.
+// The handle is kept, because the slot it holds is not the jail's to give
+// back. Every check clears under the one attribution-only operation and the
+// `goal-check` step, and that ledger's `max_outstanding` is one, so a check
+// nobody wants any more still occupies the pair until it settles — and a new
+// `RunCheck` inside that window is refused with `OutstandingCapReached`, which
+// the loop records as a check that produced no exit status and shows the
+// reviewer as evidence the harness does not have. Cancelling the witnessed run
+// kills the task, and the task's death is what the broker relay's caller-watch
+// is for: it cancels the execution, drains to the helper's terminal event and
+// settles, which returns the helper and the budget slot
+// (`packages/broker/src/broker/broker.gleam`, the `CallerGone` arm of `relay`).
 fn run_check(
   state: State,
   memory: Memory,
@@ -1893,7 +1915,7 @@ fn run_check(
     Ok(Nil)
   }
 
-  let _witnessed =
+  let witnessed =
     weft.new([task])
     |> weft.deadline(wiring.check.timeout_ms)
     |> weft.start_witnessed
@@ -1902,7 +1924,41 @@ fn run_check(
     field.count(key: "deadline_ms", value: deadline_ms),
   ])
 
-  #(GoalChecking, memory)
+  #(GoalChecking, Memory(..without_check(memory), checking: Some(witnessed)))
+}
+
+// The check in flight, dropped unless the goal is still in the phase it was
+// started for.
+//
+// One rule covers every way a check is abandoned — the operator cleared the
+// goal, paused it, replaced the command, the primary went back to work, the
+// deadline passed — because all of them are the same fact about the cell:
+// the phase is no longer `Checking`. It is applied where the goal cache is
+// written rather than at each of those doors, which is what keeps the
+// at-most-one-outstanding invariant out of reach of a door somebody adds
+// later.
+fn only_while_checking(memory: Memory) -> Memory {
+  case memory.goal {
+    Some(goalstate.Goal(phase: goalstate.Checking(..), ..)) -> memory
+
+    Some(_moved) | None -> without_check(memory)
+  }
+}
+
+// Cancels the check the memory remembers and forgets it.
+//
+// Unconditional on whether the run is still alive: `cancel_witnessed` is
+// idempotent and harmless once the scope has exited, so a handle for a check
+// that already reported needs no test of its own.
+fn without_check(memory: Memory) -> Memory {
+  case memory.checking {
+    None -> memory
+
+    Some(witnessed) -> {
+      weft.cancel_witnessed(witnessed)
+      Memory(..memory, checking: None)
+    }
+  }
 }
 
 // The deadline the phase this action came with carries. `next_action` moves
@@ -2471,7 +2527,7 @@ fn clear_goal(
 ) -> #(Result(Nil, String), Memory) {
   delete_cell(state, runtime, goal_key)
 
-  #(Ok(Nil), Memory(..memory, goal: None))
+  #(Ok(Nil), without_check(Memory(..memory, goal: None)))
 }
 
 // Sets or replaces the goal. The same objective under any status but
@@ -2597,8 +2653,9 @@ fn refresh_of(
 // The phase returns to idle, and that is the whole of what "clearing or
 // pausing mid-check leaves nothing that acts later" needs: a check in flight
 // reports against the deadline its `Checking` phase carried, and a phase
-// that no longer carries it ignores the report. The process itself is left
-// to the wall it was started under.
+// that no longer carries it ignores the report. The process is cancelled with
+// it, because the pair it clears under admits one check at a time and the
+// replacement would be refused for a reason the operator could not see.
 //
 // The recorded result goes with the command it described. An operator who
 // changes `make check` for `go test ./...` should not see the old command's
