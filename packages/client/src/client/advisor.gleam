@@ -2013,6 +2013,37 @@ fn account_recompute(state: State, goal: goalstate.Goal) -> goalstate.Goal {
   }
 }
 
+// Where the ledger stands right now: the newest usage row's seq, or zero
+// on a session that has committed none.
+//
+// One row, newest first, rather than a count or a sum. It is the cursor a
+// fresh goal starts from, so what it has to be right about is only "no row
+// at or below this is the goal's" — an unreadable ledger answers zero and
+// costs the first evaluation an over-count it can never repeat, because the
+// cursor moves past every row it examines.
+//
+// The same number also bounds the branch scan `primary_entries` makes, which
+// is what makes a row's *entry* have to sit above the cursor too. That holds
+// because the ledger writes a row in the same transaction as the entry it
+// names, so the two seqs are adjacent; a row naming an entry from before the
+// pin is not a shape the store produces, and if one ever were, it would go
+// uncounted rather than miscounted.
+fn newest_usage_seq(state: State) -> Int {
+  storage.usage_scan()
+  |> storage.usage_order(storage.NewestFirst)
+  |> storage.usage_limit(1)
+  |> storage.scan_usage(state.wiring.session.store, _)
+  |> result.map(newest_row_seq)
+  |> result.unwrap(0)
+}
+
+fn newest_row_seq(rows: List(entry.UsageRow)) -> Int {
+  case rows {
+    [row, ..] -> row.seq
+    [] -> 0
+  }
+}
+
 // The primary's own entry ids inside the accounting window.
 fn primary_entries(state: State, through: Seq) -> Set(EntryId) {
   case primary_leaf(state.wiring.session) {
@@ -2158,11 +2189,20 @@ fn set_goal(
   })
 
   let now_ms = now(state.wiring)
+
+  // Where a fresh goal's accounting starts. It is read here, once, rather
+  // than defaulted in the codec: the sum is every usage row past the
+  // cursor, so a goal pinned at zero charges the whole session's prior
+  // spend to the budget the operator just set — on a session that has
+  // already spent two million tokens, a 400,000-token goal is
+  // `budget_limited` on its first evaluation, before the loop runs at all.
+  let accounted_from = newest_usage_seq(state)
   let pinned = case memory.goal {
     Some(goal) if goal.objective == objective ->
-      refreshed(goal, token_budget, now_ms)
+      refreshed(goal, token_budget, now_ms, accounted_from)
 
-    Some(_replaced) | None -> goalstate.new(objective, token_budget, now_ms)
+    Some(_replaced) | None ->
+      goalstate.new(objective, token_budget, now_ms, accounted_from:)
   }
 
   // A goal pinned onto an idle primary must start on its own: an idle
@@ -2180,9 +2220,14 @@ fn refreshed(
   goal: goalstate.Goal,
   token_budget: Int,
   now_ms: Int,
+  accounted_from: Int,
 ) -> goalstate.Goal {
   case goal.status {
-    goalstate.Complete -> goalstate.new(goal.objective, token_budget, now_ms)
+    // A replacement for a complete goal is a new goal, so its accounting
+    // starts where the ledger stands now rather than where the finished
+    // one left off.
+    goalstate.Complete ->
+      goalstate.new(goal.objective, token_budget, now_ms, accounted_from:)
 
     goalstate.Active | goalstate.Paused(..) | goalstate.Limited(..) ->
       goalstate.Goal(

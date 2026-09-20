@@ -1167,7 +1167,28 @@ fn a_rig_over_history() -> Result(#(Rig, OpId), String) {
   Ok(#(Rig(opened:, runtime:, name:), history))
 }
 
+// The actor first, then the tree it reads through.
+//
+// The actor is not part of the session tree — it is linked to the test
+// process — so killing the tree alone left it alive with a dead writer
+// behind it, and any message still in flight (the tail of an abort drain,
+// say) then crashed it inside `write_cell`. Because it is linked to the
+// eunit process, that crash cancelled the rest of the module: a flake that
+// reported as "one or more tests were cancelled" several tests later.
 fn stop(rig: Rig) -> Nil {
+  case address.lookup(rig.name) {
+    Ok(subject) ->
+      case process.subject_owner(subject) {
+        // Unlinked first: the actor is linked to this process, so killing
+        // it while linked would take the test down with it.
+        Ok(pid) -> {
+          process.unlink(pid)
+          process.kill(pid)
+        }
+        Error(Nil) -> Nil
+      }
+    Error(Nil) -> Nil
+  }
   process.kill(rig.runtime.tree.supervisor)
 }
 
@@ -1177,9 +1198,25 @@ fn stop(rig: Rig) -> Nil {
 //
 // It is a run-start drain, so it renews the operator turn as well as
 // draining. Every test that cares about the turn's one unsolicited
-// delivery uses `take_pending` with an operation it chose instead.
+// delivery uses `take_pending` with an operation it chose instead, and
+// every test that cares about the *goal's* counters uses `barrier`, which
+// touches nothing.
 fn settle(subject: process.Subject(advisor.Message)) -> List(String) {
   take_pending(subject, an_op_id(97))
+}
+
+// A barrier that changes nothing.
+//
+// `settle` is a run-start drain, and a run-start drain is not inert: it
+// renews the operator turn, and the operation it names is one the actor
+// never opened, so the goal evaluation it triggers is a *foreign*
+// `PrimaryStarted` that clears the continuation and zero-progress counts. A
+// goal test that used it could pass on its own barrier. This is the run-end
+// drain served past its deadline, which is the one call this actor answers
+// by touching neither queue, turn nor goal.
+fn barrier(subject: process.Subject(advisor.Message)) -> Nil {
+  let _nothing = take_at_run_end(subject, 0)
+  Nil
 }
 
 // The primary's run-start drain, with the operation the run is opening.
@@ -2143,11 +2180,15 @@ pub fn a_resume_offers_the_goal_feed_at_once_test() {
     as "the operator's resume must commit"
 
   // The command answers before its own evaluation, so that a terminal
-  // waiting on the reply does not wait on a provider. The barrier is the
-  // drain every test here synchronizes with: an answer to a call sent
-  // after the command means the command's work is finished, because the
-  // mailbox is FIFO per sender.
-  let _drained = settle(subject)
+  // waiting on the reply does not wait on a provider. The barrier is a call
+  // sent after it: an answer means the command's work is finished, because
+  // the mailbox is FIFO per sender.
+  //
+  // It is the *inert* barrier, and that matters here more than anywhere. A
+  // run-start drain evaluates the goal itself, so a `settle` would have sent
+  // the feed this test is asserting the resume sent — the fixture would have
+  // passed against a resume that evaluated nothing.
+  barrier(subject)
 
   // The resume sent the feed itself. The phase names the advisor run the
   // feed opened, which is what a verdict is matched against and what a
@@ -2273,5 +2314,63 @@ pub fn an_abort_of_a_foreign_run_leaves_the_goal_active_test() {
   let assert Ok(Some(cell)) = api.fact(rig.runtime, advisor.goal_key)
   let assert Ok(goal) = goalstate.decode(cell)
   assert goalstate.status_of(goal) == goalstate.Active
+  stop(rig)
+}
+
+// --- the accounting starts where the ledger stands -------------------------
+
+// One primary entry, with the run that carried it closed again, so the next
+// acceptance is not refused as `strand_busy` and the wrap-up door finds an
+// idle primary to wake.
+fn a_settled_primary_entry(rig: Rig) -> EntryId {
+  let leaf = a_primary_entry(rig)
+  case strand_operation(rig.opened, advisor.primary) {
+    Some(open) -> idle_again(rig, open)
+    None -> Nil
+  }
+  leaf
+}
+
+// A fresh goal's accounting starts at the ledger's newest seq, so spend the
+// session had already made is not charged to a budget the operator has only
+// just set.
+//
+// The cursor used to start at zero, which meant the first evaluation summed
+// every usage row the session had ever committed: on a session that had spent
+// two million tokens, `/goal --budget 400000` was `budget_limited` before the
+// loop ran once, and the operator's only evidence was a panel saying their
+// brand-new goal had exhausted its budget.
+pub fn spend_before_the_pin_is_not_charged_to_the_goal_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  // The session's history: one primary entry with one usage row against it,
+  // committed before anybody pinned anything.
+  let worked = a_settled_primary_entry(rig)
+  let before = commit_usage(rig, worked, 201)
+
+  pin_goal(subject, 400_000)
+
+  process.send(subject, advisor.PrimarySpent)
+  barrier(subject)
+
+  let pinned = goal_cell(rig)
+  assert pinned.tokens_used == 0
+    as "spend the session made before the pin is not the goal's"
+  assert pinned.accounted_through_seq >= before
+    as "the cursor starts at the ledger's newest row, not at zero"
+
+  // Spend after the pin is the goal's, which is what says the cursor was
+  // seeded rather than parked past everything. The row names an entry
+  // committed after the pin, which is the shape every real row has: the
+  // ledger writes a row in the same transaction as the entry it names.
+  let fresh = a_settled_primary_entry(rig)
+  let _after = commit_usage(rig, fresh, 202)
+  process.send(subject, advisor.PrimarySpent)
+  barrier(subject)
+
+  assert goal_cell(rig).tokens_used == 26
+    as "spend after the pin is charged to the goal"
   stop(rig)
 }

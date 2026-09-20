@@ -29,7 +29,7 @@ import gleam/option.{type Option, None, Some}
 // A goal with room in every bound, so a test that wants a bound reached
 // says so rather than inheriting it.
 fn a_goal() -> goalstate.Goal {
-  goalstate.new("get the branch green", 400_000, 1000)
+  goalstate.new("get the branch green", 400_000, 1000, accounted_from: 0)
 }
 
 // The observation of an idle session: nothing running on either strand,

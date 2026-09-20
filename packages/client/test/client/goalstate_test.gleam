@@ -219,7 +219,13 @@ pub fn a_reviewer_note_round_trips_test() {
 // `new` is the goal a `goal_set` pins: active, idle, zeroed accounting
 // and counters, both timestamps at the pin, no note yet.
 pub fn a_new_goal_is_active_with_zeroed_accounting_test() {
-  let goal = goalstate.new("land the migration", 400_000, 1_726_000_000_000)
+  let goal =
+    goalstate.new(
+      "land the migration",
+      400_000,
+      1_726_000_000_000,
+      accounted_from: 0,
+    )
 
   assert goalstate.status_of(goal) == goalstate.Active
   assert goal.phase == goalstate.Idle
@@ -323,7 +329,13 @@ pub fn the_optional_fields_take_the_defaults_test() {
       #("updated_ms", json.Int(1_726_000_000_000)),
     ])
 
-  let expected = goalstate.new("land the migration", 400_000, 1_726_000_000_000)
+  let expected =
+    goalstate.new(
+      "land the migration",
+      400_000,
+      1_726_000_000_000,
+      accounted_from: 0,
+    )
   let assert Ok(carried) = goalstate.decode(stored)
     as "a payload with only the required fields still decodes"
 
@@ -378,7 +390,7 @@ pub fn a_null_note_reads_as_none_test() {
   assert goalstate.decode(stored)
     == Ok(
       goalstate.Goal(
-        ..goalstate.new("land the migration", 400_000, 1000),
+        ..goalstate.new("land the migration", 400_000, 1000, accounted_from: 0),
         updated_ms: 2000,
       ),
     )
@@ -836,15 +848,29 @@ pub fn the_cross_field_refusals_are_worded_test() {
 // reader learns the API from is the same code a test proves.
 pub fn the_doc_examples_hold_test() {
   // `new` and its three accessors.
-  let goal = goalstate.new("land the migration", 400_000, 1_726_000_000_000)
+  let goal =
+    goalstate.new(
+      "land the migration",
+      400_000,
+      1_726_000_000_000,
+      accounted_from: 0,
+    )
   assert goalstate.status_of(goal) == goalstate.Active
   assert goal.phase == goalstate.Idle
   assert goalstate.tokens_used_of(goal) == 0
   assert goalstate.reviewer_note_of(goal) == None
 
-  assert goalstate.status_of(goalstate.new("x", 100, 0)) == goalstate.Active
-  assert goalstate.tokens_used_of(goalstate.new("x", 100, 0)) == 0
-  assert goalstate.reviewer_note_of(goalstate.new("x", 100, 0)) == None
+  assert goalstate.status_of(goalstate.new("x", 100, 0, accounted_from: 0))
+    == goalstate.Active
+  assert goalstate.tokens_used_of(goalstate.new("x", 100, 0, accounted_from: 0))
+    == 0
+  assert goalstate.reviewer_note_of(goalstate.new(
+      "x",
+      100,
+      0,
+      accounted_from: 0,
+    ))
+    == None
 
   // The status words and the cause beside them.
   assert goalstate.encode_status(goalstate.Active) == "active"
@@ -867,6 +893,7 @@ pub fn the_doc_examples_hold_test() {
     == Ok(goalstate.Idle)
 
   // `decode` of `encode`.
-  let example = goalstate.new("make the race test pass", 400_000, 1000)
+  let example =
+    goalstate.new("make the race test pass", 400_000, 1000, accounted_from: 0)
   assert goalstate.decode(goalstate.encode(example)) == Ok(example)
 }

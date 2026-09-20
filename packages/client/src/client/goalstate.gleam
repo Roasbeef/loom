@@ -204,29 +204,49 @@ const decode_where = "client/goalstate.decode"
 /// A fresh goal: active, idle, with zeroed counters and no reviewer note.
 ///
 /// Total and unvalidated by design. The objective's non-empty and
-/// 4,000-character bounds are the `goal_set` handler's refusal — a
+/// 4,000-character bounds are the `goal_set` decoder's refusal — a
 /// message worded for the operator with the actual and maximum counts —
 /// and the budget's positivity is re-checked by `decode` on every read,
 /// which is where a bad value would actually be caught.
 ///
+/// `accounted_from` is where the accounting starts, and it is an argument
+/// rather than a zero because zero is wrong on every session that has
+/// already spent anything: the sum is "every usage row past this cursor
+/// attributed to the primary", so a goal pinned with the cursor at zero
+/// charges the whole session's prior spend to the budget the operator just
+/// set and trips it before the loop runs once. The caller passes the
+/// ledger's newest seq at pin time; a caller with no ledger to read passes
+/// zero and means it.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// let goal = goalstate.new("land the migration", 400_000, 1_726_000_000_000)
+/// let goal =
+///   goalstate.new(
+///     "land the migration",
+///     400_000,
+///     1_726_000_000_000,
+///     accounted_from: 0,
+///   )
 ///
 /// assert goalstate.status_of(goal) == goalstate.Active
 /// assert goal.phase == goalstate.Idle
 /// assert goalstate.tokens_used_of(goal) == 0
 /// ```
 ///
-pub fn new(objective: String, token_budget: Int, now: Int) -> Goal {
+pub fn new(
+  objective: String,
+  token_budget: Int,
+  now: Int,
+  accounted_from accounted_from: Int,
+) -> Goal {
   Goal(
     objective:,
     status: Active,
     phase: Idle,
     token_budget:,
     tokens_used: 0,
-    accounted_through_seq: 0,
+    accounted_through_seq: accounted_from,
     cost_used: 0.0,
     continuations: 0,
     zero_progress: 0,
@@ -247,7 +267,8 @@ pub fn new(objective: String, token_budget: Int, now: Int) -> Goal {
 /// ## Examples
 ///
 /// ```gleam
-/// assert goalstate.status_of(goalstate.new("x", 100, 0)) == goalstate.Active
+/// assert goalstate.status_of(goalstate.new("x", 100, 0, accounted_from: 0))
+///   == goalstate.Active
 /// ```
 ///
 pub fn status_of(goal: Goal) -> Status {
@@ -259,7 +280,10 @@ pub fn status_of(goal: Goal) -> Status {
 /// ## Examples
 ///
 /// ```gleam
-/// assert goalstate.tokens_used_of(goalstate.new("x", 100, 0)) == 0
+/// assert goalstate.tokens_used_of(
+///   goalstate.new("x", 100, 0, accounted_from: 0),
+/// )
+///   == 0
 /// ```
 ///
 pub fn tokens_used_of(goal: Goal) -> Int {
@@ -271,7 +295,7 @@ pub fn tokens_used_of(goal: Goal) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert goalstate.reviewer_note_of(goalstate.new("x", 100, 0))
+/// assert goalstate.reviewer_note_of(goalstate.new("x", 100, 0, accounted_from: 0))
 ///   == option.None
 /// ```
 ///
@@ -575,7 +599,8 @@ fn optional_operation(
 /// ## Examples
 ///
 /// ```gleam
-/// let goal = goalstate.new("make the race test pass", 400_000, 1000)
+/// let goal =
+///   goalstate.new("make the race test pass", 400_000, 1000, accounted_from: 0)
 ///
 /// assert goalstate.decode(goalstate.encode(goal)) == Ok(goal)
 /// ```
