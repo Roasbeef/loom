@@ -63,7 +63,11 @@ The cell payload is one JSON object:
   "objective": "make the failing storage race test pass",
   "status": "active",
   "reason": null,
-  "phase": { "state": "awaiting_verdict", "operation": "0193f2c1-…" },
+  "phase": {
+    "state": "awaiting_verdict",
+    "operation": "0193f2c1-…",
+    "since_seq": null
+  },
   "token_budget": 400000,
   "tokens_used": 51200,
   "accounted_through_seq": 3417,
@@ -96,6 +100,20 @@ the loop itself opened, and is null for `idle` alone. A state word whose
 operation does not match it — `idle` with one, or either of the other two
 without — is a decode error. A restart reads this and knows a verdict is
 owed and by which run, which is what makes the loop recoverable; see §4.
+
+`since_seq` rides the `continuing` state alone and is where the primary's
+branch stood when the wake went out. It is what the zero-progress
+predicate measures the woken stretch from, and it is in the phase rather
+than beside it because it means nothing in any other state. The feed
+cursor cannot serve: an ordinary mid-run review advances it, so a working
+run whose last step tripped the review threshold was judged over whatever
+came after that review — for a run about to stop, nothing — and two of
+those paused a goal that was working. It is null or absent outside
+`continuing`, and an absent one inside it reads as zero, which measures
+from the start of the branch; that direction is the safe one, because a
+wider stretch can only read as more progress, and reading progress where
+there was none costs one continuation where reading none where there was
+some pauses a working goal.
 
 `token_budget` is a **required** positive integer — v1 has no unbounded
 goals. `tokens_used` and `accounted_through_seq` form the accounting pair

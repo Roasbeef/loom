@@ -235,6 +235,26 @@ implementation could not fire either of them.
    schedule or another layer arriving with work of their own, and an
    operator resume clears it too. Crossed → `budget_limited` with reason
    `continuation_cap`.
+
+   Two things about that reset are worth stating plainly, because both
+   decide how much the cap is worth. The runs the *harness* opens do not
+   reset it, and the phase alone cannot say which those are: the harness
+   opens runs for a goal continuation, for a reviewer's nudge wake, and
+   for a tripped bound's own wrap-up, and only the first is in the phase.
+   Read as somebody arriving with work, the other two cleared the cap, so
+   a reviewer that nudged between continuations could hold the bound off
+   for as long as it kept nudging. The run start therefore carries who
+   opened it (`goalloop.Origin`) rather than leaving the loop to infer it.
+
+   And a run start the *model* arranged — a schedule it created, a
+   background job's wake, a sub-agent's result coming back — does reset
+   it, because nothing in the harness can tell one from the operator's own
+   prompt. Under a primary that schedules its own wakes the cap is
+   therefore not binding, and the token budget is the bound that is. That
+   is a limit of the cap rather than a gap to close: a cap that tried to
+   distinguish the two would be guessing about intent from the shape of a
+   run, and would stop the operator's own work the first time it guessed
+   wrong.
 3. **Zero-progress suppression.** A goal-woken run that committed no tool
    result and no operator turn did no work toward the objective; two in a
    row pause the goal with reason `zero_progress`. The predicate has to

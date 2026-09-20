@@ -515,9 +515,11 @@ pub fn with_effect_abort(options: Options, sweep: fn(OpId) -> Nil) -> Options {
 
 /// Supplies the advisor actor's abort notice. A cast, never a call: the
 /// `abort` command is not held open for the goal loop, and a notice lost
-/// to a busy actor costs at most a goal that stays active until the
-/// operator's next prompt — the same price every advisor notification
-/// already pays.
+/// to a busy actor costs the loop nothing it cannot recover. It used to
+/// cost a goal that stayed active until the operator's next prompt, which
+/// is what the notice was for; the level read now consults the aborted
+/// run's own durable terminal record, so a dropped notice costs at most
+/// the delay to the next evaluation and the goal is held either way.
 ///
 /// ## Examples
 ///
