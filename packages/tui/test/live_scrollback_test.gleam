@@ -51,6 +51,40 @@ pub fn scrolling_inside_a_live_answer_freezes_until_end_test() {
     as "returning to the bottom reveals the accumulated output"
 }
 
+// Etui reports a tick only when a poll times out with no input, and a wheel
+// flick delivers notches faster than any poll timeout. A socket drained by
+// ticks alone is therefore starved for as long as the hand keeps moving: the
+// history page a scroll asked for, and every capture queued behind it, land
+// in one batch when the gesture pauses.
+pub fn a_wheel_notch_drains_the_socket_without_waiting_for_a_tick_test() {
+  let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
+  process.send(
+    reading.inbox,
+    connection.Incoming(gateway.stream_delta("main", "text", "\n\nQueued.")),
+  )
+
+  let scrolled = tui.update(backend.MouseScroll(5, 5, True), reading)
+  assert scrolled.streams != reading.streams
+    as "a notch applies the traffic already queued behind it"
+  assert scrolled.reading_lines == reading.reading_lines
+    as "and the drained fragment cannot reflow the text being read"
+}
+
+pub fn a_held_drag_drains_the_socket_too_test() {
+  let pressed =
+    tui.update(backend.MousePress(5, 5, backend.MouseLeft), streaming())
+  process.send(
+    pressed.inbox,
+    connection.Incoming(gateway.stream_delta("main", "text", "\n\nQueued.")),
+  )
+
+  let dragged = tui.update(backend.MouseDrag(9, 6, backend.MouseLeft), pressed)
+  assert dragged.streams != pressed.streams
+    as "a drag applies the traffic queued while the button is held"
+  assert dragged.selection != None
+    as "and the selection it extends survives the drain"
+}
+
 pub fn frozen_text_reflows_on_resize_without_adopting_new_output_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   let arrived = deliver(reading, "\n\nHidden until returning to the bottom.")

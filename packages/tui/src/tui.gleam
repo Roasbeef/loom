@@ -4237,8 +4237,15 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
       handle_paste(clear_selection(model), text)
       |> mark_activity
       |> invalidate_frame
+
+    // A wheel flick delivers notches faster than any poll timeout, so no
+    // tick arrives until the hand pauses. Draining here, as a key does,
+    // keeps the history page this gesture asked for from waiting on that
+    // pause and then landing with every capture queued behind it.
     backend.MouseScroll(x, y, up) ->
-      scroll_at(clear_selection(model), geometry.Position(x, y), case up {
+      drain_connection(model, 64)
+      |> clear_selection
+      |> scroll_at(geometry.Position(x, y), case up {
         True -> Older
         False -> Newer
       })
@@ -4251,8 +4258,13 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
       begin_selection(model, geometry.Position(x, y))
       |> mark_activity
       |> invalidate_frame
+
+    // A held drag is the other gesture that outruns the poll timeout, for as
+    // long as the button is down. The selection reads the frame it began
+    // on, so the traffic applied here cannot move the cells under it.
     backend.MouseDrag(x, y, backend.MouseLeft) ->
-      extend_selection(model, geometry.Position(x, y))
+      drain_connection(model, 64)
+      |> extend_selection(geometry.Position(x, y))
       |> mark_activity
       |> invalidate_frame
     backend.MouseRelease(x, y, backend.MouseLeft) ->
@@ -9715,8 +9727,10 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
     True, _ | _, None -> model
     False, Some(#(cut, view)) -> {
       case offset == 0 && !older {
-        True ->
-          apply_cut(Model(..model, scrollback: history_view.empty()), cut, view)
+        True -> {
+          let history = history_view.resume(model.scrollback)
+          apply_cut(Model(..model, scrollback: history), cut, view)
+        }
         False -> {
           let history = history_view.freeze(model.scrollback)
           let history = case

@@ -154,6 +154,12 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   retains proved ancestry so unrelated reviewer traffic cannot evict a missing
   parent's endpoint. The newer end is evicted when paging backward past the
   cache bound. End with an empty composer returns to the latest captured leaf.
+  `history_view.resume` keeps the paged-in window on that return.
+  `history_view.capture` merges a retained window with a cut only when the
+  strand's leaf has not moved or the window's newest record reaches the
+  cut's oldest sequence; otherwise the cut stands alone, because an interval
+  between the two was never read and `before_seq` would sit beneath it. The
+  same rule covers a parked strand's window and a reconnect's.
 - A strand switch parks the outgoing strand's scrollback in
   `Model.parked_scrollback` and restores the incoming strand's, so switching
   never discards loaded history. The window is per strand because ancestry is,
@@ -904,6 +910,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   alone does not keep fast polling active. Because the websocket actor cannot
   wake etui's terminal poll, the first external event after quiet may wait up to
   the 400 ms quiet timeout before the client drains it and returns to 40 ms.
+  A tick exists only when a poll times out with no input, and a wheel flick
+  delivers notches faster than any timeout, so a key, a wheel notch and a
+  held drag each drain up to sixty-four queued socket messages before they are interpreted.
+  Without that a history page waits for the hand to pause and then lands with
+  every capture queued behind it.
 - **Durable and transient output do not alias.** Stream fragments live
   newest-first in a strand-and-kind keyed list and disappear when that strand's
   settled entry arrives. The historical row cache contains durable records

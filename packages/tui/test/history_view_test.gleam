@@ -182,6 +182,82 @@ pub fn history_frozen_endpoint_survives_live_cuts_and_ignores_late_pages_test() 
     == pending
 }
 
+// One older page read above a hundred-record live window, as a reader who
+// scrolled up once holds it.
+fn paged_once(all) {
+  let current = view(300)
+  let initial =
+    history_view.capture(
+      history_view.empty(),
+      window(list.take(all, 100)),
+      current,
+      "main",
+    )
+  let wanted =
+    history_view.older(
+      history_view.freeze(initial),
+      history_view.branch(initial, current).unloaded,
+    )
+  let assert Some(#(after, before)) = history_view.range(wanted)
+    as "a missing parent supplies one older interval"
+  let page =
+    window(
+      list.filter(all, fn(item) {
+        snapshot.sequence(item) > after && snapshot.sequence(item) < before
+      }),
+    )
+  history_view.accept(
+    history_view.sent(wanted, before),
+    page,
+    before,
+    after,
+    current,
+  )
+}
+
+pub fn returning_to_live_keeps_pages_the_cut_still_meets_test() {
+  // A hundred records arrived while the reader was away: the window's newest
+  // record is 300 and the cut's oldest is 301, with no sequence between them.
+  let all = entries(400)
+  let read = paged_once(list.drop(all, 100))
+  let cut = window(list.take(all, 100))
+
+  let live =
+    history_view.resume(read)
+    |> history_view.capture(cut, view(400), "main")
+  assert live.mode == history_view.Live
+  assert list.length(history_view.branch(live, view(400)).records) == 300
+    as "touching the tail must not discard the page already read"
+}
+
+pub fn returning_to_live_drops_pages_the_cut_has_left_behind_test() {
+  // One more record than that, and sequence 301 was never read. Keeping the
+  // window would put `before_seq` beneath it, where no later page fills it.
+  let all = entries(401)
+  let read = paged_once(list.drop(all, 101))
+  let cut = window(list.take(all, 100))
+
+  let live =
+    history_view.resume(read)
+    |> history_view.capture(cut, view(401), "main")
+  assert live.before_seq == 302
+    as "the next older page must start directly beneath the cut"
+  assert list.length(live.window.items) == 100
+}
+
+pub fn a_quiet_strand_keeps_its_pages_however_far_the_cut_moves_test() {
+  // The strand's leaf has not moved, so its ancestry is already whole and
+  // the records other strands wrote in between are not a gap in it.
+  let all = entries(300)
+  let read = paged_once(all)
+  let elsewhere = window(list.take(entries(900), 100))
+
+  let live =
+    history_view.resume(read)
+    |> history_view.capture(elsewhere, view(300), "main")
+  assert list.length(history_view.branch(live, view(300)).records) == 200
+}
+
 pub fn history_unrelated_sequences_do_not_fill_a_missing_parent_test() {
   let all = entries(30)
   let state =
