@@ -685,7 +685,9 @@ pub fn read_tool() -> tool.Tool {
   tool.Tool(
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
-      <> "Use offset/limit to window large files; anchors are what fs_edit "
+      <> "Use offset/limit to window large files; `limit` without `offset` "
+      <> "returns the first `limit` lines, so pass `offset` to read anywhere "
+      <> "but the start of the file. Anchors are what fs_edit "
       <> "hunks must reference, and the result text carries the file digest "
       <> "fs_edit requires. PNG, JPEG, GIF, and WebP files return images for "
       <> "visual inspection; offset/limit apply only to text.",
@@ -805,7 +807,7 @@ fn read_outcome(
   // Provider adapters intentionally omit presentation details. The digest is
   // an edit prerequisite, so it must travel in model-visible result content
   // beside the anchors, including for an empty file or a windowed read.
-  let text = "digest: " <> digest <> "\n" <> lines
+  let text = "digest: " <> digest <> "\n" <> lines <> continuation(window)
 
   // An anchored read must stay inline — anchors in a blob would be
   // useless for planning edits — so an oversized window is refused
@@ -832,6 +834,40 @@ fn read_outcome(
       #("anchor_version", json.Int(hashline.anchor_version)),
     ]),
   )
+}
+
+// What the model is told when the window it received is not the whole
+// file, and nothing at all when it is.
+//
+// `has_more`, `total_lines` and the continuing `offset` are all in
+// `with_details`, and no provider adapter puts that object on the wire: a
+// model reading a file longer than its window otherwise receives the
+// leading lines with no statement that any others exist, which reads
+// exactly like a complete file. Stating which lines of how many arrived is
+// the difference between paging on and reading the same first window
+// again, and the continuing offset is stated only when there is something
+// after the window to continue to.
+//
+// A window at an offset past the end has no lines in it, and the file's
+// length is already in `empty_window_text`; naming a range there would
+// invert it, so the empty window says nothing here.
+fn continuation(window: hashline.Window) -> String {
+  let returned = list.length(window.lines)
+  let whole_file = !window.has_more && window.offset == 1
+  use <- bool.guard(when: whole_file || returned == 0, return: "")
+  let last = window.offset + returned - 1
+  let range =
+    "\n(lines "
+    <> int.to_string(window.offset)
+    <> "-"
+    <> int.to_string(last)
+    <> " of "
+    <> int.to_string(window.total_lines)
+  case window.has_more {
+    False -> range <> ")"
+    True ->
+      range <> "; read the rest with offset " <> int.to_string(last + 1) <> ")"
+  }
 }
 
 // The message for a window with no lines in it: an empty file reads
