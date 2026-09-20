@@ -50,23 +50,25 @@
 //// a doorbell lost against an idle strand still costs latency alone, and
 //// the latency it costs is the idle period rather than never.
 ////
-//// The chain replaces itself and nothing else joins it, so a strand has
-//// exactly one checkpoint deadline outstanding at any moment. A message
-//// that opens work on an idle strand therefore does not shorten the tick
-//// already pending; it drives at once, as every message does, and the
-//// period only changes when that pending tick arms its successor. So an
-//// occupied strand can be without a fast tick for up to
-//// `idle_poll_interval_ms`, and exactly one thing waits on that: the first
-//// deferred poll after a strand has been idle, since the permit is what a
-//// tick grants. Every later one is at the short period, because by then
-//// the drive has found the operation open. Nothing in production emits a
-//// deferred handle yet, so the window costs nothing observable today; the
-//// day an adapter does, it is a stall of up to two minutes on the default
-//// period, and `docs/design-notes/daemon-memory.md` records both the fix
-//// and what the fix costs. The alternative — arming on the transition — would leave the tick it
-//// replaced pending until its own delay elapsed, since the `Timers` seam
-//// arranges a wake and hands back nothing to cancel it with, and one
-//// outstanding deadline per strand is worth more than that first permit.
+//// Every drive re-arms, so the period follows the occupancy immediately:
+//// a message that opens work on an idle strand arms the short tick as
+//// part of handling that message, and the run does not wait out the idle
+//// tick it found pending. That matters because a turn is almost always
+//// shorter than the idle period, so a strand that had to wait for the
+//// pending idle tick before its period could change would run the whole
+//// turn without a short tick at all — the short period would be
+//// unreachable in ordinary use rather than merely delayed.
+////
+//// The re-arming is conditional and the tick is stamped, which together
+//// keep one live chain. A drive whose occupancy names the period already
+//// outstanding arms nothing, so a session whose two periods are equal
+//// arms exactly one deadline for its whole life. A drive that wants the
+//// other period arms it and stamps the arm with a new generation; the
+//// tick it superseded is still pending, because the `Timers` seam
+//// arranges a wake and hands back nothing to cancel it with, and it is
+//// dropped on arrival for carrying the older number. The cost is one
+//// stale wake per period change — two per turn — and what it buys is that
+//// the strand never holds two chains, each arming its own successor.
 
 import core/clock.{type Clock}
 import core/corruption
@@ -190,7 +192,14 @@ pub opaque type Message {
   Nudge
 
   /// The periodic checkpoint poll; also grants one deferred poll permit.
-  PollTick
+  ///
+  /// The generation names the arming this tick belongs to. A strand
+  /// re-arms whenever the period it wants changes, which leaves the tick
+  /// it superseded still pending; that one arrives carrying an older
+  /// generation and is dropped. Dropping the loser rather than cancelling
+  /// it is what lets the period change at once through a `Timers` seam
+  /// that arranges a wake and hands back nothing to cancel it with.
+  PollTick(generation: Int)
 
   /// A retry wait elapsed.
   RetryDue
@@ -279,6 +288,17 @@ type State {
     observations: List(Observation),
     poll_permit: Bool,
     retry_wake: Option(Int),
+    /// The arming the live tick chain belongs to. Only a `PollTick`
+    /// carrying this number is this strand's current tick; an older one
+    /// is a superseded arm's wake and is dropped.
+    poll_generation: Int,
+    /// The period of the tick currently outstanding, or `None` between a
+    /// tick's arrival and its successor's arming. Holding the period
+    /// rather than a plain "armed" answer is what makes re-arming
+    /// conditional: a strand whose desired period has not changed leaves
+    /// the pending tick alone, so a session configured with one period
+    /// for both occupancies arms exactly one deadline for its whole life.
+    armed_poll_ms: Option(Int),
     // The branch as last scanned, keyed by the leaf it was scanned from.
     // A step projects the branch once for the planner's threshold and once
     // for the request; both read this, and a later step whose leaf has
@@ -305,20 +325,18 @@ type State {
 // rather than a flag because the two answers name two different jobs for
 // the poll, not one condition and its negation.
 type Occupancy {
-  /// A drive loaded an open operation, so the next tick takes the poll's
-  /// short period. That period's one functional role is the rate at which
-  /// a deferred suspension is granted its next permit; every other
-  /// in-flight step is answered by its own monitor or its own timer.
+  /// A drive loaded an open operation, so the strand ticks at the poll's
+  /// short period. Two things are found at that rate and nothing else is:
+  /// a deferred suspension's next permit, and a queue admission committed
+  /// onto the open run by a caller that did not ring the doorbell, which
+  /// is what `api.steer_marking` is. Every other in-flight step — a
+  /// provider request, a tool run, a retry deadline — is answered by its
+  /// own monitor or its own timer.
   ///
-  /// Reaching this state does not shorten the tick already pending, because
-  /// the chain only ever replaces itself. A doorbell that opens work on an
-  /// idle strand therefore leaves an occupied strand with no fast tick for
-  /// up to `idle_poll_interval_ms`, and the one thing that window delays is
-  /// the first deferred poll after idleness. No provider adapter emits a
-  /// deferred handle today; the day one does, that becomes a stall of up to
-  /// two minutes on the default period, and
-  /// `docs/design-notes/daemon-memory.md` records the fix it would then be
-  /// worth paying for.
+  /// Reaching this state arms the short tick at once, dropping whichever
+  /// tick was pending when the strand was idle. The drive that reached it
+  /// has already run, so the period change is for the *next* thing the
+  /// strand must find rather than for the work that woke it.
   Occupied
 
   /// A drive found no open operation. Nothing the strand holds can make
@@ -432,6 +450,8 @@ pub fn start(
       observations: [],
       poll_permit: False,
       retry_wake: None,
+      poll_generation: 0,
+      armed_poll_ms: None,
       cleared: None,
       projection: None,
     ))
@@ -516,13 +536,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
 
-    // The tick arm is the only one that arms a tick, which is what keeps
-    // exactly one deadline outstanding for this strand at any moment.
-    PollTick -> polled(logger, state)
+    PollTick(generation:) -> polled(logger, state, generation)
 
-    // No other message touches the chain. A drive one of these caused can
-    // change the period the *next* tick will take, by moving `occupancy`,
-    // and that tick reads the period when it arms its successor.
+    // Every other arm reaches the chain through `finish`, which re-arms
+    // when the drive it follows changed the period the strand wants. A
+    // message that opens work therefore gets the short period at once
+    // rather than waiting out the idle tick it found pending.
     Nudge -> finish(logger, drive(state))
     RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
     RequestAbort(operation:) -> finish(logger, abort(state, operation))
@@ -535,20 +554,32 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 }
 
 // One checkpoint tick: drive holding the one deferred poll permit the tick
-// grants, then arm the successor at the period that drive earned. The
-// permit never outlives the drive that was offered it.
+// grants. `finish` arms the successor at the period that drive earned, so the
+// arming follows the drive rather than opening it, which is what lets the
+// period be read from what the drive found and what stops a halting strand
+// from leaving a timer behind for a process about to be gone.
 //
-// The arming follows the drive rather than opening the arm, which is what
-// lets the period be read from what the drive found, and which also stops a
-// halting strand from leaving a timer behind for a process about to be gone.
-fn polled(logger: Logger, state: State) -> actor.Next(State, Message) {
-  case drive(State(..state, poll_permit: True)) {
+// A tick from a superseded arming is dropped without driving. It is not an
+// error and it is not work lost: the arming that replaced it is outstanding
+// and will drive, and the strand's durable state is what decides anything
+// either tick would have found.
+fn polled(
+  logger: Logger,
+  state: State,
+  generation: Int,
+) -> actor.Next(State, Message) {
+  use <- bool.lazy_guard(
+    when: generation != state.poll_generation,
+    return: fn() { actor.continue(state) },
+  )
+
+  // This tick has arrived, so nothing is outstanding until `finish` arms
+  // again — and the permit never outlives the drive it was offered to.
+  let state = State(..state, armed_poll_ms: None, poll_permit: True)
+  case drive(state) {
     Halt(reason) -> finish(logger, Halt(reason))
-    Continue(next) -> {
-      let next = State(..next, poll_permit: False)
-      arm_poll(next)
-      finish(logger, Continue(next))
-    }
+    Continue(next) ->
+      finish(logger, Continue(State(..next, poll_permit: False)))
   }
 }
 
@@ -572,43 +603,57 @@ fn await_predecessors(
       log.info(logger, "strand.started", [])
       let out = drive(state)
 
-      // The recovery drive is what starts the only tick chain this
-      // incarnation has, and it starts it at the period that drive earned:
-      // a restored open operation keeps the short poll, and a strand that
-      // rebooted with nothing to do goes straight to the idle period
-      // instead of spending a turn's worth of ticks proving it.
-      case out {
-        Halt(reason) -> finish(logger, Halt(reason))
-        Continue(next) -> {
-          arm_poll(next)
-          finish(logger, Continue(next))
-        }
-      }
+      // The recovery drive is what starts this incarnation's tick chain,
+      // and `finish` starts it at the period that drive earned: a restored
+      // open operation keeps the short poll, and a strand that rebooted
+      // with nothing to do goes straight to the idle period instead of
+      // spending a turn's worth of ticks proving it.
+      finish(logger, out)
     }
     Error(reason) -> finish(logger, Halt(reason))
   }
 }
 
-// Arms the successor tick at the period the state's occupancy names. The one
-// caller per path is deliberate: the chain replaces itself and nothing else
-// joins it, so a strand has exactly one checkpoint deadline outstanding at
-// any moment and a tick can never arrive from a chain the strand has
-// forgotten. The price of that is the window this does not close: an
-// occupancy that became `Occupied` between two ticks waits for the pending
-// idle one before the short period resumes, which delays a deferred poll's
-// first permit and nothing else.
+// Arms the next tick at the period the state's occupancy names, unless the
+// tick already outstanding runs at that period — in which case the pending
+// one is left alone and nothing is armed.
+//
+// That condition is the whole mechanism, and it is what makes the two periods
+// usable rather than nominal. `Timers` arranges a wake and hands back nothing
+// to cancel it with, so a strand that has just become `Occupied` cannot take
+// back the idle tick it armed between turns. Arming beside it would leave two
+// live chains, each arming its own successor. The generation resolves that:
+// the arm increments it, the superseded tick arrives carrying the older number
+// and `polled` drops it, so the strand still has exactly one live chain and
+// pays one stale wake per period change. Without this, an occupied strand
+// inherited whatever tick was pending when it became occupied — the idle one,
+// for every turn admitted onto an idle strand — and so ran the *whole* turn
+// with no short tick unless the turn outlasted the idle period. The short
+// period is what grants a deferred suspension its next permit and what a quiet
+// admission onto an open run (`api.steer_marking`) is found by, and both waited
+// out the idle period instead.
 //
 // The subject is bound before the closure for the reason every other timer
 // here binds it: `real_timers` hands the callback to a timer process, and a
 // closure over `state` would copy the whole strand state — `Effects`
 // included — into that process.
-fn arm_poll(state: State) -> Nil {
-  let internal = state.internal
+fn arm_poll(state: State) -> State {
   let delay = case state.occupancy {
     Occupied -> state.poll_interval_ms
     Unoccupied -> state.idle_poll_interval_ms
   }
-  state.effects.timers.after(delay, fn() { wake(internal, PollTick) })
+  case state.armed_poll_ms {
+    Some(armed) if armed == delay -> state
+
+    _ -> {
+      let generation = state.poll_generation + 1
+      let internal = state.internal
+      state.effects.timers.after(delay, fn() {
+        wake(internal, PollTick(generation:))
+      })
+      State(..state, poll_generation: generation, armed_poll_ms: Some(delay))
+    }
+  }
 }
 
 // A halt is the one thing the strand cannot recover from on its own —
@@ -617,7 +662,12 @@ fn arm_poll(state: State) -> Nil {
 // process is gone.
 fn finish(logger: Logger, outcome: Outcome) -> actor.Next(State, Message) {
   case outcome {
-    Continue(state) -> actor.continue(state)
+    // The single arming site, which is why it is here rather than in each
+    // handler: whatever moved the strand's occupancy, the tick chain is
+    // brought to the period that occupancy names before the next message
+    // is taken. A halt arms nothing, so a process about to be gone leaves
+    // no deadline behind.
+    Continue(state) -> actor.continue(arm_poll(state))
     Halt(reason) -> {
       log.error(logger, "strand.halted", [
         field.text(key: "reason", value: reason),

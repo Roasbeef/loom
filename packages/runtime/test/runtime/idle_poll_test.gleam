@@ -41,12 +41,11 @@ const long_poll_ms = 2731
 // running at the short period, and well under the long one.
 const quiet_window_ms = 400
 
-// The idle period the occupied-chain test boots with. The chain only ever
-// replaces itself, so the first tick a newly occupied strand sees is the idle
-// one already pending; that test has to wait it out before it can watch the
-// short period at all, and `long_poll_ms` would make it a three-second test.
-// It is still far longer than the short period, which is the only relation
-// the test depends on.
+// The idle period the occupied-chain test boots with. That test watches a
+// chain run at the short period across an idle tick's own deadline, so the
+// deadline has to land inside the block the provider holds; `long_poll_ms`
+// would outlast it. It is still far longer than the short period, which is
+// the only other relation the test depends on.
 const brief_idle_poll_ms = 431
 
 // How long the occupied-chain test's provider blocks before it answers. It
@@ -173,9 +172,9 @@ pub fn a_tick_over_an_open_operation_stays_short_test() {
   let #(_sess, rt, rec) = boot_with(answers_slowly, brief_idle_poll_ms)
   let assert Ok(op) = api.prompt(rt, [fake.user("Hello")]) as "prompt accepted"
 
-  // The doorbell drove the strand to `Occupied` but left the pending idle tick
-  // alone, so the first short arm cannot appear until that tick fires and
-  // finds the provider still working.
+  // The doorbell drove the strand to `Occupied`, and that drive armed the
+  // short period as part of handling it — well inside the idle deadline that
+  // was pending when the prompt arrived.
   wait_for(fn() { recorder.read(rec, "poll.short") >= 1 }, 3000)
   assert recorder.read(rec, "poll.short") >= 1
 
@@ -210,10 +209,12 @@ pub fn a_restart_with_an_open_operation_arms_the_short_period_test() {
   wait_for(fn() { recorder.read(rec, "provider") >= 1 }, 3000)
   assert recorder.read(rec, "provider") >= 1
 
-  // Nothing has fired yet: the only pending tick is the long one boot armed,
-  // and it is `long_poll_ms` away. So every short arm counted after the kill
-  // belongs to the replacement.
-  assert recorder.read(rec, "poll.short") == 0
+  // The prompt's own drive armed the short period and that chain has been
+  // running ever since, so the count is not zero and what the replacement is
+  // measured against is this snapshot rather than nothing. The chain dies with
+  // the process it belongs to: `wake` drops a tick whose driver is gone, so
+  // every arm counted past this point belongs to the replacement.
+  let short_before_kill = recorder.read(rec, "poll.short")
   let assert Ok(subject) = supervisor.strand_subject(rt.tree, "main")
     as "the strand driver must be registered"
   let assert Ok(pid) = process.subject_owner(subject)
@@ -227,16 +228,24 @@ pub fn a_restart_with_an_open_operation_arms_the_short_period_test() {
   // instead would reach the short one eventually, once that idle tick fired
   // over the still-open operation, and a deadline past it would pass on the
   // recovery this test exists to distinguish.
-  wait_for(fn() { recorder.read(rec, "poll.short") >= 3 }, 1200)
-  assert recorder.read(rec, "poll.short") >= 3
+  wait_for(
+    fn() { recorder.read(rec, "poll.short") >= short_before_kill + 3 },
+    1200,
+  )
+  assert recorder.read(rec, "poll.short") >= short_before_kill + 3
   process.kill(rt.tree.supervisor)
 }
 
-/// A second turn admitted while the strand is idle does not start a tick
-/// chain beside the pending one. The chain replaces itself and nothing else
-/// joins it, so the count of armed ticks over a whole second turn stays at
-/// what one chain produces: were a message to arm as well, each chain would
-/// go on arming its own successor and the count would run at two rates.
+/// A second turn admitted while the strand is idle arms the short period at
+/// once, and leaves one live chain behind rather than two.
+///
+/// Both halves are the claim. The arming is what makes the short period
+/// reachable: a turn is shorter than the idle period, so a strand that had to
+/// wait for the pending idle tick before its period could change would run
+/// the whole turn without a short tick. The single chain is what the
+/// generation stamp buys: the superseded idle tick still fires, and were it
+/// to drive and arm a successor of its own the strand would tick at two
+/// rates, which the quiet window at the end would see.
 pub fn a_second_turn_does_not_start_a_second_tick_chain_test() {
   let #(_sess, rt, rec) = boot(answers_once)
   let assert Ok(first) = api.prompt(rt, [fake.user("Hello")])
@@ -247,18 +256,20 @@ pub fn a_second_turn_does_not_start_a_second_tick_chain_test() {
   assert recorder.read(rec, "poll.long") >= 1
 
   // A second turn, whose doorbell arrives while the pending tick is the long
-  // one. It drives on the doorbell, and the pending tick is left alone.
+  // one. The drive it causes finds the operation open and arms the short
+  // period there and then, rather than inheriting the idle deadline.
   let armed_before = recorder.read(rec, "poll.short")
   let assert Ok(second) = api.prompt(rt, [fake.user("Again")])
     as "the second prompt must be accepted"
   let assert Ok(_settled) = api.await_result(rt, second, within_ms: 5000)
     as "the second run must complete"
-  assert recorder.read(rec, "poll.short") == armed_before
+  assert recorder.read(rec, "poll.short") > armed_before
 
-  // The second turn also finished inside the one pending long period, so that
-  // tick fires with the strand idle again and arms a second long one. The
-  // point is the count: one chain produced both long arms and no short arm,
-  // where a turn that started a chain of its own would have gone on arming.
+  // The run settled, so the drive that settled it armed the long period again
+  // and the strand is back on one long chain. The superseded idle tick from
+  // before the turn arrives somewhere in here and is dropped: were it instead
+  // to drive and arm, the two chains would keep arming and neither count
+  // would hold still.
   wait_for(fn() { recorder.read(rec, "poll.long") >= 2 }, 3 * long_poll_ms)
   assert recorder.read(rec, "poll.long") >= 2
   let settled = recorder.read(rec, "poll.short")
@@ -303,6 +314,36 @@ pub fn a_quiet_acceptance_is_still_polled_up_test() {
     api.await_result(rt, op, within_ms: long_poll_ms + 5000)
     as "the idle checkpoint tick must find the accepted run"
   harness.assert_completed(outcome)
+  process.kill(rt.tree.supervisor)
+}
+
+/// A strand that becomes occupied arms the short period at once, rather than
+/// waiting out the idle tick that was pending when the work arrived.
+///
+/// This is the property the two periods need and the one a run that finishes
+/// inside a single idle period cannot show. The idle period here is
+/// `long_poll_ms` and the deadline is a fraction of it, so a strand that had
+/// inherited the pending idle deadline would have armed nothing short by the
+/// time this gives up.
+///
+/// What waits on it in production is a quiet admission onto an open run —
+/// `api.steer_marking`, the door a harness-side injector uses because its
+/// claim and its admission must land in one transaction — and a deferred
+/// suspension's next permit. Both are found by a tick and nothing else, and
+/// both would otherwise have waited the idle period out: two minutes on
+/// production's defaults, for a turn that will be over long before then.
+pub fn an_occupied_strand_arms_the_short_period_without_waiting_test() {
+  let #(_sess, rt, rec) = boot(fn(_spec) { fake.Hang })
+  let assert Ok(_op) = api.prompt(rt, [fake.user("Hello")]) as "prompt accepted"
+
+  // Three arms rather than one, so the assertion is about a chain running at
+  // the short period and not about a single arm that happened to land.
+  wait_for(fn() { recorder.read(rec, "poll.short") >= 3 }, long_poll_ms / 4)
+  assert recorder.read(rec, "poll.short") >= 3
+
+  // That the superseded idle tick leaves no second chain behind is
+  // `a_second_turn_does_not_start_a_second_tick_chain_test`'s claim, whose
+  // window is wide enough to see that tick arrive; this deadline is not.
   process.kill(rt.tree.supervisor)
 }
 
