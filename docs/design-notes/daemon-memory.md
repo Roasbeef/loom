@@ -1262,6 +1262,90 @@ Against a remaining 1.309 MiB it is not justified. It becomes worth
 re-examining only if the registry-internal narrowing above is taken and the
 residue still dominates a census.
 
+### 2026-09-20: narrowing the registry-internal multiplication
+
+This is the first of the two routes named just above: the three `schedule_*`
+tools and the six `agent_*` tools each closing over their family's whole seam
+record rather than the one slot each call uses.
+
+**`tools/agent.gleam`.** Each of the six `*_tool` constructors took the whole
+`Agency` and closed its `run` field over it, so a copy of `agent_note`'s
+closure duplicated `spawn`, `send`, `wait`, `notes` and `roster` along with
+the one field `run_note` calls. Each constructor now takes only the slot (or
+slots — `agent_wait` needs both `wait` and `max_wait_ms`) its own `run_*`
+function reads, bound once in `tools()` before the six `Tool` values are
+built. No tool's schema, description or behaviour changed; `spawn_tool`,
+`wait_tool`, `send_tool`, `note_tool`, `notes_tool` and `roster_tool` moved
+from taking `Agency` to taking the narrower slot, and since none of the six
+is called from outside `agent.tools`, no other caller moved.
+
+**`tools/schedule.gleam` and `client/scheduleseam.gleam`.** The three
+`schedule_*` tools took the whole `Schedules` record the same way, and
+`Schedules` was itself built by `scheduleseam.seam` from a `Door` whose three
+closures each closed over the whole `Wiring` — including `operator_schedules`,
+which only `create` reads, and `policy`, which only `create` checks.
+`create_tool`, `list_tool` and `cancel_tool` now take one function each;
+`door` binds `wiring.runtime`, `wiring.policy`, `wiring.operator_schedules`
+and `wiring.scanner` to local names before building its three closures, and
+`seam` binds `door.create`, `door.list` and `door.cancel` the same way before
+building the three `Schedules` closures. `create`, `listing` and `cancel` (the
+functions doing the work) take exactly the arguments their body reads instead
+of a `Wiring` or a `Door`.
+
+**`tools/job.gleam` and `client/jobtools.gleam`.** Same shape, found while
+looking for it elsewhere: the three `job_*` tools each closed over the whole
+`Jobs`, and `jobtools.seam` built `Jobs` from a `jobseam.Door` whose five
+`job.Jobs` closures each closed over the whole `Door`. Narrowed the same way:
+`poll_tool` takes `poll`, `list` and `max_wait_ms` (the three slots
+`run_poll`, `run_poll_one` and `run_list` actually read), `kill_tool` takes
+`kill` and `poll` (a kill re-polls once to report the settled state), and
+`send_tool` takes `send`. `jobseam.Wiring` itself is small (an address, a
+clock, a sleep function, an integer) and was left as each `Door` closure's
+whole capture — narrowing a seam this size is not worth the diff.
+
+**Left alone, with reasons.** `tools/history.gleam`, `tools/remember.gleam`,
+`tools/advise.gleam` and `tools/codemode.gleam` register exactly one tool
+each from their seam, so there is no family to multiply the capture across —
+the bug this section is about is specifically N tools each duplicating an
+(N-1)-sized remainder of a shared record, and N is 1 for all four.
+`client/jobseam.door`'s own five closures over `Wiring` were also left, for
+the size reason above.
+
+**Tests.** A size test per narrowed family, in the shape PR #470 established:
+build the family's tools over a seam whose one unrelated slot carries a large
+padded value (`list.repeat(0, 4096)`, captured in a closure the tool under
+test never calls), and assert with `erts_debug:flat_size` (wrapped as
+`ffi_memory.flat_words`, mirrored into `packages/tools/test/support/internal`
+for the tools-package suite) that the tool's own closure does not grow with
+it. Added: `packages/tools/test/tools/agent_size_test.gleam`,
+`schedule_size_test.gleam`, `job_size_test.gleam`, and one test appended to
+`packages/client/test/client/scheduleseam_test.gleam`
+(`list_and_cancel_do_not_capture_operator_schedules_test`, since the seam
+level of the bug lives in `client` and needs no runtime to exercise). Each
+was confirmed to fail — by hand, restoring the wide-capture shape locally and
+reverting — before being left in its fixed, passing state.
+
+**Registry size, measured.** A throwaway test built `tool_registry.built_in`
+with an `Agency` and a `Schedules` populated by lightweight fakes (the same
+tool set `bash`, `grep`, `fs_read`, `fs_write`, `fs_edit` plus the six
+`agent_*` and three `schedule_*` tools) and read `ffi_memory.flat_words` on
+the resulting registry, once against this branch and once with
+`packages/tools/src/tools/{agent,schedule,job}.gleam` and
+`packages/client/src/client/{scheduleseam,jobtools}.gleam` checked out from
+`origin/main`. Before: 4,933 words. After: 4,727 words — a 4.2% reduction on
+this single registry copy. That figure understates the shipped effect by
+construction: the fakes' own closures are minimal, so the padding this
+change removes from each tool's capture is small next to a real
+`client/agency`, `client/scheduleseam` or `client/jobtools` seam's captured
+runtime state, and — as the top of this section notes — the multiplication
+this section is against is not one registry's flat size but the number of
+`Effects` copies (nine, before the first pass above; three, after) each
+paying for the registry once. The per-tool figures the "Where the 3.797 MiB
+went" table above measured directly on the installed shape — 0.028 MiB per
+`agent_*` tool, 0.044 MiB per `schedule_*` tool — are the load-bearing
+numbers for what this change removes in production; the registry-flat-size
+figure here is a same-shape regression pin, not a restatement of those.
+
 ### Three copy holders left for their own change
 
 Each of these was found and confirmed in the code during this work and
