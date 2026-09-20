@@ -930,6 +930,28 @@ or build information in it; every other path was a static `404`. The default
 daemon returns `404` for both of those retired routes. Its two v2 route families
 authenticate against the manager before upgrading.
 
+## Native agent workspace
+
+The terminal's `agent_view` projection combines one captured strand/operation
+view with bounded task and designated-assistant excerpts. It never derives
+success from an absent phase or a failed operation from a single tool failure.
+Exact pending approvals are scoped to the captured strand and operation; opening
+one delegates to the existing `approval_panel` with no decision selected.
+
+`agents.Inspector` stores selection by strand ID independently of the active
+recipient. Explicitly opening a transcript transfers the editor and reader to
+that strand's `(session, strand)` workspace. Snapshot refreshes cannot redirect a
+missing recipient. Each saved reading endpoint carries the anchors used to
+relocate it after width changes, and retired reading windows are released
+without evicting unsent drafts. Pending advisor observations stay transient and
+are labeled separately from durable delivered advice.
+
+Palette adaptation is pure and occurs before a completed frame is cached.
+Light and ANSI terminals preserve the same content, links and wide-character
+cells; `NO_COLOR` preserves textual statuses and focus. See the
+[implementation review](../design-notes/tui-agent-workspace.md) for interaction
+keys, native captures, evidence boundaries and validation limits.
+
 ## Historical: the terminal client
 
 `loom` is the native Gleam client in `packages/tui`. Etui owns raw
@@ -1223,6 +1245,8 @@ multiplayer scenario has run against production providers.
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
+| `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
+| `packages/tui/src/tui/appearance.gleam`, `theme.gleam` | Semantic palette and terminal-capability adaptation before frame caching. |
 | `packages/host/src/host/websocket.gleam`, `packages/tui/src/tui/connection.gleam` | Shared owned WebSocket transport and its thin terminal event adapter. |
 | `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |
 | `packages/tui/src/tui/daemon/bootstrap.gleam` | Default daemon discovery, authenticated readiness, and serialized launch policy. |

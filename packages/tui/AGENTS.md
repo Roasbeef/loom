@@ -1,5 +1,46 @@
 # tui
 
+## Agent workspace
+
+`F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
+Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
+the selected transcript and recipient. Missing selections stay visible as
+unavailable until navigation chooses another row. `n` visits the next attention
+state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
+only the detail. The ordinary `Shift+Tab` rail shares the same task summaries.
+A `sub:` prefix is an identity convention, not evidence of a parent relation.
+
+`agent_view.Row` is projected from one coherent `snapshot_view.View` and window.
+It reuses `reviewer_status` for accepted task excerpts and effect-pending tools,
+then decodes `op.state` and `strand.last_result` for waits and terminal outcomes.
+An idle strand with captured pending input is shown as halted; queued input on
+a live operation is receipt evidence, never an operator question. Pending
+approvals match both strand and a live current operation; stale journal records
+cannot replace a terminal outcome. Update excerpts retain their
+exact assistant entry ID as well as operation identity; successors and missing
+newer answers cannot inherit a misleading old update. Disconnect makes current
+state unavailable while leaving the previous observation readable.
+
+`StrandWorkspace` parks the complete editor, attachments, command history,
+submission mode and bounded reader under `(session, strand)`. Navigation restores
+that owner before rendering. Retired strands and old sessions release history
+buffers while retaining unsent drafts. A missing captured recipient cannot submit
+and cannot silently fall back to another strand. Reading anchors are relocated
+from the restored endpoint, never from the strand being left. A daemon-returned
+held prompt appends only to its original strand's draft. Session replacement
+clears advice and goal observations and their pending request identities, then
+refreshes the new session, even when both primaries are already running.
+
+`appearance.Palette` adapts semantic colors once per completed frame. Launch
+reads `COLORTERM`, `TERM`, `COLORFGBG`, and `NO_COLOR`; rendering performs no I/O.
+Truecolor uses the dark palette unless the background hint names ANSI 7 or 15;
+limited-color terminals use their ANSI palette, and `NO_COLOR` uses terminal
+defaults. Content, links, wide-cell markers and modifiers survive adaptation.
+`theme.quiet_text` is readable secondary text without a dim modifier; structural
+dividers have their own color. Status labels and selection marks carry meaning
+without color. `gleam dev agents dark|light|ansi|plain` runs an illustrative,
+provider-free native fixture through the capture decoder and the shipped loop.
+
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
@@ -169,15 +210,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   cut's oldest sequence; otherwise the cut stands alone, because an interval
   between the two was never read and `before_seq` would sit beneath it. The
   same rule covers a parked strand's window and a reconnect's.
-- A strand switch parks the outgoing strand's scrollback in
-  `Model.parked_scrollback` and restores the incoming strand's, so switching
-  never discards loaded history. The window is per strand because ancestry is,
-  and the cut window alone holds only the newest hundred records of the whole
-  session across every strand. `render_cut` prunes the parked dictionary to
-  the strands the cut still carries, and adopting a different session clears
-  it, because strand names are reused. `history_view.capture` still discards a
-  window whose strand does not match, as the safety net for paths that change
-  strands without going through the switch.
+- A strand switch parks its editing and reading endpoint in
+  `Model.strand_workspaces`, keyed by `(session, strand)`. It restores the
+  incoming owner's complete editor and bounded ancestry before applying the
+  current capture. `render_cut` releases parked reading buffers for retired
+  strands and other sessions without evicting unsent drafts. The selected
+  source anchor survives returning at a different terminal width.
+
 - `tui/transcript_anchor.Row` identifies a durable entry and its source block
   or tool call. Wrapped row offsets relocate the reading position through
   incoming output, older pages, detail changes and width changes. Equal text
@@ -516,18 +555,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   joins the worker before the caller sees the timeout. It performs no path
   expansion or shell evaluation.
 - `tui/advisor_pending.{Board, decode, lines, primary_strand,
-  advisor_strand, visible_nudges}` draws the advisor's undelivered nudge
-  queue beside the composer. `decode` is a total decoder over a board this
-  terminal did not write — own row and byte caps rather than a trust of
-  the server's — and `lines` renders it in the advisor's voice: nothing at
-  all for an empty queue, since the band is taken from the conversation
-  and costs nothing when there is nothing to say; otherwise a heading
-  naming the total and the strand, up to `visible_nudges` (3) sanitized
-  bullets, and a `+N more waiting` line for the remainder. `primary_strand`
-  and `advisor_strand` are copies of `client/advisor`'s constants, not
-  imports — the terminal links no server package — and `gateway_test`
-  pins both pairs against each other so a rename on either side fails a
-  test rather than quietly disarming the panel's read triggers.
+  advisor_strand}` validates an observation of undelivered advice. The composer
+  uses the count/recipient heading from `lines`; `pending_nudge_lines` exposes
+  every received body in the scrollable transient tail, with a pending and
+  not-delivered label. A server-omitted suffix is explicitly reported. The
+  terminal neither drains this queue nor adds its observation to durable
+  records. The primary/advisor constants remain copied from the server and
+  pinned by gateway tests, because the terminal links no server package.
 
 - `tui/goal_view.{Board, Status, PauseCause, LimitCause, CheckRun,
   check_output_limit, decode, lines, row, refusal}` is the session goal's
@@ -723,10 +757,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   edges above. The primary starting a run is `DropNudges` — a local
   submission counts, so the operator's own send clears the panel before
   the server confirms the phase — because that run start is what drains
-  the queue into the prompt; the panel is drawn beside the composer as
-  context for the prompt about to be written, never as a transcript row,
-  since a transcript row would claim the model had already read advice it
-  has not. It never enters model context.
+  the queue into the prompt. A compact heading stays beside the composer;
+  complete bodies live in the explicitly pending transient tail. Neither
+  presentation enters model context or claims that observing a nudge delivers it.
 - **Session goal panel**: `/goal` shows the status block, `/goal <objective>`
   pins one, and `/goal clear|pause|resume` are subcommands **only as the
   whole argument**, so `/goal clear the failing test` is an objective. The
@@ -1054,8 +1087,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `tui.advisor_payload` recognizes each by its whole frame — a header line
   with its footer, or the header with the `advisor-nudges` fence — and
   `tui.advisor_lines` draws the row as `System` under the advisor's name:
-  collapsed to one attribution line, expanded to the body with the frame
-  lines dropped, since those address the model rather than the operator. Both
+  advice and feeds collapse to one attribution line, while nudges retain their
+  full body in both modes. Expanded advice and feeds drop their frame lines,
+  since those address the model rather than the operator. Both
   tokens are required, so an operator quoting a verdict back keeps their own
   attribution. The frame literals are copies of `client/advisorslice`'s,
   because this package links no server package; `advisor_view_test` pins all

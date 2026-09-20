@@ -1,5 +1,35 @@
 # Next
 
+## Native agent workspace, September 20
+
+The agent workspace slice for [#473](https://github.com/Roasbeef/loom/issues/473)
+is based on `9c9bb576`. The compact rail and `F2` inspector now show accepted
+tasks, captured activity, terminal outcomes, and exact approval attention.
+Inspection retains its own strand identity; only `Enter` changes the explicitly
+named composer recipient. Drafts, attachments, mode, and command history belong
+to `(session, strand)`; reading windows and anchors restore across strand
+switches in the current session. Cross-session history buffers are released.
+
+Pending and delivered advisor nudges retain their full text in compact mode.
+Session switches clear advice and goal observations, then request the new
+session's state. Dark/light/indexed/color-free palettes preserve cell content,
+selection, and links. The implementation note records
+[native captures, reproduction, and validation](design-notes/tui-agent-workspace.md).
+The [independent review](review/tui-agent-workspace.md) found three ownership
+paths; each has a repair and regression coverage.
+
+The TUI gate passes 625 tests and package lint has zero errors. Broader gates
+were resumed after a Hex rate limit; their exact results and built-in skips
+are in the implementation note. Provider-backed validation remains open:
+creating a smoke session received the shared daemon's connection-admission
+`503`, and the daemon was not restarted. Next, exercise normal and parallel
+provider runs, live exact approvals, held input, advice, and reconnect once
+admission is available. Do not infer those outcomes from the illustrative
+native fixture or close all of #473 on this slice alone.
+
+The older handoffs below describe their own revisions. Their counts are not
+validation evidence for this workspace change.
+
 ## Blackboard reads preserve failures, September 21
 
 The follow-up to `b3a8c9f9` removes Agency's conversion of failed note scans

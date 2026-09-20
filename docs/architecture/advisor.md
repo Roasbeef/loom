@@ -668,13 +668,13 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:7998`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8221`) renders
-it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
-`advisor feed`, `advisor goal feed`, `goal continuation`) with an opening
-excerpt and the expand hint; expanded,
-the body under the same heading with the frame lines dropped, since
-those address the model rather than the operator. Each frame is
+`advisor_payload` (`tui.gleam:8282`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8387`) renders
+them. Nudges always show their complete body, including in compact mode.
+The other variants collapse to one attribution row (`advisor`, `advisor feed`,
+`advisor goal feed`, or `goal continuation`) with an opening excerpt and expand
+hint. Expanded bodies retain their heading but drop the frame delimiters,
+which address the model rather than the operator. Each frame is
 recognized by its first line *and* its body delimiter, the same
 two-token test the notes envelope makes, so an operator pasting a
 verdict back to ask about it keeps their own attribution. The server
@@ -703,28 +703,25 @@ primary's branch. A nudge sitting in the guard cell, still undelivered,
 is not on any branch and has no frame to recognize — so the terminal
 reads it separately, through the read-only `advisor_pending` command
 (`packages/client/src/client/advisor_pending.gleam`, `docs/client-protocol.md`
-§"Advisor nudge queue observation") and draws it as a compact panel,
-headed `advisor nudges pending (N)`, above the composer.
+§"Advisor nudge queue observation"). The composer shows the count; the
+scrollable tail shows every received body under “Advisor · pending, not
+delivered.” This is transient presentation state, not a durable transcript
+entry, and cannot be mistaken for advice already delivered to the model.
 
-The terminal issues this read itself, with no operator keystroke, on
-three transitions and no others: the primary's own run settling, a
-review settling while the primary is already idle (a review's end is
-where a nudge is queued in the first place), and the primary first
-appearing in the roster (the attach edge, where idleness is otherwise
-unknown until the first snapshot). `tui.advisor_nudges_action`
-(`packages/tui/src/tui.gleam`) is the decision function; every other
-transition — a phase change on an unrelated strand included — holds,
-because the queue cannot have grown without one of those three edges.
+The terminal requests an observation when the primary's run settles, when a
+review settles while the primary is idle, when the primary first appears in
+the roster, or when the session changes. `tui.advisor_nudges_action`
+(`packages/tui/src/tui.gleam`) owns those edges. An unrelated strand's phase
+change holds the current observation. Session replacement first clears the
+old board and request identity, so two idle primaries in different sessions
+cannot share advice merely because both are named `main`.
 
-The panel is deliberately not a transcript row, for the same reason the
-protocol proposal (`protocol-change/039-advisor-pending-observation.md`)
-gives for rejecting an entry-shaped alternative: drawing undelivered
-advice where delivered messages go would tell the operator the model had
-already read it, when the whole reason to show it is that the model has
-not. It clears the moment the primary leaves idle — that run start is
-what drains the queue into the prompt — and it never enters model
-context: the read is a snapshot pulled by the terminal for the operator
-alone, never fed back to either model.
+The pending body clears when the primary leaves idle, because that run start
+drains the queue into its prompt. Display never drains the queue or enters
+model context: the read is an observation for the operator alone. The explicit
+pending attribution preserves the distinction required by
+`protocol-change/039-advisor-pending-observation.md` while letting the operator
+read the complete nudge without expanding unrelated tool output.
 
 ## Configuration
 
