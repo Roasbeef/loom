@@ -1862,7 +1862,8 @@ share is different and, being more live, probably lower.
   altogether is described here and not designed.
 - One `make check-client` run failed
   `client@goal_e2e_test.a_scripted_reviewer_is_shown_the_checks_result_test` on
-  its 60-second wait; the same test passes alone in 0.4 seconds, and the run
-  was under a load average of 25 from unrelated builds on the same host. Read
-  as load, not as a liveness finding, but it was not reproduced clean under
-  load.
+  its 60-second wait, under a load average of 25 from unrelated builds on the
+  same host. It was load: the test passes alone in 0.4 seconds, and a later
+  full `check-client` on the same tree passed it in 0.383 seconds with no
+  failures at all. Recorded because a 60-second wait expiring is worth knowing
+  about even when the cause turns out to be the host.
