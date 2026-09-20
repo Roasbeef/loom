@@ -1896,14 +1896,17 @@ fn perform(
 // The handle is kept, because the slot it holds is not the jail's to give
 // back. Every check clears under the one attribution-only operation and the
 // `goal-check` step, and that ledger's `max_outstanding` is one, so a check
-// nobody wants any more still occupies the pair until it settles — and a new
-// `RunCheck` inside that window is refused with `OutstandingCapReached`, which
-// the loop records as a check that produced no exit status and shows the
-// reviewer as evidence the harness does not have. Cancelling the witnessed run
-// kills the task, and the task's death is what the broker relay's caller-watch
-// is for: it cancels the execution, drains to the helper's terminal event and
-// settles, which returns the helper and the budget slot
+// nobody wants any more still occupies the pair until it settles. Cancelling
+// the witnessed run kills the task, and the task's death is what the broker
+// relay's caller-watch is for: it cancels the execution, drains to the helper's
+// terminal event and settles, which returns the helper and the budget slot
 // (`packages/broker/src/broker/broker.gleam`, the `CallerGone` arm of `relay`).
+//
+// That drain is asynchronous to the cancel, so the replacement this actor
+// starts a moment later can still find the slot taken. The runner waits the
+// window out rather than reporting the refusal — `goalcheck.slot_wait_ms` — so
+// the reviewer reads the command's real exit status instead of being shown
+// evidence the harness had merely not waited for.
 fn run_check(
   state: State,
   memory: Memory,
