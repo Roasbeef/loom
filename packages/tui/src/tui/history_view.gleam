@@ -3,7 +3,8 @@
 //// Browsing freezes the ancestry endpoint. Older reads fill that ancestry in
 //// sequence order without adopting their metadata. Retention drops the newest
 //// end when paging backward, so a long session remains traversable at bounded
-//// memory. Returning to live output uses the latest authoritative cut.
+//// memory. Returning to live output follows the latest authoritative cut, and
+//// keeps the ancestry already paged in whenever that cut still meets it.
 
 import core/ids
 import gleam/dict
@@ -67,6 +68,24 @@ pub fn empty() -> State {
 
 /// Adopts live history only while the reader follows the selected leaf.
 ///
+/// A cut holds the newest hundred records of the whole session, and the
+/// retained window can be older than that: a parked strand is not refreshed
+/// while another is on screen, a reconnect keeps the window it had, and a
+/// reader returning from history brings the pages they read. Merging such a
+/// window with a cut that no longer reaches it would leave an interval
+/// nobody read inside the result, with `before_seq` beneath it where no
+/// later page would fill it.
+///
+/// The retained window therefore joins the merge only when one of two facts
+/// rules that interval out. Either the strand's leaf has not moved, so the
+/// ancestry the window already holds is still the whole answer, which is
+/// what keeps a finished sub-agent's history while other strands advance the
+/// cut. Or the window's newest record reaches the cut's oldest sequence, so
+/// no sequence lies between them. Otherwise the cut stands alone and paging
+/// starts directly beneath it. The second fact assumes the new leaf descends
+/// from the old one; a peer navigating the strand to a sibling branch below
+/// the cut is not detected here.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -86,15 +105,16 @@ pub fn capture(
   case state.mode {
     Reading -> state
     Live -> {
-      let merged = merge(state.window, window) |> bounded
-      State(
-        strand,
-        Live,
-        result.unwrap(dict.get(view.leaves, strand), None),
-        merged,
-        oldest(merged),
-        Quiet,
-      )
+      let leaf = result.unwrap(dict.get(view.leaves, strand), None)
+      let retained = case
+        leaf == state.leaf || newest(state.window) >= oldest(window) - 1
+      {
+        True -> state.window
+        False -> snapshot.empty()
+      }
+
+      let merged = merge(retained, window) |> bounded
+      State(strand, Live, leaf, merged, oldest(merged), Quiet)
     }
   }
 }
@@ -109,6 +129,27 @@ pub fn capture(
 @internal
 pub fn freeze(state: State) -> State {
   State(..state, mode: Reading)
+}
+
+/// Returns to live output without discarding the pages already read.
+///
+/// A transcript shorter than its viewport is always at offset zero, so any
+/// downward wheel notch is a return to the tail. Emptying the window there
+/// left the reader with the selected strand's share of one cut, often a few
+/// rows, and the next upward notch paid for the same pages again. Whether
+/// the kept window may join the next cut is `capture`'s decision.
+///
+/// An outstanding request is retired: `accept` refuses a reply that finds no
+/// matching `Pending`, so a late page cannot attach to the live view.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert history_view.resume(history_view.empty()).mode == history_view.Live
+/// ```
+@internal
+pub fn resume(state: State) -> State {
+  State(..state, mode: Live, request: Quiet)
 }
 
 /// Requests another interval only when a parent is still missing.
@@ -269,6 +310,14 @@ fn merge(first: snapshot.Window, second: snapshot.Window) {
     list.fold(items, 0, fn(sum, item) { sum + bytes(item) }),
     None,
   )
+}
+
+// Items are held newest first, by `merge` and by `accept` alike.
+fn newest(window: snapshot.Window) {
+  case window.items {
+    [item, ..] -> snapshot.sequence(item)
+    [] -> 0
+  }
 }
 
 fn oldest(window: snapshot.Window) {

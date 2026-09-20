@@ -9722,8 +9722,10 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
     True, _ | _, None -> model
     False, Some(#(cut, view)) -> {
       case offset == 0 && !older {
-        True ->
-          apply_cut(Model(..model, scrollback: history_view.empty()), cut, view)
+        True -> {
+          let history = history_view.resume(model.scrollback)
+          apply_cut(Model(..model, scrollback: history), cut, view)
+        }
         False -> {
           let history = history_view.freeze(model.scrollback)
           let history = case
