@@ -10,7 +10,7 @@
 │ │▸ /details  toggle reasoning and tool detail                          │ │
 │ │  /deny  reject an exact displayed request                            │ │
 ╰─╰──────────────────────────────────────────────────────────────────────╯─╯
-╭ prompt · / commands ─────────────────────────────────────────────────────╮
+╭ To main · prompt · enter sends · / commands ─────────────────────────────╮
 │/de                                                                       │
 ╰──────────────────────────────────────────────────────────────────────────╯
  /w/demo                                                    baseten-kimi-k3
