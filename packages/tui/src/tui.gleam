@@ -4237,8 +4237,15 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
       handle_paste(clear_selection(model), text)
       |> mark_activity
       |> invalidate_frame
+
+    // A wheel flick delivers notches faster than any poll timeout, so no
+    // tick arrives until the hand pauses. Draining here, as a key does,
+    // keeps the history page this gesture asked for from waiting on that
+    // pause and then landing with every capture queued behind it.
     backend.MouseScroll(x, y, up) ->
-      scroll_at(clear_selection(model), geometry.Position(x, y), case up {
+      drain_connection(model, 64)
+      |> clear_selection
+      |> scroll_at(geometry.Position(x, y), case up {
         True -> Older
         False -> Newer
       })
