@@ -129,7 +129,17 @@ if [ "$SMOKE" = 1 ]; then
   # found by accident cannot make the run look better than it is.
   # Domain maintenance takes its configuration from daemon startup, while the
   # probe supplies the same file for session admission. Both must stay offline.
-  ( cd "$WORKSPACE" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
+  #
+  # The `exec` is what makes `$!` the daemon rather than the subshell that
+  # launched it, and every later use of SERVER_PID depends on that: the
+  # native-identity assertion below, the startup liveness poll, the SIGTERM
+  # that must reach the VM's own signal handler, and the cleanup trap. Bash
+  # replaces a subshell with its final command on its own, but only for some
+  # shapes and only in newer releases — bash 3.2, which is what macOS ships
+  # and what the hosted macos-15 runner resolves for `shell: bash`, does not
+  # do it for a `cd && cmd` list. Writing the exec means the pid is the
+  # daemon's under every shell rather than under the ones that optimize.
+  ( cd "$WORKSPACE" && exec env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
       "$REL/bin/loomd" --state-dir "$STATE" \
       --config "$SMOKE_SUPPORT/release-smoke.toml" \
       --best-effort ) >"$LOG" 2>&1 &
