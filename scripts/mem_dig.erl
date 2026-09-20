@@ -3,12 +3,16 @@
 %% Diagnostic tooling. The module is injected into the target node for the
 %% duration of one census so the walk happens where the term lives; nothing
 %% large crosses distribution. See docs/design-notes/daemon-memory.md.
+%%
+%% The reach is net_kernel:connect_node/1 for the reason mem_report.erl gives:
+%% net_adm:ping/1 answers pang for a reachable node whose short hostname does
+%% not resolve to an address the host answers on, and the loss is silent.
 -module(mem_dig).
 -export([main/1, report/1]).
 
 main([NodeStr]) ->
     Node = list_to_atom(NodeStr),
-    pong = net_adm:ping(Node),
+    true = net_kernel:connect_node(Node),
     {module, _} = code:ensure_loaded(mem_dig),
     {_, Bin, File} = code:get_object_code(mem_dig),
     {module, _} = rpc:call(Node, code, load_binary, [mem_dig, File, Bin]),

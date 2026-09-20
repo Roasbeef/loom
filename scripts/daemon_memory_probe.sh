@@ -5,7 +5,7 @@
 # bin/loomd, because the only difference it needs is a distribution name: the
 # launcher deliberately ships no vm.args and no cookie, and ERL_FLAGS would be
 # inherited by every emulator the daemon itself spawns (code mode runs one),
-# where a duplicate -sname is a boot failure. Nothing is added to the server.
+# where a duplicate node name is a boot failure. Nothing is added to the server.
 #
 # Cuts: daemon listening, sessions admitted, the same sessions after an idle
 # wait. Each records ps RSS, macOS footprint, and the BEAM accounting that
@@ -35,12 +35,21 @@ VERSION=$(cd "$REL/releases" && ls -d */ | grep -v start_erl | head -1 | tr -d /
 
 # A fresh state root under the repository. Code mode refuses a capability
 # socket under /tmp, so neither the state nor the workspace may live there.
+#
+# The daemon also gets its own HOME. Without that it reads the operator's
+# ~/.claude, installs their imported hooks and extensions, and so builds a
+# different tool registry from the one a bare host would — which is the term
+# a memory census is usually here to weigh.
 PROFILE="$REPO/build/loom-memory-profile.$$"
 rm -rf "$PROFILE"
-mkdir -p "$PROFILE/state" "$PROFILE/work"
+mkdir -p "$PROFILE/state" "$PROFILE/work" "$PROFILE/home"
 LOG="$PROFILE/server.log"
 
-NODE=loommem$$
+# Long names over loopback rather than -sname. A short name is resolved
+# through the host's own hostname, which on macOS can answer with an address
+# the machine does not listen on, and the probe then cannot reach a daemon
+# that is running perfectly well.
+NODE="loommem$$@127.0.0.1"
 COOKIE=loommemprobe
 PROBE_EBIN="$PROFILE/probe-ebin"
 mkdir -p "$PROBE_EBIN"
@@ -59,10 +68,10 @@ trap cleanup EXIT
 # stays so that a run against a non-release build can ask.
 (
   cd "$PROFILE/work" &&
-  exec "$REL/erts-$ERTS/bin/erl" \
+  HOME="$PROFILE/home" exec "$REL/erts-$ERTS/bin/erl" \
     -boot "$REL/releases/$VERSION/no_dot_erlang" \
     -pa "$REL"/lib/*/ebin \
-    -sname "$NODE" -setcookie "$COOKIE" \
+    -name "$NODE" -setcookie "$COOKIE" \
     +Muatags true \
     -noshell \
     -eval 'client@@main:run(client)' \
@@ -88,8 +97,8 @@ census() {
     footprint -p "$SERVER_PID" 2>/dev/null | grep -Ei 'TOTAL|VM_ALLOCATE|MALLOC' | head -12 || true
   } >>"$OUT"
   "$REL/erts-$ERTS/bin/erl" -boot "$REL/bin/no_dot_erlang" \
-    -sname "memprobe$$_$CENSUS" -setcookie "$COOKIE" \
-    -pa "$PROBE_EBIN" -noshell -run mem_report main "$NODE@$(hostname -s)" "$1" "${2:-observe}" \
+    -name "memprobe$$c$CENSUS@127.0.0.1" -setcookie "$COOKIE" \
+    -pa "$PROBE_EBIN" -noshell -run mem_report main "$NODE" "$1" "${2:-observe}" \
     >>"$OUT" 2>&1 || true
   CENSUS=$((CENSUS + 1))
 }
@@ -100,7 +109,7 @@ census "listening, no session"
 # The release's own control-plane acceptance: it admits two sessions over the
 # production websocket, then stops the first, leaving one resident.
 (
-  cd "$PROFILE/work" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
+  cd "$PROFILE/work" && env -i HOME="$PROFILE/home" PATH=/usr/bin:/bin \
     "$REL/erts-$ERTS/bin/erl" \
     -boot "$REL/bin/no_dot_erlang" -pa "$REL"/lib/*/ebin "$SUPPORT" \
     -noshell -eval 'application:ensure_all_started(client), client@release_probe_test:main(), erlang:halt(0, [{flush, true}]).' \
@@ -126,8 +135,8 @@ if [ "${DIG:-0}" = 1 ]; then
     echo "## heaviest process states (taken after every cut)"
   } >>"$OUT"
   "$REL/erts-$ERTS/bin/erl" -boot "$REL/bin/no_dot_erlang" \
-    -sname "memdig$$" -setcookie "$COOKIE" -pa "$PROBE_EBIN" -noshell \
-    -run mem_dig main "$NODE@$(hostname -s)" >>"$OUT" 2>&1 || true
+    -name "memdig$$@127.0.0.1" -setcookie "$COOKIE" -pa "$PROBE_EBIN" -noshell \
+    -run mem_dig main "$NODE" >>"$OUT" 2>&1 || true
 fi
 
 echo "profile root: $PROFILE" >>"$OUT"
