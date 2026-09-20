@@ -220,7 +220,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:426`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:432`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:408`), and its shape is the shape of every admission
 in the system.
@@ -322,7 +322,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:1010`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:1022`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -491,7 +491,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1450`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1471`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -722,7 +722,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1507`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1528`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1626`). That is the
@@ -1192,7 +1192,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:1186`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1204`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1203,7 +1203,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1559`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1577`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3724`). Keying
@@ -1229,7 +1229,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1248`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1266`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans

@@ -442,8 +442,9 @@ extended by the M3 runtime wave.
 - **The checkpoint poll runs at two periods, and which one is decided by the
   drive it follows.** `strand_runtime.State.occupancy` records what the last
   completed drive's `load` found. `Occupied` re-arms at `poll_interval_ms`
-  (200 ms), which is both the rate a deferred suspension is granted its next
-  permit at and the backstop behind every in-flight step; `Unoccupied`
+  (200 ms), which is the rate a deferred suspension is granted its next
+  permit at and nothing else — every other in-flight step is answered by its
+  own monitor or its own timer; `Unoccupied`
   re-arms at `idle_poll_interval_ms` (two minutes), which clears
   `residency.hibernate_after_ms` and is the reason the strand can hibernate
   at all — it holds the largest `Effects` heap in an assembly and used to be
@@ -458,9 +459,15 @@ extended by the M3 runtime wave.
   seam arranges a wake and hands back nothing to cancel it with, so arming on
   that transition would leave the tick it replaced pending until its own delay
   elapsed, and `client@schedulescan_test` asserts a strand has one deadline in
-  the wheel. What it costs is bounded: the first deferred poll after a strand
-  has been idle may wait out the idle period for its permit, because a permit
-  is what a tick grants; every later one is at the short period. The arming
+  the wheel. What it costs is bounded and exactly one thing: an occupied
+  strand can go up to `idle_poll_interval_ms` without a fast tick, so the
+  first deferred poll after a strand has been idle may wait out the idle
+  period for its permit; every later one is at the short period. Nothing in
+  production emits a deferred handle yet — the only producer under any `src`
+  is `conformance/simulation/surface.gleam:462` — so the window costs nothing
+  observable today, and the day an adapter emits one it is a stall of up to
+  two minutes. `docs/design-notes/daemon-memory.md` records the fix and what
+  relaxing the one-deadline invariant would cost. The arming
   also follows the drive rather than opening it, which is what lets the period
   be read from what that drive found and stops a halting strand leaving a
   timer behind. `runtime/idle_poll_test` asserts the single chain and both

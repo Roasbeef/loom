@@ -38,8 +38,10 @@
 //// decided by what the drive it follows found. A drive that loaded an
 //// open operation re-arms at `poll_interval_ms`, because an open
 //// operation is what the poll's short period is for: it is the rate at
-//// which a deferred suspension is granted its next permit, and the
-//// backstop behind every in-flight step. A drive that found no open
+//// which a deferred suspension is granted its next permit, and that is
+//// the short period's one functional role: a provider request, a tool run
+//// and a retry deadline are each answered by their own monitor or their
+//// own timer, never by a tick. A drive that found no open
 //// operation re-arms at `idle_poll_interval_ms` instead, which is longer
 //// than `runtime/residency.hibernate_after_ms`, so the mailbox of a
 //// strand nobody is talking to falls quiet for long enough to hibernate
@@ -52,12 +54,16 @@
 //// exactly one checkpoint deadline outstanding at any moment. A message
 //// that opens work on an idle strand therefore does not shorten the tick
 //// already pending; it drives at once, as every message does, and the
-//// period only changes when that pending tick arms its successor. What
-//// that costs is bounded and worth naming: the first deferred poll after
-//// a strand has been idle may wait out the idle period for its permit,
-//// because the permit is what a tick grants. Every later one is at the
-//// short period, since by then the drive has found the operation open.
-//// The alternative — arming on the transition — would leave the tick it
+//// period only changes when that pending tick arms its successor. So an
+//// occupied strand can be without a fast tick for up to
+//// `idle_poll_interval_ms`, and exactly one thing waits on that: the first
+//// deferred poll after a strand has been idle, since the permit is what a
+//// tick grants. Every later one is at the short period, because by then
+//// the drive has found the operation open. Nothing in production emits a
+//// deferred handle yet, so the window costs nothing observable today; the
+//// day an adapter does, it is a stall of up to two minutes on the default
+//// period, and `docs/design-notes/daemon-memory.md` records both the fix
+//// and what the fix costs. The alternative — arming on the transition — would leave the tick it
 //// replaced pending until its own delay elapsed, since the `Timers` seam
 //// arranges a wake and hands back nothing to cancel it with, and one
 //// outstanding deadline per strand is worth more than that first permit.
@@ -299,9 +305,20 @@ type State {
 // rather than a flag because the two answers name two different jobs for
 // the poll, not one condition and its negation.
 type Occupancy {
-  /// A drive loaded an open operation. The poll's short period is the
-  /// deferred-permit rate and the backstop behind every in-flight step,
-  /// so it is what the next tick takes.
+  /// A drive loaded an open operation, so the next tick takes the poll's
+  /// short period. That period's one functional role is the rate at which
+  /// a deferred suspension is granted its next permit; every other
+  /// in-flight step is answered by its own monitor or its own timer.
+  ///
+  /// Reaching this state does not shorten the tick already pending, because
+  /// the chain only ever replaces itself. A doorbell that opens work on an
+  /// idle strand therefore leaves an occupied strand with no fast tick for
+  /// up to `idle_poll_interval_ms`, and the one thing that window delays is
+  /// the first deferred poll after idleness. No provider adapter emits a
+  /// deferred handle today; the day one does, that becomes a stall of up to
+  /// two minutes on the default period, and
+  /// `docs/design-notes/daemon-memory.md` records the fix it would then be
+  /// worth paying for.
   Occupied
 
   /// A drive found no open operation. Nothing the strand holds can make
@@ -403,10 +420,11 @@ pub fn start(
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
       idle_poll_interval_ms: options.idle_poll_interval_ms,
-      // Assumed occupied until the first drive answers. A cold start that
-      // restores an open operation is the case this protects: reading the
-      // idle period from an unread register would put the recovery of a
-      // suspended operation a whole idle interval away.
+      // A placeholder the first drive overwrites before anything reads it:
+      // every arming site runs after a drive, and every drive sets this
+      // from `load`. `Occupied` is the safe direction to be wrong in
+      // anyway, since the only way this value could ever be armed on is a
+      // path that halts instead of arming.
       occupancy: Occupied,
       logger:,
       reaper:,
@@ -575,7 +593,10 @@ fn await_predecessors(
 // caller per path is deliberate: the chain replaces itself and nothing else
 // joins it, so a strand has exactly one checkpoint deadline outstanding at
 // any moment and a tick can never arrive from a chain the strand has
-// forgotten.
+// forgotten. The price of that is the window this does not close: an
+// occupancy that became `Occupied` between two ticks waits for the pending
+// idle one before the short period resumes, which delays a deferred poll's
+// first permit and nothing else.
 //
 // The subject is bound before the closure for the reason every other timer
 // here binds it: `real_timers` hands the callback to a timer process, and a

@@ -8,7 +8,13 @@
 //// commit, the `Nudge` only wakes the strand early. The `_quietly`
 //// variants commit without ringing the doorbell — schedulers (and the
 //// doorbell-drop tests) rely on the strand's periodic checkpoint poll
-//// finding the work anyway; a lost nudge costs latency, never data.
+//// finding the work anyway; a lost nudge costs latency, never data. How
+//// much latency depends on what the strand was doing: a strand with an
+//// operation open polls at `poll_interval_ms`, but one that is idle — which
+//// is every strand a quiet acceptance opens work on — polls at
+//// `idle_poll_interval_ms`, two minutes by default. A caller that wants the
+//// work picked up promptly rings, and `send_to_strand_marking` is the
+//// combination that does both.
 ////
 //// A `Runtime` addresses one strand at a time (`Runtime.strand`);
 //// `on_strand` rebinds the same tree to a sibling strand, so every
@@ -458,6 +464,12 @@ pub fn prompt(
 /// open; the strand's next checkpoint poll picks it up. For schedulers
 /// and doorbell-loss testing.
 ///
+/// The wait is the idle period, not the busy one: an acceptance is by
+/// definition work on a strand with nothing open, so the tick that finds it
+/// is up to `idle_poll_interval_ms` away — two minutes by default. Use
+/// `prompt`, or `send_to_strand_marking` for the cross-strand case, when the
+/// run should start now; both ring.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -854,7 +866,9 @@ pub fn steer(
 }
 
 /// Enqueues a steer item without the doorbell: the strand's own commits
-/// (via stale expectations) or its checkpoint poll pick it up.
+/// (via stale expectations) or its checkpoint poll pick it up. A steer lands
+/// on an open run, so the poll behind it is the short one rather than the
+/// idle period a quiet acceptance waits out.
 ///
 /// ## Examples
 ///

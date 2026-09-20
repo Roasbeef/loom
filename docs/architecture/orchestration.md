@@ -354,6 +354,17 @@ else joins it, so a strand keeps exactly one checkpoint deadline outstanding:
 the effect seam arranges a wake and returns no handle to cancel it with, so a
 tick armed beside the pending one would stay pending too.
 
+That invariant leaves one window, and it is worth naming because it is the
+price of the invariant. A doorbell that opens work on an idle strand drives at
+once but does not shorten the tick already pending, so for up to the idle
+period an occupied strand has no fast tick. Only the deferred poll depends on
+one — every other in-flight step is answered by its own monitor or its own
+timer — so the cost is that the first deferred poll after a strand has been
+idle may wait out the idle period for its permit. No production provider
+adapter emits a deferred handle today, which is why the window is documented
+rather than closed; `docs/design-notes/daemon-memory.md` records what closing
+it would cost.
+
 ## The supervision tree
 
 ```

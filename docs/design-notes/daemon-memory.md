@@ -1753,12 +1753,29 @@ wheel is the strand driver's own checkpoint poll" — and three of its tests fai
 against a second one. That assertion is right, and it is worth more than what
 the transition arming bought.
 
-What not arming costs is bounded and belongs in the record: the first deferred
-poll after a strand has been idle may wait out the idle period for its permit,
-because a permit is what a tick grants. Every later one is at the short period,
-since by then a drive has found the operation open. A deferred handle is a
-batch request measured in minutes, so a one-off two-minute granularity on its
-first poll is inside the noise of the thing being polled.
+What not arming costs is bounded and belongs in the record, precisely. When a
+doorbell wakes an `Unoccupied` strand, the drive runs at once and the strand
+becomes `Occupied`, but the one deadline already pending is the idle one. So
+for up to `idle_poll_interval_ms` an occupied strand has no fast tick. Nothing
+in the table above needs one: every in-flight step is answered by its own
+monitor or its own timer. The single exception is `DeferredPollDue`, where the
+tick *is* the permit, so the first deferred poll after a strand has been idle
+may wait out the idle period. Every later one is at the short period, since by
+then a drive has found the operation open.
+
+Today that costs nothing observable, because nothing in production emits a
+deferred handle: the only producer of `message.DeferredHandle` anywhere under a
+`src` tree is the simulation's own provider surface
+(`packages/conformance/src/conformance/simulation/surface.gleam:462`), and it
+injects both periods itself. **The day a provider adapter emits a deferred
+handle, this window becomes a user-visible stall of up to two minutes before
+the first poll of that handle.** The fix at that point is to arm one short tick
+from the `DeferredPollDue` arm when the occupancy the drive replaced was
+`Unoccupied` — and the cost of that fix is the invariant above: it leaves the
+idle tick pending beside the new one, so it needs either
+`client@schedulescan_test`'s one-deadline assertion relaxed, or a cancel handle
+added to `effects.Timers` so the superseded tick can be withdrawn instead of
+tolerated. It is not taken now because there is no handle to poll.
 
 ### What the relation between the two numbers is for
 
