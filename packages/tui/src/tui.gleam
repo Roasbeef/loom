@@ -8540,8 +8540,15 @@ fn tool_result_lines(
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
+
+    // The fresh-anchor block a successful edit carries is for the model;
+    // the patch preview below is what shows the operator what changed, so
+    // the anchors are stripped here the way a read's are.
     "fs_edit", False, Some(json.Object(fields)) -> [
-      Line(ToolResult, "fs_edit · " <> compact(result, 120)),
+      Line(
+        ToolResult,
+        "fs_edit · " <> compact(file_read_view.edit_summary(result), 120),
+      ),
       ..edit_patch_lines(fields, details_expanded)
     ]
     "context_remaining", False, Some(json.Object(fields)) ->
