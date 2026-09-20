@@ -96,9 +96,12 @@
 ////   `ToolRun.replay` is deliberately not consulted — replay decisions
 ////   were made durably at intent time. No core tool terminates a run, so
 ////   `terminate` is always `False`.
-//// - **Replay-still-safe** consults the *live* registry (pi §4.5: stored
-////   and current declarations must both say safe); an unregistered name
-////   is never safe.
+//// - **Replay-still-safe** reads the registration's own declaration
+////   (pi §4.5: stored and current declarations must both say safe); an
+////   unregistered name is never safe. It reads it from the declaration
+////   table projected when `Effects` was built, which is the same answer
+////   a lookup would give: the registry a session runs under is fixed for
+////   that record's life.
 //// - **Hooks** are built through `runtime/hooks` from real facts, not
 ////   `effects.default_hooks()`. `admission` is asked **per query** and
 ////   answers from the catalogue entry the *query's own* strand
@@ -470,11 +473,16 @@ fn history_registration(registry: Registry) -> HistoryRegistration {
   }
 }
 
-// The registration question as a `Result`, so it chains with the durable
-// reads beside it instead of branching around them.
-fn registered(registration: HistoryRegistration) -> Result(Nil, Nil) {
+// The registration question in `use` position, so it chains with the durable
+// reads beside it instead of branching around them. The two sides are not
+// both `Result`, which is the case the house combinator pattern exists for
+// (`docs/gleam-style.md` Part III, "Short-circuit combinators").
+fn if_searchable(
+  registration: HistoryRegistration,
+  then: fn() -> Result(a, Nil),
+) -> Result(a, Nil) {
   case registration {
-    HistorySearchRegistered -> Ok(Nil)
+    HistorySearchRegistered -> then()
     HistorySearchAbsent -> Error(Nil)
   }
 }
@@ -495,7 +503,7 @@ fn reference_projection(
       |> result.replace_error(Nil),
     )
     use configuration <- result.try(option.to_result(cell, Nil))
-    use _registered <- result.try(registered(searchable))
+    use <- if_searchable(searchable)
     use session_cell <- result.try(
       session.id(opened) |> result.replace_error(Nil),
     )
@@ -557,7 +565,7 @@ fn recall_projected(
       |> result.replace_error(Nil),
     )
     use configuration <- result.try(option.to_result(cell, Nil))
-    use _registered <- result.try(registered(searchable))
+    use <- if_searchable(searchable)
     Ok(list.contains(configuration.value.active_tool_names, history.tool_name))
   }
   case available {
@@ -1479,8 +1487,6 @@ pub fn tool_specs(config: Config, active: List(String)) -> List(ToolSpec) {
 /// policy; anything else → refused (the driver stages the reason as the
 /// ordinary in-band error result). Broker policy composition happens at
 /// execution, inside the tool's `clear_call`.
-///
-/// ## Examples
 ///
 /// Clearance reads the registration's replay declaration and nothing
 /// else, so it takes the declaration projection for the reason

@@ -304,12 +304,12 @@ pub fn declaration_slots_do_not_copy_the_registry_test() {
   assert ffi_memory.flat_words(large.tools.clear)
     == ffi_memory.flat_words(small.tools.clear)
 
-  // The registration is still reachable through the slots that answer about
-  // it, so this measures a narrower capture rather than a lost tool.
-  assert wiring.replay_still_safe(
-    tool.declarations(heavy.registry),
-    "padded_one",
-  )
+  // The registration is still reachable through the slot itself, so this
+  // measures a narrower capture rather than a lost tool. Asking the slot
+  // rather than a freshly built projection is the point: it is the slot
+  // whose size the assertions above pinned.
+  assert large.tools.replay_still_safe("padded_one")
+  assert large.tools.execution_mode("padded_one") == effects.ConcurrentExecution
 }
 
 /// The three compaction slots ask the registry one question — whether this
