@@ -1894,7 +1894,10 @@ share is different and, being more live, probably lower.
 - One `make check-client` run failed
   `client@goal_e2e_test.a_scripted_reviewer_is_shown_the_checks_result_test` on
   its 60-second wait, under a load average of 25 from unrelated builds on the
-  same host. It was load: the test passes alone in 0.4 seconds, and a later
-  full `check-client` on the same tree passed it in 0.383 seconds with no
-  failures at all. Recorded because a 60-second wait expiring is worth knowing
-  about even when the cause turns out to be the host.
+  same host. It was first put down to load, because the test passes alone in
+  0.4 seconds. That reading was wrong. The same wait expired on two Linux
+  signoffs, one of them without this change, and the cause was in the goal
+  check itself: a check replaced while the broker was still draining the
+  cancelled one was refused for the outstanding-effect cap, and the refusal
+  was fed to the reviewer as evidence. It is fixed separately, and it has
+  nothing to do with the poll: the test passes with the poll disabled outright.
