@@ -357,10 +357,17 @@ pub type Created {
 /// ```
 ///
 pub fn tools(schedules: Schedules, limits: Limits) -> List(Tool) {
-  [create_tool(schedules, limits), list_tool(schedules), cancel_tool(schedules)]
+  [
+    create_tool(schedules.create, limits),
+    list_tool(schedules.list),
+    cancel_tool(schedules.cancel),
+  ]
 }
 
-fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
+fn create_tool(
+  create: fn(Ctx, Request) -> Result(Created, Refusal),
+  limits: Limits,
+) -> Tool {
   tool.Tool(
     name: create_tool_name,
     description: "Schedule a heartbeat: text that will be injected into a "
@@ -536,11 +543,15 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_create(schedules, ctx, args) },
+    run: fn(ctx, args) { run_create(create, ctx, args) },
   )
 }
 
-fn run_create(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_create(
+  create: fn(Ctx, Request) -> Result(Created, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use name <- tool.with_arg(tool.required_string(args, "name"))
   use body <- tool.with_arg(tool.required_string(args, "body"))
   use wanted <- tool.with_arg(requested_wake(args))
@@ -563,10 +574,7 @@ fn run_create(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
       wake: wanted,
       body:,
     )
-  use created <- tool.or_outcome(
-    schedules.create(ctx, request),
-    refusal_outcome,
-  )
+  use created <- tool.or_outcome(create(ctx, request), refusal_outcome)
   created_outcome(created, ctx, asked_for_wake: wanted)
 }
 
@@ -756,7 +764,7 @@ fn created_outcome(
   )
 }
 
-fn list_tool(schedules: Schedules) -> Tool {
+fn list_tool(list_schedules: fn(Ctx) -> Result(List(Listed), Refusal)) -> Tool {
   tool.Tool(
     name: list_tool_name,
     description: "List the heartbeats you have scheduled — this strand's "
@@ -771,12 +779,15 @@ fn list_tool(schedules: Schedules) -> Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, _args) { run_list(schedules, ctx) },
+    run: fn(ctx, _args) { run_list(list_schedules, ctx) },
   )
 }
 
-fn run_list(schedules: Schedules, ctx: Ctx) -> ToolOutcome {
-  use listed <- tool.or_outcome(schedules.list(ctx), refusal_outcome)
+fn run_list(
+  list_schedules: fn(Ctx) -> Result(List(Listed), Refusal),
+  ctx: Ctx,
+) -> ToolOutcome {
+  use listed <- tool.or_outcome(list_schedules(ctx), refusal_outcome)
   case listed {
     [] ->
       tool.success("you have no schedules.")
@@ -841,7 +852,9 @@ fn listed_json(listed: Listed) -> JsonValue {
   ])
 }
 
-fn cancel_tool(schedules: Schedules) -> Tool {
+fn cancel_tool(
+  cancel: fn(Ctx, String, Option(String)) -> Result(Nil, Refusal),
+) -> Tool {
   tool.Tool(
     name: cancel_tool_name,
     description: "Cancel one heartbeat you scheduled, by name. It will "
@@ -874,17 +887,18 @@ fn cancel_tool(schedules: Schedules) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_cancel(schedules, ctx, args) },
+    run: fn(ctx, args) { run_cancel(cancel, ctx, args) },
   )
 }
 
-fn run_cancel(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_cancel(
+  cancel: fn(Ctx, String, Option(String)) -> Result(Nil, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use name <- tool.with_arg(tool.required_string(args, "name"))
   use target <- tool.with_arg(tool.optional_string(args, "target"))
-  use Nil <- tool.or_outcome(
-    schedules.cancel(ctx, name, target),
-    refusal_outcome,
-  )
+  use Nil <- tool.or_outcome(cancel(ctx, name, target), refusal_outcome)
   tool.success("cancelled \"" <> name <> "\". It will not fire again.")
   |> tool.with_details(
     json.Object([
