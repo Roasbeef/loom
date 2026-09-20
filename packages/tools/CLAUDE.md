@@ -356,6 +356,14 @@ was asked.
   `names` is sorted (the provider cache's byte prefix), while
   `registered` and `snippets` read in the order tools were registered,
   which is the order the prompt's index prints.
+- `tools/tool.{Declaration, Declarations}` — the registry projected to one
+  `{replay, execution_mode}` pair per name, read with `declared`. It exists
+  for copy cost, not for convenience: the effect plane's
+  `replay_still_safe` and `execution_mode` slots are closures inside a
+  record that every process of a session assembly receives a copy of, and
+  a closure holding the whole registry to read two words duplicates the
+  entire tool table once per copy. `Declarations` is opaque so a caller
+  cannot reach back to the registry through it.
 - `tools/hashline.{AnchoredLine, Ref, Hunk, Plan, Stale, ApplyError}` — the
   pure anchor/window/plan core.
 - `tools/blob.Bounded` — the overflow decision plus `{ref, size,
