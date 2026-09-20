@@ -666,11 +666,38 @@ fn woken_finished(goal: Goal, observed: Observed) -> Goal {
 // only ever rose, so a resume after a trip tripped again on its first
 // evaluation.
 fn started(goal: Goal, operation: OpId, origin: Origin, now_ms: Int) -> Goal {
+  let overtaken = check_overtaken(goal, now_ms)
+
   case harness_opened(goal, operation, origin) {
-    True -> goal
+    True -> overtaken
 
     False ->
-      Goal(..goal, continuations: 0, zero_progress: 0, updated_ms: now_ms)
+      Goal(..overtaken, continuations: 0, zero_progress: 0, updated_ms: now_ms)
+  }
+}
+
+// A check the primary has overtaken, returned to idle.
+//
+// The check runs when both strands are idle, so a primary that is working
+// again is the primary having done something the check did not see. Neither
+// phase survives that: `Checking` names a run whose result would describe the
+// tree as it stood before, and `ReadyToFeed` names a result that already
+// does. The frame carries the time the check ran but no reviewer can be asked
+// to read a pass recorded before the build broke as anything but current, and
+// what it argues for is `complete`.
+//
+// Returning to `Idle` costs one check per stretch of work, which is what the
+// operator asked for: the check runs again at the next idle boundary, before
+// the feed that follows it. A result from the abandoned run reports against a
+// deadline the phase no longer carries and is inert; the actor cancels the run
+// itself when it sees the phase move, so the jail does not keep working on an
+// answer nobody will read.
+fn check_overtaken(goal: Goal, now_ms: Int) -> Goal {
+  case goal.phase {
+    goalstate.Checking(..) | goalstate.ReadyToFeed ->
+      Goal(..goal, phase: Idle, updated_ms: now_ms)
+
+    Idle | goalstate.AwaitingVerdict(..) | Continuing(..) -> goal
   }
 }
 
@@ -802,13 +829,22 @@ fn check_abandoned(goal: Goal, observed: Observed) -> Goal {
 // started for: a result for any other deadline is a run this loop stopped
 // waiting for, and recording it would show the reviewer evidence about a
 // stretch of work that has since moved on.
+//
+// The command is the second half of the same test. Two checks started in the
+// same millisecond are indistinguishable by deadline alone, and the way that
+// happens is the operator replacing the command while one runs — so the result
+// must name the command the goal carries now, or the reviewer is shown output
+// from a command nobody is asking about under the label of one that is.
 fn checked(
   goal: Goal,
   deadline_ms: Int,
   result: goalstate.CheckResult,
   now_ms: Int,
 ) -> Goal {
-  case goal.phase == goalstate.Checking(deadline_ms:) {
+  case
+    goal.phase == goalstate.Checking(deadline_ms:)
+    && goal.check == Some(result.command)
+  {
     True ->
       Goal(
         ..goal,
@@ -889,16 +925,28 @@ fn running(goal: Goal, observed: Observed) -> #(Goal, Action) {
 // bounds. The two phases that name a run have already been relevelled,
 // so a phase that still names one names a run that is genuinely open.
 fn await(goal: Goal, observed: Observed) -> #(Goal, Action) {
-  case goal.phase {
-    goalstate.AwaitingVerdict(..) | Continuing(..) -> #(goal, Rest)
+  case goal.phase, observed.primary {
+    goalstate.AwaitingVerdict(..), _either | Continuing(..), _other -> #(
+      goal,
+      Rest,
+    )
+
+    // The primary is working with a check in flight or a result in hand, so
+    // both describe the tree as it stood before this run. `check_overtaken`
+    // says what that costs; here it is read off the level rather than off a
+    // notification, which is what covers a run the loop was never told about
+    // and a result that landed while the primary was already busy.
+    goalstate.Checking(..), Some(_busy)
+    | goalstate.ReadyToFeed, Some(_working)
+    -> #(check_overtaken(goal, observed.now_ms), Rest)
 
     // A check inside its deadline is work in flight, and the loop waits for
     // it the way it waits for a review. `relevel` has already turned a
     // deadline that passed into `ReadyToFeed`, so this arm rests only while
     // there is genuinely something to wait for.
-    goalstate.Checking(..) -> #(goal, Rest)
+    goalstate.Checking(..), None -> #(goal, Rest)
 
-    Idle | goalstate.ReadyToFeed -> offer(goal, observed)
+    Idle, _any | goalstate.ReadyToFeed, None -> offer(goal, observed)
   }
 }
 

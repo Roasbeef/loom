@@ -762,6 +762,103 @@ pub fn a_check_in_flight_does_not_outlast_the_budget_test() {
     == goalloop.WrapUp(text: goalloop.wrap_up_text(goalstate.ByTokenBudget))
 }
 
+// A primary that goes back to work drops the check in flight. The operator
+// prompted, or a nudge woke it, and whatever the check is measuring is now the
+// tree as it stood before that run.
+pub fn a_run_start_drops_the_check_in_flight_test() {
+  let owed =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 9000),
+    )
+
+  let prompted = an_op(77)
+  let started =
+    goalloop.Observed(
+      ..idle(goalloop.PrimaryStarted(
+        operation: prompted,
+        origin: goalloop.Foreign,
+      )),
+      primary: Some(prompted),
+    )
+
+  let #(moved, action) = goalloop.next_action(owed, started)
+
+  assert moved.phase == goalstate.Idle
+    as "a check the primary overtook does not survive its run start"
+  assert action == goalloop.Rest
+    as "the check waits for the run the operator just opened to end"
+}
+
+// And a result already in hand is dropped the same way: `ReadyToFeed` is a
+// result waiting to be fed, and feeding it after the primary worked again
+// would argue for completion from evidence about earlier work.
+pub fn a_run_start_drops_a_result_not_yet_fed_test() {
+  let ready =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.ReadyToFeed,
+      last_check: Some(a_failing_check()),
+    )
+
+  let prompted = an_op(78)
+  let started =
+    goalloop.Observed(
+      ..idle(goalloop.PrimaryStarted(
+        operation: prompted,
+        origin: goalloop.Foreign,
+      )),
+      primary: Some(prompted),
+    )
+
+  let #(moved, _action) = goalloop.next_action(ready, started)
+
+  assert moved.phase == goalstate.Idle
+    as "an unfed result does not survive the primary's next run"
+}
+
+// The same read off the level, which is what covers a run the loop was never
+// told about: a busy primary with a check in flight drops it rather than
+// waiting out the deadline.
+pub fn a_busy_primary_drops_the_check_from_the_level_test() {
+  let owed =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      phase: goalstate.Checking(deadline_ms: 9000),
+    )
+  let working =
+    goalloop.Observed(..idle(goalloop.Level), primary: Some(an_op(79)))
+
+  let #(moved, action) = goalloop.next_action(owed, working)
+
+  assert moved.phase == goalstate.Idle
+    as "a check does not outlive the level that shows the primary busy"
+  assert action == goalloop.Rest
+    as "the check waits for the primary to stop rather than racing it"
+}
+
+// A result for a command the operator has since replaced is inert, whatever
+// deadline it names. Two checks started in the same millisecond cannot be told
+// apart by deadline alone, and this is the way that happens.
+pub fn a_check_result_for_a_replaced_command_is_ignored_test() {
+  let owed =
+    goalstate.Goal(
+      ..a_checked_goal(),
+      check: Some("go test ./..."),
+      phase: goalstate.Checking(deadline_ms: 9000),
+    )
+
+  let #(moved, _action) =
+    goalloop.next_action(
+      owed,
+      idle(goalloop.Checked(deadline_ms: 9000, result: a_failing_check())),
+    )
+
+  assert moved.last_check == None
+    as "a result for a command nobody pinned any more records nothing"
+  assert moved.phase == goalstate.Checking(deadline_ms: 9000)
+}
+
 fn a_checked_goal() -> goalstate.Goal {
   goalstate.Goal(..a_goal(), check: Some("make check"))
 }
@@ -840,6 +937,43 @@ pub fn a_level_read_never_leaves_a_check_past_its_deadline_test() {
       | goalstate.Continuing(..) -> Nil
     }
   })
+}
+
+// A fed check result was always produced after the primary's last run ended,
+// stated as the invariant that makes it true one step at a time: no evaluation
+// leaves an Active goal holding a check while the primary is observed working.
+//
+// The induction is the whole argument. A check is started only from the
+// occasion where both strands are idle, so the run it measures is the stretch
+// that had just ended; the only way its result could describe older work is for
+// the primary to run again before the feed goes out, and every event that shows
+// a busy primary returns the phase to `Idle` instead. What is left over is a
+// run this loop never observed at all, and no property can speak for that.
+pub fn a_check_never_outlives_a_busy_primary_test() {
+  walk(seed(48), 400, fn(reached) {
+    let #(goal, observed) = reached
+    let #(moved, _action) = goalloop.next_action(goal, observed)
+
+    case moved.status, observed.primary {
+      goalstate.Active, Some(_working) -> {
+        assert holds_no_check(moved.phase)
+          as "an active goal never holds a check while the primary works"
+      }
+
+      _status, _primary -> Nil
+    }
+  })
+}
+
+// Whether the phase is one that carries no check: neither a run in flight nor
+// a result waiting to be fed.
+fn holds_no_check(phase: goalstate.Phase) -> Bool {
+  case phase {
+    goalstate.Checking(..) | goalstate.ReadyToFeed -> False
+
+    goalstate.Idle | goalstate.AwaitingVerdict(..) | goalstate.Continuing(..) ->
+      True
+  }
 }
 
 // A check result the loop was not waiting for moves nothing. The walk draws

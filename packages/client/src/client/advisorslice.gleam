@@ -801,7 +801,7 @@ pub fn goal_feed_message(
     <> untrusted_close
     <> "\n"
     <> budget_line(goal)
-    <> check_block(goal)
+    <> check_block(goal, now)
     <> "\n\n"
     <> goal_feed_evidence(slice)
     <> "\n"
@@ -831,7 +831,7 @@ pub const check_label = "Check (run by the harness, not by the primary):"
 // printed `</untrusted_objective>` must not be able to close a block it is
 // quoted after, and one that printed the footer must not be able to end the
 // feed and speak the rest in the harness's voice.
-fn check_block(goal: goalstate.Goal) -> String {
+fn check_block(goal: goalstate.Goal, now: Int) -> String {
   case goal.last_check {
     None -> ""
 
@@ -840,9 +840,28 @@ fn check_block(goal: goalstate.Goal) -> String {
       <> check_label
       <> "\n  command: "
       <> goal_frame_safe(result.command)
+      <> "\n  ran: "
+      <> check_age(result.ran_at_ms, now)
       <> "\n  result: "
       <> check_ending(result.ending)
       <> check_output(result.output)
+  }
+}
+
+// When the run happened, relative to the feed that carries it.
+//
+// The reviewer cannot otherwise tell a check of this stretch of work from a
+// check of the one before it, and the difference decides what a pass is worth:
+// a pass from before the primary's last run says nothing about the tree the
+// reviewer is being asked to judge. The loop drops a result the primary
+// overtook, so an old one here is the case the loop cannot see — a clock that
+// moved, a restart, a result recorded while the operator was mid-command — and
+// the line is what lets the reviewer discount it.
+fn check_age(ran_at_ms: Int, now: Int) -> String {
+  case int.max(0, { now - ran_at_ms } / 1000) {
+    0 -> "immediately before this feed"
+    1 -> "1 second before this feed"
+    seconds -> int.to_string(seconds) <> " seconds before this feed"
   }
 }
 
