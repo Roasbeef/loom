@@ -1795,7 +1795,7 @@ pub fn goal_words_with_no_open_goal_feed_are_refused_test() {
 // the abandoned feed is counted and offered again, and the count is what
 // bounds the retry so a provider that never answers pauses the goal
 // rather than being paid to refuse it forever.
-pub fn an_unanswered_review_is_counted_and_offered_again_test() {
+pub fn an_unanswered_review_is_counted_and_left_for_the_tick_test() {
   let assert Ok(rig) = a_rig() as "the advisor rig must open"
   let assert Ok(subject) = address.lookup(rig.name)
     as "the advisor actor must be registered"
@@ -1823,15 +1823,14 @@ pub fn an_unanswered_review_is_counted_and_offered_again_test() {
   assert goal.unanswered_feeds == 1
   assert goalstate.status_of(goal) == goalstate.Active
 
-  // Offered again rather than abandoned, and the phase is the durable
-  // evidence: the level read found the idle phase, sent a feed, and
-  // recorded a verdict owed again. The second frame is not a second
-  // committed entry here because this rig's advisor never settles — the
-  // store still shows its run open, so the send steers that run rather
-  // than starting one, and a steered message sits on the run's queue. The
-  // earlier draft left this state with no verdict owed and nothing
-  // scheduled, which is exactly what this assertion refutes.
-  assert goal.phase == goalstate.AwaitingVerdict(feed:)
+  // The phase returns to idle and the feed is *not* re-offered here. The
+  // re-offer is the periodic tick's, because a provider refusing on a rate
+  // limit ends its run in the time it takes to refuse a request: three of
+  // those inside one thirty-second window spent the whole bound and paused
+  // the goal for a reviewer that would have answered a minute later. The
+  // level read that re-offers is asserted in `goalloop_test`, where it needs
+  // no provider at all.
+  assert goal.phase == goalstate.Idle
   stop(rig)
 }
 
@@ -1985,6 +1984,60 @@ pub fn the_accounting_counts_only_the_primary_test() {
   // the sum refuses is a row it must never re-examine.
   assert goal.tokens_used == 26
   assert goal.accounted_through_seq == trailing
+  stop(rig)
+}
+
+// A stopped goal is not accounted at all, and what that costs is the point of
+// the test: spend while the goal is held is not charged to it.
+//
+// The reason is not only the write. A paused goal ran the ledger scan and
+// rewrote its cell on every usage row the session committed — a durable write
+// per row for a loop that was not running — and what it charged was the
+// operator's own work, since the loop commits nothing while it is stopped. The
+// resume moves the cursor to where the ledger stands then, so the held stretch
+// is not charged late either.
+pub fn a_stopped_goal_is_not_accounted_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    as "the operator must be able to pause the goal"
+  barrier(subject)
+  let held = goal_cell(rig)
+
+  // The operator works on something else, and the ledger records it.
+  let worked = a_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 101)
+
+  process.send(subject, advisor.PrimarySpent)
+  let _drained = settle(subject)
+
+  let paused = goal_cell(rig)
+  assert paused.tokens_used == 0
+    as "a held goal is not charged for work it did not do"
+  assert paused.accounted_through_seq == held.accounted_through_seq
+    as "a held goal's cursor does not move, so nothing is written"
+
+  // And the resume starts accounting from where the ledger stands now rather
+  // than replaying the held stretch into the budget.
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.ResumeGoal(reply:)
+    })
+    as "the operator must be able to resume the goal"
+  barrier(subject)
+
+  let resumed = goal_cell(rig)
+  assert resumed.tokens_used == 0
+    as "the resume does not charge the stretch the goal was held for"
+  assert resumed.accounted_through_seq > held.accounted_through_seq
+    as "the resume accounts from where the ledger stands, not from the pin"
   stop(rig)
 }
 

@@ -1635,7 +1635,7 @@ fn evaluate(
     None -> memory
 
     Some(goal) -> {
-      let fresh = account_recompute(state, goal)
+      let fresh = accounted(state, goal)
       let #(moved, action) =
         goalloop.next_action(fresh, observe(state, memory, event))
       let memory = stored_if_moved(state, runtime, memory, goal, moved)
@@ -2206,7 +2206,7 @@ fn answered(
   answer: goalloop.Answer,
   reply: Subject(Result(advise.Ack, String)),
 ) -> State {
-  let fresh = account_recompute(state, goal)
+  let fresh = accounted(state, goal)
   let #(moved, action) =
     goalloop.next_action(
       fresh,
@@ -2254,6 +2254,29 @@ fn verdict_ack(
 }
 
 // --- accounting -----------------------------------------------------------
+
+// Whether this goal's spend is accounted at all.
+//
+// Only a running goal's is. A stopped goal runs nothing, so every usage row
+// the session commits while it is held belongs to whatever the operator is
+// doing instead — and accounting it anyway cost a ledger scan and a durable
+// cell write per row for a loop that was not running, which on a paused goal
+// is every row of every turn the operator types.
+//
+// What that gives up is stated rather than hidden: **spend while the goal is
+// stopped is not charged to it** (protocol 044 §5, amended). A resume
+// accounts from where the ledger stands when the loop starts again, because
+// the cursor stays where the last accounted row left it and the scan
+// afterwards begins there — so the gap is not double-counted either. It
+// cannot under-count the loop's own work, which is the property the budget
+// bound depends on: the loop commits nothing while it is stopped.
+fn accounted(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+  case goal.status {
+    goalstate.Active -> account_recompute(state, goal)
+
+    goalstate.Paused(..) | goalstate.Limited(..) | goalstate.Complete -> goal
+  }
+}
 
 // The one code path that adds to the goal's token total.
 //
@@ -2662,6 +2685,12 @@ fn resume_goal(
 // evaluation that starts the loop again is `commanded`'s, which is what
 // makes a resume onto an idle primary send a feed rather than wait for
 // an occasion that cannot come.
+//
+// The accounting cursor moves to where the ledger stands now, which is the
+// other half of "spend while the goal is stopped is not charged to it": a
+// stopped goal accounts nothing, so a resume that left the cursor behind
+// would charge the whole held stretch to the budget on its first evaluation —
+// the same trap `set_goal` avoids by reading the newest row at pin time.
 fn continued(state: State, goal: goalstate.Goal) -> goalstate.Goal {
   goalstate.Goal(
     ..goal,
@@ -2670,6 +2699,7 @@ fn continued(state: State, goal: goalstate.Goal) -> goalstate.Goal {
     continuations: 0,
     zero_progress: 0,
     unanswered_feeds: 0,
+    accounted_through_seq: newest_usage_seq(state),
     updated_ms: now(state.wiring),
   )
 }
