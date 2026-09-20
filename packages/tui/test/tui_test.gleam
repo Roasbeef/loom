@@ -1557,6 +1557,37 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
     == "Bash($ gleam test --target erlang)"
 }
 
+// A run of reads on one file is only distinguishable in the transcript if
+// the row says which window each one asked for, and the absence of
+// `offset` has to be visible as an absence.
+pub fn fs_read_tool_call_shows_the_window_it_asked_for_test() {
+  let window = fn(fields) {
+    tui.tool_call_summary("fs_read", json.Object(fields), False)
+  }
+  let path = #("path", json.String("a/b.gleam"))
+
+  assert window([path]) == "fs_read · a/b.gleam"
+  assert window([path, #("limit", json.Int(45))])
+    == "fs_read · a/b.gleam · limit 45"
+  assert window([path, #("offset", json.Int(1010))])
+    == "fs_read · a/b.gleam · offset 1010"
+  assert window([path, #("offset", json.Int(1010)), #("limit", json.Int(32))])
+    == "fs_read · a/b.gleam · offset 1010 limit 32"
+}
+
+// A write and an edit take no window, so their rows are unchanged.
+pub fn fs_edit_tool_call_shows_only_its_path_test() {
+  assert tui.tool_call_summary(
+      "fs_edit",
+      json.Object([
+        #("path", json.String("a/b.gleam")),
+        #("digest", json.String("abcdef0123456789-42")),
+      ]),
+      False,
+    )
+    == "fs_edit · a/b.gleam"
+}
+
 pub fn live_tool_call_hides_partial_json_arguments_test() {
   assert tui.live_tool_call_summary("bash") == "bash · preparing arguments…"
 }
