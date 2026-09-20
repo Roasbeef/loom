@@ -64,6 +64,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
+import runtime/residency
 import weft/actor
 import weft/registry as address
 
@@ -208,6 +209,7 @@ pub fn start(
   actor.new(State(bounds:, entries: [], total_bytes: 0, count: 0))
   |> actor.on_message(handle)
   |> actor.addressed(name)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

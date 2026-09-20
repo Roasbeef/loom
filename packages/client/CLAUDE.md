@@ -3708,6 +3708,42 @@ source lookup. `daemon_manager_test` opens three real host pairs with large runt
 payloads and checks that host state stays bounded while publication and ordered
 shutdown still succeed.
 
+## Idle assembly actors hibernate
+
+A session's weft actors take `runtime/residency.hibernate_after_ms` — one
+constant, thirty seconds — and no site overrides it: `escalate`, `agency`,
+`rulescan`, `jobs`, `scratch`, `history`, `internal/shared_history`,
+`extension/hosts`, `advisor`, and the counters actor inside `hookserve.wire`.
+`erlang:hibernate/3` sweeps and then shrinks the heap block to the live data,
+so a parked session gives back the working heap of its last turn.
+
+Three kinds of actor are deliberately left awake, and the reasons are
+load-bearing rather than oversights. The **gateway hub** ticks
+`MaintainTransfers` every second, so its mailbox is never quiet for any
+threshold at or above a second and the receive timeout can never expire;
+changing that means arming the tick conditionally, which is a separate
+decision with its own missed-tick argument. `runtime/strand_runtime` is out
+of reach for the same reason and is the costlier loss: it re-arms its
+checkpoint poll every 200 ms unconditionally and holds the largest `Effects`
+heap in the assembly. The **commit forwarders**
+(`gateway.commit_forwarder`, `history.commit_pull`,
+`history.supervised_shared_commit_pull`) and `serve`'s owned publication child
+are stateless `Nil` processes: nothing to reclaim, and a wake sweep would land
+on the hot path of every commit. `distillpass`'s domain stop token is
+request-scoped and dies with its pass.
+
+Hibernation returns garbage only. The live set it leaves behind is dominated by
+this assembly's per-process copies of `Effects`, so this is a complement to
+sharing that value and never a substitute; the measured local yield is 3 to 5%
+of an idle six-session assembly across runs, and the yield on the installed
+daemon is unmeasured. `client@assembly_heap_census_test` observes it — it
+confirms `erlang:hibernate/3` through `process_info` rather than assuming the
+interval fired — behind `LOOM_ASSEMBLY_HEAP_CENSUS`, and with a
+`scripts/serial-tests` line because it differences `erlang:processes/0` and
+suspends what it finds.
+[The daemon memory investigation](../../docs/design-notes/daemon-memory.md)
+carries the tables and the rerun command.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)

@@ -133,6 +133,7 @@ import runtime/api
 import runtime/child_run
 import runtime/effects
 import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
+import runtime/residency
 import runtime/writer
 import session/session
 import tools/agent.{
@@ -301,6 +302,7 @@ pub fn start(
     }
   })
   |> actor.addressed(config.name)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

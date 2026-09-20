@@ -36,6 +36,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import runtime/residency
 import storage/internal/history_source as source
 import storage/snapshot
 import tools/history as tool
@@ -190,6 +191,7 @@ pub fn prepare(config: Config) -> Result(Prepared, String) {
       |> Ok
     })
     |> actor.on_message(handle)
+    |> actor.hibernate_after(residency.hibernate_after_ms)
     |> actor.start
     |> result.map_error(string.inspect),
   )

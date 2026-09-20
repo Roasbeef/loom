@@ -25,6 +25,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
+import runtime/residency
 import runtime/strand_runtime
 import weft/actor
 import weft/registry as address
@@ -104,6 +105,7 @@ pub fn start(
     let _stopped = address.stop(state.namespace)
     Nil
   })
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 
