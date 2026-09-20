@@ -469,6 +469,19 @@ was asked.
   count, then `digest:`, in that order. Bounded three ways: contexts that
   touch are merged, a block over `max_fresh_anchor_bytes` becomes one line
   naming the offset to read from, and an edit that leaves no lines says so.
+- **A successful write is enough to plan the next edit.** `write_outcome`
+  keeps its first line, then always adds `digest:` — one short line, and
+  `fs_edit` cannot be planned without it — then the whole written file as a
+  single region through the same `fresh_anchor_text`, renderer, heading and
+  cap as an edit. Before this, `fs_write` followed by `fs_edit` of the same
+  file always cost an `fs_read` in between, for content the harness held at
+  the moment it wrote it. `fs_write`'s `content` is a required *string*, so
+  a write is always text and there is no binary or image payload for anchors
+  to be wrong about. The size check decides on its own where it can: anchored
+  rendering is strictly larger than the content, so a file already at the cap
+  is never annotated to discover it does not fit. The two oversized wordings
+  differ because the advice does — an edit names the offset its regions begin
+  at, a write has the whole file and names the choice instead.
 - **Annotate the post-image once, then slice it.** `edit_outcome` takes
   `hashline.annotate(edited)` once and each region is a `drop`/`take` over
   that list rendered by `hashline.render_lines` — the renderer `render` uses
