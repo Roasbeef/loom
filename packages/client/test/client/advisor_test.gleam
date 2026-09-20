@@ -2375,6 +2375,73 @@ pub fn spend_before_the_pin_is_not_charged_to_the_goal_test() {
   stop(rig)
 }
 
+// --- the operator's pause reads the status it found ------------------------
+
+// Pausing a goal a bound already stopped is a committed no-op, so the cause
+// the goal carries survives.
+//
+// The pause used to write over any status, which lost the bound: a
+// `budget_limited` goal became `paused` with `operator` as its reason, and the
+// panel then told the operator they had paused a goal the harness stopped.
+pub fn pausing_a_limited_goal_keeps_its_cause_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  // A budget of one token, tripped by the first row the primary commits
+  // after the pin. The entry is created after the pin too, because that is
+  // the shape a real row has: the ledger writes a row in the same
+  // transaction as the entry it names, so both sit above the cursor the
+  // pin seeded.
+  pin_goal(subject, 1)
+  let worked = a_settled_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 211)
+  process.send(subject, advisor.PrimarySpent)
+  barrier(subject)
+
+  assert goal_cell(rig).status == goalstate.Limited(by: goalstate.ByTokenBudget)
+    as "the budget must have tripped before the pause is asked for"
+
+  let assert Ok(Nil) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    as "pausing an already-stopped goal is committed, not refused"
+
+  assert goal_cell(rig).status == goalstate.Limited(by: goalstate.ByTokenBudget)
+    as "a pause must not overwrite the bound that stopped the goal"
+  stop(rig)
+}
+
+// A complete goal has nothing to hold, and the refusal says so. Writing a
+// pause over it made the reviewer's terminal verdict resumable: `/goal pause`
+// then `/goal resume` restarted a goal that was finished.
+pub fn pausing_a_complete_goal_is_refused_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  pin_goal(subject, 400_000)
+
+  // The pin found an idle primary, so the feed is already open on the
+  // advisor's own run, which is the run that owes the verdict.
+  let assert Ok(advise.Acknowledged) =
+    judge(subject, advise.Complete(text: "the migration is merged"))
+    as "the reviewer's complete must answer the open goal feed"
+  assert goal_cell(rig).status == goalstate.Complete
+
+  let assert Error(reason) =
+    process.call(subject, waiting: 5000, sending: fn(reply) {
+      advisor.PauseGoal(reply:)
+    })
+    as "a complete goal must refuse a pause rather than absorb it"
+  assert string.contains(reason, "complete goal")
+
+  assert goal_cell(rig).status == goalstate.Complete
+    as "the refusal leaves the terminal status alone"
+  stop(rig)
+}
+
 // --- the harness's own wakes do not renew the operator turn ----------------
 
 // A wrap-up wakes the idle primary, and that run is the harness's own: it

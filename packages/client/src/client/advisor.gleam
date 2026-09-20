@@ -1118,14 +1118,28 @@ fn read_goal(state: State, runtime: Runtime) -> Option(goalstate.Goal) {
 // ordering `store_guard` takes: a crash between the write and the wake
 // costs one continuation, while the reverse ordering could wake a
 // primary toward a goal the cell no longer records.
+// Every transition stamps `updated_ms` from this session's clock, and the
+// cell's own decoder refuses a payload whose `updated_ms` precedes its
+// `created_ms`. A wall clock that steps backwards — an NTP correction, a
+// laptop resuming — would otherwise write a cell that no restart can read,
+// and an unreadable goal cell is no goal at all: the operator's pinned
+// objective would vanish because the host adjusted its clock. Clamping here
+// rather than at each of the eight transitions is what makes that
+// unrepresentable instead of remembered.
 fn store_goal(
   state: State,
   runtime: Runtime,
   memory: Memory,
   goal: goalstate.Goal,
 ) -> Memory {
-  write_cell(state, runtime, goal_key, goalstate.encode(goal))
-  Memory(..memory, goal: Some(goal))
+  let ordered =
+    goalstate.Goal(
+      ..goal,
+      updated_ms: int.max(goal.updated_ms, goal.created_ms),
+    )
+
+  write_cell(state, runtime, goal_key, goalstate.encode(ordered))
+  Memory(..memory, goal: Some(ordered))
 }
 
 // A guard that would not commit is still the guard this actor acts on:
@@ -1502,7 +1516,7 @@ fn judge(
     // error naming the two words that are legal here, which the
     // reviewer reads and can correct within the same run.
     True, advise.Quiet | True, advise.Nudge(_) | True, advise.Block(_) ->
-      case goal_feed_open(memory) {
+      case goal_feed_open(state, memory) {
         True -> {
           process.send(
             reply,
@@ -1519,14 +1533,22 @@ fn judge(
   }
 }
 
-// Whether a goal feed is open and its verdict owed, read from the
-// durable phase rather than from the actor's heap. That is the whole of
-// the difference a restart sees: an actor that has just replaced a dead
-// one knows a verdict is owed, so the reviewer's answer is acted on
-// instead of being refused as answering no open feed.
-fn goal_feed_open(memory: Memory) -> Bool {
+// Whether a goal feed is open and *this* run owes its verdict, read from
+// the durable phase rather than from the actor's heap. That is the whole of
+// the difference a restart sees: an actor that has just replaced a dead one
+// knows a verdict is owed, so the reviewer's answer is acted on instead of
+// being refused as answering no open feed.
+//
+// The phase alone is not the question. `AwaitingVerdict` names the advisor
+// run the feed opened, and a `continue` arriving from any *other* advisor
+// run is an ordinary review reaching for the goal words — it would wake the
+// primary toward an objective it was never shown. So the run asking must be
+// the run that owes, which is what the recorded operation is for.
+fn goal_feed_open(state: State, memory: Memory) -> Bool {
   case memory.goal {
-    Some(goalstate.Goal(phase: goalstate.AwaitingVerdict(..), ..)) -> True
+    Some(goalstate.Goal(phase: goalstate.AwaitingVerdict(feed:), ..)) ->
+      running(state.wiring.session, strand) == Some(feed)
+
     Some(_otherwise) | None -> False
   }
 }
@@ -2015,7 +2037,7 @@ fn goal_word(
   answer: goalloop.Answer,
   reply: Subject(Result(advise.Ack, String)),
 ) -> State {
-  use <- bool.lazy_guard(when: !goal_feed_open(memory), return: fn() {
+  use <- bool.lazy_guard(when: !goal_feed_open(state, memory), return: fn() {
     process.send(
       reply,
       Error(
@@ -2368,6 +2390,14 @@ fn refreshed(
 // goal is a committed no-op; resuming a complete goal refuses —
 // completion is the reviewer's verdict, not a status to undo (protocol
 // 044 §7).
+//
+// The pause is matched on the status rather than written over whatever it
+// finds, because a rewrite loses two things the operator needs. A
+// `Limited` goal rewritten to `Paused(ByOperator)` forgets which bound
+// stopped it, so the panel's cause and the resume's advice both become
+// "you paused it"; and `Complete` rewritten to a pause is resumable, which
+// is a door onto restarting a finished goal that the reviewer's verdict is
+// supposed to close.
 fn pause_goal(
   state: State,
   runtime: Runtime,
@@ -2376,18 +2406,36 @@ fn pause_goal(
   case memory.goal {
     None -> #(Error("there is no goal to pause"), memory)
 
-    Some(goal) -> {
-      let held =
-        goalstate.Goal(
-          ..goal,
-          status: goalstate.Paused(by: goalstate.ByOperator),
-          phase: goalstate.Idle,
-          updated_ms: now(state.wiring),
+    Some(goal) ->
+      case goal.status {
+        goalstate.Active -> #(
+          Ok(Nil),
+          store_goal(state, runtime, memory, held(state, goal)),
         )
 
-      #(Ok(Nil), store_goal(state, runtime, memory, held))
-    }
+        // Already stopped, and the operator's intent is satisfied. A
+        // committed no-op rather than a second write, so the cause the
+        // goal already carries survives: a goal the cap limited and a goal
+        // the operator paused are different things to do next.
+        goalstate.Paused(..) | goalstate.Limited(..) -> #(Ok(Nil), memory)
+
+        goalstate.Complete -> #(
+          Error(
+            "a complete goal has nothing to hold; clear it or set a new one",
+          ),
+          memory,
+        )
+      }
   }
+}
+
+fn held(state: State, goal: goalstate.Goal) -> goalstate.Goal {
+  goalstate.Goal(
+    ..goal,
+    status: goalstate.Paused(by: goalstate.ByOperator),
+    phase: goalstate.Idle,
+    updated_ms: now(state.wiring),
+  )
 }
 
 fn resume_goal(
