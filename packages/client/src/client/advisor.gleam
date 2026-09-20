@@ -147,6 +147,7 @@ import gleam/string
 import machine/strand as machine_strand
 import runtime/api.{type Runtime}
 import runtime/effects
+import runtime/residency
 import session/session.{type Session}
 import storage/storage
 import telemetry/field
@@ -557,6 +558,7 @@ pub fn start(wiring: Wiring) -> actor.StartResult(Subject(Message)) {
   ))
   |> actor.on_message(handle)
   |> actor.addressed(wiring.name)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

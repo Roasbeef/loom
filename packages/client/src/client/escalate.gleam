@@ -157,6 +157,7 @@ import gleam/result
 import gleam/string
 import runtime/api
 import runtime/escalation as durable
+import runtime/residency
 import tools/blob
 import tools/tool
 import weft/actor
@@ -284,6 +285,7 @@ pub fn start(
     }
   })
   |> actor.addressed(config.name)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

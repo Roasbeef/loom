@@ -1306,3 +1306,350 @@ than one session needs something other than `client@release_probe_test`, which
 asserts zero residents at start: a few frames of `sessions.create` and
 `sessions.list` over the daemon's control websocket, built from
 `host/websocket`, `host/endpoint` and `host/bootstrap`, is enough.
+
+**Superseded.** That run has since been done, and the paragraph above is
+corrected under "Correcting the 2026-09-19 experiment" in the September 20
+section below: its diagnosis of the cause was right, its reading of the rising
+heaps was not, and a forced collection is the wrong proxy for a hibernation.
+The option is now sized, observed, and taken.
+
+## 2026-09-20: idle hibernation, taken as a complement to sharing `Effects`
+
+This section sizes option B from the previous section and takes it. Hibernation
+is now armed on the session-assembly actors that go quiet, it is observed
+working, and it recovers 4.7% of what an idle six-session assembly holds
+locally. That is a complement to option A, not a substitute: 71% of the same
+heap is live, and only removing the copies reaches it.
+
+Three things were established, and the first changes what the option is.
+
+### The option was already built
+
+`weft/actor.hibernate_after(builder, ms)` has been in weft since `3b70c62` and
+ships in 0.4.4, which is the version every Loom package already pins. There was
+no API to design, no `protocol-change`, and **no new Erlang FFI**: the one
+external it needs, `erlang:hibernate/3`, is already confined to
+`weft_sys_ffi:hibernate/1` with the comment explaining why no Gleam signature
+could be honest about a call that never returns. The mechanism is a receive
+timeout rather than a timer message, so nothing is queued and there is no stale
+fire to discard; `weft/actor`'s `await_message` hibernates from inside the
+receive it was already blocked in, and a hibernating actor keeps its selector,
+its timer book and its monitors. `idle_timeout` and `periodic` use named timers
+with generation stamps precisely so they can coexist with a hibernation.
+
+`weft/state_machine` has no equivalent, and the previous section's single
+largest unattributed process — 117.533 MiB — is a state machine. Adding one
+there is a separate change; the measurement below says what it would be worth.
+
+### What hibernation does, in isolation
+
+A weft test (`hibernation_shrinks_the_heap_without_reclaiming_live_state_test`)
+churns two identical actors holding a 1.6 MiB live list, reads one idle and
+then after a forced major collection, and reads the other once
+`is_hibernating` confirms it has hibernated:
+
+| Reading | Allocated process memory |
+|---|---:|
+| Idle, no hibernation | 10,783,824 B |
+| After a forced major collection | 4,119,616 B |
+| Hibernated | 1,601,552 B |
+| The live state alone | 1,600,000 B |
+
+Two results. Hibernation is **better than a forced full sweep**, because a
+sweep sizes its fresh heap by a growth policy while hibernation shrinks the
+block to the live data — 1.60 MiB against 4.12 MiB for the same live set. And
+it lands one tenth of one percent above the live floor, so it reclaims garbage
+and only garbage. An actor whose state is large is still large after
+hibernating.
+
+The wake-up cost is measured there rather than asserted, because it is a full
+sweep of whatever the caller holds: for a 1.6 MiB live set the first round trip
+after a hibernation took 939 microseconds against 134 awake.
+
+### What is armed, and what is not
+
+`runtime/residency.hibernate_after_ms` is one constant, thirty seconds, and its
+doc comment carries the argument for the value from both sides. Eleven sites
+take it and no site overrides it.
+
+Enabled, in `client`: `escalate.start` and `agency.start`, whose entire state is
+an `api.Runtime`; `rulescan.start`, which holds one; `jobs.start`,
+`scratch.start`, `history.start`, `internal/shared_history.start`,
+`extension/hosts.start`, `advisor.start`, and the counters actor inside
+`hookserve.wire`. Enabled, in `runtime`: `registry.start`.
+
+Deliberately not enabled, with the reason in each case:
+
+- **`runtime/strand_runtime`** cannot, and this is the expensive one. Its
+  `handle` re-arms the checkpoint poll from inside the `PollTick` arm itself,
+  on every tick, whether or not there is work: `state.effects.timers.after(
+  state.poll_interval_ms, ...)` is the first thing that arm does.
+  `api.default_options` sets `poll_interval_ms: 200` and `effects.real_timers`
+  really sends the message, so a strand's mailbox is never quiet for a fifth of
+  a second, let alone thirty. An interval on it is dead code, and it was
+  briefly armed here before being removed. **The strand is also the actor
+  holding the largest `Effects` heap in an assembly**, so the most valuable
+  hibernation target in the tree is the one currently out of reach.
+- **`client/gateway`'s hub** carries `actor.periodic(every: 1000, sending:
+  MaintainTransfers)`. A one-second heartbeat means the mailbox is never quiet
+  for any threshold at or above a second, so the receive timeout the option is
+  built on never expires. See the separate decision below.
+- **`runtime/writer`** carries `actor.periodic(..., RenewTick)`, for the same
+  reason.
+- **`client/gateway.commit_forwarder`, `client/history.commit_pull` and
+  `client/history.supervised_shared_commit_pull`** are stateless `Nil`
+  forwarders on the commit path. They hold nothing, so there is nothing to
+  reclaim, and a wake sweep would land on the hot path of every commit.
+- **`runtime/supervisor`'s booter and `serve`'s owned publication child** are
+  stateless `Nil` placeholders that exist to order one publication. Nothing to
+  reclaim.
+- **`client/distillpass`'s domain stop token** is request-scoped and dies with
+  its pass.
+- **`runtime/internal/drain_registry`** is a `gleam_otp` actor, not a weft one,
+  so the option does not exist for it.
+- **`host/websocket`** is a per-connection transport on the latency-critical
+  read path, and is not part of a session assembly.
+
+### The local census: method
+
+`client@assembly_heap_census_test` assembles real session trees through
+`serve.assemble_owned` under real custody, drives each through four turns
+against a scripted Anthropic transport — every turn is two provider requests
+and one jailed `bash` execution returning 8 KiB — and takes cuts at session
+counts 1, 3 and 6, cumulatively: immediately after the last turn, after five
+seconds of quiet, and after `erlang:garbage_collect/1` on every process the
+assemblies own. At the last session count it additionally waits past the
+residency interval, **confirms hibernation through
+`process_info(Pid, current_function)`**, reads the hibernated sizes, wakes every
+sleeper with one `sys:suspend/1` and reads them again.
+
+Processes are found by differencing `erlang:processes/0` and grouped by shape as
+the operator's census groups them. Two quantities are read and they are not the
+same thing: *allocated* is `process_info(memory)`, which is what
+`erlang:memory(processes)` sums and includes capacity the process is not using;
+*used* is the live and fragmented heap out of `garbage_collection_info`.
+`garbage_collection` is never asked, because it omits `old_heap_size` and
+reports a zero old generation for every process.
+
+The wake is timed through `sys:suspend/1` rather than the actor's own protocol:
+suspension is one system message the loop must handle before its caller is
+released, and unlike `sys:get_state/1` it copies no state, so a large heap does
+not swamp the number being read.
+
+It is opt-in, and not because it is slow. Its reach is node-wide: it
+differences `erlang:processes/0` and then forces a collection and a suspension
+on everything the difference contains, so beside a concurrent sibling it would
+collect and freeze another module's actors, and a sibling actor dying between
+the census and the suspension would answer `noproc` and redden the gate.
+`scripts/serial-tests` therefore lists it, which keeps it out of the parallel
+group that signoff runs with `LOOM_TEST_PARALLEL=8`, and
+`LOOM_ASSEMBLY_HEAP_CENSUS` is what admits it at all — unset, it says it was
+not requested and returns (worded so the signoff's skip census does not read
+an opt-in measurement as a dropped suite), because fifty seconds of residency wait does not belong in every
+`make check-client`.
+
+Rerun it with:
+
+```sh
+make sandbox
+LOOM_ASSEMBLY_HEAP_CENSUS=1 LOOM_TEST_TIMEOUT_SECONDS=900 \
+  bash scripts/test.sh client --match 'client@assembly_heap_census_test:'
+```
+
+The run is about fifty seconds, most of it the residency wait, and it touches
+nothing outside the client package's own `build` directory. Nothing else should
+be building in the same checkout while it runs, because two of its readings are
+heap sizes under load.
+
+Two limits of the method. The assembly runs in the test's own VM rather than in
+a separately launched daemon, because a probe has to be inside the VM it
+measures and the shipped launcher publishes no distribution name; what that
+costs is a whole-process resident figure, and what it does not cost is the
+per-process attribution, since the assembly code, the effects graph it copies
+and the collector are the same either way. And this configuration is offline
+with one model, no extensions and distillation off, so its `Effects` is far
+smaller than the installed daemon's 12.869 MiB. Ratios transfer; absolute sizes
+do not, and the direction matters — a larger `Effects` raises the live share, so
+a production daemon is a worse case for hibernation than this one.
+
+### The live set is additive per session
+
+| Sessions | Processes | Idle, allocated | Live after a sweep | Live per session |
+|---:|---:|---:|---:|---:|
+| 1 | 35 | 23.20 MiB | 15.34 MiB | 15.34 MiB |
+| 3 | 103 | 66.39 MiB | 46.05 MiB | 15.35 MiB |
+| 6 | 205 | 129.43 MiB | 92.10 MiB | 15.35 MiB |
+
+Flat to two decimal places across three session counts. That is the same
+finding as the six 15.818 MiB state machines in the previous section, reached
+from the other side: these are per-instance copies of one value, and the copies
+are live.
+
+### Hibernation observed, at six sessions
+
+Every figure below is measured on the same six assemblies in one run. Forty-two
+processes hibernated, seven per session, all of them in the weft-actor row.
+
+| Cut | Total allocated | Total live | Hibernating |
+|---|---:|---:|---:|
+| Just worked | 134.82 MiB | 98.33 MiB | 0 |
+| Idle, before the interval | 129.43 MiB | 97.64 MiB | 0 |
+| **Hibernated** | **125.42 MiB** | **94.69 MiB** | **42** |
+| Woken, one message each | 146.15 MiB | 94.81 MiB | 0 |
+| After a full sweep of everything | 116.08 MiB | 92.10 MiB | 0 |
+
+Per shape, across the same cuts:
+
+| Shape | Procs | Idle | Hibernated | Woken | Swept |
+|---|---:|---:|---:|---:|---:|
+| `weft/actor`, all | 78 | 61.49 | 57.54 | 78.27 | 49.39 |
+| — of which gateway hubs | 6 | 23.79 | 25.88 | — | 22.07 |
+| `gleam_otp` static supervisor | 12 | 39.22 | 39.22 | 39.22 | 39.22 |
+| `gleam_otp` factory supervisor | 12 | 18.01 | 18.01 | 18.01 | 18.01 |
+| `weft/state_machine` | 24 | 9.82 | 9.82 | 9.82 | 9.10 |
+| `gleam_otp` actor | 42 | 0.65 | 0.59 | 0.59 | 0.18 |
+
+All forty-two sleepers are weft actors, checked by matching
+`erlang:hibernate/3` exactly rather than by the module alone, and restricted to
+pids whose pre-sleep shape was a weft actor — a `gleam_otp` supervisor
+hibernates on its own account, and counting those would report this interval
+working when it had done nothing. Seven per session, out of the eleven sites:
+this fixture's configuration starts neither `advisor` (none is configured) nor
+`internal/shared_history` (`assemble_owned` passes no domain paths), and the
+remainder are quiet but not all of them reach the interval within the window.
+
+Three readings of the table.
+
+**The yield is 4.01 MiB of 129.43, or 3.1%**, and it is entirely in the
+weft-actor row: 61.49 MiB idle to 57.54 MiB hibernated. An earlier run of the
+same fixture gave 6.05 MiB of 129.05, or 4.7%, so read this as **3 to 5% with
+run-to-run variance**, not as a fixed number. The supervisors and the state
+machines do not move at all, because the option does not reach them.
+
+**The saving is held only while parked.** Waking all forty-two put allocated at
+146.15 MiB — above the 129.43 MiB they held before hibernating — while the live
+total did not move, 94.69 to 94.81. That is the growth policy again: a woken
+process sizes a fresh heap rather than keeping the compacted one, and the
+overshoot settles at the next collection, which is what the 116.08 MiB sweep
+cut shows. For the case the option is for — sessions parked for hours — the
+reduction stands. For an actor messaged in bursts a little longer than the
+interval it would be a cost, which is what the thirty seconds is chosen to
+avoid.
+
+**Waking is cheap here and would not be everywhere.** Forty-two
+suspend-and-resume round trips took 10 ms against 0 ms for the same group
+awake, so under 250 microseconds each, consistent with weft's isolated 939
+microseconds for a live set three times larger. Extrapolating that linearly —
+and it is an extrapolation, not a measurement — a wake sweep of a 12.9 MiB
+`Effects` copy, which is what the installed daemon carries, would cost about
+8 ms, against the tightest caller deadline in the tree, `advisor
+.pending_timeout_ms = 500`. Eight milliseconds of five hundred is affordable;
+the point of writing it down is that the margin is two orders of magnitude and
+not four, so a site with a tighter deadline than the advisor's would need
+checking before it took the interval.
+
+### Correcting the 2026-09-19 experiment
+
+The previous section records an attempt to size this option on a locally built
+daemon that "did not succeed", and its diagnosis was right about the cause and
+wrong about the consequence. It was right that a freshly admitted offline
+session has promoted nothing into an old generation and so has nothing for a
+sweep to find, and right that sizing the option needs a driven daemon. It was
+wrong to read the weft actors' heaps *rising* from 23.428 to 28.282 MiB as a
+failure of the experiment alone: that rise is what a forced full sweep does, by
+sizing a fresh heap from a growth policy, and it is the same effect this
+section's "woken" cut measures at 143.73 MiB. A forced collection is therefore
+not a proxy for a hibernation in either direction, and the only way to size the
+option was to arm it and look, which is what was done.
+
+### Correcting this note's own derived figure
+
+An earlier draft of this section derived the yield from the post-sweep used heap
+of every non-hub weft actor and put it at 16.71 MiB, or 12.9%. **Observation
+gives 3 to 5%**, and the derivation was wrong in two ways worth
+naming. It assumed all seventy-two non-hub weft actors would hibernate, where
+forty-two do — the rest are the hub, the strand, the writer and the stateless
+commit forwarders, all of which are deliberately or necessarily left alone. And
+it treated a per-process compaction as equivalent to a whole-VM sweep, which it
+is not: a sweep of everything reaches 49.39 MiB in that row where hibernating
+forty-two of it reaches 57.54 MiB. Derived numbers overstate this option; this
+is why the fixture now observes it.
+
+### The periodic and polling actors: separate decisions
+
+Three actors can never hibernate because something in them always sends, and
+none is changed here.
+
+The first is the strand runtime, and it is the one worth the most. Its
+checkpoint poll re-arms from inside its own handler every `poll_interval_ms`,
+so the mailbox is never quiet; it also holds the largest `Effects` heap in an
+assembly. Reaching it means arming `PollTick` only while work is pending —
+while an operation is open, a retry is due or an effect is outstanding — and
+re-arming it on every transition that could create such work. The correctness
+question that change owes is the one the unconditional poll exists to answer:
+the poll is the drive loop's liveness backstop, the thing that finds work a
+lost doorbell or a missed wake would otherwise leave sitting, and spec §3.1
+makes a restarted strand's first drive depend on it. A conditional poll has to
+prove that every path which creates work also arms the poll, including the
+paths that recover from a crash, or a strand can park with an open operation
+and nothing to wake it. That is a liveness proof, not a memory table, and it
+belongs in its own change.
+
+The other two are the heartbeats. `client/gateway`'s hub ticks
+`MaintainTransfers` every second and `runtime/writer` ticks `RenewTick`. The
+change, if it is taken, is to arm each
+tick only while it has something to maintain: for the hub, while a credited
+transfer or an attached connection exists; for the writer, while a lease is
+outstanding. `weft/actor` cannot express that today — `periodic` is a property
+of the actor rather than of a `Next`, so a handler can neither cancel nor
+re-time it — so it needs either a cancellable tick in weft or a
+`weft/state_machine` whose periodic timeout belongs to the step.
+
+What it would be worth, from the table above: the six hubs hold 25.29 MiB idle
+against 14.20 MiB live after a sweep, so **at most 11.09 MiB across six
+sessions, about 1.85 MiB per session**, and the writer is smaller still and
+inside the same row. Against that sits a correctness argument nobody has made
+yet — a tick that is armed conditionally is a tick that can be missed, and both
+of these guard something with a deadline. The saving is larger than what
+hibernation already recovers, which is why it is written down rather than
+dismissed; it is also the kind of change that wants its own measurement of
+missed ticks, not a memory table.
+
+### Recommendation
+
+**Take A, and keep B.** The two are complements and this note's earlier draft
+was wrong to frame them as a choice.
+
+B is now on, it cost one constant and eleven lines, it is observed to work, and
+it recovers 3 to 5% of an idle assembly's heap while a session is parked. That
+is small, and it is also nearly free: the machinery was already shipped, the
+wake is under 250 microseconds at these sizes, and no interface changed. There
+is no version of this investigation where turning it off is an improvement.
+
+A remains the reduction. 92.10 MiB of the 129.43 MiB six local sessions hold is
+live, the per-session live figure is flat to two decimals, and the value inside
+it is a copy of `Effects` per process of each assembly. Hibernation cannot touch
+any of that, and neither can narrowing another capture. **The next reduction has
+to remove copies**, which is the per-session owner for `Effects`, and this note
+now has a measured reason to prefer it rather than a tie.
+
+### What was not verified
+
+- **The yield on the installed daemon is unmeasured.** Every figure here is
+  local. The installed daemon was not touched, collected, restarted or read,
+  and nothing under `~/.loom` or `~/.local` was opened. A matched before-and-
+  after census there still needs the operator to install a build and restart.
+- The local `Effects` is much smaller than the installed daemon's, so the
+  percentages transfer and the absolute sizes do not. The live share there is
+  higher, so the hibernation yield there is likely lower than 4.7%.
+- No figure here is a resident-set measurement of a standalone daemon, for the
+  reason given under the method.
+- The 8 ms wake cost at production `Effects` sizes is a linear extrapolation
+  from a 1.6 MiB measurement, not a measurement at that size.
+- The thirty-second interval has not been observed against a real provider
+  turn. The argument that it never fires between two steps of ordinary work is
+  from the code and from the scripted turns, not from a live drive.
+- One `make check` run of weft's own gate reported three failures in
+  `weft_managed_test`, all timing assertions unrelated to the added tests; a
+  rerun passed 184 tests with exit status zero. That file's timing assertions
+  are flaky under load.

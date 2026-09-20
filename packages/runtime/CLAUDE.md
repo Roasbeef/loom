@@ -425,6 +425,25 @@ extended by the M3 runtime wave.
   Summary failures use the same convention in `OperationError.details` when
   their producer supplies it. Terminal cancellation remains terminal.
 
+- **An idle assembly actor hibernates, and the interval is one value.**
+  `runtime/residency.hibernate_after_ms` is the quiet period after which a
+  session's weft actors shed their heaps, and every site takes that constant
+  rather than a number of its own; in this package only `registry` takes it.
+  Three actors deliberately do not, and two of them cannot. `writer` holds a
+  `RenewTick` heartbeat, so its mailbox is never quiet. **`strand_runtime`
+  cannot either**, for the same reason and less obviously: `handle`'s
+  `PollTick` arm re-arms the checkpoint poll every `poll_interval_ms` —
+  200 ms in `api.default_options` — unconditionally, so the strand is never
+  quiet for any threshold above that. It is also the actor holding the
+  largest `Effects` heap in an assembly, so the most valuable target is the
+  unreachable one; arming `PollTick` only while work is pending would reach
+  it and would be a change to the drive loop's liveness argument, not to the
+  constant. The booter is a stateless placeholder with nothing to reclaim.
+  Hibernation returns garbage
+  only — the live set, which is dominated by this session's `Effects` copies,
+  survives it — so it is a complement to sharing that value, never a
+  substitute. `docs/design-notes/daemon-memory.md` has the measurement.
+
 - **One writer, structurally.** All commits are calls into one actor, so
   "transactions on one session are serialized" is a property of the process
   topology, not a convention. Reads route through it too, keeping a single

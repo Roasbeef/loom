@@ -166,6 +166,7 @@ import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
 import runtime/lineage
+import runtime/residency
 import runtime/writer
 import session/session
 import storage/storage
@@ -313,6 +314,7 @@ pub fn start(
   actor.new(State(options:, runtime:, progress: dict.new()))
   |> actor.on_message(handle)
   |> actor.addressed(name)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 

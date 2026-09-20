@@ -73,6 +73,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/otp/supervision
 import gleam/result
+import runtime/residency
 import weft/actor
 import weft/registry as address
 
@@ -275,6 +276,7 @@ pub fn start(
   actor.new(State(known: extensions, clock:, held: dict.new()))
   |> actor.on_message(handle)
   |> actor.addressed(name)
+  |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
 }
 
