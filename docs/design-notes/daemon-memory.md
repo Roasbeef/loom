@@ -1055,14 +1055,16 @@ through many real provider turns, which is the same experiment the previous
 section says an idle-hibernate policy needs.
 
 
-## 2026-09-20: option A evaluated — the copies came from nine references, not one big value
+
+
+## 2026-09-20: option A evaluated — the cost was nine references, not one big value
 
 This section evaluates the first of the two options above, a per-session owner
-for `Effects`. The conclusion is that an owner process is not needed, because
-the prior question had an answer: five of the nine references to the expensive
-value did not need it. Narrowing those five halved the per-session cost of an
-admitted session on a locally built daemon, with no new process, no new
-external function and no interface change.
+for `Effects`. An owner process is not needed. The prior question had an
+answer: six of the nine references to the expensive value did not need it.
+Narrowing those six cut the per-session cost of an admitted session by 56% on
+a locally built daemon, with no new process, no new external function and no
+interface change.
 
 Everything below was measured on a release daemon built from this worktree,
 started with its own `--state-dir` and its own `HOME`, both under the
@@ -1073,10 +1075,10 @@ attached to, or read.
 
 ### Two BEAM facts the arithmetic rests on
 
-A copy between processes preserves no sharing for ordinary heap terms, but it
-does share two kinds of term outright. Both were confirmed on this host and
-runtime (OTP 29, ERTS 17.0.5, macOS arm64 — a small Erlang module that sends a
-term to a fresh process and reads its heap growth):
+A copy between processes preserves no sharing for ordinary heap terms, but two
+kinds of term are shared outright. Both were confirmed on this host and
+runtime (OTP 29, ERTS 17.0.5, macOS arm64) with a small Erlang module that
+sends a term to a fresh process and reads its heap growth:
 
 | Term sent | Flattened words | Receiver's heap growth |
 |---|---:|---:|
@@ -1087,16 +1089,16 @@ term to a fresh process and reads its heap growth):
 
 Literals live in a module's constant area and are not copied. Refc binaries
 are shared. Run-time-built structure is duplicated, and duplicated **once per
-closure that captures it**, even when all those closures sit in one record and
+closure that captures it**, even when those closures sit in one record and
 share it perfectly in place.
 
-The last row is the whole shape of this problem, and the first two rows are
-why option 2a as written does not apply: a tool's description and its JSON
-schema are compiled literals or refc binaries, so they were never being
-copied. Measured directly, the five core tools' whole definitions flatten to
-2,307 words, of which 2,050 are schemas and 40 are descriptions. There is no
-static bulk to move into `persistent_term` or into a binary. Nothing about the
-copy is static.
+The last row is the shape of this problem. The first two rows are why option
+2a as written does not apply: a tool's description and its JSON schema are
+compiled literals or refc binaries, so they were never being copied. Measured
+directly, the five core tools' whole definitions flatten to 2,307 words, of
+which 2,050 are schemas and 40 are descriptions. There is no static bulk to
+move into `persistent_term` or into a binary. Nothing about the copy is
+static, so nothing about it can be made shared that way.
 
 ### Where the 3.797 MiB went
 
@@ -1108,7 +1110,7 @@ One admitted session on the local daemon. Its `Effects` flattens to
 | `clock`, `entropy`, `timers` | under 0.001 MiB each | small |
 | `provider` | 0.845 MiB | two relay closures at 0.422 MiB each |
 | `tools` | 1.688 MiB | four closures at 0.422 MiB each |
-| `hooks` | 1.264 MiB | three slots at ~0.413 MiB, eight negligible |
+| `hooks` | 1.264 MiB | three slots at about 0.413 MiB, eight negligible |
 | total | 3.797 MiB | |
 
 Every one of those 0.41–0.42 MiB figures is the same value: the session's
@@ -1118,7 +1120,7 @@ Nine closures hold it, so a copy of `Effects` pays for it nine times.
 The registry's own 0.410 MiB is the same shape one level further down. Per
 tool, largest first: the three `schedule_*` tools at 0.044 MiB each, the six
 `agent_*` tools at 0.028 MiB each, `code_mode` at 0.020 MiB, then a tail under
-0.012 MiB. In each case almost all of it is the tool's `run` field — a closure
+0.012 MiB. In each case almost all of it is the tool's `run` field, a closure
 over that plane's seam, duplicated once per tool in the family. Static
 definition data is the small remainder: the largest schema in the registry,
 `fs_edit`'s, is 0.007 MiB.
@@ -1131,27 +1133,32 @@ advisor, no extensions and no imported hooks, so it composes fewer layers.
 
 ### Which of the nine references were real
 
-Reading each of the nine call sites, five need no registry at all:
+Reading each of the nine call sites, six need no registry:
 
 - `tools.replay_still_safe` reads one registration's replay declaration.
 - `tools.execution_mode` reads one registration's scheduling constraint.
+- `tools.clear` reads one registration's replay declaration and refuses a
+  name nothing registered. It touches no other field. The policy
+  requirements a reader might expect it to need belong to execution, which
+  reaches them through `tool.dispatch` inside `run_tool`.
 - the `threshold`, `overflow_preparation` and `structural_decision` hooks ask
   one question between them, through `reference_projection` and
   `recall_projected`: whether this host registered `history_search` at all.
 
-The other four are ownership rather than mis-scoped capture. `provider.request`
-and `provider.prepare` render the wire tool array, and `tools.clear` and
-`tools.run` need a tool's policy requirements and its behaviour.
+The other three are ownership rather than mis-scoped capture.
+`provider.request` and `provider.prepare` render the wire tool array, and
+`tools.run` dispatches through the registry.
 
 ### The change, and what it cost
 
 `tool.declarations` projects a registry to one `Declaration` per name, and the
-two declaration slots take that. The three compaction slots take a
+three declaration-reading slots take that. The three compaction slots take a
 two-variant `HistoryRegistration` read once where the registry already is.
 Neither projection can go stale: the registry a session runs under is fixed
-for the life of the `Effects` record built from it.
+for the life of the `Effects` record built from it, and `client/serve` builds
+both together in one assembly with no path that replaces one under the other.
 
-This is a type change and four call sites. It adds no process, no
+This is a type change and six call sites. It adds no process, no
 serialisation point, no restart relationship, no `@external`, and no change to
 any interface frozen in spec Part 1 — `effects.Effects`, `effects.ToolSurface`
 and `effects.Hooks` are untouched.
@@ -1165,36 +1172,37 @@ KiB, so they are allocated memory rather than a reachable-term size.
 
 | Sessions | `processes` before | after | total before | after | RSS before | after |
 |---:|---:|---:|---:|---:|---:|---:|
-| 0 (listening) | 15.68 | 15.69 | 56.02 | 56.04 | 103,808 | 100,752 |
-| 1 | 85.13 | 49.98 | 132.31 | 97.09 | 169,008 | 134,976 |
-| 3 | 236.86 | 119.43 | 284.46 | 167.41 | 290,320 | 199,648 |
-| 6 | 436.22 | 215.46 | 484.78 | 264.11 | 483,376 | 292,912 |
+| 0 (listening) | 15.68 | 15.68 | 56.02 | 56.03 | 103,808 | 101,984 |
+| 1 | 85.13 | 41.30 | 132.31 | 88.82 | 169,008 | 124,864 |
+| 3 | 236.86 | 106.50 | 284.46 | 154.44 | 290,320 | 173,504 |
+| 6 | 436.22 | 199.40 | 484.78 | 247.67 | 483,376 | 246,336 |
 
 Per resident session, process memory falls from 69.5–73.7 MiB to
-33.3–34.6 MiB: a 50.6%, 53.1% and 52.5% reduction at one, three and six
-sessions. At six sessions the whole VM falls 45.5% and RSS 39.4%.
+25.6–30.6 MiB: a 63.1%, 58.9% and 56.3% reduction at one, three and six
+sessions. At six sessions the whole VM falls 48.9% and RSS 49.0%.
 
-The `Effects` value behind that: 3.797 MiB flattened before, 1.729 MiB after.
-`hooks` falls from 1.264 to 0.037 MiB and `tools` from 1.688 to 0.847;
-`provider` is unchanged at 0.845, which is the two remaining copies that
-dispatch a request.
+The `Effects` value behind that: 3.797 MiB flattened before, 1.309 MiB after.
+`hooks` falls from 1.264 to 0.037 MiB and `tools` from 1.688 to 0.427;
+`provider` is unchanged at 0.845, the two remaining copies that dispatch a
+request.
 
 The repository's own `scripts/daemon_memory_probe.sh` agrees. Run against both
 builds with its two-admitted-one-stopped acceptance, one resident session's
-process memory goes from 93.583 MiB to 52.016 MiB.
+process memory went from 93.583 MiB to 52.016 MiB at the intermediate stage
+where `tools.clear` had not yet been narrowed.
 
 ### What this does not establish
 
 No provider turn was driven. The smoke configuration cannot serve one, and the
 `Effects` copies this change removes are created at admission and do not grow
-with a turn — the first pass of this investigation established the step is
+with a turn — the first pass of this investigation established that the step is
 deterministic and arrives before any request. A turn-driven measurement is
 still the right way to size the *other* option, idle hibernation, because that
 one depends on heap that accumulates over real work.
 
 The installed daemon's reduction is not measured. Extrapolating its 12.872 MiB
-`Effects` by removing five copies of its 0.961 MiB registry predicts about
-8.1 MiB, a 37% cut rather than the local 54%, because its `hooks` carries
+`Effects` by removing six copies of its 0.961 MiB registry predicts about
+7.1 MiB, a 45% cut rather than the local 66%, because its `hooks` carries
 layers a smoke host does not install. That number is an inference and needs an
 installed before/after to become a measurement.
 
@@ -1206,20 +1214,48 @@ the flattened figures explain it rather than stand in for it.
 
 ### What is left, and whether an owner process is now worth it
 
-`Effects` still costs 1.729 MiB per copy, four references to one 0.41 MiB
+`Effects` still costs 1.309 MiB per copy: three references to one 0.41 MiB
 graph. Two routes remain and neither is taken here.
 
-The first is the multiplication *inside* the registry: the three `schedule_*`
-tools each hold a whole `Schedules` seam, the six `agent_*` tools each hold a
-whole `Agency`. Narrowing those divides the leaf, and the leaf is what the
-four remaining copies pay for, so it is the higher-leverage of the two. It is
-also a change across several tool modules rather than four call sites.
+The first is the multiplication *inside* the registry. The three `schedule_*`
+tools each hold a whole `Schedules` seam and the six `agent_*` tools each hold
+a whole `Agency`, which is this same bug one level down. Narrowing there
+divides the leaf, and the leaf is what all three remaining copies pay for, so
+it is the higher-leverage of the two. A second candidate at the same level:
+`provider.request` and `provider.prepare` reach the registry only through
+`tool_specs`, which reads `name`, `description` and `schema` and never `run`
+or `requirements`, so a name-keyed spec projection would cut most of their
+0.845 MiB. That one is a bigger change than the six call sites here, because
+those closures also need `gateway`, `facts`, `session` and the fallback
+counts, so it means splitting `Config` rather than swapping an argument.
 
 The second is the per-session owner process this section set out to evaluate.
-It would remove the remaining four copies, and it is still the more expensive
+It would remove the remaining three copies, and it is still the more expensive
 shape: a serialisation point on the hot path for every effect call, a new
 failure domain needing restart custody, message copies of whatever it returns,
 and recovery and interleaving scenarios for an owner that dies mid-dispatch.
-Against a remaining 1.729 MiB it is not justified. It becomes worth
+Against a remaining 1.309 MiB it is not justified. It becomes worth
 re-examining only if the registry-internal narrowing above is taken and the
 residue still dominates a census.
+
+### Rerunning this
+
+`scripts/daemon_memory_probe.sh <config> <out>` is the committed harness, and
+it was repaired in this work. It had been reaching the daemon with
+`net_adm:ping/1`, which answers `pang` on a macOS host whose short hostname
+resolves to an address the machine does not answer on, and the script
+swallowed the failure and wrote only the OS numbers. It also ran the daemon
+under the operator's `HOME`, so it measured a registry built from their
+`~/.claude`. Both are fixed; `DIG=1` adds the heaviest-state walk.
+
+The per-field `Effects` breakdown above came from a throwaway sibling of
+`scripts/mem_dig.erl` that finds every `{effects, _, _, _, _, _, _}` tuple in
+a process state and reports `erts_debug:flat_size` and `erts_debug:size` for
+each field, for each slot of the three closure-bearing fields, and for each
+capture in those slots over 4,096 words, then does the same for the
+`{registry, _, _}` it finds. It is a dozen lines of pattern matching over
+`mem_dig`'s existing `children/1` walk and was not committed. Admitting more
+than one session needs something other than `client@release_probe_test`, which
+asserts zero residents at start: a few frames of `sessions.create` and
+`sessions.list` over the daemon's control websocket, built from
+`host/websocket`, `host/endpoint` and `host/bootstrap`, is enough.

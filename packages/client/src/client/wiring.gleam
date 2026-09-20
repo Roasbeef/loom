@@ -318,7 +318,7 @@ pub fn build_effects(config: Config) -> Effects {
       timeout_ms: config.provider_timeout_ms,
     ),
     tools: effects.ToolSurface(
-      clear: fn(query) { clear(config, query) },
+      clear: fn(query) { clear(declared, query) },
       run: fn(run) { run_tool(config, run) },
       replay_still_safe: fn(name) { replay_still_safe(declared, name) },
       execution_mode: fn(name) { execution_mode(declared, name) },
@@ -1482,13 +1482,20 @@ pub fn tool_specs(config: Config, active: List(String)) -> List(ToolSpec) {
 ///
 /// ## Examples
 ///
+/// Clearance reads the registration's replay declaration and nothing
+/// else, so it takes the declaration projection for the reason
+/// `build_effects` gives. The registry's policy requirements belong to
+/// execution, which reaches them through `tool.dispatch` in `run_tool`.
+///
+/// ## Examples
+///
 /// ```gleam
-/// // wiring.clear(config, query)
+/// // wiring.clear(tool.declarations(registry), query)
 /// // -> effects.Cleared(effective_arguments: .., replay: ReplayNever)
 /// ```
 ///
 pub fn clear(
-  config: Config,
+  declared: tool.Declarations,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
   let name = query.call.name
@@ -1498,11 +1505,11 @@ pub fn clear(
         reason: "the tool `" <> name <> "` is not active for this strand",
       )
     True ->
-      case tool.lookup(config.registry, name) {
-        Ok(registered) ->
+      case tool.declared(declared, name) {
+        Ok(declaration) ->
           effects.Cleared(
             effective_arguments: query.call.arguments,
-            replay: replay_policy(registered.replay),
+            replay: replay_policy(declaration.replay),
           )
         Error(Nil) ->
           effects.ClearanceRefused(

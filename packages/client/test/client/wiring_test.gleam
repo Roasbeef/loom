@@ -184,7 +184,7 @@ fn clearance(active: List(String), name: String) -> effects.Clearance {
   let #(operation, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   wiring.clear(
-    config(),
+    tool.declarations(config().registry),
     effects.ClearanceQuery(
       operation:,
       step_id: "turn-1:tools",
@@ -301,6 +301,8 @@ pub fn declaration_slots_do_not_copy_the_registry_test() {
     == ffi_memory.flat_words(small.tools.replay_still_safe)
   assert ffi_memory.flat_words(large.tools.execution_mode)
     == ffi_memory.flat_words(small.tools.execution_mode)
+  assert ffi_memory.flat_words(large.tools.clear)
+    == ffi_memory.flat_words(small.tools.clear)
 
   // The registration is still reachable through the slots that answer about
   // it, so this measures a narrower capture rather than a lost tool.
@@ -317,6 +319,11 @@ pub fn compaction_slots_do_not_copy_the_registry_test() {
   let heavy = wiring.Config(..config(), registry: registry_padded_to(4096))
   let small = wiring.compaction_hooks(light)
   let large = wiring.compaction_hooks(heavy)
+
+  // Its own premise, so this does not depend on a sibling test failing
+  // first if the padding ever stops growing the registry.
+  assert ffi_memory.flat_words(heavy.registry)
+    > ffi_memory.flat_words(light.registry) + 8192
 
   assert ffi_memory.flat_words(large.threshold)
     == ffi_memory.flat_words(small.threshold)

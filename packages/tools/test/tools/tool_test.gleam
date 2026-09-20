@@ -150,6 +150,28 @@ pub fn outcome_constructors_continue_the_run_test() {
     == tool.ContinueRun
 }
 
+/// The declaration projection answers exactly what a lookup plus a field
+/// read answered, for a registered name and for one nothing registered.
+///
+/// The equivalence is what lets the effect plane's declaration slots hold
+/// the projection instead of the registry, so it belongs under a gate in
+/// the package that owns both sides of it.
+pub fn declarations_agree_with_a_lookup_test() {
+  let registry = full_registry()
+  let declared = tool.declarations(registry)
+
+  list.each(tool.registered(registry), fn(registered) {
+    assert tool.declared(declared, registered.name)
+      == Ok(tool.Declaration(
+        replay: registered.replay,
+        execution_mode: registered.execution_mode,
+      ))
+  })
+
+  assert tool.declared(declared, "teleport") == Error(Nil)
+  assert tool.lookup(registry, "teleport") == Error(Nil)
+}
+
 pub fn duplicate_name_keeps_later_tool_test() {
   let first = fs.read_tool()
   let second = tool.Tool(..fs.read_tool(), description: "override")
