@@ -2330,9 +2330,14 @@ fn verdict_ack(
 // stopped is not charged to it** (protocol 044 §5, amended). A resume
 // accounts from where the ledger stands when the loop starts again, because
 // the cursor stays where the last accounted row left it and the scan
-// afterwards begins there — so the gap is not double-counted either. It
-// cannot under-count the loop's own work, which is the property the budget
-// bound depends on: the loop commits nothing while it is stopped.
+// afterwards begins there — so the gap is not double-counted either.
+//
+// The loop is not quite silent while stopped, and the exclusion is one run
+// wide rather than none. A woken run can straddle the pause that stops it, and
+// the wrap-up a tripped bound sends is opened after the status has already
+// moved, so spend from at most one harness-opened run goes uncharged. Against
+// a bound the budget reads as a floor that is one run of headroom, which is
+// what a durable write per row on every stopped goal was buying.
 fn accounted(state: State, goal: goalstate.Goal) -> goalstate.Goal {
   case goal.status {
     goalstate.Active -> account_recompute(state, goal)

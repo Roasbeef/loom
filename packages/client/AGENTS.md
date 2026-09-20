@@ -882,7 +882,11 @@ catalogue without opening runtimes. Explicit admission invokes
   which primary run is the loop's own, and whether a check is in flight and
   until when. `Checking`'s deadline is durable because the check runs in a
   task linked to the actor, so an actor that dies takes it with it and a
-  deadline already passed is the repair rather than an error.
+  deadline already passed is the repair rather than an error. Neither
+  `Checking` nor `ReadyToFeed` survives a primary that goes back to work:
+  both describe the tree as it stood before that run, so the loop returns the
+  phase to `Idle` and the check runs again for the stretch the feed is
+  actually about.
 
   `CheckEnding` is `Exited(status: Int) | DidNotFinish(reason: String)` and
   `CheckResult` carries the command that actually ran beside it, so an
@@ -912,11 +916,20 @@ catalogue without opening runtimes. Explicit admission invokes
   policy: operator-authored is not exempt from Rule Zero, which is about
   where code runs rather than who wrote it, and a check is deliberately not
   narrowed to a read-only workspace because the commands an operator pins
-  write build output. `Wiring` is one blocking closure plus the wall it runs
-  under, so an advisor test stubs a check that passes, fails, hangs or dies
-  without a broker, a helper pool or a jail; `Runner` is the seven fields the
-  production path needs, which are `client/jobs.Wiring`'s own. The step id is
-  its own name so the pooled execution budget is not shared with the hooks'.
+  write build output. `Wiring` is one blocking closure, the wall it runs
+  under and the backstop the caller kills its task at, so an advisor test
+  stubs a check that passes, fails, hangs or dies without a broker, a helper
+  pool or a jail; `Runner` is the fields the production path needs, which are
+  `client/jobs.Wiring`'s own. The backstop is the wall plus the clearance a
+  congested helper pool may cost plus `settle_grace_ms`, never the wall
+  itself: both clocks start in the caller and the task's starts first, so a
+  task killed at the wall could never deliver the settlement the sandbox
+  reached there. The step id is its own name so the pooled execution budget
+  is not shared with the hooks' — and because that pair's ledger admits one
+  call at a time, an abandoned check is *cancelled* rather than left running:
+  `client/advisor` keeps the witnessed handle and cancels it whenever the
+  goal leaves `Checking`, which is what returns the slot through the broker
+  relay's caller-watch.
   A settlement the wall stopped reports **no** exit status, because a number
   invented for it would read to the reviewer as the command's verdict on the
   work.
@@ -956,7 +969,9 @@ catalogue without opening runtimes. Explicit admission invokes
   `check_timeout_ms` (five minutes) is the fourth bound and the only one a
   process rather than a count: it is both the jailed command's own wall and
   the durable `Checking` deadline, so a restarted actor cannot wait on a
-  process the sandbox has already killed. `wrap_up_text` and
+  process the sandbox has already killed. The task that runs the command is
+  killed later than that, by `goalcheck.Wiring`'s backstop, so the wall's own
+  settlement has room to arrive. `wrap_up_text` and
   `stopped_because` are the per-cause wordings, rendered once so the
   primary's wrap-up, the operator's panel and the reviewer's refusals
   cannot word one status three ways.

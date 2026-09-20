@@ -409,13 +409,23 @@ loss mode here is a dropped cast, which no CAS catches. A single writer
 with a recomputable value is the honest shape.
 
 **Spend while the goal is stopped is not charged to it.** A `paused`,
-`budget_limited` or `complete` goal is not accounted at all: the loop commits
-nothing while it is stopped, so every row the session records then belongs to
-whatever the operator is doing instead, and accounting it anyway cost a ledger
-scan and a durable cell write per row for a loop that was not running. A resume
-moves `accounted_through_seq` to where the ledger stands then, so the held
-stretch is not charged late either — the same read `goal_set` makes at pin
-time, for the same reason.
+`budget_limited` or `complete` goal is not accounted at all: almost every row
+the session records then belongs to whatever the operator is doing instead, and
+accounting it anyway cost a ledger scan and a durable cell write per row for a
+loop that was not running. A resume moves `accounted_through_seq` to where the
+ledger stands then, so the held stretch is not charged late either — the same
+read `goal_set` makes at pin time, and the same read a refresh of a *stopped*
+goal makes, which is how `/goal --budget` raises a `budget_limited` goal's
+budget without charging it for everything since the trip.
+
+The loop is not quite silent while stopped, so what is given up is stated
+rather than implied: spend from at most one harness-opened run is excluded. A
+woken run can straddle the pause — the operator's `/goal pause`, or a
+zero-progress or abort pause the loop reaches mid-run — and the wrap-up run
+that follows a bound is opened by the loop after the status has already moved.
+Both are the loop's own spend and neither is charged. One run of headroom
+against a bound the budget reads as a floor is the cost, and the alternative
+was a durable write per row on every goal that is not running.
 
 ### 6. The continuation frame
 
@@ -535,7 +545,33 @@ critical path under `pending_timeout_ms`. So the borrower is a weft task:
 `weft.new([...]) |> weft.deadline(...) |> weft.start_witnessed`. The scope is
 linked to the actor, so an actor that dies takes an in-flight check with it;
 the deadline kills and joins the worker, so a command that ignores its own
-wall is still reaped.
+wall is still reaped. That deadline is the wall plus the clearance a congested
+helper pool may cost and the grace the cancel ladder needs — never the wall
+itself, because both clocks start in the caller and a task killed at the wall
+can never deliver the settlement the sandbox reached there.
+
+**An abandoned check is cancelled, not left to the wall.** Every check clears
+under one attribution-only operation and the `goal-check` step, and that
+ledger's `max_outstanding` is one, so a check nobody wants any more holds the
+pair until it settles and a replacement inside that window is refused with
+`OutstandingCapReached` — a refusal the loop can only record as a check that
+produced no exit status. The actor therefore keeps the witnessed handle and
+cancels it whenever the goal leaves the `Checking` phase it was started for:
+the goal cleared, paused, its command replaced, the primary back at work, or
+the deadline passed. The task's death is what the broker relay's caller-watch
+keys on, so the cancel returns the helper and the budget slot. The drain takes
+as long as the helper's own cancel ladder, so a replacement started inside that
+window can still be refused; the cost is then one feed without check evidence
+rather than every feed for the length of the wall.
+
+**A base policy narrower than the check's limits refuses every check.** The
+requirements move exactly two limits, the wall to 300 s and the output ceiling
+to 1 MiB, and composition takes the meet of base and requirements under
+`RefuseNarrowed`. A session whose base policy sets `wall_s` below 300 or
+`output_bytes` below 1 MiB therefore refuses every check with `NarrowedLimit`,
+and the refusal rides the feed in the broker's own words — the operator reads
+the same sentence a narrowed `bash` call gets. It is a session's own
+configuration rather than a bug, but it is not self-evident from the panel.
 
 **How a lost result is repaired.** The phase gains `Checking(deadline_ms)` and
 `ReadyToFeed` (§1). A check that never reports — a killed task, a crashed one,
@@ -553,13 +589,29 @@ and cannot be mistaken for somebody arriving with work of their own; the
 bounds are read before the phase, so a check in flight does not outlast the
 token budget, the continuation cap or the zero-progress pause. An
 always-failing check therefore costs the operator the cap rather than an
-unbounded loop.
+unbounded loop. It cannot report about work it did not see either: a primary
+that goes back to work with a check in flight, or with a result not yet fed,
+returns the phase to `Idle`, so the check runs again for the stretch that
+actually precedes the feed. The frame says when the result was produced, for
+the cases the loop cannot observe.
+
+**What the check costs the unresponsive-reviewer bound.** Three unanswered
+feeds pause the goal, and each is now a check duration further apart: a check
+precedes every feed, so the pause arrives after roughly three tick intervals
+plus three check durations rather than three tick intervals. Under the shipped
+two-minute tick and a `make check` that takes a minute, a reviewer that never
+answers holds the goal for about nine minutes instead of six.
 
 **Its output is untrusted the moment it exists.** The frame breaks its own
-header, its own footer and both untrusted-objective delimiters wherever the
-command printed them, so a check that prints a frame footer cannot close the
-frame it is quoted inside and speak the rest in the harness's voice. The
-command is operator data and is made safe the same way.
+header, its own footer, both untrusted-objective delimiters and the check
+block's own two tokens — its label and the end of its output body — wherever
+the command printed them, so a check that prints a frame footer cannot close
+the frame it is quoted inside and speak the rest in the harness's voice, and
+one that prints the label cannot report a second check under the real one. The
+command is operator data and is made safe the same way. The block's tokens are
+broken in the rendered slice as well, because the primary's transcript reaches
+the same frame: without that, a goal with no check configured could be shown a
+passing one the primary wrote.
 
 `clear_call`, `CallSpec`, `effects.Hooks` and `advisor.Wiring` are all outside
 spec Part 1, so the mechanism needed no proposal of its own; the `check`
