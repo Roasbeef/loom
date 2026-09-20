@@ -910,7 +910,8 @@ catalogue without opening runtimes. Explicit admission invokes
   `client/goalloop`'s, and the `goal_set` handler owns the objective's
   4,000-character bound, which is why `new` is total and unvalidated.
 - `client/goalcheck.{output_tail_chars, output_bytes, settle_grace_ms,
-  step_id, Wiring, Runner, wiring, unavailable}` — the operator's goal check
+  slot_wait_ms, slot_retry_ms, slot_never_came_free, step_id, Wiring, Runner,
+  wiring, unavailable}` — the operator's goal check
   as one jailed process. It clears through `tools/tool.broker_runner`, the
   closure the `bash` tool itself clears through, under the session's own base
   policy: operator-authored is not exempt from Rule Zero, which is about
@@ -921,7 +922,8 @@ catalogue without opening runtimes. Explicit admission invokes
   stubs a check that passes, fails, hangs or dies without a broker, a helper
   pool or a jail; `Runner` is the fields the production path needs, which are
   `client/jobs.Wiring`'s own. The backstop is the wall plus the clearance a
-  congested helper pool may cost plus `settle_grace_ms`, never the wall
+  congested helper pool may cost plus `slot_wait_ms` plus `settle_grace_ms`,
+  never the wall
   itself: both clocks start in the caller and the task's starts first, so a
   task killed at the wall could never deliver the settlement the sandbox
   reached there. The step id is its own name so the pooled execution budget
@@ -930,6 +932,19 @@ catalogue without opening runtimes. Explicit admission invokes
   `client/advisor` keeps the witnessed handle and cancels it whenever the
   goal leaves `Checking`, which is what returns the slot through the broker
   relay's caller-watch.
+  **The cancel does not return the slot synchronously**, and that is the one
+  refusal this module waits out rather than reports: the relay cancels the
+  execution and drains it to the helper's terminal event before releasing the
+  budget, while the actor starts the replacement at once, so the replacement is
+  refused with `OutstandingCapReached` for a reason that says nothing about the
+  command. Reporting it showed the reviewer "no exit status" for a command that
+  exits immediately, and not only once — the shape recurs every time the primary
+  goes back to work with a check in flight, so a whole run's feeds can carry it.
+  The wait is `slot_wait_ms` at `slot_retry_ms`, spent in the check's own weft
+  task so the actor still never blocks; a slot that outlasts it is recorded as
+  `slot_never_came_free`, so a check that can never start still lands a result
+  and still feeds. Every other refusal is a decision more time cannot change
+  and is reported at once.
   A settlement the wall stopped reports **no** exit status, because a number
   invented for it would read to the reviewer as the command's verdict on the
   work.
