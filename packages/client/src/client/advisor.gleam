@@ -2475,10 +2475,13 @@ fn clear_goal(
 }
 
 // Sets or replaces the goal. The same objective under any status but
-// `complete` is a refresh — accounting kept, budget replaced — because
-// the operator re-pinning the work they meant is not a new goal (the
-// distinction protocol 044 §7 makes). A changed objective, or any
+// `complete` is a refresh — the spend so far kept, the budget replaced —
+// because the operator re-pinning the work they meant is not a new goal
+// (the distinction protocol 044 §7 makes). A changed objective, or any
 // complete goal, starts fresh.
+//
+// Where the accounting *cursor* lands depends on the status the refresh
+// found, and `refreshed` says why.
 //
 // A refresh clears the loop's bound counters and its phase whatever it
 // kept. The operator arriving with a larger budget means the goal should
@@ -2548,18 +2551,44 @@ fn refreshed(
     goalstate.Complete ->
       goalstate.new(goal.objective, token_budget, now_ms, accounted_from:)
 
-    goalstate.Active | goalstate.Paused(..) | goalstate.Limited(..) ->
+    // A running goal's cursor stays where the last accounted row left it:
+    // the loop has been charged for every row up to there and the scan
+    // afterwards begins from the next one, so moving the cursor would
+    // forgive spend the goal owes.
+    goalstate.Active -> refresh_of(goal, token_budget, now_ms)
+
+    // A stopped goal's does not, and this is the same half of "spend while
+    // the goal is stopped is not charged to it" that `continued` owns. The
+    // documented way to raise a budget is to re-pin the same objective with
+    // a larger `--budget`, which arrives here on a `budget_limited` goal —
+    // and a refresh that left the cursor behind would charge the whole
+    // stopped stretch, everything the operator did by hand since the trip
+    // included, and could trip the new budget on its first evaluation.
+    goalstate.Paused(..) | goalstate.Limited(..) ->
       goalstate.Goal(
-        ..goal,
-        status: goalstate.Active,
-        phase: goalstate.Idle,
-        token_budget:,
-        continuations: 0,
-        zero_progress: 0,
-        unanswered_feeds: 0,
-        updated_ms: now_ms,
+        ..refresh_of(goal, token_budget, now_ms),
+        accounted_through_seq: accounted_from,
       )
   }
+}
+
+// What every refresh clears, whatever the status it came from: the stop, the
+// phase, and the three counters a resume clears for the same reason.
+fn refresh_of(
+  goal: goalstate.Goal,
+  token_budget: Int,
+  now_ms: Int,
+) -> goalstate.Goal {
+  goalstate.Goal(
+    ..goal,
+    status: goalstate.Active,
+    phase: goalstate.Idle,
+    token_budget:,
+    continuations: 0,
+    zero_progress: 0,
+    unanswered_feeds: 0,
+    updated_ms: now_ms,
+  )
 }
 
 // Sets or clears the check on a goal that already exists, leaving the

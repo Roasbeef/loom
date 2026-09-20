@@ -2475,6 +2475,64 @@ pub fn spend_before_the_pin_is_not_charged_to_the_goal_test() {
   stop(rig)
 }
 
+// Raising a stopped goal's budget does not charge it for the stretch it was
+// stopped for, which is the documented way out of `budget_limited`: the
+// operator re-pins the same objective with a larger `--budget`.
+//
+// The refresh used to keep the accounting cursor wherever the last charged row
+// left it, and a stopped goal is not accounted, so every row the session
+// committed while the goal was held sat waiting past that cursor. The first
+// evaluation after the re-pin summed the lot — the operator's own hand-driven
+// work included, since that is what a session does while a goal is stopped —
+// and a budget raised from one trip to the next could trip again before the
+// loop ran once.
+pub fn a_raised_budget_is_not_charged_for_the_stopped_stretch_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  // A budget of one token, tripped by the first row committed after the pin.
+  pin_goal(subject, 1)
+  let worked = a_settled_primary_entry(rig)
+  let _spent = commit_usage(rig, worked, 231)
+  process.send(subject, advisor.PrimarySpent)
+  barrier(subject)
+
+  let limited = goal_cell(rig)
+  assert limited.status == goalstate.Limited(by: goalstate.ByTokenBudget)
+    as "the budget must have tripped before the operator raises it"
+  assert limited.tokens_used == 26
+
+  // The trip's wrap-up woke the primary to say the loop had stopped, and that
+  // run has to close before the fixture can accept another turn.
+  case strand_operation(rig.opened, advisor.primary) {
+    Some(wrapped) -> idle_again(rig, wrapped)
+    None -> Nil
+  }
+
+  // The operator carries on by hand while the goal is stopped, and the ledger
+  // records what they spend. None of it is the loop's.
+  let by_hand = a_settled_primary_entry(rig)
+  let _theirs = commit_usage(rig, by_hand, 232)
+  process.send(subject, advisor.PrimarySpent)
+  barrier(subject)
+
+  assert goal_cell(rig).tokens_used == 26
+    as "a stopped goal is not charged for the operator's own work"
+
+  // The same objective with room to run again.
+  pin_goal(subject, 400_000)
+  barrier(subject)
+
+  let raised = goal_cell(rig)
+  assert raised.status == goalstate.Active
+  assert raised.tokens_used == 26
+    as "the raised budget is not charged for the stopped stretch"
+  assert raised.accounted_through_seq >= limited.accounted_through_seq
+    as "the cursor moves to the ledger's newest row, never backwards"
+  stop(rig)
+}
+
 // --- the operator's pause reads the status it found ------------------------
 
 // Pausing a goal a bound already stopped is a committed no-op, so the cause
