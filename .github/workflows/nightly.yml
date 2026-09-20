@@ -119,6 +119,20 @@ jobs:
           cache-epoch: ${{ env.CACHE_EPOCH }}
           cache: "false"
 
+      # `make check` runs the client bucket, whose developer fixture drives
+      # the real rg through the real jail; ci.yml installs these for that
+      # same fixture. A host package is not a cache, so installing it here
+      # does not weaken what this job is for — leaving it out made the job
+      # red on a missing apt package rather than on a cold build, which is
+      # the one signal it exists to carry.
+      - name: Install developer fixture tools and jail
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 
