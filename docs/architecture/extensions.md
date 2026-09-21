@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:3377`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:3386`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -1210,6 +1210,7 @@ Where each event lands in the harness:
 | `session_start` | `serve.with_extension_hooks`, once the bus exists and before the runtime opens |
 | `before_agent_start` | `effects.Hooks.run_start`, appended after the harness's own digests; the text is fenced `<extension name=…>` and attributed by the harness, never by the extension |
 | `context` | `effects.Hooks.context`, a phase-3 slot on the frozen-in-shape hooks record, applied in `runtime/strand_runtime` to the projection a generation attempt is about to send. A transform that grows the context past its allowance is discarded and logged |
+| `select_skills` | After context transforms, propose up to three names from 64 eligible catalogue previews. The harness loads captured documents with attribution under one shared 8,000-token allowance; protocol 045 specifies validation and failure behavior. This event needs no model-visible tool |
 | `tool_call` | `effects.ToolSurface.clear`, **after** the built-in clearance; a `Block` becomes the `ClearanceRefused` the driver turns into the in-band error the model reads, reading `<extension> blocked <tool>: <reason>`. A verdict the harness cannot read allows the call in hand and costs the extension its place on the bus, because a gate whose answers do not parse is not a policy |
 | `tool_result` | `effects.ToolSurface.run`, over the settled reply before the driver commits it. The transform is applied by rebuilding the original reply with the hook's content, so `is_error`, `usage`, the timestamp and the call's coordinates stay the harness's — a hook may rewrite what the model reads and may not write the session's accounting |
 | `agent_end` | `effects.Hooks.run_end`, beside the follow-up the harness was already placing |
@@ -1223,7 +1224,7 @@ can read: it admits `gleam/json` and no msgpack decoder. A conversation
 message is `core/codec`'s durable JSON, decoded back through the same
 total decoder, so a transform that no longer decodes is discarded rather
 than half-applied. `client/extension/hooks.gleam`'s module documentation
-is the normative table of the nine shapes, and
+is the wire table of the hook shapes, and
 `packages/ext/src/ext/hook.gleam` is the extension's side of the same
 wire: one `Hook` variant per event, so an entry module that answers the
 wrong event is a compile error in the extension rather than a shape
@@ -1334,7 +1335,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:234`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:242`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:209`), the staging discipline, the generated satellite entry that serves this manifest's tools and hooks. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:121`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
@@ -1375,3 +1376,17 @@ the client's side, including the registry seam. `packages/ext/CLAUDE.md`,
 `packages/broker/CLAUDE.md` are denser than this document about their own
 packages. For intent, `docs/adr/007-extension-tiers-and-brokered-egress.md`
 and `docs/design-notes/extension-architecture.md`.
+
+## Proactive skills (protocol 045)
+
+An extension may now register hooks without tools; an entirely empty manifest
+still refuses. `ext/hook.OnSelectSkills` receives opaque candidates and returns
+selected candidates. The host validates names against the advertised immutable
+catalogue and never accepts document text or paths from the reply. Explicit-only
+skills remain outside automatic selection. Repeated projection recreates full
+instructions without appending durable transcript entries.
+
+The [Jev skill selector](https://github.com/Roasbeef/loom-skill-selector) is the
+first consumer. It uses brokered HTTP and scoped extension memory; the harness
+contains no Jev-specific ranking or dependency. The [design note](../design-notes/jev-context-selection.md)
+distills the motivating ideas and separates this built slice from future work.
