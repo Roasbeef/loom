@@ -117,7 +117,7 @@ fn assembly(
         owner,
       )
     },
-    build: fn(record, selected, services, owner) {
+    build: fn(record, selected, services, owner, _directory) {
       process.send(owners, #(record.id, owner))
       let transport = case record.name {
         "A" -> held

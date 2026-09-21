@@ -50,8 +50,8 @@
 ////
 //// - the **workspace** seam — `cap/{fs, proc, net, git, lsp, report, task,
 ////   actor, kv}` — a program that orchestrates *effects*;
-//// - the **orchestration** seam — `cap/strand` and `cap/report`, and
-////   nothing else — a program that orchestrates *agents*;
+//// - the **orchestration** seam — child operations, reporting, background
+////   input and explicitly authorized peers — a program orchestrating agents;
 //// - the **extension** seam — the workspace seam plus `ext`, `ext/hook`,
 ////   `ext/memory` and HTTP data helpers — an
 ////   installed extension's tool, compiled once and run per call;
@@ -60,8 +60,8 @@
 ////   removed — the seam a harness-resident hook body would be judged
 ////   against if one were ever loaded (`resident`).
 ////
-//// The first two are disjoint by construction and the third is
-//// deliberately *not*: an extension is a workspace program with a
+//// Workspace effects and child orchestration remain separate. Reporting,
+//// input and granted peer communication are shared. An extension is a workspace program with a
 //// different entry point, so its allowlist is the workspace seam's
 //// widened rather than a fourth set of capabilities that travel together.
 //// The property that holds it is a superset claim rather than an
@@ -298,7 +298,7 @@ fn is_ident_continue(code: Int) -> Bool {
 /// is provably effect-free.
 ///
 /// This is one of the two seams (`Seam`, `for_seam`); `orchestration` is
-/// the other, and the two share no capability module but `cap/report`.
+/// the other. Reporting, background input and granted peer communication are shared.
 ///
 /// # The capability prelude (`cap/*`)
 ///
@@ -334,7 +334,7 @@ pub fn default() -> VetPolicy {
   new(list.append(default_cap_modules(), default_stdlib_modules()))
 }
 
-/// The orchestration seam's allowlist: `cap/strand`, `cap/report`, and the
+/// The orchestration seam's allowlist includes named child workflows and the
 /// same pure standard-library subset the workspace seam gets.
 ///
 /// `cap/strand` is the whole of what an orchestration program may reach
@@ -548,7 +548,8 @@ pub fn extension_authority_modules() -> List(String) {
 pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
+    "cap/execution", "cap/peer", "cap/task", "cap/actor", "cap/kv",
+    "cap/schedule", "cap/job", "cap/search",
   ]
 }
 
@@ -570,7 +571,7 @@ pub fn default_cap_modules() -> List(String) {
 /// ```
 ///
 pub fn orchestration_cap_modules() -> List(String) {
-  ["cap/strand", "cap/report"]
+  ["cap/strand", "cap/report", "cap/execution", "cap/peer", "cap/workflow"]
 }
 
 /// The capability-prelude and prelude-package modules on the extension
@@ -634,29 +635,13 @@ pub fn extension_stdlib_modules() -> List(String) {
   list.append(default_stdlib_modules(), ["gleam/bit_array", "gleam/uri"])
 }
 
-// `cap/schedule` stays on the workspace seam and not this one. A
-// heartbeat reads as orchestration — it is about what happens later
-// rather than about the files in front of you — so issue #156 asked
-// whether it belonged on both, and the answer there is no. The bar for
-// the one shared entry is the bar `cap/report` meets: `report.emit`
-// mints nothing durable and causes no later effect, it is only how a
-// program says what it found, so a seam that carries it gains no
-// authority by carrying it. `schedule.create` does not meet that bar.
-// It mints a durable reserved cell whose whole purpose is to admit a
-// turn onto a strand at a later time, with nobody present and possibly
-// waking an idle strand — the ability to cause future execution, which
-// is authority however it is spelled.
-//
-// What admitting it would cost is the property rather than the module:
-// the intersection above *is* the confinement, so widening the shared
-// entry from one module to two spends a real guarantee — one rule read
-// in two directions — on a convenience nobody has asked for. Nothing
-// becomes unreachable, only indirect — an orchestration program that
-// wants a heartbeat has the strand it is running on schedule one
-// through the `schedule_*` tools, and a workspace program can already
-// schedule for the strand it runs on. The intersection test asserting
-// `shared == ["cap/report"]` is therefore this ruling's checkable form,
-// which is where a rule belongs here rather than in prose.
+// Scheduling remains workspace-only. Protocol 045 deliberately widens the
+// shared surface to reporting, background input and peer communication. Input
+// is bound to the current execution; peer delivery requires an operator-owned
+// exact directional grant, with idle wake permission checked separately. Neither
+// exposes workspace effects or child ownership to the other seam. This is an
+// explicit authority change: shared peer delivery can induce work at a granted
+// recipient, unlike reporting alone. The intersection test pins these modules.
 //
 // The extension seam is different in kind and is not the exception it
 // looks like: `extension_cap_modules` is the workspace seam widened by

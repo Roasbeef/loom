@@ -23,7 +23,7 @@ import core/message
 import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import tools/codemode
 import tools/directory_access
@@ -118,6 +118,7 @@ fn scripted_over(
   execution: codemode.Execution,
 ) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(_request) { execution },
     seams:,
     default_within_ms: 300_000,
@@ -133,6 +134,7 @@ fn echoing() -> codemode.CodeMode {
 
 fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(request: codemode.Request) {
       codemode.Execution(
         result: codemode.Ran(
@@ -1103,6 +1105,7 @@ const raised_grant = policy.GrantEnv(name: "LOOM_CAP_SOCK")
 // rather than infer them.
 fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(request: codemode.Request) {
       process.send(crossings, request.grants)
       case list.contains(request.grants, raised_grant) {
@@ -1130,6 +1133,7 @@ fn always_refusing(
   crossings: Subject(List(policy.Grant)),
 ) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(request: codemode.Request) {
       process.send(crossings, request.grants)
       run_refused()

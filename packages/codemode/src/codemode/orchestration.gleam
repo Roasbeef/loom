@@ -388,7 +388,17 @@ fn spawn_plan(
   )
 }
 
-fn decode_spawn(args: MsgPackValue) -> Result(agent.SpawnRequest, CapDenial) {
+/// Decodes a child assignment shared by ordinary and named workflow spawns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestration.decode_spawn(request.args)
+/// ```
+@internal
+pub fn decode_spawn(
+  args: MsgPackValue,
+) -> Result(agent.SpawnRequest, CapDenial) {
   use purpose <- result.try(decode.string(args, "purpose"))
   use brief <- result.try(decode.string(args, "brief"))
   use model <- result.try(optional_string_arg(args, "model"))

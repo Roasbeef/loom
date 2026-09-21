@@ -69,6 +69,7 @@ import machine/operation.{
 }
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
+import runtime/async_execution
 import runtime/child_run
 import runtime/effects.{type Effects}
 import runtime/escalation.{type Escalation}
@@ -612,7 +613,143 @@ fn accept_request(
 // (including a human prompting a child directly) use its current parent run,
 // if any. The owner expectation is committed with the child's admission.
 type Continuation {
-  Continuation(owner: #(String, OpId), within_ms: Option(Int))
+  Continuation(
+    owner: #(String, OpId),
+    within_ms: Option(Int),
+    execution: Option(AsyncCustody),
+  )
+}
+
+/// Whether execution completion cancels a newly accepted child.
+pub type Attachment {
+  /// The execution owns the child's lifetime.
+  Owned
+
+  /// The caller explicitly relinquishes completion custody.
+  Detached
+}
+
+/// Harness-bound authority for an asynchronous child admission.
+/// The durable execution record is checked on every use; this value alone
+/// grants nothing, and cannot renew a deadline or resurrect closed custody.
+pub type AsyncCustody {
+  AsyncCustody(
+    /// The strand that launched the execution.
+    strand: String,
+    /// The operation that launched the execution.
+    operation: OpId,
+    /// The execution's stable handle.
+    execution: String,
+    /// Cancellation relationship for newly admitted children.
+    attachment: Attachment,
+  )
+}
+
+// The record sequence participates in the recipient transaction. Closing
+// custody therefore serializes with both new runs and busy-child steering.
+fn async_authority(
+  runtime: Runtime,
+  custody: AsyncCustody,
+  now: Int,
+) -> Result(#(async_execution.Execution, List(tx.SeqExpectation)), ApiError) {
+  let aborted_key = async_execution.abort_key(custody.operation)
+  use aborted <- result.try(fact_cell(runtime, aborted_key))
+  use Nil <- result.try(case aborted {
+    None -> Ok(Nil)
+    Some(_) -> Error(ReadFailed("initiating operation has been aborted"))
+  })
+  use cell <- result.try(fact_cell(
+    runtime,
+    async_execution.key(custody.execution),
+  ))
+  use cell <- result.try(case cell {
+    Some(cell) -> Ok(cell)
+    None -> Error(ReadFailed("async execution does not exist"))
+  })
+  use record <- result.try(
+    async_execution.decode(cell.value)
+    |> result.replace_error(ReadFailed("invalid async execution record")),
+  )
+  case
+    record.id == custody.execution
+    && record.strand == custody.strand
+    && record.operation == custody.operation
+    && async_execution.admits(record, now)
+  {
+    False -> Error(ReadFailed("async execution is not admitting work"))
+    True ->
+      Ok(
+        #(record, [
+          tx.Expect(register.FactCustom, aborted_key, None),
+          tx.Expect(
+            register.FactCustom,
+            async_execution.key(record.id),
+            Some(cell.seq),
+          ),
+        ]),
+      )
+  }
+}
+
+fn admitting_async_child(
+  runtime: Runtime,
+  custody: AsyncCustody,
+  budget: Option(Int),
+  operation: OpId,
+  now: Int,
+  plan: tx.Tx,
+) -> Result(tx.Tx, ApiError) {
+  use #(execution, fence) <- result.try(async_authority(runtime, custody, now))
+  let deadline = case budget {
+    Some(ms) -> int.min(now + ms, execution.deadline_ms)
+    None -> execution.deadline_ms
+  }
+  let owner = case custody.attachment {
+    Owned ->
+      Some(child_run.AsyncExecution(custody.operation, custody.execution))
+    Detached -> None
+  }
+  let run =
+    child_run.Run(
+      strand: runtime.strand,
+      owner:,
+      deadline: Some(deadline),
+      stop: child_run.Unstopped,
+    )
+
+  // Preserve the first accepted async brief in the admission transaction.
+  // A later peer or operator run cannot replace the identity recovered after
+  // interruption between admission and publication of the lineage cell.
+  let initial_key = child_run.initial_key(runtime.strand)
+  use initial <- result.try(fact_cell(runtime, initial_key))
+  let initial_writes = case initial {
+    Some(_) -> []
+    None -> [
+      tx.SetRegister(
+        register.FactCustom,
+        initial_key,
+        register.value(json.String(ids.op_id_to_string(operation))),
+      ),
+    ]
+  }
+  let initial_expected = case initial {
+    Some(cell) -> [tx.Expect(register.FactCustom, initial_key, Some(cell.seq))]
+    None -> [tx.Expect(register.FactCustom, initial_key, None)]
+  }
+  Ok(tx.Tx(
+    writes: list.append(initial_writes, [
+      tx.SetRegister(
+        register.FactCustom,
+        child_run.key(operation),
+        register.value(child_run.encode(run)),
+      ),
+      ..plan.writes
+    ]),
+    expected: list.append(fence, [
+      tx.Expect(register.FactCustom, child_run.key(operation), None),
+      ..list.append(initial_expected, plan.expected)
+    ]),
+  ))
 }
 
 fn accept_with_child_run(
@@ -684,9 +821,12 @@ fn admitting_child_run(
   now: Int,
   plan: tx.Tx,
 ) -> Result(tx.Tx, ApiError) {
-  case request {
-    AcceptCompaction(..) | AcceptNavigation(..) -> Ok(plan)
-    AcceptRun(..) -> {
+  case request, continuation {
+    AcceptCompaction(..), _ | AcceptNavigation(..), _ -> Ok(plan)
+    AcceptRun(..),
+      Some(Continuation(execution: Some(custody), within_ms: budget, ..))
+    -> admitting_async_child(runtime, custody, budget, operation, now, plan)
+    AcceptRun(..), _ -> {
       use cell <- result.try(
         read_decoded(
           runtime,
@@ -767,7 +907,7 @@ fn child_owner(
   runtime: Runtime,
   child: lineage.Lineage,
   continuation: Option(Continuation),
-) -> Result(#(Option(OpId), List(tx.SeqExpectation)), ApiError) {
+) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
   let parent = case continuation {
     Some(Continuation(owner: #(strand, _), ..)) -> strand
     None -> child.parent
@@ -805,7 +945,7 @@ fn child_owner_phase(
   runtime: Runtime,
   current: Option(OpId),
   continuation: Option(Continuation),
-) -> Result(#(Option(OpId), List(tx.SeqExpectation)), ApiError) {
+) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
   case current {
     None -> Ok(#(None, []))
     Some(id) -> {
@@ -824,7 +964,7 @@ fn child_owner_phase(
         True, Some(_) ->
           Error(ReadFailed("the sending parent run is finishing"))
         True, None -> Ok(None)
-        False, _ -> Ok(Some(id))
+        False, _ -> Ok(Some(child_run.ParentRun(id)))
       })
       Ok(
         #(owner, [
@@ -891,12 +1031,14 @@ pub fn steer_quietly(
 ///
 /// Constructor invariants: `key` is under a reserved prefix
 /// (`reserved_fact_key`), which `steer_marking` refuses otherwise. The
-/// absent-expectation is the type's whole meaning: a mark guarded on a
-/// seq the caller read — claim-if-unmoved rather than claim-if-first —
-/// is a generalization nothing wants yet, cut rather than shipped
-/// untested.
+/// receipt is always expected absent. GuardedMark additionally compares the
+/// exact authority cells read by the caller. Neither a duplicate receipt nor
+/// a stale authority cell is retried as an ordinary strand admission race.
 pub type Mark {
   Mark(key: String, value: JsonValue)
+
+  /// Checks recipient-owned authority in the same commit as the receipt.
+  GuardedMark(key: String, value: JsonValue, expected: List(tx.SeqExpectation))
 }
 
 /// Enqueues a steer item and stakes a reserved claim in one transaction:
@@ -977,6 +1119,22 @@ fn enqueue(
   ) -> Result(queue.QueuePlan, queue.QueueReject),
   mark: Option(Mark),
 ) -> Result(EntryId, ApiError) {
+  enqueue_guarded(runtime, message, admit, mark, None)
+}
+
+fn enqueue_guarded(
+  runtime: Runtime,
+  message: AgentMessage,
+  admit: fn(
+    Operation,
+    OperationState,
+    Int,
+    ids.Generator,
+    operation.PendingEntry,
+  ) -> Result(queue.QueuePlan, queue.QueueReject),
+  mark: Option(Mark),
+  custody: Option(AsyncCustody),
+) -> Result(EntryId, ApiError) {
   retry_admission(4, fn() {
     use <- attempt
     let w = writer_subject(runtime)
@@ -989,11 +1147,19 @@ fn enqueue(
           runtime,
           op_id,
         ))
-        let #(_now, generator) = mint_context(runtime)
+        let #(now, generator) = mint_context(runtime)
         use queue.QueuePlan(entry:, next: _, tx: plan_tx) <- or_rejected(
           admit(op, op_state, op_state_seq, generator, PendingMessage(message:)),
           fn(reason) { QueueRejected(reason:) },
         )
+
+        use plan_tx <- result.try(case custody {
+          None -> Ok(plan_tx)
+          Some(owner) -> {
+            use #(_, fence) <- result.try(async_authority(runtime, owner, now))
+            Ok(tx.Tx(..plan_tx, expected: list.append(fence, plan_tx.expected)))
+          }
+        })
 
         // Only a lost seq race reloads. Every other refusal — a stolen
         // lease above all — finishes the admission: `retry_admission`
@@ -1500,7 +1666,57 @@ pub fn send_to_child(
   owner owner: OpId,
   within_ms within_ms: Option(Int),
 ) -> Result(Delivery, ApiError) {
-  let continuation = Continuation(owner: #(runtime.strand, owner), within_ms:)
+  let continuation =
+    Continuation(owner: #(runtime.strand, owner), within_ms:, execution: None)
+  send_child_attempts(on_strand(runtime, target), message, continuation, 4)
+}
+
+/// Steers an active recipient while checking async custody atomically.
+/// This never wakes an idle parent or transfers custody of its operation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.steer_async(runtime, message, custody)
+/// ```
+pub fn steer_async(
+  runtime: Runtime,
+  message: AgentMessage,
+  custody: AsyncCustody,
+) -> Result(Delivery, ApiError) {
+  use entry <- result.map(enqueue_guarded(
+    runtime,
+    message,
+    queue.enqueue_steer,
+    None,
+    Some(custody),
+  ))
+  nudge(runtime)
+  Steered(entry)
+}
+
+/// Admits or steers a child under fixed asynchronous execution custody.
+/// The recipient's lineage may still be unpublished during its first run;
+/// custody is committed with admission rather than inferred from that ledger.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.send_to_async_child(runtime, child, brief, custody, Some(30_000))
+/// ```
+pub fn send_to_async_child(
+  runtime: Runtime,
+  to target: String,
+  message message: AgentMessage,
+  custody custody: AsyncCustody,
+  within_ms within_ms: Option(Int),
+) -> Result(Delivery, ApiError) {
+  let continuation =
+    Continuation(
+      owner: #(custody.strand, custody.operation),
+      within_ms:,
+      execution: Some(custody),
+    )
   send_child_attempts(on_strand(runtime, target), message, continuation, 4)
 }
 
@@ -1527,7 +1743,15 @@ fn send_child_attempts(
     Some(ms) if ms <= 0 -> Error(ReadFailed("within_ms must be positive"))
     Some(_) -> admission()
     None ->
-      case enqueue(target, message, queue.enqueue_steer, None) {
+      case
+        enqueue_guarded(
+          target,
+          message,
+          queue.enqueue_steer,
+          None,
+          continuation.execution,
+        )
+      {
         Ok(entry) -> {
           nudge(target)
           Ok(Steered(entry:))
@@ -1951,6 +2175,17 @@ fn commit_fact_expecting(
   value: JsonValue,
   expected: Option(Seq),
 ) -> Result(Seq, ApiError) {
+  commit_fact_guarded(runtime, key, value, [
+    tx.Expect(register.FactCustom, key, expected),
+  ])
+}
+
+fn commit_fact_guarded(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  expected: List(tx.SeqExpectation),
+) -> Result(Seq, ApiError) {
   let plan_tx =
     tx.Tx(
       writes: [
@@ -1960,7 +2195,7 @@ fn commit_fact_expecting(
           value: register.value(value),
         ),
       ],
-      expected: [tx.Expect(ns: register.FactCustom, key:, seq: expected)],
+      expected:,
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(tx.CommitResult(first_seq:, ..)) -> Ok(first_seq)
@@ -3199,7 +3434,13 @@ fn commit_or_retry(
 fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
   case mark {
     None -> plan
-    Some(Mark(key:, value:)) ->
+    Some(mark) -> {
+      let key = mark.key
+      let value = mark.value
+      let guards = case mark {
+        Mark(..) -> []
+        GuardedMark(expected:, ..) -> expected
+      }
       tx.Tx(
         writes: list.append(plan.writes, [
           tx.SetRegister(
@@ -3210,9 +3451,10 @@ fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
         ]),
         expected: [
           tx.Expect(ns: register.FactCustom, key:, seq: None),
-          ..plan.expected
+          ..list.append(guards, plan.expected)
         ],
       )
+    }
   }
 }
 
@@ -3239,14 +3481,21 @@ fn conflicted_key(
   mark: Option(Mark),
 ) -> Option(String) {
   case result, mark {
-    Error(writer.Underlying(tx.StaleExpectation(failed:))), Some(Mark(key:, ..))
-    ->
-      case failed {
-        tx.Expect(ns: register.FactCustom, key: failed_key, seq: _)
-          if failed_key == key
-        -> Some(key)
-        tx.Expect(..) -> None
+    Error(writer.Underlying(tx.StaleExpectation(failed:))), Some(mark) -> {
+      let expected = case mark {
+        Mark(..) -> []
+        GuardedMark(expected:, ..) -> expected
       }
+      case
+        list.contains(
+          [tx.Expect(register.FactCustom, mark.key, None), ..expected],
+          failed,
+        )
+      {
+        True -> Some(mark.key)
+        False -> None
+      }
+    }
     Error(writer.Underlying(tx.StaleExpectation(..))), None
     | Error(writer.Underlying(tx.Corruption(..))), Some(_)
     | Error(writer.Underlying(tx.Corruption(..))), None
@@ -3440,4 +3689,30 @@ fn describe_start_error(error: actor.StartError) -> String {
     actor.InitFailed(reason) -> "supervision tree start failed: " <> reason
     actor.InitExited(_) -> "supervision tree initialiser exited"
   }
+}
+
+/// Claims a reserved fact only while both its key and an abort fence are absent.
+/// Launch and abort race in the writer transaction, never across a read gap.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.claim_reserved_fact(runtime, execution_key, record, unless: abort_key)
+/// ```
+pub fn claim_reserved_fact(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  unless fence: String,
+) -> Result(Seq, ApiError) {
+  use Nil <- result.try(
+    case reserved_fact_key(key) && reserved_fact_key(fence) {
+      True -> Ok(Nil)
+      False -> Error(UnreservedFactKey(key))
+    },
+  )
+  commit_fact_guarded(runtime, key, value, [
+    tx.Expect(register.FactCustom, key, None),
+    tx.Expect(register.FactCustom, fence, None),
+  ])
 }

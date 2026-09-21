@@ -17,6 +17,7 @@ import gleam/erlang/process
 import gleam/http/response
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -56,7 +57,7 @@ fn fixture_with_limits(connection_limits: limits.Limits, run) {
       root.Config(directory, "Owner", 2, connection_limits),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -68,6 +69,7 @@ fn fixture_with_limits(connection_limits: limits.Limits, run) {
     as "only the fixture receives plaintext owner credential"
   let config =
     server.Config(
+      peer_endpoint: fn(_) { None },
       daemon:,
       domain_configuration: "",
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
@@ -370,6 +372,20 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
         within_ms: 1000,
       )
     assert field(field(denied, "body"), "code") == json.String("forbidden")
+    let peer_fields = [
+      #("source_session", json.String(visible.registration.id)),
+      #("source_strand", json.String("main")),
+      #("target_session", json.String(hidden.registration.id)),
+      #("target_strand", json.String("main")),
+      #("wake", json.String("may_wake")),
+      #("epoch", json.String(ready.epoch)),
+    ]
+    list.each(["peers.link", "peers.unlink"], fn(command) {
+      let denied =
+        send(socket, 30, command, json.Object(peer_fields), within_ms: 1000)
+      assert field(field(denied, "body"), "code") == json.String("forbidden")
+        as "session membership cannot mutate peer communication authority"
+    })
     assert access.revoke_credential(store, digest) == Ok(Nil)
     let revoked = send(socket, 4, "status", json.Object([]), within_ms: 1000)
     assert field(field(revoked, "body"), "code") == json.String("unauthorized")
@@ -843,5 +859,29 @@ pub fn terminal_reports_connection_admission_refusal_without_actor_wrapper_test(
     assert string.contains(reason, "max_reserved_message_bytes")
     assert !string.contains(reason, "InitFailed")
     ffi_ws.tcp_close(socket)
+  })
+}
+
+pub fn peer_control_mutations_are_epoch_fenced_before_resolution_test() {
+  fixture(fn(_, _, port, credential) {
+    let #(socket, response) = connect(port, credential, "/v2/control")
+    assert string.contains(response, "101")
+    let _hello = frame(socket, within_ms: 1000)
+    let #(id, _) = ids.mint_session(ids.generator(clock.fixed(1), 13))
+    let fields = [
+      #("source_session", json.String(ids.session_id_to_string(id))),
+      #("source_strand", json.String("main")),
+      #("target_session", json.String(ids.session_id_to_string(id))),
+      #("target_strand", json.String("main")),
+      #("wake", json.String("may_wake")),
+      #("epoch", json.String("stale")),
+    ]
+    list.each(["peers.link", "peers.unlink"], fn(command) {
+      let refused =
+        send(socket, 1, command, json.Object(fields), within_ms: 1000)
+      assert field(field(refused, "body"), "code") == json.String("stale_epoch")
+    })
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
   })
 }

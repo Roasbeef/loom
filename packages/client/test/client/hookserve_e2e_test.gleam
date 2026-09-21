@@ -554,6 +554,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
   let assert Ok(here) = simplifile.current_directory()
     as "the test process must know where it is"
   serve.Settings(
+    peer_directory: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: rig.root <> "/session.db",

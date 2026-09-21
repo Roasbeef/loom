@@ -160,6 +160,7 @@ fn settings_under(root: String) -> serve.Settings {
   // no tool call could ever run under.
   let root = absolute(root)
   serve.Settings(
+    peer_directory: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",
@@ -331,7 +332,7 @@ fn with_daemon_instance(run) {
       daemon_root.Config(config.state_root, "Fixture owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) {
+        build: fn(record, _domain, _services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the catalogue reserved a canonical identity"
           serve.assemble_owned(

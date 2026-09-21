@@ -195,7 +195,7 @@ fn start(settings: serve.Settings) {
             owner,
           )
         },
-        build: fn(record, selected, services, owner) {
+        build: fn(record, selected, services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the catalogue reserves canonical identities"
           serve.assemble_in_domain(

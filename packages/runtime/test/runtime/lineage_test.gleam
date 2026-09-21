@@ -17,6 +17,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import machine/strand.{ModelIdentity, StrandConfiguration, ThinkingOff}
 import runtime/api
+import runtime/async_execution
 import runtime/child_run
 import runtime/effects
 import runtime/lineage
@@ -385,7 +386,7 @@ pub fn child_run_records_round_trip_and_reject_missing_custody_test() {
   let original =
     child_run.Run(
       strand: "sub:1",
-      owner: Some(an_op(30)),
+      owner: Some(child_run.ParentRun(an_op(30))),
       deadline: Some(50_000),
       stop: child_run.Unstopped,
     )
@@ -532,4 +533,101 @@ pub fn corrupt_lineage_refuses_agent_admission_but_keeps_host_recovery_test() {
     == Ok(Some(json.String("corrupt")))
   let _closed = api.close(runtime)
   Nil
+}
+
+// A satellite outlives its initiating turn. Its first child has no lineage
+// yet, so ownership must be part of acceptance itself, not a later repair.
+pub fn async_child_custody_precedes_lineage_and_fences_steering_test() {
+  let runtime = open_runtime(fn(_) { False })
+  let execution =
+    async_execution.Execution(
+      id: "abc",
+      strand: "main",
+      operation: an_op(91),
+      step: "async/abc",
+      deadline_ms: 9_000_000,
+      source: "program",
+      seam: "orchestration",
+      phase: async_execution.Running,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact_expecting(
+      runtime,
+      async_execution.key(execution.id),
+      async_execution.encode(execution),
+      None,
+    )
+    as "the live execution must be durable"
+  let assert Ok(_) =
+    api.create_idle_strand(runtime, "sub:async", configuration(), None)
+    as "the child must be seeded idle"
+  let custody =
+    api.AsyncCustody("main", execution.operation, execution.id, api.Owned)
+  let prompt =
+    message.UserMessage(
+      content: [message.UserText("work", None)],
+      timestamp: 1_000_000,
+      origin: None,
+    )
+  let assert Ok(api.Started(operation)) =
+    api.send_to_async_child(
+      runtime,
+      "sub:async",
+      prompt,
+      custody,
+      Some(999_999_999),
+    )
+    as "async custody must admit without a live parent operation or lineage"
+  let assert Ok(Some(payload)) = api.fact(runtime, child_run.key(operation))
+    as "admission must persist custody"
+  let assert Ok(run) = child_run.decode(payload)
+    as "the child record must decode"
+  assert run.owner == Some(child_run.AsyncExecution(execution.operation, "abc"))
+  assert run.deadline == Some(execution.deadline_ms)
+  let assert Ok(api.Steered(_)) =
+    api.send_to_async_child(runtime, "sub:async", prompt, custody, None)
+    as "a live execution may steer"
+
+  let assert Ok(Some(cell)) = api.fact_cell(runtime, async_execution.key("abc"))
+    as "the fence sequence must exist"
+  let closed =
+    async_execution.Execution(..execution, phase: async_execution.Draining)
+  let assert Ok(_) =
+    api.put_reserved_fact_expecting(
+      runtime,
+      async_execution.key("abc"),
+      async_execution.encode(closed),
+      Some(cell.seq),
+    )
+    as "closing custody must commit"
+  let assert Error(api.ReadFailed(_)) =
+    api.send_to_async_child(runtime, "sub:async", prompt, custody, None)
+    as "closed custody must refuse busy steering"
+  let assert Ok(_) =
+    api.create_idle_strand(runtime, "sub:late", configuration(), None)
+    as "another child must be seeded idle"
+  let assert Error(api.ReadFailed(_)) =
+    api.send_to_async_child(runtime, "sub:late", prompt, custody, Some(1000))
+    as "closed custody must refuse new runs"
+  let _closed = api.close(runtime)
+}
+
+pub fn async_execution_codec_rejects_cross_execution_steps_test() {
+  let record =
+    async_execution.Execution(
+      "abc",
+      "main",
+      an_op(92),
+      "async/abc",
+      1_000_000,
+      "program",
+      "workspace",
+      async_execution.Running,
+    )
+  assert async_execution.decode(async_execution.encode(record)) == Ok(record)
+  let forged = async_execution.Execution(..record, step: "async/def")
+  let assert Error(_) = async_execution.decode(async_execution.encode(forged))
+    as "a stored handle must never address another broker step"
+  assert !async_execution.admits(record, record.deadline_ms)
+  assert !async_execution.valid_id("../abc")
 }

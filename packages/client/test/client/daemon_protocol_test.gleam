@@ -2,6 +2,7 @@
 //// Wire examples use the accepted control vocabulary, not the conversation codec.
 
 import client/daemon/protocol
+import client/peer_mail
 import core/clock
 import core/ids
 import core/json
@@ -308,4 +309,45 @@ pub fn encoded_events_preserve_version_and_correlation_within_bound_test() {
     "status",
     json.String(string.repeat("x", protocol.max_bytes)),
   ))
+}
+
+pub fn peer_controls_require_explicit_wake_and_canonical_sessions_test() {
+  let fields = [
+    #("source_session", json.String(session_id())),
+    #("target_session", json.String(session_id())),
+    #("source_strand", json.String("main")),
+    #("target_strand", json.String("reviewer")),
+    #("epoch", json.String("epoch")),
+  ]
+  assert protocol.decode(
+      envelope(1, "peers.link", [#("wake", json.String("busy_only")), ..fields]),
+    )
+    == Ok(protocol.Request(
+      1,
+      protocol.LinkPeers(
+        session_id(),
+        "main",
+        session_id(),
+        "reviewer",
+        peer_mail.BusyOnly,
+        "epoch",
+      ),
+    ))
+  assert result.is_error(protocol.decode(envelope(1, "peers.link", fields)))
+  assert result.is_error(
+    protocol.decode(
+      envelope(1, "peers.link", [#("wake", json.String("implicit")), ..fields]),
+    ),
+  )
+  assert protocol.decode(envelope(2, "peers.unlink", fields))
+    == Ok(protocol.Request(
+      2,
+      protocol.UnlinkPeers(
+        session_id(),
+        "main",
+        session_id(),
+        "reviewer",
+        "epoch",
+      ),
+    ))
 }

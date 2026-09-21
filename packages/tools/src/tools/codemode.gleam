@@ -73,7 +73,7 @@ import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tools/blob
@@ -97,7 +97,7 @@ pub type Seam {
   /// that orchestrates *effects*.
   WorkspaceSeam
 
-  /// `cap/strand` and `cap/report` and nothing else: a program that
+  /// Children and named workflows with reporting and communication: a program that
   /// orchestrates *agents*.
   OrchestrationSeam
 }
@@ -426,6 +426,8 @@ pub type CodeMode {
   CodeMode(
     /// Runs one submitted program end to end.
     execute: fn(Request) -> Execution,
+    /// Optional session-owned execution service.
+    background: Option(Background),
     /// The seams this host serves, the default first.
     seams: Seams,
     /// The wall budget used when the call names none.
@@ -433,6 +435,50 @@ pub type CodeMode {
     /// The ceiling a call's `within_ms` is clamped to.
     max_within_ms: Int,
   )
+}
+
+/// Interactions with a strand-owned background execution handle.
+pub type Interaction {
+  /// Observe without extending the execution's deadline.
+  Check
+
+  /// Observe until terminal or until this bounded wait expires.
+  Join
+
+  /// Request cancellation of the execution and its owned children.
+  Cancel
+
+  /// Append a JSON value to the execution's durable inbox.
+  Send(value: JsonValue)
+}
+
+/// Host closures behind the asynchronous modes of code_mode.
+pub type Background {
+  Background(
+    /// Launches with policy and identity captured from the original request.
+    launch: fn(Request) -> Result(JsonValue, String),
+    /// Authenticates every handle access with the calling strand.
+    interact: fn(String, String, Interaction, Int) -> Result(JsonValue, String),
+  )
+}
+
+fn async_properties(
+  background: Option(Background),
+) -> List(#(String, JsonValue)) {
+  case background {
+    None -> []
+    Some(_) -> [
+      #(
+        "mode",
+        tool.enum_property(
+          ["run", "launch", "send", "check", "join", "cancel"],
+          "run synchronously (default), or launch and interact with a background execution",
+        ),
+      ),
+      #("handle", tool.string_property("execution handle returned by launch")),
+      #("value", json.Object([])),
+    ]
+  }
 }
 
 /// A host that serves one seam, which is every host until one wires a
@@ -517,6 +563,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
           ),
         ],
         seam_properties(mode.seams),
+        async_properties(mode.background),
         [
           #(
             "within_ms",
@@ -530,7 +577,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
           ),
         ],
       ]),
-      ["program"],
+      case mode.background {
+        None -> ["program"]
+        Some(_) -> []
+      },
     ),
     replay: tool.Never,
     execution_mode: tool.Exclusive,
@@ -863,6 +913,57 @@ pub fn requirements(workspace: String) -> SandboxPolicy {
 }
 
 fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+  use named <- tool.with_arg(tool.optional_string(args, "mode"))
+  case option.unwrap(named, "run"), mode.background {
+    "run", _ -> run_program(mode, ctx, args, None)
+    "launch", Some(background) -> run_program(mode, ctx, args, Some(background))
+    command, Some(background) -> interact(background, ctx, args, command)
+    _, None -> tool.failure("this host does not serve asynchronous code mode")
+  }
+}
+
+fn interact(
+  background: Background,
+  ctx: Ctx,
+  args: JsonValue,
+  command: String,
+) -> ToolOutcome {
+  use handle <- tool.with_arg(tool.required_string(args, "handle"))
+  use within <- tool.with_arg(tool.optional_int(args, "within_ms"))
+  use action <- tool.with_arg(case command {
+    "check" -> Ok(Check)
+    "join" -> Ok(Join)
+    "cancel" -> Ok(Cancel)
+    "send" -> {
+      use value <- result.try(tool.optional_value(args, "value"))
+      case value {
+        None -> Error("send requires value")
+        Some(value) -> Ok(Send(value))
+      }
+    }
+    _ -> Error("unknown code_mode mode")
+  })
+  async_outcome(background.interact(
+    ctx.strand,
+    handle,
+    action,
+    option.unwrap(within, 30_000),
+  ))
+}
+
+fn async_outcome(answer: Result(JsonValue, String)) -> ToolOutcome {
+  case answer {
+    Error(reason) -> tool.failure(reason)
+    Ok(value) -> tool.success(json.to_string(value)) |> tool.with_details(value)
+  }
+}
+
+fn run_program(
+  mode: CodeMode,
+  ctx: Ctx,
+  args: JsonValue,
+  background: Option(Background),
+) -> ToolOutcome {
   use program <- tool.with_arg(tool.required_string(args, "program"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   use named <- tool.with_arg(tool.optional_string(args, "seam"))
@@ -875,7 +976,11 @@ fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
         fn(outcome) { outcome },
       )
       let asked = request(mode, ctx, program, within_ms, on: offer.seam)
-      render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
+      case background {
+        None ->
+          render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
+        Some(background) -> async_outcome(background.launch(asked))
+      }
     }
   }
 }
@@ -990,6 +1095,45 @@ pub fn request(
       max: mode.max_within_ms,
     ),
   )
+}
+
+/// Renders a durable asynchronous result without retaining a tool context.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.execution_value(execution)
+/// ```
+pub fn execution_value(execution: Execution) -> JsonValue {
+  let fields = case execution.result {
+    Ran(Completed(value), manifest_hash) -> [
+      #("status", json.String("completed")),
+      #("value", value_json(value)),
+      #("manifest_hash", json.String(manifest_hash)),
+    ]
+    Ran(Errored(message, details), manifest_hash) -> [
+      #("status", json.String("errored")),
+      #("message", json.String(message)),
+      #("details", value_json(details)),
+      #("manifest_hash", json.String(manifest_hash)),
+    ]
+    VetRejected(rejections) -> [
+      #("status", json.String("vetting_rejected")),
+      #("rejections", json.Array(list.map(rejections, rejection_json))),
+    ]
+    CompileFailed(failure) -> [
+      #("status", json.String("compile_failed")),
+      #("failure", json.String(string.inspect(failure))),
+    ]
+    RunFailed(failure) -> [
+      #("status", json.String("run_failed")),
+      #("failure", json.String(string.inspect(failure))),
+    ]
+  }
+  json.Object([
+    #("enforcement", enforcement_json(execution.enforcement)),
+    ..fields
+  ])
 }
 
 // --- rendering the execution ----------------------------------------------

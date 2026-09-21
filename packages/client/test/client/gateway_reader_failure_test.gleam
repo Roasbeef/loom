@@ -61,7 +61,7 @@ fn resident(epoch: String) -> Resident {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) {
+        build: fn(record, _domain, _services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the manager reserved a canonical ID"
           serve.assemble_owned(

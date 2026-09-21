@@ -15,27 +15,52 @@
 //// counter here is a `clock.from_function` over a real actor, which is
 //// exactly the shape production uses.
 
+import broker/exec
+import broker/token
 import client/agency
+import client/async_codemode
+import client/async_runs
+import client/codemode
+import client/internal/ffi_os
+import client/peer_mail
+import client/peers
+import client/serve
+import client/workflow_ledger
 import core/clock.{type Clock}
+import core/codec
+import core/entry
 import core/ids
 import core/json
 import core/message
+import core/register
+import core/tx
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
+import machine/codec as machine_codec
+import machine/operation
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
+import runtime/async_execution
 import runtime/child_run
 import runtime/effects
 import runtime/lineage
 import session/session
+import simplifile
 import storage/storage
 import support/addresses
 import support/tool_registry
 import tools/agent.{type Caller, type Handle, Caller}
+import tools/codemode as codemode_tool
+import tools/directory_access
 import tools/tool
+import weft
 import weft/actor
 
 // --- the harness -----------------------------------------------------------
@@ -98,15 +123,22 @@ fn start_harness_with(
   provider: Provider,
   shape: fn(agency.Config) -> agency.Config,
 ) -> Harness {
-  start_harness_over(provider, shape, fn(sess) { sess })
+  start_harness_on(
+    provider,
+    shape,
+    counting_clock(1_756_000_000_000, 3),
+    counting_clock(1_756_000_000_000, 3),
+    fn(sess) { sess },
+  )
 }
 
-fn start_harness_over(
+fn start_harness_on(
   provider: Provider,
   shape: fn(agency.Config) -> agency.Config,
+  session_clock: Clock,
+  agency_clock: Clock,
   storage_shape: fn(session.Session) -> session.Session,
 ) -> Harness {
-  let session_clock = counting_clock(1_756_000_000_000, 3)
   let assert Ok(sess) = session.open_memory(session_clock)
     as "the memory session must open"
   let assert Ok(counter) =
@@ -123,7 +155,6 @@ fn start_harness_over(
     * 104_729
   }
   let name = addresses.new()
-  let agency_clock = counting_clock(1_756_000_000_000, 3)
   let config =
     shape(
       agency.Config(
@@ -168,6 +199,20 @@ fn start_harness_over(
   let assert Ok(_holder) = agency.start(config, runtime)
     as "the agency holder must start"
   Harness(runtime:, seam:, config:)
+}
+
+fn start_harness_over(
+  provider: Provider,
+  shape: fn(agency.Config) -> agency.Config,
+  storage_shape: fn(session.Session) -> session.Session,
+) -> Harness {
+  start_harness_on(
+    provider,
+    shape,
+    counting_clock(1_756_000_000_000, 3),
+    counting_clock(1_756_000_000_000, 3),
+    storage_shape,
+  )
 }
 
 fn scripted_stream(
@@ -1796,7 +1841,7 @@ pub fn resuming_an_aborted_child_renews_its_budget_and_parent_owner_test() {
     as "the new parent must continue the same child"
   let renewed = agent.Handle(strand: child.strand, operation:)
   let run = run_for(harness, renewed)
-  assert run.owner == Some(parent.operation)
+  assert run.owner == Some(child_run.ParentRun(parent.operation))
   assert run.stop == child_run.Unstopped
   assert run.deadline == Some(deadline)
   let #(now, _) = clock.read(harness.runtime.effects.clock)
@@ -1893,7 +1938,7 @@ pub fn prompting_a_child_directly_also_records_a_fresh_lifecycle_test() {
     as "the operator must be able to resume the child directly"
   let renewed = agent.Handle(strand: child.strand, operation:)
   let run = run_for(harness, renewed)
-  assert run.owner == Some(parent.operation)
+  assert run.owner == Some(child_run.ParentRun(parent.operation))
   assert run.deadline != None
   assert run.stop == child_run.Unstopped
   let assert Ok([peer]) = harness.seam.roster(parent)
@@ -1954,6 +1999,1160 @@ pub fn a_finished_parent_cannot_admit_more_child_work_test() {
   let assert Ok([peer]) = harness.seam.roster(parent)
     as "refused admission must preserve the original handle"
   assert peer.handle == Some(child.handle)
+  close(harness)
+}
+
+fn async_record(id: String, clock: Clock) -> async_execution.Execution {
+  let #(now, _) = clock.read(clock)
+  let #(operation, _) = ids.mint_op(ids.generator(clock, seed: 13))
+  async_execution.Execution(
+    id:,
+    strand: "main",
+    operation:,
+    step: "async/" <> id,
+    deadline_ms: now + 60_000,
+    source: "test program",
+    seam: "workspace",
+    phase: async_execution.Starting,
+  )
+}
+
+pub fn async_inputs_survive_repeated_reads_and_enforce_handle_ownership_test() {
+  let harness = start_harness(Hangs)
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.config.clock,
+        abort: fn(_, _) { Nil },
+      ),
+    )
+    as "the execution service must start"
+  let ready = process.new_subject()
+  let record = async_record("abc", harness.config.clock)
+  let assert Ok(_) =
+    async_runs.launch(name, record, fn() {
+      let finish = process.new_subject()
+      process.send(ready, finish)
+      let assert Ok(Nil) = process.receive(finish, 10_000)
+        as "the test must release the worker"
+      json.String("finished")
+    })
+    as "launch must return while its worker is alive"
+  let assert Ok(finish) = process.receive(ready, 1000)
+    as "the worker must start"
+  let assert Error(_) =
+    async_runs.interact(name, "other", "abc", async_runs.Check, 0)
+    as "a different strand cannot inspect the handle"
+  let assert Error(_) =
+    async_runs.interact(name, "other", "abc", async_runs.Send(json.Null), 0)
+    as "a different strand cannot inject input"
+  assert async_runs.interact(name, "main", "abc", async_runs.Receive(0), 0)
+    == Ok(json.Null)
+    as "the first raw receive must publish default-endpoint readiness"
+  assert async_runs.interact(
+      name,
+      "main",
+      "abc",
+      async_runs.Send(json.String("hello")),
+      0,
+    )
+    == Ok(json.Int(1))
+  let expected =
+    json.Object([#("sequence", json.Int(1)), #("value", json.String("hello"))])
+  assert async_runs.interact(name, "main", "abc", async_runs.Receive(0), 0)
+    == Ok(expected)
+  assert async_runs.interact(name, "main", "abc", async_runs.Receive(0), 0)
+    == Ok(expected)
+  assert async_runs.interact(name, "main", "abc", async_runs.Receive(1), 0)
+    == Ok(json.Null)
+  process.send(finish, Nil)
+  let assert Ok(value) =
+    async_runs.interact(name, "main", "abc", async_runs.Check, 2000)
+    as "join must return a durable terminal"
+  let assert Ok(done) = async_execution.decode(value)
+    as "the record must decode"
+  assert done.phase == async_execution.Finished(json.String("finished"))
+  let assert Error(_) =
+    async_runs.interact(name, "main", "abc", async_runs.Send(json.Null), 0)
+    as "a finished execution cannot receive more input"
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  close(harness)
+}
+
+pub fn async_cancellation_fences_new_children_before_reporting_terminal_test() {
+  let harness = start_harness(Hangs)
+  let name = addresses.new()
+  let aborted = process.new_subject()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.config.clock,
+        abort: fn(operation, step) { process.send(aborted, #(operation, step)) },
+      ),
+    )
+    as "the execution service must start"
+  let ready = process.new_subject()
+  let record = async_record("def", harness.config.clock)
+  let assert Ok(_) =
+    async_runs.launch(name, record, fn() {
+      process.send(ready, Nil)
+      process.sleep_forever()
+      json.Null
+    })
+    as "the worker must launch"
+  let assert Ok(Nil) = process.receive(ready, 1000) as "the worker must be live"
+  let assert Ok(_) =
+    async_runs.interact(name, "main", "def", async_runs.Cancel, 0)
+    as "cancellation must fence before returning"
+  let assert Ok(Some(value)) =
+    api.fact(harness.runtime, async_execution.key("def"))
+    as "the custody fence must exist"
+  let assert Ok(fenced) = async_execution.decode(value)
+    as "the fence must decode"
+  assert !async_execution.admits(fenced, 0)
+  let assert Ok(#(operation, step)) = process.receive(aborted, 1000)
+    as "cancellation must address the original operation and distinct step"
+  assert operation == record.operation
+  assert step == record.step
+  let assert Ok(value) =
+    async_runs.interact(name, "main", "def", async_runs.Check, 2000)
+    as "cancelled work must settle"
+  let assert Ok(done) = async_execution.decode(value)
+    as "the terminal must decode"
+  assert done.phase == async_execution.Lost("cancelled")
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  close(harness)
+}
+
+pub fn async_service_restart_records_loss_without_replaying_a_program_test() {
+  let harness = start_harness(Hangs)
+  let record = async_record("fed", harness.config.clock)
+  let running =
+    async_execution.Execution(..record, phase: async_execution.Running)
+  let assert Ok(_) =
+    api.put_reserved_fact_expecting(
+      harness.runtime,
+      async_execution.key("fed"),
+      async_execution.encode(running),
+      None,
+    )
+    as "the previous incarnation's record must exist"
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.config.clock,
+        abort: fn(_, _) { Nil },
+      ),
+    )
+    as "the replacement must start"
+  let assert Ok(value) =
+    async_runs.interact(name, "main", "fed", async_runs.Check, 0)
+    as "recovery must precede interaction"
+  let assert Ok(lost) = async_execution.decode(value)
+    as "the recovered record must decode"
+  assert lost.phase == async_execution.Lost("execution service restarted")
+  let assert Ok(replayed) =
+    async_runs.launch(name, record, fn() {
+      panic as "a repeated launch must never replay a lost program"
+    })
+    as "the lost receipt remains inspectable"
+  assert replayed == value
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  close(harness)
+}
+
+pub fn async_operation_abort_also_refuses_a_delayed_launch_test() {
+  let harness = start_harness(Hangs)
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.config.clock,
+        abort: fn(_, _) { Nil },
+      ),
+    )
+    as "the execution service must start"
+  let record = async_record("ab12", harness.config.clock)
+  let assert Ok(Nil) = async_runs.abort_operation(name, record.operation)
+    as "operator abort must persist a launch fence even with no live execution"
+  let assert Error(_) =
+    async_runs.launch(name, record, fn() {
+      panic as "a delayed launch after operator abort must never run"
+    })
+    as "the operation fence must refuse the delayed launch"
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  close(harness)
+}
+
+pub type AsyncEunitTest {
+  Timeout(seconds: Int, body: fn() -> Nil)
+}
+
+pub fn async_real_satellite_keeps_actor_state_across_inputs_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the package directory must be readable"
+    let repo = here <> "/../.."
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) ->
+        async_satellite(
+          repo,
+          toolchain,
+          codemode_tool.WorkspaceSeam,
+          async_actor_program(),
+          TypedActor,
+        )
+      _, _ ->
+        io.println_error(
+          "SKIP async_real_satellite: run make sandbox codemode-seed",
+        )
+    }
+  })
+}
+
+type AsyncSatelliteScenario {
+  TypedActor
+  NamedWorkflow
+}
+
+fn async_satellite(
+  repo: String,
+  toolchain: codemode.Toolchain,
+  selected: codemode_tool.Seam,
+  program: String,
+  scenario: AsyncSatelliteScenario,
+) -> Nil {
+  let suffix =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let workspace = "/var/tmp/lac-" <> suffix
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+    as "the shallow socket workspace must exist"
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let harness =
+    start_harness_on(HoldsParent, fn(config) { config }, wall, wall, fn(sess) {
+      sess
+    })
+  let assert Ok(plane) =
+    serve.start_build_plane(
+      helper: Some(repo <> "/packages/sandbox/loom-exec"),
+      seed: Some(repo <> "/build/codemode-seed"),
+      workspace: repo,
+      writable: workspace,
+      state_root: workspace <> "-state",
+      tmp_dir: workspace <> "/tmp",
+      clock: wall,
+    )
+    as "the real build plane must start"
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: wall,
+        abort: async_codemode.abort(plane.broker),
+      ),
+    )
+    as "the execution service must start"
+  let config =
+    codemode.default_config(plane.broker, wall, workspace, toolchain)
+    |> codemode.serving(codemode.BothSeams, over: harness.seam)
+  let mode = async_codemode.seam(config, name, harness.config)
+  let assert Some(background) = mode.background
+    as "production wiring must expose async mode"
+  let parent = open_parent(harness, "launch actor workflow")
+  let request =
+    codemode_tool.Request(
+      source: program,
+      seam: selected,
+      strand: "main",
+      op_id: parent.operation,
+      step_id: "async-e2e",
+      source_index: 0,
+      workspace:,
+      base_policy: plane.base_policy,
+      directory_access: directory_access.none(),
+      demand: exec.BestEffort,
+      env: [#("PATH", serve.toolchain_path_of(plane))],
+      within_ms: 180_000,
+      grants: [],
+      observe_output: tool.ignore_output(),
+    )
+  let assert Ok(value) = background.launch(request)
+    as "launch must return before input is available"
+  let assert Ok(record) = async_execution.decode(value)
+    as "launch returns a stable handle"
+  let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
+  let _ = hooks.run_end(parent.operation)
+  case scenario {
+    TypedActor -> drive_typed_actor(background, record)
+    NamedWorkflow -> Nil
+  }
+  let assert True =
+    until(
+      fn() {
+        case
+          background.interact("main", record.id, codemode_tool.Join, 30_000)
+        {
+          Ok(value) ->
+            case async_execution.decode(value) {
+              Ok(done) -> async_execution.terminal(done.phase)
+              Error(_) -> False
+            }
+          Error(_) -> False
+        }
+      },
+      8,
+    )
+    as "the real satellite must finish within its fixed budget"
+  let assert Ok(value) =
+    background.interact("main", record.id, codemode_tool.Check, 0)
+    as "the result must remain durable"
+  let assert Ok(done) = async_execution.decode(value)
+    as "the result record must decode"
+  case scenario {
+    TypedActor -> {
+      assert done.phase == async_execution.Lost("execution idle timeout")
+        as "the explicit idle lifetime must reap the execution-owned actor service"
+    }
+    NamedWorkflow -> {
+      let assert async_execution.Finished(json.Object(fields)) = done.phase
+        as "the named workflow satellite must finish"
+      assert list.key_find(fields, "status") == Ok(json.String("completed"))
+      assert list.key_find(fields, "value") == Ok(json.Int(7))
+    }
+  }
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  serve.stop_build_plane(plane)
+  close(harness)
+  let _cleaned = simplifile.delete_all([workspace])
+  Nil
+}
+
+fn drive_typed_actor(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Nil {
+  let assert True =
+    until(
+      fn() {
+        case background.interact("main", record.id, codemode_tool.Check, 0) {
+          Ok(json.Object(fields)) ->
+            list.key_find(fields, "readiness") == Ok(json.String("ready"))
+            && list.key_find(fields, "endpoints")
+            == Ok(json.Array([json.String("number")]))
+          _ -> False
+        }
+      },
+      6000,
+    )
+    as "the satellite must register its typed endpoint before sends"
+  let assert Ok(json.Int(1)) =
+    background.interact(
+      "main",
+      record.id,
+      codemode_tool.SendTo("number", json.String("wrong")),
+      0,
+    )
+    as "an invalid typed value is still durably admitted"
+  let assert True =
+    until(
+      fn() {
+        case background.interact("main", record.id, codemode_tool.Check, 0) {
+          Ok(json.Object(fields)) ->
+            case list.key_find(fields, "latest_delivery") {
+              Ok(json.Object(delivery)) ->
+                list.key_find(delivery, "sequence") == Ok(json.Int(1))
+                && list.key_find(delivery, "endpoint")
+                == Ok(json.String("number"))
+                && list.key_find(delivery, "status")
+                == Ok(json.String("rejected"))
+              _ -> False
+            }
+          _ -> False
+        }
+      },
+      100,
+    )
+    as "the decoder must reject the value without calling the typed handler"
+  let assert Ok(json.Int(2)) =
+    background.interact(
+      "main",
+      record.id,
+      codemode_tool.SendTo("number", json.Int(2)),
+      0,
+    )
+    as "the first typed input must commit"
+  let assert Ok(json.Int(3)) =
+    background.interact(
+      "main",
+      record.id,
+      codemode_tool.SendTo("number", json.Int(5)),
+      0,
+    )
+    as "a later input must use the same live execution"
+  let assert True =
+    until(
+      fn() {
+        case background.interact("main", record.id, codemode_tool.Check, 0) {
+          Ok(json.Object(fields)) ->
+            case list.key_find(fields, "progress") {
+              Ok(json.Object(progress)) ->
+                list.key_find(progress, "value") == Ok(json.Int(7))
+              _ -> False
+            }
+          _ -> False
+        }
+      },
+      100,
+    )
+    as "the latest bounded progress must expose the actor's accumulated state"
+  io.println(
+    "async e2e: typed actor state reached progress 7 before its idle lifetime reaped the satellite",
+  )
+  Nil
+}
+
+fn async_actor_program() -> String {
+  "import cap/actor
+import cap/execution
+import cap/report
+import gleam/result
+
+pub type CounterMessage {
+  Add(value: Int, reply: actor.Reply(Int))
+}
+
+pub fn main() -> report.Outcome {
+  case actor.spawn(0, handle_counter) {
+    Error(_) -> report.text(\"actor start failed\")
+    Ok(counter) -> {
+      case number_endpoint(counter) {
+        Error(reason) -> report.text(reason)
+        Ok(endpoint) -> case execution.serve([endpoint], idle_within_ms: 5000) {
+          Error(_) -> report.text(\"endpoint service failed\")
+          Ok(_) -> case actor.get(counter, timeout: 1000) {
+            Ok(sum) -> report.value(report.int(sum))
+            Error(_) -> report.text(\"actor read failed\")
+          }
+        }
+      }
+    }
+  }
+}
+
+fn handle_counter(sum: Int, message: CounterMessage) -> actor.Next(Int) {
+  case message {
+    Add(value, reply) -> {
+      let sum = sum + value
+      actor.reply(reply, sum)
+      actor.continue(sum)
+    }
+  }
+}
+
+fn number_endpoint(
+  counter: actor.Address(Int, CounterMessage),
+) -> Result(execution.Endpoint, String) {
+  execution.endpoint(
+    name: \"number\",
+    decode: fn(value) {
+      report.as_int(value) |> result.replace_error(\"expected integer\")
+    },
+    deliver: fn(value) {
+      use sum <- result.try(
+        actor.call(counter, fn(reply) { Add(value, reply) }, timeout: 1000)
+        |> result.replace_error(\"actor delivery failed\"),
+      )
+      execution.progress(report.int(sum))
+      |> result.map(fn(_) { Nil })
+    },
+  )
+  |> result.map_error(fn(_) { \"invalid endpoint\" })
+}
+"
+}
+
+pub fn peer_delivery_requires_exact_grant_and_commits_one_receipt_test() {
+  let source = start_harness(Hangs)
+  let target = start_harness(Hangs)
+  let source_endpoint = agency.peer_endpoint(source.config, "source-session")
+  let target_endpoint = agency.peer_endpoint(target.config, "target-session")
+  let wiring =
+    peers.Wiring(
+      source_endpoint,
+      json.Null,
+      Some(
+        peers.Directory(
+          resolve: fn(id) {
+            case id {
+              "target-session" -> Ok(target_endpoint)
+              "source-session" -> Ok(source_endpoint)
+              _ -> Error("not resident")
+            }
+          },
+          describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
+        ),
+      ),
+    )
+  assert result.is_error(peers.send(
+    wiring,
+    "main",
+    "target-session",
+    "main",
+    "one",
+    "hello",
+  ))
+  let assert Ok(_) =
+    peers.link(
+      source_endpoint,
+      target_endpoint,
+      "main",
+      "main",
+      peer_mail.BusyOnly,
+    )
+    as "the owner links an exact pair without wake authority"
+  assert result.is_error(peers.send(
+    wiring,
+    "main",
+    "target-session",
+    "main",
+    "one",
+    "hello",
+  ))
+  let assert Ok(before) =
+    api.reserved_facts(target.runtime, "client/peers/receipt/")
+    as "receipts are queryable"
+  assert before == [] as "a refused idle send leaves no receipt"
+  let assert Ok(_) =
+    peers.link(
+      source_endpoint,
+      target_endpoint,
+      "main",
+      "main",
+      peer_mail.MayWake,
+    )
+    as "waking is an explicit owner decision"
+  let assert Ok(receipt) =
+    peers.send(wiring, "main", "target-session", "main", "one", "hello")
+    as "the message wakes the authorized resident strand"
+  let assert Ok(retried) =
+    peers.send(wiring, "main", "target-session", "main", "one", "hello")
+    as "a lost acknowledgment can be retried"
+  assert receipt == retried
+  assert result.is_error(peers.send(
+    wiring,
+    "main",
+    "target-session",
+    "main",
+    "one",
+    "changed",
+  ))
+  assert result.is_error(peers.send(
+    wiring,
+    "other",
+    "target-session",
+    "main",
+    "two",
+    "hello",
+  ))
+  let assert Ok(after) =
+    api.reserved_facts(target.runtime, "client/peers/receipt/")
+    as "the atomic receipt remains durable"
+  assert list.length(after) == 1
+  assert_peer_message(target, "source-session", "main", "hello")
+  let assert Ok(_) =
+    peers.unlink(source_endpoint, target_endpoint, "main", "main")
+    as "the owner revokes the pair"
+  assert result.is_error(peers.send(
+    wiring,
+    "main",
+    "target-session",
+    "main",
+    "two",
+    "hello",
+  ))
+  close(source)
+  close(target)
+}
+
+pub fn outgoing_peer_links_stop_at_the_roster_bound_test() {
+  let source = start_harness(Hangs)
+  let target = start_harness(Hangs)
+  let source_endpoint = agency.peer_endpoint(source.config, "source-session")
+  let target_endpoint = agency.peer_endpoint(target.config, "target-session")
+  let assert Ok(_) =
+    peers.link(
+      source_endpoint,
+      target_endpoint,
+      "main",
+      "main",
+      peer_mail.MayWake,
+    )
+    as "the first link grants a real destination"
+
+  int.range(from: 1, to: 64, with: Nil, run: fn(_, index) {
+    let assert Ok(_) =
+      source_endpoint.call(peer_mail.Link(
+        "main",
+        "extra-" <> int.to_string(index),
+        "main",
+      ))
+      as "the source strand can fill its outgoing index"
+    Nil
+  })
+  let assert Ok(json.Array(full)) =
+    source_endpoint.call(peer_mail.Links("main"))
+    as "the full outgoing index remains readable"
+  assert list.length(full) == peer_mail.outgoing_link_limit
+
+  let assert Ok(_) =
+    source_endpoint.call(peer_mail.Link("main", "target-session", "main"))
+    as "replacing an existing link does not consume a slot"
+  let assert Error(reason) =
+    source_endpoint.call(peer_mail.Link("main", "extra-64", "main"))
+    as "the next distinct link is refused at admission"
+  assert reason == "peer roster exceeds the 64-link bound"
+  let assert Ok(json.Array(still_full)) =
+    source_endpoint.call(peer_mail.Links("main"))
+    as "refusal does not poison the outgoing index"
+  assert list.length(still_full) == peer_mail.outgoing_link_limit
+  let assert Ok(_) =
+    source_endpoint.call(peer_mail.Link("other", "extra", "main"))
+    as "the limit belongs to each source strand"
+
+  let wiring =
+    peers.Wiring(
+      source_endpoint,
+      json.Null,
+      Some(
+        peers.Directory(
+          resolve: fn(id) {
+            case id {
+              "target-session" -> Ok(target_endpoint)
+              _ -> Error("not resident")
+            }
+          },
+          describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
+        ),
+      ),
+    )
+  let assert Ok(_) =
+    peers.send(wiring, "main", "target-session", "main", "at-limit", "hello")
+    as "the valid link still delivers at the bound"
+  assert_peer_message(target, "source-session", "main", "hello")
+  close(source)
+  close(target)
+}
+
+pub fn peer_same_session_link_does_not_grant_join_or_child_ownership_test() {
+  let harness = start_harness(Hangs)
+  let parent = open_parent(harness, "peer parent")
+  let assert Ok(left) = harness.seam.spawn(parent, a_spawn("left"))
+    as "left sibling starts"
+  let assert Ok(right) =
+    harness.seam.spawn(Caller(..parent, source_index: 1), a_spawn("right"))
+    as "right sibling starts"
+  let endpoint = agency.peer_endpoint(harness.config, "local-session")
+  let wiring = peers.Wiring(endpoint, json.Null, None)
+  let left_caller =
+    Caller(..parent, strand: left.strand, operation: left.handle.operation)
+  assert result.is_error(harness.seam.send(
+    left_caller,
+    right.strand,
+    "no default peer access",
+    None,
+  ))
+  let assert Ok(_) =
+    peers.link(
+      endpoint,
+      endpoint,
+      left.strand,
+      right.strand,
+      peer_mail.BusyOnly,
+    )
+    as "an explicit directional grant permits sibling mail"
+  let assert Ok(_) =
+    peers.send(
+      wiring,
+      left.strand,
+      "local-session",
+      right.strand,
+      "finding",
+      "review finding",
+    )
+    as "the linked sibling receives a peer message"
+  assert_queued_peer_message(
+    harness,
+    "local-session",
+    left.strand,
+    "review finding",
+  )
+  assert result.is_error(harness.seam.wait(left_caller, [right.handle], 0))
+  assert run_for(harness, right.handle).owner
+    == Some(child_run.ParentRun(parent.operation))
+  close(harness)
+}
+
+// Reads the durable entry back through the public codec so these peer tests
+// cover both admission doors and the representation replay will later use.
+fn assert_peer_message(
+  harness: Harness,
+  session: String,
+  strand: String,
+  body: String,
+) -> Nil {
+  let assert Ok(entries) =
+    storage.scan_entries(harness.runtime.session.store, storage.entry_scan())
+    as "peer admission must remain readable from durable history"
+  let peers =
+    list.filter_map(entries, fn(value) {
+      case value {
+        entry.MessageEntry(
+          message: message.UserMessage(
+            content: [message.UserText(text, None)],
+            origin: Some(message.PeerOrigin(found_session, found_strand)),
+            ..,
+          ) as peer,
+          ..,
+        )
+          if text == body
+        -> Ok(#(peer, found_session, found_strand))
+        _ -> Error(Nil)
+      }
+    })
+  let assert [#(peer, found_session, found_strand)] = peers
+    as "one admitted peer message must retain structured provenance"
+  assert found_session == session
+  assert found_strand == strand
+  assert codec.decode_message(codec.encode_message(peer)) == Ok(peer)
+}
+
+// A steer remains a pending payload until the active provider reaches a
+// placement boundary. Read that durable pre-placement representation directly
+// so a hung provider cannot turn correct queue admission into an empty history.
+fn assert_queued_peer_message(
+  harness: Harness,
+  session: String,
+  strand: String,
+  body: String,
+) -> Nil {
+  let assert Ok(cells) =
+    storage.list_registers(
+      harness.runtime.session.store,
+      register.PendingEntry,
+      None,
+    )
+    as "a steered peer message must retain a pending payload"
+  let peers =
+    list.filter_map(cells, fn(cell) {
+      case machine_codec.decode_pending_entry(cell.1.value.payload) {
+        Ok(operation.PendingMessage(
+          message: message.UserMessage(
+            content: [message.UserText(text, None)],
+            origin: Some(message.PeerOrigin(found_session, found_strand)),
+            ..,
+          ) as peer,
+        ))
+          if text == body
+        -> Ok(#(peer, found_session, found_strand))
+        Ok(operation.PendingCustom(..)) | Error(_) -> Error(Nil)
+        Ok(operation.PendingMessage(..)) -> Error(Nil)
+      }
+    })
+  let assert [#(peer, found_session, found_strand)] = peers
+    as "one queued peer message must retain structured provenance"
+  assert found_session == session
+  assert found_strand == strand
+  assert codec.decode_message(codec.encode_message(peer)) == Ok(peer)
+}
+
+pub fn workflow_named_steps_reconcile_across_execution_loss_test() {
+  let harness = start_harness(HoldsParent)
+  let parent = open_parent(harness, "workflow owner")
+  let first =
+    async_execution.Execution(
+      ..async_record("a1", harness.config.clock),
+      operation: parent.operation,
+      phase: async_execution.Running,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(first.id),
+      async_execution.encode(first),
+    )
+    as "first execution custody is durable"
+  let custody = api.AsyncCustody("main", parent.operation, first.id, api.Owned)
+  let step =
+    workflow_ledger.Step(
+      "review-1",
+      "v1",
+      "commit-a",
+      "security",
+      "assignment-a",
+    )
+  let assert Ok(child) =
+    agency.workflow_child(
+      harness.config,
+      parent,
+      step,
+      a_spawn("security"),
+      custody,
+    )
+    as "named step starts"
+  assert settled(harness, child.handle)
+    as "the child result is durable before recovery"
+
+  // Model the interrupted publication window, then admit unrelated later
+  // work on the same conversation before the named step is recovered.
+  let assert Ok(_) =
+    api.delete_reserved_fact(
+      harness.runtime,
+      lineage.register_key(child.strand),
+    )
+    as "the original admission can outlive unpublished lineage"
+  let assert Ok(api.Started(later)) =
+    api.send_to_strand(
+      harness.runtime,
+      child.strand,
+      message.UserMessage(
+        [message.UserText("unrelated later task", None)],
+        0,
+        None,
+      ),
+    )
+    as "an operator can start unrelated later work on the existing strand"
+  assert later != child.handle.operation
+  assert settled(harness, agent.Handle(child.strand, later))
+    as "the unrelated later result must not become the named step result"
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(first.id),
+      async_execution.encode(
+        async_execution.Execution(
+          ..first,
+          phase: async_execution.Lost("restart"),
+        ),
+      ),
+    )
+    as "the volatile original execution was lost"
+  let next =
+    async_execution.Execution(
+      ..first,
+      id: "a2",
+      step: "async/a2",
+      phase: async_execution.Running,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(next.id),
+      async_execution.encode(next),
+    )
+    as "the resumed execution has new custody"
+  let resumed = api.AsyncCustody("main", parent.operation, next.id, api.Owned)
+  let changed_order =
+    Caller(..parent, step_id: "different-code-mode-call", source_index: 7)
+  let assert Ok(recovered) =
+    agency.workflow_child(
+      harness.config,
+      changed_order,
+      step,
+      a_spawn("security"),
+      resumed,
+    )
+    as "call order changes cannot duplicate the durable named step"
+  assert recovered.handle == child.handle
+  let assert Error(_) =
+    agency.workflow_child(
+      harness.config,
+      changed_order,
+      workflow_ledger.Step(..step, input: "commit-b"),
+      a_spawn("security"),
+      resumed,
+    )
+    as "changed workflow input is refused"
+  let assert Error(_) =
+    agency.workflow_child(
+      harness.config,
+      changed_order,
+      workflow_ledger.Step(..step, assignment: "changed"),
+      a_spawn("security"),
+      resumed,
+    )
+    as "changed assignment is refused"
+  let assert Ok(other) =
+    agency.workflow_child(
+      harness.config,
+      changed_order,
+      workflow_ledger.Step(..step, name: "performance"),
+      a_spawn("performance"),
+      resumed,
+    )
+    as "a new independent step is admitted under current custody"
+  assert other.handle != child.handle
+  assert run_for(harness, other.handle).owner
+    == Some(child_run.AsyncExecution(parent.operation, "a2"))
+  close(harness)
+}
+
+pub fn async_real_workflow_reuses_named_children_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the package path exists"
+    let repo = here <> "/../.."
+    let assert Ok(toolchain) = codemode.discover(repo <> "/build/codemode-seed")
+      as "the real workflow test needs make codemode-seed"
+    async_satellite(
+      repo,
+      toolchain,
+      codemode_tool.OrchestrationSeam,
+      async_workflow_program(),
+      NamedWorkflow,
+    )
+  })
+}
+
+fn async_workflow_program() -> String {
+  "import cap/workflow
+import cap/strand
+import cap/report
+import gleam/result
+
+pub fn main() -> report.Outcome {
+  case run() {
+    Ok(_) -> report.value(report.int(7))
+    Error(reason) -> report.text(reason)
+  }
+}
+
+fn run() -> Result(Nil, String) {
+  let assignment = strand.assignment(purpose: \"security\", brief: \"Review the protocol\")
+  use first <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment))
+  use second <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment))
+  case first == second {
+    False -> Error(\"duplicate child\")
+    True -> {
+      use joined <- result.try(strand.wait([first], within_ms: 10000) |> result.map_error(fn(_) { \"join refused\" }))
+      case joined {
+        [strand.Ready(outcome: strand.Completed, ..)] -> Ok(Nil)
+        _ -> Error(\"child did not complete\")
+      }
+    }
+  }
+}"
+}
+
+pub fn peer_revoked_grant_cannot_commit_a_receipt_or_wake_the_target_test() {
+  let harness = start_harness(Hangs)
+  let grant = "client/test-peer-grant"
+  let assert Ok(sequence) =
+    api.put_reserved_fact_expecting(
+      harness.runtime,
+      grant,
+      json.String("allowed"),
+      None,
+    )
+    as "the sender read an allowed grant"
+  let assert Ok(_) = api.delete_reserved_fact(harness.runtime, grant)
+    as "the owner revokes before admission commits"
+  let receipt = "client/test-peer-receipt"
+  let mark =
+    api.GuardedMark(receipt, json.String("admitted"), [
+      tx.Expect(register.FactCustom, grant, Some(sequence)),
+    ])
+  let assert Error(api.FactConflict(_)) =
+    api.send_to_strand_marking(
+      harness.runtime,
+      "main",
+      message.UserMessage([message.UserText("late peer", None)], 0, None),
+      mark,
+    )
+    as "admission cannot retry past the authority change"
+  assert api.fact(harness.runtime, receipt) == Ok(None)
+  let assert Ok(Some(state)) =
+    session.strand_state(harness.runtime.session, "main")
+    as "the target still exists"
+  assert state.value.current_operation == None
+  close(harness)
+}
+
+pub fn async_parent_cancellation_drains_a_childs_background_execution_test() {
+  nested_background_cancellation(AsyncParent)
+}
+
+pub fn ordinary_parent_reap_fences_backgrounds_after_child_completion_test() {
+  nested_background_cancellation(OrdinaryParent)
+}
+
+type ParentCustody {
+  AsyncParent
+  OrdinaryParent
+}
+
+fn nested_background_cancellation(parent_custody: ParentCustody) {
+  let harness = start_harness(Hangs)
+  let parent = open_parent(harness, "nested async")
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(harness.runtime, harness.config.clock, fn(_, _) { Nil }),
+    )
+    as "background execution service starts"
+  let outer =
+    async_execution.Execution(
+      ..async_record("beef", harness.config.clock),
+      operation: parent.operation,
+    )
+  let assert Ok(_) =
+    async_runs.launch(name, outer, fn() {
+      process.sleep_forever()
+      json.Null
+    })
+    as "outer background scope stays live"
+  let seam = case parent_custody {
+    AsyncParent ->
+      agency.async_seam(
+        harness.config,
+        api.AsyncCustody("main", parent.operation, outer.id, api.Owned),
+      )
+    OrdinaryParent -> harness.seam
+  }
+  let assert Ok(child) = seam.spawn(parent, a_spawn("nested"))
+    as "the parent owns a real child operation"
+  let inner =
+    async_execution.Execution(
+      ..async_record("cafe", harness.config.clock),
+      strand: child.strand,
+      operation: child.handle.operation,
+    )
+  let started = process.new_subject()
+  let assert Ok(_) =
+    async_runs.launch(name, inner, fn() {
+      process.send(started, Nil)
+      process.sleep_forever()
+      json.Null
+    })
+    as "the child starts its own background scope"
+  assert process.receive(started, 1000) == Ok(Nil)
+
+  case parent_custody {
+    AsyncParent -> {
+      let assert Ok(_) =
+        async_runs.interact(name, "main", outer.id, async_runs.Cancel, 0)
+        as "cancelling the outer scope closes its owned tree"
+      let assert Ok(value) =
+        async_runs.interact(name, "main", outer.id, async_runs.Check, 3000)
+        as "parent drain includes nested scopes"
+      let assert Ok(record) = async_execution.decode(value)
+        as "the parent record decodes"
+      assert async_execution.terminal(record.phase)
+    }
+    OrdinaryParent -> {
+      api.abort_operation(
+        api.on_strand(harness.runtime, child.strand),
+        child.handle.operation,
+      )
+      assert settled(harness, child.handle)
+        as "the child is already terminal before the parent ends"
+      let hooks = agency.reaping_hooks(effects.default_hooks(), harness.config)
+      let _ = hooks.run_end(parent.operation)
+      Nil
+    }
+  }
+  let assert Ok(value) =
+    async_runs.interact(name, child.strand, inner.id, async_runs.Check, 3000)
+    as "reaping reaches child-owned background work even after its launch returned"
+  let assert Ok(record) = async_execution.decode(value)
+    as "the inner record decodes"
+  let assert async_execution.Lost(_) = record.phase
+    as "nested background work is cancelled"
+  let late = async_execution.Execution(..inner, id: "dead", step: "async/dead")
+  let assert Error(_) =
+    async_runs.launch(name, late, fn() {
+      panic as "reaped children cannot launch delayed backgrounds"
+    })
+    as "reaping leaves a durable delayed-launch fence"
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  close(harness)
+}
+
+pub fn async_completed_value_cannot_override_a_lost_scope_proof_test() {
+  let harness = start_harness(Hangs)
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(harness.runtime, harness.config.clock, fn(_, _) { Nil }),
+    )
+    as "the execution service starts"
+  let record = async_record("abba", harness.config.clock)
+  let assert Ok(_) =
+    async_runs.launch(name, record, fn() {
+      process.sleep_forever()
+      json.Null
+    })
+    as "the worker remains live while ordered reports are injected"
+  process.send(
+    service.data,
+    async_runs.Reported(
+      record.id,
+      weft.PulledOutcome(weft.Completed(0, json.String("provisional"))),
+    ),
+  )
+  process.send(
+    service.data,
+    async_runs.Reported(record.id, weft.RunLost(process.Killed)),
+  )
+  let assert Ok(value) =
+    async_runs.interact(name, "main", record.id, async_runs.Check, 3000)
+    as "the scope loss becomes a durable terminal"
+  let assert Ok(done) = async_execution.decode(value) as "the terminal decodes"
+  assert done.phase == async_execution.Lost("execution scope lost")
+    as "a provisional value cannot certify a lost drain proof"
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  close(harness)
+}
+
+pub fn async_launch_claim_compares_the_abort_fence_in_its_transaction_test() {
+  let harness = start_harness(Hangs)
+  let record = async_record("bead", harness.config.clock)
+  let fence = async_execution.abort_key(record.operation)
+  assert api.fact(harness.runtime, fence) == Ok(None)
+  let assert Ok(_) = api.put_reserved_fact(harness.runtime, fence, json.Null)
+    as "a parent reap wins after the launcher's initial absence read"
+  let assert Error(api.FactConflict(_)) =
+    api.claim_reserved_fact(
+      harness.runtime,
+      async_execution.key(record.id),
+      async_execution.encode(record),
+      unless: fence,
+    )
+    as "the writer refuses the stale launch instead of publishing a worker"
+  assert api.fact(harness.runtime, async_execution.key(record.id)) == Ok(None)
   close(harness)
 }
 

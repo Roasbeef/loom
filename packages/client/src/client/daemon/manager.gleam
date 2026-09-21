@@ -177,6 +177,7 @@ pub type Assembly(instance) {
       domain.Domain,
       domain_service.Services,
       custody.Owner,
+      Manager(instance),
     ) -> Result(instance, String),
     /// Root deaths which make the instance unusable.
     fatal: fn(instance) -> List(#(String, Pid)),
@@ -2030,6 +2031,7 @@ fn prepare_domain_slot(
   // resident instances through the full book.
   let commands = book.commands
   let build = book.assembly.build
+  let directory = Manager(commands, process.self())
 
   case
     host.prepare(
@@ -2042,7 +2044,7 @@ fn prepare_domain_slot(
           ))
           |> result.unwrap(Error("domain registry is unavailable")),
         )
-        build(record, selected, services, owner)
+        build(record, selected, services, owner, directory)
       },
       fatal: book.assembly.fatal,
       results:,

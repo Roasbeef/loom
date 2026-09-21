@@ -16,10 +16,13 @@
 //// builds: `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed
 //// by `satellite.default_router`, a program that orchestrates *effects*.
 //// The **orchestration** seam is `cap/strand` plus `cap/report`, with
-//// a host-installed notes door, routed onto the Agency closures the `agent_*` tools call,
-//// a program that orchestrates *agents*. A host may serve either alone or
-//// both (`Surface`, `serving`); when it serves both, a submission names
-//// the one it wants and the tool defaults it to the workspace seam.
+//// a host-installed notes door, routed onto the Agency closures the `agent_*`
+//// tools call. Named workflows are added by the background host; reporting,
+//// execution input, and granted peer communication are shared with workspace
+//// programs. Together these form a program that orchestrates *agents*. A host
+//// may serve either alone or both (`Surface`, `serving`); when it serves both,
+//// a submission names the one it wants and the tool defaults it to the
+//// workspace seam.
 ////
 //// One field rather than two, because the vetting allowlist and the
 //// capability router have to agree and a host that could set them apart
@@ -274,6 +277,11 @@ pub type Config {
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
     surface: Surface,
+    /// An optional fixed execution deadline captured at async admission.
+    fixed_deadline: Option(Int),
+    /// Adds a harness-bound capability router for this execution only.
+    wrap_router: fn(codemode_tool.Request, satellite.CapRouter) ->
+      satellite.CapRouter,
     /// The shared blackboard data door, installed independently of agent
     /// orchestration. None removes its imports, signatures, and routing.
     notes: Option(notes.Door),
@@ -801,6 +809,8 @@ pub fn default_config(
     toolchain_path: toolchain_path(toolchain),
     host_mounts: toolchain_mounts(toolchain),
     surface: Workspace,
+    fixed_deadline: None,
+    wrap_router: fn(_request, router) { router },
     notes: None,
     blob_root: workspace <> "/" <> blob_directory,
     scratch: scratch.none(),
@@ -1267,6 +1277,7 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 ///
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
+    background: None,
     execute: fn(request) { execute(config, request) },
     seams: offered_seams(config),
     default_within_ms: config.default_within_ms,
@@ -1432,7 +1443,8 @@ fn execute_after_vetting(
       )
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.clock)
-      let deadline_ms = now + request.within_ms
+      let deadline_ms =
+        option.unwrap(config.fixed_deadline, now + request.within_ms)
       let shortfalls = process.new_subject()
       let execution =
         pipeline.execute(
@@ -1992,7 +2004,7 @@ pub fn exec_config(
       clock: config.clock,
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
-      router: surface_router(config, request),
+      router: config.wrap_router(request, surface_router(config, request)),
       ceilings: surface_ceilings(config, request),
       call_timeout_ms: config.call_timeout_ms,
     ),

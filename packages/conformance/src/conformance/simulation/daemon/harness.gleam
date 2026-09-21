@@ -601,7 +601,7 @@ fn assembly(
       park(arrest, AfterReservation, selected.workspace)
       Ok(domain_service.inert())
     },
-    build: fn(record: catalogue.Registration, _, _, owner) {
+    build: fn(record: catalogue.Registration, _, _, owner, _) {
       park(arrest, AfterDomainBind, record.request_key)
       initialize(record, owner, lease_clock, arrest)
     },

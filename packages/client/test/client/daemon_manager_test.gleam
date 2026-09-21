@@ -51,7 +51,7 @@ pub fn assembly_hosts_do_not_capture_other_resident_instances_test() {
           process.send(domain_built, process.self())
           Ok(domain_service.inert())
         },
-        build: fn(_, _, _, _) {
+        build: fn(_, _, _, _, _directory) {
           process.send(built, process.self())
           Ok(list.repeat(42, 8192))
         },
@@ -274,7 +274,9 @@ fn start(
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) { build(record, owner) },
+        build: fn(record, _domain, _services, owner, _directory) {
+          build(record, owner)
+        },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -1042,7 +1044,7 @@ pub fn outer_shutdown_waits_for_registry_to_drain_before_normal_exit_test() {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) {
+        build: fn(record, _domain, _services, owner, _directory) {
           let assert Ok(Nil) =
             custody.publish(owner, custody.Storage, fn() {
               let release = process.new_subject()
@@ -1098,7 +1100,7 @@ pub fn registry_kill_loses_outer_proof_even_when_inner_cleanup_finishes_test() {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) {
+        build: fn(record, _domain, _services, owner, _directory) {
           let assert Ok(Nil) =
             custody.publish(owner, custody.Storage, fn() {
               let release = process.new_subject()
@@ -1153,7 +1155,7 @@ pub fn registry_kill_with_failed_cleanup_never_proves_outer_retirement_test() {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) {
+        build: fn(record, _domain, _services, owner, _directory) {
           let assert Ok(Nil) =
             custody.publish(owner, custody.Runtime, fn() {
               Error("injected lifetime drain failure")
@@ -1202,7 +1204,7 @@ pub fn outer_lifetime_survives_repeated_incarnations_with_one_registry_test() {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -1419,7 +1421,7 @@ pub fn domain_sources_are_enumerated_across_pages_test() {
           process.send(enumerated, sources())
           Ok(domain_service.inert())
         },
-        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -1457,7 +1459,7 @@ pub fn an_oversized_domain_refuses_its_source_enumeration_test() {
           process.send(enumerated, sources())
           Ok(domain_service.inert())
         },
-        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),

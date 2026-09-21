@@ -4,7 +4,8 @@
 //// This is the second of the prelude's two seams. A *workspace* program
 //// holds `cap/{fs, proc, net, git, lsp, report, task, actor, kv}` and
 //// orchestrates effects; an *orchestration* program holds this module and
-//// `cap/report` and nothing else, and orchestrates agents. Which
+//// reporting, execution input, peer communication and named workflows,
+//// and orchestrates agents. Which
 //// capabilities travel together is the whole of the separation: an
 //// orchestrator that could also write files would be a materially worse
 //// thing to hand a model than one that cannot, so vetting judges a
@@ -444,17 +445,7 @@ pub fn expecting(assignment: Assignment, fields: List(Field)) -> Assignment {
 ///
 /// Capability: `strand.spawn`.
 pub fn spawn(assignment: Assignment) -> Result(Handle, StrandError) {
-  let args =
-    wire.args([
-      #("purpose", wire.string(assignment.purpose)),
-      #("brief", wire.string(assignment.brief)),
-      #("model", optional_string(assignment.model)),
-      #("within_ms", optional_int(assignment.within_ms)),
-      #("detach", wire.bool(assignment.detach)),
-      #("context", wire.string(provenance_name(assignment.context))),
-      #("tools", optional_strings(assignment.tools)),
-      #("result_schema", encode_schema(assignment.result_schema)),
-    ])
+  let args = assignment_value(assignment)
   use value <- result.try(
     dispatch.call("strand.spawn", args) |> result.map_error(map_error),
   )
@@ -901,6 +892,39 @@ fn outcome_text(outcome: Outcome) -> String {
     Failed(reason:) -> "failed: " <> reason
     Aborted -> "aborted"
   }
+}
+
+/// Encodes the same assignment for ordinary and durable named child steps.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.assignment_value(assignment)
+/// ```
+@internal
+pub fn assignment_value(assignment: Assignment) -> Value {
+  wire.args([
+    #("purpose", wire.string(assignment.purpose)),
+    #("brief", wire.string(assignment.brief)),
+    #("model", optional_string(assignment.model)),
+    #("within_ms", optional_int(assignment.within_ms)),
+    #("detach", wire.bool(assignment.detach)),
+    #("context", wire.string(provenance_name(assignment.context))),
+    #("tools", optional_strings(assignment.tools)),
+    #("result_schema", encode_schema(assignment.result_schema)),
+  ])
+}
+
+/// Decodes a handle returned by the harness's child admission paths.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.read_handle(value)
+/// ```
+@internal
+pub fn read_handle(value: Value) -> Result(Handle, String) {
+  decode_handle(value)
 }
 
 /// One assignment's result from a bounded map, in input order.

@@ -11,6 +11,8 @@ import broker/token
 import client/daemon/manager
 import client/daemon/protocol
 import client/daemon/root
+import client/peer_mail
+import client/peers
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -19,7 +21,7 @@ import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -34,6 +36,8 @@ pub type Config(instance) {
   Config(
     /// Lifetime owner and admission authority.
     daemon: root.Root(instance),
+    /// Projects the address-only communication endpoint from a resident.
+    peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
     /// Fresh entropy-seeded generator for explicit creation.
@@ -428,7 +432,9 @@ fn control(
           // rather than inheriting "keep serving" from a catch-all.
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
-            protocol.Status
+            protocol.LinkPeers(..)
+            | protocol.UnlinkPeers(..)
+            | protocol.Status
             | protocol.ListSessions(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
@@ -470,7 +476,9 @@ fn control_use(command: protocol.Command) {
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
     | protocol.GetOperation(..) -> root.ControlRead
-    protocol.SetDefault(..)
+    protocol.LinkPeers(..)
+    | protocol.UnlinkPeers(..)
+    | protocol.SetDefault(..)
     | protocol.ArchiveSession(..)
     | protocol.RestoreSession(..)
     | protocol.RenameSession(..)
@@ -529,6 +537,34 @@ fn dispatch(
   // authority is narrower: an operator may open a granted identity, but cannot
   // choose another workspace, configuration, or durable default.
   case command {
+    protocol.LinkPeers(source, from, target, to, wake, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use source <- result.try(peer_endpoint(config, state.registry, source))
+      use target <- result.try(peer_endpoint(config, state.registry, target))
+      peers.link(source, target, from, to, wake)
+      |> result.map(fn(value) { #("peers.link", value) })
+    }
+    protocol.UnlinkPeers(source, from, target, to, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use source <- result.try(peer_endpoint(config, state.registry, source))
+      let answer = case peer_endpoint(config, state.registry, target) {
+        Ok(endpoint) -> peers.unlink(source, endpoint, from, to)
+        Error(_) ->
+          source.call(peer_mail.Unlink(from, target, to))
+          |> result.replace(
+            json.Object([
+              #("outgoing_link_removed", json.Bool(True)),
+              #(
+                "recipient_grant",
+                json.String("unavailable; no outgoing authority remains"),
+              ),
+            ]),
+          )
+      }
+      answer |> result.map(fn(value) { #("peers.unlink", value) })
+    }
     protocol.RenameSession(id, name, supplied) -> {
       manager.rename(state.registry, digest, supplied, id, name)
       |> result.map_error(admin_error_code)
@@ -899,7 +935,7 @@ fn page_prefix(views: List(manager.View), remaining: Int, accumulated) {
   }
 }
 
-fn view_json(view: manager.View) -> JsonValue {
+pub fn view_json(view: manager.View) -> JsonValue {
   json.Object([
     #("session_id", json.String(view.registration.id)),
     #("workspace", json.String(view.registration.workspace)),
@@ -956,4 +992,15 @@ fn error_code(error) {
 fn plain(status, text) {
   response.new(status)
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
+}
+
+fn peer_endpoint(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(peer_mail.Endpoint, String) {
+  use resident <- result.try(
+    manager.resolve(registry, id) |> result.map_error(error_code),
+  )
+  config.peer_endpoint(resident) |> option.to_result("peer_service_unavailable")
 }

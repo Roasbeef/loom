@@ -93,7 +93,7 @@ fn start(settings: serve.Settings) {
         fn(selected, sources, owner) {
           serve.build_domain(selected, sources, log.discard(), owner)
         },
-        fn(record, selected, services, owner) {
+        fn(record, selected, services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the catalogue supplies a canonical identity"
           assert bootstrap.ensure_private_directory(filepath.directory_name(

@@ -12,6 +12,7 @@ import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import runtime/async_execution
 
 /// The default wall-clock budget for a child run, in milliseconds.
 pub const default_within_ms = 600_000
@@ -34,13 +35,22 @@ pub type Stop {
   LegacyReaped
 }
 
+/// The lifetime whose closure cancels a child operation.
+pub type Owner {
+  /// The ordinary parent run, cancelled at its run-end boundary.
+  ParentRun(operation: OpId)
+
+  /// A background execution, cancelled when its durable custody closes.
+  AsyncExecution(operation: OpId, execution: String)
+}
+
 /// One operation's lifecycle, independent of later runs on the same strand.
 pub type Run {
   Run(
     /// Conversation on which this operation was accepted.
     strand: String,
     /// Parent operation whose completion cancels this run, or no owner.
-    owner: Option(OpId),
+    owner: Option(Owner),
     /// Absolute session-clock deadline, or an explicitly unbounded run.
     deadline: Option(Int),
     /// Durable reason for a requested cancellation.
@@ -71,7 +81,12 @@ pub fn encode(run: Run) -> JsonValue {
     #("strand", json.String(run.strand)),
     #("owner", case run.owner {
       None -> json.Null
-      Some(operation) -> json.String(ids.op_id_to_string(operation))
+      Some(ParentRun(operation)) -> json.String(ids.op_id_to_string(operation))
+      Some(AsyncExecution(operation, execution)) ->
+        json.Object([
+          #("operation", json.String(ids.op_id_to_string(operation))),
+          #("execution", json.String(execution)),
+        ])
     }),
     #("deadline", case run.deadline {
       None -> json.Null
@@ -109,7 +124,26 @@ pub fn decode(value: JsonValue) -> Result(Run, CorruptionReport) {
   use owner <- result.try(field(fields, "owner"))
   use owner <- result.try(case owner {
     json.Null -> Ok(None)
-    json.String(text) -> ids.parse_op_id(text) |> result.map(Some)
+    json.String(text) ->
+      ids.parse_op_id(text) |> result.map(fn(id) { Some(ParentRun(id)) })
+    json.Object(fields) -> {
+      use operation <- result.try(field(fields, "operation"))
+      use operation <- result.try(case operation {
+        json.String(text) -> ids.parse_op_id(text)
+        other -> invalid("owner.operation", "an operation id", other)
+      })
+      use execution <- result.try(field(fields, "execution"))
+      use execution <- result.try(case execution {
+        json.String(text) -> {
+          case async_execution.valid_id(text) {
+            True -> Ok(text)
+            False -> invalid("owner.execution", "an execution id", execution)
+          }
+        }
+        other -> invalid("owner.execution", "an execution id", other)
+      })
+      Ok(Some(AsyncExecution(operation, execution)))
+    }
     other -> invalid("owner", "null or an operation id", other)
   })
 
@@ -151,4 +185,16 @@ fn invalid(
     expected:,
     context: json.to_string(value),
   ))
+}
+
+/// The immutable original async brief, committed before lineage publication.
+/// Recovery must not infer this identity from a strand's mutable latest run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // child_run.initial_key("sub:main/reviewer")
+/// ```
+pub fn initial_key(strand: String) -> String {
+  "client/child-initial/" <> strand
 }

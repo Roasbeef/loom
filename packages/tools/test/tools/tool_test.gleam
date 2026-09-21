@@ -289,6 +289,7 @@ fn unused_agency() -> agent.Agency {
 
 fn unused_code_mode() -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(_request) { panic as "the census never runs a program" },
     seams: codemode.one_seam(
       codemode.SeamOffer(

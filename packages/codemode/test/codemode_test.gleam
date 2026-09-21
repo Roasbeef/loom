@@ -509,12 +509,12 @@ pub fn the_workspace_may_not_reach_strands_test() {
 /// fails when a capability *moves* between the seams and passes when one
 /// is added to *both*, which is the likelier mistake — see the stdlib
 /// test below for the door that makes it likely.
-pub fn the_seams_share_only_the_report_capability_test() {
+pub fn the_seams_share_reporting_and_collaboration_capabilities_test() {
   let workspace = policy.default_cap_modules()
   let orchestration = policy.orchestration_cap_modules()
   let shared =
     list.filter(workspace, fn(name) { list.contains(orchestration, name) })
-  assert shared == ["cap/report"]
+  assert shared == ["cap/report", "cap/execution", "cap/peer"]
   // Both sets are non-empty, so the intersection above is a real
   // disjointness claim rather than one made vacuous by an empty side.
   assert list.length(workspace) > 1
