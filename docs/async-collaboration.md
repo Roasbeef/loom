@@ -116,10 +116,29 @@ daemon epoch and canonical session IDs are required:
 {"v":2,"id":1,"cmd":"peers.link","body":{"source_session":"<canonical-id>","source_strand":"main","target_session":"<canonical-id>","target_strand":"reviewer","wake":"busy_only","epoch":"<current-epoch>"}}
 ```
 
+Peer messaging is disabled until the owner grants a link. There is no automatic
+link for sessions in the same repository, and granting A-to-B does not grant
+B-to-A. Both sessions must be open when the owner creates the link.
+
 `busy_only` permits messages during an existing run. `may_wake` also permits a
 new run on that exported strand. Neither opens a saved session. A link permits
 neither joining the peer nor cancelling it, changing its configuration, or
 using its filesystem. Same-session sibling links use the same controls.
+
+An owner-authenticated script or bridge can send through the same control
+connection with `peers.send`. It supplies the same source and target coordinates,
+plus `message_id`, `text`, and the current `epoch`:
+
+```json
+{"v":2,"id":2,"cmd":"peers.send","body":{"source_session":"<canonical-id>","source_strand":"main","target_session":"<canonical-id>","target_strand":"reviewer","message_id":"review-42-finding-1","text":"The review found a missing cancellation check.","epoch":"<current-epoch>"}}
+```
+
+The owner selects the strand on whose behalf the script sends. The command
+still requires that strand's outgoing link and the recipient's grant. It uses
+the same durable receipt and wake policy as the model tool. Both sessions must
+be resident; sending never opens a saved session. The harness reads source
+metadata from the resident endpoint and catalogue instead of accepting it from
+the request. A member credential cannot use this command.
 
 The model gets three tools: `peer_roster`, `peer_send`, and `peer_describe`.
 `peer_send` takes `session`, `strand`, `message_id`, and `text`. The program API

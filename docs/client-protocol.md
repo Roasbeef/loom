@@ -441,7 +441,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:931`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:957`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -849,6 +849,27 @@ The response event uses the command name. See the
 [Protocol 045](../protocol-change/045-async-collaboration.md) for delivery and
 retry semantics. The model-facing tools are `peer_roster`, `peer_send`, and
 `peer_describe`; they cannot create grants.
+
+### 3.19 `peers.send`
+
+An owner-authenticated script sends on behalf of a source strand through this
+mutation. The request MUST carry `epoch`, canonical `source_session` and
+`target_session` IDs, and non-empty `source_strand` and `target_strand` names.
+It also requires `message_id` (1 to 128 bytes) and `text` (1 to 32,768 bytes).
+The normal 64 KiB envelope bound still applies after JSON encoding.
+
+The server checks owner authority and epoch before resolving the source. It
+then uses the same outgoing-link, recipient-grant, wake-policy, and receipt
+checks as `peer_send`. Both sessions MUST be resident. The owner can select the
+source strand, but cannot bypass its communication grants or supply source
+metadata. The harness constructs provenance from the selected resident endpoint
+and its catalogue record.
+
+The success event is `peers.send`, and its body is the recipient's admission
+receipt. Retrying requires the same message ID, target, and text. A changed body
+is refused; revoking a grant can also refuse a retry. During daemon drain the
+command is refused like other control mutations. See the
+[API guide](async-collaboration.md#peer-messaging) for an example.
 
 ---
 
@@ -2932,7 +2953,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:275`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:298`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

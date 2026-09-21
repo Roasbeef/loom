@@ -351,3 +351,53 @@ pub fn peer_controls_require_explicit_wake_and_canonical_sessions_test() {
       ),
     ))
 }
+
+pub fn peer_send_decodes_bounded_identity_and_payload_test() {
+  let id = session_id()
+  let coordinates = [
+    #("source_session", json.String(id)),
+    #("source_strand", json.String("main")),
+    #("target_session", json.String(id)),
+    #("target_strand", json.String("reviewer")),
+    #("epoch", json.String("epoch")),
+  ]
+  let payload = [
+    #("message_id", json.String("review-1")),
+    #("text", json.String("finding")),
+  ]
+  assert protocol.decode(envelope(
+      7,
+      "peers.send",
+      list.append(coordinates, payload),
+    ))
+    == Ok(protocol.Request(
+      7,
+      protocol.SendPeer(
+        id,
+        "main",
+        id,
+        "reviewer",
+        "review-1",
+        "finding",
+        "epoch",
+      ),
+    ))
+  list.each([#("message_id", 129), #("text", 32_769)], fn(pair) {
+    list.each(["", string.repeat("x", pair.1)], fn(value) {
+      let fields =
+        list.map(payload, fn(field) {
+          case field.0 == pair.0 {
+            True -> #(field.0, json.String(value))
+            False -> field
+          }
+        })
+      assert result.is_error(
+        protocol.decode(envelope(
+          7,
+          "peers.send",
+          list.append(coordinates, fields),
+        )),
+      )
+    })
+  })
+}

@@ -434,6 +434,7 @@ fn control(
             protocol.Shutdown(_) -> DrainDaemon
             protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
+            | protocol.SendPeer(..)
             | protocol.Status
             | protocol.ListSessions(..)
             | protocol.ListArchivedSessions(..)
@@ -478,6 +479,7 @@ fn control_use(command: protocol.Command) {
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.LinkPeers(..)
     | protocol.UnlinkPeers(..)
+    | protocol.SendPeer(..)
     | protocol.SetDefault(..)
     | protocol.ArchiveSession(..)
     | protocol.RestoreSession(..)
@@ -544,6 +546,30 @@ fn dispatch(
       use target <- result.try(peer_endpoint(config, state.registry, target))
       peers.link(source, target, from, to, wake)
       |> result.map(fn(value) { #("peers.link", value) })
+    }
+    protocol.SendPeer(source, from, target, to, id, text, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use source <- result.try(peer_endpoint(config, state.registry, source))
+      let registry = state.registry
+      let directory =
+        peers.Directory(
+          resolve: fn(id) { peer_endpoint(config, registry, id) },
+          describe: fn(id) {
+            manager.get(registry, id)
+            |> result.map(view_json)
+            |> result.map_error(error_code)
+          },
+        )
+      peers.send(
+        peers.Wiring(source, json.Null, Some(directory)),
+        from,
+        target,
+        to,
+        id,
+        text,
+      )
+      |> result.map(fn(value) { #("peers.send", value) })
     }
     protocol.UnlinkPeers(source, from, target, to, supplied) -> {
       use Nil <- result.try(owner(principal))

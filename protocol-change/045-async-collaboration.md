@@ -93,3 +93,17 @@ creation compares both its own absence and fence absence atomically. Async
 child admission compares that fence with its execution record. Parent execution
 settlement includes backgrounds launched by owned children, including children
 whose own model turns already ended.
+
+## Authenticated control delivery
+
+The v2 control endpoint also accepts owner-only `peers.send`. The owner selects
+the source session and strand on whose behalf a script sends. The server checks
+the epoch before routing, then reuses the ordinary peer sender and recipient
+handlers. Existing directional grants, wake permission, residency, and receipt
+semantics apply unchanged. The control request cannot supply provenance metadata.
+
+The command carries source and target coordinates, `message_id`, `text`, and
+`epoch`. Its success event returns the recipient's admission receipt. It is a
+control mutation and is refused during daemon drain. Session members cannot use
+it to impersonate another strand. The [client protocol](../docs/client-protocol.md#319-peerssend)
+specifies field bounds.

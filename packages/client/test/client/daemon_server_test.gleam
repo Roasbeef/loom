@@ -8,6 +8,7 @@ import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
+import client/peer_mail
 import core/clock
 import core/ids
 import core/json
@@ -17,7 +18,7 @@ import gleam/erlang/process
 import gleam/http/response
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -47,6 +48,10 @@ pub fn fixture(
 }
 
 fn fixture_with_limits(connection_limits: limits.Limits, run) {
+  fixture_with_peers(connection_limits, fn(_) { None }, run)
+}
+
+fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -69,7 +74,7 @@ fn fixture_with_limits(connection_limits: limits.Limits, run) {
     as "only the fixture receives plaintext owner credential"
   let config =
     server.Config(
-      peer_endpoint: fn(_) { None },
+      peer_endpoint:,
       daemon:,
       domain_configuration: "",
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
@@ -378,9 +383,11 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
       #("target_session", json.String(hidden.registration.id)),
       #("target_strand", json.String("main")),
       #("wake", json.String("may_wake")),
+      #("message_id", json.String("message-1")),
+      #("text", json.String("finding")),
       #("epoch", json.String(ready.epoch)),
     ]
-    list.each(["peers.link", "peers.unlink"], fn(command) {
+    list.each(["peers.link", "peers.unlink", "peers.send"], fn(command) {
       let denied =
         send(socket, 30, command, json.Object(peer_fields), within_ms: 1000)
       assert field(field(denied, "body"), "code") == json.String("forbidden")
@@ -874,9 +881,11 @@ pub fn peer_control_mutations_are_epoch_fenced_before_resolution_test() {
       #("target_session", json.String(ids.session_id_to_string(id))),
       #("target_strand", json.String("main")),
       #("wake", json.String("may_wake")),
+      #("message_id", json.String("message-1")),
+      #("text", json.String("finding")),
       #("epoch", json.String("stale")),
     ]
-    list.each(["peers.link", "peers.unlink"], fn(command) {
+    list.each(["peers.link", "peers.unlink", "peers.send"], fn(command) {
       let refused =
         send(socket, 1, command, json.Object(fields), within_ms: 1000)
       assert field(field(refused, "body"), "code") == json.String("stale_epoch")
@@ -884,4 +893,130 @@ pub fn peer_control_mutations_are_epoch_fenced_before_resolution_test() {
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
+}
+
+pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_test() {
+  let generator = ids.generator(clock.fixed(0), 401)
+  let #(target, _) = ids.mint_session(generator)
+  let target_id = ids.session_id_to_string(target)
+  let delivered = process.new_subject()
+  let endpoint = fn(session) {
+    Some(
+      peer_mail.Endpoint(session, fn(command) {
+        case command {
+          peer_mail.Links("main") ->
+            Ok(
+              json.Array([
+                json.Object([
+                  #("session", json.String(target_id)),
+                  #("strand", json.String("reviewer")),
+                ]),
+              ]),
+            )
+          peer_mail.Links(_) -> Ok(json.Array([]))
+          peer_mail.Activity(_) -> Ok(json.Object([]))
+          peer_mail.Deliver(source, target, id, text) -> {
+            process.send(delivered, #(session, source, target, id, text))
+            Ok(json.Object([#("message_id", json.String(id))]))
+          }
+          _ -> Error("unexpected peer command")
+        }
+      }),
+    )
+  }
+  fixture_with_peers(limits.defaults, endpoint, fn(_, ready, port, credential) {
+    let assert Ok(source) =
+      manager.create(
+        ready.registry,
+        manager.Creation("source", ready.state_root, "Source", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 400),
+      )
+      as "source session is created"
+    let assert Ok(target) =
+      manager.create(
+        ready.registry,
+        manager.Creation("target", ready.state_root, "Target", ""),
+        directory: ready.sessions_directory,
+        generator: generator,
+      )
+      as "target session is created"
+    assert target.registration.id == target_id
+    list.each([source.registration.id, target_id], fn(id) {
+      let assert poll.Answered(_) =
+        poll.until(within: 2000, every: 1, attempt: fn() {
+          case manager.resolve(ready.registry, id) {
+            Ok(instance) -> poll.Done(instance)
+            Error(_) -> poll.Retry
+          }
+        })
+        as "both endpoints become resident"
+    })
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let fields = [
+      #("source_session", json.String(source.registration.id)),
+      #("target_session", json.String(target_id)),
+      #("target_strand", json.String("reviewer")),
+      #("message_id", json.String("review-1")),
+      #("text", json.String("finding")),
+      #("epoch", json.String(ready.epoch)),
+      #("metadata", json.String("forged metadata")),
+    ]
+    let denied =
+      send(
+        socket,
+        1,
+        "peers.send",
+        json.Object([#("source_strand", json.String("unlinked")), ..fields]),
+        within_ms: 1000,
+      )
+    assert field(denied, "event") == json.String("error")
+    let body = json.Object([#("source_strand", json.String("main")), ..fields])
+    let accepted = send(socket, 2, "peers.send", body, within_ms: 1000)
+    assert field(accepted, "event") == json.String("peers.send")
+    assert field(field(accepted, "body"), "message_id")
+      == json.String("review-1")
+    let stopped =
+      send(
+        socket,
+        3,
+        "sessions.stop",
+        json.Object([
+          #("session_id", json.String(target_id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(stopped, "event") == json.String("sessions.stop")
+    let assert poll.Answered(Nil) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, target_id) {
+          Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "the recipient becomes saved"
+    let refused = send(socket, 4, "peers.send", body, within_ms: 1000)
+    assert field(refused, "event") == json.String("error")
+    assert result.is_error(manager.resolve(ready.registry, target_id))
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+  let #(source, _) = ids.mint_session(ids.generator(clock.fixed(0), 400))
+  let source_id = ids.session_id_to_string(source)
+
+  // The subject belongs to this test process, not the fixture's worker.
+  let assert Ok(#(session, sender, strand, id, text)) =
+    process.receive(delivered, 1000)
+    as "delivery reaches the selected recipient endpoint"
+  assert session == target_id
+  assert sender.session == source_id
+  assert sender.strand == "main"
+  assert strand == "reviewer"
+  assert id == "review-1"
+  assert text == "finding"
+  assert !string.contains(json.to_string(sender.metadata), "forged metadata")
+  assert string.contains(json.to_string(sender.metadata), "Source")
+  assert process.receive(delivered, 0) == Error(Nil)
 }

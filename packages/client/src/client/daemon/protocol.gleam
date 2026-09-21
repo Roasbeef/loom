@@ -33,6 +33,24 @@ pub type Command {
     epoch: String,
   )
 
+  /// Sends on behalf of an exact source strand after owner authorization.
+  SendPeer(
+    /// Resident session on whose behalf the owner sends.
+    source_session: String,
+    /// Source strand whose outgoing link authorizes delivery.
+    source_strand: String,
+    /// Resident recipient session.
+    target_session: String,
+    /// Exact recipient strand named by the grant.
+    target_strand: String,
+    /// Stable identity reused only for the same target and body.
+    message_id: String,
+    /// Message data, never source code or caller-supplied authority.
+    text: String,
+    /// Current daemon epoch, checked before resolving either session.
+    epoch: String,
+  )
+
   /// Revokes one directional peer delivery permission.
   UnlinkPeers(
     source_session: String,
@@ -201,7 +219,7 @@ fn decode_fields(
   use body <- result.try(required(fields, "body"))
   use fields <- result.try(object(body))
   case name {
-    "peers.link" | "peers.unlink" -> {
+    "peers.link" | "peers.unlink" | "peers.send" -> {
       use source <- result.try(text_field(fields, "source_session", 128))
       use _ <- result.try(
         ids.parse_session_id(source)
@@ -217,6 +235,11 @@ fn decode_fields(
       use epoch <- result.try(text_field(fields, "epoch", 256))
       case name {
         "peers.unlink" -> Ok(UnlinkPeers(source, from, target, to, epoch))
+        "peers.send" -> {
+          use id <- result.try(text_field(fields, "message_id", 128))
+          use text <- result.try(text_field(fields, "text", 32_768))
+          Ok(SendPeer(source, from, target, to, id, text, epoch))
+        }
         _ -> {
           use wake <- result.try(text_field(fields, "wake", 32))
           use wake <- result.try(case wake {
