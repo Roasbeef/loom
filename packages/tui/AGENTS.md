@@ -34,6 +34,23 @@ Approval previews show the captured action before opening the exact decision
 surface; they never choose a grant. General assistant questions remain in their
 update and transcript because the protocol has no separate pending-question fact.
 
+The inspector keeps Activity, Messages and Notes under `agents.Detail`, switched
+with 1/2/3. `agent_messages` admits sends only after the sending strand's
+accepted operation prompt. It joins results within that branch and before a
+later reuse of the call ID. `Model.agent_messages` retains the latest twenty
+verified sends across operation completion, with message bodies bounded to 4096
+characters plus an excerpt marker; changing sessions releases this cache.
+Acceptance means the tool accepted the send, not that the recipient read it.
+Unobserved older history remains explicitly unavailable.
+
+Notes use the inspected strand while the Notes tab owns focus, and the active
+strand in standalone `/notes`. `notes_requested` coalesces reads behind the
+existing session channel; `NotesSnapshot` values from a different target cannot
+replace the visible board. `note_selected` holds a stable key through reorder,
+falling back to the first key only when the old key disappears. Brackets select
+notes, Ctrl+g switches between readable and raw values, and refresh preserves
+the composer. Opening `/notes` clears the competing diff surface.
+
 `StrandWorkspace` parks the complete editor, attachments, command history,
 submission mode and bounded reader under `(session, strand)`. Navigation restores
 that owner before rendering. Retired strands and old sessions release history
@@ -57,7 +74,9 @@ provider-free native fixture through the capture decoder and the shipped loop.
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
-The dialog captures the record's sequence, action and grants. Metadata refreshes
+The dialog captures the record's sequence, action and grants. Its owner label
+comes from the exact escalation ID and sequence in the captured register; absent
+scope stays unavailable instead of borrowing the selected strand's identity. Metadata refreshes
 cannot replace that question before a decision. The terminal tracks presented
 questions by ID and sequence, so dismissal does not reopen the same question
 and a reopened request with a new sequence is offered again.

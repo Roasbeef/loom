@@ -79,3 +79,32 @@ The independent reviewer checked the narrow repair and found no ownership
 variant: failed candidates do not bind a draft; successful first adoption does;
 subsequent switches and reconnects have a nonempty identity. The reviewer also
 confirmed the earlier generic failure arm uses the bounded multiline preview.
+
+## Messages and notebooks, September 21
+
+Base: `35f0533b`, after rebasing onto `543d641a`. The independent pass covered
+message provenance and receipt matching, notebook ownership and caching, and
+captured approval context. The native fixture was separately exercised through
+real terminal input at 132×42, 80×24, and 40×12.
+
+1. **Note navigation reset the underlying transcript position. Fixed.**
+   Bracket navigation now resets only the inspector's scroll position. A real
+   streaming answer and wheel gesture establish a nonzero reading position;
+   changing notes preserves that position and the frozen text beneath it.
+2. **An evicted invocation could borrow a later reused-ID result. Fixed.**
+   Refreshing a retained receipt now requires its exact invocation entry in
+   the connected branch. With that evidence gone, the last verified outcome
+   remains unchanged. Separate regressions cover reused IDs while both calls
+   are loaded and a result-only truncated window after eviction.
+3. **Inspector notes could enter the standalone notes cache. Fixed.**
+   Rendering now takes an explicit owner: the inspector passes its selected
+   strand, while standalone notes always pass the active strand. The regression
+   settles worker content before closing the inspector and checks the existing
+   cache without a resize that could conceal the error.
+
+The reviewer verified all three production repairs and found no outstanding
+issue in this pass. Active terminal testing additionally exposed `/notes`
+leaving the diff visible, absent approval-owner context, and an inspector whose
+borders consumed the entire body at 40×12. The surface transition, exact owner
+label, and compact unframed layout now have focused regressions. Approval
+context does not change the captured request or choose a decision.

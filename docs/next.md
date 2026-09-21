@@ -1,5 +1,25 @@
 # Next
 
+## Agent messages and notebooks, September 21
+
+The workspace branch is rebased onto `543d641a`. The inspector now separates
+Activity, Messages, and Notes while preserving the existing composer target.
+Message projection follows each sender's accepted operation boundary, joins
+results by call occurrence, and retains a bounded observed history through
+operation completion. It does not infer read receipts or invent older history.
+Notes follow the inspected strand, retain selection by key, reject another
+strand's late reply, and expose both readable and raw values. `/notes` now
+replaces a visible diff, and approval dialogs name the exact captured owner.
+
+The complete `make check` returned zero: 654 TUI tests, 2,030 client tests,
+306 code-mode tests, conformance, sandbox checks, and zero house-lint errors.
+The real native TUI/server round-trip passed, and interactive native tests
+covered messages, notes, approval ownership, diff navigation, and the compact
+40×12 fallback. Independent review verified all three ownership/provenance
+repairs. The implementation note records the captures and explicit macOS and
+opt-in fixture skips. The older sections below retain historical counts and
+limits. Check hosted CI at the final proposed head before merge.
+
 ## Native TUI overhaul, September 20
 
 The native implementation for [#473](https://github.com/Roasbeef/loom/issues/473)

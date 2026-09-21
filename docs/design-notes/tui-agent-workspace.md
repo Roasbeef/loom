@@ -1,5 +1,64 @@
 # Native agent workspace
 
+## Agent messages and notebooks, September 21
+
+| Messages between agents | Selected agent's notebook |
+| --- | --- |
+| ![Messages](tui-agent-workspace/after-messages.png) | ![Agent notes](tui-agent-workspace/after-agent-notes.png) |
+
+| Worktree diff | Compact 40×12 inspector |
+| --- | --- |
+| ![Diff](tui-agent-workspace/after-diff.png) | ![Tiny inspector](tui-agent-workspace/after-tiny.png) |
+
+[Captured approval owner](tui-agent-workspace/after-approval-owner.png) ·
+[Standalone notes at 80 columns](tui-agent-workspace/after-notes-narrow.png).
+The adjacent ANSI files preserve the actual terminal output.
+
+This follow-up rebases the implementation onto `543d641a` and keeps the original
+[#473](https://github.com/Roasbeef/loom/issues/473) steering and approval
+boundaries. The agent inspector now has Activity, Messages, and Notes tabs.
+Messages show both incoming and outgoing captured sends, with sender, recipient,
+body, revision, and observed result. Accepted and started results describe tool
+delivery; they are not read receipts. Missing results remain unknown. Only sends
+after the sender's accepted operation prompt are admitted, avoiding inherited
+parent history, and reused call IDs cannot settle an earlier send. The client
+retains twenty verified sends across operation completion and bounds each body
+to 4096 characters plus an explicit excerpt marker. It does not claim a complete
+historical inbox when the necessary captures were never observed.
+
+Notes now follow the inspected agent while the composer retains its existing
+recipient and draft. A key list supports bracket navigation, stable selection
+through refresh/reorder, readable structured values, raw JSON expansion, and
+explicit refresh. Late replies for another strand cannot replace the board.
+Standalone `/notes` uses the active strand and takes the surface from `/diff`.
+The approval dialog visibly names its captured strand and operation while
+preserving the exact request, grants, sequence, and absence of a default choice.
+
+Active native fixture testing covers the Messages and Notes tabs and the diff
+navigator. This fixture uses typed snapshot entries and the real reducer/event
+loop, but its sends, note replies, and worktree observation are synthetic. The
+provider smoke recorded below is separate evidence and does not certify live
+message delivery or a live approval decision.
+
+### September 21 validation
+
+The complete `make check` returned exit zero on the rebased implementation:
+654 TUI tests, 2,030 client tests, 306 code-mode tests, all other package suites,
+the sandbox Go checks, and final house lint. The native TUI/server terminal
+round-trip test passed with its scripted model and real daemon/SQLite runtime.
+The final house lint reports zero errors and 833 warnings. The separate
+documentation gate also passes with zero errors.
+
+The default run retains explicit skips for opt-in shipped-daemon fixtures when
+`LOOM_BOOTSTRAP_E2E_SERVER` is unset and for the real-MCP process-death fixture
+on macOS without `/proc`. These are not Linux confinement evidence. Live
+inter-agent provider delivery and approval decisions were not exercised by the
+synthetic interactive fixture. Hosted CI remains a separate check at the final
+PR head; the September 20 interruption below is historical and is superseded
+by this uninterrupted local gate.
+
+## September 20 implementation
+
 Status: implemented for review, September 20, 2026. Tracks
 [#473](https://github.com/Roasbeef/loom/issues/473). The implementation starts
 from `9c9bb576`; the follow-up completes the native Focus, Studio, and Agents
@@ -153,9 +212,9 @@ it uses Pillow and the macOS Menlo font only for documentation rendering.
 | Full details and viewport integrity | Exact source/result expansion, multiline failures, history anchors, selection/copy, streaming handoff, pacing, and stale-cell regressions. |
 | Native coverage and repository gates | Snapshot/replay suite, native fixture captures, independent review, and the gate results below. |
 
-## Validation and limits
+## September 20 validation and limits
 
-The final TUI suite passes all 635 tests with a warning-free build, including
+The September 20 TUI suite passed all 635 tests with a warning-free build, including
 the new header-identity regression. The client gate passes all 2,025 tests,
 including the native client/server E2E module. Repository house lint reports
 zero errors and 831 warnings; the documentation gate reports zero errors and

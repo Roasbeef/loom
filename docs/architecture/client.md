@@ -150,7 +150,13 @@ Live provider text is scoped to a request generation within an operation.
 Terminal markers retire only their own request, and stale cuts cannot erase a
 newer pushed answer. Compact tool groups preserve call identity. `/notes` reads current values through `client/notes_view` and
 validates them in `tui/notes_view`, independently of the conversation transfer.
-The panel names capture and last-write revisions and labels excerpts. See
+The panel names capture and last-write revisions and labels excerpts. The agent
+inspector's Notes tab uses its selected strand independently of the composer,
+with stable note-key selection and stale-reply rejection. The Messages tab
+projects `agent_send` invocations after each sender's accepted operation prompt;
+its bounded cache retains verified sends after operations end. Tool acceptance
+is visible delivery evidence, not a read receipt. These views reuse existing
+captures and notes queries without adding wire authority. See
 [protocol 021](../../protocol-change/021-request-scoped-streams.md) and
 [protocol 023](../../protocol-change/023-current-client-observations.md).
 
