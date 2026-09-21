@@ -31,6 +31,21 @@ WHERE entry_fts.text MATCH ?
 ORDER BY rank
 LIMIT ?;
 
+-- The newest rows one session has indexed, for browsing without a query.
+-- FTS5 assigns rowids in insertion order and a sync inserts a session's
+-- entries in log order, so the highest rowids are its most recent entries.
+-- There is no MATCH to anchor snippet(), so the excerpt is the opening of
+-- the indexed text.
+-- name: RecentEntriesInSession :many
+SELECT
+  session_id,
+  entry_id,
+  substr(text, 1, 160) AS snippet
+FROM entry_fts
+WHERE session_id = ?
+ORDER BY rowid DESC
+LIMIT ?;
+
 -- name: GetCursor :one
 SELECT generation, high_water
 FROM search_cursor
