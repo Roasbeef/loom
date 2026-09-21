@@ -5600,15 +5600,18 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
 // drawn row answers the same question `closes_bare` answers about a speaker
 // — a blank row already separates whatever follows it, a drawn one does not
 // — so the seam is decided from the screen rather than from a second copy of
-// the projection. Compact history has no entry-level rule to apply, so the
-// seam belongs to the expanded view alone.
+// the projection. Compact history applies the same rule between its items,
+// so the seam is the same in both views.
+//
+// The live tail sits on the same seam and asks the same question of it: a
+// reasoning row still streaming under a settled result must stand where its
+// settled form will, or the transcript moves a row when it lands.
 fn separated_from_screen(lines: List(Line), model: Model) -> List(Line) {
   let drawn = case list.first(model.record_rows) {
     Ok(row) -> span.line_width(row) > 0
     Error(Nil) -> False
   }
-  let wanted =
-    model.details_expanded && drawn && opens_tool_group(lines, BetweenEntries)
+  let wanted = drawn && opens_bare(lines, BetweenEntries)
 
   case wanted {
     True -> [Line(Spacer, ""), ..lines]
@@ -5703,6 +5706,11 @@ fn record_anchors_for(
       })
       |> separated_tool_blocks(BetweenEntries)
     }
+
+    // The mirror of the item-level separation `record_lines` applies in
+    // compact history. Inside a group or a response every spacer is already
+    // placed, and a spacer's own row is blank, so this pass adds only the
+    // gaps between items.
     False ->
       entries
       |> tool_activity.project
@@ -5728,6 +5736,7 @@ fn record_anchors_for(
           }
         }
       })
+      |> separated_tool_blocks(BetweenEntries)
   }
   [#("", model.transcript), ..blocks]
   |> list.flat_map(fn(block) {
@@ -5870,6 +5879,7 @@ fn transient_lines(model: Model) -> List(Line) {
   |> list.append(tool_tail_lines(model))
   |> list.append(pending_input_lines(model))
   |> list.append(pending_nudge_lines(model))
+  |> separated_from_screen(model)
 }
 
 // Pending advice is a labeled, disposable observation in the scrollable tail.
@@ -8217,6 +8227,11 @@ fn record_lines(
       dict.new(),
       dict.new(),
     )
+
+    // Compact history places the same gap between items that expanded
+    // history places between entries: a reasoning row carries no blank of
+    // its own, so one opening a narrative under a group's bare last row
+    // would otherwise sit welded to it.
     False -> {
       let #(reversed, calls, narratives) =
         entries
@@ -8224,11 +8239,15 @@ fn record_lines(
         |> splice_notices(notices, item_holds)
         |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
           case spliced {
-            Transient(text) -> #([Line(System, text), ..acc.0], acc.1, acc.2)
+            Transient(text) -> #([[Line(System, text)], ..acc.0], acc.1, acc.2)
             Projected(item) -> compact_item_lines(acc, item, model, owner)
           }
         })
-      #(list.reverse(reversed), calls, narratives)
+      #(
+        reversed |> list.reverse |> separated_tool_groups(BetweenEntries),
+        calls,
+        narratives,
+      )
     }
   }
 }
@@ -8245,13 +8264,14 @@ fn expanded_lines(
   }
 }
 
-// One projected item folded into the compact accumulator: reversed rows, the
-// call cache and the narrative cache. Lifted out of the fold so the caches
-// it reads are parameters rather than a closure over the model, which is
-// what lets the notice fold share the same accumulator shape.
+// One projected item folded into the compact accumulator: each item's rows,
+// newest item first, the call cache and the narrative cache. Lifted out of
+// the fold so the caches it reads are parameters rather than a closure over
+// the model, which is what lets the notice fold share the same accumulator
+// shape.
 fn compact_item_lines(
   acc: #(
-    List(Line),
+    List(List(Line)),
     Dict(tool_activity.Call, List(Line)),
     Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
   ),
@@ -8259,7 +8279,7 @@ fn compact_item_lines(
   model: Model,
   owner: Option(message.Origin),
 ) -> #(
-  List(Line),
+  List(List(Line)),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
@@ -8269,20 +8289,12 @@ fn compact_item_lines(
       let lines =
         dict.get(model.compact_entry_cache, key)
         |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
-      #(
-        list.append(list.reverse(lines), acc.0),
-        acc.1,
-        dict.insert(acc.2, key, lines),
-      )
+      #([lines, ..acc.0], acc.1, dict.insert(acc.2, key, lines))
     }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
         cached_activity_lines(calls, model.compact_call_cache)
-      #(
-        list.append(list.reverse(lines), acc.0),
-        dict.merge(acc.1, cached),
-        acc.2,
-      )
+      #([lines, ..acc.0], dict.merge(acc.1, cached), acc.2)
     }
   }
 }
@@ -8355,7 +8367,7 @@ fn separated_tool_blocks(
     // so the row consulted here is never one this fold wrote.
     let wanted = case placed {
       [#(_, previous), ..] ->
-        block_closes_bare(previous) && opens_tool_group(block.1, opening)
+        block_closes_bare(previous) && opens_bare(block.1, opening)
       [] -> False
     }
 
@@ -8410,11 +8422,15 @@ fn closes_bare(speaker: Speaker) -> Bool {
   }
 }
 
-// A block opens a tool group when its first row is a call's own summary,
-// whether that call is pending, succeeded or failed.
-fn opens_tool_group(rows: List(Line), opening: GroupOpening) -> Bool {
+// A block opens bare when its first row brings no blank above itself: a
+// call's own summary, whether that call is pending, succeeded or failed, or
+// a collapsed reasoning row. The digest is drawn without a blank so that its
+// live and settled forms keep one height, which leaves the gap above it to
+// this rule, exactly as for a call.
+fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
+    [Line(speaker: ReasoningDigest, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
     // `GroupOpening`.
