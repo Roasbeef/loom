@@ -1,0 +1,24 @@
+[1m[38;2;255;189;105m[48;2;24;27;31m ◆ loom [0m[38;2;231;237;245m[48;2;24;27;31m      native-fixture · native UI fixture      [38;2;160;171;184m fixture-model · Ctrl+g d…
+[49m ↓ Scrollback · click for latest · End with empty prompt [39m
+ [38;2;160;171;184m◇ [39mnotes for main · read at revision 42 · r to refresh
+ [38;2;160;171;184m  [39m2 saved notes · [/] select · PgUp/PgDn scroll · Ctrl+g raw
+ [38;2;160;171;184m  [39mSession advanced since this read · r refreshes. Saved plans may need
+ [38;2;160;171;184m  [39mcorrection.
+
+ [38;2;160;171;184m◇ [39m▸ plan
+ [38;2;160;171;184m    [39mevidence
+
+ [38;2;160;171;184m◇ [39mplan · updated at revision 41
+
+ [38;2;160;171;184m  [1m[38;2;255;189;105m• [39mGoal[0m: Preserve recipient ownership
+
+[38;2;255;189;105m─ To main · enter queues · tab steers                                          ─
+[39m [38;2;160;171;184m◒ Message to sub:protocol-review (1m 51s)[39m
+ [38;2;160;171;184mReviewer sub:protocol-review · agent_send · no pending input[39m
+ [38;2;160;171;184m  Task: Verify exact-request approval ownership across refreshes.[39m
+ [38;2;160;171;184mReviewer advisor · fs_read · no pending input[39m
+ [38;2;160;171;184m  Task: Review the primary strand's implementation and validation claims.[39m
+ [1m[38;2;24;27;31m[48;2;255;189;105m [0m[38;2;231;237;245m                                                                             [39m
+[38;2;60;74;91m────────────────────────────────────────────────────────────────────────────────
+[38;2;170;176;182m refreshing notes for main · fixture-model · ctx — · est $0.00[39m
+[38;2;170;176;182m 6 agents · 2 working · 3 attention[39m
