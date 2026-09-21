@@ -73,6 +73,14 @@ not establish the parameter boundary. Preserve evaluation order, arguments,
 exceptions, and effects.
 Do not move an effect into a callback that may run later or more than once.
 
+Treat a nested-call-to-pipeline rewrite as a change to verify, not a performance
+guarantee. Retain the expensive-result parameter boundary and the exact service
+order, then compare rebuilt package time and `core_inline_module` time against
+the nested version under the same toolchain. Run the affected package tests.
+If either compile measurement regresses beyond normal variation, investigate
+before accepting the rewrite; a faster no-op build is not evidence. Inspect
+generated Erlang to confirm the pipeline adds no callback or repeated work.
+
 Existing precedents in [tui.gleam](../../packages/tui/src/tui.gleam):
 
 - `f09bf1cf` separated `update` dispatch from `settle_update`. The recorded
