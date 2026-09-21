@@ -215,6 +215,15 @@ pub fn a_restart_with_an_open_operation_arms_the_short_period_test() {
   // the process it belongs to: `wake` drops a tick whose driver is gone, so
   // every arm counted past this point belongs to the replacement.
   let short_before_kill = recorder.read(rec, "poll.short")
+
+  // The idle count is snapshotted for the stricter half of the claim below.
+  // Arming the short period *eventually* is not the property: a replacement
+  // that armed the idle tick first and only reached the short one after that
+  // tick fired would satisfy a count that merely grows. Holding this number
+  // still across the replacement's whole life says the first thing it armed
+  // was the short tick, which is what a restored open operation needs.
+  let long_before_kill = recorder.read(rec, "poll.long")
+
   let assert Ok(subject) = supervisor.strand_subject(rt.tree, "main")
     as "the strand driver must be registered"
   let assert Ok(pid) = process.subject_owner(subject)
@@ -233,6 +242,13 @@ pub fn a_restart_with_an_open_operation_arms_the_short_period_test() {
     1200,
   )
   assert recorder.read(rec, "poll.short") >= short_before_kill + 3
+
+  // Three short ticks have fired and not one idle tick was armed, so the
+  // replacement never passed through the long period on its way to the short
+  // one. A restart that read its period from an inherited arming rather than
+  // from durable state would have shown up here.
+  assert recorder.read(rec, "poll.long") == long_before_kill
+
   process.kill(rt.tree.supervisor)
 }
 
