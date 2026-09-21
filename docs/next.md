@@ -20,15 +20,23 @@ advisor nudges and the existing exact-request approval authority remain intact.
 The [implementation note](design-notes/tui-agent-workspace.md) maps every issue
 acceptance item to native behavior and regression evidence, and contains the
 updated terminal captures. The [review record](review/tui-agent-workspace.md)
-explains both independent review passes and each verified repair. The final TUI suite passes 634 tests and the client gate passes 2,025.
+explains both independent review passes and each verified repair. The final TUI suite passes 635 tests and the client gate passes 2,025.
 House lint and documentation checks have zero errors. A full gate was
 interrupted by Hex rate limiting; the implementation note records the complete
 component results without claiming an uninterrupted full-command success.
 
-The new client attaches to a fresh session with code mode available. Actual
-provider parallelism and a live approval decision remain untested; local fixture
-screenshots do not establish those outcomes. Check hosted Linux CI at the final
-head before merge. The independent main/advisor split in #448 is still an
+A Baseten GLM-5.3 run completed the two requested file reads and rendered its
+answer in the native client. Its configured stop hook then launched an unwanted
+mail watcher, which was stopped; the implementation note records this limit.
+No live approval decision or code-mode batch was exercised.
+
+Hosted CI exposed the initial-attachment draft path. The editor now binds to
+the first selected session once; subsequent sessions retain separate drafts.
+The credited-v2 regression and real-daemon creation/reconnect test cover this
+boundary. The latter fixture now uses live startup's empty session identity.
+The broader bootstrap script passed the lifecycle and hostile-shell checks,
+then stopped when an operator hook altered a scripted-provider request in the
+multiplayer fixture. Check hosted Linux CI at the final head before merge. The independent main/advisor split in #448 is still an
 exploration, not a default-layout decision made by this change.
 
 The older handoffs below describe their own revisions. Their counts are not

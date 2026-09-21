@@ -38,7 +38,7 @@ not run tests; the implementation session ran the gates documented in
 Draft preservation spans session changes; frozen history and reading-position
 restoration span strand switches within one session. Session changes release
 old history buffers. Native fixture captures demonstrate renderer behavior,
-not real provider outcomes. The client now attaches after other clients released admission. A provider-backed request has not run; local fixtures do not establish real provider behavior.
+not real provider outcomes. The client now attaches after other clients released admission. A later Baseten smoke completed two reads and response rendering; its unexpected stop-hook watcher and remaining coverage limits are recorded in the implementation note.
 
 ## Complete layout follow-up
 
@@ -64,3 +64,18 @@ roster omission or shared composer measurement. Implementation validation also
 updated the stale-cell regression's terminal height: compact failures now keep
 eight diagnostic lines, so its 72-row pane again has an asserted blank tail.
 It still verifies the expanded pane is full and every vacated cell is blank.
+
+## Initial-attachment draft repair
+
+Hosted bootstrap CI exposed draft loss during creation/reconnect. The fixture
+was reproduced locally, and a new credited-v2 test reproduced the real empty
+session path. `select_workspace` now parks an unassigned editor under the first
+chosen session identity, preserving the ordinary restore path for every later
+switch. The bootstrap fixture now matches live startup's empty session instead
+of retaining the demonstration identity, and checks the draft immediately after
+creation as well as after reconnect.
+
+The independent reviewer checked the narrow repair and found no ownership
+variant: failed candidates do not bind a draft; successful first adoption does;
+subsequent switches and reconnects have a nonempty identity. The reviewer also
+confirmed the earlier generic failure arm uses the bounded multiline preview.

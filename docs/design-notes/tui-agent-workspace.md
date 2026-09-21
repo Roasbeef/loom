@@ -155,7 +155,7 @@ it uses Pillow and the macOS Menlo font only for documentation rendering.
 
 ## Validation and limits
 
-The final TUI suite passes all 634 tests with a warning-free build, including
+The final TUI suite passes all 635 tests with a warning-free build, including
 the new header-identity regression. The client gate passes all 2,025 tests,
 including the native client/server E2E module. Repository house lint reports
 zero errors and 831 warnings; the documentation gate reports zero errors and
@@ -169,16 +169,45 @@ Hex API rate limit. The client and TUI gates were rerun successfully, and the
 final house lint and documentation checks pass. This is complete component
 gate evidence, not a claim that an uninterrupted `make check` returned zero.
 
-The new client successfully attaches to a fresh session after other clients
-released daemon admission. Code mode is available. No provider request, real
-parallel provider run, or live approval decision was sent during this follow-up;
-the native client/server E2E tests use controlled providers. No installed daemon
-or operator configuration was changed.
+A Baseten GLM-5.3 smoke run completed two requested `fs_read` calls for
+`theme.gleam` and `agents.gleam`, then rendered a table and an explanation in
+the native client. Both results were non-errors, and the captured main and
+advisor outcomes were completed. Recorded session cost was about $0.11. No
+tracked files changed during that run; file reads produced one untracked blob.
 
-The macOS gate retains its reported skips: code-mode satellite cases have no
-seed in this worktree, and shipped-daemon cases have no
-`LOOM_BOOTSTRAP_E2E_SERVER`. These runs do not establish Linux sandbox coverage.
+The configured stop hook subsequently launched a background mail watcher,
+which was outside the prompt's no-shell constraint. The watcher was stopped.
+This proves provider-backed reads and response rendering, not strict adherence
+to the entire read-only prompt. No live approval decision or code-mode batch
+was exercised. No installed daemon or operator configuration was changed.
+
+The earlier macOS package gate reported no-seed satellite and unset
+`LOOM_BOOTSTRAP_E2E_SERVER` skips. The follow-up built the seed and both
+shipments, then exercised the bootstrap script as recorded below. These local
+runs do not establish Linux sandbox coverage.
 Hosted CI must be checked at the submitted head before merge.
 
 The [review dispositions](../review/tui-agent-workspace.md) record the initial
 ownership repairs and the follow-up keyboard-routing and diagnostic fixes.
+
+### CI bootstrap follow-up
+
+The first hosted run exposed one lifecycle assertion in three jobs: a draft
+entered before first attachment was absent after session creation/reconnect.
+The real-daemon fixture reproduced the failure locally. Its model also still
+carried the demonstration session ID, unlike live startup's empty identity.
+
+The workspace now binds the unassigned editor to the first explicitly selected
+session. Subsequent session switches still restore separate drafts. A credited
+v2 regression failed before the repair and covers text, attachments, mode,
+returning to the first session, and absence of an orphan empty-session entry.
+The lifecycle fixture now starts with the real empty identity and asserts the
+draft both immediately after creation and after reconnect. The exact real-daemon
+test passes, along with all 635 TUI tests, TUI lint, and the documentation gate.
+
+The full bootstrap script passed launcher help, real-daemon lifecycle, and all
+four hostile-shell lock checks. It then failed in the shipped multiplayer
+fixture: an imported operator hook injected a mail-watcher instruction, and
+the scripted provider rejected the altered request with HTTP 400. The script
+stopped there, so later shipped fixtures were not exercised by this run. This
+is an environment-contaminated failure, not a passing shipped-client gate.
