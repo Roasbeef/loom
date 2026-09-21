@@ -632,11 +632,15 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // The connection is fine, so this is the same auxiliary refusal a
     // correlated error is, and the socket stays open. A custody return rides
     // the same lane: it is pushed, it answers nothing, and the terminal is
-    // the only place the returned draft can be restored.
+    // the only place the returned draft can be restored. A usage row is the
+    // same kind of fact — pushed live state that no cut is required to
+    // carry — so the terminal folds it into its own watch and settlement
+    // figures now rather than at the next capture.
     protocol.ServerError(..)
     | protocol.HeldInputReturned(..)
     | protocol.WorktreeSnapshot(_)
-    | protocol.ContextSnapshot(_) -> #(channel, [
+    | protocol.ContextSnapshot(_)
+    | protocol.UsageChanged(..) -> #(channel, [
       Auxiliary(event),
     ])
 
@@ -656,7 +660,6 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
-    | protocol.UsageChanged(..)
     | protocol.EscalationPending(..)
     | protocol.Resumed(_)
     | protocol.Ignored(_) -> #(channel, [])

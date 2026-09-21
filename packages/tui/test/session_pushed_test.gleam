@@ -10,12 +10,14 @@
 import core/codec
 import core/json
 import core/message
+import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/attempt
+import tui/cache_miss
 import tui/connection
 import tui/protocol
 import tui/session_channel
@@ -463,6 +465,96 @@ pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {
   // captured, so nothing painted, so no `Capture` names this frame at all.
   assert model.last_capture == session_channel.Requested
     as "a dropped notice leaves the last capture's provenance untouched"
+}
+
+// A settlement's usage row arrives as a push in every open phase, and
+// must reach the terminal rather than die in the lane: the cache-miss
+// detector, the settlement label and the output rate all read it. This is
+// the regression shape of a row that `apply_pushed` used to list among
+// the dropped events.
+fn usage_push(strand: String, reported: message.Usage) {
+  push([
+    #("event", json.String("usage")),
+    #(
+      "body",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("usage", codec.encode_usage(reported)),
+      ]),
+    ),
+  ])
+}
+
+pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
+  let #(ready, issued) = synchronized()
+  let _ = requests(issued)
+  let reported =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      option.Some(400),
+      option.None,
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let auxiliary =
+    session_channel.Auxiliary(protocol.UsageChanged(
+      strand: "main",
+      usage: reported,
+    ))
+
+  // In Ready: handed straight to the terminal, moving neither phase nor
+  // credit — the same contract a fragment has.
+  let #(after_ready, updates) =
+    session_channel.receive(ready, usage_push("main", reported))
+  assert updates == [auxiliary]
+    as "the lane forwards the row instead of dropping it"
+  assert !session_channel.in_flight(after_ready)
+    as "a usage row starts no request"
+  assert requests(issued) == []
+
+  // Mid-transfer: applied without touching the phase, and the transfer
+  // continues from the credit it held.
+  let #(capturing, _) = session_channel.receive(after_ready, notice("main", 10))
+  let #(receiving, _) = feed(capturing, [begin(4, "1:2", "catch_up", 12)])
+  let #(receiving, updates) =
+    session_channel.receive(receiving, usage_push("main", reported))
+  assert updates == [auxiliary]
+  let #(_, updates) = feed(receiving, [piece(5, "1:2"), end(6, "1:2", 12)])
+  let assert [session_channel.Captured(..)] = updates
+    as "a usage row mid-transfer neither spends credit nor fails the lane"
+}
+
+// The whole path a live terminal takes: a pushed usage row folds into the
+// model's own watch, so the settlement label and the detector's baseline
+// both move on the push rather than waiting for a capture that never
+// carries them.
+pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
+  let model = tui.Model(..attached(), peer: tui.Preview)
+  let reported =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      option.None,
+      option.Some(400),
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let settled =
+    tui.accept_connection_message(model, usage_push("main", reported))
+
+  assert settled.usage.total_tokens == 250_400
+    as "the pushed row is folded into the session usage totals"
+  assert settled.notice == "250k tokens"
+    as "the settlement label moves off the streaming form"
+  let assert Ok(cache_miss.Watch(previous:, ..)) =
+    dict.get(settled.cache_watch, "main")
+  assert previous == reported
+    as "the row becomes the detector's baseline on the push"
 }
 
 pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
