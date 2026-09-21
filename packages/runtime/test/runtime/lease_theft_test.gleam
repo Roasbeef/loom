@@ -65,7 +65,11 @@ fn open_quiet(name: String) -> #(String, api.Runtime) {
     api.open(
       opened,
       idle_effects(),
-      api.Options(..base, poll_interval_ms: 600_000),
+      api.Options(
+        ..base,
+        poll_interval_ms: 600_000,
+        idle_poll_interval_ms: 600_000,
+      ),
     )
     as "the session tree must boot"
   #(path, runtime)

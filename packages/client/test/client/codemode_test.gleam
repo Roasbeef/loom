@@ -1228,7 +1228,12 @@ fn start_runtime() -> Live {
         ),
         hooks: effects.default_hooks(),
       ),
-      api.Options(..base, poll_interval_ms: 25, subagent: agency.is_subagent),
+      api.Options(
+        ..base,
+        poll_interval_ms: 25,
+        idle_poll_interval_ms: 25,
+        subagent: agency.is_subagent,
+      ),
     )
     as "the runtime must open"
   let assert Ok(_holder) = agency.start(config, runtime)

@@ -358,8 +358,10 @@ extended by the M3 runtime wave.
   - `strand_runtime.Message` (all casts): `AwaitPredecessors(resolution)`
     (the guaranteed-first barrier message weft's `continuing` injects at
     init — opaque, so nothing else can construct it), `Nudge` (the
-    doorbell), `PollTick` (the checkpoint poll, which also grants one
-    deferred poll permit), `RetryDue`, `RequestAbort`,
+    doorbell), `PollTick(generation)` (the checkpoint poll, which also grants
+    one deferred poll permit; the generation names the arming it belongs to,
+    and a tick from a superseded arming is dropped), `RetryDue`,
+    `RequestAbort`,
     `ProviderDone(token, terminal)`, `ToolDone(token, outcome)`,
     `EffectExit(down)`. Callers use the stable
     address resolved to the current subject, while the reaper, effect workers,
@@ -438,21 +440,54 @@ extended by the M3 runtime wave.
 - **An idle assembly actor hibernates, and the interval is one value.**
   `runtime/residency.hibernate_after_ms` is the quiet period after which a
   session's weft actors shed their heaps, and every site takes that constant
-  rather than a number of its own; in this package only `registry` takes it.
-  Three actors deliberately do not, and two of them cannot. `writer` holds a
-  `RenewTick` heartbeat, so its mailbox is never quiet. **`strand_runtime`
-  cannot either**, for the same reason and less obviously: `handle`'s
-  `PollTick` arm re-arms the checkpoint poll every `poll_interval_ms` —
-  200 ms in `api.default_options` — unconditionally, so the strand is never
-  quiet for any threshold above that. It is also the actor holding the
-  largest `Effects` heap in an assembly, so the most valuable target is the
-  unreachable one; arming `PollTick` only while work is pending would reach
-  it and would be a change to the drive loop's liveness argument, not to the
-  constant. The booter is a stateless placeholder with nothing to reclaim.
+  rather than a number of its own; in this package `registry` and
+  `strand_runtime` take it. Two actors deliberately do not. `writer` holds a
+  `RenewTick` heartbeat through `actor.periodic`, which a handler can neither
+  cancel nor re-time, so its mailbox is never quiet. The booter is a
+  stateless placeholder with nothing to reclaim.
   Hibernation returns garbage
   only — the live set, which is dominated by this session's `Effects` copies,
   survives it — so it is a complement to sharing that value, never a
   substitute. `docs/design-notes/daemon-memory.md` has the measurement.
+
+- **The checkpoint poll runs at two periods, and which one is decided by the
+  drive it follows.** `strand_runtime.State.occupancy` records what the last
+  completed drive's `load` found. `Occupied` re-arms at `poll_interval_ms`
+  (200 ms), which is the rate a deferred suspension is granted its next
+  permit at and nothing else — every other in-flight step is answered by its
+  own monitor or its own timer; `Unoccupied`
+  re-arms at `idle_poll_interval_ms` (two minutes), which clears
+  `residency.hibernate_after_ms` and is the reason the strand can hibernate
+  at all — it holds the largest `Effects` heap in an assembly and used to be
+  permanently awake. The backstop is *kept* in both states rather than
+  dropped in one, so the doctrine of design §4.6 still holds verbatim: a
+  doorbell lost between a caller's commit and its nudge costs latency, and
+  the latency it costs an idle strand is the idle period rather than never.
+  Every drive re-arms, through the single `arm_poll` call in `finish`, so the
+  period follows the occupancy immediately: a message that opens work on an
+  idle strand arms the short tick while handling that message. That is
+  load-bearing rather than a nicety. A turn is almost always shorter than the
+  idle period, so a strand that had to wait for the pending idle tick before
+  its period could change would run the whole turn without a short tick, and
+  the short period would be unreachable in ordinary use — which is what it
+  was until the correction recorded in
+  `docs/design-notes/daemon-memory.md`. Two things wait on it: a deferred
+  suspension's permit, and `api.steer_marking`, the quiet marked injection
+  `client/rulescan` and `client/schedulescan` commit onto an *open* run
+  without ringing.
+  Two rules keep one live chain. A drive whose occupancy names the period
+  already outstanding (`State.armed_poll_ms`) arms nothing, so a session
+  configured with one period for both occupancies arms exactly one deadline
+  for its whole life — which is what `client@schedulescan_test`'s
+  one-deadline assertion reads. A drive that wants the other period arms it
+  under a new `State.poll_generation`, and the tick it superseded — which the
+  `Timers` seam gives nothing to cancel with — is dropped by `polled` on
+  arrival for carrying the older number. The price is one stale wake per
+  period change, two per turn. The arming
+  also follows the drive rather than opening it, which is what lets the period
+  be read from what that drive found and stops a halting strand leaving a
+  timer behind. `runtime/idle_poll_test` asserts both periods, the single
+  chain, and that becoming occupied arms the short period without waiting.
 
 - **One writer, structurally.** All commits are calls into one actor, so
   "transactions on one session are serialized" is a property of the process

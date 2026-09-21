@@ -1738,6 +1738,350 @@ now has a measured reason to prefer it rather than a tie.
   rerun passed 184 tests with exit status zero. That file's timing assertions
   are flaky under load.
 
+## 2026-09-20: the strand hibernates, by giving the poll a second period
+
+The previous section left the strand runtime as the one hibernation target
+worth having and out of reach, and asked for a liveness proof before anything
+touched its checkpoint poll. This section is that proof and the change it
+licensed. The strand now takes `residency.hibernate_after_ms`, and it takes it
+without weakening the doorbell doctrine: the poll was not made conditional, it
+was given a second, longer period for the state in which it has nothing to
+find.
+
+### Where a strand's work comes from
+
+Every source of work, and what wakes the strand for it. `S` is
+`packages/runtime/src/runtime/strand_runtime.gleam`, `A` is
+`packages/runtime/src/runtime/api.gleam`.
+
+| Source | What wakes the strand | Reliable? |
+|---|---|---|
+| Operator prompt | `api.prompt` commits, then `nudge` (`A:462`) | Doorbell, at-most-once |
+| Steer, follow-up | `api.steer` (`A:867`), `api.follow_up` (`A:964`) | Doorbell, at-most-once |
+| Quiet acceptance | `api.accept_quietly` (`A:482`), `steer_quietly` (`A:886`): commit, no ring | **Poll only** |
+| Marked injection | `api.steer_marking` (`A:943`), used by `client/rulescan:590` and `client/schedulescan:1207` | **Poll only**, onto an open run, so at the short period |
+| Inter-strand send | `send_attempts` nudges both the steer and the accept arm (`A:1523`, `A:1529`) | Doorbell |
+| Send to child | `send_child_attempts` nudges both arms (`A:1490`, `A:1500`) | Doorbell |
+| Subagent adoption | `adopt_strand` nudges after the brief (`A:1314`) | Doorbell |
+| Provider settlement | `ProviderDone` from the effect process (`S:212`) | Message |
+| Tool settlement | `ToolDone` (`S:215`) | Message |
+| Effect process death | `EffectExit` through a monitor installed at spawn (`S:218`) | Message, and a monitor cannot be lost |
+| Retry deadline | `park_retry` arms `RetryDue` at the planner's `at` (`S:1258`) | Own timer |
+| Deferred poll due | `planner.Wait(DeferredPollDue)` (`S:1110`): the permit *is* the tick | **Poll only, by design** |
+| Abort | `request_abort` casts `RequestAbort` (`S:513`); a lost stale-race retry re-sends to itself (`S:950`) | Message |
+| Predecessors draining | `AwaitPredecessors` is weft's guaranteed-first message (`S:189`) | In-process, before the mailbox |
+| Restart, crash recovery | the recovery handler drives before it arms anything (`S:603`) | In-process |
+| Writer lease loss | `commit` answers `LeaseLost` and the strand halts (`S:1204`) | Not a wake at all |
+| Escalation decision | `decide_escalation_with_fact_at` commits and rings nothing (`A:2836`) | Not a wake: the planner has no escalation state, and grants are read at the next clearance |
+
+Two of these are genuinely time-based and need a timer whatever else changes.
+`RetryNotBefore` names a wall-clock instant and arms its own. `DeferredPollDue`
+is the other and it is the reason the poll cannot simply be deleted: the permit
+a tick grants *is* the rate limiter on polling a deferred handle
+(`packages/machine/src/machine/planner.gleam:2286` and `:2366` both return it
+when `!in.poll_permit`), so the tick interval is that feature's polling
+interval.
+
+### Why the poll was not made conditional
+
+The parked states are enumerable, and that is what made the analysis tractable.
+With an operation open, a drive ends in exactly one of: a retry timer armed, a
+deferred poll due, or a live effect outstanding. With no operation open it ends
+in `LoadOutcome.Idle`. So a conditional poll — one that ticks only for the
+deferred-poll state — would have been correct against every source in the table
+except the two marked poll-only, and the analysis of those two is what decided
+the design.
+
+`steer_marking` is refused on an idle strand
+(`packages/runtime/test/runtime/api_test.gleam:516`), so it only ever lands on
+an open run, where a settlement or a retry will re-plan. That one is covered.
+
+The quiet acceptance is not, and the reason is worth stating plainly because it
+is a production path and not only a test seam. A doorbell is a local
+`process.send` after the commit returns, and the two are separate steps *in the
+caller's process*. A caller that dies in between — a host request handler whose
+connection dropped, a scan killed mid-tick — leaves durable work on an idle
+strand with nothing scheduled to find it. Closing that at the source means
+ringing the doorbell from inside the writer's post-commit publication rather
+than from the caller, which is a new edge in the durability plane and a larger
+change than this one. Until that exists, the poll is the only thing standing
+behind it, and spec line 353 requires exactly that: "doorbell loss must be
+harmless by construction — the checkpoint poll must find the item."
+
+So the backstop stays. What changed is its period.
+
+### The change
+
+`api.Options` gained `idle_poll_interval_ms`, two minutes by default beside the
+existing 200 ms. `strand_runtime.State` gained `occupancy`, set from the same
+`load` the drive already performs, and the tick is re-armed *after* the drive
+at the period that drive earned: `Occupied` keeps 200 ms, `Unoccupied` takes
+two minutes.
+
+The brief named two hazards for this shape — a stale tick arriving after the
+strand went idle, and two chains ticking side by side. The first version of the
+change answered both by arming from one place only: `polled` and the recovery
+drive, so the chain replaced itself and nothing joined it. That was wrong, and
+the subsection below records how it was caught and what replaced it. Arming now
+happens after every drive, under two rules that keep one live chain: a drive
+whose occupancy names the period already outstanding arms nothing, and a drive
+that wants the other period arms it under a new generation so the tick it
+superseded is dropped on arrival.
+
+### Correction, same day: one arming site made the short period unreachable
+
+Arming only from the tick arm means the period a strand runs at cannot change
+until the next tick. A strand is idle between turns, so the deadline pending
+when a turn is admitted is the idle one, and a turn that finishes inside it
+never arms a short tick at all. Since a turn is almost always shorter than two
+minutes, **the short period was unreachable in ordinary use** rather than
+merely delayed for one permit, which is what the first version of this section
+claimed.
+
+Two rows of the table above wait on that, not one. `DeferredPollDue` is the
+designed one and nothing in production emits a handle yet. The other is
+`api.steer_marking`, the quiet marked injection `client/rulescan` and
+`client/schedulescan` use: it lands on an *open* run, so its own doc comment
+says the poll behind it is the short one. It was not. A rule-fired injection
+committed onto an open run had to wait out the idle period — two minutes on
+production's defaults, where it had been 200 ms.
+
+A Linux signoff found it as a timing failure rather than as a stall.
+`conformance@routing_test.a_mid_wait_switch_leaves_the_steps_admission_alone_test`
+drives a retry ladder against `clock.stepping(by: 25)`, a logical clock that
+advances only when the driver reads it, so the drives the poll supplies are
+what carry the ladder to its deadline. Measured on one machine, one test: 7.0 s
+with the idle period pinned at 200 ms (which is `main`), 21.9 s with the idle
+period at its two-minute default, 28.0 s with it at an hour, against the test's
+own 30 s ceiling. It failed on the signoff and passed without the branch.
+
+The fix is the transition arming the first version rejected, and the reason it
+was rejected does not hold. Superseding is still not cancelling — `Timers`
+arranges a wake and returns no handle — so the replaced tick stays pending; a
+generation stamp on `PollTick` is what makes it harmless, since `polled` drops
+a tick whose generation is not the strand's current one. `client@schedulescan_test`'s
+one-deadline assertion survives untouched because the re-arm is conditional on
+the period *changing*: that fixture configures `poll_interval_ms` and
+`idle_poll_interval_ms` to the same value, so it arms exactly one deadline for
+its whole life. A fixture with two different periods pays one stale wake per
+period change, two per turn.
+
+The routing test runs in 5.8 s with the fix. No fixture was changed for it.
+
+A full sweep was run to find anything else sitting on the poll: `runtime`,
+`conformance` and `client` all pass with the idle period set to an hour, and
+`client`'s 2025 tests pass with *both* periods set to an hour, which is the
+poll disabled outright. Nothing else in the suite depends on a tick.
+
+### What the relation between the two numbers is for
+
+The brief's option (b) was described as helping CPU only, on the reasoning that
+an interval above the thirty-second hibernation threshold would defeat
+hibernation. **That is backwards, and it is the reason this change is option
+(b) rather than option (a).** `weft/actor.hibernate_after` is a receive
+timeout: it expires when the mailbox has been quiet for the interval. A poll
+period *shorter* than the interval is what defeats hibernation, because the
+mailbox is never quiet that long — which is exactly why 200 ms did. A period
+*longer* than it does not defeat anything: the strand hibernates after thirty
+seconds of quiet, sleeps until the tick, drives once, and hibernates again.
+Two minutes against thirty seconds means a parked strand is hibernating for
+about three quarters of every cycle, and pays one wake sweep per two minutes
+for the privilege.
+
+That relation is asserted rather than left in prose:
+`runtime@idle_poll_test.the_default_idle_period_outlasts_the_residency_interval_test`
+compares the two constants, and `residency`'s own module doc now states the
+comparison as the rule any future periodic tick on an assembly actor is held
+to.
+
+### Two doors that documented a doorbell they did not ring
+
+Lengthening the idle period turned a latent defect into a visible one, which is
+the useful kind of change. `api.compact` and `api.navigate` both open an
+operation on a strand that is usually idle, both say "and rings the doorbell"
+in their own doc comments, and neither did: each returned straight out of
+`accept_request` with no `nudge`. Under a 200 ms poll that cost 200 ms and
+nobody noticed. Under a two-minute idle poll a manual compaction would have sat
+for two minutes, and
+`client@compaction_test.production_threshold_references_a_retrievable_result_test`
+failed on its 5-second deadline and said so.
+
+Both now ring, which is the "add the missing doorbell at the source" arm rather
+than the "keep polling in that state" one: three lines each, and each function
+now does what it always claimed. That test is the standing guard, because it
+runs at `poll_interval_ms: 20` against the *default* two-minute idle period, so
+it can only pass through the doorbell.
+
+This is worth generalizing. A poll short enough to hide a missing doorbell is a
+poll that hides missing doorbells, and there is no reason to think these were
+the only two. The idle period makes that class of defect fail loudly on any
+path that admits work to a parked strand.
+
+### What this costs
+
+One number: the latency of a lost doorbell against an *idle* strand, which was
+up to 200 ms and is now up to two minutes. Nothing else regresses. The hot path
+is untouched — an open operation polls at exactly the period it always did,
+which is what the correction above had to restore — and the doorbell-drop
+suites still pass with their own short intervals configured, which is what they
+were always measuring. The cost of keeping that true is one stale timer wake
+per occupancy change, two per turn.
+
+### The strand sleeps: `assembly_heap_census_test` at six sessions
+
+The same fixture, same rerun command, on this branch:
+
+| Cut | Total allocated | Total used | Hibernating |
+|---|---:|---:|---:|
+| Just worked | 60.54 MiB | 35.79 MiB | 0 |
+| Idle, before the interval | 58.79 MiB | 35.74 MiB | 0 |
+| **Hibernated** | **48.29 MiB** | **34.37 MiB** | **48** |
+| Woken, one message each | 37.70 MiB (weft row) | 14.85 MiB (weft row) | 0 |
+
+**Forty-eight sleepers, eight per session, against the previous section's
+forty-two at seven.** The sixth extra is one per session and it is the strand:
+nothing else was added, and the strand was the one weft actor in the row that
+could not sleep. The whole reduction is in that row, 35.82 MiB idle to 25.31
+MiB hibernated, which is **10.51 MiB of 58.79, or 17.9%** of what an idle
+six-session assembly holds — against 3 to 5% for the same fixture before. The
+one process per session that could not hibernate was holding most of what
+hibernation had to give.
+
+Waking forty-eight took 5 ms of suspend-and-resume, about 104 microseconds
+each, consistent with the previous section's sub-250.
+
+Two limits on reading this. The two runs' **absolute totals are not
+comparable** — 58.79 MiB here against 129.43 MiB there for nominally the same
+six sessions — so only the percentage and the sleeper count carry across, and
+even those are two separate runs rather than a matched pair on one machine
+state. And this remains the local fixture's small `Effects`, so the production
+share is different and, being more live, probably lower.
+
+### What was not verified
+
+- **The before side is the previous section's run, not a matched pair.** No
+  census was taken on `origin/main` beside this one, and the two runs' absolute
+  totals differ by more than a factor of two. The forty-two-to-forty-eight
+  sleeper count is the robust comparison; the 3-5% to 17.9% one assumes the
+  two runs are comparable in a way their totals say they are not.
+- **Scheduler wakeups and reductions for an idle assembly were not measured**
+  either way, so the CPU claim is arithmetic from the interval and not an
+  observation: five wakes per second per strand becomes one per two minutes, a
+  factor of six hundred. No `process_info(reductions)` delta was taken.
+- The yield on the installed daemon is still unmeasured; nothing under
+  `~/.loom` or `~/.local` was touched.
+- The two-minute default has not been observed against a live drive, only
+  against the scripted turns in `runtime@idle_poll_test`, the census fixture
+  and the existing suites.
+- The writer-published doorbell that would let the idle backstop be dropped
+  altogether is described here and not designed.
+- One `make check-client` run failed
+  `client@goal_e2e_test.a_scripted_reviewer_is_shown_the_checks_result_test` on
+  its 60-second wait, under a load average of 25 from unrelated builds on the
+  same host. It was first put down to load, because the test passes alone in
+  0.4 seconds. That reading was wrong. The same wait expired on two Linux
+  signoffs, one of them without this change, and the cause was in the goal
+  check itself: a check replaced while the broker was still draining the
+  cancelled one was refused for the outstanding-effect cap, and the refusal
+  was fed to the reviewer as evidence. It is fixed separately, and it has
+  nothing to do with the poll: the test passes with the poll disabled outright.
+
+### The two queue failures, and what the arming logic actually does
+
+The arming described above — every drive re-arms, a drive wanting the period
+already outstanding arms nothing, a drive wanting the other period arms under a
+new generation — was carried into three Linux queue runs. The run that included
+it failed two tests, and the same queue without this branch then passed
+everything. Neither failure had appeared in the runs carrying the first arming
+design. Both were crash-recovery paths, which is what made the arming the first
+suspect:
+
+- the conformance soak on seed 61, `run/terminated — faulted run did not reach
+  a terminal result`, on a script with `faults: crash@c4`;
+- `client@daemon_shipped_jobs_test.daemon_shipped_job_is_lost_after_a_vm_crash_test_`,
+  failing at the `reopen` after the shipped daemon's VM was killed.
+
+Neither reproduces. Seed 61 was replayed sixty times on this branch and passed
+sixty times. The whole soak was then run over seeds 1 to 2000 twice: once as the
+branch stands, and once with `idle_poll_interval_ms` set to 25 in
+`packages/conformance/src/conformance/simulation/runner.gleam`, which makes the
+two periods equal and so reproduces `origin/main`'s arming exactly. Both runs
+were clean, 0 failures of 2000. The shipped crash fixture was built from this
+branch and run twenty times against `bin/loomd` under a scratch `HOME`, and
+passed twenty times. The soak's own corroboration had already said as much about
+seed 61 on the signoff: it re-ran the seed and printed `NOT REPRODUCIBLE — this
+seed was run 2 times and failed 1`.
+
+Four mechanisms were proposed and each is refuted by the code rather than by the
+absence of a repro.
+
+**A restarted strand cannot inherit an arming.** `armed_poll_ms` is `None` in
+the state `start` builds (`packages/runtime/src/runtime/strand_runtime.gleam`,
+line 454), so the recovery drive's `finish` always falls through to the arming
+branch. There is no initial value that could make `arm_poll` believe a tick is
+already outstanding when none is, which is the liveness hole the generation
+scheme would otherwise open.
+
+**A dead incarnation's tick cannot reach its replacement.** The subject a poll
+timer is armed against is `internal`, and `internal` is a fresh
+`process.new_subject()` created inside the initialiser (line 407), bound to that
+incarnation's pid rather than to the restartable address. A timer process that
+outlives the strand delivers to a dead pid and its wake is dropped there. The
+replacement's `poll_generation` starts at 0 and its first arm is 1, so no tick
+in flight from any incarnation carries a number the replacement will accept.
+
+**Hibernation preserves what the strand depends on.** `weft/actor`'s
+`await_message` hibernates with `sys.hibernate(fn() { loop(self) })`
+(`../weft/src/weft/actor.gleam`, line 1224): the closure carries `self`, the
+selector is rebuilt from it by `running_selector` on re-entry, and monitors are
+VM-level and untouched by `erlang:hibernate/3`. The strand is also not the first
+actor here to take the interval — eleven others already do, `runtime/registry`
+among them. In the soak, hibernation is 30 000 ms against an idle period of
+2000 ms and cannot fire at all.
+
+**The period's magnitude is nearly invisible to the simulation.**
+`vclock.advance` pops the single earliest registered deadline and fires it
+whatever its delay (`packages/conformance/src/conformance/simulation/vclock.gleam`,
+line 199), so a 2000 ms idle arm costs the runner one pump pass, exactly as a
+25 ms one does. What the two periods change there is the ordering of deadlines
+and the count of them, and the count this branch adds is one stale wake per
+period change against `pump`'s idle budget of 4000 passes.
+
+That leaves the reading the harness itself reached. `run/terminated` is raised
+when `pump_strand` exhausts that budget, and each pass without a commit costs a
+one-millisecond `process.receive`, so the budget is a four-second wall-clock
+allowance in disguise. The comment above the replenishing arm in
+`packages/conformance/src/conformance/simulation/runner.gleam` records the same
+failure shape from before this branch existed: charging progress against the
+allowance "made loaded Linux runs stall at different seeds even though an
+immediate replay of each identical schedule completed". A loaded signoff host is
+the condition, not the arming. The shipped-daemon fixture is the second known
+member of that class; it boots a real VM, kills it, and reopens, and it is the
+same test family the 2026-09-19 note already had to run under a scratch `HOME`
+to keep the operator's own hooks out of the daemon's start-up budget.
+
+One thing was tightened rather than fixed.
+`runtime@idle_poll_test.a_restart_with_an_open_operation_arms_the_short_period_test`
+asserted that short ticks appear after the restart, which a replacement that
+armed the idle tick first and reached the short period only after that tick
+fired would also satisfy. It now also asserts that the idle arm count does not
+move across the replacement's life, so the claim is that the first thing a
+restarted strand with an open operation arms is the short tick. The idle
+restart's dual was already asserted that way.
+
+### What was not verified, for the two failures
+
+- Neither failure was reproduced, so no mechanism is confirmed and none is
+  excluded by measurement. The four above are excluded by reading the code.
+- Every run here was on macOS, and both failures were on Linux under a queue's
+  load. The load itself was not reproduced; no run was made with a competing
+  load average in the twenties.
+- No failure rate could be compared, because both arms of the comparison were
+  zero over 2000 seeds. A branch-versus-main rate difference smaller than one in
+  2000 is not excluded.
+- The `daemon_shipped_*` family was not run on Linux at all, and the twenty
+  local runs were serial. The signoff runs it at `SIGNOFF_PARALLEL=8`.
+
 ## 2026-09-20: the session manager now holds a handle, not an instance
 
 The previous section's list of copy holders left for their own change opened

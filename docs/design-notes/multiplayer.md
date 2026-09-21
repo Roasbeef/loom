@@ -33,7 +33,7 @@ peers, a fleet routes clients by session id (`docs/loom-design.md`
 - **Serialised writes.** The hub is one actor and every write goes
   through the session's single writer, so two clients' commands queue in
   mailbox order and never race at the store. A second prompt on a live
-  strand is refused as `StrandBusy` (`runtime/api.gleam:53`); two
+  strand is refused as `StrandBusy` (`runtime/api.gleam:61`); two
   steers both admit, in writer order, and both reach the run at
   successive checkpoints.
 - **Per-connection state is only `subscribed`.** Every command names

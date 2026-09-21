@@ -101,6 +101,7 @@ pub fn strand_restart_reaps_the_live_tool_effect_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -172,6 +173,7 @@ pub fn predecessor_retry_timer_cannot_wake_replacement_test() {
         max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 600_000,
+      idle_poll_interval_ms: 600_000,
       tolerance: supervisor.Tolerance(intensity: 100, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -240,6 +242,7 @@ pub fn provider_timeout_cancels_before_settling_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
     )
   let assert Ok(rt) = api.open(sess, eff, options)
     as "the session tree must boot"
@@ -395,6 +398,7 @@ pub fn provider_surface_crash_faults_the_effect_and_recovers_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -438,6 +442,7 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
     )
   let assert Ok(rt) = api.open(sess, eff, options)
     as "the session tree must boot"
@@ -570,6 +575,7 @@ pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -668,6 +674,7 @@ pub fn strand_exit_during_provider_start_waits_for_parked_custodian_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -716,6 +723,7 @@ pub fn strand_exit_waits_for_its_published_provider_owner_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -781,6 +789,7 @@ pub fn registry_restart_preserves_the_provider_drain_barrier_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -1086,6 +1095,7 @@ pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
         max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 1000,
+      idle_poll_interval_ms: 1000,
       claim_reaper: fn(_strand, reaper) {
         // A slow ledger: the driver dies before this returns, and the pid
         // it named must still be there for the monitor the ledger installs.

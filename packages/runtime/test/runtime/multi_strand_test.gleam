@@ -95,6 +95,7 @@ pub fn parent_and_two_subagents_collaborate_across_reboot_test() {
         max_delay_ms: 1_073_741_824,
       ),
       poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)
@@ -224,6 +225,7 @@ pub fn send_to_strand_steers_an_open_run_test() {
     api.Options(
       ..base,
       poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
     )
   let assert Ok(rt) = api.open(sess, eff, options)

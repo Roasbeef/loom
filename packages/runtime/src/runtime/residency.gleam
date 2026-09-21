@@ -15,19 +15,32 @@
 //// forced collection does, so what it gives back it gives back completely.
 ////
 //// This module exists so that the interval is one value with one argument
-//// behind it rather than a number repeated at eleven call sites.
+//// behind it rather than a number repeated at twelve call sites.
 //// `docs/design-notes/daemon-memory.md` has the measurement and the list of
 //// which actors take it and which cannot.
 ////
-//// One entry on that list is worth naming here, because it is the reason
-//// this module recovers less than its argument suggests. A strand runtime
-//// holds the largest `Effects` heap in an assembly and does no work between
-//// turns, so it is the target worth having. It still cannot take the
-//// interval: its `PollTick` arm re-arms the checkpoint poll every
-//// `poll_interval_ms` — 200 ms in `api.default_options` — whether or not
-//// there is work, so the mailbox is never quiet even when the strand is.
-//// Reaching it means arming that poll conditionally, which changes the drive
-//// loop's liveness argument rather than this constant.
+//// One entry on that list is worth naming here, because it is the largest
+//// one and because what it takes is a property of this constant rather than
+//// of the actor. A strand runtime holds the largest `Effects` heap in an
+//// assembly and does no work between turns, so it is the target worth
+//// having, and for a while it was out of reach: its `PollTick` arm re-armed
+//// the checkpoint poll every `poll_interval_ms` — 200 ms in
+//// `api.default_options` — whether or not there was work, so the mailbox was
+//// never quiet even when the strand was. It takes the interval now because
+//// the poll runs at two periods. A drive that finds an operation open keeps
+//// the short one; a drive that finds none re-arms at
+//// `api.Options.idle_poll_interval_ms`, two minutes by default, which is
+//// four times this constant. The relation is the load-bearing part: a poll
+//// period *shorter* than this interval defeats hibernation outright, and one
+//// longer than it costs only the wake it pays at each tick. Any future
+//// periodic tick on an assembly actor is held to the same comparison.
+////
+//// Which period a strand runs at follows its occupancy immediately, because
+//// every drive re-arms. That is what makes the short period reachable at all:
+//// a turn is shorter than the idle period, so a strand that could only change
+//// period at the next tick would run whole turns on the idle one. It costs one
+//// stale timer wake per occupancy change, which is what the generation stamp
+//// on `PollTick` exists to make harmless.
 
 /// The quiet interval after which a session assembly's actor hibernates.
 ///

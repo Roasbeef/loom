@@ -570,6 +570,7 @@ fn harness(script: Script, notes: Notes) -> Result(Rig, String) {
     api.Options(
       ..options,
       poll_interval_ms: 20,
+      idle_poll_interval_ms: 20,
       settings: operation.RunSettings(
         ..options.settings,
         compaction: compaction_settings(),

@@ -337,6 +337,34 @@ API exposes `_quietly` variants that commit without ringing, and the
 doorbell tests use them — accept quietly, steer quietly, never nudge, and
 the run still completes with the steer in context.
 
+The tick that provides that backstop runs at **two periods**, chosen by what
+the drive before it loaded. A strand with an operation open ticks at
+`poll_interval_ms`, 200 ms, which is also the rate at which a deferred
+suspension is granted its next poll permit. A strand that has finished its
+turn ticks at `idle_poll_interval_ms`, two minutes, because 200 ms of
+five-times-a-second wakes per resident session buys nothing between turns and
+costs the strand its hibernation: `weft/actor.hibernate_after` is a receive
+timeout, so it expires only if the mailbox is quiet for
+`runtime/residency.hibernate_after_ms`, and the strand holds the largest
+`Effects` heap in a session assembly. Note what did *not* change: the backstop
+is kept in both states rather than dropped in one, so a doorbell lost between a
+caller's commit and its nudge still costs latency and not the work — up to the
+idle period rather than up to 200 ms. The chain replaces itself and nothing
+else joins it, so a strand keeps exactly one checkpoint deadline outstanding:
+the effect seam arranges a wake and returns no handle to cancel it with, so a
+tick armed beside the pending one would stay pending too.
+
+That invariant leaves one window, and it is worth naming because it is the
+price of the invariant. A doorbell that opens work on an idle strand drives at
+once but does not shorten the tick already pending, so for up to the idle
+period an occupied strand has no fast tick. Only the deferred poll depends on
+one — every other in-flight step is answered by its own monitor or its own
+timer — so the cost is that the first deferred poll after a strand has been
+idle may wait out the idle period for its permit. No production provider
+adapter emits a deferred handle today, which is why the window is documented
+rather than closed; `docs/design-notes/daemon-memory.md` records what closing
+it would cost.
+
 ## The supervision tree
 
 ```

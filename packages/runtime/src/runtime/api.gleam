@@ -8,7 +8,13 @@
 //// commit, the `Nudge` only wakes the strand early. The `_quietly`
 //// variants commit without ringing the doorbell — schedulers (and the
 //// doorbell-drop tests) rely on the strand's periodic checkpoint poll
-//// finding the work anyway; a lost nudge costs latency, never data.
+//// finding the work anyway; a lost nudge costs latency, never data. How
+//// much latency depends on what the strand was doing: a strand with an
+//// operation open polls at `poll_interval_ms`, but one that is idle — which
+//// is every strand a quiet acceptance opens work on — polls at
+//// `idle_poll_interval_ms`, two minutes by default. A caller that wants the
+//// work picked up promptly rings, and `send_to_strand_marking` is the
+//// combination that does both.
 ////
 //// A `Runtime` addresses one strand at a time (`Runtime.strand`);
 //// `on_strand` rebinds the same tree to a sibling strand, so every
@@ -125,7 +131,11 @@ pub type Runtime {
 /// first open; `settings` is the run-settings snapshot captured into
 /// accepted runs; `after_commit` and `subscribers` instrument the writer
 /// (see `runtime/writer`); `poll_interval_ms` is every strand's
-/// checkpoint-poll period; `subagent` names, by strand name alone, the
+/// checkpoint-poll period while it has an operation open and
+/// `idle_poll_interval_ms` the period it falls back to between turns,
+/// which is longer than `runtime/residency.hibernate_after_ms` so that a
+/// parked strand's mailbox is quiet long enough to hibernate; `subagent`
+/// names, by strand name alone, the
 /// strands that belong under the tree's second strand factory, so a
 /// model-spawned strand in a crash loop cannot reboot the strand a human
 /// is talking to (`runtime/supervisor`), and `subagent_tolerance` is that
@@ -138,6 +148,7 @@ pub type Options {
     retry_policy: NormalizedRetryPolicy,
     stream_options: JsonValue,
     poll_interval_ms: Int,
+    idle_poll_interval_ms: Int,
     tolerance: Tolerance,
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
@@ -168,7 +179,23 @@ pub const default_retry_policy = NormalizedRetryPolicy(
 
 /// Sensible defaults: strand `"main"`, parallel tools, consume-all
 /// queues, compaction off, an unbounded retry ladder from a 1 s base to a
-/// 60 s cap, a 200 ms checkpoint poll, and a conservative restart tolerance.
+/// 60 s cap, a 200 ms checkpoint poll while a run is open against a two
+/// minute one between turns, and a conservative restart tolerance.
+///
+/// The two poll periods are one decision. The short one is the rate a
+/// deferred suspension is granted its next permit at, the rate a quiet
+/// admission onto an open run (`steer_marking`) is found at, and the backstop
+/// behind every in-flight step, so it belongs to an open operation — and a
+/// strand takes it as soon as a drive finds an operation open, rather than at
+/// the next tick. Between
+/// turns there is nothing for it to find that an admission's own doorbell
+/// does not announce, and holding it at 200 ms costs five wakes a second
+/// per resident session forever and keeps the strand — which holds the
+/// largest `Effects` heap in a session assembly — above
+/// `runtime/residency.hibernate_after_ms` and so permanently awake. Two
+/// minutes is long enough to clear that interval four times over and short
+/// enough that a doorbell lost to a caller dying between its commit and its
+/// nudge still costs latency rather than the work.
 ///
 /// `tool_execution: Parallel` is the default because a batch the model
 /// issued as one batch is a batch it expects to run as one: under
@@ -204,6 +231,7 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
     retry_policy: default_retry_policy,
     stream_options: json.Object([]),
     poll_interval_ms: 200,
+    idle_poll_interval_ms: 120_000,
     tolerance: Tolerance(intensity: 5, period: 5),
     // No strand is a subagent unless a host says so: the runtime cannot
     // tell a model-spawned strand from an operator-spawned one, and the
@@ -346,6 +374,7 @@ pub fn open_published(
   let stream_options = options.stream_options
   let retry_policy = options.retry_policy
   let poll_interval_ms = options.poll_interval_ms
+  let idle_poll_interval_ms = options.idle_poll_interval_ms
   let logger = options.logger
 
   let describe_runtime = fn(tree) {
@@ -368,6 +397,7 @@ pub fn open_published(
           stream_options:,
           retry_policy:,
           poll_interval_ms:,
+          idle_poll_interval_ms:,
           claim_reaper:,
           logger:,
         )
@@ -436,6 +466,12 @@ pub fn prompt(
 /// Accepts a prompt without ringing the doorbell. The run is durably
 /// open; the strand's next checkpoint poll picks it up. For schedulers
 /// and doorbell-loss testing.
+///
+/// The wait is the idle period, not the busy one: an acceptance is by
+/// definition work on a strand with nothing open, so the tick that finds it
+/// is up to `idle_poll_interval_ms` away — two minutes by default. Use
+/// `prompt`, or `send_to_strand_marking` for the cross-strand case, when the
+/// run should start now; both ring.
 ///
 /// ## Examples
 ///
@@ -508,11 +544,13 @@ pub fn compact(
   custom_instructions custom_instructions: Option(String),
   preparation preparation: Option(StructuralPreparation),
 ) -> Result(OpId, ApiError) {
-  accept_request(
+  use operation <- result.map(accept_request(
     runtime,
     AcceptCompaction(custom_instructions:, preparation:),
     None,
-  )
+  ))
+  nudge(runtime)
+  operation
 }
 
 /// Accepts a navigation request and rings the doorbell: moves the
@@ -537,7 +575,7 @@ pub fn navigate(
   preparation preparation: Option(StructuralPreparation),
 ) -> Result(OpId, ApiError) {
   use target_known <- result.try(target_exists(runtime, to))
-  accept_request(
+  use operation <- result.map(accept_request(
     runtime,
     AcceptNavigation(
       target: to,
@@ -548,7 +586,9 @@ pub fn navigate(
       target_known:,
     ),
     None,
-  )
+  ))
+  nudge(runtime)
+  operation
 }
 
 // The retry-admission body shared by every acceptance: read the
@@ -829,7 +869,9 @@ pub fn steer(
 }
 
 /// Enqueues a steer item without the doorbell: the strand's own commits
-/// (via stale expectations) or its checkpoint poll pick it up.
+/// (via stale expectations) or its checkpoint poll pick it up. A steer lands
+/// on an open run, so the poll behind it is the short one rather than the
+/// idle period a quiet acceptance waits out.
 ///
 /// ## Examples
 ///

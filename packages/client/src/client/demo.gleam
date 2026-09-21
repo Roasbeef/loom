@@ -151,9 +151,14 @@ fn run_in(namespace: address.Registry) -> Result(Narrative, String) {
   use runtime <- result.try(api.open(
     session,
     effects,
-    api.Options(..options, poll_interval_ms: 25, subscribers: [
-      writer.Routed(forwarder_name),
-    ]),
+    api.Options(
+      ..options,
+      poll_interval_ms: 25,
+      idle_poll_interval_ms: 25,
+      subscribers: [
+        writer.Routed(forwarder_name),
+      ],
+    ),
   ))
 
   // --- the served gateway -------------------------------------------------

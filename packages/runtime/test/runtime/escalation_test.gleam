@@ -41,6 +41,7 @@ fn options() -> api.Options {
   api.Options(
     ..api.default_options(harness.configuration()),
     poll_interval_ms: 50,
+    idle_poll_interval_ms: 50,
     tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
   )
 }

@@ -54,6 +54,7 @@ fn open_runtime(subagent: fn(String) -> Bool) -> api.Runtime {
       api.Options(
         ..base,
         poll_interval_ms: 25,
+        idle_poll_interval_ms: 25,
         tolerance: supervisor.Tolerance(intensity: 50, period: 5),
         subagent:,
         subagent_tolerance: supervisor.Tolerance(intensity: 50, period: 5),

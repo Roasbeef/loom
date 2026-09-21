@@ -30,6 +30,7 @@ pub fn stale_abort_cannot_cancel_the_next_queued_turn_test() {
     api.Options(
       ..api.default_options(harness.configuration()),
       poll_interval_ms: 600_000,
+      idle_poll_interval_ms: 600_000,
     )
   let assert Ok(rt) = api.open(sess, eff, options)
     as "the session tree must boot"

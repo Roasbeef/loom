@@ -210,6 +210,7 @@ fn boot(rule_list: List(rules.Rule), answers: Answers) -> Rig {
       api.Options(
         ..options,
         poll_interval_ms: 20,
+        idle_poll_interval_ms: 20,
         // By name, the way `client/serve` subscribes it: the writer skips
         // a subscriber whose name is momentarily unregistered, which is
         // exactly what makes the kill row survivable.

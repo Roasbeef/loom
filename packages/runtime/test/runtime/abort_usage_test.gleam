@@ -48,6 +48,7 @@ pub fn abort_retains_settled_usage_test() {
     api.Options(
       ..base,
       poll_interval_ms: 200,
+      idle_poll_interval_ms: 200,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
       after_commit: fn(ordinal) {
         case ordinal == 4 {
