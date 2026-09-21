@@ -379,8 +379,8 @@ pub type Settings {
     /// value `boot` derives, for the same reason `base_policy` is one:
     /// the choice belongs to whoever stands the server up, and the
     /// `Agency` the orchestration seam needs does not exist until `boot`
-    /// has built one. The default is `WorkspaceOnly` — the seam an
-    /// unconfigured server has always served.
+    /// has built one. The default is `BothSeams`; each submission selects
+    /// one of the two isolated capability surfaces.
     codemode_seams: codemode_wiring.Seams,
     /// The triggered project rules from the same `loom.toml`, in file
     /// order. Empty — the ordinary case — starts no scanner at all, so
@@ -1014,7 +1014,7 @@ const usage = "usage: loomd --session <path.db>
   [--read-scope <scope>]   host (default) or workspace; protected paths remain masked
   [--network <mode>]       full (default) or off for jailed tools
   [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed, then the bundled one)
-  [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default workspace)
+  [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default both)
   [--full-enforcement]     require every requested resource and lifecycle layer
   [--best-effort]          accept any degraded sandbox helper"
 
@@ -1247,15 +1247,20 @@ fn named_tools(value: String) -> List(String) {
   |> list.filter(fn(name) { name != "" })
 }
 
-// The `--codemode-seams` value, or the default. An unrecognised name is a
-// usage error rather than a fallback: a typo that quietly served the
-// workspace seam would look exactly like a server that ignored the flag,
-// and the person who typed it is standing at the terminal.
-fn parse_codemode_seams(
+/// Resolves the server's offered seams, defaulting to both isolated surfaces.
+/// Unknown names are usage errors rather than silently choosing a default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// parse_codemode_seams(None) == Ok(codemode_wiring.BothSeams)
+/// ```
+@internal
+pub fn parse_codemode_seams(
   named: Option(String),
 ) -> Result(codemode_wiring.Seams, String) {
   case named {
-    None -> Ok(codemode_wiring.WorkspaceOnly)
+    None -> Ok(codemode_wiring.BothSeams)
     Some("workspace") -> Ok(codemode_wiring.WorkspaceOnly)
     Some("orchestration") -> Ok(codemode_wiring.OrchestrationOnly)
     Some("both") -> Ok(codemode_wiring.BothSeams)

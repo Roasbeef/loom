@@ -38,6 +38,7 @@ import core/json
 import core/message
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option
@@ -54,6 +55,7 @@ import support/notes_session
 import tools/agent
 import tools/blob
 import tools/codemode as codemode_tool
+import tools/codemode_recipes
 import tools/directory_access
 import tools/tool
 
@@ -2113,4 +2115,133 @@ fn notes_program_value(outcome: tool.ToolOutcome) -> json.JsonValue {
   let assert Ok(value) = list.key_find(fields, "value")
     as "a completed program must retain its returned value"
   value
+}
+
+pub fn advertised_recipes_execute_verbatim_on_both_default_seams_test() {
+  case prerequisites() {
+    Error(reason) -> io.println_error("SKIP advertised_recipes: " <> reason)
+    Ok(ready) -> run_advertised_recipes(ready)
+  }
+}
+
+// Children are scripted at the Agency boundary; notes use the real SQLite
+// writer. Vetting, compilation, jail execution, and both routers are real.
+fn run_advertised_recipes(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let session = notes_session.open(rig.root <> "/recipe-notes.db", wall_clock())
+  let seen = process.new_subject()
+  let agency = recipe_agency(session.agency, seen)
+  let assert Ok(seams) = serve.parse_codemode_seams(option.None)
+    as "default server exposes both seams"
+  let config =
+    codemode.default_config(
+      broker: rig.broker,
+      clock: wall_clock(),
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
+    )
+    |> codemode.serving(seams, over: agency)
+  let description = codemode_tool.description(codemode.seam(config))
+  assert string.contains(description, codemode_recipes.workspace())
+  assert string.contains(description, codemode_recipes.orchestration())
+  assert simplifile.read("../../docs/examples/workspace_analysis.gleam")
+    == Ok(codemode_recipes.workspace())
+  assert simplifile.read("../../docs/examples/strand_map.gleam")
+    == Ok(codemode_recipes.orchestration())
+  let assert Ok(Nil) =
+    simplifile.write(rig.workspace <> "/input-a.json", "{\"count\":3}")
+    as "first input exists"
+  let assert Ok(Nil) =
+    simplifile.write(rig.workspace <> "/input-b.json", "{\"count\":5}")
+    as "second input exists"
+  let outcome =
+    run_notes_program(
+      config,
+      rig,
+      codemode_recipes.workspace(),
+      "recipe-workspace",
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome) == json.Object([#("count", json.Int(8))])
+  assert simplifile.read(rig.workspace <> "/analysis.json")
+    == Ok("{\"count\":8}")
+
+  let ctx =
+    tool.Ctx(
+      ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      strand: "main",
+      step_id: "recipe-orchestration",
+    )
+  let outcome =
+    codemode_tool.tool_for(codemode.seam(config)).run(
+      ctx,
+      json.Object([
+        #("program", json.String(codemode_recipes.orchestration())),
+        #("seam", json.String("orchestration")),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  assert !outcome.is_error as rendered_text(outcome)
+  let assert json.Array(rows) = notes_program_value(outcome)
+    as "reviews return structured rows"
+  assert list.length(rows) == 2
+  list.each(rows, fn(row) {
+    let assert json.Object(fields) = row as "each review is an object"
+    assert list.key_find(fields, "status") == Ok(json.String("completed"))
+    assert list.key_find(fields, "value")
+      == Ok(json.Object([#("count", json.Int(2))]))
+  })
+  assert process.receive(seen, 100) == Ok("spawn:review core")
+  assert process.receive(seen, 100) == Ok("spawn:review client")
+  assert process.receive(seen, 100) == Ok("wait:2")
+
+  // Read the orchestration's saved output in a fresh workspace execution.
+  let saved =
+    run_notes_program(
+      config,
+      rig,
+      "import cap/notes\nimport cap/report\nimport gleam/option.{Some}\npub fn main() -> report.Outcome { case notes.get(\"main/reviews\") { Ok(Some(value)) -> report.value(value) _ -> report.failure(\"missing reviews\") } }",
+      "recipe-reuse",
+    )
+  assert !saved.is_error as rendered_text(saved)
+  assert notes_program_value(saved) == notes_program_value(outcome)
+  let assert Ok(Nil) = api.close(session.runtime) as "recipe database closes"
+  stop_rig(rig)
+}
+
+fn recipe_agency(
+  base: agent.Agency,
+  seen: process.Subject(String),
+) -> agent.Agency {
+  agent.Agency(
+    ..base,
+    spawn: fn(caller: agent.Caller, request: agent.SpawnRequest) {
+      process.send(seen, "spawn:" <> request.purpose)
+      assert request.result_schema != option.None
+      let name = "sub:main/" <> string.replace(request.purpose, " ", "-")
+      Ok(agent.Spawned(
+        handle: agent.Handle(name, caller.operation),
+        strand: name,
+        tools: [],
+        model: "fixture",
+        model_id: "fixture",
+        deadline_ms: option.None,
+      ))
+    },
+    wait: fn(_, handles, within_ms) {
+      assert within_ms == 20_000
+      process.send(seen, "wait:" <> int.to_string(list.length(handles)))
+      Ok(
+        list.map(handles, fn(handle) {
+          agent.Ready(
+            handle:,
+            outcome: agent.Completed,
+            report: "done",
+            result: agent.ResultGiven(json.Object([#("count", json.Int(2))])),
+            notes: [],
+          )
+        }),
+      )
+    },
+  )
 }

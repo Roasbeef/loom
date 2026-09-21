@@ -77,6 +77,7 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import tools/blob
+import tools/codemode_recipes
 import tools/directory_access
 import tools/permissions
 import tools/prelude
@@ -621,6 +622,7 @@ pub fn description(mode: CodeMode) -> String {
   <> "`report.text(...)` or `report.value(...)`. "
   <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
+  <> recipes_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
   <> signatures_text(mode.seams)
@@ -1521,4 +1523,45 @@ fn notes_guidance(seams: Seams) -> String {
     True ->
       "Persist structured analysis with cap/notes.put(key, value), using report.object/list and scalar builders. Later calls read it with notes.get(\"main/analysis\") or notes.list(prefix); keys are relative to agent/, and list returns reusable keys. A put updates your own namespace; reads share this session's blackboard with agent_note/agent_notes. Notes survive execution exit and compaction, are last-write-wins, and notify nobody. Store bulky data in report.emit artifacts or workspace files and keep a small reference note. cap/kv is evictable scratch. In workspace code mode, fs.read(\"note://main/analysis\") returns JSON; note:// is read-only and is not an OS mount. "
   }
+}
+
+// Include only recipes whose entire import surface the host admits. These are
+// exact executable programs, not pseudocode that makes the model guess APIs.
+fn recipes_text(seams: Seams) -> String {
+  let offers = offered(seams)
+  list.fold(offers, "", fn(text, offer) {
+    let needed = case offer.seam {
+      WorkspaceSeam -> [
+        "cap/fs",
+        "cap/task",
+        "cap/notes",
+        "cap/report",
+        "gleam/list",
+        "gleam/result",
+      ]
+      OrchestrationSeam -> [
+        "cap/strand",
+        "cap/notes",
+        "cap/report",
+        "gleam/list",
+        "gleam/result",
+      ]
+    }
+    case
+      list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
+      offer.seam
+    {
+      False, _ -> text
+      True, WorkspaceSeam ->
+        text
+        <> "\nWorkspace recipe (seam: workspace): read JSON inputs in parallel, save structured analysis, and export JSON.\n```gleam\n"
+        <> codemode_recipes.workspace()
+        <> "```\n"
+      True, OrchestrationSeam ->
+        text
+        <> "\nOrchestration recipe (seam: orchestration): bounded child reviews with structured results saved to notes. Results preserve assignment order; keep pending handles and retry only NotStarted work after prior children settle.\n```gleam\n"
+        <> codemode_recipes.orchestration()
+        <> "```\n"
+    }
+  })
 }

@@ -81,6 +81,12 @@ IDs to retrieve the complete entry. context_remaining reports estimated
 room before compaction; it does not initiate compaction or reserve a final
 note-writing turn.
 
+When code_mode offers both seams, select workspace for file/process work and
+orchestration for child agents. A program uses one seam; pass data between
+programs through notes. The tool description includes executable recipes.
+Use report.decode_json/encode_json to bridge JSON text and structured values;
+use strand.map for bounded batches and inspect partial outcomes before retrying.
+
 When code_mode advertises cap/notes, persist structured analysis directly
 with notes.put and read it in later programs with notes.get or notes.list.
 This uses the same durable session blackboard as agent_note. Return only

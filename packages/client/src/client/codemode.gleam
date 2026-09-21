@@ -466,13 +466,13 @@ pub type Surface {
 /// orchestration seam with. `serving` turns one of these plus an Agency
 /// into the `Surface` a `Config` holds.
 pub type Seams {
-  /// The workspace seam alone — the shipped default.
+  /// The workspace seam alone.
   WorkspaceOnly
 
   /// The orchestration seam alone.
   OrchestrationOnly
 
-  /// Both, with the submission choosing.
+  /// Both, with the submission choosing. This is the shipped server default.
   BothSeams
 }
 

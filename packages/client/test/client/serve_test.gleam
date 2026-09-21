@@ -2281,3 +2281,14 @@ pub fn a_workspace_mount_line_that_says_nothing_usable_is_refused_test() {
     )
   assert result.is_error(unknown)
 }
+
+pub fn code_mode_defaults_to_both_isolated_surfaces_test() {
+  assert serve.parse_codemode_seams(None) == Ok(codemode.BothSeams)
+  assert serve.parse_codemode_seams(Some("workspace"))
+    == Ok(codemode.WorkspaceOnly)
+  assert serve.parse_codemode_seams(Some("orchestration"))
+    == Ok(codemode.OrchestrationOnly)
+  assert serve.parse_codemode_seams(Some("both")) == Ok(codemode.BothSeams)
+  let assert Error(_) = serve.parse_codemode_seams(Some("invalid"))
+    as "unknown modes must not silently select a default"
+}
