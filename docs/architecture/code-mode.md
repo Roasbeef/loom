@@ -26,6 +26,46 @@ program through the whole pipeline against a real jail. The last section
 says what that run proves and what it cannot prove on a kernel missing a
 layer.
 
+## Durable analysis between executions
+
+The default server selects workspace code mode and installs a shared notes
+door through `client/codemode.serving`. That host advertises `cap/notes` in
+both workspace and orchestration code mode. `notes.put(key, value)` writes a
+JSON-compatible value under the caller's own `agent/<strand>/` namespace.
+`notes.get("main/analysis")` reads an exact cell; `notes.list(prefix)` returns
+keys in the same relative form for reuse. Missing cells and stored JSON null
+are distinct. Writes update current values and notify nobody. Agency retains
+namespace validation and the schema check on a child's `result` note.
+
+These values survive satellite exit, runtime restart, and context compaction
+because they are existing durable session registers. They do not become
+cross-session memory. `cap/kv` remains an evictable cache; large data belongs in
+workspace files or `report.emit` artifacts, with a small reference in a note.
+The [analysis example](../examples/notes_analysis.gleam) saves data without
+returning the payload to the model. The [reuse example](../examples/notes_reuse.gleam)
+reads it in a fresh program and verifies its JSON view.
+
+`cap/fs.read("note://main/analysis")` returns the exact cell serialized as
+JSON. The facade dispatches a separate `notes.read` capability, so this read
+has a finite quota and never enters filesystem path resolution. URI suffixes
+are opaque keys. Other filesystem operations reject these virtual paths.
+There is no OS mount: a shell command needs an explicit copy into a permitted
+workspace file before it can consume the value.
+
+The optional `codemode/notes.Door` holds only Agency's write and scan callbacks.
+Its presence controls import admission, model descriptions, routing, and
+execution quotas. Unconfigured hosts, extensions, and resident hooks do not
+receive `cap/notes`. Workspace programs still cannot import `cap/strand`.
+The static seam intersection remains unchanged; this host-installed shared
+door adds data access, not agent lifecycle authority.
+
+Each execution allows 256 puts and 64 each of get, list, and virtual reads.
+All three reads use the existing prefix query, with exact reads filtering its
+result by the full key. Stored values and list replies have a 1 MiB encoded-JSON bound;
+oversized results fail explicitly. Legacy strand note calls retain their own
+quotas. [Protocol 045](../../protocol-change/045-code-mode-notes.md) records the
+contract and the deliberate absence of filesystem mounts and subscriptions.
+
 ## Why Gleam is safe to run
 
 Pure Gleam cannot touch the world. It has no reflection, no `eval`, no

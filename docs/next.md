@@ -1,5 +1,33 @@
 # Next
 
+## Durable workspace code-mode notes, September 21
+
+This change starts at `543d641a` on `codex/codemode-notes`. The default
+workspace seam now exposes `cap/notes` when the host wires its Agency door.
+Programs can save structured analysis with `notes.put`, retrieve exact values
+with `notes.get`, and discover namespace-qualified keys with `notes.list`.
+`cap/fs.read("note://main/analysis")` supplies a read-only JSON view. The
+prompts and generated capability reference advertise these calls only when
+the host offers them. [Protocol 045](../protocol-change/045-code-mode-notes.md)
+records the contract, and [the review](review/code-mode-notes.md) records the
+boundary checks and independent review.
+
+Notes reuse the SQLite-backed Agency register and survive reopening that
+session's store. They are not global cross-session memory. The virtual paths
+are not OS mounts; shell programs need an explicit workspace-file copy.
+Extensions and resident hooks do not gain the notes door, and workspace
+programs still cannot import the agent lifecycle surface in `cap/strand`.
+
+The complete `make check` passed on macOS with zero lint errors. The final
+focused suite passed all 65 tests, and the jailed examples saved an analysis,
+closed and reopened SQLite, then consumed it in a fresh code-mode program.
+The exact structured result and virtual-read quota were verified. Independent
+review found and verified the fix for namespace-qualified maximum-length keys.
+
+Next, run hosted CI and Linux jail validation before merge. Rebuild the
+capability seed and daemon to deploy this surface; no installed daemon has
+been changed. Older sections retain their own historical baselines.
+
 ## Configurable daemon connection admission, September 18
 
 The connection-limit change is based on `a65aa2f0` and its implementation is

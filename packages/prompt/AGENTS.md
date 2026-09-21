@@ -262,3 +262,12 @@ written by whoever calls `render`, not here.
   — the plane the rendered prompt is consumed in.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc
   graph.
+
+## Durable code-mode notes
+
+The context guidance directs programs to cap/notes only when code_mode
+advertises it. Structured data can stay in the durable session blackboard
+while the program returns a small summary. It distinguishes this from evictable
+cap/kv scratch and makes virtual note reads conditional on the advertised API.
+
+See [protocol 045](../../protocol-change/045-code-mode-notes.md).

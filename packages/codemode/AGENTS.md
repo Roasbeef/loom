@@ -813,3 +813,17 @@ remains unchanged. The richer internal `Started` receipt and
 `BudgetExpired`/`ParentFinished` outcomes map to the existing operation and
 aborted capability results; direct agent tools expose the additional deadline
 and cause metadata specified by proposal 042.
+
+## Durable code-mode notes
+
+`codemode/notes.Door` carries only the existing Agency note and notes
+callbacks. Its router binds `tools/agent.Caller` from the host strand and
+admitted execution identity, decodes JSON-compatible values through
+`internal/json_value`, and retains Agency namespace and result-schema checks.
+Exact reads filter the prefix query by full key; list returns relative keys.
+The router enforces a 1 MiB JSON payload bound. Satellite admission limits
+allow 256 puts and 64 each of get, list, and virtual reads per execution.
+The `notes.read` operation returns serialized JSON for `cap/fs.read` without
+passing a virtual URI through the filesystem router.
+
+See [protocol 045](../../protocol-change/045-code-mode-notes.md).
