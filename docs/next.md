@@ -1,5 +1,14 @@
 # Next
 
+## Proactive compile review, September 21
+
+The optional [BEAM compile review skill](../skills/beam-compile-review/SKILL.md)
+records the inliner diagnosis and a bounded profiler for existing generated
+Erlang. It preserves build artifacts and cleans up its compiler process group
+on timeout or interruption. The tick services now use a pipeline while retaining
+the `settle_tick` parameter boundary; the rebuild took 7.04 seconds and all
+654 TUI tests passed.
+
 ## TUI compile-time repair, September 21
 
 The notes-read step extended a tick-handler chain whose expensive drain
