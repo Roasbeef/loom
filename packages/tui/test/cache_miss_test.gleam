@@ -231,6 +231,108 @@ pub fn the_idle_label_reads_as_a_clock_test() {
   assert cache_miss.idle_label(-5000) == "0s"
 }
 
+// One Anthropic row: the same priced counts as `row`, with the cache write
+// split reporting the one-hour head. Only the split's presence matters to
+// the outlook, so the head's share of the write is a small stand-in.
+fn split_row(input: Int, cache_read: Int, cache_write: Int) -> message.Usage {
+  message.Usage(
+    ..row(input, cache_read, cache_write),
+    cache_write_1h: Some(1000),
+  )
+}
+
+// A watch that read a held prefix at time zero under the stated horizon.
+fn held_watch(horizon: cache_miss.HourHead) -> cache_miss.Watch {
+  let usage = case horizon {
+    cache_miss.Unproven -> held_prefix()
+    cache_miss.Split -> split_row(12, 250_000, 0)
+  }
+  let assert #(_, Some(watch)) = cache_miss.observe(None, usage, 0)
+  watch
+}
+
+pub fn the_horizon_is_learned_once_and_never_unlearned_test() {
+  // A first row without the split leaves the horizon unproven, and the
+  // split row then proves it once and for all.
+  let #(_, first) = cache_miss.observe(None, held_prefix(), 0)
+  assert first
+    == Some(cache_miss.Watch(
+      previous: held_prefix(),
+      previous_at: 0,
+      hour_head: cache_miss.Unproven,
+    ))
+
+  let #(_, learned) =
+    cache_miss.observe(first, split_row(0, 250_000, 0), 60_000)
+  assert learned
+    == Some(cache_miss.Watch(
+      previous: split_row(0, 250_000, 0),
+      previous_at: 60_000,
+      hour_head: cache_miss.Split,
+    ))
+
+  // A later row without the bucket cannot un-report the head, because its
+  // absence is not a denial: the provider simply wrote nothing new there.
+  let #(_, kept) = cache_miss.observe(learned, held_prefix(), 120_000)
+  let assert Some(watch) = kept
+  assert watch.hour_head == cache_miss.Split
+}
+
+pub fn a_proven_split_counts_down_the_tail_then_the_head_test() {
+  let watch = held_watch(cache_miss.Split)
+
+  // Inside the tail: the whole prefix is held, and the countdown reads as
+  // the tail's remaining time.
+  assert cache_miss.outlook(Some(watch), 60_000)
+    == Some(cache_miss.Held(remaining_ms: 240_000))
+  assert cache_miss.outlook_label(cache_miss.Held(240_000)) == "cache 4m"
+
+  // Past the tail, inside the hour: only the head still holds.
+  assert cache_miss.outlook(Some(watch), 300_000)
+    == Some(cache_miss.Head(remaining_ms: 3_300_000))
+  assert cache_miss.outlook_label(cache_miss.Head(3_300_000))
+    == "cache tail gone · head 55m"
+
+  // Past the hour: nothing holds, and the label says so plainly.
+  assert cache_miss.outlook(Some(watch), 3_600_000) == Some(cache_miss.Expired)
+  assert cache_miss.outlook_label(cache_miss.Expired) == "cache expired"
+
+  // The final minute of a countdown reads in seconds, because that is the
+  // resolution a send-now decision is made at.
+  assert cache_miss.outlook_label(cache_miss.Held(45_000)) == "cache 45s"
+  assert cache_miss.outlook_label(cache_miss.Head(30_000))
+    == "cache tail gone · head 30s"
+}
+
+pub fn an_unproven_provider_only_reports_its_growing_idle_age_test() {
+  let watch = held_watch(cache_miss.Unproven)
+
+  // Nothing has been established about this provider's TTL, so there is no
+  // expiry moment to name: under the floor the label says nothing at all.
+  assert cache_miss.outlook(Some(watch), 30_000) == Some(cache_miss.Unheld)
+  assert cache_miss.outlook_label(cache_miss.Unheld) == ""
+
+  // Past the floor the honest reading is the pause's age, which grows
+  // without end and never turns into "expired" on its own.
+  assert cache_miss.outlook(Some(watch), nine_minutes())
+    == Some(cache_miss.Held(remaining_ms: 480_000))
+  assert cache_miss.outlook_label(cache_miss.Held(480_000)) == "cache 8m"
+  assert cache_miss.outlook(Some(watch), 24 * 3_600_000)
+    == Some(cache_miss.Held(remaining_ms: 86_340_000))
+}
+
+pub fn a_small_prefix_or_no_watch_gives_no_label_test() {
+  // A prefix under the floor is not worth a label: the reading the footer
+  // would draw would cost more cells than the pause costs cents.
+  let assert #(_, Some(small)) = cache_miss.observe(None, row(4, 4000, 0), 0)
+  assert cache_miss.outlook(Some(small), nine_minutes())
+    == Some(cache_miss.Unheld)
+
+  // No watch at all means no row was ever seen, and the caller renders
+  // nothing rather than a guess.
+  assert cache_miss.outlook(None, 0) == None
+}
+
 // A closed integer sweep. `int.range` is a fold with an exclusive upper
 // bound, and every sweep here is written as an inclusive range of cases.
 fn each_int(from: Int, to: Int, run: fn(Int) -> Nil) -> Nil {

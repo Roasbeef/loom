@@ -18,8 +18,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import tui
 import tui/attachment
+import tui/cache_miss
 import tui/connection
 import tui/frame
+import tui/protocol
 import tui/session_channel
 import tui/snapshot
 import tui/workspace
@@ -151,6 +153,80 @@ pub fn an_unpriced_model_keeps_the_row_and_drops_the_money_test() {
     "Cache miss after 10m idle: 250k tokens re-billed",
   )
   assert !string.contains(drawn, "re-billed (~$")
+}
+
+pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
+  // The outlook is the forward-looking counterpart of the miss row: the
+  // tick folds the active strand's watch into the footer's cache label,
+  // and the label repaints only when the reading moves. What is asserted
+  // is the model's own label rather than the painted frame, because the
+  // fixture's footer truncates its tail and the label is what the footer
+  // draws from. The seeded preview strands are cleared first, because they
+  // carry a live phase and a live strand suppresses the label.
+  let quiet = after_the_first_turn() |> clear_strands
+
+  let idle = tui.update(backend.Tick, at(quiet, 600_000))
+  assert idle.cache_outlook == "cache 9m"
+    as "an idle cache with no proven horizon reads as its growing pause"
+
+  // Under the idle floor there is nothing to warn about, so the label
+  // stays empty rather than counting toward an expiry nothing
+  // established.
+  let fresh = tui.update(backend.Tick, at(quiet, 30_000))
+  assert fresh.cache_outlook == ""
+    as "a short pause has no reading worth a label"
+
+  // A live operation suppresses the label: the request in flight is
+  // rewriting the prefix, so an expiry countdown would name a rollover
+  // the request itself is about to reset.
+  let live =
+    tui.update(
+      backend.Tick,
+      tui.Model(..at(quiet, 600_000), strands: [
+        protocol.Strand(
+          id: "main",
+          name: Some("main"),
+          live_phase: Some("assistant"),
+        ),
+      ]),
+    )
+  assert live.cache_outlook == ""
+    as "a running strand hides the countdown until it settles"
+
+  // A proven split counts down instead: the same watch carried a
+  // one-hour write, so the reading states what is holding and for how
+  // much longer rather than the pause's age.
+  let split =
+    quiet
+    |> fn(base) {
+      tui.Model(
+        ..base,
+        cache_watch: dict.from_list([
+          #("main", watch_with(cache_miss.Split)),
+        ]),
+      )
+    }
+    |> at(180_000)
+    |> fn(base) { tui.update(backend.Tick, base) }
+  assert split.cache_outlook == "cache 2m"
+    as "a proven tail counts down to its expiry"
+}
+
+// The preview model's strand roster, emptied: an idle session has no live
+// operation, and the outlook's suppression is keyed on one.
+fn clear_strands(model: tui.Model) -> tui.Model {
+  tui.Model(..model, strands: [])
+}
+
+// A watch holding the priced prefix at time zero under the stated horizon.
+fn watch_with(horizon: cache_miss.HourHead) -> cache_miss.Watch {
+  let usage = case horizon {
+    cache_miss.Unproven -> held_prefix()
+    cache_miss.Split ->
+      message.Usage(..held_prefix(), cache_write_1h: Some(1000))
+  }
+  let assert #(_, Some(watch)) = cache_miss.observe(None, usage, 0)
+  watch
 }
 
 pub fn a_subagent_strand_never_feeds_the_primary_detector_test() {

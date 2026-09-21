@@ -616,6 +616,13 @@ pub type Model {
     /// these do not come back, which is acceptable for a notice about the
     /// moment it happened, and is what keeps them out of the store.
     cache_notices: List(CacheNotice),
+    /// The footer's cache label for the active strand, as of the last tick:
+    /// what `cache_miss.outlook` says rendered as text, or `""` when it
+    /// says nothing. Held as a string rather than an `Outlook` so the tick
+    /// can compare the new label against the old and repaint only when the
+    /// reading actually changed — the reading moves once a minute at most
+    /// until a countdown reaches its final stretch.
+    cache_outlook: String,
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
     notice: String,
@@ -1143,6 +1150,7 @@ pub fn new_model_with_clock(
     records: [],
     cache_watch: dict.new(),
     cache_notices: [],
+    cache_outlook: "",
     scrollback: history_view.empty(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
@@ -3882,12 +3890,20 @@ fn render_compact_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  // The cache label rides the info line's tail so the truncation, when the
+  // row runs out of cells, spends them on the reading the operator can
+  // recompute rather than on the figures only the footer reports.
+  let cache = case model.cache_outlook {
+    "" -> ""
+    label -> " · " <> label
+  }
   let info =
     text_hygiene.single_line(model.current_model)
     <> " · "
     <> context_view.footer(model.context)
     <> " · est $"
     <> money(model.usage.cost.total)
+    <> cache
   let status = agents.summary_rows(displayed_agents(model))
   let context = case model.notice {
     "" -> info
@@ -3950,7 +3966,8 @@ fn footer_sections(
           context_view.footer(model.context)
             <> " · "
             <> usage_summary(model.usage)
-            <> output_rate_label(model.output_rate_tps),
+            <> output_rate_label(model.output_rate_tps)
+            <> cache_section_label(model.cache_outlook),
           footer_usage_limit(model.width),
         )
           <> " ",
@@ -4968,6 +4985,7 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     |> service_advisor_nudges_read
     |> service_goal_read
     |> tick_channel
+    |> advance_cache_outlook
   let quiet_for_ms =
     pacing.next_quiet_for(
       model.quiet_for_ms,
@@ -5091,6 +5109,32 @@ fn advance_activity_indicator(model: Model) -> Model {
         False -> invalidate_frame(advanced)
       }
     }
+  }
+}
+
+// The tick is also where the cache outlook's clock is read, for the same
+// reason the elapsed count lives here: rendering stays a pure function of
+// the model, and the label repaints only when the reading actually moved.
+//
+// The reading is suppressed while the active strand is running. A request
+// in flight re-writes the prefix whatever the label says, so a countdown
+// shown mid-generation would name an expiry the request in progress is
+// about to reset — and the miss row, not the label, is the thing that
+// reports what the pause before the request cost.
+fn advance_cache_outlook(model: Model) -> Model {
+  let label = case active_strand_live(model) {
+    False ->
+      model.cache_watch
+      |> dict.get(model.active_strand)
+      |> option.from_result
+      |> cache_miss.outlook(model.monotonic_time_ms())
+      |> option.map(cache_miss.outlook_label)
+      |> option.unwrap("")
+    True -> ""
+  }
+  case label == model.cache_outlook {
+    True -> model
+    False -> invalidate_frame(Model(..model, cache_outlook: label))
   }
 }
 
@@ -6113,6 +6157,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           // miss that never happened.
           cache_watch: dict.new(),
           cache_notices: [],
+          cache_outlook: "",
           scroll_offset: case model.scrollback.mode {
             history_view.Reading -> model.scroll_offset
             history_view.Live -> 0
@@ -9930,6 +9975,15 @@ pub fn output_rate_label(rate: Option(Int)) -> String {
   case rate {
     Some(rate) -> " · " <> int.to_string(rate) <> " tok/s"
     None -> ""
+  }
+}
+
+// The cache outlook's contribution to a footer section, in the section's
+// own join shape: nothing to say costs no cells.
+pub fn cache_section_label(label: String) -> String {
+  case label {
+    "" -> ""
+    text -> " · " <> text
   }
 }
 
