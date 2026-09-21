@@ -52,6 +52,7 @@ import core/message
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -423,7 +424,7 @@ pub fn a_scripted_reviewer_is_shown_the_checks_result_test_() -> EunitTest {
 
     // The failing check reaches the reviewer's request body, labelled as the
     // harness's own evidence rather than as part of the transcript.
-    let failing = await_advisor(script, "exit status 1")
+    let failing = await_advisor(instance, script, "exit status 1")
     assert string.contains(failing, advisorslice.check_label)
     assert string.contains(failing, "command: exit 1")
     assert string.contains(failing, "(the check failed)")
@@ -435,18 +436,27 @@ pub fn a_scripted_reviewer_is_shown_the_checks_result_test_() -> EunitTest {
     // script gives until told otherwise, and the loop woke the primary.
     let _carrying = await_primary(script, advisorslice.continuation_header)
 
-    // Now the check passes. The completion is armed first, because setting the
-    // check returns the phase to idle and the evaluation that follows sends
-    // the next feed at once — a completion armed after would race it.
-    actor.call(script, waiting: 5000, sending: fn(reply) {
-      AnswerComplete(reply)
-    })
+    // Now the check passes, and the reviewer keeps saying `continue` while it
+    // does. An earlier draft armed the completion before this command, which
+    // made the fixture's two claims depend on one another: the very next feed
+    // had to be the one carrying `exit 0`, so any feed sent between the two —
+    // and a refused check produced exactly that — was answered `complete` and
+    // the goal ended before a passing check was ever shown. The completion is
+    // released below instead, once the feed this waits for has been seen, so
+    // nothing here rests on which feed comes next.
     let assert Ok(Nil) = goal_commands.set_check(Some("exit 0"))
       as "the operator must be able to change the check without a refresh"
 
-    let passing = await_advisor(script, "exit status 0")
+    let passing = await_advisor(instance, script, "exit status 0")
     assert string.contains(passing, "command: exit 0")
     assert string.contains(passing, "(the check passed)")
+
+    // Every feed from here on is answered `complete`. The primary makes a call
+    // on every woken run, so the loop reaches the next feed with a fresh run of
+    // the passing check, well inside the continuation cap.
+    actor.call(script, waiting: 5000, sending: fn(reply) {
+      AnswerComplete(reply)
+    })
 
     let assert poll.Answered(done) = poll_goal(instance, "complete")
       as "a reviewer shown a passing check must be able to complete the goal"
@@ -948,7 +958,11 @@ fn sse(event: String, data: String) -> String {
 // --- waiting on the loop ------------------------------------------------------
 // The same wait against the reviewer's own requests, which is where a claim
 // about what the reviewer was shown has to land: a body is what was sent.
-fn await_advisor(script: Subject(ScriptMessage), marker: String) -> String {
+fn await_advisor(
+  instance: serve.Instance,
+  script: Subject(ScriptMessage),
+  marker: String,
+) -> String {
   let found: poll.Outcome(String, Nil) =
     poll.until(within: await_ms, every: 100, attempt: fn() {
       case latest_with(seen(script).advisor, marker) {
@@ -956,9 +970,63 @@ fn await_advisor(script: Subject(ScriptMessage), marker: String) -> String {
         Error(Nil) -> poll.Retry
       }
     })
-  let assert poll.Answered(value: body) = found
-    as "the marker must reach an advisor request inside the wait"
-  body
+
+  case found {
+    poll.Answered(value: body) -> body
+
+    // A wait that ends this way has taken a minute to say only that the
+    // marker never arrived, which is the least a Linux-only flake can tell
+    // whoever reads the failure. So the evidence is written out: what the
+    // reviewer was shown instead, and what the loop's own cell says about why
+    // it stopped sending. Both are what a diagnosis of this fixture starts
+    // from, and neither survives the test process.
+    //
+    // It goes to stderr rather than into the failure message because eunit
+    // prints an assertion message through Erlang's own depth-limited
+    // formatter, which cuts a feed's worth of text off after a line and a
+    // half; stderr is passed through, so the dump reaches the log the way it
+    // was written.
+    poll.Expired | poll.Failed(error: _nothing) -> {
+      io.println_error(
+        "goal fixture: no advisor request carried "
+        <> marker
+        <> "\nchecks the reviewer was shown: "
+        <> string.inspect(checks_shown(script))
+        <> "\ngoal board: "
+        <> board_text(instance),
+      )
+
+      panic as "the marker must reach an advisor request inside the wait"
+    }
+  }
+}
+
+// The check block of every goal feed the reviewer has been sent, newest last.
+//
+// Read out of the newest request rather than by collecting one line per body,
+// because every advisor request replays its whole branch: the newest body
+// already carries each earlier feed's check block, so one split over it is the
+// whole history and a body-by-body walk would report the same blocks many
+// times over.
+fn checks_shown(script: Subject(ScriptMessage)) -> List(String) {
+  case list.last(seen(script).advisor) {
+    Error(Nil) -> []
+
+    Ok(newest) ->
+      string.split(newest, advisorslice.check_label)
+      |> list.drop(1)
+      |> list.map(fn(block) { string.slice(block, 0, 120) })
+  }
+}
+
+// The goal cell as the board renders it, or why it could not be read. A
+// fixture that failed waiting on a feed needs the status and the phase the
+// loop stopped at, and a read that fails is itself worth saying.
+fn board_text(instance: serve.Instance) -> String {
+  case goal_pending.read(instance.runtime.session, 0) {
+    Ok(board) -> json.to_string(board)
+    Error(reason) -> "unreadable: " <> string.inspect(reason)
+  }
 }
 
 fn await_primary(script: Subject(ScriptMessage), marker: String) -> String {

@@ -1346,12 +1346,12 @@ pub fn describe(refusal: Refusal) -> String {
 ///
 pub fn tools(agency: Agency) -> List(Tool) {
   [
-    note_tool(agency),
-    notes_tool(agency),
-    roster_tool(agency),
-    send_tool(agency),
-    spawn_tool(agency),
-    wait_tool(agency),
+    note_tool(agency.note),
+    notes_tool(agency.notes),
+    roster_tool(agency.roster),
+    send_tool(agency.send),
+    spawn_tool(agency.spawn, agency.model_names),
+    wait_tool(agency.wait, agency.max_wait_ms),
   ]
 }
 
@@ -1364,7 +1364,10 @@ pub fn tools(agency: Agency) -> List(Tool) {
 /// there. Nothing runs twice — the same promise the effect sandwich makes
 /// everywhere else, obtained the same way: mint the identifier before the
 /// effect, not after.
-pub fn spawn_tool(agency: Agency) -> Tool {
+pub fn spawn_tool(
+  spawn: fn(Caller, SpawnRequest) -> Result(Spawned, Refusal),
+  model_names: List(String),
+) -> Tool {
   tool.Tool(
     name: spawn_tool_name,
     description: "Start a subagent on a task brief and get a handle back. "
@@ -1389,7 +1392,7 @@ pub fn spawn_tool(agency: Agency) -> Tool {
             "the complete task. The child starts with no other context",
           ),
         ),
-        #("model", spawn_model_property(agency.model_names)),
+        #("model", spawn_model_property(model_names)),
         #(
           "tools",
           tool.string_array_property(
@@ -1439,7 +1442,7 @@ pub fn spawn_tool(agency: Agency) -> Tool {
     replay: tool.Safe,
     execution_mode: tool.Exclusive,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_spawn(agency, ctx, args) },
+    run: fn(ctx, args) { run_spawn(spawn, ctx, args) },
   )
 }
 
@@ -1456,7 +1459,11 @@ fn spawn_model_property(names: List(String)) -> JsonValue {
   }
 }
 
-fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_spawn(
+  spawn: fn(Caller, SpawnRequest) -> Result(Spawned, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use purpose <- tool.with_arg(tool.required_string(args, "purpose"))
   use brief <- tool.with_arg(tool.required_string(args, "brief"))
   use model <- tool.with_arg(tool.optional_string(args, "model"))
@@ -1476,7 +1483,7 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
       context:,
       detach: option.unwrap(detach, False),
     )
-  case agency.spawn(caller(ctx), request) {
+  case spawn(caller(ctx), request) {
     Error(refusal) -> refusal_outcome(refusal)
     Ok(spawned) ->
       tool.success(
@@ -1538,7 +1545,10 @@ fn decode_provenance(args: JsonValue) -> Result(Provenance, String) {
 ///
 /// One call, one deadline, however many handles — see the module doc for
 /// why the array is the unit of waiting rather than the tool call.
-pub fn wait_tool(agency: Agency) -> Tool {
+pub fn wait_tool(
+  wait: fn(Caller, List(Handle), Int) -> Result(List(Waited), Refusal),
+  max_wait_ms: Int,
+) -> Tool {
   tool.Tool(
     name: "agent_wait",
     description: "Wait for subagents to finish. Give it every handle you "
@@ -1566,7 +1576,7 @@ pub fn wait_tool(agency: Agency) -> Tool {
           "within_ms",
           tool.integer_property(
             "how long to wait, for the whole set; clamped to "
-            <> int.to_string(agency.max_wait_ms),
+            <> int.to_string(max_wait_ms),
           ),
         ),
       ],
@@ -1580,11 +1590,16 @@ pub fn wait_tool(agency: Agency) -> Tool {
     // `sequential` back. See the module doc.
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_wait(agency, ctx, args) },
+    run: fn(ctx, args) { run_wait(wait, max_wait_ms, ctx, args) },
   )
 }
 
-fn run_wait(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_wait(
+  wait: fn(Caller, List(Handle), Int) -> Result(List(Waited), Refusal),
+  max_wait_ms: Int,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use texts <- tool.with_arg(
     tool.optional_string_list(args, "handles")
     |> result.map_error(fn(reason) {
@@ -1617,11 +1632,7 @@ fn run_wait(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     refusal_outcome,
   )
   use waited <- tool.or_outcome(
-    agency.wait(
-      caller(ctx),
-      handles,
-      option.unwrap(within_ms, agency.max_wait_ms),
-    ),
+    wait(caller(ctx), handles, option.unwrap(within_ms, max_wait_ms)),
     refusal_outcome,
   )
   tool.success(string.join(list.map(waited, waited_text), "\n\n"))
@@ -1797,7 +1808,9 @@ fn outcome_json(outcome: Outcome) -> JsonValue {
 /// synthetic interrupted result carrying the explicit warning that the
 /// call's outcome is unknown; the model can consult `agent_roster` or
 /// simply say it again.
-pub fn send_tool(agency: Agency) -> Tool {
+pub fn send_tool(
+  send: fn(Caller, String, String, Option(Int)) -> Result(Delivery, Refusal),
+) -> Tool {
   tool.Tool(
     name: "agent_send",
     description: "Send a message to your parent or to one of your "
@@ -1840,16 +1853,20 @@ pub fn send_tool(agency: Agency) -> Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_send(agency, ctx, args) },
+    run: fn(ctx, args) { run_send(send, ctx, args) },
   )
 }
 
-fn run_send(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_send(
+  send: fn(Caller, String, String, Option(Int)) -> Result(Delivery, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use to <- tool.with_arg(tool.required_string(args, "to"))
   use message <- tool.with_arg(tool.required_string(args, "message"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   use delivery <- tool.or_outcome(
-    agency.send(caller(ctx), to, message, within_ms),
+    send(caller(ctx), to, message, within_ms),
     refusal_outcome,
   )
   case delivery {
@@ -1894,7 +1911,9 @@ fn started_outcome(
 }
 
 /// The `agent_note` tool: write one blackboard cell.
-pub fn note_tool(agency: Agency) -> Tool {
+pub fn note_tool(
+  note: fn(Caller, String, JsonValue) -> Result(Nil, Refusal),
+) -> Tool {
   tool.Tool(
     name: "agent_note",
     description: "Write one cell to the shared blackboard, under your own "
@@ -1926,23 +1945,27 @@ pub fn note_tool(agency: Agency) -> Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_note(agency, ctx, args) },
+    run: fn(ctx, args) { run_note(note, ctx, args) },
   )
 }
 
-fn run_note(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_note(
+  note: fn(Caller, String, JsonValue) -> Result(Nil, Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use key <- tool.with_arg(tool.required_string(args, "key"))
   use value <- tool.with_arg(tool.optional_value(args, "value"))
   use value <- tool.with_arg(option.to_result(value, "`value` is required"))
-  use Nil <- tool.or_outcome(
-    agency.note(caller(ctx), key, value),
-    refusal_outcome,
-  )
+  use Nil <- tool.or_outcome(note(caller(ctx), key, value), refusal_outcome)
   tool.success("noted " <> blackboard_prefix <> ctx.strand <> "/" <> key)
 }
 
 /// The `agent_notes` tool: read blackboard cells by prefix.
-pub fn notes_tool(agency: Agency) -> Tool {
+pub fn notes_tool(
+  notes: fn(Caller, Option(String)) ->
+    Result(List(#(String, JsonValue)), Refusal),
+) -> Tool {
   tool.Tool(
     name: "agent_notes",
     description: "Read the shared blackboard. Omit the prefix to read every "
@@ -1963,13 +1986,18 @@ pub fn notes_tool(agency: Agency) -> Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, args) { run_notes(agency, ctx, args) },
+    run: fn(ctx, args) { run_notes(notes, ctx, args) },
   )
 }
 
-fn run_notes(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_notes(
+  notes: fn(Caller, Option(String)) ->
+    Result(List(#(String, JsonValue)), Refusal),
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use prefix <- tool.with_arg(tool.optional_string(args, "prefix"))
-  case agency.notes(caller(ctx), prefix) {
+  case notes(caller(ctx), prefix) {
     Error(refusal) -> refusal_outcome(refusal)
     Ok([]) -> tool.success("no notes")
     Ok(cells) ->
@@ -1986,7 +2014,7 @@ fn run_notes(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
 /// It exists because compaction can erase every handle from the model's
 /// context, and a durable read of who is running is then the only way
 /// back.
-pub fn roster_tool(agency: Agency) -> Tool {
+pub fn roster_tool(roster: fn(Caller) -> Result(List(Peer), Refusal)) -> Tool {
   tool.Tool(
     name: "agent_roster",
     description: "List your parent and your subagents, with their handles "
@@ -2001,12 +2029,15 @@ pub fn roster_tool(agency: Agency) -> Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
-    run: fn(ctx, _args) { run_roster(agency, ctx) },
+    run: fn(ctx, _args) { run_roster(roster, ctx) },
   )
 }
 
-fn run_roster(agency: Agency, ctx: Ctx) -> ToolOutcome {
-  case agency.roster(caller(ctx)) {
+fn run_roster(
+  roster: fn(Caller) -> Result(List(Peer), Refusal),
+  ctx: Ctx,
+) -> ToolOutcome {
+  case roster(caller(ctx)) {
     Error(refusal) -> refusal_outcome(refusal)
     Ok([]) -> tool.success("no parent and no subagents")
     Ok(peers) ->

@@ -62,9 +62,19 @@ import tools/tool.{type Ctx}
 /// ```
 ///
 pub fn seam(door: jobseam.Door) -> job.Jobs {
+  // Bind the one function each closure below calls, not the whole
+  // `Door`: a closure capturing `door` would duplicate its other four
+  // slots for every one of the five `job.Jobs` closures built here,
+  // which is the over-capture `daemon-memory.md` measures for `Agency`
+  // one level down.
+  let start = door.start
+  let poll = door.poll
+  let list_jobs = door.list
+  let kill = door.kill
+  let send = door.send
   job.Jobs(
     start: fn(ctx: Ctx, command, wall_ms) {
-      door.start(
+      start(
         ctx.strand,
         ctx.op_id,
         command,
@@ -74,16 +84,16 @@ pub fn seam(door: jobseam.Door) -> job.Jobs {
       |> translate(started)
     },
     poll: fn(ctx: Ctx, id, wait_ms, cursors) {
-      door.poll(ctx.strand, id, wait_ms, seam_cursors(cursors))
+      poll(ctx.strand, id, wait_ms, seam_cursors(cursors))
       |> translate(polled)
     },
     list: fn(ctx: Ctx) {
-      door.list(ctx.strand)
+      list_jobs(ctx.strand)
       |> translate(list.map(_, listed))
     },
-    kill: fn(ctx: Ctx, id) { door.kill(ctx.strand, id) |> translate(nothing) },
+    kill: fn(ctx: Ctx, id) { kill(ctx.strand, id) |> translate(nothing) },
     send: fn(ctx: Ctx, id, data, end) {
-      door.send(ctx.strand, id, data, seam_end(end))
+      send(ctx.strand, id, data, seam_end(end))
       |> translate(nothing)
     },
     max_wait_ms: jobseam.max_wait_ms,

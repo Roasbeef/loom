@@ -20,6 +20,17 @@
 //// binary — write build output, and a check that could not write would
 //// fail for a reason that has nothing to do with the objective.
 ////
+//// # Why one refusal is waited on
+////
+//// The step's ledger admits one check at a time, and the slot an abandoned
+//// check held comes back only once the broker has drained that execution to
+//// the helper's terminal event. The advisor cancels an abandoned check and
+//// starts its replacement in the same breath, so the replacement's clearance
+//// lands inside that drain and is refused for a reason that says nothing about
+//// the command. So an outstanding-cap refusal is waited out here rather than
+//// reported, bounded by `slot_wait_ms`; every other refusal is a decision more
+//// time cannot change and is reported at once.
+////
 //// # Why the seam is one closure
 ////
 //// Everything above is a fact about this module, and nothing above is a
@@ -49,6 +60,7 @@ import gleam/int
 import gleam/list
 import gleam/string
 import tools/tool
+import weft/poll
 
 /// How much of each captured stream one result carries, in characters.
 ///
@@ -77,6 +89,38 @@ pub const output_bytes = 1_048_576
 /// declaring the call lost, mirroring the bash tool's: the helper's cancel
 /// ladder needs a moment to climb from TERM to KILL.
 pub const settle_grace_ms = 10_000
+
+/// How long a check waits for the one `goal-check` slot to come free.
+///
+/// Every check clears under one operation and this module's step, and that
+/// ledger admits one at a time. An abandoned check's slot comes back when the
+/// broker relay has cancelled the execution and drained it to the helper's
+/// terminal event, which is asynchronous to the cancel that started it — so a
+/// replacement issued in that window finds the slot still taken and is refused
+/// with `OutstandingCapReached`. Waiting the window out is the difference
+/// between the reviewer reading the command's real exit status and reading that
+/// the harness has no evidence about a command that ran perfectly well a
+/// moment later.
+///
+/// Three seconds is the drain's own room rather than a guess at scheduling:
+/// the relay cancels and then bounds its trust in the helper's ladder by one
+/// grace window, so a slot still held past that is held by something a check
+/// waiting longer would not outlive either.
+pub const slot_wait_ms = 3000
+
+/// How often the wait re-asks the broker for the slot, in milliseconds.
+///
+/// Short, because the whole wait is short and what it is waiting for is a
+/// message already in flight between two local processes.
+pub const slot_retry_ms = 25
+
+/// What a check that never got the slot is recorded as.
+///
+/// A named constant because the loop's own test depends on the words: this is
+/// the one refusal the runner waits on rather than reports, so a feed carrying
+/// this sentence is evidence the wait was spent, not that a check was refused
+/// the moment it asked.
+pub const slot_never_came_free = "another goal check was still finishing, so this one could not start"
 
 /// The step every check clears under.
 ///
@@ -110,9 +154,10 @@ pub type Wiring {
     /// wins, and the timed-out result — the one carrying the tail of the
     /// build that was killed, which is exactly what says why — was
     /// unreachable in production and the feed waited for the next tick
-    /// instead. The room is the clearance a congested helper pool may cost
-    /// plus the grace the cancel ladder needs, which is the backstop
-    /// `client/jobs` computes for the same path.
+    /// instead. The room is the clearance a congested helper pool may cost,
+    /// the wait for a slot an abandoned check has not finished giving back,
+    /// and the grace the cancel ladder needs — the backstop `client/jobs`
+    /// computes for the same path, plus this module's own wait.
     backstop_ms: Int,
   )
 }
@@ -160,7 +205,10 @@ pub fn wiring(runner: Runner, timeout_ms timeout_ms: Int) -> Wiring {
   Wiring(
     run: fn(command) { execute(runner, command, timeout_ms) },
     timeout_ms:,
-    backstop_ms: runner.clearance_ms + timeout_ms + settle_grace_ms,
+    backstop_ms: runner.clearance_ms
+      + slot_wait_ms
+      + timeout_ms
+      + settle_grace_ms,
   )
 }
 
@@ -176,14 +224,13 @@ fn execute(
   command: String,
   timeout_ms: Int,
 ) -> goalstate.CheckResult {
-  let #(now, _clock) = clock.read(runner.clock)
   let events = process.new_subject()
   let wait_ms = timeout_ms + settle_grace_ms
 
-  case runner.clear_call(call_spec(runner, command, now, timeout_ms), events) {
-    Error(refusal) -> unfinished(command, refused(refusal), now)
+  case admitted(runner, command, timeout_ms, events) {
+    Error(#(now, reason)) -> unfinished(command, reason, now)
 
-    Ok(call) -> {
+    Ok(#(now, call)) -> {
       call.stdin(<<>>, True)
 
       case tool.collect_events(events, waiting: wait_ms) {
@@ -199,6 +246,63 @@ fn execute(
           unfinished(command, "the sandbox did not settle the check", now)
         }
       }
+    }
+  }
+}
+
+// The clearance, waiting out a slot the check before it has not finished
+// giving back.
+//
+// One refusal is waited on and every other is reported at once, and the
+// difference is whether more time can change the answer. `OutstandingCapReached`
+// under this step means one thing — the previous check's execution is still
+// draining — and a moment later the same call clears; a narrowed policy, a
+// passed deadline, an aborted operation or an unreachable broker are decisions,
+// and re-asking would only spend the wall before reporting the same thing. So
+// the wait is bounded and its expiry is its own sentence rather than the
+// broker's: a feed that says the slot never came free is telling the operator
+// that the harness waited, which the cap refusal's wording would not.
+//
+// The clock is read per attempt rather than once, because both numbers derived
+// from it describe the attempt they are used in: the budget deadline the spec
+// carries is the wall of the run that is about to start, and the stamp on the
+// result is when the command the reviewer is shown actually ran. The events
+// subject is reused across attempts, and safely: a refused clearance dispatched
+// nothing, so nothing can ever have sent to it.
+fn admitted(
+  runner: Runner,
+  command: String,
+  timeout_ms: Int,
+  events: Subject(broker.CallEvent),
+) -> Result(#(Int, tool.RunningCall), #(Int, String)) {
+  let attempt = fn() {
+    let #(now, _clock) = clock.read(runner.clock)
+
+    case
+      runner.clear_call(call_spec(runner, command, now, timeout_ms), events)
+    {
+      Ok(call) -> poll.Done(#(now, call))
+
+      Error(broker.BudgetRefused(refusal: budget.OutstandingCapReached(cap: _))) ->
+        poll.Retry
+
+      Error(decided) -> poll.Fail(#(now, refused(decided)))
+    }
+  }
+
+  case poll.until(within: slot_wait_ms, every: slot_retry_ms, attempt:) {
+    poll.Answered(value: cleared) -> Ok(cleared)
+
+    poll.Failed(error: reported) -> Error(reported)
+
+    // The slot outlasted the wait. The loop is told the check produced
+    // nothing, which is what keeps a check that can never start from
+    // stranding the goal: the result still lands, still moves the phase, and
+    // the feed still goes out.
+    poll.Expired -> {
+      let #(now, _clock) = clock.read(runner.clock)
+
+      Error(#(now, slot_never_came_free))
     }
   }
 }

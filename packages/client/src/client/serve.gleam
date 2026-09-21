@@ -1804,16 +1804,91 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
 /// ```
 @internal
 pub fn drain_instance(instance: Instance, within_ms: Int) -> Nil {
+  drain_resident(resident(instance), within_ms)
+}
+
+/// What the daemon's session manager holds for one resident session, and what
+/// it answers an attaching socket with.
+///
+/// The manager is generic in its resident value, and this is the value the
+/// daemon instantiates it with. It exists because the whole `Instance` is far
+/// wider than anything either holder reads. An `Instance` carries an
+/// `api.Runtime`, which carries the session's `Effects`: megabytes of closures
+/// over its tool registry. The manager keeps one resident value per admitted
+/// session in its own state, and replies with one on every websocket upgrade,
+/// so each of those was paying for a full copy of that graph while reading, at
+/// most, a gateway name and a drain.
+///
+/// Nothing here is duplicated per session: a gateway is a registered name, the
+/// children are pids, and `api.Drain` is two handles. All three are fixed for
+/// the life of the instance they were projected from — the fatal roots are
+/// precisely the handles that cannot be replaced in place, and neither the
+/// tree nor the session store behind a drain is ever swapped under a resident
+/// session — so the projection cannot go stale.
+pub type Resident {
+  Resident(
+    /// The hub's stable address, which is all an attaching socket reads.
+    gateway: hub.Gateway,
+    /// The fatal roots, named for the log line. Read once, immediately after
+    /// publication, by the assembly host that monitors them.
+    children: List(#(String, Pid)),
+    /// The tree and session a graceful drain reaches strands through.
+    drain: api.Drain,
+  )
+}
+
+/// Projects one published instance to what the daemon's registry holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build: fn(..) { serve.assemble_in_domain(..) |> result.map(serve.resident) }
+/// ```
+@internal
+pub fn resident(instance: Instance) -> Resident {
+  Resident(
+    gateway: instance.gateway,
+    children: instance_children(instance),
+    drain: api.draining(instance.runtime),
+  )
+}
+
+/// Lists the fatal roots a resident was projected with.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.Assembly(fatal: serve.resident_children, ..)
+/// ```
+@internal
+pub fn resident_children(resident: Resident) -> List(#(String, Pid)) {
+  resident.children
+}
+
+/// Returns this session's hub-held prompts to their submitters, unsent.
+///
+/// The graceful-drain hook the root calls on every resident session before
+/// it kills the sockets those returns travel over, and the same hook a
+/// per-session close runs on itself. Both are safe: the hub empties its
+/// queues on the first call, so the second finds nothing to return.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.Assembly(drain: serve.drain_resident, ..)
+/// ```
+@internal
+pub fn drain_resident(resident: Resident, within_ms: Int) -> Nil {
   let deadline = bootstrap.monotonic_time_ms() + int.max(within_ms, 0)
 
   // The gateway owns the admission fence. Fence and return held input before
   // aborting, so a terminal hint cannot admit it into a successor during drain.
-  hub.drain_held_within(instance.gateway, int.max(within_ms, 0))
+  hub.drain_held_within(resident.gateway, int.max(within_ms, 0))
 
   // Cancellation retains the existing durable Aborted path. Socket flushes
   // and runtime settlement spend the same remaining instance budget.
-  api.drain(
-    instance.runtime,
+  api.drain_within(
+    resident.drain,
     within_ms: int.max(deadline - bootstrap.monotonic_time_ms(), 0),
   )
 }
