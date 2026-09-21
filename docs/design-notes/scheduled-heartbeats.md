@@ -7,8 +7,8 @@ where the two disagree later.
 
 ## The ask, and the prior art
 
-Loom has no time-triggered admission today — a strand only hears from a
-human, a sibling strand, or a content-triggered rule (#27). Two systems
+At the time of this design, Loom admitted prompts from people, sibling
+strands, and content-triggered rules (#27), but had no time-triggered admission. Two systems
 were used as reference, not as templates to copy structurally:
 
 - **Claude Code** ships two shapes: an ephemeral, in-memory, per-session
@@ -21,10 +21,11 @@ were used as reference, not as templates to copy structurally:
   the session's ordinary steer/follow-up path — "the same execution and
   persistence path" as any other prompt, just another source tag.
 
-Loom has no daemon and no cross-session infrastructure, so the only
-version of "wake a dormant session" that is coherent here is *wake an
-idle strand inside a session whose server the operator left running*.
-That reframing does most of the work below.
+This design originally predated the shared daemon and cross-session messaging.
+Loom now has both, but the scheduling boundary remains: a schedule may wake an
+idle strand only within a resident session. It does not open a Saved session.
+[Protocol 045](../../protocol-change/045-async-collaboration.md) applies the same
+residency rule to peer messaging.
 
 ## The mechanism: `client/rules` + `client/rulescan`, time-triggered
 
@@ -627,9 +628,9 @@ purpose:
   has the argument, and it is a posture the priority order chose rather
   than a gap.
 - **Cross-session routines, webhooks and completion notifications**
-  (a push or an email when a routine's run ends) are infrastructure that
-  only makes sense with nobody attached and a service to hold the
-  schedule; loom has no daemon and none of these is in scope.
+  (a push or an email when a routine's run ends) remain outside this scheduling
+  design. The shared daemon and granted peer messaging do not supply a
+  scheduler that opens Saved sessions or sends external notifications.
 - **`session_crons` on stop hooks.** Claude Code tells a stop hook which
   crons will wake the session again. Loom's equivalent is the
   `schedules` command, which any client can ask at any time.
