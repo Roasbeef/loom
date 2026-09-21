@@ -44,6 +44,7 @@ import host/endpoint
 import machine/strand as machine_strand
 import simplifile
 import tui/advisor_pending
+import tui/agent_messages
 import tui/agent_view
 import tui/agents
 import tui/appearance
@@ -680,6 +681,10 @@ pub type Model {
     diff_worktree_source: #(Option(worktree_view.Board), Int),
     /// Latest explicit read of the notes board, with its own revision.
     note_board: Option(notes_view.Board),
+    /// Stable cell key within the inspected notes board.
+    note_selected: Option(String),
+    /// Latest explicit notes target waiting for the existing command lane.
+    notes_requested: Option(String),
     overlay: Overlay,
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.
@@ -692,6 +697,8 @@ pub type Model {
     reviewer_rows: List(reviewer_status.Row),
     /// Stable, operation-owned summaries of the captured agent roster.
     agent_rows: List(agent_view.Row),
+    /// At most twenty provenance-verified sends observed in this attachment.
+    agent_messages: List(agent_messages.Item),
     active_strand: String,
     session: String,
     /// One catalogue display name, paired with the identity that owns it.
@@ -1153,6 +1160,8 @@ pub fn new_model_with_clock(
     diff_row_count: 0,
     diff_worktree_source: #(None, 0),
     note_board: None,
+    note_selected: None,
+    notes_requested: None,
     overlay: NoOverlay,
     models: demo_models(),
     skills: [],
@@ -1162,6 +1171,7 @@ pub fn new_model_with_clock(
     agent_summary: agents.summary(strands),
     reviewer_rows: [],
     agent_rows: [],
+    agent_messages: [],
     active_strand: "main",
     session: "demo",
     session_label: None,
@@ -2737,12 +2747,13 @@ fn render_frame(
     NoOverlay -> base
     ModelSelector(selector) -> model_selector.render(base, screen, selector)
     AgentInspector(selected) ->
-      agents.render_overlay(
+      agents.render_inspection(
         base,
         body_area,
         displayed_agents(model),
         model.active_strand,
         selected,
+        agent_detail_content(model, selected),
       )
     SessionSelector(selector) -> sessions.render(base, screen, selector)
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
@@ -3475,17 +3486,111 @@ fn help_content() -> span.Text {
   ])
 }
 
+// Inspection has its own target. Reading a worker's notes never changes the
+// active strand, its parked draft, or the next submitted message.
+fn notes_target(model: Model) -> String {
+  case model.overlay {
+    AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)) ->
+      selected
+    _ -> model.active_strand
+  }
+}
+
 fn refresh_notes(model: Model) -> Model {
-  send_frame(
-    Model(..model, notice: "refreshing notes"),
-    protocol.notes(model.next_id, model.active_strand),
+  service_notes_read(
+    Model(
+      ..model,
+      notes_requested: Some(notes_target(model)),
+      notice: "refreshing notes for " <> notes_target(model),
+    ),
   )
 }
 
-fn notes_content(model: Model, width: Int) -> span.Text {
+// Reads coalesce to the latest inspected target while the existing channel
+// owns an earlier command. Old replies may be retained, but never relabelled.
+fn service_notes_read(model: Model) -> Model {
+  case model.notes_requested, model.channel {
+    None, _ -> model
+    Some(target), Some(channel) -> {
+      case session_channel.ready_for_read(channel) {
+        False -> model
+        True ->
+          send_frame(
+            Model(..model, notes_requested: None),
+            protocol.notes(model.next_id, target),
+          )
+      }
+    }
+    Some(target), None ->
+      send_frame(
+        Model(..model, notes_requested: None),
+        protocol.notes(model.next_id, target),
+      )
+  }
+}
+
+fn agent_detail_content(model: Model, inspector: agents.Inspector) {
+  case inspector.detail {
+    agents.Overview -> None
+    agents.Messages ->
+      Some(fn(width) {
+        agent_message_content(model, inspector.selected, width).lines
+      })
+    agents.Notes ->
+      Some(fn(width) { notes_content(model, width, inspector.selected).lines })
+  }
+}
+
+fn agent_message_content(
+  model: Model,
+  selected: String,
+  width: Int,
+) -> span.Text {
+  let messages = agent_messages.for_strand(model.agent_messages, selected)
+  let heading = [
+    Line(System, "MESSAGES · " <> selected),
+    Line(
+      System,
+      "Observed sends · latest 20 retained · acceptance is not a read receipt",
+    ),
+  ]
+  let body = case messages {
+    [] -> [
+      Line(
+        System,
+        "No sends observed for this agent in the retained captures. Older or unloaded history may be absent.",
+      ),
+    ]
+    messages ->
+      list.flat_map(messages, fn(item) {
+        let state = case item.state {
+          agent_messages.SendPending -> "Outcome not captured"
+          agent_messages.SendFailed -> "Send failed"
+          agent_messages.Accepted -> "Accepted by recipient"
+          agent_messages.Started -> "Started recipient run"
+        }
+        let extent = case item.body_extent {
+          agent_messages.Complete -> ""
+          agent_messages.Excerpt ->
+            " · excerpt; open sender transcript for full body"
+        }
+        [
+          Line(System, item.source <> " → " <> item.target),
+          Line(
+            System,
+            state <> " · revision " <> int.to_string(item.seq) <> extent,
+          ),
+          Line(ToolDetail, item.body),
+        ]
+      })
+  }
+  transcript_content(list.append(heading, body), width)
+}
+
+fn notes_content(model: Model, width: Int, target: String) -> span.Text {
   case model.note_board {
-    None -> historical_notes_content(model, width)
-    Some(board) -> current_notes_content(board, model, width)
+    None -> historical_notes_content(model, width, target)
+    Some(board) -> current_notes_content(board, model, width, target)
   }
 }
 
@@ -3500,12 +3605,12 @@ fn note_read_status(board: notes_view.Board, model: Model) -> String {
 
 // Only the accepted operation's own revision establishes that a note predates
 // this turn. Unrelated session activity says nothing about the note's accuracy.
-fn note_turn_relation(seq: Int, model: Model) -> String {
+fn note_turn_relation(seq: Int, model: Model, target: String) -> String {
   case model.captured {
     None -> ""
     Some(#(_, view)) -> {
       let started = {
-        use current <- result.try(dict.get(view.operations, model.active_strand))
+        use current <- result.try(dict.get(view.operations, target))
         list.find(view.cells, fn(cell) {
           cell.namespace == register.OpMeta && cell.key == current
         })
@@ -3532,11 +3637,19 @@ fn current_notes_content(
   board: notes_view.Board,
   model: Model,
   width: Int,
+  active_strand: String,
 ) -> span.Text {
-  let active_strand = model.active_strand
   case board.strand == active_strand {
     False ->
-      transcript_content([Line(System, "refresh notes for this strand")], width)
+      transcript_content(
+        [
+          Line(
+            System,
+            "No observed notes for " <> active_strand <> " · r refresh",
+          ),
+        ],
+        width,
+      )
     True -> {
       let heading =
         "notes for "
@@ -3544,8 +3657,27 @@ fn current_notes_content(
         <> " · read at revision "
         <> int.to_string(board.as_of)
         <> " · r to refresh"
+      let selected = selected_note(model, board)
+      let index =
+        list.index_map(board.notes, fn(note, position) { #(note.key, position) })
+        |> list.key_find(option.unwrap(selected, ""))
+        |> result.unwrap(0)
+      let #(visible, _) = agents.selection_window(board.notes, index, 5)
+      let navigation = [
+        Line(
+          System,
+          list.map(visible, fn(note) {
+            case Some(note.key) == selected {
+              True -> "▸ " <> note.key
+              False -> "  " <> note.key
+            }
+          })
+            |> string.join("\n"),
+        ),
+      ]
       let rows =
-        list.flat_map(board.notes, fn(note) {
+        list.filter(board.notes, fn(note) { Some(note.key) == selected })
+        |> list.flat_map(fn(note) {
           let extent = case note.extent {
             notes_view.Complete -> ""
             notes_view.Excerpt -> " · excerpt"
@@ -3556,7 +3688,7 @@ fn current_notes_content(
               note.key
                 <> " · updated at revision "
                 <> int.to_string(note.seq)
-                <> note_turn_relation(note.seq, model)
+                <> note_turn_relation(note.seq, model, active_strand)
                 <> extent,
             ),
             case model.details_expanded, note.extent {
@@ -3567,6 +3699,10 @@ fn current_notes_content(
             },
           ]
         })
+      let rows = case rows {
+        [] -> [Line(System, "No saved notes in this observed board.")]
+        rows -> list.append(navigation, rows)
+      }
       let omitted = board.total - list.length(board.notes)
       let tail = case omitted > 0 {
         True -> [
@@ -3579,8 +3715,15 @@ fn current_notes_content(
       }
       transcript_content(
         [
-          Line(System, heading),
-          Line(System, note_read_status(board, model)),
+          Line(
+            System,
+            heading
+              <> "\n"
+              <> int.to_string(list.length(board.notes))
+              <> " saved notes · [/] select · PgUp/PgDn scroll · Ctrl+g raw"
+              <> "\n"
+              <> note_read_status(board, model),
+          ),
           ..list.append(rows, tail)
         ],
         width,
@@ -3589,12 +3732,66 @@ fn current_notes_content(
   }
 }
 
-fn historical_notes_content(model: Model, width: Int) -> span.Text {
+fn selected_note(model: Model, board: notes_view.Board) -> Option(String) {
+  case
+    list.find(board.notes, fn(note) { Some(note.key) == model.note_selected })
+  {
+    Ok(note) -> Some(note.key)
+    Error(Nil) ->
+      list.first(board.notes)
+      |> result.map(fn(note) { note.key })
+      |> option.from_result
+  }
+}
+
+fn select_note(model: Model, direction: Int) -> Model {
+  let target = notes_target(model)
+  case model.note_board {
+    Some(board) if board.strand == target -> {
+      let index =
+        list.index_map(board.notes, fn(note, position) {
+          #(Some(note.key), position)
+        })
+        |> list.key_find(selected_note(model, board))
+        |> result.unwrap(0)
+      let next =
+        int.clamp(
+          index + direction,
+          0,
+          int.max(0, list.length(board.notes) - 1),
+        )
+      let selected =
+        list.drop(board.notes, next)
+        |> list.first
+        |> result.map(fn(note) { note.key })
+        |> option.from_result
+
+      // Note navigation moves only the surface that owns this key. The
+      // transcript beneath an inspector retains its independent anchor.
+      let #(overlay, scroll_offset) = case model.overlay {
+        AgentInspector(inspector) -> #(
+          AgentInspector(agents.Inspector(..inspector, scroll: 0)),
+          model.scroll_offset,
+        )
+        other -> #(other, 0)
+      }
+      Model(..model, note_selected: selected, scroll_offset:, overlay:)
+      |> invalidate_transcript
+    }
+    _ -> model
+  }
+}
+
+fn historical_notes_content(
+  model: Model,
+  width: Int,
+  target: String,
+) -> span.Text {
   let latest =
     model.records
     |> list.find_map(fn(record) {
       let protocol.EntryRecord(strand:, entry:) = record
-      case strand == model.active_strand, entry {
+      case strand == target, entry {
         True, entry.MessageEntry(message: value, ..) ->
           agent_notes_payload(value) |> option.to_result(Nil)
         _, _ -> Error(Nil)
@@ -3617,10 +3814,7 @@ fn historical_notes_content(model: Model, width: Int) -> span.Text {
     None ->
       transcript_content(
         [
-          Line(
-            System,
-            "no agent notes are available for " <> model.active_strand,
-          ),
+          Line(System, "no agent notes are available for " <> target),
         ],
         width,
       )
@@ -4714,7 +4908,9 @@ fn update_tick(model: Model) -> Model {
         service_advisor_nudges_read(
           service_context_read(
             service_jobs_read(
-              service_worktree_read(service_queue_read(drained)),
+              service_notes_read(
+                service_worktree_read(service_queue_read(drained)),
+              ),
             ),
           ),
         ),
@@ -4780,6 +4976,8 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
           False -> model.scrollback
         },
         note_board: None,
+        note_selected: None,
+        notes_requested: None,
         approvals: [],
         prompted_approvals: [],
         inspecting_approval: None,
@@ -5106,6 +5304,21 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
           |> option.unwrap(after.scroll_offset)
       }
 
+      // A notebook opens at its index and selected cell heading, rather than
+      // at the end of a long value. Paging then uses the ordinary copy-safe
+      // row viewport; unrelated stream updates cannot reset that position.
+      let anchored = case
+        after.notes_open
+        && {
+          !before.notes_open
+          || before.note_selected != after.note_selected
+          || { before.note_board == None && after.note_board != None }
+        }
+      {
+        True -> rendered_row_count
+        False -> anchored
+      }
+
       // Reading history owns the viewport through the scroll offset, and a
       // strand or session switch replaced the rows rather than extending
       // them: neither has a tail to walk toward. Otherwise the count only
@@ -5113,6 +5326,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       // viewport claiming rows that no longer exist.
       let revealed_rows = case
         reading_history(after)
+        || after.notes_open
         || before.active_strand != after.active_strand
         || before.session != after.session
       {
@@ -5516,7 +5730,8 @@ fn rendered_layout_for(
       #(rows, list.repeat(0, list.length(rows)))
     }
     False, True -> {
-      let rows = notes_content(model, width).lines |> list.reverse
+      let rows =
+        notes_content(model, width, model.active_strand).lines |> list.reverse
       #(rows, list.repeat(0, list.length(rows)))
     }
     False, False -> {
@@ -5779,6 +5994,8 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           channel: Some(channel),
           captured: None,
           note_board: None,
+          note_selected: None,
+          notes_requested: None,
           approvals: [],
           prompted_approvals: [],
           overlay: NoOverlay,
@@ -6153,7 +6370,7 @@ fn present_pending_approval(model: Model) -> Model {
           Model(
             ..model,
             prompted_approvals: [#(record.id, record.seq), ..seen],
-            overlay: ApprovalInspector(approval_panel.new(record)),
+            overlay: ApprovalInspector(captured_approval_panel(model, record)),
           )
       }
     }
@@ -6291,6 +6508,11 @@ fn render_cut(
     agent_summary: agents.summary_rows(rows),
     reviewer_rows: reviewers,
     agent_rows: rows,
+    agent_messages: agent_messages.capture(
+      model.agent_messages,
+      view,
+      cut.window,
+    ),
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -6423,7 +6645,7 @@ fn inspect_looked_up(model: Model, records, missing) {
         Ok(record) ->
           Model(
             ..model,
-            overlay: ApprovalInspector(approval_panel.new(record)),
+            overlay: ApprovalInspector(captured_approval_panel(model, record)),
             inspecting_approval: None,
           )
         Error(Nil) ->
@@ -6580,6 +6802,8 @@ fn adopt_session(
     help_open: False,
     notes_open: False,
     note_board: None,
+    note_selected: None,
+    notes_requested: None,
     overlay: NoOverlay,
     session: target.session,
     local_options: Some(options),
@@ -6853,9 +7077,25 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
       )
     protocol.NotesSnapshot(board) ->
-      invalidate_transcript(
-        Model(..model, note_board: Some(board), notice: "notes refreshed"),
-      )
+      case board.strand == notes_target(model) {
+        True -> {
+          let previous = case model.note_board {
+            Some(old) if old.strand == board.strand -> selected_note(model, old)
+            _ -> model.note_selected
+          }
+          let selected =
+            selected_note(Model(..model, note_selected: previous), board)
+          invalidate_transcript(
+            Model(
+              ..model,
+              note_board: Some(board),
+              note_selected: selected,
+              notice: "notes refreshed for " <> board.strand,
+            ),
+          )
+        }
+        False -> model
+      }
     protocol.EntryAdded(record:) -> {
       let protocol.EntryRecord(strand:, ..) = record
       let updated =
@@ -9767,7 +10007,7 @@ fn update_agent_inspector(
     update_workspace_composer(key, model, inspector)
   })
   let rows = displayed_agents(model)
-  case key {
+  let changed = case key {
     keys.Tab ->
       Model(
         ..model,
@@ -9802,6 +10042,13 @@ fn update_agent_inspector(
         ..model,
         overlay: AgentInspector(agents.navigate(inspector, rows, agents.Next)),
       )
+    keys.Char("1") -> select_agent_detail(model, inspector, agents.Overview)
+    keys.Char("2") -> select_agent_detail(model, inspector, agents.Messages)
+    keys.Char("3") -> select_agent_detail(model, inspector, agents.Notes)
+    keys.Char("[") -> select_note(model, -1)
+    keys.Char("]") -> select_note(model, 1)
+    keys.Char("r") if inspector.detail == agents.Notes -> refresh_notes(model)
+    keys.Ctrl("g") -> toggle_details(model)
     keys.Char("n") ->
       Model(
         ..model,
@@ -9835,6 +10082,28 @@ fn update_agent_inspector(
           )
       }
     _ -> model
+  }
+  case changed.overlay {
+    AgentInspector(next)
+      if next.detail == agents.Notes && next.selected != inspector.selected
+    -> refresh_notes(Model(..changed, note_selected: None))
+    _ -> changed
+  }
+}
+
+fn select_agent_detail(
+  model: Model,
+  inspector: agents.Inspector,
+  detail: agents.Detail,
+) -> Model {
+  let selected =
+    Model(
+      ..model,
+      overlay: AgentInspector(agents.Inspector(..inspector, detail:, scroll: 0)),
+    )
+  case detail {
+    agents.Notes -> refresh_notes(selected)
+    agents.Overview | agents.Messages -> selected
   }
 }
 
@@ -9875,6 +10144,44 @@ fn update_workspace_composer(
   }
 }
 
+// Owner context is read from the same exact escalation revision. A newer
+// metadata cut cannot silently rename the request whose grants are displayed.
+fn captured_approval_panel(model: Model, review: approval.Review) {
+  let context = {
+    use captured <- result.try(option.to_result(model.captured, Nil))
+    use cell <- result.try(
+      list.find(captured.1.cells, fn(cell) {
+        cell.namespace == register.FactCustom
+        && cell.key == "escalation/" <> review.id
+        && cell.seq == review.seq
+      }),
+    )
+    use fields <- result.try(case cell.value {
+      json.Object(fields) -> Ok(fields)
+      _ -> Error(Nil)
+    })
+    use scope <- result.try(list.key_find(fields, "scope"))
+    use fields <- result.try(case scope {
+      json.Object(fields) -> Ok(fields)
+      _ -> Error(Nil)
+    })
+    use owner <- result.try(case list.key_find(fields, "strand") {
+      Ok(json.String(owner)) -> Ok(owner)
+      _ -> Error(Nil)
+    })
+    use operation <- result.try(case list.key_find(fields, "operation") {
+      Ok(json.String(operation)) -> Ok(operation)
+      _ -> Error(Nil)
+    })
+    Ok("Requested by " <> owner <> " · operation " <> operation)
+  }
+  approval_panel.new(review)
+  |> approval_panel.with_context(result.unwrap(
+    context,
+    "Request owner unavailable in this capture",
+  ))
+}
+
 // Inspection opens the existing exact-request panel. It never chooses or sends
 // a decision, and a disappeared request cannot be replaced by a different one.
 fn inspect_agent_approval(model: Model, strand: String) -> Model {
@@ -9889,7 +10196,10 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
     })
   case found {
     Ok(review) ->
-      Model(..model, overlay: ApprovalInspector(approval_panel.new(review)))
+      Model(
+        ..model,
+        overlay: ApprovalInspector(captured_approval_panel(model, review)),
+      )
     Error(Nil) -> Model(..model, notice: "No current approval for this agent")
   }
 }
@@ -9999,6 +10309,8 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
     keys.Char("r"), False, True -> refresh_notes(model)
+    keys.Char("["), False, True -> select_note(model, -1)
+    keys.Char("]"), False, True -> select_note(model, 1)
     keys.Ctrl("g"), _, _ -> toggle_details(model)
     keys.PageUp, _, _ -> scroll_reading_panel(model, Older, 10)
     keys.PageDown, _, _ -> scroll_reading_panel(model, Newer, 10)
@@ -10015,6 +10327,8 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
         ..model,
         notes_open: False,
         note_board: None,
+        note_selected: None,
+        notes_requested: None,
         scroll_offset: 0,
         repaint_phase: !model.repaint_phase,
         notice: "agent notes closed",
@@ -10821,6 +11135,8 @@ fn submit_text(model: Model) -> Model {
         help_open: True,
         notes_open: False,
         note_board: None,
+        note_selected: None,
+        notes_requested: None,
         scroll_offset: 0,
         repaint_phase: !cleared.repaint_phase,
         notice: "/help",
@@ -10904,6 +11220,11 @@ fn submit_text(model: Model) -> Model {
         Model(
           ..cleared,
           help_open: False,
+          diff_view: DiffHidden,
+          worktree: worktree_view.State(
+            ..cleared.worktree,
+            focus: worktree_view.Composer,
+          ),
           notes_open: True,
           scroll_offset: 0,
           repaint_phase: !cleared.repaint_phase,
@@ -11983,6 +12304,10 @@ fn select_workspace(model: Model, session: String, strand: String) -> Model {
     strand_workspaces: dict.delete(parked, #(session, strand)),
     agent_rows: case model.session == session {
       True -> model.agent_rows
+      False -> []
+    },
+    agent_messages: case model.session == session {
+      True -> model.agent_messages
       False -> []
     },
     reviewer_rows: case model.session == session {

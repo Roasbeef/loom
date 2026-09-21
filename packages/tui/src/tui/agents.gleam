@@ -14,7 +14,7 @@ import etui/widgets/block
 import etui/widgets/paragraph
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tui/agent_view.{type Row}
@@ -32,6 +32,8 @@ pub type Inspector {
     scroll: Int,
     /// Keyboard owner; inspection never consumes composer text.
     focus: Focus,
+    /// The selected read-only detail, independent of the composer.
+    detail: Detail,
   )
 }
 
@@ -43,6 +45,19 @@ pub type Focus {
 
   /// Keys edit and submit the unchanged active recipient's draft.
   Composing
+}
+
+/// Every detail belongs to the inspected identity, never the message target.
+@internal
+pub type Detail {
+  /// Current task, outcome, activity, and exact pending decisions.
+  Overview
+
+  /// Captured sends to and from the inspected strand.
+  Messages
+
+  /// Explicitly read durable notes for the inspected strand.
+  Notes
 }
 
 /// Direction is explicit at navigation call sites.
@@ -60,11 +75,11 @@ pub type Direction {
 /// ## Examples
 ///
 /// ```gleam
-/// assert agents.inspect("main") == agents.Inspector("main", 0, agents.Browsing)
+/// assert agents.inspect("main") == agents.Inspector("main", 0, agents.Browsing, agents.Overview)
 /// ```
 @internal
 pub fn inspect(active: String) -> Inspector {
-  Inspector(active, 0, Browsing)
+  Inspector(active, 0, Browsing, Overview)
 }
 
 /// Moves by identity; a missing selection starts at the next available row.
@@ -90,7 +105,7 @@ pub fn navigate(
     Previous, True -> move_selection(index, list.length(rows), False)
   }
   case list.first(list.drop(rows, selected)) {
-    Ok(row) -> inspect(row.id)
+    Ok(row) -> Inspector(..inspector, selected: row.id, scroll: 0)
     Error(Nil) -> inspector
   }
 }
@@ -108,7 +123,7 @@ pub fn next_attention(inspector: Inspector, rows: List(Row)) -> Inspector {
   let ordered =
     list.append(list.drop(rows, index + 1), list.take(rows, index + 1))
   case list.find(ordered, fn(row) { agent_view.needs_attention(row.status) }) {
-    Ok(row) -> inspect(row.id)
+    Ok(row) -> Inspector(..inspector, selected: row.id, scroll: 0)
     Error(Nil) -> inspector
   }
 }
@@ -203,6 +218,82 @@ pub fn render_overlay(
   active: String,
   inspector: Inspector,
 ) -> buffer.Buffer {
+  render_inspection(buf, screen, rows, active, inspector, None)
+}
+
+/// Renders a read-only detail supplied by the owning model at its actual width.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agents.render_inspection(buf, area, rows, active, inspector, Some(content))
+/// ```
+@internal
+pub fn render_inspection(
+  buf: buffer.Buffer,
+  screen: Rect,
+  rows: List(Row),
+  active: String,
+  inspector: Inspector,
+  content: Option(fn(Int) -> List(span.Line)),
+) -> buffer.Buffer {
+  case screen.size.height < 10 {
+    True -> render_compact_inspection(buf, screen, rows, inspector, content)
+    False ->
+      render_full_inspection(buf, screen, rows, active, inspector, content)
+  }
+}
+
+// At short heights, framing would consume the entire body. Keep the selected
+// identity and navigation fixed while the remaining rows scroll the detail.
+fn render_compact_inspection(
+  buf: buffer.Buffer,
+  area: Rect,
+  rows: List(Row),
+  inspector: Inspector,
+  content: Option(fn(Int) -> List(span.Line)),
+) -> buffer.Buffer {
+  let #(identity, body) = case
+    list.find(rows, fn(row) { row.id == inspector.selected })
+  {
+    Error(Nil) -> #("Selected strand unavailable", [])
+    Ok(row) -> #(
+      "▸ " <> row.name <> " · " <> agent_view.label(row.status),
+      case content {
+        Some(render) -> render(area.size.width)
+        None ->
+          wrapped(
+            row.task <> "\n" <> row.activity,
+            area.size.width,
+            theme.overlay_plain(),
+          )
+      },
+    )
+  }
+  let height = int.max(0, area.size.height - 2)
+  let offset = int.min(inspector.scroll, int.max(0, list.length(body) - height))
+  paragraph.render_styled(buffer.clear(buf, area), area, [
+    line(fit(identity, area.size.width), theme.overlay_signal()),
+    ..list.append(list.take(list.drop(body, offset), height), [
+      line(
+        case inspector.focus {
+          Browsing -> "↑↓ inspect · 1/2/3 view · Esc close"
+          Composing -> "Editing composer · Esc inspects"
+        },
+        theme.overlay_quiet(),
+      ),
+    ])
+  ])
+}
+
+fn render_full_inspection(
+  buf: buffer.Buffer,
+  screen: Rect,
+  rows: List(Row),
+  active: String,
+  inspector: Inspector,
+  content: Option(fn(Int) -> List(span.Line)),
+) -> buffer.Buffer {
   let width = int.max(1, int.min(136, screen.size.width - 2))
   let height = int.max(1, screen.size.height - 2)
   let area = geometry.centered_rect(width, height, screen)
@@ -220,6 +311,7 @@ pub fn render_overlay(
     )
     |> block.with_padding(0, 0, 1, 1)
   let inside = block.inner(area, frame)
+  let detail_content = content
   let #(content, footer) = case geometry.split_v(inside, [Fill, Length(3)]) {
     [content, footer] -> #(content, footer)
     _ -> #(inside, geometry.rect_zero())
@@ -231,7 +323,7 @@ pub fn render_overlay(
     buf
     |> buffer.clear(screen)
     |> block.render(area, frame)
-    |> render_workspace(content, rows, active, inspector)
+    |> render_workspace(content, rows, active, inspector, detail_content)
   let footer_lines = [
     line(
       "To: "
@@ -244,7 +336,7 @@ pub fn render_overlay(
     ),
     line(
       case inspector.focus {
-        Browsing -> "↑/↓ inspect · n attention · a approval · PgUp/PgDn detail"
+        Browsing -> "↑/↓ inspect · n attention · a review permission"
         Composing ->
           "Enter submits to the named recipient · Tab changes delivery"
       },
@@ -252,7 +344,12 @@ pub fn render_overlay(
     ),
     line(
       case inspector.focus {
-        Browsing -> "Tab write to " <> active <> " · Esc conversation"
+        Browsing ->
+          case inspector.detail {
+            Notes ->
+              "[/] note · r refresh · PgUp/Dn scroll · Tab write · Esc close"
+            _ -> "1/2/3 view · PgUp/Dn scroll · Tab write · Esc close"
+          }
         Composing -> "Editing To " <> active <> " · Esc returns to roster"
       },
       theme.overlay_quiet(),
@@ -271,6 +368,7 @@ fn render_workspace(
   rows: List(Row),
   active: String,
   inspector: Inspector,
+  content: Option(fn(Int) -> List(span.Line)),
 ) -> buffer.Buffer {
   case area.size.width >= 96 {
     True -> {
@@ -294,9 +392,9 @@ fn render_workspace(
               theme.graphite,
             ),
           )
-          |> render_detail(detail, rows, inspector)
+          |> render_detail(detail, rows, inspector, content)
         }
-        _ -> render_detail(buf, area, rows, inspector)
+        _ -> render_detail(buf, area, rows, inspector, content)
       }
     }
     False -> {
@@ -318,9 +416,9 @@ fn render_workspace(
           |> paragraph.render_styled(roster, [
             line(fit(label, roster.size.width), theme.overlay_signal()),
           ])
-          |> render_detail(detail, rows, inspector)
+          |> render_detail(detail, rows, inspector, content)
         }
-        _ -> render_detail(buf, area, rows, inspector)
+        _ -> render_detail(buf, area, rows, inspector, content)
       }
     }
   }
@@ -331,6 +429,7 @@ fn render_detail(
   area: Rect,
   rows: List(Row),
   inspector: Inspector,
+  content: Option(fn(Int) -> List(span.Line)),
 ) -> buffer.Buffer {
   let lines = case list.find(rows, fn(row) { row.id == inspector.selected }) {
     Error(Nil) -> [
@@ -341,7 +440,22 @@ fn render_detail(
         theme.overlay_plain(),
       )
     ]
-    Ok(row) -> detail_lines(row, area.size.width)
+    Ok(row) -> {
+      let heading = case inspector.detail {
+        Overview -> "[1 Activity]  2 Messages  3 Notes"
+        Messages -> "1 Activity  [2 Messages]  3 Notes"
+        Notes -> "1 Activity  2 Messages  [3 Notes]"
+      }
+      let body = case content {
+        Some(render) -> render(area.size.width)
+        None -> detail_lines(row, area.size.width)
+      }
+      [
+        line(fit(heading, area.size.width), theme.overlay_current()),
+        span.line_plain(""),
+        ..body
+      ]
+    }
   }
   let offset =
     int.min(inspector.scroll, int.max(0, list.length(lines) - area.size.height))

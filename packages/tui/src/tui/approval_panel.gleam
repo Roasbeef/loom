@@ -13,7 +13,9 @@ import etui/widgets/paragraph
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import tui/approval
+import tui/text_hygiene
 import tui/theme
 
 /// Explicit decisions offered beside the exact requested authority.
@@ -63,6 +65,21 @@ pub fn new(review: approval.Review) -> State {
     Error(reason) -> reason
   }
   State(detail, 0, review, None)
+}
+
+/// Adds captured owner context without changing the exact consent record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval_panel.with_context(panel, "Requested by worker · operation 123")
+/// ```
+@internal
+pub fn with_context(state: State, context: String) -> State {
+  State(
+    ..state,
+    text: text_hygiene.single_line(context) <> "\n\n" <> state.text,
+  )
 }
 
 /// Scrolls the authority or selects a decision before explicitly confirming it.
@@ -178,7 +195,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   // can reinterpret a grant path or turn the preview into a link or control.
   let lines =
     span.wrap(
-      span.text_new([span.line_plain(state.text)]),
+      span.text_new(string.split(state.text, "\n") |> list.map(span.line_plain)),
       int.max(1, detail.size.width),
     ).lines
   let offset =

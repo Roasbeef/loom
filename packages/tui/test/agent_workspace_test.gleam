@@ -701,3 +701,25 @@ pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
   assert string.contains(header, "review-session")
   assert string.contains(header, "provider/model")
 }
+
+pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
+  let initial =
+    tui.Model(
+      ..model(),
+      strands: roster(),
+      input: textarea.state_from_string("retained draft"),
+    )
+    |> tui.update(backend.Resize(40, 12), _)
+    |> press("f2")
+    |> press("down")
+  let rendered =
+    tui.view(
+      tui.Model(..initial, frame_cache: None),
+      geometry.rect_new(0, 0, 40, 12),
+    ).0
+    |> frame.buffer_to_text
+  assert string.contains(rendered, "Review scheduler")
+  assert string.contains(rendered, "inspect")
+  assert string.contains(rendered, "To main")
+  assert string.contains(rendered, "retained draft")
+}

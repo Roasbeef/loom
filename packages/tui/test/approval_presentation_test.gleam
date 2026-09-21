@@ -104,3 +104,27 @@ pub fn approval_presentation_exact_display_boundary_and_narrow_scrolling_test() 
     as "a narrow panel wraps and scrolls to the entire grant, not just its prefix"
   assert approval_panel.update(keys.Escape, last) == approval_panel.Close
 }
+
+// Owner context changes the presentation, never the exact captured decision.
+pub fn approval_owner_context_preserves_exact_consent_test() {
+  let record = review("/work/report")
+  let panel =
+    approval_panel.new(record)
+    |> approval_panel.with_context("Requested by sub:review · operation run-1")
+  let screen = geometry.rect_new(0, 0, 100, 24)
+  let rendered =
+    approval_panel.render(buffer.buffer_new(screen), screen, panel)
+    |> frame.buffer_to_text
+  assert string.contains(rendered, "Requested by sub:review")
+  assert string.contains(rendered, "operation run-1")
+  let assert approval_panel.Continue(unselected) =
+    approval_panel.update(keys.Enter, panel)
+    as "adding owner context does not preselect consent"
+  let assert approval_panel.Continue(selected) =
+    approval_panel.update(keys.Right, unselected)
+    as "the operator explicitly chooses once-only permission"
+  let assert approval_panel.Decide(exact, approval_panel.AllowOnce) =
+    approval_panel.update(keys.Enter, selected)
+    as "confirmation returns the untouched captured request"
+  assert exact == record
+}
