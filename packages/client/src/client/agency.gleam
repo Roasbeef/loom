@@ -1481,7 +1481,7 @@ fn note(
   value: JsonValue,
 ) -> Result(Nil, Refusal) {
   use runtime <- result.try(borrow(config))
-  use key <- result.try(validate_key(key))
+  use key <- result.try(validate_key(key, within: 128))
   use Nil <- result.try(check_result_contract(runtime, caller, key, value))
 
   // The prefix is built here and the key is only ever appended to it, so
@@ -1529,8 +1529,12 @@ fn notes(
   // schema promises the blackboard, not the session.
   use prefix <- result.try(case prefix {
     None -> Ok(agent.blackboard_prefix)
+
+    // Reads address namespace-qualified keys, so their bound must include
+    // the strand name as well as the 128-character caller-owned suffix.
+    // A bounded 4 KiB prefix leaves room for nested child strand names.
     Some(text) ->
-      validate_key(text)
+      validate_key(text, within: 4096)
       |> result.map(fn(key) { agent.blackboard_prefix <> key })
   })
   Ok(notes_under(runtime, prefix))
@@ -1551,11 +1555,16 @@ fn notes_under(
 // depend on this — the prefix is prepended, and reservation is a prefix
 // test that `..` cannot defeat — but a key that renders back to the model
 // should be readable, and an unbounded one should not.
-fn validate_key(key: String) -> Result(String, Refusal) {
-  case key == "" || string.length(key) > 128 {
+fn validate_key(
+  key: String,
+  within max_length: Int,
+) -> Result(String, Refusal) {
+  case key == "" || string.length(key) > max_length {
     True ->
       Error(agent.InvalidArgument(
-        reason: "a key must be between 1 and 128 characters",
+        reason: "a key must be between 1 and "
+        <> int.to_string(max_length)
+        <> " characters",
       ))
     False ->
       case

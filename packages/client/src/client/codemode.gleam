@@ -15,8 +15,8 @@
 //// this host serves. The **workspace** seam is what `default_config`
 //// builds: `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed
 //// by `satellite.default_router`, a program that orchestrates *effects*.
-//// The **orchestration** seam is `cap/strand` plus `cap/report` and
-//// nothing else, routed onto the Agency closures the `agent_*` tools call,
+//// The **orchestration** seam is `cap/strand` plus `cap/report`, with
+//// a host-installed notes door, routed onto the Agency closures the `agent_*` tools call,
 //// a program that orchestrates *agents*. A host may serve either alone or
 //// both (`Surface`, `serving`); when it serves both, a submission names
 //// the one it wants and the tool defaults it to the workspace seam.
@@ -45,6 +45,11 @@
 //// `codemode.seam(codemode.orchestrating(config, over: agency))`, or
 //// `codemode.serving(config, codemode.BothSeams, over: agency)` to leave
 //// the choice to the model.
+////
+//// `serving` also installs a narrow notes door on either seam. Its two
+//// callbacks cannot spawn or message agents. The same optional door gates
+//// cap/notes imports, prompt guidance, routing, and lifetime quotas, and
+//// extension and resident surfaces never inherit it.
 ////
 //// ## One execution, one identity, one budget
 ////
@@ -194,6 +199,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/notes
 import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
@@ -268,6 +274,9 @@ pub type Config {
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
     surface: Surface,
+    /// The shared blackboard data door, installed independently of agent
+    /// orchestration. None removes its imports, signatures, and routing.
+    notes: Option(notes.Door),
     /// Where the session keeps its content-addressed blobs, and
     /// therefore where a `report.emit` artifact lands.
     ///
@@ -483,11 +492,15 @@ pub type Seams {
 ///
 pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
   let spawn_ceiling = orchestration.default_spawn_ceiling
-  Config(..config, surface: case seams {
-    WorkspaceOnly -> Workspace
-    OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
-    BothSeams -> Both(agency:, spawn_ceiling:)
-  })
+  Config(
+    ..config,
+    notes: Some(notes.Door(put: agency.note, scan: agency.notes)),
+    surface: case seams {
+      WorkspaceOnly -> Workspace
+      OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
+      BothSeams -> Both(agency:, spawn_ceiling:)
+    },
+  )
 }
 
 /// The same host configuration, serving the orchestration seam over a
@@ -562,8 +575,13 @@ pub fn seam_allowlist(
   config: Config,
   seam: vet_policy.Seam,
 ) -> vet_policy.VetPolicy {
-  mcp_wiring.allowed_imports(seam_mcp(config, seam))
-  |> list.fold(seam_policy(seam), vet_policy.allow)
+  let allowed =
+    mcp_wiring.allowed_imports(seam_mcp(config, seam))
+    |> list.fold(seam_policy(seam), vet_policy.allow)
+  case notes_on(config, seam) {
+    None -> allowed
+    Some(_) -> vet_policy.allow(allowed, "cap/notes")
+  }
 }
 
 // The MCP layer one seam sees, and the one place that decision is made.
@@ -689,7 +707,15 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
 /// ```
 ///
 pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
-  list.append(seam_caps(seam), mcp_wiring.serviced_caps(seam_mcp(config, seam)))
+  let caps =
+    list.append(
+      seam_caps(seam),
+      mcp_wiring.serviced_caps(seam_mcp(config, seam)),
+    )
+  case notes_on(config, seam) {
+    None -> caps
+    Some(_) -> list.append(caps, notes.serviced_caps)
+  }
 }
 
 /// The pooled outstanding-effect cap one execution runs under. Above the
@@ -775,6 +801,7 @@ pub fn default_config(
     toolchain_path: toolchain_path(toolchain),
     host_mounts: toolchain_mounts(toolchain),
     surface: Workspace,
+    notes: None,
     blob_root: workspace <> "/" <> blob_directory,
     scratch: scratch.none(),
     // No scheduling plane by default, the same posture `scratch.none()`
@@ -1999,7 +2026,7 @@ fn surface_router(
   config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
-  case config.surface, vetting_seam(request.seam) {
+  let router = case config.surface, vetting_seam(request.seam) {
     Workspace, _seam -> workspace_router(config, request)
     Both(..), vet_policy.WorkspaceSeam -> workspace_router(config, request)
     Orchestration(agency:, ..), _seam | Both(agency:, ..), _seam ->
@@ -2022,6 +2049,11 @@ fn surface_router(
         emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
         emit_ceiling: artifact.default_emit_ceiling,
       ))
+  }
+  case notes_on(config, vetting_seam(request.seam)) {
+    None -> router
+    Some(door) ->
+      notes.routing(door, request.strand, request.source_index, over: router)
   }
 }
 
@@ -2912,7 +2944,7 @@ fn surface_ceilings(
   config: Config,
   request: codemode_tool.Request,
 ) -> List(satellite.CapCeiling) {
-  case config.surface, vetting_seam(request.seam) {
+  let ceilings = case config.surface, vetting_seam(request.seam) {
     Workspace, _seam | Both(..), vet_policy.WorkspaceSeam ->
       workspace.ceilings(workspace_seam(config, request))
     Orchestration(spawn_ceiling:, ..), _seam
@@ -2922,6 +2954,10 @@ fn surface_ceilings(
         spawn_ceiling,
         emit_admissions: artifact.default_emit_ceiling,
       )
+  }
+  case notes_on(config, vetting_seam(request.seam)) {
+    None -> ceilings
+    Some(_) -> list.append(ceilings, notes.ceilings())
   }
 }
 
@@ -3142,5 +3178,14 @@ fn directory_of(path: String) -> String {
           }
         [] -> "."
       }
+  }
+}
+
+// Installed extensions and resident hooks do not inherit model note writes.
+// This choice gates the import surface, advertised calls, router, and quotas.
+fn notes_on(config: Config, seam: vet_policy.Seam) -> Option(notes.Door) {
+  case seam {
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.notes
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
   }
 }

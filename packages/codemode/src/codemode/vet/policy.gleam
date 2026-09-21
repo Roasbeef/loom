@@ -684,7 +684,13 @@ pub fn extension_stdlib_modules() -> List(String) {
 // `docs/architecture/extensions.md` states it beside the other
 // invariants, and `dispatch_test` pins both polarities.
 
-/// The capability-prelude modules on **no** seam, deliberately.
+/// Prelude modules outside every static seam. Host-installed modules are
+/// added only when their corresponding runtime door is present.
+///
+/// cap/notes is installed by client/codemode for workspace and orchestration
+/// programs with a blackboard door. Extensions and resident hooks never gain
+/// it. Its static absence prevents advertising a door an unconfigured host
+/// cannot answer.
 ///
 /// `cap/runtime` is the boot runtime: the satellite's generated entry
 /// module calls it, and a submitted program has no business naming it. So
@@ -722,7 +728,7 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
-  ["cap/mcp", "cap/runtime"]
+  ["cap/notes", "cap/mcp", "cap/runtime"]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,

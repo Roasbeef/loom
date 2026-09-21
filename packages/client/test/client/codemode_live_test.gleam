@@ -46,9 +46,11 @@ import gleam/string
 import mcp/client as mcp_client
 import mcp/codegen
 import provider/secret
+import runtime/api
 import simplifile
 import support/addresses
 import support/fake_mcp
+import support/notes_session
 import tools/agent
 import tools/blob
 import tools/codemode as codemode_tool
@@ -2009,4 +2011,106 @@ fn run_search(ready: Ready) -> Nil {
     <> "the real pipeline; the hidden tree and the escaping link stayed out",
   )
   stop_rig(rig)
+}
+
+// Two real jailed programs, separated by SQLite close/reopen, prove that
+// default workspace code mode owns a usable persistent data path.
+pub fn workspace_notes_survive_sqlite_reopen_and_feed_a_fresh_program_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error("SKIP workspace_notes_round_trip: " <> reason)
+    Ok(ready) -> run_notes_round_trip(ready)
+  }
+}
+
+fn run_notes_round_trip(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let path = rig.root <> "/notes.db"
+  let first = notes_session.open(path, wall_clock())
+  let base =
+    codemode.default_config(
+      broker: rig.broker,
+      clock: wall_clock(),
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
+    )
+  let writer =
+    codemode.serving(base, codemode.WorkspaceOnly, over: first.agency)
+  let assert Ok(Nil) =
+    simplifile.write(rig.workspace <> "/input.json", "[3,5,8]")
+    as "analysis input must exist"
+  let assert Ok(source) =
+    simplifile.read("../../docs/examples/notes_analysis.gleam")
+    as "the documented writer must exist"
+  let outcome = run_notes_program(writer, rig, source, "notes-write")
+  assert !outcome.is_error as rendered_text(outcome)
+  assert string.contains(rendered_text(outcome), "Saved analysis")
+  let assert Ok(Nil) = api.close(first.runtime)
+    as "the first runtime must close its SQLite writer"
+
+  let second = notes_session.open(path, wall_clock())
+  let reader =
+    codemode.serving(base, codemode.WorkspaceOnly, over: second.agency)
+  let assert Ok(source) =
+    simplifile.read("../../docs/examples/notes_reuse.gleam")
+    as "the documented reader must exist"
+  let outcome = run_notes_program(reader, rig, source, "notes-read")
+  case outcome.is_error {
+    True -> io.println_error(rendered_text(outcome))
+    False -> Nil
+  }
+  assert !outcome.is_error as rendered_text(outcome)
+  assert notes_program_value(outcome)
+    == json.Object([
+      #("saved_sum", json.Int(16)),
+      #("next_sum", json.Int(17)),
+    ])
+  let quota =
+    run_notes_program(reader, rig, notes_quota_source(), "notes-quota")
+  assert !quota.is_error as rendered_text(quota)
+  assert notes_program_value(quota) == json.String("admission_ceiling")
+  let assert Ok(Nil) = api.close(second.runtime)
+    as "the reopened runtime must close"
+  stop_rig(rig)
+}
+
+fn run_notes_program(
+  config: codemode.Config,
+  rig: Rig,
+  source: String,
+  step: String,
+) -> tool.ToolOutcome {
+  let ctx =
+    tool.Ctx(
+      ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      strand: "main",
+      step_id: step,
+    )
+  codemode_tool.tool_for(codemode.seam(config)).run(
+    ctx,
+    json.Object([
+      #("program", json.String(source)),
+      #("within_ms", json.Int(600_000)),
+    ]),
+  )
+}
+
+fn notes_quota_source() -> String {
+  "import cap/fs\nimport cap/report\nimport gleam/list\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  let results = list.map(list.repeat(Nil, 65), fn(_) { fs.read(\"note://main/analysis\") })\n"
+  <> "  case list.last(results) {\n"
+  <> "    Ok(Error(fs.FsFailed(code: \"admission_ceiling\", message: _))) -> report.text(\"admission_ceiling\")\n"
+  <> "    _ -> report.failure(\"virtual read quota was not enforced\")\n"
+  <> "  }\n}\n"
+}
+
+// Compare structured results directly so unrelated diagnostic numbers cannot
+// make a wrong computed value look like a successful persistence round trip.
+fn notes_program_value(outcome: tool.ToolOutcome) -> json.JsonValue {
+  let assert option.Some(json.Object(fields)) = outcome.details
+    as "a completed program must retain structured details"
+  let assert Ok(value) = list.key_find(fields, "value")
+    as "a completed program must retain its returned value"
+  value
 }

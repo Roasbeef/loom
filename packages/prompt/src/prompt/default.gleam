@@ -81,6 +81,13 @@ IDs to retrieve the complete entry. context_remaining reports estimated
 room before compaction; it does not initiate compaction or reserve a final
 note-writing turn.
 
+When code_mode advertises cap/notes, persist structured analysis directly
+with notes.put and read it in later programs with notes.get or notes.list.
+This uses the same durable session blackboard as agent_note. Return only
+the summary needed for the next decision; do not copy a large payload
+through the conversation merely to save it. cap/kv is evictable scratch.
+Use note:// reads only when the advertised filesystem API supports them.
+
 %% section tool_discipline
 Your tools and their schemas are given to you separately and are
 authoritative. They are not repeated here; the rest of this section is

@@ -619,6 +619,7 @@ pub fn description(mode: CodeMode) -> String {
   <> "switch to a program: fetch once, filter internally, return the "
   <> "answer. Write `pub fn main() -> report.Outcome`, returning "
   <> "`report.text(...)` or `report.value(...)`. "
+  <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
@@ -1506,5 +1507,18 @@ fn bounded(
         terminate: tool.ContinueRun,
       )
       |> blob.with_blob_details(bounded)
+  }
+}
+
+// Describe the usable door, not merely a module present in the build seed.
+fn notes_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/notes")
+    })
+  {
+    False -> ""
+    True ->
+      "Persist structured analysis with cap/notes.put(key, value), using report.object/list and scalar builders. Later calls read it with notes.get(\"main/analysis\") or notes.list(prefix); keys are relative to agent/, and list returns reusable keys. A put updates your own namespace; reads share this session's blackboard with agent_note/agent_notes. Notes survive execution exit and compaction, are last-write-wins, and notify nobody. Store bulky data in report.emit artifacts or workspace files and keep a small reference note. cap/kv is evictable scratch. In workspace code mode, fs.read(\"note://main/analysis\") returns JSON; note:// is read-only and is not an OS mount. "
   }
 }

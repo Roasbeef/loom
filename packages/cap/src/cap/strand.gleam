@@ -59,7 +59,7 @@
 //// |---|---|---|
 //// | `spawn` | 32 | a child strand, durable |
 //// | `send` | 128 | a durable commit, and to an idle child it starts a run |
-//// | `note` | 256 | a durable write-once register under a chosen key |
+//// | `note` | 256 | a durable register update under a chosen key |
 //// | `notes` | 64 | a full prefix scan of the session's agent namespaces |
 //// | `wait` | none | its cost is time, which the clamp and the deadline bind |
 //// | `roster` | none | bounded by `session_strands`, a structural constant |

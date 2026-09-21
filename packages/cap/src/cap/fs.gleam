@@ -25,6 +25,7 @@ import cap/internal/wire
 import core/msgpack.{type MsgPackValue}
 import gleam/list
 import gleam/result
+import gleam/string
 
 /// Why a filesystem call failed. Descriptive variants for the causes a
 /// program branches on; `FsFailed` carries any other broker code
@@ -70,13 +71,29 @@ pub type Replacement {
   Replacement(find: String, replace_with: String)
 }
 
-/// Reads a file's contents as text.
+/// Reads a file's contents as text. With a notes-enabled host,
+/// note://<strand>/<key> returns the exact note serialized as JSON.
+/// The suffix is an opaque key, not an OS path. Missing notes are NotFound.
+/// Virtual reads admit at most 64 calls per execution; they are not mounted
+/// files, so shell tools require an explicit copy to a workspace file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// fs.read("note://main/analysis")
+/// ```
 ///
 /// Capability: `fs.read`.
 pub fn read(path: String) -> Result(String, FsError) {
-  let args = wire.args([#("path", wire.string(path))])
+  let #(cap, args) = case string.starts_with(path, "note://") {
+    True -> #(
+      "notes.read",
+      wire.args([#("key", wire.string(string.drop_start(path, 7)))]),
+    )
+    False -> #("fs.read", wire.args([#("path", wire.string(path))]))
+  }
   use value <- result.try(
-    dispatch.call("fs.read", args) |> result.map_error(map_error(_, path)),
+    dispatch.call(cap, args) |> result.map_error(map_error(_, path)),
   )
   wire.string_field(value, "contents")
   |> result.map_error(fn(reason) {
@@ -88,6 +105,7 @@ pub fn read(path: String) -> Result(String, FsError) {
 ///
 /// Capability: `fs.write`.
 pub fn write(path: String, contents: String) -> Result(Nil, FsError) {
+  use Nil <- result.try(ordinary_path(path))
   let args =
     wire.args([
       #("path", wire.string(path)),
@@ -102,6 +120,7 @@ pub fn write(path: String, contents: String) -> Result(Nil, FsError) {
 ///
 /// Capability: `fs.list`.
 pub fn list(path: String) -> Result(List(DirEntry), FsError) {
+  use Nil <- result.try(ordinary_path(path))
   let args = wire.args([#("path", wire.string(path))])
   use value <- result.try(
     dispatch.call("fs.list", args) |> result.map_error(map_error(_, path)),
@@ -127,6 +146,7 @@ pub fn edit(
   path: String,
   replacements: List(Replacement),
 ) -> Result(Nil, FsError) {
+  use Nil <- result.try(ordinary_path(path))
   let args =
     wire.args([
       #("path", wire.string(path)),
@@ -168,5 +188,17 @@ fn map_error(error: CallError, path: String) -> FsError {
         "invalid_argument" -> InvalidArgument(message:)
         _ -> FsFailed(code:, message:)
       }
+  }
+}
+
+// Virtual notes are readable values only; never reinterpret their names as
+// workspace paths when an operation has no note equivalent.
+fn ordinary_path(path: String) -> Result(Nil, FsError) {
+  case string.starts_with(path, "note://") {
+    True ->
+      Error(InvalidArgument(
+        "note:// supports read only; use cap/notes.put to update a note or cap/notes.list to enumerate notes",
+      ))
+    False -> Ok(Nil)
   }
 }

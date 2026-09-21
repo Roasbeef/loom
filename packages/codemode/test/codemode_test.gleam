@@ -551,7 +551,7 @@ pub fn the_shared_stdlib_list_admits_no_capability_test() {
 /// list itself and that it contradicts neither seam.
 pub fn a_harness_only_capability_is_on_no_seam_test() {
   let harness_only = policy.harness_only_cap_modules()
-  assert harness_only == ["cap/mcp", "cap/runtime"]
+  assert harness_only == ["cap/notes", "cap/mcp", "cap/runtime"]
   assert list.all(harness_only, fn(name) {
     !policy.contains(policy.default(), name)
     && !policy.contains(policy.orchestration(), name)
