@@ -20,6 +20,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
+import host/skill
 import machine/operation
 import machine/planner.{ModelResolved}
 import machine/strand
@@ -886,4 +887,25 @@ pub fn extension_wrappers_do_not_copy_sibling_slots_test() {
   assert ffi_memory.flat_words(large.tools.run)
     == ffi_memory.flat_words(small.tools.run)
   assert large.tools.replay_still_safe("marker")
+}
+
+pub fn failed_skill_selection_keeps_the_provider_projection_test() {
+  let original = [user("Review this")]
+  let assert Ok(candidate) =
+    skill.parse(
+      "/skills/review/SKILL.md",
+      "---\nname: review\ndescription: Review code\n---\nCheck invariants.",
+    )
+    as "a valid review fixture"
+  let bus =
+    started([
+      hooks.Extension("failed", ["select_skills"], fn(_, _, _, _) {
+        Error(hooks.Deadline)
+      }),
+      hooks.Extension("unknown", ["select_skills"], fn(_, _, _, _) {
+        Ok(msgpack.StringValue("{\"skills\":[\"invented\"]}"))
+      }),
+    ])
+  assert hooks.select_skills(bus, operation(), [candidate], original)
+    == original
 }

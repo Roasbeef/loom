@@ -2252,6 +2252,7 @@ fn inert_hooks(name: String, events: List(String), logger: Logger) -> Nil {
 fn with_extension_hooks(
   built: effects.Effects,
   registrations: List(Registration),
+  skills: skill.Catalogue,
   session: session.Session,
   clock: Clock,
   logger: Logger,
@@ -2277,6 +2278,7 @@ fn with_extension_hooks(
           // booted the extension", and that is now.
           extension_hooks.session_start(bus)
           extension_hooks.wire(built, bus, session, clock)
+          |> extension_hooks.with_skills(bus, skill.entries(skills))
         }
       }
   }
@@ -3248,7 +3250,14 @@ fn assemble_in(
   // request's messages. Wrapping rather than replacing is what lets the
   // two layers coexist at all.
   let effects_record =
-    with_extension_hooks(effects_record, extensions, opened, clock, logger)
+    with_extension_hooks(
+      effects_record,
+      extensions,
+      skills,
+      opened,
+      clock,
+      logger,
+    )
 
   // The imported-hook compatibility layer goes on last of all, over
   // the bus-composed record, for the same reason the bus goes on

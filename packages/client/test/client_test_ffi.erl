@@ -319,6 +319,9 @@ origin_header(Line) ->
 %% The body carries no part of the request, deliberately: see the header
 %% comment. A path this origin does not know answers 404 with a body that
 %% is still not the request.
+origin_respond(Socket, <<"/v1/systemone">>) ->
+    origin_send(Socket, 200,
+      <<"{\"model\":\"jev-fixture\",\"answers\":{\"review\":{\"type\":\"noul\",\"noul\":0.99}},\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}">>);
 origin_respond(Socket, <<"/get">>) ->
     origin_send(Socket, 200, <<"the origin answered">>);
 origin_respond(Socket, _Path) ->

@@ -71,6 +71,7 @@ import codemode/identity
 import codemode/launch
 import codemode/satellite
 import core/clock
+import core/codec as core_codec
 import core/entry
 import core/ids
 import core/json
@@ -84,7 +85,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import host/skill
 import machine/strand as machine_strand
+import provider/secret
 import provider/stream
 import runtime/api
 import runtime/effects
@@ -1388,4 +1391,194 @@ fn repository_root() -> String {
 
 fn wall_clock() -> clock.Clock {
   clock.from_function(ffi_os.system_time_ms)
+}
+
+/// Runs the separately maintained selector through installation, a real jailed
+/// satellite, TLS egress, the runtime and the provider request boundary. Setting
+/// the source opts into a mandatory test: missing prerequisites then fail.
+pub fn skill_selector_reaches_provider_test_() -> EunitTest {
+  Timeout(e2e_timeout_seconds / gleeunit_timeout_scale, fn() {
+    case secret.lookup(secret.env(), "LOOM_SKILL_SELECTOR_SOURCE") {
+      Error(Nil) ->
+        io.println_error(
+          "SKIP skill selector: set LOOM_SKILL_SELECTOR_SOURCE to a clean source tree",
+        )
+      Ok(path) -> {
+        let assert Ok(ready) = prerequisites()
+          as "selector e2e prerequisites are required"
+        selector_drive(ready, path)
+      }
+    }
+  })
+}
+
+fn selector_drive(ready: Ready, path: String) -> Nil {
+  let #(server, port, root_der) = origin.start()
+  let host = "localhost:" <> int.to_string(port)
+  let assert Ok(installed_at) = install_fixture(ready, host)
+    as "the real build plane must be usable"
+  let assert Ok(tree) = archive.from_directory(path, archive.default_caps())
+    as "the selector source tree must be readable"
+  let files =
+    list.map(tree.files, fn(file) {
+      let assert Ok(text) = bit_array.to_string(file.bytes)
+        as "selector files are text"
+      let text = case file.path {
+        "extension.toml" -> string.replace(text, "api.typesafe.ai", host)
+        "src/jevelin.gleam" ->
+          string.replace(text, "https://api.typesafe.ai", "https://" <> host)
+        _other -> text
+      }
+      #(file.path, text)
+    })
+  let assert Ok(#(written, decoded, artifact)) =
+    install_beside(installed_at, files, "selector-src")
+    as "the real hook-only selector must vet and build offline"
+  assert decoded.tools == [] as "selection needs no dummy model tool"
+
+  let hosts_name = addresses.new()
+  let seam = hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000)
+  let taps = process.new_subject()
+  let specs = process.new_subject()
+  let holder = pending_holder()
+  let config =
+    dispatch.Config(
+      host: installed_at.host,
+      hosts: seam,
+      secrets: fn(name) {
+        case name {
+          "JEV_AUTHORIZATION" -> Ok(secret_value)
+          _other -> Error(Nil)
+        }
+      },
+      trust: egress.PinnedRoots([root_der]),
+      launch: tapping(taps, specs),
+      memory: borrowing(holder),
+    )
+  let assert Ok(_started) =
+    hosts.start(hosts_name, wall_clock(), [
+      dispatch.hosting(config, written, decoded, artifact:),
+    ])
+    as "selector satellite registry starts"
+  let at =
+    dispatch.coordinates(live_ctx(
+      installed_at.workspace,
+      installed_at.base_policy,
+    ))
+  let assert Ok(bus) =
+    hooks.start(
+      [
+        hooks.Extension(
+          written.name,
+          ["select_skills"],
+          hosts.invoker(seam, at:),
+        ),
+      ],
+      log.discard(),
+    )
+    as "selector bus starts"
+
+  let assert Ok(review) =
+    skill.parse(
+      "/skills/review/SKILL.md",
+      "---\nname: review\ndescription: Review code for bugs\n---\nCheck ownership before proposing changes.\n",
+    )
+    as "the captured review skill parses"
+  let assert Ok(manual) =
+    skill.parse(
+      "/skills/deploy/SKILL.md",
+      "---\nname: deploy\ndescription: Deploy\ndisable-model-invocation: true\n---\nNever auto-load this sentinel.\n",
+    )
+    as "the explicit-only skill parses"
+  let provider_requests = process.new_subject()
+  let assert Ok(opened) =
+    open_session(installed_at.live_root <> "/selector.sqlite")
+    as "selector session opens"
+  let assert Ok(entropy) = start_entropy() as "entropy starts"
+  let base =
+    effects.Effects(
+      clock: wall_clock(),
+      entropy:,
+      timers: effects.real_timers(),
+      tools: refusing_tools(),
+      hooks: effects.default_hooks(),
+      provider: effects.ProviderSurface(timeout_ms: 30_000, request: fn(spec) {
+        process.send(provider_requests, spec)
+        stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
+      }),
+    )
+  let wired =
+    hooks.wire(base, bus, opened, wall_clock())
+    |> hooks.with_skills(bus, [review, manual])
+  let assert Ok(runtime) =
+    api.open(
+      opened,
+      wired,
+      api.default_options(
+        machine_strand.StrandConfiguration(
+          model: machine_strand.ModelIdentity("acme", "loom-1"),
+          thinking_level: machine_strand.ThinkingOff,
+          active_tool_names: [],
+        ),
+      ),
+    )
+    as "the runtime opens with production hook composition"
+  process.send(holder, Held(runtime))
+  let original = [a_user_message("Review this change for bugs")]
+  let assert Ok(operation) = api.prompt(runtime, original)
+    as "an ordinary task starts"
+  let assert Ok(effects.GenerationRequest(context:, ..)) =
+    process.receive(provider_requests, within: 15_000)
+    as "the provider receives automatically loaded skill instructions"
+  let projected =
+    json.to_string(json.Array(list.map(context, core_codec.encode_message)))
+  assert string.contains(projected, "Check ownership before proposing changes.")
+  assert !string.contains(projected, "Never auto-load this sentinel.")
+  assert string.contains(projected, "Automatically loaded skill")
+  assert list.length(origin.seen(server)) == 1
+    as "one batched request reaches Jev"
+  assert string.contains(
+    string.join(list.flatten(origin.seen(server)), "\n"),
+    "authorization: " <> secret_value,
+  )
+
+  // Projection is transient: the same base messages produce one copy again.
+  let repeated = wired.hooks.context(operation, original)
+  assert list.length(repeated) == 2
+    as "a repeated projection does not duplicate the skill"
+  assert list.length(origin.seen(server)) == 1
+    as "durable extension memory avoids another Jev request"
+  let frames = drain(taps, [])
+  assert !list.any(frames, fn(frame) { carries(frame, secret_value) })
+    as "the credential never crosses the satellite capability channel"
+  api.abort(runtime)
+  assert api.close(runtime) == Ok(Nil)
+  hosts.stop(hosts_name, timeout_ms: registry_stop_ms)
+  origin.stop(server)
+  stop(installed_at)
+  io.println(
+    "skill selector e2e: real hook-only install, jailed Jevelin, TLS egress and provider projection verified",
+  )
+}
+
+// Installation needs a memory door before the runtime exists. No hook is
+// invoked until Held publishes the runtime; a premature borrow times out.
+fn pending_holder() -> Subject(Holding) {
+  let assert Ok(started) =
+    actor.new(None)
+    |> actor.on_message(fn(held, message) {
+      case message {
+        Held(runtime:) -> actor.continue(Some(runtime))
+        Borrow(reply:) -> {
+          case held {
+            Some(runtime) -> process.send(reply, runtime)
+            None -> Nil
+          }
+          actor.continue(held)
+        }
+      }
+    })
+    |> actor.start
+    as "the runtime holder starts before dispatch"
+  started.data
 }

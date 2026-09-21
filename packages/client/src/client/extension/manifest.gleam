@@ -36,7 +36,7 @@
 //// `tier` decodes only `"jailed"`. A harness-resident body is phase 4 and
 //// there is no loader for one, so a manifest naming the tier is refused
 //// saying that rather than installed and ignored. `[[hook]]` is accepted
-//// from phase 3 on: the event must be one of the nine the ruling fixes
+//// from phase 3 on: the event must be one of the declared hook events
 //// and the entry must name a module the package ships, both checked here
 //// so that the hook bus never has to re-check either.
 
@@ -75,6 +75,9 @@ pub const before_agent_start_event = "before_agent_start"
 /// than a notification, so it never travels the bus.
 pub const context_event = "context"
 
+/// `select_skills`: propose known instructions for the current projection.
+pub const select_skills_event = "select_skills"
+
 /// `tool_call`: a tool call was planned, before dispatch.
 pub const tool_call_event = "tool_call"
 
@@ -102,7 +105,7 @@ pub const usage_event = "usage"
 pub const hook_events = [
   session_start_event, before_agent_start_event, context_event, tool_call_event,
   tool_result_event, agent_end_event, agent_settled_event, before_compact_event,
-  usage_event,
+  usage_event, select_skills_event,
 ]
 
 /// Where an extension's body runs.
@@ -267,6 +270,10 @@ pub fn decode(
   use tier <- result.try(tier_field(extension))
   use tools <- result.try(tools_of(document, surroundings))
   use hooks <- result.try(hooks_of(document, surroundings))
+  use Nil <- result.try(case tools, hooks {
+    [], [] -> Error("an extension registers at least one tool or hook")
+    _, _ -> Ok(Nil)
+  })
   use net <- result.try(net_of(document))
   Ok(Manifest(
     name:,
@@ -330,10 +337,6 @@ fn tools_of(
   surroundings: Surroundings,
 ) -> Result(List(Tool), String) {
   use entries <- result.try(array_of_tables(document, "tool"))
-  use Nil <- result.try(case entries {
-    [] -> Error("an extension registers at least one [[tool]]")
-    [_, ..] -> Ok(Nil)
-  })
   use tools <- result.try(
     list.try_map(entries, fn(fields) { tool_of(fields, surroundings) }),
   )
