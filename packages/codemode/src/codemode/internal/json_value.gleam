@@ -1,12 +1,12 @@
-//// Lossless conversion between the JSON blackboard and capability values.
-//// Binary values and non-text object keys are refused rather than coerced.
+//// The orchestration and notes routers share core's JSON value conversion.
+//// Keeping this forwarding boundary preserves their internal imports while
+//// report helpers in the satellite use the same conversion rules.
 
 import core/json.{type JsonValue}
+import core/json_wire
 import core/msgpack.{type MsgPackValue}
-import gleam/list
-import gleam/result
 
-/// One JsonValue as the msgpack value the wire carries.
+/// Converts a stored JSON value to the wire representation.
 ///
 /// ## Examples
 ///
@@ -14,23 +14,10 @@ import gleam/result
 /// of_json(json.Null) == msgpack.NilValue
 /// ```
 pub fn of_json(value: JsonValue) -> MsgPackValue {
-  case value {
-    json.Null -> msgpack.NilValue
-    json.Bool(value:) -> msgpack.BoolValue(value)
-    json.Int(value:) -> msgpack.IntValue(value)
-    json.Float(value:) -> msgpack.FloatValue(value)
-    json.String(value:) -> msgpack.StringValue(value)
-    json.Array(items:) -> msgpack.ArrayValue(list.map(items, of_json))
-    json.Object(fields:) ->
-      msgpack.MapValue(
-        list.map(fields, fn(entry) {
-          #(msgpack.StringValue(entry.0), of_json(entry.1))
-        }),
-      )
-  }
+  json_wire.of_json(value)
 }
 
-/// One msgpack value as a JsonValue, or why it has no JSON form.
+/// Refuses values that JSON cannot represent without losing information.
 ///
 /// ## Examples
 ///
@@ -38,37 +25,5 @@ pub fn of_json(value: JsonValue) -> MsgPackValue {
 /// to_json(msgpack.NilValue) == Ok(json.Null)
 /// ```
 pub fn to_json(value: MsgPackValue) -> Result(JsonValue, String) {
-  case value {
-    msgpack.NilValue -> Ok(json.Null)
-    msgpack.BoolValue(value:) -> Ok(json.Bool(value))
-    msgpack.IntValue(value:) -> Ok(json.Int(value))
-    msgpack.FloatValue(value:) -> Ok(json.Float(value))
-    msgpack.StringValue(value:) -> Ok(json.String(value))
-    msgpack.BinaryValue(bytes: _) ->
-      Error(
-        "must not hold raw bytes: the blackboard stores JSON, which has no "
-        <> "binary form; send text instead",
-      )
-    msgpack.ArrayValue(items:) ->
-      list.try_map(items, to_json) |> result.map(json.Array)
-    msgpack.MapValue(entries:) ->
-      list.try_map(entries, fn(entry) {
-        case entry.0 {
-          msgpack.StringValue(key) ->
-            to_json(entry.1) |> result.map(fn(held) { #(key, held) })
-          msgpack.NilValue
-          | msgpack.BoolValue(..)
-          | msgpack.IntValue(..)
-          | msgpack.FloatValue(..)
-          | msgpack.BinaryValue(..)
-          | msgpack.ArrayValue(..)
-          | msgpack.MapValue(..) ->
-            Error(
-              "must key its objects by text: the blackboard stores JSON, "
-              <> "whose object keys are always strings",
-            )
-        }
-      })
-      |> result.map(json.Object)
-  }
+  json_wire.to_json(value)
 }
