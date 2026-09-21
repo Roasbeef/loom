@@ -80,7 +80,7 @@ type Message {
   Begin(process.Subject(Result(Nil, String)))
   Stop(process.Subject(String))
   Notify(ids.SessionId)
-  Query(ids.SessionId, String, Int, tool.Scope, process.Subject(Reply))
+  Query(ids.SessionId, Lookup, Int, tool.Scope, process.Subject(Reply))
   Read(ids.SessionId, ids.SessionId, ids.EntryId, process.Subject(Reply))
   Step
 }
@@ -111,9 +111,20 @@ type Phase {
   Blocked(String)
 }
 
+// What a search asks the index for. A browse rides the same request as a
+// ranked search, because it owes the caller the same refresh first: rows a
+// sibling committed since the last sync are exactly the recent ones.
+type Lookup {
+  // Ranked full-text hits for a trimmed, non-empty query.
+  Matching(String)
+
+  // The calling session's newest rows, newest first; always `ThisSession`.
+  Newest
+}
+
 type Request {
   Background
-  SearchRequest(ids.SessionId, String, Int, tool.Scope, process.Subject(Reply))
+  SearchRequest(ids.SessionId, Lookup, Int, tool.Scope, process.Subject(Reply))
   EntryRequest(
     ids.SessionId,
     ids.SessionId,
@@ -229,14 +240,10 @@ pub fn notify(shared: Shared, session: ids.SessionId) -> Nil {
 pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
   tool.History(
     search: fn(text, limit, scope) {
-      use reply <- result.try(
-        exchange(shared, Query(current, text, limit, scope, _))
-        |> result.map_error(tool.IndexUnavailable),
-      )
-      case reply {
-        Hits(answer) -> answer
-        Entry(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
-      }
+      hits(shared, Query(current, Matching(text), limit, scope, _))
+    },
+    recent: fn(limit) {
+      hits(shared, Query(current, Newest, limit, tool.ThisSession, _))
     },
     read: fn(session, entry) {
       use reply <- result.try(
@@ -249,6 +256,20 @@ pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
       }
     },
   )
+}
+
+fn hits(
+  shared: Shared,
+  request: fn(process.Subject(Reply)) -> Message,
+) -> Result(List(tool.Hit), tool.Refusal) {
+  use reply <- result.try(
+    exchange(shared, request)
+    |> result.map_error(tool.IndexUnavailable),
+  )
+  case reply {
+    Hits(answer) -> answer
+    Entry(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
+  }
 }
 
 fn exchange(shared: Shared, request) {
@@ -297,8 +318,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(state)
         }
       }
-    Query(current, text, limit, scope, reply) ->
-      admit(state, SearchRequest(current, text, limit, scope, reply))
+    Query(current, lookup, limit, scope, reply) ->
+      admit(state, SearchRequest(current, lookup, limit, scope, reply))
     Read(current, session, entry, reply) ->
       admit(state, EntryRequest(current, session, entry, reply))
     Step -> step(state)
@@ -906,7 +927,7 @@ fn finish_job(state: State, job: Job) {
     Background -> advance(State(..state, phase: Ready))
     EntryRequest(_, _, _, _) ->
       fail_job(state, job, "history entry was not found")
-    SearchRequest(current, text, limit, scope, reply) -> {
+    SearchRequest(current, lookup, limit, scope, reply) -> {
       let answer = {
         use sources <- result.try(authorized(state.config))
         use _ <- result.try(member(sources, current))
@@ -924,7 +945,10 @@ fn finish_job(state: State, job: Job) {
           tool.ThisSession -> [current]
           tool.Repository -> list.map(sources, fn(item) { item.session })
         }
-        search.query_authorized(index, ids, text, limit)
+        case lookup {
+          Matching(text) -> search.query_authorized(index, ids, text, limit)
+          Newest -> search.recent_in_session(index, session: current, limit:)
+        }
         |> result.map_error(string.inspect)
         |> result.map(
           list.map(_, fn(hit) { tool.Hit(hit.session, hit.entry, hit.snippet) }),

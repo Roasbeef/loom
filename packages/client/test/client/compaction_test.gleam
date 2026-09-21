@@ -230,6 +230,9 @@ pub fn production_threshold_references_a_retrievable_result_test() {
       search: fn(_, _, _) {
         Error(history_tool.IndexUnavailable("search is unused"))
       },
+      recent: fn(_) {
+        Error(history_tool.IndexUnavailable("browsing is unused"))
+      },
       read: fn(got_session, got_entry) {
         sqlite.read_entry(path:, session: got_session, entry: got_entry)
         |> result.map(codec.encode_entry)

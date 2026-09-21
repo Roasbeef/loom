@@ -367,6 +367,10 @@ pub opaque type Message {
     entry: ids.EntryId,
     reply_with: Subject(Result(JsonValue, String)),
   )
+  Recent(
+    limit: Int,
+    reply_with: Subject(Result(List(history_tool.Hit), String)),
+  )
   Stop
 }
 
@@ -490,19 +494,30 @@ pub fn seam(
       })
     },
     search: fn(text, limit, scope) {
-      case ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _)) {
-        Error(reason) -> Error(history_tool.IndexUnavailable(reason:))
-
-        // A holder that is alive but holds nothing is unavailability,
-        // not a refusal: the tool's refusal rendering suggests rephrasing
-        // the query, and no rephrasing opens an index.
-        Ok(Error(reason)) if reason == unavailable_index ->
-          Error(history_tool.IndexUnavailable(reason:))
-        Ok(Error(reason)) -> Error(history_tool.IndexRefused(reason:))
-        Ok(Ok(hits)) -> Ok(hits)
-      }
+      ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _))
+      |> hits_answer
+    },
+    recent: fn(limit) {
+      ask(name, timeout_ms, Recent(limit:, reply_with: _)) |> hits_answer
     },
   )
+}
+
+// A search and a browse are refused in the same vocabulary.
+fn hits_answer(
+  answer: Result(Result(List(history_tool.Hit), String), String),
+) -> Result(List(history_tool.Hit), history_tool.Refusal) {
+  case answer {
+    Error(reason) -> Error(history_tool.IndexUnavailable(reason:))
+
+    // A holder that is alive but holds nothing is unavailability, not a
+    // refusal: the tool's refusal rendering suggests rephrasing the query,
+    // and no rephrasing opens an index.
+    Ok(Error(reason)) if reason == unavailable_index ->
+      Error(history_tool.IndexUnavailable(reason:))
+    Ok(Error(reason)) -> Error(history_tool.IndexRefused(reason:))
+    Ok(Ok(hits)) -> Ok(hits)
+  }
 }
 
 /// Starts the commit subscriber that turns the runtime writer's
@@ -576,6 +591,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply_with, Error(unavailable_index))
       actor.continue(state)
     }
+    Recent(limit:, reply_with:), Some(index) -> {
+      process.send(reply_with, recent(state, index, limit))
+      actor.continue(state)
+    }
+    Recent(reply_with:, ..), None -> {
+      process.send(reply_with, Error(unavailable_index))
+      actor.continue(state)
+    }
     Stop, Some(index) -> {
       let _closed = search.close(index)
       actor.stop()
@@ -632,16 +655,22 @@ fn query(
       )
   }
   found
-  |> result.map(
-    list.map(_, fn(hit) {
-      history_tool.Hit(
-        session: hit.session,
-        entry: hit.entry,
-        snippet: hit.snippet,
-      )
-    }),
-  )
+  |> result.map(list.map(_, tool_hit))
   |> result.map_error(describe_search_error)
+}
+
+fn recent(
+  state: State,
+  index: Search,
+  limit: Int,
+) -> Result(List(history_tool.Hit), String) {
+  search.recent_in_session(index, session: state.config.session, limit:)
+  |> result.map(list.map(_, tool_hit))
+  |> result.map_error(describe_search_error)
+}
+
+fn tool_hit(hit: search.Hit) -> history_tool.Hit {
+  history_tool.Hit(session: hit.session, entry: hit.entry, snippet: hit.snippet)
 }
 
 // One question to the holder, degrading an absent or wedged holder to an

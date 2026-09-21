@@ -155,6 +155,21 @@ pub fn a_fresh_session_finds_a_compacted_away_decision_test() {
     text_of(own),
     ids.session_id_to_string(api.session_id(second.runtime)),
   )
+
+  // --- browsing this session's own history ---
+  // No query in the session scope lists B's newest entries, and B's alone:
+  // session A's decision shares the index but is not B's history.
+  let browsed =
+    tool.dispatch(
+      second.registry,
+      a_ctx(),
+      history_tool.tool_name,
+      json.Object([#("scope", json.String("session"))]),
+    )
+  assert !browsed.is_error
+  assert string.contains(text_of(browsed), "newest first")
+  assert string.contains(text_of(browsed), "changelog")
+  assert !string.contains(text_of(browsed), ids.session_id_to_string(first_id))
   close_session(second)
 }
 
