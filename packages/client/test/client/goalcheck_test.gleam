@@ -13,6 +13,7 @@
 //// wall and the output ceiling it states.
 
 import broker/broker
+import broker/budget
 import broker/exec
 import broker/framing
 import broker/policy
@@ -104,10 +105,50 @@ fn scripted(
   )
 }
 
+// A runner whose first few clearances are refused the way the broker refuses a
+// check whose predecessor is still draining, and whose next one clears and
+// exits `code`.
+//
+// The countdown is a mailbox rather than a counter in a process of its own:
+// `wiring.run` is called on the test's own process here, so a token sent before
+// the run is waiting when the clearance asks for it, and a zero-millisecond
+// receive is the whole of the state machine. Every attempt records its spec, so
+// a test can say how many times the runner asked.
+fn draining(
+  refusals: Int,
+  code: Int,
+  seen: Subject(broker.CallSpec),
+) -> goalcheck.Runner {
+  let admitting = scripted([], exited(code), seen)
+  let slot = process.new_subject()
+  list.each(list.repeat(Nil, refusals), fn(_taken) { process.send(slot, Nil) })
+
+  goalcheck.Runner(..admitting, clear_call: fn(spec, events) {
+    case process.receive(slot, within: 0) {
+      // The slot is still held by the execution the advisor cancelled.
+      Ok(Nil) -> {
+        process.send(seen, spec)
+
+        Error(
+          broker.BudgetRefused(refusal: budget.OutstandingCapReached(cap: 1)),
+        )
+      }
+
+      Error(Nil) -> admitting.clear_call(spec, events)
+    }
+  })
+}
+
+// A runner nothing clears through. The spec is still recorded, so a test can
+// say how many times the runner asked before it gave up.
 fn refusing(seen: Subject(broker.CallSpec)) -> goalcheck.Runner {
   goalcheck.Runner(
     ..scripted([], exited(0), seen),
-    clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
+    clear_call: fn(spec, _events) {
+      process.send(seen, spec)
+
+      Error(broker.BrokerUnavailable)
+    },
   )
 }
 
@@ -187,6 +228,73 @@ pub fn a_refused_check_carries_the_brokers_words_test() {
     as "a refused clearance produces no exit status"
   assert string.contains(reason, "broker is unavailable")
   assert result.output == ""
+}
+
+// The slot an abandoned check is still giving back is waited out, not reported.
+//
+// This is the flake the goal e2e fixture kept hitting on Linux. The step's
+// ledger admits one check at a time; the advisor cancels an abandoned check and
+// starts its replacement at once; and the cancelled execution's slot comes back
+// only when the broker relay has drained it to the helper's terminal event. The
+// replacement's clearance therefore lands inside that drain, and reporting the
+// refusal showed the reviewer "no exit status" for a command that ran perfectly
+// well a few milliseconds later — evidence about the harness's scheduling, read
+// as evidence about the work.
+pub fn a_slot_still_draining_is_waited_out_test() {
+  let seen = process.new_subject()
+  let result = run(draining(3, 1, seen), "make check")
+
+  assert result.ending == goalstate.Exited(status: 1)
+    as "the check reports the command's own status, not the refusal"
+
+  // The runner asked four times: three refusals and the clearance. Counting
+  // them is what says the wait happened here rather than the refusal having
+  // been relabelled.
+  assert list.length(attempts(seen)) == 4
+}
+
+// A slot that never comes free still ends the check, and in the runner's own
+// words rather than the broker's.
+//
+// The bound is what keeps the loop's no-stall property true: the result lands,
+// the phase moves to `ReadyToFeed`, and the feed goes out saying the harness has
+// no evidence. The sentence is the runner's because it is a claim about the
+// wait — the harness asked repeatedly for a slot and never got one — which the
+// cap refusal's wording would not tell an operator.
+pub fn a_slot_that_never_comes_free_is_reported_as_unfinished_test() {
+  let seen = process.new_subject()
+  let result = run(draining(1_000_000, 0, seen), "make check")
+
+  assert result.ending
+    == goalstate.DidNotFinish(reason: goalcheck.slot_never_came_free)
+  assert result.output == ""
+
+  // More than one attempt, so the wait was spent rather than skipped, and the
+  // count is not pinned: how many attempts fit inside the wait is the
+  // scheduler's business.
+  assert list.length(attempts(seen)) > 1
+}
+
+// A refusal more time cannot change is reported at once. Waiting out a narrowed
+// policy or an aborted operation would spend the check's whole wall re-asking a
+// question already answered, and the feed the operator is waiting for would be
+// that much later for nothing.
+pub fn a_decided_refusal_is_not_waited_out_test() {
+  let seen = process.new_subject()
+  let result = run(refusing(seen), "make check")
+
+  let assert goalstate.DidNotFinish(reason:) = result.ending
+    as "a refused clearance produces no exit status"
+  assert string.contains(reason, "broker is unavailable")
+  assert list.length(attempts(seen)) == 1
+}
+
+// Every spec the runner asked to clear, drained from the recording subject.
+fn attempts(seen: Subject(broker.CallSpec)) -> List(broker.CallSpec) {
+  case process.receive(seen, within: 0) {
+    Error(Nil) -> []
+    Ok(spec) -> [spec, ..attempts(seen)]
+  }
 }
 
 // A chatty command is clipped to its tail, because the end of a build log is

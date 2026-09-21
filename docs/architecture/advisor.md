@@ -85,7 +85,7 @@ cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
 `ensure_strand` (`client/advisor.gleam:3428`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1227`) instead, which is the
+`create_idle_strand` (`runtime/api.gleam:1259`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
 

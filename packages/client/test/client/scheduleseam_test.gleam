@@ -36,6 +36,7 @@ import runtime/effects
 import runtime/lineage
 import session/session
 import support/addresses
+import support/internal/ffi_memory
 import tools/directory_access
 import tools/schedule as schedule_tool
 import tools/tool
@@ -1156,6 +1157,59 @@ pub fn an_unavailable_runtime_refuses_in_band_test() {
   let assert Error(schedule_tool.Unavailable(..)) =
     seam.cancel(ctx("main"), "poll", None)
     as "a cancel with no runtime must refuse rather than crash"
+}
+
+// `operator_schedules` is a slot `create` alone needs — it is checked for
+// a name collision before a claim is written, and neither `list` nor
+// `cancel` reads it. `daemon-memory.md`'s "option A evaluated" section
+// measured the wider bug one level up (a whole `Agency`/`Schedules` per
+// tool); this is the same shape inside `scheduleseam.seam` itself: before
+// `door` and `seam` bound one function per closure, all three of
+// `Schedules`' fields captured the whole `Door`, and the whole `Door`
+// closed over the whole `Wiring`, so a large `operator_schedules` would
+// have inflated `list` and `cancel` along with `create`. This pins that
+// it no longer does, with no runtime needed since none of the three
+// closures is called.
+pub fn list_and_cancel_do_not_capture_operator_schedules_test() {
+  let one_operator_schedule = [
+    schedule.Schedule(
+      name: "heartbeat",
+      target: "main",
+      owner: schedule.OperatorOwned,
+      timing: schedule.Interval(
+        seconds: 60,
+        expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+      ),
+      wake: schedule.SteersOnly,
+      body: "look at it",
+    ),
+  ]
+  let many_operator_schedules =
+    list.flatten(list.repeat(one_operator_schedule, 4096))
+
+  let small =
+    scheduleseam.seam(scheduleseam.Wiring(
+      runtime: fn() { Error(Nil) },
+      policy: schedule.ModelSchedulesWake,
+      operator_schedules: one_operator_schedule,
+      scanner: addresses.new(),
+    ))
+  let large =
+    scheduleseam.seam(scheduleseam.Wiring(
+      runtime: fn() { Error(Nil) },
+      policy: schedule.ModelSchedulesWake,
+      operator_schedules: many_operator_schedules,
+      scanner: addresses.new(),
+    ))
+
+  // Sanity: the padding actually reaches `create`, so the size held flat
+  // below is a real property rather than an accident of what got shared.
+  assert ffi_memory.flat_words(large.create)
+    > ffi_memory.flat_words(small.create) + 4096
+
+  assert ffi_memory.flat_words(large.list) == ffi_memory.flat_words(small.list)
+  assert ffi_memory.flat_words(large.cancel)
+    == ffi_memory.flat_words(small.cancel)
 }
 
 // --- fixtures --------------------------------------------------------------

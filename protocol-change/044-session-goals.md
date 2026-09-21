@@ -550,19 +550,39 @@ helper pool may cost and the grace the cancel ladder needs — never the wall
 itself, because both clocks start in the caller and a task killed at the wall
 can never deliver the settlement the sandbox reached there.
 
-**An abandoned check is cancelled, not left to the wall.** Every check clears
-under one attribution-only operation and the `goal-check` step, and that
-ledger's `max_outstanding` is one, so a check nobody wants any more holds the
-pair until it settles and a replacement inside that window is refused with
-`OutstandingCapReached` — a refusal the loop can only record as a check that
-produced no exit status. The actor therefore keeps the witnessed handle and
-cancels it whenever the goal leaves the `Checking` phase it was started for:
-the goal cleared, paused, its command replaced, the primary back at work, or
-the deadline passed. The task's death is what the broker relay's caller-watch
-keys on, so the cancel returns the helper and the budget slot. The drain takes
-as long as the helper's own cancel ladder, so a replacement started inside that
-window can still be refused; the cost is then one feed without check evidence
-rather than every feed for the length of the wall.
+**An abandoned check is cancelled, not left to the wall, and its replacement
+waits for the slot.** Every check clears under one attribution-only operation
+and the `goal-check` step, and that ledger's `max_outstanding` is one, so a
+check nobody wants any more holds the pair until it settles. The actor
+therefore keeps the witnessed handle and cancels it whenever the goal leaves
+the `Checking` phase it was started for: the goal cleared, paused, its command
+replaced, the primary back at work, or the deadline passed. The task's death is
+what the broker relay's caller-watch keys on, so the cancel returns the helper
+and the budget slot.
+
+The drain that returns the slot is asynchronous to the cancel, and the actor
+starts the replacement immediately, so the replacement's clearance lands inside
+the drain and the broker refuses it with `OutstandingCapReached`. An earlier
+draft of this proposal recorded that as the cost of one feed without check
+evidence. It is not bounded that way: the shape that produces the refusal —
+cancel, then start again at once — recurs every time the primary goes back to
+work with a check in flight, so the refusal can repeat for as many feeds as the
+loop has left. Measured under a widened drain, all eight of a run's feeds
+carried "no exit status — execution budget refused the call: outstanding-effect
+cap 1 reached" for a command that exits immediately, and the goal reached the
+continuation cap having shown the reviewer no evidence at all.
+
+So `client/goalcheck` waits that one refusal out rather than reporting it,
+bounded by `slot_wait_ms` (three seconds, the relay's own drain grace) and
+re-asking every `slot_retry_ms`. The wait happens in the check's weft task, so
+the actor still never blocks, and it is added to the task's backstop so a
+waiting check cannot be reaped before it has run. Every other refusal — a
+narrowed policy, a passed deadline, an aborted operation, an unreachable broker
+— is a decision more time cannot change and is reported at once. A slot that
+outlasts the wait is recorded as a check that did not finish, in the runner's
+own words rather than the broker's: the loop's no-stall property holds because
+the result still lands, still moves the phase to `ReadyToFeed`, and still
+feeds.
 
 **A base policy narrower than the check's limits refuses every check.** The
 requirements move exactly two limits, the wall to 300 s and the output ceiling

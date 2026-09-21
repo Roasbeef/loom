@@ -240,10 +240,19 @@ pub fn limits() -> schedule_tool.Limits {
 ///
 pub fn seam(wiring: Wiring) -> schedule_tool.Schedules {
   let door = door(wiring)
+
+  // Bind the one function each closure below calls, rather than the
+  // whole `Door`: a closure capturing `door` would duplicate its other
+  // two slots (each already a closure over `wiring`) for every tool this
+  // seam feeds, which is the same over-capture `daemon-memory.md`
+  // documents for `Agency`, one level further down.
+  let create = door.create
+  let list = door.list
+  let cancel = door.cancel
   schedule_tool.Schedules(
-    create: fn(ctx: Ctx, request) { door.create(ctx.strand, request) },
-    list: fn(ctx: Ctx) { door.list(ctx.strand) },
-    cancel: fn(ctx: Ctx, name, target) { door.cancel(ctx.strand, name, target) },
+    create: fn(ctx: Ctx, request) { create(ctx.strand, request) },
+    list: fn(ctx: Ctx) { list(ctx.strand) },
+    cancel: fn(ctx: Ctx, name, target) { cancel(ctx.strand, name, target) },
   )
 }
 
@@ -288,18 +297,29 @@ pub type Door {
 /// ```
 ///
 pub fn door(wiring: Wiring) -> Door {
+  // Each closure below binds only the `Wiring` slots its own operation
+  // touches, rather than the whole record: `create` needs the policy,
+  // the operator's schedules and the scanner besides the runtime,
+  // `list` needs only the runtime, and `cancel` needs the runtime and
+  // the scanner. Capturing `wiring` whole in all three would duplicate
+  // every slot for every closure that does not read it — the same
+  // over-capture `daemon-memory.md` measures for `Agency`.
+  let borrow_runtime = wiring.runtime
+  let policy = wiring.policy
+  let operator_schedules = wiring.operator_schedules
+  let scanner = wiring.scanner
   Door(
     create: fn(strand, request) {
-      use runtime <- with_runtime(wiring)
-      create(wiring, runtime, strand, request)
+      use runtime <- with_runtime(borrow_runtime)
+      create(policy, operator_schedules, scanner, runtime, strand, request)
     },
     list: fn(strand) {
-      use runtime <- with_runtime(wiring)
+      use runtime <- with_runtime(borrow_runtime)
       listing(runtime, strand)
     },
     cancel: fn(strand, name, target) {
-      use runtime <- with_runtime(wiring)
-      cancel(wiring, runtime, strand, name, on: target)
+      use runtime <- with_runtime(borrow_runtime)
+      cancel(scanner, runtime, strand, name, on: target)
     },
   )
 }
@@ -307,10 +327,10 @@ pub fn door(wiring: Wiring) -> Door {
 // Every call borrows the runtime first, and a holder that is not up
 // refuses in band rather than crashing the effect process.
 fn with_runtime(
-  wiring: Wiring,
+  borrow_runtime: fn() -> Result(Runtime, Nil),
   then: fn(Runtime) -> Result(a, schedule_tool.Refusal),
 ) -> Result(a, schedule_tool.Refusal) {
-  case wiring.runtime() {
+  case borrow_runtime() {
     Error(Nil) ->
       Error(schedule_tool.Unavailable(
         reason: "the session runtime is not available",
@@ -322,13 +342,13 @@ fn with_runtime(
 // --- create ---------------------------------------------------------------
 
 fn create(
-  wiring: Wiring,
+  policy: Policy,
+  operator_schedules: List(Schedule),
+  scanner: address.Address(schedulescan.Message),
   runtime: Runtime,
   caller: String,
   request: schedule_tool.Request,
 ) -> Result(schedule_tool.Created, schedule_tool.Refusal) {
-  let Wiring(policy:, operator_schedules:, scanner:, ..) = wiring
-
   // An absent target means the caller's own strand, which is what every
   // schedule this door could create used to mean. Resolving it here and
   // once is what lets everything below — the ownership check, the key,
@@ -720,7 +740,7 @@ pub fn fire_count(runtime: Runtime, sched: Schedule) -> Int {
 // --- cancel ---------------------------------------------------------------
 
 fn cancel(
-  wiring: Wiring,
+  scanner: address.Address(schedulescan.Message),
   runtime: Runtime,
   caller: String,
   name: String,
@@ -751,7 +771,7 @@ fn cancel(
   // Nothing breaks without this — the next tick would find the cell gone
   // on its own — but a cancelled schedule that fires once more before the
   // scanner notices reads as the cancel having failed.
-  schedulescan.poke(wiring.scanner)
+  schedulescan.poke(scanner)
   Ok(Nil)
 }
 
