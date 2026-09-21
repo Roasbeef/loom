@@ -4911,19 +4911,15 @@ fn update_tick(model: Model) -> Model {
 // the original model for the quiet-time comparison after all reads settle.
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
-    tick_channel(
-      service_goal_read(
-        service_advisor_nudges_read(
-          service_context_read(
-            service_jobs_read(
-              service_notes_read(
-                service_worktree_read(service_queue_read(drained)),
-              ),
-            ),
-          ),
-        ),
-      ),
-    )
+    drained
+    |> service_queue_read
+    |> service_worktree_read
+    |> service_notes_read
+    |> service_jobs_read
+    |> service_context_read
+    |> service_advisor_nudges_read
+    |> service_goal_read
+    |> tick_channel
   let quiet_for_ms =
     pacing.next_quiet_for(
       model.quiet_for_ms,
