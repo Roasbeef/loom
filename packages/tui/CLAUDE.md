@@ -1029,6 +1029,14 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   measures worse than the original; `erlc +time` on the generated `tui.erl`
   shows it as `core_inline_module`, and `docs/execution.md` has the
   measurement.
+- **Tick settling has the same parameter boundary.** `update_tick` drains
+  replay, control, reconnect and connection events before passing the result
+  to `settle_tick`. The helper applies the existing read-service chain to its
+  `drained` parameter and retains the original model for quiet-time and activity
+  comparisons. Adding the notes read to the former single body exposed another
+  inliner blow-up: `core_inline_module` took 51.445 seconds. The boundary reduced
+  that phase to 1.632 seconds in the generated-code experiment; the actual Gleam
+  package build took 7.80 seconds. Keep the service order and this boundary.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read

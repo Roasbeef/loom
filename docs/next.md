@@ -1,5 +1,16 @@
 # Next
 
+## TUI compile-time repair, September 21
+
+The notes-read step extended a tick-handler chain whose expensive drain
+expression was repeatedly expanded by Erlang's inliner. The existing
+`settle_update` boundary was intact; `update_tick` needed the same structure.
+It now passes the drained model to `settle_tick`, preserving call order and
+quiet-time accounting. Profiling isolated 51.445 seconds in `core_inline_module`;
+the equivalent generated-code split took 1.632 seconds in that phase. The actual
+Gleam rebuild took 7.80 seconds and all 654 TUI tests passed. The full repository
+gate below belongs to the preceding implementation head, `6eb46007`.
+
 ## Agent messages and notebooks, September 21
 
 The workspace branch is rebased onto `543d641a`. The inspector now separates

@@ -4902,6 +4902,14 @@ fn update_tick(model: Model) -> Model {
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let switched = drain_reconnect(switched)
   let drained = drain_connection(switched, 64)
+  settle_tick(model, drained)
+}
+
+// Keep the read-service chain on a parameter, as `settle_update` does for
+// event dispatch. Otherwise each inlining attempt revisits the entire drain
+// expression; adding another service can double compilation time. Preserve
+// the original model for the quiet-time comparison after all reads settle.
+fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     tick_channel(
       service_goal_read(
