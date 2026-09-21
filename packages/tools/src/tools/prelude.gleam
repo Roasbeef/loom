@@ -34,15 +34,15 @@
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
-////   9f573452d1333b42e16a9521c08a7c3597e4daa4cb09a937307095641b1a232f  packages/cap/src/cap/report.gleam
+////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   5506db2b75e3cfc5573f4ad9b2c1fe9a95ae22bafebcefa957bfa076aa07d1e7  packages/cap/src/cap/strand.gleam
+////   456f230634d9858f7c187ea9192278e5af7a854e35308d313ef85c74d7022e4d  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 054c97719d20da13a1c49c44753f105fec4beff83dacae317a75bbae583a1df7
+//// Body digest (every line after the marker): 4239264da91e32abe9509c7927137e5714b27ae10f223fde9527351c26d0f64b
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -701,11 +701,19 @@ pub fn as_list(Value) -> Result(List(Value), Nil)
 pub fn as_string(Value) -> Result(String, Nil)
 /// A boolean value.
 pub fn bool(Bool) -> Value
+/// Parses JSON into the same structured value used by notes and child
+/// results. Rejects duplicate object keys, excessive nesting, and
+/// trailing input.
+pub fn decode_json(String) -> Result(Value, String)
 /// Emits an artifact and returns a durable reference to it.
 ///
 /// Capability: `report.emit`. `content_type` is a MIME-ish label the
 /// broker stores alongside the bytes.
 pub fn emit(name: String, content_type: String, bytes: BitArray) -> Result(ArtifactRef, ReportError)
+/// Encodes a structured value as compact JSON without coercing its
+/// contents. Binary values, non-text keys, duplicate keys, and excessive
+/// nesting fail.
+pub fn encode_json(Value) -> Result(String, String)
 /// An `Errored` outcome from a message alone, with nil details.
 pub fn failure(String) -> Outcome
 /// One field of an object value, or `Error(Nil)` when the value is not an
@@ -1259,6 +1267,19 @@ pub type FieldType {
 pub type Handle {
   Handle(strand: String, operation: String)
 }
+/// One assignment's result from a bounded map, in input order.
+pub type Mapped {
+  /// Admission failed. The helper stops admitting further assignments.
+  SpawnFailed(error: StrandError)
+  /// A child was admitted and its join answered, possibly still Pending.
+  Joined(waited: Waited)
+  /// A child was admitted but the join failed. Keep its handle for a
+  /// later wait.
+  JoinFailed(handle: Handle, error: StrandError)
+  /// The helper stopped before admitting this assignment. It can be
+  /// retried.
+  NotStarted(assignment: Assignment)
+}
 /// How a child's operation ended.
 pub type Outcome {
   /// The run finished normally.
@@ -1408,6 +1429,19 @@ pub fn from_my_conversation(Assignment) -> Assignment
 /// A handle rendered as the text the harness and the model both use,
 /// `{strand}#{operation}`.
 pub fn handle_text(Handle) -> String
+/// Runs assignments in batches of at most `max_concurrency` children.
+/// Returns one entry per assignment in input order, retaining every known
+/// handle. The concurrency bound covers children started by this call,
+/// not other work already running on the parent. Each batch shares one
+/// `within_ms` join window; the host's execution deadline remains the
+/// outer bound for the entire call.
+///
+/// A pending child, failed admission, or failed join stops further
+/// admissions. Remaining assignments are NotStarted; admitted children
+/// are not cancelled. Ready children with Failed/Aborted outcomes or
+/// unusable results remain explicit Joined entries and do not prevent the
+/// next batch from starting.
+pub fn map(List(Assignment), max_concurrency: Int, within_ms: Int) -> Result(List(Mapped), StrandError)
 /// Writes one blackboard cell under the calling strand's own namespace.
 /// The key is forced under that namespace by the harness, so a program
 /// cannot address another strand's notes or a reserved cell.
