@@ -34,4 +34,4 @@ declared|linux|SKIP joined terminal observations: platform enforcement unavailab
 declared|linux|SKIP worktree observation: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail and hard macOS terminal-observation steps run every worktree fixture without this waiver.
 
 # The external selector repository runs this fixture as a mandatory CI check.
-declared|any|SKIP skill selector: set LOOM_SKILL_SELECTOR_SOURCE|The independent extension source is not part of the Loom checkout; loom-skill-selector CI supplies it and requires the real jailed provider-path test.
+declared|linux|SKIP skill selector: set LOOM_SKILL_SELECTOR_SOURCE|The independent extension source is not part of the Loom checkout; loom-skill-selector CI supplies it and requires the real jailed provider-path test.
