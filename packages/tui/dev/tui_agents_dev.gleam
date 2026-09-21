@@ -26,10 +26,13 @@ import tui/agents
 import tui/appearance
 import tui/connection
 import tui/internal/ffi_terminal
+import tui/notes_view
+import tui/protocol
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
+import tui/worktree_view
 
 type Work {
   Active(tool: String)
@@ -158,7 +161,10 @@ pub fn run(palette: String) -> Nil {
       ..initial,
       overlay: tui.AgentInspector(agents.inspect("main")),
       notice: "illustrative fixture · no provider calls",
-      diff_view: tui.DiffHidden,
+      diff_view: tui.DiffVisible,
+      worktree: fixture_worktree(),
+      note_board: Some(fixture_notes()),
+      note_selected: Some("plan"),
       nudges: Some(advisor_pending.Board(
         "main",
         1,
@@ -173,11 +179,55 @@ pub fn run(palette: String) -> Nil {
       default.new_with_options(backend.Options(mouse: True, paste: True)),
       initial,
       tui.view,
-      tui.update,
+      fixture_update,
       fn(model) { model.quit },
       tui.terminal_poll_timeout,
     )
   Nil
+}
+
+// These boards are illustrative observations, not replies from a daemon.
+// The production reducer still owns all navigation and recipient changes.
+fn fixture_update(event: backend.InputEvent, model: tui.Model) -> tui.Model {
+  let changed = tui.update(event, model)
+  let target = case changed.overlay, changed.notes_open {
+    tui.AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)), _
+    -> Some(selected)
+    _, True -> Some(changed.active_strand)
+    _, False -> None
+  }
+  case target {
+    None -> changed
+    Some(target) -> {
+      let board = case target {
+        "main" -> fixture_notes()
+        _ ->
+          notes_view.Board(target, 42, 2, [
+            notes_view.Note(
+              "findings",
+              40,
+              "{\"summary\":\"Recipient ownership stays explicit\",\"checks\":[\"Inspecting a worker keeps main as recipient\",\"Late replies retain their original note owner\"]}",
+              notes_view.Complete,
+            ),
+            notes_view.Note(
+              "next",
+              42,
+              "Report the remaining narrow-layout findings to main.\n\nThis is illustrative fixture data.",
+              notes_view.Complete,
+            ),
+          ])
+      }
+      case changed.note_board == Some(board) {
+        True -> changed
+        False ->
+          changed
+          |> tui.apply_channel_update(
+            session_channel.Auxiliary(protocol.NotesSnapshot(board)),
+          )
+          |> tui.update(backend.Tick, _)
+      }
+    }
+  }
 }
 
 fn selected_palette(value: String) -> appearance.Palette {
@@ -202,6 +252,154 @@ fn configuration() {
     strand.ModelIdentity("fixture", "fixture-model"),
     strand.ThinkingHigh,
     ["fs_read"],
+  )
+}
+
+fn fixture_notes() -> notes_view.Board {
+  notes_view.Board("main", 42, 2, [
+    notes_view.Note(
+      "plan",
+      41,
+      "{\"goal\":\"Preserve recipient ownership\",\"next\":[\"Review send receipts\",\"Check narrow layout\"]}",
+      notes_view.Complete,
+    ),
+    notes_view.Note(
+      "evidence",
+      42,
+      "{\"fixture\":\"provider-free\",\"coverage\":[\"started\",\"steered\",\"failed\"]}",
+      notes_view.Complete,
+    ),
+  ])
+}
+
+fn fixture_worktree() -> worktree_view.State {
+  worktree_view.State(
+    "fixture",
+    None,
+    Some(worktree_view.Board(
+      7,
+      42,
+      "fixture-head",
+      [
+        worktree_view.File(
+          "docs/review/native-layout.md",
+          "A",
+          " ",
+          "+native agent workspace findings\n",
+          "text",
+          "complete",
+        ),
+        worktree_view.File(
+          "packages/tui/src/tui.gleam",
+          " ",
+          "D",
+          "-legacy agent overlay path\n",
+          "text",
+          "complete",
+        ),
+      ],
+      2,
+      0,
+      "complete",
+      worktree_view.Committed("Fixture commit view", "", "complete"),
+    )),
+    0,
+    worktree_view.Composer,
+    worktree_view.Settled,
+    "captured fixture worktree · 1 added · 1 deleted",
+  )
+}
+
+fn send_calls(agent: String) -> List(message.AssistantBlock) {
+  case agent {
+    "main" -> [
+      message.AssistantToolCall(message.ToolCall(
+        "send-main-to-protocol",
+        "agent_send",
+        json.Object([
+          #("to", json.String("sub:protocol-review")),
+          #(
+            "message",
+            json.String(
+              "Please verify the approval ownership path.\nRecord the exact request owner and the operation handle.\nReply with the observed delivery state.",
+            ),
+          ),
+        ]),
+        None,
+        None,
+      )),
+    ]
+    "sub:protocol-review" -> [
+      message.AssistantToolCall(message.ToolCall(
+        "send-protocol-to-main",
+        "agent_send",
+        json.Object([
+          #("to", json.String("main")),
+          #(
+            "message",
+            json.String(
+              "Approval ownership is still exact.\nThe request belongs to sub:protocol-review.\nThe main strand may continue after the recorded decision.",
+            ),
+          ),
+        ]),
+        None,
+        None,
+      )),
+    ]
+    _ -> []
+  }
+}
+
+fn send_results(agent: String, n: Int) -> List(snapshot.Item) {
+  case agent {
+    "main" -> [
+      send_result(
+        n,
+        "send-main-to-protocol",
+        "sub:protocol-review",
+        "started",
+        "Delivered to sub:protocol-review and started its active operation.",
+      ),
+    ]
+    "sub:protocol-review" -> [
+      send_result(
+        n,
+        "send-protocol-to-main",
+        "main",
+        "steered",
+        "Delivered to main and steered its running turn.",
+      ),
+    ]
+    _ -> []
+  }
+}
+
+fn send_result(
+  n: Int,
+  call_id: String,
+  target: String,
+  delivery: String,
+  text: String,
+) -> snapshot.Item {
+  snapshot.Loaded(
+    entry.MessageEntry(
+      entry_id(n + 3),
+      Some(entry_id(n + 1)),
+      n + 3,
+      n + 3,
+      message.ToolResultMessage(
+        call_id,
+        "agent_send",
+        [message.ToolResultText(text <> "\nTarget: " <> target, None)],
+        Some(json.Object([#("delivery", json.String(delivery))])),
+        None,
+        None,
+        False,
+        n + 3,
+      ),
+      False,
+    ),
+    0,
   )
 }
 
@@ -235,7 +433,12 @@ fn agent_cells(agent: Agent, n: Int) -> List(json.JsonValue) {
           n
           + case agent.work {
             Complete | Failed -> 2
-            Active(_) | Held -> 1
+            Active(_) ->
+              case agent.name {
+                "main" | "sub:protocol-review" -> 3
+                _ -> 1
+              }
+            Held -> 1
           },
         )),
       ),
@@ -367,31 +570,34 @@ fn agent_entries(
       False,
     )
   let tools = case agent.work {
-    Active(tool) -> [
-      message.AssistantToolCall(message.ToolCall(
-        "fixture-call",
-        tool,
-        case tool {
-          "agent_wait" ->
-            json.Object([
-              #(
-                "handles",
-                json.Array([
-                  json.String(
-                    "sub:terminal-checks#" <> ids.op_id_to_string(op_id(21)),
-                  ),
-                ]),
-              ),
-            ])
-          "fs_write" ->
-            json.Object([#("path", json.String("docs/review/native-layout.md"))])
-          _ ->
-            json.Object([#("path", json.String("packages/tui/src/tui.gleam"))])
-        },
-        None,
-        None,
-      )),
-    ]
+    Active(tool) ->
+      list.append(send_calls(agent.name), [
+        message.AssistantToolCall(message.ToolCall(
+          "fixture-call",
+          tool,
+          case tool {
+            "agent_wait" ->
+              json.Object([
+                #(
+                  "handles",
+                  json.Array([
+                    json.String(
+                      "sub:terminal-checks#" <> ids.op_id_to_string(op_id(21)),
+                    ),
+                  ]),
+                ),
+              ])
+            "fs_write" ->
+              json.Object([
+                #("path", json.String("docs/review/native-layout.md")),
+              ])
+            _ ->
+              json.Object([#("path", json.String("packages/tui/src/tui.gleam"))])
+          },
+          None,
+          None,
+        )),
+      ])
     Complete | Failed -> [
       message.AssistantToolCall(message.ToolCall(
         "fixture-call",
@@ -459,7 +665,8 @@ fn agent_entries(
         0,
       ),
     ]
-    Active(_) | Held -> []
+    Active(_) -> send_results(agent.name, n)
+    Held -> []
   }
   list.append(
     [snapshot.Loaded(prompt, 0), snapshot.Loaded(response, 0)],
