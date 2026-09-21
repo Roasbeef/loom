@@ -9,8 +9,10 @@
 
 Loom is a terminal coding agent and an extensible agent runtime written in
 Gleam. Work survives terminal disconnects and daemon restarts. People and
-subagents can collaborate in one session. Models can compose tools into typed
-programs, with real concurrency and kernel-enforced execution boundaries.
+subagents can collaborate within a session or exchange messages across sessions
+through explicit grants. Models can compose tools into typed programs, keep
+actors alive across turns, and coordinate children with durable named steps.
+Programs run concurrently within kernel-enforced execution boundaries.
 
 [Get started](#get-started) · [Code mode](#code-mode) ·
 [Multiplayer](#multiplayer-and-subagents) · [Advisor mode](#advisor-mode) ·
@@ -23,7 +25,8 @@ programs, with real concurrency and kernel-enforced execution boundaries.
 |---|---|
 | **Durable sessions** | SQLite-backed conversation trees, recorded tool intents and results, resumable work, and forks that preserve the original history. |
 | **Multiplayer** | Several terminals and collaborators in one session, with attributed prompts, presence, shared approvals, and operator/observer roles. |
-| **Code mode** | Gleam programs that compose tools, filter intermediate results, and run work concurrently in one model turn. |
+| **Code mode** | Gleam programs that compose tools, run concurrently, and retain actors across turns in a background execution. |
+| **Agent collaboration** | Granted peer messaging across strands and resident sessions, plus named workflow steps that reuse durable child results. |
 | **BEAM concurrency** | Lightweight processes and OTP supervision for agents, streams, and tool execution, with independent lifecycles and explicit cancellation. |
 | **Controlled execution** | Sandboxed commands and agent-written programs, capability-checked effects, and approvals bound to the action being approved. |
 | **Model routing and advisors** | Choose models by role, configure fallbacks, and pair a fast primary with a separate model that reviews its work. |
@@ -128,6 +131,13 @@ and configuration. They can run concurrently, exchange durable messages, and
 return structured results to a parent. Shared session state supports coordination
 without copying every intermediate result into the main conversation.
 
+The owner can grant directional peer links between siblings or across resident
+sessions. Agents can discover linked peers and send attributed messages with
+retry-safe receipts. A separate permission allows a message to start work on an
+idle peer. Communication grants do not transfer cancellation, joining, or
+filesystem access. See [async collaboration](docs/async-collaboration.md) for
+the model tools, capability APIs, and daemon controls.
+
 One daemon hosts sessions across workspaces. Closing or switching a terminal's
 attachment leaves the session available to other clients. Remote connections
 use a secure tunnel or TLS proxy to the loopback-bound daemon.
@@ -168,6 +178,17 @@ Typed capability modules expose filesystem access, commands, shared state, and
 artifact reporting. Configured MCP servers become generated modules available
 through code mode. A separate, opt-in orchestration capability set lets programs
 spawn and coordinate subagents.
+
+With `code_mode` in `launch` mode, a program can keep typed actors alive after
+the tool call returns. Later turns can send data, inspect the execution, wait
+for its result, or cancel it. The execution keeps its original grants and
+deadline.
+
+Background orchestration programs can use
+`cap/workflow.step` to start named children and recover the same child operations
+on a later launch. A restart preserves child identities and results, but loses the satellite
+process and its actor state; Loom reports that loss instead of replaying effects.
+The [collaboration guide](docs/async-collaboration.md) includes working examples.
 
 Submitted source cannot introduce foreign-function calls or import arbitrary
 modules. The compiler checks tool argument types, and the broker checks each

@@ -187,11 +187,12 @@ flipping between busy and idle never drops the message.
 
 Not every peer is a child. The **advisor** strand is created by the
 harness through `api.create_idle_strand` rather than by the Agency, so
-it has no `lineage/` cell, and the whole of its isolation follows from
+it has no `lineage/` cell, and its isolation from lineage tools follows from
 that absence: `agent_send` and `agent_wait` check the cell before one
-strand may address another and `strand.roster` lists from it, so the
-primary cannot address the advisor, the advisor can address nothing, and
-neither appears in the other's roster. The one channel between them runs
+strand may address another and `strand.roster` lists from it, so neither strand can use those tools to address the other, and neither
+appears in the other's lineage roster. Peer links are a separate, explicit
+owner grant under Protocol 045; advisor isolation therefore also requires
+withholding those links. The one channel between them runs
 the other way and is built by the harness out of the machinery above:
 the advisor calls a tool, the harness decides what that verdict costs,
 and only then does a `send_to_strand` carry the text to the primary. A
@@ -222,13 +223,14 @@ watch-or-notify, so a `put_fact` rings no doorbell. When a reader must
 point, pair the write with a `send_to_strand`, or let the reader's
 checkpoint poll pick it up.
 
-Four corners of the namespace are reserved (`api.reserved_fact_key`), and
-each names something a forged blackboard write would let a model do:
+The harness reserves prefixes through `api.reserved_fact_key` to prevent
+model-written facts from changing authority or lifecycle state. Examples include:
 `escalation/` — manufacture an approval and widen a denied call;
 `operation-result/` — shadow an operation's terminal result and lie to
 every waiter; `lineage/` — rewrite a parent edge, which is the single
 assumption the wait graph's acyclicity rests on; `prompt/` — rewrite the
-operator's channel.
+operator's channel. The `client/` prefix also protects async execution records,
+workflow steps, peer grants, and delivery receipts.
 
 Reserving a prefix does two things, not one. `put_fact` refuses it, and
 `facts` *hides* it — a reserved cell is not merely unwritable through the
@@ -360,3 +362,30 @@ queue machinery every pattern reuses, `docs/architecture/orchestration.md`
 covers admission, doorbells, and the drive loop; for the store beneath it
 all, `docs/architecture/durability.md` covers commits, registers, and the
 single writer.
+
+
+## Explicit peers and background workflows
+
+[Protocol 045](../../protocol-change/045-async-collaboration.md) adds directional
+peer links independently of lineage. The owner grants a source session and
+strand permission to message one target session and strand. Starting work on
+an idle target requires the separate `may_wake` permission.
+
+The recipient's `peer_mail` handler checks the durable grant. It commits the
+message and receipt in the same transaction, provided the grant has not changed.
+Retrying the same message ID, target, and body returns the receipt without
+adding another message. The receipt proves admission, not model consumption.
+The daemon routes to resident endpoints only; discovery can list saved sessions
+without opening them. An unavailable link remains one unavailable roster row.
+
+A background execution keeps one satellite alive under a fixed deadline.
+`cap/execution.receive` reads committed input that the program can decode into
+messages for its typed actors. Children belong to that execution and survive
+the launching turn. Closing the execution cancels its owned children and waits
+for their background work to settle.
+
+`cap/workflow.step` records a named step's input and assignment before starting
+its child. Repeating the step recovers the original child operation, even if
+lineage publication was interrupted. The runtime commits that original operation
+ID with the brief, so a later run cannot replace it. See the
+[API guide](../async-collaboration.md) for examples and recovery limits.

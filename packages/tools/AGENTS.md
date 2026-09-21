@@ -678,7 +678,9 @@ was asked.
   mutation: the broker pools budget per `{op_id, step_id}`, so a
   concurrent call in the same step would open that ledger with *its*
   budget — and a satellite needs two outstanding effects to exist at
-  all.
+  all. Background launch assigns a separate broker step and releases the
+  tool invocation after admission. `Exclusive` does not serialize the
+  remaining lifetime of admitted satellites.
 - **The description carries the prelude's signatures, and they are
   filtered through the allowlist rather than through the package.** A
   model writing a program has no autocomplete and no language server: it
@@ -811,6 +813,22 @@ wait/roster keep wire outcome `aborted` while reporting a recorded
 outcome variants; unknown aborts remain `Aborted`. Tool guidance distinguishes
 continuing a strand with `agent_send` from observing one operation with
 `agent_wait`, and makes clear that the old handle remains historical.
+
+## Async code-mode modes (protocol 047)
+
+`codemode.CodeMode.background` optionally supplies `Background.launch` and
+`interact`. When present, `code_mode` accepts `run` (the existing default),
+`launch`, `send`, `check`, `join`, and `cancel`. A launch captures the ordinary
+`Request`; interactions name an owner-checked execution handle. No interaction
+can replace source or widen grants. `execution_value` renders terminal pipeline
+outcomes. Generated `prelude.gleam` includes the new capability signatures and
+remains digest-gated against `cap` source.
+
+`send` accepts an optional endpoint name, defaulting to `default`. `check`
+retains the flat execution record and adds readiness, registered endpoints,
+and optional volatile progress/delivery observations. The host refuses sends
+before readiness. `tool.Exclusive` covers each invocation, so a returned launch
+handle does not prevent later tools or backgrounds from running concurrently.
 
 ## Durable code-mode notes
 

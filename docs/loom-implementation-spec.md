@@ -810,3 +810,29 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 - Satellite boot time target: measure `erl -noshell` cold start with preloaded prelude; decide pool-warm default.
 - ~~Hashline anchor length; whether anchors include line-number salt~~ — settled by WP-I as built (spec-gaps WP-I 1): 8 hex of a package-internal 64-bit hash, no salt, line numbers travelling beside anchors in refs, because an anchor never outlives one read-edit round trip.
 - ~~TUI implementation substrate~~ — amended by the issue #114 evaluation: native Gleam over etui, shipped as a separate Erlang shipment over the unchanged client protocol. The client archive requires compatible OTP 29 because it does not carry a second ERTS.
+
+
+## Protocol 045: async collaboration
+
+[Protocol 045](../protocol-change/045-async-collaboration.md) extends the
+code-mode tool with opt-in background launch/send/check/join/cancel while
+retaining synchronous default behavior and the existing capability framing.
+A durable execution record owns its fixed deadline and child custody. Both
+execution admission and async child admission compare operation-abort fence
+absence in their writer transaction. Reaping includes backgrounds launched
+by owned children, even if those children have already completed their turns.
+
+The workspace and orchestration import sets now share reporting, execution
+input and peer communication. `cap/workflow` remains orchestration-only;
+filesystem and process capabilities remain workspace-only. Peer communication
+is an explicit authority extension, requiring recipient-owned directional
+grants and separate idle-wake permission. Model input never names the sender.
+The recipient compares grant sequence while atomically committing receipt and
+message. Daemon resolution never implicitly activates a saved session.
+
+Named workflow steps fix input, version and assignment before child admission.
+An immutable original-operation pointer commits with an async child's initial
+brief, so recovery after interrupted lineage publication cannot adopt a later
+run. Existing durable child results are the result authority. Arbitrary effect
+replay and actor-heap recovery remain outside the contract. The
+[API guide](async-collaboration.md) specifies bounds and interaction fields.

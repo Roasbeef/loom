@@ -391,10 +391,13 @@ also write files, run a process, or reach the network is a materially
 worse thing to hand a model than one that cannot. A compromised
 orchestration program can spawn and message within the lineage its own
 strand roots, and can touch neither the disk, the network, nor a process.
-That holds only while the two capability sets stay disjoint, which is why
-they share no module but `cap/report` — which carries no authority of its
-own — and why a test pins the disjointness rather than trusting the two
-lists to stay apart.
+The import sets keep filesystem and process capabilities on the workspace
+seam, and child orchestration on the orchestration seam. They share
+`cap/report`, `cap/execution`, and `cap/peer`, as specified in
+[Protocol 045](../../protocol-change/045-async-collaboration.md). Peer messages
+require an explicit recipient grant; importing `cap/peer` grants no workspace
+access. Tests pin the exact shared set and reject capabilities from the other
+seam.
 
 Why a capability rather than an interpreter: Rule Zero. A trusted
 orchestration interpreter living in the harness VM *is* model-influenced
@@ -443,7 +446,7 @@ capability checks.
 
 The **extension seam** is the workspace seam widened, and its relation to
 the other two is deliberately not disjointness. It is
-`extension_cap_modules` — the ten workspace capabilities plus `ext` —
+`extension_cap_modules`, the workspace capabilities plus `ext`,
 over `extension_stdlib_modules`, the shared pure subset plus
 `gleam/bit_array` and `gleam/uri`. JSON and dynamic decoders are part of the
 shared subset, so workspace and orchestration programs can parse JSON data
@@ -654,10 +657,10 @@ costs nothing to run constantly; regeneration is the step that needs
 `gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
 
 **It is filtered through the allowlist, not through the package.**
-`package-interface` reports fourteen modules, and the three seams admit
-twelve between them: `cap/runtime`, the satellite's trusted boot runtime,
-and `cap/mcp`, the types-only vocabulary a generated façade imports, are
-on none of them. `tools/codemode` selects from the artifact using each
+`package-interface` reports the public modules. All three allowlists exclude
+`cap/runtime`, the satellite's trusted boot runtime, and `cap/mcp`, the types-only
+vocabulary a generated façade imports. `tools/codemode` selects from the artifact
+using each
 `SeamOffer`'s own `allowed_imports` — the same list vetting judges
 against — so a module vetting will reject can never be advertised.
 Advertising one would be the same class of lie as classifying a
@@ -668,11 +671,11 @@ understand.
 **Each seam pays only for what it adds.** The signatures follow the split
 the import lists already take: modules on every offered seam are rendered
 once under a shared heading, and each seam renders only its own. An
-orchestration-only host pays for `cap/strand` and `cap/report` and for
-none of the others.
+orchestration-only host receives the signatures for `cap/strand`,
+`cap/workflow`, and the shared reporting, input, and peer modules.
 
-The price is real and is written down where it can be checked: against
-the shipped allowlists a workspace-only host's whole description is
+Before the Protocol 045 additions, the measured description sizes were: a
+workspace-only host's whole description was
 17,678 bytes, an orchestration-only host's 15,205, and a host serving
 both 28,818 — roughly 4,400, 3,800 and 7,200 tokens. About half of that
 is the `pub type` declarations, which the estimate this work was scoped
@@ -1207,12 +1210,19 @@ across the next several, which nothing MCP-shaped can express. **That
 mode is built**, for installed extensions:
 `codemode/satellite.start`/`invoke`/`stop` hold a node open, and
 `client/extension/hosts` keeps one per installed extension for the life
-of a session. A submitted `code_mode` program still gets a fresh node per
-execution and always will, because a program submitted in one turn has
-nothing to be persistent *about*.
+of a session.
 
-Holding a node open does not widen it, and three rules are what make that
-true.
+Submitted `code_mode` programs use a fresh node per execution. In background
+`launch` mode, that execution can span several model turns. The program receives
+later data through `cap/execution.receive`, under its original capability token
+and deadline. A lost satellite is reported explicitly; its actor state is not
+restored. The [async collaboration guide](../async-collaboration.md) covers
+launch handles, named child steps, and recovery.
+
+Installed extensions have a different lifetime: their satellite serves repeated
+invocations, each with a separately issued token.
+
+The extension host enforces three rules across those invocations.
 
 **The token is the invocation's, never the node's.** A token is minted
 for one `{op_id, step_id}` and checked on every `cap_call`, so a node that

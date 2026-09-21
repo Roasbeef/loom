@@ -441,7 +441,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:878-890`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:931`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -713,7 +713,7 @@ Owner-only. Gives a session its own domain so that it can be shared.
 | `transcript` | string | required | MUST be exactly `share_existing`. Any other value is `bad_request`. |
 | `epoch` | string | required | Current daemon epoch. |
 
-Source: (`client/daemon/protocol.gleam:228-181`).
+Source: (`client/daemon/protocol.gleam:228`).
 
 ```json
 {"v":2,"id":12,"cmd":"sessions.isolate","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","transcript":"share_existing","epoch":"ep-7f3a"}}
@@ -823,6 +823,32 @@ the read commands `status`, `sessions.list`, `sessions.get`,
 is refused. Source: (`client/daemon/server.gleam:443-463`).
 
 That includes `sessions.delete`, which is a mutation like any other.
+
+### 3.18 `peers.link` and `peers.unlink`
+
+These owner-only mutations grant or revoke messaging from one session and
+strand to another. Each request MUST include the current `epoch`, canonical
+`source_session` and `target_session` IDs, and non-empty `source_strand` and
+`target_strand` names. A member credential is refused with `forbidden`; an old
+epoch is refused with `stale_epoch` before either session is resolved.
+
+`peers.link` also requires `wake`: `busy_only` permits steering an existing run,
+while `may_wake` permits starting work on an idle target. Both sessions MUST be
+resident. The recipient grant is written before the outgoing link is published.
+A reverse link requires a separate request. The link grants messaging only;
+it grants no permission to join, cancel, or access the recipient's workspace.
+
+`peers.unlink` removes the outgoing link before revoking the recipient grant.
+The source MUST be resident. If the recipient is unavailable, the response
+reports `outgoing_link_removed: true` and a `recipient_grant` string explaining
+that the recipient grant remains. No outgoing authority remains at the source.
+Neither command opens a saved session.
+
+The response event uses the command name. See the
+[API guide](async-collaboration.md#peer-messaging) for a request example and
+[Protocol 045](../protocol-change/045-async-collaboration.md) for delivery and
+retry semantics. The model-facing tools are `peer_roster`, `peer_send`, and
+`peer_describe`; they cannot create grants.
 
 ---
 
@@ -2906,7 +2932,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:228-212`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:275`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

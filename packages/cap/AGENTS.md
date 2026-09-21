@@ -14,10 +14,10 @@ it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 The prelude serves **three seams**, and a submission is vetted against one
 of them (`codemode/vet/policy.Seam`). The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search}` — a program that orchestrates effects. The *orchestration* seam
-is `cap/strand` + `cap/report` and nothing else — a program that orchestrates agents. Those
-two sets are disjoint but for `cap/report`, and that disjointness is the
-point: an orchestrator that could also write files is a materially worse
+search, execution, peer}` — a program that orchestrates effects. The *orchestration* seam
+is `cap/{strand, report, execution, peer, workflow}` — a program that
+orchestrates agents. The shared modules provide reporting and communication;
+filesystem and process effects remain exclusive to the workspace seam: an orchestrator that could also write files is a materially worse
 thing to hand a model than one that cannot. The *extension* seam is the
 workspace seam widened by the `ext` prelude alone, and its relation to
 the other two is a superset rather than a disjointness on purpose — an
@@ -176,20 +176,11 @@ cannot hide the capability error. This does not grant the program a new effect.
   subagent has finished. `Schedule.target` and `Created.target` are how
   a program tells the two apart, since one name may be in use on this
   strand and on a child's at once.
-  Workspace seam only and not orchestration, asked and decided in issue
-  #156. The bar for the one entry the two seams share is the bar
-  `cap/report` meets: `report.emit` mints nothing durable and causes no
-  later effect, it is only how a program says what it found. A `create`
-  here mints a durable reserved cell that admits a turn onto a strand at
-  a later time, with nobody present and possibly waking an idle strand,
-  which is the ability to cause future execution and so is authority.
-  The intersection of the two seams' allowlists *is* the confinement
-  property, so widening it from one module to two would spend one rule
-  read in two directions on a convenience nobody has asked for; nothing
-  is unreachable, only indirect, since an orchestration program has the
-  strand it runs on schedule a heartbeat through the `schedule_*` tools.
-  The intersection test pinning `["cap/report"]` is the ruling's
-  checkable form.
+  Scheduling remains workspace-only, as decided in issue #156. It creates
+  durable work that can outlive a program and may wake an idle strand.
+  Protocol 047 separately permits reporting, execution input, and granted peer
+  messaging on both seams. That shared set does not include `cap/schedule`;
+  the allowlist intersection test pins the distinction.
 - `cap/job.{Started, State, StopCause, LostReason, Exit, Stream, Spill,
   Job, Row, Cursors, JobError}` with `start`, `start_within`, `poll`,
   `list`, `kill`, `send`, `send_last`, `from_start`, `after`,
@@ -430,6 +421,27 @@ cannot hide the capability error. This does not grant the program a new effect.
 - [docs/review/m4-triage.md](../../docs/review/m4-triage.md) — the review
   wave this package's current shape answers.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Background collaboration (protocol 047)
+
+`cap/execution.receive` reads the current background execution's durable input
+by cursor. `cap/peer` discovers and messages operator-linked peers; its JSON
+receipts prove admission. Both are shared by workspace and orchestration
+allowlists, with host routers supplying identity. `cap/workflow.step` is
+orchestration-only and requires a background host. It returns a normal
+`cap/strand.Handle` for a durable named child operation. None of these modules
+grants filesystem access to orchestration programs. Model code still executes
+only in the satellite VM. Ordinary code mode and extension boot remain
+separate lifecycles.
+
+`execution.endpoint` couples a decoder and typed callback in an opaque endpoint.
+`execution.serve` registers the immutable names and idle interval, reads one
+ordered journal and continues after a rejected value. It reports callback
+outcomes through `execution.delivery`; callback success is not proof of actor
+completion. `execution.progress` submits bounded, coalesced volatile snapshots.
+Raw `receive` publishes `default` readiness and cannot consume a typed service.
+Idle expiry is host-owned cancellation, so the program cannot rely on reporting
+a final result after an idle response. The original wall deadline always holds.
 
 ## Durable code-mode notes
 

@@ -36,7 +36,7 @@ the model as an ordinary in-band error: `refusal_outcome`
 wanted grants attached as structured details via `denial_to_json`
 (`packages/tools/src/tools/tool.gleam:793`), and nothing in production
 consumes those details. The raiser exists — `raise_escalation_for`
-(`packages/runtime/src/runtime/api.gleam:1063`) writes a durable record
+(`packages/runtime/src/runtime/api.gleam:2889`) writes a durable record
 scoped to the exact call — but its only callers are the demo, through the
 unscoped legacy `raise_escalation`
 (`packages/client/src/client/demo.gleam:252`), and the simulation surface
@@ -120,7 +120,7 @@ questions the option list runs together:
      under the widened policy. Spendable without parking anything; needs
      grants read at dispatch rather than captured in a boot-time closure.
    - **Host re-executes.** The documented semantics of the unscoped path
-     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:2651`):
+     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:2889`):
      an explicit `consume_escalation` by a host that re-runs the denied
      action itself. The demo does this today. It spends, but nothing in
      the session loop benefits.

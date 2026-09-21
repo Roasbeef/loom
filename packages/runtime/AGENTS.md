@@ -888,3 +888,18 @@ checkpoint cannot transfer cleanup custody because run-end hooks precede the
 terminal commit. Ordinary operator admission at that boundary is unowned.
 Lineage retains original spawn identity and a default budget for later runs.
 Proposal 042 specifies compatibility and the additional wire metadata.
+
+## Async custody and guarded admission (protocol 045)
+
+`async_execution.Execution` is the total-decoded record under
+`client/async/record/{id}`. `child_run.Owner` distinguishes `ParentRun` from
+`AsyncExecution`; old string owners still decode as parent custody.
+`send_to_async_child` compares live execution custody in the same transaction
+as run admission. `child_run.initial_key` retains the original operation
+atomically before Agency lineage publication. Later operations cannot replace
+that recovery identity. `steer_async` checks the same custody without waking.
+
+`GuardedMark` extends a write-once receipt with exact sequence expectations.
+A failed receipt or authority expectation returns `FactConflict`; admission
+must not retry past a changed grant. This lets peer delivery atomically commit
+provenance, receipt and prompt through the existing queue/acceptance paths.
