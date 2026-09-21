@@ -368,6 +368,44 @@ pub fn query_in_session_scopes_to_one_session_test() {
     == Ok([])
 }
 
+/// Browsing needs no query: the newest entries of one session come back
+/// newest first, bounded by `limit`, and never another session's.
+pub fn recent_in_session_is_newest_first_and_scoped_test() {
+  let store_a = fixtures.open_store()
+  let store_b = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(first, ctx) = fixtures.message_entry(ctx, None, "opening words")
+  let #(second, ctx) =
+    fixtures.message_entry(ctx, Some(first.id), "middle words")
+  let #(third, ctx) =
+    fixtures.message_entry(ctx, Some(second.id), "closing words")
+  let #(theirs, _ctx) = fixtures.message_entry(ctx, None, "another session")
+  fixtures.commit_entries(store_a, [first, second, third])
+  fixtures.commit_entries(store_b, [theirs])
+  let service = open_search()
+  let assert Ok(Nil) =
+    search.sync(service, store_a, session: sid(9), generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store_b, session: sid(10), generation: 0)
+
+  // The two newest, newest first, with the text's opening as the excerpt.
+  let assert Ok([newest, older]) =
+    search.recent_in_session(service, session: sid(9), limit: 2)
+  assert newest.entry == ids.entry_id_to_string(third.id)
+  assert older.entry == ids.entry_id_to_string(second.id)
+  assert string.contains(newest.snippet, "closing words")
+
+  // The other session's entry is not in this session's history.
+  let assert Ok(all) =
+    search.recent_in_session(service, session: sid(9), limit: 10)
+  assert list.map(all, fn(hit) { hit.session })
+    == list.repeat(ids.session_id_to_string(sid(9)), 3)
+
+  // A session with nothing indexed has nothing to browse.
+  assert search.recent_in_session(service, session: sid(11), limit: 10)
+    == Ok([])
+}
+
 pub fn limit_caps_hits_test() {
   let store = fixtures.open_store()
   let ctx = fixtures.new_ctx()
