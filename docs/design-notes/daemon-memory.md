@@ -1901,3 +1901,99 @@ share is different and, being more live, probably lower.
   cancelled one was refused for the outstanding-effect cap, and the refusal
   was fed to the reviewer as evidence. It is fixed separately, and it has
   nothing to do with the poll: the test passes with the poll disabled outright.
+
+### The two queue failures, and what the arming logic actually does
+
+The arming described above — every drive re-arms, a drive wanting the period
+already outstanding arms nothing, a drive wanting the other period arms under a
+new generation — was carried into three Linux queue runs. The run that included
+it failed two tests, and the same queue without this branch then passed
+everything. Neither failure had appeared in the runs carrying the first arming
+design. Both were crash-recovery paths, which is what made the arming the first
+suspect:
+
+- the conformance soak on seed 61, `run/terminated — faulted run did not reach
+  a terminal result`, on a script with `faults: crash@c4`;
+- `client@daemon_shipped_jobs_test.daemon_shipped_job_is_lost_after_a_vm_crash_test_`,
+  failing at the `reopen` after the shipped daemon's VM was killed.
+
+Neither reproduces. Seed 61 was replayed sixty times on this branch and passed
+sixty times. The whole soak was then run over seeds 1 to 2000 twice: once as the
+branch stands, and once with `idle_poll_interval_ms` set to 25 in
+`packages/conformance/src/conformance/simulation/runner.gleam`, which makes the
+two periods equal and so reproduces `origin/main`'s arming exactly. Both runs
+were clean, 0 failures of 2000. The shipped crash fixture was built from this
+branch and run twenty times against `bin/loomd` under a scratch `HOME`, and
+passed twenty times. The soak's own corroboration had already said as much about
+seed 61 on the signoff: it re-ran the seed and printed `NOT REPRODUCIBLE — this
+seed was run 2 times and failed 1`.
+
+Four mechanisms were proposed and each is refuted by the code rather than by the
+absence of a repro.
+
+**A restarted strand cannot inherit an arming.** `armed_poll_ms` is `None` in
+the state `start` builds (`packages/runtime/src/runtime/strand_runtime.gleam`,
+line 454), so the recovery drive's `finish` always falls through to the arming
+branch. There is no initial value that could make `arm_poll` believe a tick is
+already outstanding when none is, which is the liveness hole the generation
+scheme would otherwise open.
+
+**A dead incarnation's tick cannot reach its replacement.** The subject a poll
+timer is armed against is `internal`, and `internal` is a fresh
+`process.new_subject()` created inside the initialiser (line 407), bound to that
+incarnation's pid rather than to the restartable address. A timer process that
+outlives the strand delivers to a dead pid and its wake is dropped there. The
+replacement's `poll_generation` starts at 0 and its first arm is 1, so no tick
+in flight from any incarnation carries a number the replacement will accept.
+
+**Hibernation preserves what the strand depends on.** `weft/actor`'s
+`await_message` hibernates with `sys.hibernate(fn() { loop(self) })`
+(`../weft/src/weft/actor.gleam`, line 1224): the closure carries `self`, the
+selector is rebuilt from it by `running_selector` on re-entry, and monitors are
+VM-level and untouched by `erlang:hibernate/3`. The strand is also not the first
+actor here to take the interval — eleven others already do, `runtime/registry`
+among them. In the soak, hibernation is 30 000 ms against an idle period of
+2000 ms and cannot fire at all.
+
+**The period's magnitude is nearly invisible to the simulation.**
+`vclock.advance` pops the single earliest registered deadline and fires it
+whatever its delay (`packages/conformance/src/conformance/simulation/vclock.gleam`,
+line 199), so a 2000 ms idle arm costs the runner one pump pass, exactly as a
+25 ms one does. What the two periods change there is the ordering of deadlines
+and the count of them, and the count this branch adds is one stale wake per
+period change against `pump`'s idle budget of 4000 passes.
+
+That leaves the reading the harness itself reached. `run/terminated` is raised
+when `pump_strand` exhausts that budget, and each pass without a commit costs a
+one-millisecond `process.receive`, so the budget is a four-second wall-clock
+allowance in disguise. The comment above the replenishing arm in
+`packages/conformance/src/conformance/simulation/runner.gleam` records the same
+failure shape from before this branch existed: charging progress against the
+allowance "made loaded Linux runs stall at different seeds even though an
+immediate replay of each identical schedule completed". A loaded signoff host is
+the condition, not the arming. The shipped-daemon fixture is the second known
+member of that class; it boots a real VM, kills it, and reopens, and it is the
+same test family the 2026-09-19 note already had to run under a scratch `HOME`
+to keep the operator's own hooks out of the daemon's start-up budget.
+
+One thing was tightened rather than fixed.
+`runtime@idle_poll_test.a_restart_with_an_open_operation_arms_the_short_period_test`
+asserted that short ticks appear after the restart, which a replacement that
+armed the idle tick first and reached the short period only after that tick
+fired would also satisfy. It now also asserts that the idle arm count does not
+move across the replacement's life, so the claim is that the first thing a
+restarted strand with an open operation arms is the short tick. The idle
+restart's dual was already asserted that way.
+
+### What was not verified, for the two failures
+
+- Neither failure was reproduced, so no mechanism is confirmed and none is
+  excluded by measurement. The four above are excluded by reading the code.
+- Every run here was on macOS, and both failures were on Linux under a queue's
+  load. The load itself was not reproduced; no run was made with a competing
+  load average in the twenties.
+- No failure rate could be compared, because both arms of the comparison were
+  zero over 2000 seeds. A branch-versus-main rate difference smaller than one in
+  2000 is not excluded.
+- The `daemon_shipped_*` family was not run on Linux at all, and the twenty
+  local runs were serial. The signoff runs it at `SIGNOFF_PARALLEL=8`.
