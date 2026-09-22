@@ -1,9 +1,9 @@
 # TUI component pass
 
-Status: Phases 1 through 4 verified through `44190709`, September 21, 2026. The
+Status: Phases 1 through 5 verified through `a4299962`, September 21, 2026. The
 implementation baseline is `ef469716` on PR 478. The PR is open and ready for
 review; it has no automatic merge. This note records settled scope and the
-evidence each phase must produce. Later phases remain planned.
+evidence each phase must produce. Phase 6 remains planned.
 
 ## Purpose and constraints
 
@@ -225,6 +225,37 @@ Acceptance evidence must cover added, modified, deleted, binary, empty, and
 unavailable observations; multi-file selection; patch scrolling; focus transfer;
 refresh; and the three native terminal sizes.
 
+### Phase 5 evidence
+
+Commit `a4299962` gives rendering, keyboard navigation, mouse hits, and
+wheel routing one shared geometry. It presents a status-accented file list, a
+full-row selection marker, a sticky selected-file header, and the existing patch
+rows. Navigator and Composer are explicit focus states. Up/Down selects a file,
+`r` refreshes, PgUp/PgDn scrolls the patch, Enter returns to the composer, and
+Ctrl+d re-enters navigation.
+
+The panel reuses the existing patch renderer, numbering, selected raw identity,
+and patch cache. On a short terminal, focused navigation may borrow status-band
+space only above the actual editor; the editor and footer remain owned by the
+composer. Compact mode retains the observation line and a readable Navigator
+help title.
+
+Independent review is closed after repairs to active wheel bounds, focus-time
+cache clamping, and the overlay borrowing guard. Native QA covered 132×42,
+80×24, and 40×12. Arrows selected an added file and its patch; compact PgUp/PgDn
+reached both start and tail. Enter returned to the composer, typing `retained
+draft` and pressing Ctrl+d preserved both draft and selected file, and F2
+replaced the borrowed view. Automated tests cover mouse hits and wheel routing;
+the native pass did not exercise a physical mouse. The
+[wide capture](tui-agent-workspace/diff-component.png) and
+[40×12 capture](tui-agent-workspace/diff-component-40.png) have adjacent ANSI
+recordings.
+
+The footer-one-row snapshot was regenerated only for the intentional diff rows;
+inspection confirmed that its footer and editor were unchanged. The closing TUI
+gate passed all 692 tests with exit zero in 9.30 seconds. It was incremental;
+the latest compile took 8.15 seconds.
+
 ## Phase 6: context and summary
 
 Group measured context, usage, completion evidence, and live jobs into a
@@ -245,13 +276,13 @@ omitted jobs, refresh transitions, stable selection, and narrow layout.
 
 ## Evidence ledger
 
-Phases 1 through 4 are verified by commits `27da4a7d`, `157c5207`, `39a735f5`,
-and `44190709`, their closing TUI gates, native captures, and confirmed review
-repairs recorded above. For later phases, focused and full gate results, timings,
-native captures, review findings, and commit IDs remain pending. The final
-documentation refresh must repair the known line-citation drift in
-`docs/architecture/advisor.md` and
-add the new panels to the `docs/architecture/client.md` code-location table.
+Phases 1 through 5 are verified by commits `27da4a7d`, `157c5207`, `39a735f5`,
+`44190709`, and `a4299962`, their closing TUI gates, native captures, and
+confirmed review repairs recorded above. For Phase 6, focused and full gate
+results, timings, native captures, review findings, and its commit ID remain
+pending. The final documentation refresh must repair the known line-citation
+drift in `docs/architecture/advisor.md` and add the new panels to the
+`docs/architecture/client.md` code-location table.
 Avoid churning those anchors between phases. The final full-repository gate and
 hosted CI also remain pending. The unrelated `.blobs/` directory is outside this
 work and must remain untouched.

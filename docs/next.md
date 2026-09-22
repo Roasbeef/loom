@@ -1,12 +1,40 @@
 # Next
 
+## Diff component, September 21
+
+Phase 5 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at `a4299962`. It provides a shared diff layout for rendering,
+keyboard navigation, mouse hits, and wheel routing. It adds a status-accented
+file list, full-row selection, sticky selected
+header, and explicit Navigator or Composer focus while retaining the existing
+patch renderer, numbering, raw identity, and cache. A compact focused panel may
+borrow status-band space only above the actual editor and footer.
+
+Independent review is closed after fixes to active wheel bounds, focus-time cache
+clamping, overlay borrowing, and compact stale-state presentation. Native QA at
+132×42, 80×24, and 40×12 verified arrow selection, compact patch paging, draft
+and file selection retention across Enter and Ctrl+d, and F2 replacing the
+borrowed view. Automated tests cover mouse hits and wheel routing; the native
+pass did not use a physical mouse. The design note links wide and compact
+captures. The regenerated footer-one-row snapshot changed only intentional diff
+rows; its editor and footer remained unchanged.
+
+The closing TUI gate passed 692 tests with exit zero in 9.30 seconds. It was
+incremental; the latest compile took 8.15 seconds. Hosted CI and a latest-head
+full-repository gate remain pending.
+
+Origin `main` is currently `f440f381`. PR 478 remains open and ready at the
+previously pushed `ef469716` head, with a dirty merge state. Its only known
+upstream overlaps are `docs/architecture/advisor.md` and this handoff. Rebase,
+the final full-repository gate, and hosted CI wait until Phase 6 is complete.
+
 ## Queue component, September 21
 
 Phase 4 of the [TUI component pass](design-notes/tui-component-pass.md) is
 implemented at `44190709`. It adds a selectable queue inspector. Rows
 distinguish queue from steer and editable from read-only. The selected body is
-explicitly the captured excerpt and owns
-independent PgUp/PgDn paging. Enter uses the existing fetch-and-edit path only
+explicitly the captured excerpt and owns independent PgUp/PgDn paging. Enter
+uses the existing fetch-and-edit path only
 for editable items; read-only input cannot fetch text absent from the capture.
 The revision-fenced editor now makes its priority, delivery state, save,
 reconcile, Escape, and newline controls visible.

@@ -777,7 +777,15 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   from the attached session. `/diff` requests an observation; Up/Down selects
   all changes or a raw file identity, Enter returns to the composer, Ctrl+d
   changes focus, and `r` refreshes while the navigator has focus. Mouse file
-  selection and patch scrolling use the rendered pane geometry. Refresh keeps
+  selection and patch scrolling use `diff_panel`'s rendered geometry. The shared
+  layout gives the file list semantic status accents, a full-row text-marked
+  selection, a sticky selected-file header, and explicit Navigator or Composer
+  focus hints. PgUp/PgDn scroll the existing patch renderer and numbering.
+  Focused navigation on a short terminal may borrow status-band rows only above
+  the actual editor; it cannot cover the editor or footer. Compact mode retains
+  the observation line and a readable Navigator help title. Focusing clamps the
+  patch cache and scroll to the active geometry. Another overlay cannot borrow
+  or receive mouse hits from the hidden diff. Refresh keeps
   the selected raw path when it still exists. A pending reply releases the
   command lane; the final push must match the actual sent request ID and
   attachment. Failed refresh retains the previous board with a stale label.
