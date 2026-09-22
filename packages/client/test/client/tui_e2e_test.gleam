@@ -549,11 +549,14 @@ fn drive(ready: Ready) -> Nil {
   let context_pane =
     must_show(
       term,
-      "CONTEXT USAGE",
+      "CONTEXT CAPACITY",
       10_000,
       "the context inspector never received an observation",
     )
-  assert string.contains(context_pane, "Provider usage + estimated")
+  assert string.contains(
+    context_pane,
+    "provider usage plus newer-message estimate; includes output",
+  )
     as "a completed provider request anchors the displayed context"
   let assert Ok(Nil) = terminal.press(term, "a")
     as "the detail toggle expands the bounded inventory"
@@ -562,7 +565,7 @@ fn drive(ready: Ready) -> Nil {
   let _context_items =
     must_show(
       term,
-      "ITEM ESTIMATES",
+      "ITEM INVENTORY",
       10_000,
       "context item details never painted",
     )
