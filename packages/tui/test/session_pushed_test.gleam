@@ -554,10 +554,42 @@ fn usage_push_with(
     None -> body
   }
   push([
-    #("event", json.String("usage")),
+    #("event", json.String("usage_observation")),
     #("seq", json.Int(seq)),
     #("body", json.Object(body)),
   ])
+}
+
+/// The durable usage name cannot be used for an unsolicited observation.
+pub fn a_legacy_usage_push_cannot_double_count_the_captured_total_test() {
+  let model = attached()
+  let reported =
+    message.Usage(
+      12,
+      400,
+      0,
+      0,
+      None,
+      None,
+      412,
+      message.UsageCost(0.01, 0.004, 0.0, 0.0, 0.014),
+    )
+  let legacy =
+    push([
+      #("event", json.String("usage")),
+      #("seq", json.Int(11)),
+      #(
+        "body",
+        json.Object([
+          #("strand", json.String("main")),
+          #("usage", codec.encode_usage(reported)),
+        ]),
+      ),
+    ])
+  let received = tui.accept_connection_message(model, legacy)
+  assert received.usage == model.usage
+    as "a pushed ledger name is ignored instead of adding to a captured total"
+  assert received.cache_watch == model.cache_watch
 }
 
 pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {

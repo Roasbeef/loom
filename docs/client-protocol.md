@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:998`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1004`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1344,7 +1344,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5530`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5537`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2122,7 +2122,7 @@ own durable state register is the truth.
 | `op` | string | optional | Operation, when the row names one. |
 | `usage` | object | required | One usage-ledger append. |
 
-Source: (`client/protocol.gleam:1294-1307`).
+Source: (`client/protocol.gleam:1328-1335`).
 
 The usage object:
 
@@ -2141,6 +2141,12 @@ Source: (`core/codec.gleam:51-71`) and (`core/codec.gleam:96-104`).
 
 A client accumulates ledger appends onto the running total the metadata
 document's `usage` field carries.
+
+Protocol 047 also allows a bounded unsolicited `usage_observation` with this
+same body and a durable `seq`. It is a per-request reading for live cache
+analysis, not another ledger append. A client must not add it to the captured
+running total. The distinct event name lets older clients ignore the push;
+reusing `usage` would make them count the same row twice.
 
 ### 5.10 `escalation`
 
@@ -2893,7 +2899,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3211`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3218`) and `navigating`
    (`client/gateway.gleam:3027`).
 
 9. **The spec's control command list is incomplete.**

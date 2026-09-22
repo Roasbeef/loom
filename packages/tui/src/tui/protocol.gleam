@@ -638,10 +638,11 @@ pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
   use name <- result.try(required_string(fields, "event"))
   case name {
     "committed" -> decode_committed(fields)
-    "usage" -> {
+    "usage_observation" -> {
       use seq <- result.try(required_int(fields, "seq"))
       decode_usage(body_of(fields), Some(seq))
     }
+    "usage" -> Ok(Ignored("usage"))
     "presence" | "attachment" | "input_queue_changed" -> Ok(MetadataChanged)
     other -> decode_body(other, body_of(fields))
   }

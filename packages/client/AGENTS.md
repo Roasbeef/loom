@@ -282,6 +282,7 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
   `EntryEvent`, `OpTransitionEvent`, `StreamDeltaEvent`, `UsageEvent`,
+  `UsageObservationEvent`,
   `EscalationEvent`, `StrandResultEvent`, `ErrorEvent`, `UnknownEvent`),
   with `Snapshot`, `Strand`, `LiveOp`, `EntryRecord`, `EscalationRecord`,
   `Denial`, and `ModelInfo` as the body shapes (`ModelsSnapshot` is the
@@ -2966,7 +2967,8 @@ these forks because they define the same modules.
 - **A pushed durable frame is a notice, with one bounded usage exception.**
   The hub emits one `committed` per new emit — the seq and the strand — and
   records still travel the credited snapshot path. For a usage row it also
-  pushes the fixed-shape counters after checking the encoded frame against
+  pushes the fixed-shape counters under the distinct `usage_observation` name
+  after checking the encoded frame against
   64 KiB. This observation can drive a live cache reading but does not own
   cumulative totals; a missed push is repaired by the capture. Protocol 047
   narrows protocol 018 at this boundary. Delta text is

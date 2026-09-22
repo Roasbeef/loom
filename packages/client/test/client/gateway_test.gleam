@@ -3257,7 +3257,8 @@ pub fn a_network_usage_commit_pushes_its_row_and_notice_test() {
   let observed = next_on(inbox)
   assert observed.reply_to == None
   assert observed.seq == Some(seq)
-  assert observed.event == protocol.UsageEvent(strand: "main", op: None, usage:)
+  assert observed.event
+    == protocol.UsageObservationEvent(strand: "main", op: None, usage:)
   assert process.receive(inbox, within: 100) == Error(Nil)
     as "one durable usage row has one observation, not a repeated stream"
 }

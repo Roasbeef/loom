@@ -704,12 +704,12 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
   wrong reply IDs fail closed. Raw entries, usage, configuration and pending
   approvals arrive through a completed cut, not unsolicited legacy events.
-  Protocol 047 also permits a bounded pushed usage observation. Its sequence
+  Protocol 047 also permits a bounded pushed `usage_observation`. Its sequence
   deduplicates the row, while captured cumulative usage remains authoritative.
 - **Pushed frames in**: an envelope with no `reply_to` is a push. `committed`
   (with its sequence in the envelope) is a notice that moves a catch-up
   earlier; `presence` and `attachment` are the same trigger; `stream_delta`
-  is the live answer in order; `usage` is a bounded per-operation reading;
+  is the live answer in order; `usage_observation` is a bounded per-operation reading;
   `tool_output` is a running command's tail,
   whole each time; a pushed `error` is a daemon-side failure
   reported without closing the socket. An event name this client does not

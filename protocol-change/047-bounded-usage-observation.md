@@ -17,8 +17,8 @@ the terminal does not exercise production delivery.
 
 ## Decision
 
-For a newly committed usage row, the network gateway pushes the existing
-`usage` event after its `committed` notice. The observation carries the row's
+For a newly committed usage row, the network gateway pushes a distinct
+`usage_observation` event after its `committed` notice. The observation carries the row's
 durable sequence in the envelope, the attributed strand and operation in the
 body when known, and the provider's fixed-shape usage counters. The gateway
 checks the encoded frame against the 64 KiB response limit before sending it.
@@ -60,6 +60,7 @@ single-credit lane. The fixed-shape, size-checked observation is enough for a
 live cache reading while the existing capture retains custody of totals.
 
 The additional push costs one authority check and one small frame per usage
-row per subscribed peer. Older terminals ignore the unsolicited event name.
-The wire shape of `usage` and every command remains unchanged; only the
-existing event's unsolicited delivery gains a bounded case.
+row per subscribed peer. Older terminals ignore the new event name. Reusing
+`usage` would make them add the row to their captured cumulative total again.
+The wire shape of credited `usage` and every command remains unchanged; the
+new event has the same fixed-shape body and a distinct delivery rule.

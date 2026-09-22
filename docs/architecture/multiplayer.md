@@ -85,7 +85,7 @@ gateway also pushes four things:
   sequence and the strand and no record. A terminal that has not seen the
   sequence requests its catch-up at once instead of at the next idle
   refresh.
-- A bounded `usage` observation beside a usage row's `committed` notice.
+- A bounded `usage_observation` beside a usage row's `committed` notice.
   [Protocol 047](../../protocol-change/047-bounded-usage-observation.md)
   admits this fixed-shape exception so the terminal can compare consecutive
   provider rows. Captures still own cumulative usage and repair missed pushes.
@@ -156,7 +156,7 @@ pushed delivery.
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:3286`). Both paths call
+through `deliver` (`client/gateway.gleam:3293`). Both paths call
 `check_binding` (`client/gateway.gleam:2358`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
@@ -236,7 +236,7 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4904`) is called from
+`drain_idle_strands` (`client/gateway.gleam:4911`) is called from
 `pull_and_broadcast` (`client/gateway.gleam:2639`) after `state.live` has
 been refreshed from the registers and before any frame leaves. Ordinarily only
 the head is submitted. An explicit abort marks the existing `HeldQueue` as

@@ -2668,11 +2668,17 @@ fn pull_and_broadcast(state: State) -> State {
               event: protocol.CommittedEvent(notice_strand(state, emit.event)),
             )
           case emit.event {
-            protocol.UsageEvent(..) ->
-              case bounded_usage_observation(emit) {
-                True -> [notice, emit]
+            protocol.UsageEvent(strand:, op:, usage:) -> {
+              let observed =
+                Emit(
+                  seq: emit.seq,
+                  event: protocol.UsageObservationEvent(strand:, op:, usage:),
+                )
+              case bounded_usage_observation(observed) {
+                True -> [notice, observed]
                 False -> [notice]
               }
+            }
             _ -> [notice]
           }
         }),
@@ -2704,7 +2710,8 @@ fn bounded_usage_observation(emit: Emit) -> Bool {
 fn notice_strand(state: State, event: WireEvent) -> String {
   case event {
     protocol.EntryEvent(record:) -> record.strand
-    protocol.UsageEvent(strand:, ..) -> strand
+    protocol.UsageEvent(strand:, ..)
+    | protocol.UsageObservationEvent(strand:, ..) -> strand
     protocol.OpTransitionEvent(strand:, ..) -> strand
     protocol.EscalationEvent(record:) -> record.strand
     protocol.StrandResultEvent(strand:, ..) -> strand
