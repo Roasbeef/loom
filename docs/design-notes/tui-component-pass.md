@@ -1,9 +1,9 @@
 # TUI component pass
 
-Status: Phases 1 through 5 verified through `a4299962`, September 21, 2026. The
-implementation baseline is `ef469716` on PR 478. The PR is open and ready for
-review; it has no automatic merge. This note records settled scope and the
-evidence each phase must produce. Phase 6 remains planned.
+Status: all six phases implemented, reviewed, and component-verified through
+`19b11010`, September 22, 2026. The implementation baseline is `ef469716` on PR
+478. The PR is open and ready for review; it has no automatic merge. Rebase,
+full-repository validation, and hosted CI remain separate pending work.
 
 ## Purpose and constraints
 
@@ -274,15 +274,60 @@ Acceptance evidence must cover measured and missing context, cache and output
 accounting, success/failure/abort completion, zero and multiple live jobs,
 omitted jobs, refresh transitions, stable selection, and narrow layout.
 
+### Phase 6 evidence in progress
+
+The current `context_panel` presents estimated context capacity against the
+model window, its estimate basis and durable sequence, aligned component
+estimates, the compaction boundary, and optional bounded item inventory. It says
+that component estimates are independent and need not sum to the headline. Its
+observation line distinguishes last observation, refresh pending, another queued
+refresh, and unavailable state. Paging is clamped to the current geometry and
+the ordinary composer draft remains outside the inspector.
+
+The current `summary_panel` separates Completion, Usage, and Jobs. Completion
+shows only captured terminal outcome, ancestry coverage, final assistant entry,
+file-tool evidence, and tool results. Usage distinguishes cumulative all-strand
+accounting from the latest measured active request. Jobs is a separately
+refreshed roster: `[` and `]` retain a selected stable job identity and expose
+only its captured command excerpt, owner, age, and deadline facts. Keys 1, 2,
+and 3 change section, `r` refreshes jobs, and page keys scroll the selected
+section.
+
+Independent source review is now closed after fixes for bounded evidence,
+relative job timing, wrong-strand rosters, and render purity. Native `/summary`
+verified sections 1, 2, and 3 at 80 columns. Completion showed a completed
+`sub:viewport-review` operation and correctly remained missing on active `main`.
+Jobs at 132×42 and 40×12 retained immediate bracket-selected identity; paging
+reached timing and roster detail, and `r` reset the viewport before refresh.
+
+The real Preview `/context` path correctly refused a live observation. The
+provider-free `run_context` Replaying fixture opened an explicitly illustrative
+board at 132×42, 80×24, and 40×12. It showed capacity, component estimates, and
+the compaction threshold; `a` opened inventory and paging reached the three-item
+omission tail. These fixtures made no daemon or provider call and performed no
+mutation.
+
+The compact context help now keeps `Esc` visible at 40 columns. All six final
+PNGs and their adjacent ANSI recordings were inspected:
+
+- [context, wide](tui-agent-workspace/context-component.png) and
+  [context, 40×12](tui-agent-workspace/context-component-40.png);
+- [jobs, wide](tui-agent-workspace/summary-jobs-component.png) and
+  [jobs, 40×12](tui-agent-workspace/summary-jobs-component-40.png);
+- [completion, 80×24](tui-agent-workspace/summary-completion-component.png);
+- [usage, 80×24](tui-agent-workspace/summary-usage-component.png).
+
+The focused 13-test pass compiled in 8.44 seconds. The closing TUI gate passed
+all 693 tests with exit zero in 9.46 seconds; it was incremental. The private
+native tmux fixture was closed and made no daemon or provider call.
+
 ## Evidence ledger
 
-Phases 1 through 5 are verified by commits `27da4a7d`, `157c5207`, `39a735f5`,
-`44190709`, and `a4299962`, their closing TUI gates, native captures, and
-confirmed review repairs recorded above. For Phase 6, focused and full gate
-results, timings, native captures, review findings, and its commit ID remain
-pending. The final documentation refresh must repair the known line-citation
-drift in `docs/architecture/advisor.md` and add the new panels to the
-`docs/architecture/client.md` code-location table.
-Avoid churning those anchors between phases. The final full-repository gate and
-hosted CI also remain pending. The unrelated `.blobs/` directory is outside this
+All phases are component-verified by commits `27da4a7d`, `157c5207`, `39a735f5`,
+`44190709`, `a4299962`, and `19b11010`, their closing TUI gates, native captures,
+and confirmed review repairs recorded above. After the planned rebase, the final
+documentation refresh must repair the known line-citation drift in
+`docs/architecture/advisor.md` and add the new panels to the
+`docs/architecture/client.md` code-location table. The final full-repository gate
+and hosted CI remain pending. The unrelated `.blobs/` directory is outside this
 work and must remain untouched.

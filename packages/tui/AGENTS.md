@@ -818,6 +818,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   is free. Ordinary transcript refreshes do not query job history or run Git.
   `session_channel.RequestRefused` carries the command and actual request ID,
   so an unrelated refusal cannot settle a queue, worktree, or jobs request.
+  `summary_panel` presents Completion, Usage, and Jobs as separate numbered
+  sections. Completion renders captured terminal outcome and attributable
+  ancestry, file-tool, and tool-result evidence. Usage separates cumulative
+  all-strand accounting from the latest measured active request. Jobs remains a
+  separately refreshed observation; brackets select a stable retained job and
+  show only its captured owner, command excerpt, age, and deadline. `r` refreshes
+  jobs and resets the section viewport. A roster for another strand is
+  unavailable rather than borrowed. Job ages and deadlines are relative facts
+  from one server observation; rendering does not read a clock. Section paging
+  does not alter the composer draft.
 - **Current context**: `/context` opens aggregate usage and `/context all`
   (also `/contextall`) adds bounded item estimates. `tui/context_view.State`
   retains one attachment and strand's request identity, board, and independent
@@ -829,7 +839,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `ctx ~N%` ahead of cumulative billing. Missing observations show `ctx —`.
   Context and worktree reads wait for each other's final push before borrowing
   the same server worker slot. An unsupported optional command stays unavailable
-  until attachment replacement. Escape returns without discarding the composer.
+  until attachment replacement. `context_panel` renders estimated capacity,
+  basis, durable sequence, aligned component estimates, compaction boundary, and
+  optional bounded item inventory. It labels freshness and unavailable states,
+  and states that component rows need not sum to the headline. Page movement is
+  clamped to the current geometry. Preview refuses a live observation rather
+  than presenting illustrative data as fetched state. Compact help retains the
+  Escape control at 40 columns. Escape returns without discarding the composer.
 - **Advisor pending-nudge panel**: `tui.sync_advisor_nudges` issues an
   `advisor_pending` read itself, with no operator keystroke, on exactly
   three transitions — `tui.advisor_nudges_action` names them `ReadNudges`:

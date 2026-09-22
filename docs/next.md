@@ -1,12 +1,48 @@
 # Next
 
+## Context and summary components, September 22
+
+Phase 6 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at `19b11010`. It adds an estimated context card with aligned
+component rows, compaction facts, bounded item inventory, and explicit
+freshness. Component estimates remain independent
+of the headline capacity estimate. The current summary separates Completion,
+Usage, and Jobs: captured outcome evidence, cumulative versus latest-request
+accounting, and a separately refreshed selectable job roster.
+
+Job selection retains stable observed identity and exposes only captured owner,
+command excerpt, age, and deadline facts. Context and summary paging remain
+separate from the composer, preserving its draft. Independent review is closed
+after bounded-evidence, relative-job-time, wrong-strand, and pure-render fixes.
+
+Native `/summary` verified sections 1, 2, and 3 at 80 columns, a populated
+Completion for `sub:viewport-review`, a correctly missing Completion on active
+`main`, and immediate bracket-selected job identity at 132×42 and 40×12. Paging
+reached roster timing, and `r` reset the viewport. Real Preview `/context`
+correctly refused live observation. The provider-free Replaying fixture covered
+132×42, 80×24, and 40×12 capacity, components, compaction threshold, inventory,
+and the three-item omitted tail. No fixture made a daemon or provider call or
+performed a mutation.
+
+Compact context help keeps `Esc` visible at 40 columns. All six final context,
+jobs, completion, and usage PNGs and their ANSI recordings were inspected; the
+design note links them. The focused 13-test pass compiled in 8.44 seconds. The
+closing TUI gate passed all 693 tests with exit zero in 9.46 seconds; it was
+incremental. The private native tmux fixture was closed and made no daemon or
+provider call.
+
+All six phases are implemented, source-reviewed, and component-verified. Rebase,
+the final architecture table and citation repairs, full-repository validation,
+and hosted CI remain pending because upstream overlaps the advisor architecture
+and this handoff.
+
 ## Diff component, September 21
 
 Phase 5 of the [TUI component pass](design-notes/tui-component-pass.md) is
 implemented at `a4299962`. It provides a shared diff layout for rendering,
 keyboard navigation, mouse hits, and wheel routing. It adds a status-accented
-file list, full-row selection, sticky selected
-header, and explicit Navigator or Composer focus while retaining the existing
+file list, full-row selection, sticky selected header, and explicit Navigator or
+Composer focus while retaining the existing
 patch renderer, numbering, raw identity, and cache. A compact focused panel may
 borrow status-band space only above the actual editor and footer.
 
