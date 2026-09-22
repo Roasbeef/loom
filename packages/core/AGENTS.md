@@ -20,19 +20,17 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 - `core/entry.Entry` — the four write-once row shapes (`MessageEntry`,
   `CompactionEntry`, `BranchSummaryEntry`, `CustomEntry`), placement fields
   and payload together. `UsageRow` is the ledger row.
-- `core/message.Origin` — the human attribution `protocol-change/016`
-  added: a stable `principal` and the `name` that principal displayed at
-  admission, preserved after a later rename. It carries no credential and
-  no authority, and it reaches a message only through
-  `UserMessage.origin: Option(Origin)`, which is `None` for historical
-  turns and for anything the harness generated itself.
-- `core/origin` — the four total codec functions over that field, kept out
-  of `message` so the validation bounds have one home: `validate` checks
-  the principal's 128-byte identifier alphabet and the name's 256-byte
-  printable range, `encode` renders `None` as an explicit `null`,
-  `decode_field` reads the optional field back, and `project` prepends one
-  quoted author label to a *transient* content list at the provider
-  boundary, leaving the stored blocks untouched.
+- `core/message.Origin` distinguishes human attribution from peer-agent
+  attribution. `Origin(principal, name)` preserves the human identity admitted
+  under protocol 016. `PeerOrigin(session, strand)` records the host-bound peer
+  sender under protocol 045. Both carry attribution only, without credentials
+  or authority. Historical unattributed turns remain `None`.
+- `core/origin` owns validation, encoding, decoding and presentation of that
+  field. Human records keep their legacy untagged encoding; peer records use
+  `{kind: "peer", session, strand}`. A malformed present origin is corruption.
+  `project` adds an explicit human or peer-agent label at the provider boundary
+  while preserving stored content. `display_label` gives existing client views
+  an explicit peer label instead of treating a strand name as a human name.
 - `core/register.{RegisterNs, RegisterValue}` — the closed namespace enum
   and the thin tagged JSON wrapper storage persists. The rich payload types
   each namespace forces live in `machine`; `core` understands only

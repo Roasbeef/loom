@@ -903,3 +903,10 @@ that recovery identity. `steer_async` checks the same custody without waking.
 A failed receipt or authority expectation returns `FactConflict`; admission
 must not retry past a changed grant. This lets peer delivery atomically commit
 provenance, receipt and prompt through the existing queue/acceptance paths.
+
+`async_execution.Readiness` is stored separately under
+`client/async/ready/{id}`. Its total decoder validates the unique bounded endpoint
+names and idle interval. Readiness does not replace lifecycle: a finished or
+lost record may retain its endpoint declaration. Peer entries carry the core
+`PeerOrigin` variant through the same durable conversation codec as human
+entries; grant and receipt checks remain in the existing admission transaction.

@@ -180,8 +180,9 @@ through code mode. A separate, opt-in orchestration capability set lets programs
 spawn and coordinate subagents.
 
 With `code_mode` in `launch` mode, a program can keep typed actors alive after
-the tool call returns. Later turns can send data, inspect the execution, wait
-for its result, or cancel it. The execution keeps its original grants and
+the tool call returns. Programs register named typed input endpoints and
+publish intermediate progress. Later turns can check readiness, send data,
+inspect progress, wait for the result, or cancel the execution. The execution keeps its original grants and
 deadline.
 
 Background orchestration programs can use

@@ -370,14 +370,14 @@ timeout. The refusals a program reads are `mcp_unavailable`,
 `mcp_timeout`, `mcp_malformed`, `jsonrpc_<code>` for a server error, and
 `unsupported_cap` for a server this host never configured.
 
-## Three seams, and why two of the sets are disjoint
+## Three seams and their shared capabilities
 
 There is not one prelude but three, and a submission is vetted against
 exactly one of them (`codemode/vet/policy.Seam`).
 
-The **workspace seam** is the ten modules above: a program that
-orchestrates *effects*. The **orchestration seam** is `cap/strand` and
-`cap/report`, and nothing else: a program that orchestrates *agents*.
+The **workspace seam** provides the effect capabilities above. The
+**orchestration seam** provides `cap/strand` and `cap/workflow` for coordinating
+agents. Both also expose reporting, execution input and peer communication.
 `cap/strand` gives `spawn`, `wait` — a list of handles against one shared
 deadline — `send`, `note`/`notes` and `roster`, and every one of them is
 serviced by the same `client/agency` closures the model's own `agent_*`
@@ -1214,10 +1214,13 @@ of a session.
 
 Submitted `code_mode` programs use a fresh node per execution. In background
 `launch` mode, that execution can span several model turns. The program receives
-later data through `cap/execution.receive`, under its original capability token
-and deadline. A lost satellite is reported explicitly; its actor state is not
+later data through named typed `cap/execution` endpoints or raw `receive`,
+under its original capability token and deadline. Readiness is explicit and
+intermediate progress is observable without ending the program. A lost satellite is reported explicitly; its actor state is not
 restored. The [async collaboration guide](../async-collaboration.md) covers
-launch handles, named child steps, and recovery.
+launch handles, named child steps, and recovery. The
+[async architecture](async-collaboration.md) explains readiness, delivery
+acknowledgements, lifetime limits and the scope of exclusive tool admission.
 
 Installed extensions have a different lifetime: their satellite serves repeated
 invocations, each with a separately issued token.

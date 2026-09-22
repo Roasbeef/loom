@@ -378,6 +378,13 @@ adding another message. The receipt proves admission, not model consumption.
 The daemon routes to resident endpoints only; discovery can list saved sessions
 without opening them. An unavailable link remains one unavailable roster row.
 
+Both steering an active operation and starting an idle strand place the same
+`UserMessage` with a host-bound `PeerOrigin(session, strand)`. The message body
+contains the sender's text. `core/origin` serializes the identity independently
+and adds a peer-agent attribution label when projecting provider input. Human
+origins retain their existing representation, and a malformed peer origin is
+reported as corruption rather than replayed as anonymous text.
+
 A background execution keeps one satellite alive under a fixed deadline.
 `cap/execution.receive` reads committed input that the program can decode into
 messages for its typed actors. Children belong to that execution and survive

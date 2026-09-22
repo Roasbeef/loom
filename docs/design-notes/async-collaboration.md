@@ -107,3 +107,19 @@ adversarial review verified the cancellation and publication repairs. The origin
 full-gate invocation stopped at the callback compile error; the resumed stages
 and final lint supply the remaining evidence. Linux execution and hosted CI at
 the proposed head remain outstanding.
+
+## Completion of the backend surface
+
+The follow-up to the initial implementation adds structured peer origins,
+explicit input readiness, typed endpoint registration and dispatch, published
+intermediate progress, typed-service idle expiry, and cumulative launch limits.
+The exclusive tool contract now distinguishes an invocation from its admitted
+background lifetime. These contracts are recorded in Protocol 045 and explained
+in the [async architecture](../architecture/async-collaboration.md).
+
+The source review found no confirmed production defect in this follow-up, but
+identified an idle test that could hide a surviving worker during teardown.
+The final validation record belongs with the strengthened regression and the
+current handoff; the earlier local counts above describe the initial work only.
+TUI linking (#485), CLI convenience commands (#488), and a complete workflow
+example (#489) remain separate follow-ups.

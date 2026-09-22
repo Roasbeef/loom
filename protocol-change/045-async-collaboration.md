@@ -75,9 +75,11 @@ a later operator or peer run cannot become the recovered workflow step.
 Named step intents retain original call-site coordinates and assignment digest;
 the child operation's existing durable terminal is the result authority.
 
-Peer provenance is retained as structured receipt data and rendered as
-explicitly attributed message content. No new `AgentMessage` origin variant
-is introduced. `GuardedMark` checks grant sequence in the recipient's admission
+Peer provenance is retained as structured receipt data and as
+`PeerOrigin(session, strand)` on the placed conversation entry. The new origin
+variant uses a tagged encoding; existing human `{principal, name}` origins keep
+their untagged representation. Malformed peer origins fail the total decoder.
+Provider and terminal rendering identify the source as a peer agent. `GuardedMark` checks grant sequence in the recipient's admission
 transaction. Unlinking an unavailable recipient removes outgoing authority
 and reports the unremoved recipient grant. Git metadata is a timestamped
 activation observation, not a live branch assertion.
@@ -107,3 +109,32 @@ The command carries source and target coordinates, `message_id`, `text`, and
 control mutation and is refused during daemon drain. Session members cannot use
 it to impersonate another strand. The [client protocol](../docs/client-protocol.md#319-peerssend)
 specifies field bounds.
+
+## Readiness, typed endpoints and observation
+
+Launch admission and input readiness are distinct. The durable execution phase
+is unchanged; `client/async/ready/{id}` records an immutable endpoint set and
+idle interval. `check` extends its existing flat record with `readiness`,
+`endpoints` when ready, and optional volatile `progress` and `latest_delivery`.
+A send adds an optional `endpoint` field, defaulting to `default`, and is
+refused before readiness or for an unregistered name.
+
+The capability channel gains `execution.ready`, `execution.receive_enveloped`,
+`execution.progress` and `execution.delivery`. `cap/execution.endpoint` couples
+a decoder and typed delivery closure within the satellite; `serve` registers
+names and dispatches the ordered journal. Legacy `execution.receive` publishes
+raw readiness for `default`. It cannot consume a typed endpoint journal.
+No host-side actor subject or new exec-helper frame is introduced.
+
+Progress retains only current and pending bounded snapshots, coalesced at
+100 ms. Delivery records only the latest callback outcome. Neither observation
+is durable or evidence that actor work completed. The API guide specifies
+payload bounds. Typed idle expiry fences and reaps the execution; only a
+successful delivery renews its idle anchor. The absolute deadline is unchanged.
+A cumulative ceiling of 32 launches per initiating operation complements the
+eight-live-execution session ceiling and is reconstructed from durable records.
+
+`tool.Exclusive` covers the launching tool invocation, not the lifetime of an
+admitted background satellite. Backgrounds may overlap other calls after
+admission returns. The [architecture](../docs/architecture/async-collaboration.md)
+explains custody, callback delivery and recovery boundaries.

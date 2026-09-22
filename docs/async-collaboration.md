@@ -15,7 +15,10 @@ The owner grants those links separately from child ownership.
 The existing synchronous invocation remains the default. A background launch
 uses the same source, seam, policy, approval and budget fields with
 `"mode": "launch"`. The response contains an execution `id` and fixed deadline.
-Running means admitted; compilation and node startup may still be pending.
+`Running` describes worker custody; compilation and node startup may still be
+pending. Wait for `check` to report `readiness: "ready"` and the intended
+endpoint before sending. A program that never receives input need not become
+ready before returning its result.
 
 ```json
 {"mode":"launch","seam":"workspace","program":"import cap/report\npub fn main() { report.text(\"done\") }","within_ms":60000}
@@ -25,14 +28,16 @@ Subsequent calls use `"handle": "<id>"` and one of these modes:
 
 | Mode | Additional fields | Meaning |
 |---|---|---|
-| `send` | `value`, any JSON value | Commit the next input and return its sequence |
-| `check` | none | Read lifecycle and any result without waiting |
+| `send` | `value`, optional `endpoint` (default `default`) | Commit input for a registered endpoint and return its sequence |
+| `check` | none | Read lifecycle, readiness, endpoint names, latest progress/delivery and any result |
 | `join` | optional `within_ms` | Wait up to 30 seconds for a terminal record |
 | `cancel` | none | Close admission and request cancellation |
 
 Only the owning strand can interact with a handle. Sending data cannot replace
 the source, add grants, change the seam, or renew the original deadline. Each
-session admits at most eight live executions. An input journal holds at most
+session admits at most eight live executions. One initiating operation can
+launch at most 32 executions in total; finished and lost executions still
+count, while a retry of the same handle does not. An input journal holds at most
 128 entries and 65,536 encoded bytes. Reads are non-destructive:
 
 ```gleam
@@ -49,9 +54,75 @@ pub fn main() -> report.Outcome {
 }
 ```
 
-A longer program retains the returned cursor and decodes each value into its
-own typed actor message. Repeating a read with the same cursor returns the same
-input. Repeating a send appends a new input; sends are not deduplicated.
+The first raw `receive` publishes readiness for `default`. A longer raw program
+retains the returned cursor and decodes each value itself. Repeating a read
+with the same cursor returns the same input. Repeating a send appends a new
+input; sends are not deduplicated.
+
+### Register typed endpoints
+
+Use `endpoint` to couple each decoder to a callback accepting its decoded
+message type, then pass the endpoints to `serve`. The following program accepts
+integers on `number` and publishes each accepted value as progress:
+
+```gleam
+import cap/execution
+import cap/report
+import gleam/result
+
+pub fn main() -> report.Outcome {
+  let decoder = fn(value) {
+    report.as_int(value) |> result.map_error(fn(_) { "Expected an integer." })
+  }
+  let deliver = fn(number) {
+    execution.progress(report.int(number)) |> result.replace(Nil)
+  }
+  case execution.endpoint("number", decoder, deliver) {
+    Error(_) -> report.text("Invalid endpoint name.")
+    Ok(endpoint) -> case execution.serve([endpoint], idle_within_ms: 60_000) {
+      Ok(_) -> report.text("Input service ended.")
+      Error(_) -> report.text("Input service failed.")
+    }
+  }
+}
+```
+
+After readiness, send `{"mode":"send","handle":"<id>","endpoint":"number",
+"value":42}`. A callback can instead capture a local typed `cap/actor.Address`
+and dispatch to that actor. The host never receives the address or runs the
+callback. Endpoint names are 1..64 ASCII bytes from `[a-z0-9._-]`; an execution
+registers 1..16 unique names together. Registration is immutable. Raw receive
+and typed serving cannot be mixed.
+
+A wrong-shaped value is admitted as data, then rejected by the endpoint's
+decoder. The serving loop records that rejection and continues with later
+inputs. `check.latest_delivery` reports the latest sequence, endpoint and
+`delivered` or `rejected` status, with an optional reason of at most 1024 bytes.
+`delivered` means the callback returned successfully; a callback that enqueues
+an actor message has not necessarily waited for the actor's work to finish.
+
+### Observe progress and bound idle service
+
+`execution.progress(value)` submits up to 16,384 encoded JSON bytes. The host
+coalesces updates over 100 ms and exposes the latest published value through
+`check.progress`, with a sequence and timestamp. The acknowledgement identifies
+the currently published snapshot; a newly submitted value may still be pending.
+Progress and delivery status are volatile and disappear when the live execution
+is removed. Use a final result or an explicit durable artifact for information
+that must survive.
+
+`serve` requires an idle interval of 1..300000 ms. It starts at readiness and
+resets after a successful delivery callback. Rejections, progress updates and
+checks do not reset it. The host checks expiry at input receive boundaries,
+fences the execution and reaps it as `Lost("execution idle timeout")`. The
+satellite may receive an idle response before cancellation, but a final report
+from that path is not guaranteed. The fixed wall deadline also covers work
+between receives. Raw `receive` has only its per-call wait and that wall limit.
+
+The tool's `Exclusive` classification covers a tool invocation. A background
+launch releases that invocation when it returns the admitted handle; its
+satellite can overlap later tools and other background executions. It does
+not hold an exclusive workspace lock for its remaining lifetime.
 
 An execution moves through `Starting`, `Running`, `Draining`, and either
 `Finished(result)` or `Lost(reason)`. Loom records `Finished` only after the
@@ -136,9 +207,10 @@ plus `message_id`, `text`, and the current `epoch`:
 The owner selects the strand on whose behalf the script sends. The command
 still requires that strand's outgoing link and the recipient's grant. It uses
 the same durable receipt and wake policy as the model tool. Both sessions must
-be resident; sending never opens a saved session. The harness reads source
-metadata from the resident endpoint and catalogue instead of accepting it from
-the request. A member credential cannot use this command.
+be resident; sending never opens a saved session. The harness binds identity to the resolved resident endpoint and the selected
+source strand. The request cannot supply provenance metadata; daemon-control
+sends currently store `null` for that auxiliary metadata. A member credential
+cannot use this command.
 
 The model gets three tools: `peer_roster`, `peer_send`, and `peer_describe`.
 `peer_send` takes `session`, `strand`, `message_id`, and `text`. The program API
@@ -155,9 +227,11 @@ refuse a retry, even when the original message was admitted. A receipt proves
 that the message was stored; it does not prove that the model read it or finished
 the requested task.
 
-The harness supplies the sender's session, strand, and observed metadata. The
-sending model cannot override that identity. Message text and model descriptions
-carry no authority.
+The harness stores the sender's session and strand as a `PeerOrigin` on the
+placed conversation entry. The entry codec preserves that identity through
+storage and replay, and provider rendering labels it as a peer-agent message.
+The receipt separately retains optional source metadata supplied by the host. The sending model
+cannot override the origin; message text and model descriptions carry no authority.
 
 Discovery shows linked resident and saved sessions, catalogue name and workspace,
 exported strands, current operation and state sequence, latest terminal result,
@@ -173,6 +247,10 @@ grant could not be removed. Without the outgoing link the source cannot send.
 A later explicit link replaces the exact recipient permission before publishing
 outgoing discovery again.
 
-Terminal presentation, saved-session outboxes, cross-machine transport and
-arbitrary effect replay are deferred. The core APIs above work independently
-of a terminal redesign.
+The [architecture](architecture/async-collaboration.md) explains the ownership
+and acknowledgement boundaries. TUI linking is deferred to
+[#485](https://github.com/Roasbeef/loom/issues/485), CLI convenience commands to
+[#488](https://github.com/Roasbeef/loom/issues/488), and a complete collaboration
+workflow example to [#489](https://github.com/Roasbeef/loom/issues/489).
+Saved-session outboxes, cross-machine transport and arbitrary effect replay
+remain separate extensions.

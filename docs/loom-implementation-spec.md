@@ -836,3 +836,14 @@ brief, so recovery after interrupted lineage publication cannot adopt a later
 run. Existing durable child results are the result authority. Arbitrary effect
 replay and actor-heap recovery remain outside the contract. The
 [API guide](async-collaboration.md) specifies bounds and interaction fields.
+
+Background launch readiness is an immutable fact separate from custody phase.
+Named endpoints decode and dispatch inside the satellite; the host journals
+only endpoint names and JSON values. Sends require readiness. Progress and
+latest delivery are bounded volatile observations, not durable completion
+records. Typed serving has an explicit idle limit, and each initiating
+operation has a cumulative launch ceiling. `Exclusive` serializes tool
+invocations, not admitted satellite lifetimes. Protocol 045 and the
+[async architecture](architecture/async-collaboration.md) define these limits.
+Conversation codecs preserve a distinct `PeerOrigin(session, strand)` while
+retaining the existing human-origin encoding.

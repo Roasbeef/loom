@@ -2016,12 +2016,23 @@ Source: (`core/codec.gleam:227-238`).
 |---|---|---|---|
 | `content` | array | required | User content blocks: `text` or `image`. |
 | `timestamp` | integer | required | Milliseconds. |
-| `origin` | object or null | required | `{principal, name}` of the human who submitted the turn, or `null`. |
+| `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, or `null`. |
 
 Source: (`core/codec.gleam:130-136`).
 
 ```json
 {"role":"user","content":[{"type":"text","text":"add a retry to the fetcher"}],"timestamp":1756000010000,"origin":{"principal":"reviewer-1","name":"Reviewer"}}
+```
+
+A peer message keeps `role: "user"` while its distinct origin identifies the
+sending agent. Human origins retain the original untagged representation.
+Unknown origin kinds and malformed peer identities fail decoding; they do not
+become anonymous. Peer session IDs are bounded to 256 bytes and strand names
+to 512 bytes, with no control characters or surrounding whitespace.
+Source: (`core/origin.gleam:98-153`).
+
+```json
+{"role":"user","content":[{"type":"text","text":"Review found a missing cancellation check."}],"timestamp":1756000010000,"origin":{"kind":"peer","session":"sess-review","strand":"security"}}
 ```
 
 `origin` is durable attribution, and a client MUST NOT derive any
