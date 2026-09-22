@@ -1,5 +1,34 @@
 # Next
 
+## Styled approval review, September 21
+
+The automatic permission sheet now separates the tool-specific question,
+requester, raised action preview, and exact requested authority. Allow once,
+Allow for session, and Deny remain vertical at every width. Focus fills the
+selected row and retains a `›` marker without color. The sheet still opens with
+no selection: arrows or Tab choose an available decision, Enter confirms it,
+and Escape defers. `d` or Ctrl+g switches to the exact raw request; PgUp, PgDn,
+Home, and End scroll its independently bounded detail.
+
+Known file writes show the path and content as separate fields. Actual content
+newlines form preview rows, and each row independently escapes terminal controls,
+bidi marks, and literal backslash sequences. Unknown fields and complete file
+edits retain escaped JSON fallback, so the readable view cannot silently omit
+authority-relevant arguments. Independent review found and repaired ASCII
+control escaping and added coverage proving page navigation reaches every row.
+
+The final TUI gate passed 669 tests with exit zero; compilation took 7.38
+seconds. House lint reported zero errors and 129 warnings. Documentation checking
+reported zero errors and 152 warnings. Native QA exercised the current BEAM at
+100×40, 80×24, and 40×12. It verified the readable view and complete scope, End
+then PgUp paging, the `d` raw view, and Escape deferral without submitting an
+approval. The panel is capped at eighteen rows on a large screen; at 100×40, the
+remaining 22 rows preserve most of the transcript. The
+[100×40 capture](design-notes/tui-agent-workspace/approval-styled.png) and
+[40×12 capture](design-notes/tui-agent-workspace/approval-styled-40.png) record
+the styled and compact layouts. No latest-head full-repository gate or hosted CI
+run has verified this final change set.
+
 ## Goal architecture and compact approvals, September 21
 
 The workspace documentation now includes a source-verified
