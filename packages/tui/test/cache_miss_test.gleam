@@ -285,23 +285,27 @@ pub fn a_proven_split_counts_down_the_tail_then_the_head_test() {
   // the tail's remaining time.
   assert cache_miss.outlook(Some(watch), 60_000)
     == Some(cache_miss.Held(remaining_ms: 240_000))
-  assert cache_miss.outlook_label(cache_miss.Held(240_000)) == "cache 4m"
+  assert cache_miss.outlook_label(cache_miss.Held(240_000)) == "cache tail ≤4m"
 
   // Past the tail, inside the hour: only the head still holds.
   assert cache_miss.outlook(Some(watch), 300_000)
     == Some(cache_miss.Head(remaining_ms: 3_300_000))
   assert cache_miss.outlook_label(cache_miss.Head(3_300_000))
-    == "cache tail gone · head 55m"
+    == "cache head ≤55m"
 
   // Past the hour: nothing holds, and the label says so plainly.
   assert cache_miss.outlook(Some(watch), 3_600_000) == Some(cache_miss.Expired)
-  assert cache_miss.outlook_label(cache_miss.Expired) == "cache expired"
+  assert cache_miss.outlook_label(cache_miss.Expired) == "cache TTL elapsed"
 
   // The final minute of a countdown reads in seconds, because that is the
   // resolution a send-now decision is made at.
-  assert cache_miss.outlook_label(cache_miss.Held(45_000)) == "cache 45s"
-  assert cache_miss.outlook_label(cache_miss.Head(30_000))
-    == "cache tail gone · head 30s"
+  assert cache_miss.outlook_label(cache_miss.Held(45_000)) == "cache tail ≤45s"
+  assert cache_miss.outlook_label(cache_miss.Head(30_000)) == "cache head ≤30s"
+
+  // A displayed upper bound rounds up. The provider started its TTL before
+  // the terminal received this usage row, so a shorter claim would be false.
+  assert cache_miss.outlook_label(cache_miss.Held(239_999)) == "cache tail ≤4m"
+  assert cache_miss.outlook_label(cache_miss.Head(29_001)) == "cache head ≤30s"
 }
 
 pub fn an_unproven_provider_only_reports_its_growing_idle_age_test() {
@@ -315,10 +319,11 @@ pub fn an_unproven_provider_only_reports_its_growing_idle_age_test() {
   // Past the floor the honest reading is the pause's age, which grows
   // without end and never turns into "expired" on its own.
   assert cache_miss.outlook(Some(watch), nine_minutes())
-    == Some(cache_miss.Held(remaining_ms: 480_000))
-  assert cache_miss.outlook_label(cache_miss.Held(480_000)) == "cache 8m"
+    == Some(cache_miss.Idle(elapsed_ms: nine_minutes()))
+  assert cache_miss.outlook_label(cache_miss.Idle(nine_minutes()))
+    == "cache idle 9m"
   assert cache_miss.outlook(Some(watch), 24 * 3_600_000)
-    == Some(cache_miss.Held(remaining_ms: 86_340_000))
+    == Some(cache_miss.Idle(elapsed_ms: 86_400_000))
 }
 
 pub fn a_small_prefix_or_no_watch_gives_no_label_test() {

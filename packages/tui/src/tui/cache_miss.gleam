@@ -1,5 +1,5 @@
 //// The prompt cache as the terminal sees it: a miss it reconstructs,
-//// and the expiry it can now warn about.
+//// and the published TTL boundary it can now warn about.
 ////
 //// A provider caches the prompt prefix for a bounded time. When a session
 //// sits idle past that window the next request re-reads the whole prefix at
@@ -54,16 +54,19 @@ pub const idle_floor_ms = 60_000
 /// miss on every second prompt.
 pub const cached_prefix_floor = 10_000
 
-/// How long a split cache's rolling tail is held.
+/// The split cache's published minimum rolling-tail lifetime.
 ///
 /// The Anthropic Messages API keeps an un-priced `ephemeral` breakpoint
 /// for five minutes from its most recent write, and one hour for the
 /// session-stable head's `ttl: "1h"` breakpoint. These are the horizons a
-/// proven `cache_write_1h` row licenses the outlook to count down from; a
-/// provider that never reports the bucket is never judged against them.
+/// proven `cache_write_1h` row licenses the outlook to count down from. The
+/// terminal receives usage after the request settles, while provider TTLs
+/// start when the request begins. A countdown from settlement is therefore
+/// an upper bound on time to the published minimum TTL boundary, never a
+/// promise that the prefix is warm or that it expires at that boundary.
 pub const tail_lifetime_ms = 300_000
 
-/// How long a split cache's session-stable head is held.
+/// The split cache's published minimum session-head lifetime.
 pub const head_lifetime_ms = 3_600_000
 
 // How far the cached read must fall to count as collapsed.
@@ -150,19 +153,21 @@ pub type Outlook {
   /// arrived at all.
   Unheld
 
-  /// The split cache's five-minute tail is gone and only the one-hour
-  /// head is still holding, with this many milliseconds left of it.
+  /// The tail's minimum TTL boundary has passed; this many milliseconds
+  /// remain at most until the head's minimum TTL boundary.
   Head(remaining_ms: Int)
 
-  /// The whole held prefix expires after this many milliseconds, under
-  /// whichever horizon the rows have proven: the split tail's five
-  /// minutes, or an unproven provider's unknown lifetime expressed as
-  /// time since the last settled turn.
+  /// This many milliseconds remain at most until the split tail's minimum
+  /// TTL boundary. The provider may retain the entry past that boundary.
   Held(remaining_ms: Int)
 
-  /// The proven horizon has lapsed and the next request re-reads the
-  /// prefix. An unproven provider never reports this: without a TTL
-  /// there is no moment to name, only the growing `Held` age.
+  /// The elapsed idle time for a provider whose TTL the rows have not
+  /// established. It is an age, never a countdown.
+  Idle(elapsed_ms: Int)
+
+  /// The upper bound on the minimum TTL boundary has elapsed. The next
+  /// request may still hit an entry retained beyond that boundary.
+  /// An unproven provider never reports this.
   Expired
 }
 
@@ -400,7 +405,7 @@ pub fn outlook(watch: Option(Watch), now: Int) -> Option(Outlook) {
     // worth a label once it clears the floor a miss would clear.
     Unproven ->
       case idle_ms > idle_floor_ms {
-        True -> Held(idle_ms - idle_floor_ms)
+        True -> Idle(idle_ms)
         False -> Unheld
       }
   })
@@ -408,11 +413,10 @@ pub fn outlook(watch: Option(Watch), now: Int) -> Option(Outlook) {
 
 /// The outlook as the footer reads it.
 ///
-/// A proven split states what is holding and for how much longer:
-/// `cache 3m` while the tail lives, `cache tail gone · head 42m` once only
-/// the head holds, `cache expired` once nothing does. An unproven provider
-/// never claims an expiry; it shows the growing pause — `cache idle 9m` —
-/// so the operator can do the TTL arithmetic the rows never licensed.
+/// A proven split gives an upper bound on time to the minimum TTL boundary:
+/// `cache tail ≤3m`, then `cache head ≤42m`, then
+/// `cache TTL elapsed`. An unproven provider shows only elapsed idle time,
+/// such as `cache idle 10m`. None of these labels promises a cache hit.
 ///
 /// The seconds form exists only for the final stretch of a countdown: a
 /// reader deciding whether to send now does not care about seconds until
@@ -421,23 +425,29 @@ pub fn outlook(watch: Option(Watch), now: Int) -> Option(Outlook) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert outlook_label(Some(Held(180_000))) == "cache 3m"
+/// assert outlook_label(Held(180_000)) == "cache tail ≤3m"
 /// ```
 pub fn outlook_label(outlook: Outlook) -> String {
   case outlook {
     Unheld -> ""
-    Expired -> "cache expired"
-    Head(remaining_ms) ->
-      "cache tail gone · head " <> remaining_label(remaining_ms)
-    Held(remaining_ms) -> "cache " <> remaining_label(remaining_ms)
+    Expired -> "cache TTL elapsed"
+    Head(remaining_ms) -> "cache head ≤" <> remaining_label(remaining_ms)
+    Held(remaining_ms) -> "cache tail ≤" <> remaining_label(remaining_ms)
+    Idle(elapsed_ms) -> "cache idle " <> idle_label(elapsed_ms)
   }
 }
 
-// Time left on a horizon, read the way a countdown is: minutes until the
-// final minute, then seconds.
+// Round a TTL upper bound upward. Rounding down would turn 3m 59s into a
+// false claim that no more than 3m remains.
 fn remaining_label(remaining_ms: Int) -> String {
   case remaining_ms > 60_000 {
-    True -> idle_label(remaining_ms)
-    False -> int.to_string(int.max(0, remaining_ms / 1000)) <> "s"
+    True -> {
+      let rounded = remaining_ms + 59_999
+      int.to_string(rounded / 60_000) <> "m"
+    }
+    False -> {
+      let rounded = int.max(0, remaining_ms) + 999
+      int.to_string(rounded / 1000) <> "s"
+    }
   }
 }

@@ -3890,24 +3890,22 @@ fn render_compact_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  // The cache label rides the info line's tail so the truncation, when the
-  // row runs out of cells, spends them on the reading the operator can
-  // recompute rather than on the figures only the footer reports.
-  let cache = case model.cache_outlook {
-    "" -> ""
-    label -> " · " <> label
-  }
+  // The outlook leads the line when present. The footer truncates from the
+  // right, so placing it after cost hid the only forward-looking reading at
+  // ordinary terminal widths.
   let info =
     text_hygiene.single_line(model.current_model)
     <> " · "
     <> context_view.footer(model.context)
     <> " · est $"
     <> money(model.usage.cost.total)
-    <> cache
   let status = agents.summary_rows(displayed_agents(model))
-  let context = case model.notice {
-    "" -> info
-    notice -> text_hygiene.single_line(notice) <> " · " <> info
+  let context = case model.cache_outlook, model.notice {
+    "", "" -> info
+    "", notice -> text_hygiene.single_line(notice) <> " · " <> info
+    cache, "" -> cache <> " · " <> info
+    cache, notice ->
+      cache <> " · " <> text_hygiene.single_line(notice) <> " · " <> info
   }
   case area.size.height > 1 {
     True ->
@@ -3963,11 +3961,11 @@ fn footer_sections(
       span.span_styled(
         " "
           <> compact(
-          context_view.footer(model.context)
+          cache_section_label(model.cache_outlook)
+            <> context_view.footer(model.context)
             <> " · "
             <> usage_summary(model.usage)
-            <> output_rate_label(model.output_rate_tps)
-            <> cache_section_label(model.cache_outlook),
+            <> output_rate_label(model.output_rate_tps),
           footer_usage_limit(model.width),
         )
           <> " ",
@@ -6533,6 +6531,11 @@ fn render_cut(
     Ok(config) -> config.configuration.model.model_id
     Error(Nil) -> "unconfigured"
   }
+  let cache_watch = cache_watches_for_cut(model, view)
+  let cache_outlook = case dict.get(cache_watch, active) {
+    Ok(_) -> model.cache_outlook
+    Error(Nil) -> ""
+  }
   let role = case cut.attachment.role {
     snapshot.Owner -> "owner"
     snapshot.Operator -> "operator"
@@ -6655,6 +6658,8 @@ fn render_cut(
     },
     usage: view.usage,
     current_model: current_model,
+    cache_watch:,
+    cache_outlook:,
     streams: live,
     tool_tails: live_tails,
     interrupt: reconcile_interrupt(model.interrupt, view.operations),
@@ -7166,8 +7171,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:, directories:) -> {
       let model = case model_name {
-        Some(name) ->
-          Model(..model, current_model: name, notice: "model: " <> name)
+        Some(name) -> {
+          let selected = select_model(model, name)
+          Model(..selected, notice: "model: " <> name)
+        }
         None -> model
       }
       case directories {
@@ -9810,6 +9817,54 @@ fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
   }
 }
 
+// A watch describes one provider's prefix. A model change cannot inherit its
+// horizon or compare the new provider's first row with the old provider's
+// last row. Clear only the affected strand, leaving its historical notices
+// and other strands' watches in place.
+fn forget_cache(model: Model, strand: String) -> Model {
+  Model(
+    ..model,
+    cache_watch: dict.delete(model.cache_watch, strand),
+    cache_outlook: case strand == model.active_strand {
+      True -> ""
+      False -> model.cache_outlook
+    },
+  )
+}
+
+fn select_model(model: Model, name: String) -> Model {
+  let model = case name == model.current_model {
+    True -> model
+    False -> forget_cache(model, model.active_strand)
+  }
+  Model(..model, current_model: name)
+}
+
+// A captured configuration can change on another terminal. Compare the
+// effective model per strand instead of the whole configuration: changing a
+// directory or another setting does not erase a valid cache observation.
+fn cache_watches_for_cut(
+  model: Model,
+  view: snapshot_view.View,
+) -> Dict(String, cache_miss.Watch) {
+  case model.captured {
+    Some(#(_, previous)) if previous.configurations != view.configurations ->
+      dict.filter(model.cache_watch, fn(strand, _) {
+        configured_model(previous, strand) == configured_model(view, strand)
+      })
+    Some(_) | None -> model.cache_watch
+  }
+}
+
+fn configured_model(
+  view: snapshot_view.View,
+  strand: String,
+) -> Option(machine_strand.ModelIdentity) {
+  view.configurations
+  |> dict.get(strand)
+  |> option.from_result
+  |> option.map(fn(config) { config.configuration.model })
+}
 // A replay has no idle time of its own to report.
 fn replaying(model: Model) -> Bool {
   case model.peer {
@@ -9978,12 +10033,12 @@ pub fn output_rate_label(rate: Option(Int)) -> String {
   }
 }
 
-// The cache outlook's contribution to a footer section, in the section's
-// own join shape: nothing to say costs no cells.
+// The outlook leads a bounded footer section so right-side truncation cannot
+// erase it. Nothing to say costs no cells.
 pub fn cache_section_label(label: String) -> String {
   case label {
     "" -> ""
-    text -> " · " <> text
+    text -> text <> " · "
   }
 }
 
@@ -10179,9 +10234,10 @@ fn update_model_selector(
         notice: "model selection cancelled",
       )
     model_selector.Choose(name) -> {
+      let switched = select_model(model, name)
       let selected =
         Model(
-          ..model,
+          ..switched,
           overlay: NoOverlay,
           current_model: name,
           repaint_phase: !model.repaint_phase,
@@ -11694,7 +11750,7 @@ fn submit_text(model: Model) -> Model {
     }
     command.Model(name) -> {
       let switched =
-        Model(..cleared, current_model: name)
+        select_model(cleared, name)
         |> send_frame(protocol.set_model(
           cleared.next_id,
           cleared.active_strand,
@@ -12860,6 +12916,7 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
       active_strand: strand,
       queued: [],
       awaiting_outcome: None,
+      cache_outlook: "",
       current_model: "loading…",
       record_cache_valid: False,
       repaint_phase: !model.repaint_phase,
