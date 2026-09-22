@@ -205,11 +205,50 @@ pub fn a_reasoning_row_is_one_blank_row_below_a_result_test() {
     as "the call after the reasoning keeps its one blank row"
 }
 
+/// A live reasoning digest keeps the settled row's position below a result.
+///
+/// Both panes come from the actual etui buffer. The streamed counter and the
+/// durable excerpt differ in text, but settling them must not move the call
+/// output or add another blank row under it.
+pub fn a_live_reasoning_row_settles_without_moving_the_gap_test() {
+  let live =
+    transcript_rows(reasoned_after_failure_with(
+      Compact,
+      gateway.stream_delta("main", "thinking", "weighing the failure"),
+    ))
+  let settled = transcript_rows(reasoned_after_failure(Compact))
+  let live_output = row_index(live, "failure-output")
+  let settled_output = row_index(settled, "failure-output")
+
+  assert row_index(live, "1 line so far") == live_output + 2
+    as "the stream opens one blank row below the failed result"
+  assert row_index(settled, "weighing the failure") == settled_output + 2
+    as "the durable excerpt takes the same row after settlement"
+  assert at(live, live_output + 1) == ""
+  assert at(settled, settled_output + 1) == ""
+}
+
 // --- fixtures --------------------------------------------------------------
 
 // A failed call, then a response that reasons before its next call: the
 // transcript the collapsed reasoning row was first seen welded into.
 fn reasoned_after_failure(details: TranscriptView) -> Pane {
+  reasoned_after_failure_with(
+    details,
+    gateway.thinking_tool_call_entry(
+      "main",
+      "call-b",
+      "weighing the failure",
+      "second-command",
+      3,
+    ),
+  )
+}
+
+fn reasoned_after_failure_with(
+  details: TranscriptView,
+  ending: String,
+) -> Pane {
   let model = quiet_model(connection.new_inbox(), details)
   let steps = [
     deliver(gateway.full_snapshot("demo")),
@@ -226,13 +265,7 @@ fn reasoned_after_failure(details: TranscriptView) -> Pane {
       "failure-output",
       2,
     )),
-    deliver(gateway.thinking_tool_call_entry(
-      "main",
-      "call-b",
-      "weighing the failure",
-      "second-command",
-      3,
-    )),
+    deliver(ending),
   ]
   run(model, steps)
 }
