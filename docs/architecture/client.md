@@ -1265,6 +1265,10 @@ multiplayer scenario has run against production providers.
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
 | `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
+| `packages/tui/src/tui/agent_message_panel.gleam`, `focused_goal_panel.gleam` | Selectable observed-send presentation and the server-owned goal inspector. |
+| `packages/tui/src/tui/note_panel.gleam` | Shared standalone and agent-inspector note selection, detail modes, and body paging. |
+| `packages/tui/src/tui/queue_panel.gleam`, `diff_panel.gleam` | Captured queue-excerpt inspection and shared worktree navigation geometry. |
+| `packages/tui/src/tui/context_panel.gleam`, `summary_panel.gleam` | Estimated context-capacity presentation and separated completion, usage, and live-job evidence. |
 | `packages/tui/src/tui/appearance.gleam`, `theme.gleam` | Semantic palette and terminal-capability adaptation before frame caching. |
 | `packages/host/src/host/websocket.gleam`, `packages/tui/src/tui/connection.gleam` | Shared owned WebSocket transport and its thin terminal event adapter. |
 | `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |

@@ -1,12 +1,22 @@
 # Next
 
+## Component pass rebased, September 22
+
+The six-phase TUI component pass is rebased onto `f440f381`; the current local
+documentation head is `cc27610c`. The phase implementation commits are now
+`8622ce94`, `c599661c`, `62a43f93`, `cc7e0671`, `8a568ae3`, and `1b04a549`.
+Recorded component timings and captures predate the rebase, whose corresponding
+TUI source commits changed identity but not content. PR 478 remains open and
+ready without automatic merge; its remote head is still pre-rebase `ef469716`
+until push. The post-rebase full-repository gate and hosted CI remain pending.
+
 ## Context and summary components, September 22
 
 Phase 6 of the [TUI component pass](design-notes/tui-component-pass.md) is
-implemented at `19b11010`. It adds an estimated context card with aligned
-component rows, compaction facts, bounded item inventory, and explicit
-freshness. Component estimates remain independent
-of the headline capacity estimate. The current summary separates Completion,
+implemented at rebased commit `1b04a549`. It adds an estimated context card
+with aligned component rows, compaction facts, bounded item inventory, and
+explicit freshness. Component estimates remain independent of the headline
+capacity estimate. The current summary separates Completion,
 Usage, and Jobs: captured outcome evidence, cumulative versus latest-request
 accounting, and a separately refreshed selectable job roster.
 
@@ -31,18 +41,17 @@ closing TUI gate passed all 693 tests with exit zero in 9.46 seconds; it was
 incremental. The private native tmux fixture was closed and made no daemon or
 provider call.
 
-All six phases are implemented, source-reviewed, and component-verified. Rebase,
-the final architecture table and citation repairs, full-repository validation,
-and hosted CI remain pending because upstream overlaps the advisor architecture
-and this handoff.
+All six phases are implemented, source-reviewed, and component-verified. The
+architecture table and symbol citations are refreshed after the rebase.
+Full-repository validation and hosted CI remain pending.
 
 ## Diff component, September 21
 
 Phase 5 of the [TUI component pass](design-notes/tui-component-pass.md) is
-implemented at `a4299962`. It provides a shared diff layout for rendering,
-keyboard navigation, mouse hits, and wheel routing. It adds a status-accented
-file list, full-row selection, sticky selected header, and explicit Navigator or
-Composer focus while retaining the existing
+implemented at rebased commit `8a568ae3`. It provides a shared diff layout for
+rendering, keyboard navigation, mouse hits, and wheel routing. It adds a
+status-accented file list, full-row selection, sticky selected header, and
+explicit Navigator or Composer focus while retaining the existing
 patch renderer, numbering, raw identity, and cache. A compact focused panel may
 borrow status-band space only above the actual editor and footer.
 
@@ -59,15 +68,13 @@ The closing TUI gate passed 692 tests with exit zero in 9.30 seconds. It was
 incremental; the latest compile took 8.15 seconds. Hosted CI and a latest-head
 full-repository gate remain pending.
 
-Origin `main` is currently `f440f381`. PR 478 remains open and ready at the
-previously pushed `ef469716` head, with a dirty merge state. Its only known
-upstream overlaps are `docs/architecture/advisor.md` and this handoff. Rebase,
-the final full-repository gate, and hosted CI wait until Phase 6 is complete.
+Origin `main` is `f440f381`. The post-rebase full-repository gate and hosted CI
+remain pending.
 
 ## Queue component, September 21
 
 Phase 4 of the [TUI component pass](design-notes/tui-component-pass.md) is
-implemented at `44190709`. It adds a selectable queue inspector. Rows
+implemented at rebased commit `cc7e0671`. It adds a selectable queue inspector. Rows
 distinguish queue from steer and editable from read-only. The selected body is
 explicitly the captured excerpt and owns independent PgUp/PgDn paging. Enter
 uses the existing fetch-and-edit path only
@@ -91,10 +98,10 @@ full-repository gate remain pending.
 ## Goal inspector, September 21
 
 Phase 3 of the [TUI component pass](design-notes/tui-component-pass.md) is
-implemented at `39a735f5`. It adds a raised goal inspector that groups the
-server-owned status and cause, objective, budget consumption, age, latest check
-and output, and reviewer feedback. It uses the existing read, pause, and resume
-commands. Status controls appear only when
+implemented at rebased commit `62a43f93`. It adds a raised goal inspector that
+groups the server-owned status and cause, objective, budget consumption, age,
+latest check and output, and reviewer feedback. It uses the existing read,
+pause, and resume commands. Status controls appear only when
 applicable; pending requests disable them, and the panel never treats consumed
 budget as completion. Paging is independent of the preserved composer.
 
@@ -112,7 +119,7 @@ latest-head full-repository gate remain pending.
 ## Shared notes browser, September 21
 
 Phase 2 of the [TUI component pass](design-notes/tui-component-pass.md) is
-implemented at `157c5207`. The inspector and standalone `/notes` now share a
+implemented at rebased commit `c599661c`. The inspector and standalone `/notes` now share a
 selectable notes browser. Note mode and body scroll are independent of transcript
 detail and scroll state. Owner changes reset to the new owner's first key;
 same-owner refresh retains the key and clamps scroll to the refreshed body. Only
@@ -134,7 +141,7 @@ add the new panels to the client architecture code-location table.
 ## Selectable agent messages, September 21
 
 Phase 1 of the [TUI component pass](design-notes/tui-component-pass.md) is
-implemented at `27da4a7d`. The Messages tab now presents observed sends as a
+implemented at rebased commit `8622ce94`. The Messages tab now presents observed sends as a
 selectable invocation-identity list with direction, delivery-state badges, body
 excerpts, and an independently scrollable retained preview. Brackets select a
 message, arrows select an agent, Tab transfers to the composer, Enter opens the
@@ -149,7 +156,8 @@ a short wide view that hid the body. Native QA passed at 132×42, 80×24, and
 passed 676 tests with exit zero in 9.16 seconds. This was an incremental run; the
 prior measured compile was 7.38 seconds.
 
-Hosted CI has not run for `27da4a7d`. At the preceding `ef469716` head, macOS
+Hosted CI has not run for rebased commit `8622ce94`. At the preceding
+`ef469716` head, macOS
 passed while the Linux client job passed 2,027 tests and failed three deadline
 checks: MCP cleanup took 1,040 ms against 500 ms, plus approval-effect and
 session-socket deadline tests. No latest-head full-repository result is claimed.

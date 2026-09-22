@@ -1,9 +1,11 @@
 # TUI component pass
 
 Status: all six phases implemented, reviewed, and component-verified through
-`19b11010`, September 22, 2026. The implementation baseline is `ef469716` on PR
-478. The PR is open and ready for review; it has no automatic merge. Rebase,
-full-repository validation, and hosted CI remain separate pending work.
+rebased commit `1b04a549`, September 22, 2026. The branch is rebased onto
+`f440f381`; its current documentation head is `cc27610c`. PR 478 remains open
+and ready for review without automatic merge, but its remote head is still the
+pre-rebase `ef469716` until push. Full-repository validation and hosted CI remain
+separate pending work.
 
 ## Purpose and constraints
 
@@ -98,7 +100,7 @@ stale, unavailable, malformed, empty, and reordered notes in both entry points.
 
 ### Phase 2 evidence
 
-Commit `157c5207` installs one notes browser for the agent inspector and
+Commit `c599661c` installs one notes browser for the agent inspector and
 standalone `/notes`. Note display mode and body scroll are independent of
 transcript detail mode and transcript scroll. Entering a different owner resets
 to that owner's first key; refreshing the same owner retains its key and clamps
@@ -142,7 +144,7 @@ check and reviewer absence, explicit Pause/Resume dispatch, and narrow rendering
 
 ### Phase 3 evidence
 
-Commit `39a735f5` adds a raised, independently paged goal inspector.
+Commit `62a43f93` adds a raised, independently paged goal inspector.
 It groups status and cause, objective, token and cost consumption, continuation
 count, pinned and updated ages, the latest check and its output, and reviewer
 feedback. `r` uses the existing `goal_get` read, `p` uses the existing pause
@@ -182,7 +184,7 @@ revision refusal, local draft preservation, focus ownership, and narrow layout.
 
 ### Phase 4 evidence
 
-Commit `44190709` adds `queue_panel`, which renders selectable `[QUEUE]` or
+Commit `cc7e0671` adds `queue_panel`, which renders selectable `[QUEUE]` or
 `[STEER]` rows with `[EDIT]` or `[READ-ONLY]` access. Its selected preview says
 that the text is a captured excerpt and owns a scroll offset separate from the
 editor and composer.
@@ -227,7 +229,7 @@ refresh; and the three native terminal sizes.
 
 ### Phase 5 evidence
 
-Commit `a4299962` gives rendering, keyboard navigation, mouse hits, and
+Commit `8a568ae3` gives rendering, keyboard navigation, mouse hits, and
 wheel routing one shared geometry. It presents a status-accented file list, a
 full-row selection marker, a sticky selected-file header, and the existing patch
 rows. Navigator and Composer are explicit focus states. Up/Down selects a file,
@@ -274,7 +276,7 @@ Acceptance evidence must cover measured and missing context, cache and output
 accounting, success/failure/abort completion, zero and multiple live jobs,
 omitted jobs, refresh transitions, stable selection, and narrow layout.
 
-### Phase 6 evidence in progress
+### Phase 6 evidence
 
 The current `context_panel` presents estimated context capacity against the
 model window, its estimate basis and durable sequence, aligned component
@@ -323,11 +325,10 @@ native tmux fixture was closed and made no daemon or provider call.
 
 ## Evidence ledger
 
-All phases are component-verified by commits `27da4a7d`, `157c5207`, `39a735f5`,
-`44190709`, `a4299962`, and `19b11010`, their closing TUI gates, native captures,
-and confirmed review repairs recorded above. After the planned rebase, the final
-documentation refresh must repair the known line-citation drift in
-`docs/architecture/advisor.md` and add the new panels to the
-`docs/architecture/client.md` code-location table. The final full-repository gate
-and hosted CI remain pending. The unrelated `.blobs/` directory is outside this
-work and must remain untouched.
+All phases are component-verified by rebased commits `8622ce94`, `c599661c`,
+`62a43f93`, `cc7e0671`, `8a568ae3`, and `1b04a549`. Their recorded timings and
+captures were produced before the rebase; the corresponding TUI source commits
+are unchanged apart from commit identity. Their closing TUI gates, native
+captures, and confirmed review repairs remain the evidence recorded above. The
+final full-repository gate and hosted CI remain pending. The unrelated `.blobs/`
+directory is outside this work and must remain untouched.
