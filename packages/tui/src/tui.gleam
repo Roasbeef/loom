@@ -5961,7 +5961,12 @@ fn handle_paste(model: Model, text: String) -> Model {
     DaemonSelector(
       session_selector.State(prompt: session_selector.Renaming(..), ..) as selector,
     ) -> update_daemon_selector(keys.Char(text), model, selector)
-    NoOverlay | AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+    NoOverlay ->
+      case diff_shown(model), model.worktree.focus {
+        True, worktree_view.Navigator -> model
+        _, _ -> handle_underlay_paste(model, text)
+      }
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
       handle_underlay_paste(model, text)
     AgentInspector(_)
     | ModelSelector(_)

@@ -624,6 +624,37 @@ pub fn paste_edits_only_while_the_workspace_composer_has_focus_test() {
     as "Escape must restore the browsing paste fence"
 }
 
+/// A focused diff navigator also owns paste while the composer is hidden.
+pub fn diff_navigation_does_not_paste_into_the_hidden_composer_test() {
+  let base =
+    tui.Model(
+      ..model(),
+      diff_view: tui.DiffVisible,
+      input: textarea.state_from_string("main draft"),
+    )
+  let browsing =
+    tui.Model(
+      ..base,
+      worktree: worktree_view.State(
+        ..base.worktree,
+        focus: worktree_view.Navigator,
+      ),
+    )
+  let ignored = tui.update(backend.Paste(" hidden"), browsing)
+  assert textarea.value(ignored.input) == "main draft"
+
+  let composing =
+    tui.Model(
+      ..browsing,
+      worktree: worktree_view.State(
+        ..browsing.worktree,
+        focus: worktree_view.Composer,
+      ),
+    )
+  let pasted = tui.update(backend.Paste(" visible"), composing)
+  assert textarea.value(pasted.input) == "main draft visible"
+}
+
 pub fn opening_selected_message_sender_preserves_drafts_until_the_action_test() {
   let send =
     agent_messages.Item(
