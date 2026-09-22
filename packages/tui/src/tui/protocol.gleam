@@ -237,6 +237,11 @@ pub type Event {
     /// figure, but a per-strand reading of consecutive rows — the
     /// prompt-cache detector — needs to know which conversation moved.
     strand: String,
+    /// Durable sequence on a bounded live observation; absent on legacy
+    /// fixture rows that directly drive the presentation reducer.
+    seq: Option(Int),
+    /// Operation billed by the row, when the gateway can attribute it.
+    operation: Option(String),
     /// The server-authoritative provider usage row.
     usage: Usage,
   )
@@ -633,6 +638,10 @@ pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
   use name <- result.try(required_string(fields, "event"))
   case name {
     "committed" -> decode_committed(fields)
+    "usage" -> {
+      use seq <- result.try(required_int(fields, "seq"))
+      decode_usage(body_of(fields), Some(seq))
+    }
     "presence" | "attachment" | "input_queue_changed" -> Ok(MetadataChanged)
     other -> decode_body(other, body_of(fields))
   }
@@ -685,7 +694,7 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "stream_delta" -> decode_delta(body)
     "tool_output" -> decode_tool_output(body)
     "op_transition" -> decode_operation(body)
-    "usage" -> decode_usage(body)
+    "usage" -> decode_usage(body, None)
     "escalation" -> decode_escalation(body)
     "error" -> decode_error(body)
     "held_input_returned" -> decode_held_input_returned(body)
@@ -920,15 +929,16 @@ fn decode_operation(body: JsonValue) -> Result(Event, String) {
   Ok(OperationChanged(strand:, phase:))
 }
 
-fn decode_usage(body: JsonValue) -> Result(Event, String) {
+fn decode_usage(body: JsonValue, seq: Option(Int)) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "usage body"))
   use strand <- result.try(required_string(fields, "strand"))
+  use operation <- result.try(optional_string(fields, "op"))
   use value <- result.try(required_value(fields, "usage"))
   use usage <- result.try(
     codec.decode_usage(value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(UsageChanged(strand:, usage:))
+  Ok(UsageChanged(strand:, seq:, operation:, usage:))
 }
 
 fn decode_escalation(body: JsonValue) -> Result(Event, String) {

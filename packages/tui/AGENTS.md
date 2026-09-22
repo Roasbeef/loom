@@ -704,10 +704,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
   wrong reply IDs fail closed. Raw entries, usage, configuration and pending
   approvals arrive through a completed cut, not unsolicited legacy events.
+  Protocol 047 also permits a bounded pushed usage observation. Its sequence
+  deduplicates the row, while captured cumulative usage remains authoritative.
 - **Pushed frames in**: an envelope with no `reply_to` is a push. `committed`
   (with its sequence in the envelope) is a notice that moves a catch-up
   earlier; `presence` and `attachment` are the same trigger; `stream_delta`
-  is the live answer in order; `tool_output` is a running command's tail,
+  is the live answer in order; `usage` is a bounded per-operation reading;
+  `tool_output` is a running command's tail,
   whole each time; a pushed `error` is a daemon-side failure
   reported without closing the socket. An event name this client does not
   know is dropped. A daemon that predates live delivery pushes none of
@@ -960,6 +963,15 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   Coherent cuts supply usage and cost; model names never imply prices. Workspace
   and branch discovery still runs once before the event loop, through bounded
   regular-file reads, and the header shows the resulting workspace label.
+  Pushed usage rows update the output rate, never cumulative usage. The latest
+  row per strand waits for a capture covering its sequence before it updates
+  the cache watch, so a remote model change can discard a stale comparison.
+  The watch requires two rows on one strand, and a model switch fences every
+  row from the first subsequently observed operation before starting a new
+  baseline. An initially captured live strand is fenced because its operation
+  may have started under an earlier model. The first row already covered by a
+  cut is ignored for cache comparison if its push arrives later. A cache-write
+  count of zero gives no one-hour TTL evidence.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.

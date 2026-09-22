@@ -10,11 +10,14 @@
 import core/codec
 import core/json
 import core/message
+import etui/backend
+import etui/widgets/textarea
 import gleam/dict
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
+import machine/strand
 import tui
 import tui/attempt
 import tui/cache_miss
@@ -22,6 +25,7 @@ import tui/connection
 import tui/protocol
 import tui/session_channel
 import tui/snapshot
+import tui/snapshot_view
 import tui/workspace
 
 import gleam/bit_array
@@ -436,6 +440,65 @@ fn attached() {
   )
 }
 
+// A coherent configuration cut covering all durable rows below next_seq.
+fn cache_cut(model: tui.Model, next_seq: Int, provider: String) {
+  cache_cut_with_operation(model, next_seq, provider, None)
+}
+
+fn cache_cut_with_operation(
+  model: tui.Model,
+  next_seq: Int,
+  provider: String,
+  operation: Option(String),
+) {
+  let cut =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected(model.session, "epoch", "incarnation"),
+        "connection",
+        message.Origin("operator", "Operator"),
+        snapshot.Owner,
+      ),
+      next_seq,
+      json.Object([#("revision", json.Int(next_seq))]),
+      snapshot.empty(),
+      None,
+    )
+  let view =
+    snapshot_view.View(
+      [protocol.Strand("main", Some("main"), None)],
+      dict.new(),
+      dict.from_list([
+        #(
+          "main",
+          snapshot_view.Configuration(
+            strand.StrandConfiguration(
+              strand.ModelIdentity(provider, "shared-model"),
+              strand.ThinkingOff,
+              [],
+            ),
+            None,
+          ),
+        ),
+      ]),
+      case operation {
+        Some(op) -> dict.from_list([#("main", op)])
+        None -> dict.new()
+      },
+      model.usage,
+      snapshot_view.RunSettings("one_at_a_time", "parallel", None),
+      [],
+      [],
+      None,
+      Some([]),
+      None,
+    )
+  tui.apply_channel_update(
+    model,
+    session_channel.Captured(cut, view, session_channel.Notified),
+  )
+}
+
 pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
   let model =
     list.fold(
@@ -473,15 +536,27 @@ pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {
 // the regression shape of a row that `apply_pushed` used to list among
 // the dropped events.
 fn usage_push(strand: String, reported: message.Usage) {
+  usage_push_with(strand, 11, None, reported)
+}
+
+fn usage_push_with(
+  strand: String,
+  seq: Int,
+  operation: Option(String),
+  reported: message.Usage,
+) {
+  let body = [
+    #("strand", json.String(strand)),
+    #("usage", codec.encode_usage(reported)),
+  ]
+  let body = case operation {
+    Some(op) -> [#("op", json.String(op)), ..body]
+    None -> body
+  }
   push([
     #("event", json.String("usage")),
-    #(
-      "body",
-      json.Object([
-        #("strand", json.String(strand)),
-        #("usage", codec.encode_usage(reported)),
-      ]),
-    ),
+    #("seq", json.Int(seq)),
+    #("body", json.Object(body)),
   ])
 }
 
@@ -502,6 +577,8 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
   let auxiliary =
     session_channel.Auxiliary(protocol.UsageChanged(
       strand: "main",
+      seq: Some(11),
+      operation: None,
       usage: reported,
     ))
 
@@ -547,14 +624,252 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
   let settled =
     tui.accept_connection_message(model, usage_push("main", reported))
 
-  assert settled.usage.total_tokens == 250_400
-    as "the pushed row is folded into the session usage totals"
-  assert settled.notice == "250k tokens"
+  assert settled.usage.total_tokens == model.usage.total_tokens
+    as "a pushed observation cannot double-count an authoritative cut"
+  assert settled.notice == "250k tokens this turn"
     as "the settlement label moves off the streaming form"
+  assert dict.get(settled.cache_watch, "main") == Error(Nil)
+    as "the usage row waits for a cut that can validate its model"
+  let covered = cache_cut(settled, 12, "provider-a")
   let assert Ok(cache_miss.Watch(previous:, ..)) =
-    dict.get(settled.cache_watch, "main")
+    dict.get(covered.cache_watch, "main")
   assert previous == reported
     as "the row becomes the detector's baseline on the push"
+
+  let duplicate =
+    tui.accept_connection_message(
+      tui.Model(..covered, monotonic_time_ms: fn() { 120_000 }),
+      usage_push("main", reported),
+    )
+  assert duplicate.cache_watch == covered.cache_watch
+    as "a delayed duplicate cannot reset the observed cache clock"
+  assert duplicate.usage == settled.usage
+
+  let captured = tui.Model(..model, usage: reported)
+  let after_cut =
+    tui.accept_connection_message(captured, usage_push("main", reported))
+  assert after_cut.usage == reported
+    as "a capture that already included the row is never added again"
+}
+
+/// A model switch fences every row from the operation it first observes.
+///
+/// An old operation can make several provider requests after the operator
+/// selects a new model. Its second row must not seed the new model's cache.
+pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
+  let row =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      None,
+      None,
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let assert #(_, Some(watch)) = cache_miss.observe(None, row, 0)
+  let selected =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(
+        ..attached(),
+        peer: tui.Preview,
+        cache_watch: dict.from_list([#("main", watch)]),
+        input: textarea.state_from_string("/model new-provider"),
+      ),
+    )
+  assert dict.get(selected.cache_watch, "main") == Error(Nil)
+
+  let old_first =
+    tui.accept_connection_message(
+      selected,
+      usage_push_with("main", 11, Some("old-op"), row),
+    )
+  let old_second =
+    tui.accept_connection_message(
+      old_first,
+      usage_push_with("main", 12, Some("old-op"), row),
+    )
+  let old_second = cache_cut(old_second, 13, "new-provider")
+  assert dict.get(old_second.cache_watch, "main") == Error(Nil)
+    as "both old-provider rows stay outside the new cache baseline"
+
+  let new_first =
+    tui.accept_connection_message(
+      old_second,
+      usage_push_with("main", 13, Some("new-op"), row),
+    )
+  let new_first = cache_cut(new_first, 14, "new-provider")
+  let assert Ok(cache_miss.Watch(previous:, ..)) =
+    dict.get(new_first.cache_watch, "main")
+  assert previous == row
+  assert new_first.cache_notices == []
+    as "the new provider starts a baseline rather than comparing to the old one"
+}
+
+/// A remote model change fences old rows even before a cache watch exists.
+pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test() {
+  let row =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      None,
+      None,
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let old =
+    cache_cut(tui.Model(..attached(), peer: tui.Preview), 11, "old-provider")
+  let pending =
+    tui.accept_connection_message(
+      old,
+      usage_push_with("main", 11, Some("old-op"), row),
+    )
+  let switched = cache_cut(pending, 12, "new-provider")
+  assert dict.get(switched.cache_watch, "main") == Error(Nil)
+    as "the old operation cannot seed a new provider with no prior watch"
+  assert dict.get(switched.cache_fence, "main") == Ok(Some("old-op"))
+
+  let pushed =
+    tui.accept_connection_message(
+      switched,
+      usage_push_with("main", 12, Some("new-op"), row),
+    )
+  assert dict.get(pushed.cache_pending, "main") != Error(Nil)
+    as "the new row waits for the covering cut"
+  let next = cache_cut(pushed, 13, "new-provider")
+  let assert Ok(cache_miss.Watch(previous:, ..)) =
+    dict.get(next.cache_watch, "main")
+  assert previous == row
+}
+
+/// A pushed row cannot raise a miss before its model configuration is captured.
+pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
+  let prior =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      None,
+      None,
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let cold =
+    message.Usage(
+      250_000,
+      400,
+      0,
+      0,
+      None,
+      None,
+      250_400,
+      message.UsageCost(1.25, 0.004, 0.0, 0.0, 1.254),
+    )
+  let assert #(_, Some(watch)) = cache_miss.observe(None, prior, 0)
+  let old =
+    tui.Model(
+      ..cache_cut(
+        tui.Model(..attached(), peer: tui.Preview),
+        11,
+        "old-provider",
+      ),
+      cache_watch: dict.from_list([#("main", watch)]),
+      monotonic_time_ms: fn() { 600_000 },
+    )
+  let pending =
+    tui.accept_connection_message(
+      old,
+      usage_push_with("main", 11, Some("old-op"), cold),
+    )
+  assert pending.cache_notices == []
+    as "a pushed row cannot claim a miss before its configuration cut"
+
+  let switched = cache_cut(pending, 12, "new-provider")
+  assert switched.cache_notices == []
+    as "the remote switch discards a would-be miss from the old provider"
+  assert dict.get(switched.cache_watch, "main") == Error(Nil)
+  assert dict.get(switched.cache_fence, "main") == Ok(Some("old-op"))
+}
+
+/// Initial attachment cannot infer the running operation's accepted model.
+pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
+  let row =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      None,
+      None,
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let model = tui.Model(..attached(), peer: tui.Preview)
+  let first =
+    cache_cut_with_operation(model, 11, "new-provider", Some("old-op"))
+  assert dict.get(first.cache_fence, "main") == Ok(None)
+    as "a live operation on initial attach has unknown accepted model"
+
+  let pending =
+    tui.accept_connection_message(
+      first,
+      usage_push_with("main", 11, Some("old-op"), row),
+    )
+  let old = cache_cut(pending, 12, "new-provider")
+  assert dict.get(old.cache_watch, "main") == Error(Nil)
+  assert dict.get(old.cache_fence, "main") == Ok(Some("old-op"))
+
+  let pending =
+    tui.accept_connection_message(
+      old,
+      usage_push_with("main", 12, Some("new-op"), row),
+    )
+  let new = cache_cut(pending, 13, "new-provider")
+  let assert Ok(cache_miss.Watch(previous:, ..)) =
+    dict.get(new.cache_watch, "main")
+  assert previous == row
+  assert new.cache_notices == []
+}
+
+/// A row delivered after the initial cut may already belong to that cut.
+pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
+  let row =
+    message.Usage(
+      0,
+      400,
+      250_000,
+      0,
+      None,
+      None,
+      250_400,
+      message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let model = tui.Model(..attached(), peer: tui.Preview)
+  let first = cache_cut(model, 11, "new-provider")
+  assert dict.get(first.cache_fence, "main") == Error(Nil)
+    as "the cut shows no operation to fence"
+  let late =
+    tui.accept_connection_message(
+      first,
+      usage_push_with("main", 10, Some("old-op"), row),
+    )
+  assert dict.get(late.cache_watch, "main") == Error(Nil)
+    as "a row from before the first cut cannot seed its current model"
+
+  let pending =
+    tui.accept_connection_message(
+      late,
+      usage_push_with("main", 11, Some("new-op"), row),
+    )
+  let next = cache_cut(pending, 12, "new-provider")
+  let assert Ok(cache_miss.Watch(previous:, ..)) =
+    dict.get(next.cache_watch, "main")
+  assert previous == row
 }
 
 pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {

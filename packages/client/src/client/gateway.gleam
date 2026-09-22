@@ -2653,21 +2653,46 @@ fn pull_and_broadcast(state: State) -> State {
     // to respect and its fixtures read the entries themselves.
     HostOnly -> broadcast(state, emits)
 
-    // A network peer gets a notice per emit and fetches the record on the
-    // credited path (`protocol-change/018`). The seq is the emit's own, so
-    // a client that already holds it drops the frame without asking.
+    // A network peer gets a notice per emit and fetches records on the
+    // credited path (`protocol-change/018`). A usage row also has a bounded
+    // observational push (`protocol-change/047`): its fixed-shape counters
+    // let a terminal assess a cache miss without guessing from session
+    // totals, while the notice still drives authoritative catch-up.
     Network ->
       broadcast(
         state,
-        list.map(emits, fn(emit) {
-          Emit(
-            seq: emit.seq,
-            event: protocol.CommittedEvent(notice_strand(state, emit.event)),
-          )
+        list.flat_map(emits, fn(emit) {
+          let notice =
+            Emit(
+              seq: emit.seq,
+              event: protocol.CommittedEvent(notice_strand(state, emit.event)),
+            )
+          case emit.event {
+            protocol.UsageEvent(..) ->
+              case bounded_usage_observation(emit) {
+                True -> [notice, emit]
+                False -> [notice]
+              }
+            _ -> [notice]
+          }
         }),
       )
   }
   state
+}
+
+// The usage envelope has a fixed set of counters, but a provider can still
+// report unusually large integers. A push spends no transfer credit, so an
+// oversized observation is omitted and its committed notice still repairs
+// the authoritative session total through the bounded capture.
+fn bounded_usage_observation(emit: Emit) -> Bool {
+  protocol.event_value(protocol.EventEnvelope(
+    reply_to: None,
+    seq: Some(emit.seq),
+    event: emit.event,
+  ))
+  |> transfer.encoded_size(65_536)
+  |> result.is_ok
 }
 
 // The strand a durable emit landed on, which is a notice's whole body.

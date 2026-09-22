@@ -2963,10 +2963,13 @@ these forks because they define the same modules.
   one frame and retires the attachment when the answer changed. Push
   therefore opens no second way out and needs no new authority path; it
   reaches the existing one from the network side.
-- **A pushed durable frame is a notice, never the record.** The hub emits
-  one `committed` per new emit — the seq and the strand — and the record
-  still travels the credited snapshot path, which is the one place the
-  64 KiB bound and the retention window are enforced. Delta text is
+- **A pushed durable frame is a notice, with one bounded usage exception.**
+  The hub emits one `committed` per new emit — the seq and the strand — and
+  records still travel the credited snapshot path. For a usage row it also
+  pushes the fixed-shape counters after checking the encoded frame against
+  64 KiB. This observation can drive a live cache reading but does not own
+  cumulative totals; a missed push is repaired by the capture. Protocol 047
+  narrows protocol 018 at this boundary. Delta text is
   clipped with `preview_text` before it is encoded, so a pushed frame is
   under the reply ceiling by construction rather than by a second
   mechanism. A notice is idempotent and order-free: a client that already
