@@ -2729,8 +2729,9 @@ fn render_frame(
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
   let #(header_area, body_area, input_area, footer_area) = layout(screen, model)
+  let #(conversation_area, queue_area) = queue_body_layout(body_area, model)
   let #(transcript_panel, agent_panel, changes_panel) =
-    body_layout(body_area, model)
+    body_layout(conversation_area, model)
   let transcript_area = panel_inner(transcript_panel)
   let #(pending_area, composer_area) =
     pending_layout(panel_inner(input_area), model)
@@ -2759,6 +2760,7 @@ fn render_frame(
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
+    |> render_inline_queue(queue_area, model)
     |> render_composer_chrome(input_area, input_title(model))
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.attachments)
@@ -2838,23 +2840,23 @@ fn render_frame(
     }
     None -> rendered
   }
-  let cursor = case model.overlay {
-    NoOverlay -> text_area.cursor_screen_pos(input_view, editor_area)
-    AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+  let cursor = case model.overlay, model.queue_editor.surface {
+    NoOverlay, queue_editor.Editor -> queue_editor_cursor(model, queue_area)
+    NoOverlay, _ -> text_area.cursor_screen_pos(input_view, editor_area)
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)), _ ->
       text_area.cursor_screen_pos(input_view, editor_area)
-    ModelSelector(_)
-    | AgentInspector(_)
-    | GoalInspector(_)
-    | SessionSelector(_)
-    | DaemonSelector(_)
-    | ApprovalInspector(_) -> Error(Nil)
+    ModelSelector(_), _
+    | AgentInspector(_), _
+    | GoalInspector(_), _
+    | SessionSelector(_), _
+    | DaemonSelector(_), _
+    | ApprovalInspector(_), _
+    -> Error(Nil)
   }
   let #(rendered, cursor) =
     render_summary_surface(rendered, cursor, screen, model)
   let #(rendered, cursor) =
     render_context_surface(rendered, cursor, screen, model)
-  let #(rendered, cursor) =
-    render_queue_surface(rendered, cursor, screen, model)
   #(appearance.apply(rendered, model.palette), cursor)
 }
 
@@ -2991,6 +2993,31 @@ fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
     [main, side] if changes > 0 -> #(main, geometry.rect_zero(), side)
     [main, side] -> #(main, side, geometry.rect_zero())
     _ -> #(body, geometry.rect_zero(), geometry.rect_zero())
+  }
+}
+
+// Queue geometry is reserved before the transcript is painted. A focused card
+// may use half the body, while every size retains a bordered conversation row;
+// passive observation spends only the rows needed for three bounded entries.
+fn queue_body_layout(body: Rect, model: Model) -> #(Rect, Rect) {
+  queue_body_layout_for(body, model, queue_rows(model))
+}
+
+fn queue_body_layout_for(
+  body: Rect,
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> #(Rect, Rect) {
+  let wanted = case model.queue_editor.surface, rows {
+    queue_editor.Closed, [] -> 0
+    queue_editor.Closed, _ -> int.min(5, list.length(rows) + 2)
+    queue_editor.Inspector, _ | queue_editor.Editor, _ ->
+      int.min(14, int.max(3, body.size.height / 2))
+  }
+  let height = int.min(wanted, int.max(0, body.size.height - 3))
+  case geometry.split_v(body, [Fill, Length(height)]) {
+    [conversation, queue] -> #(conversation, queue)
+    _ -> #(body, geometry.rect_zero())
   }
 }
 
@@ -4049,12 +4076,16 @@ pub fn footer_usage_limit(width: Int) -> Int {
 }
 
 fn footer_height(model: Model) -> Int {
-  case model.details_expanded {
-    True -> footer_rows(model.width)
+  case model.queue_editor.surface != queue_editor.Closed && model.height <= 12 {
+    True -> 1
     False ->
-      case model.width < 100 {
-        True -> 2
-        False -> 1
+      case model.details_expanded {
+        True -> footer_rows(model.width)
+        False ->
+          case model.width < 100 {
+            True -> 2
+            False -> 1
+          }
       }
   }
 }
@@ -4346,18 +4377,19 @@ fn composer_status_lines(model: Model) -> List(String) {
   // it is context for the prompt about to be written, not a report on one
   // already sent. An empty queue renders nothing, so the band keeps its
   // height when the advisor has nothing waiting.
-  let nudges = case model.nudges {
-    None -> []
-    Some(board) -> list.take(advisor_pending.lines(board), 1)
+  let queue_focused = model.queue_editor.surface != queue_editor.Closed
+  let nudges = case model.nudges, queue_focused {
+    _, True | None, False -> []
+    Some(board), False -> list.take(advisor_pending.lines(board), 1)
   }
 
   // A pinned goal keeps one row above the nudges for as long as it is
   // pinned. It is the standing objective the next prompt is written
   // against, so unlike the nudge queue it is not consumed by a run start
   // and does not disappear while the session works.
-  let goal = case model.goal {
-    None -> []
-    Some(board) -> goal_view.row(board)
+  let goal = case model.goal, queue_focused {
+    _, True | None, False -> []
+    Some(board), False -> goal_view.row(board)
   }
   let active = case active_status_label(model) {
     None -> []
@@ -4371,9 +4403,9 @@ fn composer_status_lines(model: Model) -> List(String) {
 
   // The workspace and visible rail already own the roster. Repeating it
   // above the editor would spend its typing space on the same observation.
-  let reviewers = case model.overlay {
-    AgentInspector(_) -> []
-    _ ->
+  let reviewers = case model.overlay, queue_focused {
+    _, True | AgentInspector(_), False -> []
+    _, False ->
       case
         model.agent_rail_visible
         && model.width >= 100
@@ -4424,25 +4456,7 @@ fn pending_status(model: Model) -> Option(String) {
   case model.pending_submission, model.awaiting_outcome {
     Some(_), _ -> Some("Not sent yet · waiting for session sync · Esc cancels")
     None, Some(_) -> Some("Sent · waiting for receipt")
-    None, None -> {
-      case queue_rows(model) {
-        [] -> None
-        [first, ..rest] ->
-          Some(
-            "Received · "
-            <> case first.kind {
-              snapshot_view.Queue -> "queued after this turn"
-              snapshot_view.Steer -> "steer before queued turns"
-            }
-            <> case rest {
-              [] -> ""
-              more -> " · +" <> int.to_string(list.length(more)) <> " pending"
-            }
-            <> " · /queue edits · "
-            <> text_hygiene.single_line(first.text),
-          )
-      }
-    }
+    None, None -> None
   }
 }
 
@@ -10376,7 +10390,8 @@ fn note_max_scroll(model: Model) -> Int {
 fn note_detail_area(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body, _, _) = layout(screen, model)
-  let #(transcript, _, _) = body_layout(body, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  let #(transcript, _, _) = body_layout(conversation, model)
   panel_inner(transcript)
 }
 
@@ -10583,6 +10598,7 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
   case diff_shown(model), model.worktree.focus, key {
+    _, _, keys.Alt("q") -> open_queue(model)
     _, _, keys.F(2) -> open_agents(model)
     True, _, keys.Ctrl("d") ->
       Model(
@@ -10846,7 +10862,8 @@ fn clear_selection(model: Model) -> Model {
 fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body, _, _) = layout(screen, model)
-  let #(transcript, _, _) = body_layout(body, model)
+  let #(conversation, queue) = queue_body_layout(body, model)
+  let #(transcript, _, _) = body_layout(conversation, model)
   use <- bool.lazy_guard(
     reading_history(model)
       && at.y == transcript.position.y
@@ -10855,30 +10872,44 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
       scroll_transcript(clear_selection(model), False, model.rendered_row_count)
     },
   )
-  case diff_navigation_hit(model, at) {
+  case queue_row_hit(model, queue, at) {
     Some(selected) ->
       Model(
-        ..model,
-        selection: None,
-        selection_frame: None,
-        selection_gutters: [],
-        diff_scroll_offset: 0,
-        worktree: worktree_view.State(
-          ..model.worktree,
+        ..clear_selection(model),
+        queue_editor: queue_editor.State(
+          ..model.queue_editor,
+          surface: queue_editor.Inspector,
           selected:,
-          focus: worktree_view.Navigator,
+          preview_scroll: 0,
         ),
+        notice: "queued input selected",
       )
-      |> invalidate_transcript
-    None -> {
-      let #(shown, selection_gutters) = selection_display(model)
-      Model(
-        ..model,
-        selection: Some(selection.start(hit_area(model, at), at)),
-        selection_frame: Some(shown),
-        selection_gutters:,
-      )
-    }
+    None ->
+      case diff_navigation_hit(model, at) {
+        Some(selected) ->
+          Model(
+            ..model,
+            selection: None,
+            selection_frame: None,
+            selection_gutters: [],
+            diff_scroll_offset: 0,
+            worktree: worktree_view.State(
+              ..model.worktree,
+              selected:,
+              focus: worktree_view.Navigator,
+            ),
+          )
+          |> invalidate_transcript
+        None -> {
+          let #(shown, selection_gutters) = selection_display(model)
+          Model(
+            ..model,
+            selection: Some(selection.start(hit_area(model, at), at)),
+            selection_frame: Some(shown),
+            selection_gutters:,
+          )
+        }
+      }
   }
 }
 
@@ -10945,7 +10976,8 @@ fn selection_covers_transcript(
 ) -> Bool {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, _, _) = layout(screen, model)
-  let #(transcript_panel, _, _) = body_layout(body_area, model)
+  let #(conversation, _) = queue_body_layout(body_area, model)
+  let #(transcript_panel, _, _) = body_layout(conversation, model)
   selected.area == panel_inner(transcript_panel) && !main_shows_diff(model)
 }
 
@@ -10993,7 +11025,8 @@ pub fn transcript_selection_text(
 fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, _, _) = layout(screen, model)
-  let #(transcript_panel, _, _) = body_layout(body_area, model)
+  let #(conversation, _) = queue_body_layout(body_area, model)
+  let #(transcript_panel, _, _) = body_layout(conversation, model)
   let area = panel_inner(transcript_panel)
   model.rendered_gutters
   |> list.drop(model.scroll_offset + viewport_backlog(model))
@@ -11045,13 +11078,15 @@ fn write_clipboard(clipboard: Clipboard, text: String) -> Nil {
 pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
+  let #(conversation, queue) = queue_body_layout(body_area, model)
   let #(transcript_panel, agent_panel, changes_panel) =
-    body_layout(body_area, model)
+    body_layout(conversation, model)
   [
     panel_inner(transcript_panel),
     panel_inner(agent_panel),
     panel_inner(changes_panel),
     panel_inner(input_area),
+    panel_inner(queue),
   ]
   |> list.find(fn(area) { geometry.contains(area, at) })
   |> result.unwrap(screen)
@@ -11235,7 +11270,10 @@ fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
 }
 
 fn transcript_viewport_height(model: Model) -> Int {
-  transcript_height(model.height, input_height(model), footer_height(model))
+  let screen = model_screen(model)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  int.max(1, panel_inner(conversation).size.height)
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.
@@ -11250,8 +11288,10 @@ pub fn transcript_height(
 }
 
 fn transcript_width(model: Model) -> Int {
-  let #(main, _, _) =
-    body_layout(geometry.rect_new(0, 0, model.width, model.height), model)
+  let screen = model_screen(model)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  let #(main, _, _) = body_layout(conversation, model)
   int.max(1, main.size.width - 2)
 }
 
@@ -12891,6 +12931,60 @@ fn queue_rows(model: Model) -> List(snapshot_view.PendingInput) {
   }
 }
 
+// Mouse selection reuses the rectangle already reserved for rendering. The
+// passive card maps one visible message per row; the wide inspector maps its
+// left-hand list after the heading. Compact inspection shows only the selected
+// preview, so a click there leaves identity unchanged.
+fn queue_row_hit(
+  model: Model,
+  area: Rect,
+  at: geometry.Position,
+) -> Option(Int) {
+  use <- bool.guard(!geometry.contains(panel_inner(area), at), None)
+  let rows = queue_rows(model)
+  let inner = panel_inner(area)
+  let index = case model.queue_editor.surface {
+    queue_editor.Closed -> at.y - inner.position.y
+    queue_editor.Inspector -> {
+      let content = queue_content_area(area)
+      let list_width = int.min(36, { content.size.width * 2 } / 5)
+      let visible = int.max(1, content.size.height - 1)
+      let list_area =
+        geometry.rect_new(
+          content.position.x,
+          content.position.y + 1,
+          list_width,
+          int.min(visible, list.length(rows)),
+        )
+      case
+        content.size.width >= 70
+        && content.size.height >= 6
+        && geometry.contains(list_area, at)
+      {
+        True -> {
+          let offset =
+            int.min(
+              model.queue_editor.selected,
+              int.max(0, list.length(rows) - visible),
+            )
+          offset + at.y - list_area.position.y
+        }
+        False -> -1
+      }
+    }
+    queue_editor.Editor -> -1
+  }
+  let visible = case model.queue_editor.surface {
+    queue_editor.Closed -> int.min(3, list.length(rows))
+    queue_editor.Inspector -> list.length(rows)
+    queue_editor.Editor -> 0
+  }
+  case index >= 0 && index < visible {
+    True -> Some(index)
+    False -> None
+  }
+}
+
 fn update_queue_key(key: keys.Key, model: Model) -> Model {
   let state = model.queue_editor
   case key, state.surface {
@@ -12937,7 +13031,7 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
         ),
       )
     keys.PageUp, queue_editor.Inspector -> {
-      let area = queue_content_area(model_screen(model))
+      let area = queue_preview_area(model)
       let maximum =
         queue_panel.max_scroll(queue_rows(model), state.selected, area)
       Model(
@@ -12952,7 +13046,7 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
       )
     }
     keys.PageDown, queue_editor.Inspector -> {
-      let area = queue_content_area(model_screen(model))
+      let area = queue_preview_area(model)
       let maximum =
         queue_panel.max_scroll(queue_rows(model), state.selected, area)
       Model(
@@ -12966,6 +13060,7 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
         ),
       )
     }
+    keys.Char("e"), queue_editor.Inspector -> resume_queue_draft(model)
     keys.Enter, queue_editor.Inspector -> select_queue_input(model)
     keys.Ctrl("r"), queue_editor.Editor -> reconcile_queue_draft(model)
     keys.Ctrl("s"), queue_editor.Editor -> save_queue_draft(model)
@@ -12975,39 +13070,99 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
-fn select_queue_input(model: Model) -> Model {
-  let state = model.queue_editor
-  case list.first(list.drop(queue_rows(model), state.selected)) {
-    Ok(row) if row.editing == snapshot_view.Editable -> {
-      let fetch =
-        queue_editor.Fetch(
-          queue_owner(model),
-          queue_namespace(model),
-          row.strand,
-          row.id,
-        )
-      service_queue_read(
-        Model(
-          ..model,
-          queue_editor: queue_editor.State(
-            ..state,
-            fetch: Some(fetch),
-            awaiting: None,
-            request_id: None,
-            message: "Waiting for the full queued input…",
-          ),
-        ),
-      )
-    }
-    Ok(_) ->
+fn resume_queue_draft(model: Model) -> Model {
+  case model.queue_editor.draft {
+    Some(_) ->
       Model(
         ..model,
         queue_editor: queue_editor.State(
-          ..state,
-          message: "This queued input is read-only for this attachment",
+          ..model.queue_editor,
+          surface: queue_editor.Editor,
+          fetch: None,
+          awaiting: None,
+          request_id: None,
+          message: "Retained draft resumed · Ctrl+s saves · Esc returns to inspection",
         ),
       )
+    None ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..model.queue_editor,
+          message: "No retained queue draft to resume",
+        ),
+      )
+  }
+}
+
+fn select_queue_input(model: Model) -> Model {
+  let state = model.queue_editor
+  case list.first(list.drop(queue_rows(model), state.selected)) {
+    Ok(row) ->
+      case
+        retained_other_draft(state.draft, row, queue_namespace(model)),
+        row.editing
+      {
+        True, _ ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.State(
+              ..state,
+              message: "Retained draft belongs to another input · e resumes it; browsing remains available",
+            ),
+          )
+        False, snapshot_view.Editable -> {
+          let fetch =
+            queue_editor.Fetch(
+              queue_owner(model),
+              queue_namespace(model),
+              row.strand,
+              row.id,
+            )
+          service_queue_read(
+            Model(
+              ..model,
+              queue_editor: queue_editor.State(
+                ..state,
+                fetch: Some(fetch),
+                awaiting: None,
+                request_id: None,
+                message: "Waiting for the full queued input…",
+              ),
+            ),
+          )
+        }
+        False, snapshot_view.ReadOnly ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.State(
+              ..state,
+              message: "This queued input is read-only for this attachment",
+            ),
+          )
+      }
     Error(Nil) -> model
+  }
+}
+
+fn retained_other_draft(
+  draft: Option(queue_editor.Draft),
+  row: snapshot_view.PendingInput,
+  namespace: String,
+) -> Bool {
+  case draft {
+    Some(draft) -> {
+      let dirty =
+        text_area.value(draft.input) != draft.document.text
+        || draft.delivery != queue_editor.Editable
+      dirty
+      && {
+        draft.namespace != namespace
+        || draft.document.id != row.id
+        || draft.document.strand != row.strand
+      }
+    }
+    None -> False
   }
 }
 
@@ -13183,72 +13338,210 @@ fn insert_queue_paste(
   })
 }
 
-fn render_queue_surface(buf, cursor, screen, model: Model) {
+fn render_inline_queue(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
   let state = model.queue_editor
-  case state.surface {
-    queue_editor.Closed -> #(buf, cursor)
-    queue_editor.Inspector -> {
+  case state.surface, area.size.height {
+    _, 0 -> buf
+    queue_editor.Closed, _ -> {
       let rows = queue_rows(model)
-      let inner = panel_inner(screen)
-      let body = queue_content_area(screen)
-      let rendered =
-        buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " queued inputs · " <> model.active_strand <> " ",
-          theme.signal,
-        )
-        |> paragraph.render_styled(inner, [
-          span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
-          span.line_new([
-            span.span_styled(
-              "↑/↓ select · Enter edit · Esc back",
-              theme.overlay_signal(),
-            ),
-          ]),
-          span.line_new([
-            span.span_styled(
-              "PgUp/PgDn scroll captured excerpt",
-              theme.overlay_signal(),
-            ),
-          ]),
-        ])
-        |> paragraph.render_styled(
-          body,
-          queue_panel.lines(rows, state.selected, state.preview_scroll, body),
-        )
-      #(rendered, Error(Nil))
+      buf
+      |> render_panel_border(
+        area,
+        case area.size.height <= 2 {
+          True -> tiny_queue_title(rows, 0, 0, "Alt+q", area.size.width)
+          False ->
+            " queue · "
+            <> int.to_string(list.length(rows))
+            <> " pending · Alt+q inspect "
+        },
+        theme.signal,
+      )
+      |> paragraph.render_styled(
+        panel_inner(area),
+        queue_panel.compact(rows, panel_inner(area)),
+      )
     }
-    queue_editor.Editor -> render_queue_draft(buf, screen, state)
+    queue_editor.Inspector, _ -> {
+      let rows = queue_rows(model)
+      let inner = panel_inner(area)
+      let body = queue_content_area(area)
+      let title = case area.size.height {
+        height if height <= 2 ->
+          tiny_queue_title(
+            rows,
+            state.selected,
+            state.preview_scroll,
+            tiny_queue_controls(),
+            area.size.width,
+          )
+        height if height <= 4 -> " queue · ↑↓ Pg ↵ e Esc "
+        _ -> " queued inputs · " <> model.active_strand <> " "
+      }
+      buf
+      |> buffer.clear(area)
+      |> render_panel_border(area, title, theme.signal)
+      |> paragraph.render_styled(inner, queue_inspector_controls(state, inner))
+      |> paragraph.render_styled(body, case area.size.height <= 4 {
+        True -> [
+          queue_panel.tiny_line(
+            rows,
+            state.selected,
+            state.preview_scroll,
+            body.size.width,
+          ),
+        ]
+        False ->
+          queue_panel.lines(rows, state.selected, state.preview_scroll, body)
+      })
+    }
+    queue_editor.Editor, _ -> render_queue_draft(buf, area, state)
   }
+}
+
+fn tiny_queue_title(
+  rows: List(snapshot_view.PendingInput),
+  selected: Int,
+  preview_scroll: Int,
+  controls: String,
+  width: Int,
+) -> String {
+  case list.first(list.drop(rows, selected)) {
+    Error(Nil) -> " queue · " <> controls <> " "
+    Ok(row) -> {
+      let #(suffix, preview_width) = tiny_queue_measure(row, controls, width)
+      let wrapped =
+        row.text
+        |> text_hygiene.multiline
+        |> string.split("\n")
+        |> list.flat_map(fn(line) { text.wrap(line, preview_width) })
+      let offset = int.min(preview_scroll, int.max(0, list.length(wrapped) - 1))
+      let preview =
+        wrapped
+        |> list.drop(offset)
+        |> list.first
+        |> result.unwrap("")
+      " "
+      <> text.truncate(text_hygiene.single_line(preview), preview_width, "")
+      <> suffix
+      <> " "
+    }
+  }
+}
+
+fn tiny_queue_controls() -> String {
+  "Pg ↵ e Esc"
+}
+
+fn tiny_queue_measure(
+  row: snapshot_view.PendingInput,
+  controls: String,
+  width: Int,
+) -> #(String, Int) {
+  let badges = case row.kind, row.editing {
+    snapshot_view.Queue, snapshot_view.Editable -> "Q EDIT"
+    snapshot_view.Queue, snapshot_view.ReadOnly -> "Q READ-ONLY"
+    snapshot_view.Steer, snapshot_view.Editable -> "STEER EDIT"
+    snapshot_view.Steer, snapshot_view.ReadOnly -> "STEER READ-ONLY"
+  }
+  let suffix = " · " <> badges <> " · " <> controls
+  #(suffix, int.max(1, width - text.cell_width(suffix) - 3))
+}
+
+fn queue_inspector_controls(
+  state: queue_editor.State,
+  area: Rect,
+) -> List(span.Line) {
+  let lines = [
+    span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+    span.line_new([
+      span.span_styled(
+        "↑/↓ select · Enter fetch/edit · e resume draft · Esc back",
+        theme.overlay_signal(),
+      ),
+    ]),
+    span.line_new([
+      span.span_styled(
+        "PgUp/PgDn scroll captured excerpt",
+        theme.overlay_signal(),
+      ),
+    ]),
+  ]
+  list.take(lines, queue_control_rows(area))
 }
 
 fn model_screen(model: Model) -> geometry.Rect {
   geometry.rect_new(0, 0, model.width, model.height)
 }
 
-fn queue_content_area(screen: geometry.Rect) -> geometry.Rect {
-  let inner = panel_inner(screen)
+fn model_queue_area_for(
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> geometry.Rect {
+  let #(_, body, _, _) = layout(model_screen(model), model)
+  queue_body_layout_for(body, model, rows).1
+}
+
+fn queue_preview_area(model: Model) -> geometry.Rect {
+  queue_preview_area_for(model, queue_rows(model))
+}
+
+fn queue_preview_area_for(
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> geometry.Rect {
+  let area = model_queue_area_for(model, rows)
+  let content = queue_content_area(area)
+  case area.size.height {
+    height if height <= 2 ->
+      case list.first(list.drop(rows, model.queue_editor.selected)) {
+        Error(Nil) -> content
+        Ok(row) -> {
+          let #(_, width) =
+            tiny_queue_measure(row, tiny_queue_controls(), area.size.width)
+          geometry.rect_new(area.position.x, area.position.y, width, 3)
+        }
+      }
+    height if height <= 4 ->
+      case list.first(list.drop(rows, model.queue_editor.selected)) {
+        Error(Nil) -> content
+        Ok(row) -> {
+          let width = queue_panel.tiny_preview_width(row, content.size.width)
+          geometry.rect_new(content.position.x, content.position.y, width, 3)
+        }
+      }
+    _ -> content
+  }
+}
+
+fn queue_content_area(area: geometry.Rect) -> geometry.Rect {
+  let inner = panel_inner(area)
+  let controls = queue_control_rows(area)
   geometry.rect_new(
     inner.position.x,
-    inner.position.y + 3,
+    inner.position.y + controls,
     inner.size.width,
-    int.max(0, inner.size.height - 3),
+    int.max(0, inner.size.height - controls),
   )
 }
 
-fn render_queue_draft(buf, screen, state: queue_editor.State) {
+fn queue_control_rows(area: Rect) -> Int {
+  int.min(3, int.max(0, panel_inner(area).size.height - 1))
+}
+
+fn render_queue_draft(
+  buf: buffer.Buffer,
+  area: Rect,
+  state: queue_editor.State,
+) -> buffer.Buffer {
   case state.draft {
-    None -> #(buf, Error(Nil))
+    None -> buf
     Some(draft) -> {
-      let inner = panel_inner(screen)
-      let area =
-        geometry.rect_new(
-          inner.position.x,
-          inner.position.y + 3,
-          inner.size.width,
-          int.max(0, inner.size.height - 4),
-        )
+      let inner = panel_inner(area)
+      let editor_area = queue_draft_area(area)
       let priority = case draft.document.kind {
         queue_editor.Queue -> "queue"
         queue_editor.Steer -> "steer"
@@ -13266,42 +13559,86 @@ fn render_queue_draft(buf, screen, state: queue_editor.State) {
           ..draft.input,
           lines: list.map(draft.input.lines, text_hygiene.single_line),
         )
-      let input = input_view_state(safe, area.size.width)
-      let rendered =
-        buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " queued input · "
-            <> text_hygiene.single_line(draft.document.id)
-            <> " · revision "
-            <> int.to_string(draft.document.revision)
-            <> " ",
-          theme.signal,
-        )
-        |> paragraph.render_styled(inner, [
-          span.line_plain(
-            priority
-            <> " · "
-            <> delivery
-            <> " · "
-            <> int.to_string(draft.document.attachment_count)
-            <> " image attachments retained",
-          ),
-          span.line_plain(state.message),
-          span.line_new([
-            span.span_styled(
-              "Ctrl+s save · Ctrl+r reconcile · Esc back · Enter newline",
-              theme.overlay_signal(),
+      let input = queue_input_view(safe, editor_area)
+      buf
+      |> buffer.clear(area)
+      |> render_panel_border(
+        area,
+        " queued input · "
+          <> text_hygiene.single_line(draft.document.id)
+          <> " · revision "
+          <> int.to_string(draft.document.revision)
+          <> " ",
+        theme.signal,
+      )
+      |> paragraph.render_styled(
+        inner,
+        list.take(
+          [
+            span.line_plain(
+              priority
+              <> " · "
+              <> delivery
+              <> " · "
+              <> int.to_string(draft.document.attachment_count)
+              <> " image attachments retained",
             ),
-          ]),
-        ])
-        |> text_area.render(
-          area,
-          text_area.textarea_new() |> text_area.with_max_lines(0),
-          input,
-        )
-      #(rendered, text_area.cursor_screen_pos(input, area))
+            span.line_plain(state.message),
+            span.line_new([
+              span.span_styled(
+                "Ctrl+s save · Ctrl+r reconcile · Esc back · Enter newline",
+                theme.overlay_signal(),
+              ),
+            ]),
+          ],
+          queue_control_rows(area),
+        ),
+      )
+      |> text_area.render(
+        editor_area,
+        text_area.textarea_new() |> text_area.with_max_lines(0),
+        input,
+      )
     }
+  }
+}
+
+fn queue_draft_area(area: Rect) -> Rect {
+  let inner = panel_inner(area)
+  let controls = queue_control_rows(area)
+  geometry.rect_new(
+    inner.position.x,
+    inner.position.y + controls,
+    inner.size.width,
+    int.max(0, inner.size.height - controls),
+  )
+}
+
+fn queue_input_view(input: text_area.TextAreaState, area: Rect) {
+  let wrapped = input_view_state(input, area.size.width)
+  let offset = int.max(0, wrapped.cursor_y - int.max(1, area.size.height) + 1)
+  text_area.TextAreaState(
+    ..wrapped,
+    lines: wrapped.lines |> list.drop(offset) |> list.take(area.size.height),
+    cursor_y: wrapped.cursor_y - offset,
+  )
+}
+
+fn queue_editor_cursor(model: Model, area: Rect) {
+  case model.queue_editor.draft {
+    Some(draft) -> {
+      let editor_area = queue_draft_area(area)
+      let safe =
+        text_area.TextAreaState(
+          ..draft.input,
+          lines: list.map(draft.input.lines, text_hygiene.single_line),
+        )
+      text_area.cursor_screen_pos(
+        queue_input_view(safe, editor_area),
+        editor_area,
+      )
+    }
+    None -> Error(Nil)
   }
 }
 
@@ -13680,7 +14017,16 @@ fn retain_queue_selection(
             queue_panel.max_scroll(
               rows,
               selected,
-              queue_content_area(model_screen(model)),
+              queue_preview_area_for(
+                Model(
+                  ..model,
+                  queue_editor: queue_editor.State(
+                    ..model.queue_editor,
+                    selected:,
+                  ),
+                ),
+                rows,
+              ),
             ),
           )
         Ok(_) | Error(Nil) -> 0
@@ -14415,7 +14761,8 @@ fn summary_body_area(screen: Rect) -> Rect {
 fn normal_diff_panel(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body, _, _) = layout(screen, model)
-  let #(main, _, changes) = body_layout(body, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  let #(main, _, changes) = body_layout(conversation, model)
   case main_shows_diff(model) {
     True -> main
     False -> changes

@@ -10,6 +10,7 @@ import etui/style
 import etui/text
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import tui/snapshot_view
 import tui/text_hygiene
@@ -88,6 +89,64 @@ pub fn max_scroll(
           - page_rows(area),
       )
   }
+}
+
+/// Returns the excerpt cells left beside the focused tiny card's badges.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // queue_panel.tiny_preview_width(row, 38)
+/// ```
+@internal
+pub fn tiny_preview_width(row: snapshot_view.PendingInput, width: Int) -> Int {
+  int.max(1, width - text.cell_width(" · " <> tiny_badges(row)))
+}
+
+/// Renders one page-selected excerpt row beside stable scheduling badges.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // queue_panel.tiny_line(rows, 0, 0, 38)
+/// ```
+@internal
+pub fn tiny_line(
+  rows: List(snapshot_view.PendingInput),
+  selected: Int,
+  preview_scroll: Int,
+  width: Int,
+) -> span.Line {
+  case selected_row(rows, selected) {
+    Error(Nil) -> styled_line("No queued inputs", width, theme.overlay_quiet())
+    Ok(row) -> {
+      let preview_width = tiny_preview_width(row, width)
+      let wrapped = wrapped_excerpt(row.text, preview_width)
+      let offset = int.min(preview_scroll, int.max(0, list.length(wrapped) - 1))
+      let preview =
+        wrapped
+        |> list.drop(offset)
+        |> list.first
+        |> result.unwrap("")
+      raised_line(
+        message_with_suffix(preview, " · " <> tiny_badges(row), width),
+        width,
+        kind_color(row.kind),
+      )
+    }
+  }
+}
+
+fn tiny_badges(row: snapshot_view.PendingInput) -> String {
+  let kind = case row.kind {
+    snapshot_view.Queue -> "Q"
+    snapshot_view.Steer -> "STEER"
+  }
+  let access = case row.editing {
+    snapshot_view.Editable -> "EDIT"
+    snapshot_view.ReadOnly -> "READ-ONLY"
+  }
+  kind <> " " <> access
 }
 
 fn wide(area: geometry.Rect) -> Bool {
@@ -184,15 +243,14 @@ fn selected_line(
   selected: Int,
   count: Int,
 ) -> span.Line {
-  let label =
-    "▸ "
+  let suffix =
+    " · "
     <> badges(row)
-    <> " "
-    <> text_hygiene.single_line(row.id)
     <> " · item "
     <> int.to_string(selected + 1)
     <> "/"
     <> int.to_string(count)
+  let label = "▸ " <> message_with_suffix(row.text, suffix, width - 2)
   raised_line(label, width, kind_color(row.kind))
 }
 
@@ -205,11 +263,49 @@ fn queue_line(
     Selected -> "▸ "
     Ordinary -> "  "
   }
-  let label = marker <> badges(row) <> " " <> text_hygiene.single_line(row.id)
+  let suffix = " · " <> badges(row)
+  let label = marker <> message_with_suffix(row.text, suffix, width - 2)
   case focus {
     Selected -> raised_line(label, width, kind_color(row.kind))
     Ordinary -> styled_line(label, width, theme.overlay_plain())
   }
+}
+
+/// Renders at most three captured messages for the passive composer-adjacent
+/// card. The message leads each row because that is the operator's reason for
+/// distinguishing entries; opaque wire identity remains outside presentation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // queue_panel.compact(rows, area)
+/// ```
+@internal
+pub fn compact(
+  rows: List(snapshot_view.PendingInput),
+  area: geometry.Rect,
+) -> List(span.Line) {
+  let shown = list.take(rows, int.min(3, area.size.height))
+  shown
+  |> list.index_map(fn(row, index) {
+    let suffix =
+      " · "
+      <> badges(row)
+      <> " · "
+      <> int.to_string(index + 1)
+      <> "/"
+      <> int.to_string(list.length(rows))
+    styled_line(
+      message_with_suffix(row.text, suffix, area.size.width),
+      area.size.width,
+      theme.overlay_plain(),
+    )
+  })
+}
+
+fn message_with_suffix(value: String, suffix: String, width: Int) -> String {
+  let available = int.max(1, width - text.cell_width(suffix))
+  text.truncate(text_hygiene.single_line(value), available, "…") <> suffix
 }
 
 fn badges(row: snapshot_view.PendingInput) -> String {

@@ -197,9 +197,10 @@ pub fn new() -> State {
 /// queue_editor.open(queue_editor.new())
 /// ```
 pub fn open(state: State) -> State {
-  State(..state, surface: case state.draft {
-    Some(_) -> Editor
-    None -> Inspector
+  State(..state, surface: Inspector, message: case state.draft {
+    Some(_) ->
+      "Retained draft available · e resumes editing · selection remains captured queue"
+    None -> "Captured queue · Enter fetches complete text for editable items"
   })
 }
 
