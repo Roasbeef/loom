@@ -23,20 +23,29 @@ text is not authenticated operator provenance; other installed context hooks
 can still rewrite it. The independent review found this wrapper-filtering issue,
 which is now fixed and covered by realistic notes and image-bearing prompts.
 
-Validation so far: 38 SDK tests, 220 extension-focused client tests before the
-last aggregate-budget regressions, five standalone selector tests, and the
-real jailed TLS-to-provider integration passed. The documentation gate passed
-with zero errors and existing warnings. The full gate found an unchanged MCP
-cleanup timing assertion at 516 ms against 500 ms; focused reproduction and the
-remaining gate outcome are recorded in the PR. The cache-backed e2e variant
-uses Loom's real extension memory door; its final result is also recorded there.
+Validation: 38 SDK tests, five standalone selector tests and the final five
+selection-boundary tests passed. The real jailed TLS-to-provider integration
+passed with Loom's actual scoped-memory door, proving that a repeated projection
+loads one copy without another Jev request. The extension's mandatory Linux CI
+passed at `c909d67` (run `35669751434`). Documentation and house-rule lint gates
+reported zero errors; non-gating warning censuses remain.
+
+The full local `make check` reached 2,036 passing client tests and one unchanged
+MCP cleanup timing failure (516 ms against a 500 ms bound). That test passed
+twice in isolation; a third attempt was blocked before execution by Hex rate
+limiting. The packages after client were then checked separately: TUI (609),
+conformance (83), lint tests (139) and the Go sandbox passed. This is not a claim
+that the original full command was green. The first PR CI also observed soak
+seed 88's `run/terminated` failure once in two internal runs; a local replay
+passed. No simulation or MCP implementation was changed to conceal either
+result. Check the current PR head's hosted gates before merge.
 
 The extension's CI pins `f894f231` and requires the external-source integration
 test; ordinary Loom checks explicitly report the absent external fixture. To
 rerun it, stage the extension with its `scripts/package.sh`, set
 `LOOM_SKILL_SELECTOR_SOURCE` to that clean absolute directory, and run
 `bash scripts/test.sh client --match skill_selector_reaches_provider` after
-`make sandbox codemode-seed`.
+`make binaries codemode-seed`.
 
 No authenticated Jev inference was run: no key was configured. The next quality
 gate is a labelled task/skill evaluation against the prompt-only baseline,
