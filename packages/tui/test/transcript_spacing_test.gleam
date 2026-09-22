@@ -212,10 +212,11 @@ pub fn a_reasoning_row_is_one_blank_row_below_a_result_test() {
 /// output or add another blank row under it.
 pub fn a_live_reasoning_row_settles_without_moving_the_gap_test() {
   let live =
-    transcript_rows(reasoned_after_failure_with(
-      Compact,
-      gateway.stream_delta("main", "thinking", "weighing the failure"),
-    ))
+    transcript_rows(
+      reasoned_after_failure_with(Compact, [
+        gateway.stream_delta("main", "thinking", "weighing the failure"),
+      ]),
+    )
   let settled = transcript_rows(reasoned_after_failure(Compact))
   let live_output = row_index(live, "failure-output")
   let settled_output = row_index(settled, "failure-output")
@@ -228,13 +229,36 @@ pub fn a_live_reasoning_row_settles_without_moving_the_gap_test() {
   assert at(settled, settled_output + 1) == ""
 }
 
+/// A streamed call keeps its row when the preceding thought settles.
+///
+/// The live stream and the durable response each contain a thought followed
+/// by a call. The tool label changes at settlement, but its row does not.
+pub fn a_streamed_call_keeps_its_row_after_the_thought_settles_test() {
+  let live =
+    transcript_rows(
+      reasoned_after_failure_with(Compact, [
+        gateway.stream_delta("main", "thinking", "weighing the failure"),
+        gateway.stream_delta("main", "tool_call", "bash"),
+      ]),
+    )
+  let settled = transcript_rows(reasoned_after_failure(Compact))
+  let live_thought = row_index(live, "1 line so far")
+  let settled_thought = row_index(settled, "weighing the failure")
+
+  assert live_thought == settled_thought
+    as "the thought starts on the same row before and after settlement"
+  assert row_index(live, "tool · preparing arguments") == live_thought + 2
+    as "the live call is separated from its thought"
+  assert row_index(settled, "second-command") == settled_thought + 2
+    as "the durable call retains that row"
+}
+
 // --- fixtures --------------------------------------------------------------
 
 // A failed call, then a response that reasons before its next call: the
 // transcript the collapsed reasoning row was first seen welded into.
 fn reasoned_after_failure(details: TranscriptView) -> Pane {
-  reasoned_after_failure_with(
-    details,
+  reasoned_after_failure_with(details, [
     gateway.thinking_tool_call_entry(
       "main",
       "call-b",
@@ -242,31 +266,34 @@ fn reasoned_after_failure(details: TranscriptView) -> Pane {
       "second-command",
       3,
     ),
-  )
+  ])
 }
 
 fn reasoned_after_failure_with(
   details: TranscriptView,
-  ending: String,
+  endings: List(String),
 ) -> Pane {
   let model = quiet_model(connection.new_inbox(), details)
-  let steps = [
-    deliver(gateway.full_snapshot("demo")),
-    deliver(gateway.identified_tool_call_entry(
-      "main",
-      "call-a",
-      "bash",
-      "first-command",
-      1,
-    )),
-    deliver(gateway.identified_tool_failure_entry(
-      "main",
-      "call-a",
-      "failure-output",
-      2,
-    )),
-    deliver(ending),
-  ]
+  let steps =
+    list.append(
+      [
+        deliver(gateway.full_snapshot("demo")),
+        deliver(gateway.identified_tool_call_entry(
+          "main",
+          "call-a",
+          "bash",
+          "first-command",
+          1,
+        )),
+        deliver(gateway.identified_tool_failure_entry(
+          "main",
+          "call-a",
+          "failure-output",
+          2,
+        )),
+      ],
+      list.map(endings, deliver),
+    )
   run(model, steps)
 }
 

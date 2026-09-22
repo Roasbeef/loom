@@ -8009,6 +8009,8 @@ fn stream_lines(
       }
     }
   })
+  |> list.map(fn(line) { [line] })
+  |> separated_tool_groups(WithinResponse)
 }
 
 // The live and settled forms of one reasoning block are drawn by different
