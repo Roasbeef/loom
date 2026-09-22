@@ -14,8 +14,14 @@
 import core/json
 import core/message
 import etui/backend
+import etui/buffer
 import etui/geometry
+import etui/keys
+import etui/span
+import etui/widgets/paragraph
+import etui/widgets/textarea as text_area
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -23,10 +29,12 @@ import tui
 import tui/advisor_pending
 import tui/command
 import tui/connection
+import tui/focused_goal_panel
 import tui/frame
 import tui/goal_view
 import tui/notes_view
 import tui/protocol.{type Strand, Strand}
+import tui/reviewer_status
 import tui/session_channel
 import tui/workspace
 import tui_test/pushed
@@ -313,7 +321,8 @@ pub fn the_palette_offers_goal_and_its_words_test() {
       suggestion.command == "/goal"
     })
     as "the palette completes /goal"
-  assert row.takes_argument
+  assert !row.takes_argument
+    as "bare /goal is complete; typing a following space opens its actions"
 
   let words =
     list.map(command.suggestions("/goal "), fn(suggestion) {
@@ -341,6 +350,31 @@ pub fn the_palette_offers_goal_and_its_words_test() {
   // soon as the text stops being one of the words.
   assert command.suggestions("/goal clear the failing test") == []
   assert command.suggestions("/goal get the branch green") == []
+}
+
+/// Enter on the exact palette row executes the bare status command, while a
+/// typed space keeps the subcommand palette and its argument completion.
+pub fn the_palette_enter_path_opens_bare_goal_and_keeps_subcommands_test() {
+  let board = pinned(goal_view.Paused(by: goal_view.ByOperator))
+  let base = tui.Model(..model(), goal: Some(board))
+  let typed =
+    ["/", "g", "o", "a", "l"]
+    |> list.fold(base, fn(model, key) {
+      tui.update(backend.KeyPress(key), model)
+    })
+  let opened = tui.update(backend.KeyPress("enter"), typed)
+  let assert tui.GoalInspector(panel) = opened.overlay
+  assert focused_goal_panel.board(panel) == Some(board)
+  assert text_area.value(opened.input) == ""
+
+  let actions =
+    ["/", "g", "o", "a", "l", " "]
+    |> list.fold(base, fn(model, key) {
+      tui.update(backend.KeyPress(key), model)
+    })
+    |> tui.update(backend.KeyPress("enter"), _)
+  assert text_area.value(actions.input) == "/goal check "
+  assert actions.overlay == tui.NoOverlay
 }
 
 /// `/help` documents the grammar it parses, including where the budget goes.
@@ -717,6 +751,211 @@ pub fn a_pinned_goal_is_drawn_beside_the_composer_test() {
   assert string.contains(text, "get the branch green")
 }
 
+/// The dedicated card names accounting as consumption and exposes only the
+/// status-valid action. A token ratio is evidence of spend, not completion.
+pub fn the_goal_card_labels_consumption_and_status_actions_test() {
+  let area = geometry.rect_new(0, 0, 80, 20)
+  let active =
+    focused_goal_panel.new(
+      Some(pinned(goal_view.Active)),
+      "Last server observation",
+    )
+  let text =
+    focused_goal_panel.render(
+      buffer.buffer_new(area),
+      area,
+      active,
+      focused_goal_panel.Ready,
+    )
+    |> frame.buffer_to_text
+  assert string.contains(text, "Budget consumption")
+  assert string.contains(text, "51200 of 400000 tokens consumed")
+  assert !string.contains(text, "completion")
+  assert string.contains(text, "p pause")
+  assert !string.contains(text, "c continue")
+
+  let paused =
+    focused_goal_panel.new(
+      Some(pinned(goal_view.Paused(by: goal_view.ByOperator))),
+      "Last server observation",
+    )
+  let assert focused_goal_panel.Resume =
+    focused_goal_panel.update(
+      keys.Char("c"),
+      paused,
+      area,
+      focused_goal_panel.Ready,
+    )
+  let assert focused_goal_panel.Continue(_) =
+    focused_goal_panel.update(
+      keys.Char("p"),
+      paused,
+      area,
+      focused_goal_panel.Ready,
+    )
+  let assert focused_goal_panel.Continue(_) =
+    focused_goal_panel.update(
+      keys.Char("c"),
+      paused,
+      area,
+      focused_goal_panel.Pending,
+    )
+}
+
+/// A wide card owns the complete body area even though its visible frame is
+/// inset. Transcript cells in the two outer gutters must not survive it.
+pub fn the_wide_goal_card_clears_its_outer_gutters_test() {
+  let area = geometry.rect_new(0, 0, 80, 20)
+  let transcript = list.repeat(span.line_plain("XXXXXXXXXXXXXXXX"), 20)
+  let base = paragraph.render_styled(buffer.buffer_new(area), area, transcript)
+  let panel =
+    focused_goal_panel.new(
+      Some(pinned(goal_view.Active)),
+      "Last server observation",
+    )
+  let rendered =
+    focused_goal_panel.render(base, area, panel, focused_goal_panel.Ready)
+    |> frame.buffer_to_text
+  assert !string.contains(rendered, "X")
+    as "the inset card left transcript glyphs in its owned gutters"
+}
+
+/// Paging at the smallest review size reaches the last check output instead
+/// of leaving the first headings as the only reachable rows.
+pub fn the_small_goal_card_pages_through_the_actual_viewport_test() {
+  let marker = "LAST-GOAL-OUTPUT-MARKER"
+  let board =
+    goal_view.Pinned(
+      status: goal_view.Complete,
+      because: "the reviewer marked the goal complete",
+      objective: "first objective line\nsecond objective line\nthird objective line",
+      token_budget: 400_000,
+      tokens_used: 51_200,
+      cost_used: 0.42,
+      continuations: 3,
+      created_ms: 1_000_000,
+      updated_ms: 1_060_000,
+      reviewer_note: Some("reviewer feedback after the check"),
+      check: Some("make check"),
+      last_check: Some(goal_view.CheckRun(
+        command: "make check",
+        status: Some(1),
+        not_finished: None,
+        output: string.repeat("prior output ", 20) <> marker,
+        ran_at_ms: 1_100_000,
+      )),
+      observed_at_ms: 1_120_000,
+    )
+  let area = geometry.rect_new(0, 0, 40, 12)
+  let panel = focused_goal_panel.new(Some(board), "Last server observation")
+  let #(pages, paged) =
+    int.range(0, 40, #([], panel), fn(acc, _) {
+      let #(pages, state) = acc
+      let text =
+        focused_goal_panel.render(
+          buffer.buffer_new(area),
+          area,
+          state,
+          focused_goal_panel.Ready,
+        )
+        |> frame.buffer_to_text
+      let assert focused_goal_panel.Continue(next) =
+        focused_goal_panel.update(
+          keys.PageDown,
+          state,
+          area,
+          focused_goal_panel.Ready,
+        )
+      #([text, ..pages], next)
+    })
+  assert list.any(pages, fn(page) { string.contains(page, marker) })
+    as "the check tail must be reachable at 40x12"
+
+  let stale = focused_goal_panel.unavailable(paged, "conversation disconnected")
+  let first =
+    focused_goal_panel.render(
+      buffer.buffer_new(area),
+      area,
+      stale,
+      focused_goal_panel.Ready,
+    )
+    |> frame.buffer_to_text
+  assert string.contains(first, "Observation not refreshed")
+    as "a retained board must label its stale observation before its long body"
+}
+
+/// The real 40x12 application layout shows substantive goal content on its
+/// first frame; the header and observation metadata cannot consume the body.
+pub fn the_real_small_layout_starts_with_status_and_objective_test() {
+  let board = pinned(goal_view.Active)
+  let opened =
+    tui.Model(
+      ..model(),
+      goal: Some(board),
+      overlay: tui.GoalInspector(focused_goal_panel.new(
+        Some(board),
+        "Illustrative observation",
+      )),
+    )
+  let resized = tui.update(backend.Resize(40, 12), opened)
+  let #(rendered, _) = tui.view(resized, geometry.rect_new(0, 0, 40, 12))
+  let text = frame.buffer_to_text(rendered)
+  assert string.contains(text, "active")
+  assert string.contains(text, "get the branch green")
+}
+
+/// Reviewer and goal status bands may consume the normal body at 40x12. The
+/// inspector borrows those bands while leaving the actual editor visible.
+pub fn the_busy_small_layout_keeps_goal_content_and_editor_test() {
+  let board = pinned(goal_view.Active)
+  let reviewers = [
+    reviewer_status.Row("sub:first", "op-1", "Review layout", "running", ""),
+    reviewer_status.Row("sub:second", "op-2", "Review paging", "running", ""),
+  ]
+  let opened =
+    tui.Model(
+      ..model(),
+      input: text_area.state_from_string("draft remains editable"),
+      goal: Some(board),
+      reviewer_rows: reviewers,
+      overlay: tui.GoalInspector(focused_goal_panel.new(
+        Some(board),
+        "Illustrative observation",
+      )),
+    )
+  let resized = tui.update(backend.Resize(40, 12), opened)
+  let #(rendered, _) = tui.view(resized, geometry.rect_new(0, 0, 40, 12))
+  let text = frame.buffer_to_text(rendered)
+  assert string.contains(text, "active")
+  assert string.contains(text, "get the branch green")
+  assert string.contains(text, "draft remains editable")
+}
+
+/// Panel actions use the ordinary mutation lane without consuming text the
+/// operator was composing underneath the inspector.
+pub fn pausing_from_the_goal_card_retains_the_composer_draft_test() {
+  let drafted =
+    ["d", "r", "a", "f", "t"]
+    |> list.fold(pushed.attached(), fn(model, key) {
+      tui.update(backend.KeyPress(key), model)
+    })
+  let panel =
+    focused_goal_panel.new(
+      Some(pinned(goal_view.Active)),
+      "Last server observation",
+    )
+  let opened =
+    tui.Model(
+      ..drafted,
+      goal: Some(pinned(goal_view.Active)),
+      overlay: tui.GoalInspector(panel),
+    )
+  let sent = tui.update(backend.KeyPress("p"), opened)
+  assert text_area.value(sent.input) == "draft"
+  assert sent.goal_request != None
+  let assert tui.GoalInspector(_) = sent.overlay
+}
+
 // --- the read edges ---------------------------------------------------------
 
 /// The goal reads on the nudge panel's three edges and on one more: the
@@ -855,12 +1094,24 @@ fn deliver(model: tui.Model, message: connection.Message) -> tui.Model {
 /// has scrolled away.
 pub fn the_operators_question_is_answered_in_the_transcript_test() {
   let #(model, id) = outstanding(protocol.goal_get(99), "goal_get")
+  let model =
+    tui.Model(
+      ..model,
+      overlay: tui.GoalInspector(focused_goal_panel.new(
+        None,
+        "Reading current goal",
+      )),
+    )
   let answered = deliver(model, pushed.reply(id, "snapshot", snapshot()))
 
   let text = painted(answered)
-  assert string.contains(text, "Goal: active")
+  assert string.contains(text, "Session goal")
+  assert string.contains(text, "Status")
+  assert string.contains(text, "active")
   assert string.contains(text, "51200 of 400000 tokens")
   assert string.contains(text, "goal active")
+  let assert tui.GoalInspector(panel) = answered.overlay
+  assert focused_goal_panel.board(panel) == answered.goal
   assert answered.goal_report == tui.HoldGoalReport
     as "one question is answered once"
 }
@@ -945,7 +1196,12 @@ pub fn a_refused_mutation_is_not_confirmed_test() {
 /// the session does not have.
 pub fn an_automatic_refresh_refused_draws_nothing_test() {
   let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
-  let automatic = tui.Model(..asked, goal_report: tui.HoldGoalReport)
+  let automatic =
+    tui.Model(
+      ..asked,
+      goal: Some(pinned(goal_view.Active)),
+      goal_report: tui.HoldGoalReport,
+    )
   let refused =
     deliver(
       automatic,

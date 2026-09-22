@@ -25,6 +25,7 @@ import tui/advisor_pending
 import tui/agents
 import tui/appearance
 import tui/connection
+import tui/goal_view
 import tui/internal/ffi_terminal
 import tui/notes_view
 import tui/protocol
@@ -165,6 +166,7 @@ pub fn run(palette: String) -> Nil {
       worktree: fixture_worktree(),
       note_board: Some(fixture_notes()),
       note_selected: Some("plan"),
+      goal: Some(fixture_goal()),
       nudges: Some(advisor_pending.Board(
         "main",
         1,
@@ -184,6 +186,32 @@ pub fn run(palette: String) -> Nil {
       tui.terminal_poll_timeout,
     )
   Nil
+}
+
+fn fixture_goal() -> goal_view.Board {
+  goal_view.Pinned(
+    status: goal_view.Paused(by: goal_view.ByOperator),
+    because: "you paused this illustrative goal before native review",
+    objective: "Finish the native agent workspace, preserve every session draft, and verify compact layouts.",
+    token_budget: 400_000,
+    tokens_used: 51_200,
+    cost_used: 0.42,
+    continuations: 3,
+    created_ms: 1_000_000,
+    updated_ms: 1_060_000,
+    reviewer_note: Some(
+      "The focused goal card still needs review at 40 columns before the session is complete.",
+    ),
+    check: Some("bash scripts/test.sh tui --match goal"),
+    last_check: Some(goal_view.CheckRun(
+      command: "bash scripts/test.sh tui --match goal",
+      status: Some(0),
+      not_finished: None,
+      output: "676 tests, 0 failures",
+      ran_at_ms: 1_055_000,
+    )),
+    observed_at_ms: 1_120_000,
+  )
 }
 
 // These boards are illustrative observations, not replies from a daemon.

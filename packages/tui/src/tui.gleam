@@ -65,6 +65,7 @@ import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/file_read_view
+import tui/focused_goal_panel
 import tui/frame
 import tui/goal_view
 import tui/herdr
@@ -240,6 +241,7 @@ pub type Overlay {
   NoOverlay
   ModelSelector(model_selector.State)
   AgentInspector(selected: agents.Inspector)
+  GoalInspector(state: focused_goal_panel.State)
   SessionSelector(sessions.State)
   DaemonSelector(session_selector.State)
   ApprovalInspector(approval_panel.State)
@@ -2546,6 +2548,7 @@ fn finish_control(model: Model, result) {
           NoOverlay
           | ModelSelector(_)
           | AgentInspector(_)
+          | GoalInspector(_)
           | ApprovalInspector(_)
           | SessionSelector(_) -> model.overlay
         },
@@ -2578,6 +2581,7 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       NoOverlay
       | ModelSelector(_)
       | AgentInspector(_)
+      | GoalInspector(_)
       | ApprovalInspector(_)
       | SessionSelector(_) -> model.overlay
     },
@@ -2763,6 +2767,13 @@ fn render_frame(
         selected,
         agent_detail_content(model, selected),
       )
+    GoalInspector(state) ->
+      focused_goal_panel.render(
+        base,
+        goal_inspector_area(body_area, editor_area),
+        state,
+        goal_availability(model),
+      )
     SessionSelector(selector) -> sessions.render(base, screen, selector)
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
@@ -2815,6 +2826,7 @@ fn render_frame(
       text_area.cursor_screen_pos(input_view, editor_area)
     ModelSelector(_)
     | AgentInspector(_)
+    | GoalInspector(_)
     | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> Error(Nil)
@@ -3671,6 +3683,7 @@ fn note_context(model: Model, target: String) -> List(String) {
             ]
             NoOverlay
             | ModelSelector(_)
+            | GoalInspector(_)
             | SessionSelector(_)
             | DaemonSelector(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
@@ -3686,6 +3699,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     ]
     NoOverlay
     | ModelSelector(_)
+    | GoalInspector(_)
     | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
@@ -4610,6 +4624,7 @@ fn render_command_palette(
     [], _
     | _, ModelSelector(_)
     | _, AgentInspector(_)
+    | _, GoalInspector(_)
     | _, SessionSelector(_)
     | _, DaemonSelector(_)
     | _, ApprovalInspector(_)
@@ -5369,6 +5384,7 @@ fn notes_surface(model: Model) -> Bool {
     -> True
     False, NoOverlay
     | False, ModelSelector(_)
+    | False, GoalInspector(_)
     | False, SessionSelector(_)
     | False, DaemonSelector(_)
     | False, AgentInspector(_)
@@ -6278,6 +6294,10 @@ pub fn apply_channel_update(
           goal_awaiting: None,
           goal_request: None,
           goal_report: HoldGoalReport,
+          overlay: case model.overlay {
+            GoalInspector(_) -> NoOverlay
+            other -> other
+          },
           worktree: case model.worktree.awaiting {
             Some(id) ->
               worktree_view.receive(
@@ -7042,6 +7062,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ))
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
+        GoalInspector(state) -> GoalInspector(state)
         SessionSelector(selector) -> SessionSelector(selector)
         DaemonSelector(selector) -> DaemonSelector(selector)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
@@ -9909,6 +9930,7 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
       case model.overlay {
         ModelSelector(selector) -> update_model_selector(key, model, selector)
         AgentInspector(selected) -> update_agent_inspector(key, model, selected)
+        GoalInspector(state) -> update_goal_inspector(key, model, state)
         SessionSelector(selector) ->
           update_session_selector(key, model, selector)
         DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
@@ -9940,6 +9962,66 @@ fn update_session_selector(
         notice: "session selection cancelled",
       )
     sessions.Choose(choice) -> begin_session_switch(model, choice)
+  }
+}
+
+fn goal_availability(model: Model) -> focused_goal_panel.Availability {
+  case model.goal_request {
+    Some(_) -> focused_goal_panel.Pending
+    None -> focused_goal_panel.Ready
+  }
+}
+
+// A compact goal inspector may cover the pending status bands, but never the
+// editable composer. Busy reviewers and the standing goal row can consume the
+// ordinary body completely at 40x12; the editor's real top is the stable lower
+// boundary both rendering and navigation use.
+fn goal_inspector_area(body: Rect, editor: Rect) -> Rect {
+  case body.size.height >= 6 {
+    True -> body
+    False ->
+      geometry.rect_new(
+        body.position.x,
+        body.position.y,
+        body.size.width,
+        int.max(0, editor.position.y - body.position.y),
+      )
+  }
+}
+
+fn model_goal_inspector_area(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, input, _) = layout(screen, model)
+  let #(_, composer) = pending_layout(panel_inner(input), model)
+  let #(_, editor) = input_layout(composer, model.attachments)
+  goal_inspector_area(body, editor)
+}
+
+fn update_goal_inspector(
+  key: keys.Key,
+  model: Model,
+  state: focused_goal_panel.State,
+) -> Model {
+  case
+    focused_goal_panel.update(
+      key,
+      state,
+      model_goal_inspector_area(model),
+      goal_availability(model),
+    )
+  {
+    focused_goal_panel.Close ->
+      Model(
+        ..model,
+        overlay: NoOverlay,
+        repaint_phase: !model.repaint_phase,
+        notice: "goal inspector closed",
+      )
+    focused_goal_panel.Continue(next) ->
+      Model(..model, overlay: GoalInspector(next))
+    focused_goal_panel.Refresh -> request_goal_status(model)
+    focused_goal_panel.Pause -> submit_goal_action(model, command.GoalPause)
+    focused_goal_panel.Resume -> submit_goal_action(model, command.GoalResume)
   }
 }
 
@@ -11595,16 +11677,8 @@ fn submit_text(model: Model) -> Model {
         confirming(cleared, "the session goal is cleared"),
         protocol.goal_clear(cleared.next_id),
       )
-    command.GoalPause ->
-      send_frame(
-        confirming(cleared, "the session goal is held"),
-        protocol.goal_pause(cleared.next_id),
-      )
-    command.GoalResume ->
-      send_frame(
-        confirming(cleared, "the session goal continues"),
-        protocol.goal_resume(cleared.next_id),
-      )
+    command.GoalPause -> submit_goal_action(cleared, command.GoalPause)
+    command.GoalResume -> submit_goal_action(cleared, command.GoalResume)
 
     // The word is shown back because the operator has to see which of
     // their words was read as the budget, and a goal must never be pinned
@@ -12573,6 +12647,10 @@ fn select_workspace(model: Model, session: String, strand: String) -> Model {
         goal_awaiting: None,
         goal_request: None,
         goal_report: HoldGoalReport,
+        overlay: case model.overlay {
+          GoalInspector(_) -> NoOverlay
+          other -> other
+        },
       )
   }
 
@@ -13676,10 +13754,9 @@ fn sync_goal(before: Model, after: Model) -> Model {
   }
 }
 
-// The operator's own `/goal`. The panel is printed when the board arrives
-// rather than from whatever is held, because a status the operator asked
-// for must be the current one and the row beside the composer may be as
-// old as the last edge.
+// The operator's own `/goal` opens the retained observation immediately and
+// requests a current board. Its label distinguishes that retained board from
+// the correlated refresh which replaces it.
 // Arms the one line a committed goal mutation prints. The board that
 // commits it is the mutation's own reply, so nothing else has to be
 // scheduled: `report_goal` finds the line where `receive_goal` leaves it.
@@ -13687,8 +13764,69 @@ fn confirming(model: Model, line: String) -> Model {
   Model(..model, goal_report: ConfirmGoal(line:))
 }
 
+// Slash commands and inspector keys enter one gate. The pending-submission
+// marker tells the shared send path whether a composer draft belongs to this
+// command; an inspector action supplies `OverlaySubmission`, so the draft is
+// never cleared as though the operator had submitted it.
+fn submit_goal_action(model: Model, action: command.Command) -> Model {
+  case mutation_refusal(model, action) {
+    Some(reason) -> append_error(model, reason)
+    None -> {
+      let prepared = case model.pending_submission {
+        Some(_) -> model
+        None -> Model(..model, pending_submission: Some(OverlaySubmission))
+      }
+      case action {
+        command.GoalPause ->
+          send_frame(
+            confirming(prepared, "the session goal is held"),
+            protocol.goal_pause(prepared.next_id),
+          )
+        command.GoalResume ->
+          send_frame(
+            confirming(prepared, "the session goal continues"),
+            protocol.goal_resume(prepared.next_id),
+          )
+        _ -> prepared
+      }
+    }
+  }
+}
+
 fn request_goal_status(model: Model) -> Model {
-  Model(..model, goal_refresh: worktree_view.Requested, goal_report: ReportGoal)
+  let panel = case model.overlay {
+    GoalInspector(state) -> state
+    _ -> focused_goal_panel.new(model.goal, goal_observation(model))
+  }
+  case model.peer {
+    Preview ->
+      Model(
+        ..model,
+        overlay: GoalInspector(panel),
+        goal_report: HoldGoalReport,
+        repaint_phase: !model.repaint_phase,
+        notice: "goal inspector · illustrative observation",
+      )
+    Attached(_) | Disconnected | Replaying ->
+      Model(
+        ..model,
+        overlay: GoalInspector(panel),
+        goal_refresh: worktree_view.Requested,
+        goal_report: ReportGoal,
+        repaint_phase: !model.repaint_phase,
+      )
+  }
+}
+
+fn goal_observation(model: Model) -> String {
+  case model.goal, model.peer {
+    Some(_), Attached(_) -> "Last server observation · refreshing"
+    Some(_), Disconnected -> "Last server observation · disconnected"
+    Some(_), Preview | Some(_), Replaying -> "Illustrative observation"
+    None, Attached(_) -> "Reading current goal"
+    None, Disconnected -> "Goal unavailable · disconnected"
+    None, Preview | None, Replaying -> "Goal unavailable in this preview"
+  }
 }
 
 // The read waits for a free command lane like every other observation.
@@ -13714,7 +13852,19 @@ fn service_goal_read(model: Model) -> Model {
 }
 
 fn unreachable_goal(model: Model) -> Model {
-  let settled = Model(..model, goal_refresh: worktree_view.Settled)
+  let settled =
+    Model(
+      ..model,
+      goal_refresh: worktree_view.Settled,
+      overlay: case model.overlay {
+        GoalInspector(state) ->
+          GoalInspector(focused_goal_panel.unavailable(
+            state,
+            "no conversation is attached",
+          ))
+        other -> other
+      },
+    )
   case model.goal_report {
     HoldGoalReport -> settled
 
@@ -13737,6 +13887,11 @@ fn receive_goal(model: Model, board: goal_view.Board) -> Model {
         Model(
           ..model,
           goal: Some(board),
+          overlay: case model.overlay {
+            GoalInspector(state) ->
+              GoalInspector(focused_goal_panel.observe(state, board))
+            other -> other
+          },
           goal_awaiting: None,
           goal_request: None,
         ),
@@ -13782,6 +13937,14 @@ fn refuse_goal(
     Model(
       ..model,
       goal: None,
+      overlay: case model.overlay {
+        GoalInspector(state) ->
+          GoalInspector(focused_goal_panel.unavailable(
+            state,
+            goal_view.refusal(code, message),
+          ))
+        other -> other
+      },
       goal_request: None,
       goal_awaiting: None,
       goal_report: HoldGoalReport,
