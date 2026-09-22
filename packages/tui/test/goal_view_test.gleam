@@ -741,6 +741,27 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
   assert tui.goal_action(running, other) == tui.ReadGoal
 }
 
+/// A lifecycle-driven goal read is background observation. Sending it must
+/// not replace the operator-facing outcome already occupying the footer;
+/// an explicit `/goal` still reports its own send while awaiting the board.
+pub fn an_automatic_goal_read_preserves_the_footer_notice_test() {
+  let base = pushed.attached()
+  let prior = tui.Model(..base, notice: "copied 2 lines")
+  let automatic =
+    tui.apply_channel_update(
+      prior,
+      session_channel.Submission(session_channel.Sent("goal_get", 500)),
+    )
+  assert automatic.notice == prior.notice
+
+  let explicit =
+    tui.apply_channel_update(
+      tui.Model(..prior, goal_report: tui.ReportGoal),
+      session_channel.Submission(session_channel.Sent("goal_get", 501)),
+    )
+  assert explicit.notice == "goal_get sent"
+}
+
 // --- the command lane -------------------------------------------------------
 
 /// `goal_get` is a read and every mutation is answered with the fresh board,

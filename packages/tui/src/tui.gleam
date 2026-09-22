@@ -4369,13 +4369,35 @@ fn composer_status_lines(model: Model) -> List(String) {
         && diff_pane_width(model) == 0
       {
         True -> []
-        False -> reviewer_status.lines(model.reviewer_rows, model.active_strand)
+        False -> reviewer_band_lines(model)
       }
   }
   list.append(
     active,
     list.append(reviewers, list.append(goal, list.append(nudges, pending))),
   )
+}
+
+// An ordinary-height narrow terminal has no agent rail, so the composer owns
+// one reviewer's two-row status. Keep that small slot when the reviewer
+// settles: otherwise the title and cursor jump down by two rows at exactly the
+// moment the operator is likely to start typing a follow-up. The idle row is a
+// current fact and the task slot is empty, so completion does not leave stale
+// work looking live. Tiny terminals keep every row for the transcript and
+// editor instead.
+fn reviewer_band_lines(model: Model) -> List(String) {
+  let idle_advisor =
+    model.height >= 20
+    && model.active_strand != advisor_pending.advisor_strand
+    && strand_listed(model, advisor_pending.advisor_strand)
+    && !strand_running(model, advisor_pending.advisor_strand)
+  case
+    reviewer_status.lines(model.reviewer_rows, model.active_strand),
+    idle_advisor
+  {
+    [], True -> ["Advisor · idle · /agents to inspect", ""]
+    lines, _ -> lines
+  }
 }
 
 fn pending_layout(area: Rect, model: Model) -> #(Rect, Rect) {
@@ -6539,7 +6561,12 @@ fn render_cut(
     },
     submitting: None,
     record_cache_valid:,
-    notice: notice,
+    // Presence already has its own banner. Repeated metadata captures must
+    // not alternate that banner with streaming or operator feedback below.
+    notice: case model.captured {
+      None -> notice
+      Some(_) -> model.notice
+    },
     transcript:,
   )
   |> invalidate_transcript
@@ -6988,7 +7015,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     }
     protocol.StrandsSnapshot(strands:) -> {
       let summary = agents.summary(strands)
-      Model(..model, strands:, agent_summary: summary, notice: summary)
+      Model(..model, strands:, agent_summary: summary)
     }
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
@@ -12106,6 +12133,11 @@ fn apply_submission(
         notice: case command {
           // Automatic observation must not erase a user's command outcome.
           "context" -> sent.notice
+          "goal_get" ->
+            case sent.goal_report {
+              HoldGoalReport -> sent.notice
+              ReportGoal | ConfirmGoal(..) -> command <> " sent"
+            }
           _ -> command <> " sent"
         },
       )
