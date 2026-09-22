@@ -3,6 +3,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/origin
 import etui/backend
 import etui/geometry
 import gleam/dict
@@ -99,7 +100,10 @@ pub fn owner_attribution_solo_owner_hides_only_current_local_identity_test() {
     fn(author) {
       let historical =
         tui.Model(..solo, records: [record(author, "historical prompt")])
-      assert string.contains(paint(historical), author.name <> ":")
+      assert string.contains(
+        paint(historical),
+        origin.display_label(author) <> ":",
+      )
       assert historical.records == [record(author, "historical prompt")]
     },
   )

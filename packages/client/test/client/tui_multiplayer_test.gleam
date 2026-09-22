@@ -10,6 +10,7 @@ import client/permissions
 import client/session_socket_test
 import client/tui_v2_test
 import core/json
+import core/origin
 import core/register
 import core/tx
 import etui/backend
@@ -100,7 +101,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
           case dict.get(view.configurations, "main") {
             Ok(config) ->
               case config.origin {
-                Some(origin) -> origin.principal == "alice"
+                Some(author) -> origin.stable_identity(author) == "alice"
                 None -> False
               }
             Error(Nil) -> False
@@ -231,11 +232,11 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
       as "resolution author comes from the winning durable record"
     let loser = case winner.status {
       approval.Approved -> {
-        assert author.principal == "alice"
+        assert origin.stable_identity(author) == "alice"
         bob.data
       }
       approval.Rejected -> {
-        assert author.principal == "bob"
+        assert origin.stable_identity(author) == "bob"
         alice.data
       }
       approval.Pending | approval.Consumed ->
@@ -252,7 +253,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
     // exactly one decision committed. Making local refusals survive a cut is
     // a terminal change recorded as a follow-up, not a test to loosen.
     let _ = loser
-    assert string.contains(o.frame, author.name)
+    assert string.contains(o.frame, origin.display_label(author))
     let assert Some(#(after_cut, after_view)) = o.model.captured
       as "decision lookup never substitutes its sparse metadata for the conversation view"
     assert after_cut.window == before_cut.window

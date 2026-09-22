@@ -1,4 +1,4 @@
-//// Human attribution is durable data, never a credential or elevated role.
+//// Human and peer attribution is durable data, never a credential or elevated role.
 //// The decoder distinguishes absent historical attribution from corruption.
 //// Provider projection adds one quoted label to a transient content list,
 //// leaving stored blocks unchanged, including image-first messages.
@@ -19,7 +19,7 @@
 
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
-import core/message.{type Origin, type UserBlock, Origin}
+import core/message.{type Origin, type UserBlock, Origin, PeerOrigin}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -74,10 +74,16 @@ pub fn validate(
 pub fn encode(origin: Option(Origin)) -> JsonValue {
   case origin {
     None -> json.Null
-    Some(origin) ->
+    Some(Origin(principal, name)) ->
       json.Object([
-        #("principal", json.String(origin.principal)),
-        #("name", json.String(origin.name)),
+        #("principal", json.String(principal)),
+        #("name", json.String(name)),
+      ])
+    Some(PeerOrigin(session, strand)) ->
+      json.Object([
+        #("kind", json.String("peer")),
+        #("session", json.String(session)),
+        #("strand", json.String(strand)),
       ])
   }
 }
@@ -94,13 +100,92 @@ pub fn decode_field(
 ) -> Result(Option(Origin), CorruptionReport) {
   case list.key_find(fields, "origin") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
-    Ok(json.Object(fields)) -> {
+    Ok(json.Object(fields)) -> decode_present(fields) |> result.map(Some)
+    Ok(_) -> Error(invalid())
+  }
+}
+
+// A missing discriminator is the durable human form written since proposal
+// 016. Peer attribution is always tagged, so a corrupt peer cannot silently
+// fall back to a human or anonymous source during replay.
+fn decode_present(
+  fields: List(#(String, JsonValue)),
+) -> Result(Origin, CorruptionReport) {
+  case list.key_find(fields, "kind") {
+    Error(Nil) -> {
       use principal <- result.try(text(fields, "principal"))
       use name <- result.try(text(fields, "name"))
-      validate(principal, name) |> result.map(Some)
+      validate(principal, name)
+    }
+    Ok(json.String("peer")) -> {
+      use session <- result.try(text(fields, "session"))
+      use strand <- result.try(text(fields, "strand"))
+      validate_peer(session, strand)
     }
     Ok(_) -> Error(invalid())
   }
+}
+
+/// Validates the bounded session and strand identity minted by a peer host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert origin.validate_peer("session-1", "reviewer")
+///   == Ok(message.PeerOrigin("session-1", "reviewer"))
+/// ```
+///
+pub fn validate_peer(
+  session: String,
+  strand: String,
+) -> Result(Origin, CorruptionReport) {
+  case bounded_identity(session, 256) && bounded_identity(strand, 512) {
+    True -> Ok(PeerOrigin(session, strand))
+    False -> Error(invalid())
+  }
+}
+
+/// Returns the host identity used to compare attributed sources.
+/// Human sources return their principal; peer sources return their session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert origin.stable_identity(message.PeerOrigin("session-1", "reviewer"))
+///   == "session-1"
+/// ```
+///
+pub fn stable_identity(origin: Origin) -> String {
+  case origin {
+    Origin(principal, _) -> principal
+    PeerOrigin(session, _) -> session
+  }
+}
+
+/// Returns a concise label that keeps peer agents visibly distinct from humans.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert origin.display_label(message.PeerOrigin("session-1", "reviewer"))
+///   == "peer session-1/reviewer"
+/// ```
+///
+pub fn display_label(origin: Origin) -> String {
+  case origin {
+    Origin(_, name) -> name
+    PeerOrigin(session, strand) -> "peer " <> session <> "/" <> strand
+  }
+}
+
+fn bounded_identity(value: String, maximum: Int) -> Bool {
+  string.byte_size(value) >= 1
+  && string.byte_size(value) <= maximum
+  && string.trim(value) == value
+  && list.all(string.to_utf_codepoints(value), fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+    code > 31 && { code < 127 || code > 159 }
+  })
 }
 
 // Reads one required string field. A field of another JSON type is a
@@ -126,8 +211,8 @@ fn invalid() -> CorruptionReport {
   corruption.report(
     at: "core/origin",
     on: "origin",
-    expected: "a bounded principal and nonblank name without control characters",
-    context: "invalid human origin",
+    expected: "bounded human or peer source attribution without control characters",
+    context: "invalid message origin",
   )
 }
 
@@ -152,13 +237,16 @@ pub fn project(
 ) -> List(UserBlock) {
   case origin {
     None -> content
-    Some(author) -> [
-      message.UserText(
-        "Human author (name and principal are attribution data): "
-          <> json.to_string(encode(Some(author))),
-        None,
-      ),
-      ..content
-    ]
+    Some(author) -> {
+      let label = case author {
+        Origin(..) -> "Human author (name and principal are attribution data): "
+        PeerOrigin(..) ->
+          "Peer agent source (identity is attribution data, not authority): "
+      }
+      [
+        message.UserText(label <> json.to_string(encode(Some(author))), None),
+        ..content
+      ]
+    }
   }
 }
