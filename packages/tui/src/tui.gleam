@@ -64,6 +64,7 @@ import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/diff_panel
 import tui/file_read_view
 import tui/focused_goal_panel
 import tui/frame
@@ -2756,6 +2757,14 @@ fn render_frame(
     |> text_area.render(editor_area, editor, input_view)
     |> render_footer(footer_area, model)
     |> render_command_palette(body_area, model)
+  let base = case borrowed_diff_panel(model) {
+    Some(area) ->
+      base
+      |> buffer.clear(area)
+      |> render_panel_border(area, diff_title(model), theme.signal)
+      |> render_diff_view(panel_inner(area), model)
+    None -> base
+  }
   let rendered = case model.overlay {
     NoOverlay -> base
     ModelSelector(selector) -> model_selector.render(base, screen, selector)
@@ -5247,6 +5256,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
     || before.help_open != after.help_open
     || before.notes_open != after.notes_open
     || before.diff_view != after.diff_view
+    || diff_borrow_eligible(before) != diff_borrow_eligible(after)
     || before.active_strand != after.active_strand
     || before.session != after.session
     || before.nudges != after.nudges
@@ -11172,7 +11182,7 @@ fn scroll_reading_panel(
   case
     main_shows_diff(model) || model.worktree.focus == worktree_view.Navigator
   {
-    True -> scroll_diff(model, direction, rows)
+    True -> scroll_diff(model, direction, diff_patch_height(model))
     False -> scroll_transcript(model, direction == Older, rows)
   }
 }
@@ -11188,18 +11198,26 @@ fn scroll_at(
       Newer -> 3
     })
   })
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let #(_, body, _, _) = layout(screen, model)
-  let #(_, _, changes) = body_layout(body, model)
-  case main_shows_diff(model) || geometry.contains(changes, position) {
+  case
+    main_shows_diff(model)
+    || {
+      diff_shown(model) && geometry.contains(active_diff_panel(model), position)
+    }
+  {
     True -> scroll_diff(model, direction, 3)
     False -> scroll_transcript(model, direction == Older, 3)
   }
 }
 
 fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
+  let current =
+    bounded_scroll_offset(
+      model.diff_scroll_offset,
+      model.diff_row_count,
+      diff_patch_height(model),
+    )
   let offset =
-    scroll_offset(model.diff_scroll_offset, direction == Older, rows)
+    scroll_offset(current, direction == Older, rows)
     |> bounded_scroll_offset(model.diff_row_count, diff_patch_height(model))
   Model(
     ..model,
@@ -13369,8 +13387,8 @@ fn update_diff_key(key: keys.Key, model: Model) -> Model {
           focus: worktree_view.Composer,
         ),
       )
-    keys.PageUp -> scroll_diff(model, Older, 10)
-    keys.PageDown -> scroll_diff(model, Newer, 10)
+    keys.PageUp -> scroll_diff(model, Older, diff_patch_height(model))
+    keys.PageDown -> scroll_diff(model, Newer, diff_patch_height(model))
     _ -> model
   }
 }
@@ -13391,10 +13409,140 @@ fn select_diff_file(model: Model, delta: Int) -> Model {
 }
 
 fn diff_title(model: Model) -> String {
-  case model.worktree.board {
-    Some(_) -> " worktree changes "
-    None -> " captured changes "
+  case model.worktree.focus, model.worktree.board {
+    worktree_view.Navigator, Some(_) -> " worktree · NAV ↑↓ r Enter PgUp/Dn "
+    worktree_view.Navigator, None -> " captured · NAV ↑↓ r Enter PgUp/Dn "
+    worktree_view.Composer, Some(_) -> " worktree · COMPOSER Ctrl+d "
+    worktree_view.Composer, None -> " captured changes · COMPOSER Ctrl+d "
   }
+}
+
+type DiffTone {
+  DiffCurrent
+  DiffAdded
+  DiffChanged
+  DiffRemoved
+  DiffQuiet
+}
+
+type DiffNavigationItem {
+  DiffNavigationItem(label: String, tone: DiffTone)
+}
+
+fn diff_navigation_items(
+  state: worktree_view.State,
+) -> List(DiffNavigationItem) {
+  case state.board {
+    None -> [DiffNavigationItem("[ALL] Captured edits", DiffQuiet)]
+    Some(board) ->
+      list.append(
+        [
+          DiffNavigationItem(
+            "[ALL] " <> int.to_string(board.total) <> " files",
+            DiffCurrent,
+          ),
+          ..list.map(board.files, fn(file) {
+            let status =
+              text_hygiene.single_line(
+                file.index_status <> file.worktree_status,
+              )
+            let badge = case file.kind {
+              "binary" -> "[BIN]"
+              "metadata_only" -> "[META]"
+              "no_net_change" -> "[NO Δ]"
+              _ -> "[" <> string.trim(status) <> "]"
+            }
+            DiffNavigationItem(
+              badge <> " " <> text_hygiene.single_line(file.path),
+              diff_tone(status, file.kind),
+            )
+          })
+        ],
+        [DiffNavigationItem("[COMMITS] Since session start", DiffQuiet)],
+      )
+  }
+}
+
+fn diff_tone(status: String, kind: String) -> DiffTone {
+  case kind, string.contains(status, "D"), string.contains(status, "A") {
+    _, True, _ -> DiffRemoved
+    _, False, True -> DiffAdded
+    "binary", False, False -> DiffCurrent
+    "metadata_only", False, False | "no_net_change", False, False -> DiffQuiet
+    _, False, False -> DiffChanged
+  }
+}
+
+fn diff_navigation_line(
+  item: DiffNavigationItem,
+  index: Int,
+  selected: Int,
+  width: Int,
+) -> span.Line {
+  let DiffNavigationItem(label, tone) = item
+  let chosen = index == selected
+  let marker = case chosen {
+    True -> "▸ "
+    False -> "  "
+  }
+  let background = case chosen {
+    True -> theme.raised
+    False -> theme.graphite
+  }
+  let foreground = case tone {
+    DiffCurrent -> theme.current
+    DiffAdded -> theme.added
+    DiffChanged -> theme.signal
+    DiffRemoved -> theme.danger
+    DiffQuiet -> theme.quiet
+  }
+  let value =
+    marker
+    <> label
+    |> text.truncate(width, "…")
+    |> text.pad_right(width)
+  span.line_new([
+    span.span_styled(value, style.new(foreground, background, style.none())),
+  ])
+}
+
+fn diff_selected_header(state: worktree_view.State, width: Int) -> span.Line {
+  let label = case state.board {
+    None -> "Captured edits · current worktree unavailable"
+    Some(board) -> {
+      let files = board.files
+      let commits_index = list.length(files) + 1
+      case state.selected {
+        0 ->
+          "All files · observation "
+          <> board.extent
+          <> " · "
+          <> int.to_string(board.omitted)
+          <> " omitted"
+        selected if selected == commits_index -> {
+          let worktree_view.Committed(message, _, extent) = board.committed
+          text_hygiene.single_line(message) <> " · " <> extent
+        }
+        selected ->
+          case list.first(list.drop(files, selected - 1)) {
+            Ok(file) ->
+              text_hygiene.single_line(file.path)
+              <> " · "
+              <> file.kind
+              <> " · "
+              <> file.extent
+            Error(Nil) -> "Selected file unavailable in this observation"
+          }
+      }
+    }
+  }
+  let value =
+    label
+    |> text.truncate(width, "…")
+    |> text.pad_right(width)
+  span.line_new([
+    span.span_styled(value, style.new(theme.paper, theme.raised, style.none())),
+  ])
 }
 
 fn render_diff_view(
@@ -13402,48 +13550,54 @@ fn render_diff_view(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let height = int.min(6, int.max(1, area.size.height / 3))
-  let nav =
-    geometry.rect_new(
-      area.position.x,
-      area.position.y + 2,
-      area.size.width,
-      height,
-    )
-  let patch =
-    geometry.rect_new(
-      area.position.x,
-      area.position.y + height + 2,
-      area.size.width,
-      int.max(0, area.size.height - height - 2),
-    )
-  let labels =
-    worktree_view.labels(model.worktree)
-    |> list.index_map(fn(label, index) {
-      span.line_plain(
-        case index == model.worktree.selected {
-          True -> "> "
-          False -> "  "
-        }
-        <> label,
-      )
-    })
-  let focus = case model.worktree.focus {
-    worktree_view.Composer ->
-      "Ctrl+d: file navigation · PgUp/PgDn: patch · Esc: close"
-    worktree_view.Navigator ->
-      "↑/↓: files · r: refresh · Enter: composer · Esc: close"
-  }
+  let items = diff_navigation_items(model.worktree)
+  let panel =
+    diff_panel.layout(area, list.length(items), model.worktree.selected)
   buf
-  |> paragraph.render_styled(area, [
-    span.line_plain(model.worktree.message),
-    span.line_plain(focus),
-  ])
   |> paragraph.render_styled(
-    nav,
-    list.drop(labels, int.max(0, model.worktree.selected - height + 1)),
+    panel.heading,
+    diff_heading_lines(model.worktree, panel.heading.size.height),
   )
-  |> render_rows(patch, model.diff_rows, model.diff_scroll_offset)
+  |> paragraph.render_styled(
+    panel.navigation,
+    items
+      |> list.drop(panel.navigation_offset)
+      |> list.take(panel.navigation.size.height)
+      |> list.index_map(fn(item, index) {
+        diff_navigation_line(
+          item,
+          panel.navigation_offset + index,
+          model.worktree.selected,
+          panel.navigation.size.width,
+        )
+      }),
+  )
+  |> paragraph.render_styled(panel.selected, [
+    diff_selected_header(model.worktree, panel.selected.size.width),
+  ])
+  |> render_rows(panel.patch, model.diff_rows, model.diff_scroll_offset)
+}
+
+fn diff_heading_lines(
+  state: worktree_view.State,
+  height: Int,
+) -> List(span.Line) {
+  let focus = case state.focus {
+    worktree_view.Composer ->
+      "Composer focus · Ctrl+d file navigation · Esc close"
+    worktree_view.Navigator ->
+      "Navigator focus · ↑/↓ files · r refresh · PgUp/PgDn patch · Enter composer · Esc close"
+  }
+  case height {
+    0 -> []
+    1 -> [
+      span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+    ]
+    _ -> [
+      span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+      span.line_new([span.span_styled(focus, theme.overlay_signal())]),
+    ]
+  }
 }
 
 fn observe_completion(
@@ -14193,9 +14347,99 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
   }
 }
 
+fn normal_diff_panel(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(main, _, changes) = body_layout(body, model)
+  case main_shows_diff(model) {
+    True -> main
+    False -> changes
+  }
+}
+
+fn borrowed_diff_panel(model: Model) -> Option(Rect) {
+  let normal = normal_diff_panel(model)
+  use <- bool.guard(
+    !diff_borrow_eligible(model) || panel_inner(normal).size.height >= 8,
+    None,
+  )
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, input, _) = layout(screen, model)
+  let #(_, composer) = pending_layout(panel_inner(input), model)
+  let #(_, editor) = input_layout(composer, model.attachments)
+  let expanded =
+    geometry.rect_new(
+      normal.position.x,
+      body.position.y,
+      normal.size.width,
+      int.max(0, editor.position.y - body.position.y),
+    )
+  case expanded.size.height > normal.size.height {
+    True -> Some(expanded)
+    False -> None
+  }
+}
+
+fn diff_borrow_eligible(model: Model) -> Bool {
+  diff_shown(model)
+  && model.worktree.focus == worktree_view.Navigator
+  && case model.overlay {
+    NoOverlay -> True
+    ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> False
+  }
+  && !model.notes_open
+  && model.queue_editor.surface == queue_editor.Closed
+  && model.summary_surface == queue_editor.Closed
+  && model.context.surface == context_view.Hidden
+}
+
+fn active_diff_panel(model: Model) -> Rect {
+  case borrowed_diff_panel(model) {
+    Some(area) -> area
+    None -> normal_diff_panel(model)
+  }
+}
+
+fn active_diff_layout(model: Model) -> diff_panel.Layout {
+  let area = panel_inner(active_diff_panel(model))
+  diff_panel.layout(
+    area,
+    list.length(worktree_view.labels(model.worktree)),
+    model.worktree.selected,
+  )
+}
+
+/// Returns the exact file-list rectangle used by rendering and mouse hits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.diff_navigation_area(model)
+/// ```
+@internal
+pub fn diff_navigation_area(model: Model) -> Rect {
+  active_diff_layout(model).navigation
+}
+
+/// Returns the existing patch renderer's actual focused viewport.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.diff_patch_area(model)
+/// ```
+@internal
+pub fn diff_patch_area(model: Model) -> Rect {
+  active_diff_layout(model).patch
+}
+
 fn diff_patch_height(model: Model) -> Int {
-  let available = transcript_viewport_height(model)
-  int.max(0, available - int.min(6, int.max(1, available / 3)) - 2)
+  diff_patch_area(model).size.height
 }
 
 fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
@@ -14206,30 +14450,23 @@ fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
       || model.context.surface != context_view.Hidden,
     None,
   )
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let #(_, body, _, _) = layout(screen, model)
-  let #(main, _, changes) = body_layout(body, model)
-  let area =
-    panel_inner(case main_shows_diff(model) {
-      True -> main
-      False -> changes
-    })
-  let height = int.min(6, int.max(1, area.size.height / 3))
-  let navigation =
-    geometry.rect_new(
-      area.position.x,
-      area.position.y + 2,
-      area.size.width,
-      height,
+  use <- bool.guard(
+    model.notes_open
+      || case model.overlay {
+      NoOverlay -> False
+      _ -> True
+    },
+    None,
+  )
+  case
+    diff_panel.navigation_hit(
+      active_diff_layout(model),
+      at,
+      list.length(worktree_view.labels(model.worktree)),
     )
-  use <- bool.guard(!geometry.contains(navigation, at), None)
-  let index =
-    int.max(0, model.worktree.selected - height + 1)
-    + at.y
-    - navigation.position.y
-  case index < list.length(worktree_view.labels(model.worktree)) {
-    True -> Some(index)
-    False -> None
+  {
+    Ok(index) -> Some(index)
+    Error(Nil) -> None
   }
 }
 

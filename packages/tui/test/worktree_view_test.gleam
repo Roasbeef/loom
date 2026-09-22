@@ -22,6 +22,10 @@ fn file(path, patch) {
   worktree_view.File(path, " ", "M", patch, "text", "complete")
 }
 
+fn file_as(path, index, worktree, patch, kind, extent) {
+  worktree_view.File(path, index, worktree, patch, kind, extent)
+}
+
 fn board(id, files) {
   worktree_view.Board(
     id,
@@ -212,6 +216,169 @@ pub fn file_focus_keeps_composer_text_and_patch_scroll_independent_test() {
   assert textarea.value(resumed.input) == "draftrx"
   let resized = tui.update(backend.Resize(160, 35), resumed)
   assert resized.worktree.selected == 2
+}
+
+pub fn diff_navigation_labels_status_and_selected_extent_test() {
+  let files = [
+    file_as("added.gleam", "A", " ", "+added", "text", "complete"),
+    file_as("changed.gleam", " ", "M", "+changed", "text", "limited"),
+    file_as("deleted.gleam", "D", " ", "-deleted", "text", "complete"),
+    file_as("asset.bin", " ", "M", "", "binary", "complete"),
+    file_as("empty.txt", " ", "M", "", "no_net_change", "complete"),
+    file_as("mode.sh", " ", "M", "", "metadata_only", "complete"),
+  ]
+  let observed =
+    worktree_view.receive(
+      waiting(8),
+      "owner",
+      worktree_view.Ready(worktree_view.Board(
+        8,
+        1234,
+        "head",
+        files,
+        8,
+        2,
+        "limited",
+        worktree_view.Committed("Two commits observed", "", "limited"),
+      )),
+    )
+    |> worktree_view.request("owner")
+  let base = model_with_patch()
+  let model =
+    tui.Model(..base, worktree: observed)
+    |> key("ctrl+d")
+    |> fn(model) { tui.update(backend.Tick, model) }
+  let labels =
+    list.fold(range(6), #(model, ""), fn(acc, _) {
+      let #(current, text) = acc
+      #(key(current, "down"), text <> painted(current))
+    })
+  let #(selected, visible) = labels
+  let visible = visible <> painted(selected)
+  assert string.contains(visible, "[A] added.gleam")
+  assert string.contains(visible, "[M] changed.gleam")
+  assert string.contains(visible, "[D] deleted.gleam")
+  assert string.contains(visible, "[BIN] asset.bin")
+  assert string.contains(visible, "[NO Δ] empty.txt")
+  assert string.contains(visible, "[META] mode.sh")
+  assert string.contains(
+    visible,
+    "Refreshing worktree; previous observation may be stale",
+  )
+  assert string.contains(visible, "mode.sh · metadata_only · complete")
+}
+
+pub fn compact_focused_diff_borrows_status_space_but_keeps_editor_test() {
+  let compact =
+    model_with_patch()
+    |> fn(model) { tui.update(backend.Resize(40, 12), model) }
+    |> key("ctrl+d")
+    |> key("down")
+  let patch = tui.diff_patch_area(compact)
+  assert patch.size.height >= 2
+  let visible = painted(compact)
+  assert string.contains(visible, "NAV ↑↓ r Enter PgUp/Dn")
+  assert string.contains(visible, "first.gleam")
+  assert compact.diff_row_count > patch.size.height
+  let paged = key(compact, "pageup")
+  assert paged.diff_scroll_offset > compact.diff_scroll_offset
+  assert painted(paged) != visible
+  assert textarea.value(compact.input) == "draft"
+
+  let composing = compact |> key("enter") |> key("x")
+  assert composing.worktree.focus == worktree_view.Composer
+  assert composing.worktree.selected == compact.worktree.selected
+  assert textarea.value(composing.input) == "draftx"
+}
+
+pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() {
+  let files =
+    range(8)
+    |> list.map(fn(index) {
+      file("file-" <> int.to_string(index), "patch-" <> int.to_string(index))
+    })
+  let state =
+    worktree_view.receive(
+      waiting(8),
+      "owner",
+      worktree_view.Ready(board(8, files)),
+    )
+  let base = model_with_patch()
+  let focused =
+    tui.Model(
+      ..base,
+      worktree: worktree_view.State(
+        ..state,
+        selected: 6,
+        focus: worktree_view.Navigator,
+      ),
+    )
+    |> fn(model) { tui.update(backend.Resize(80, 24), model) }
+  let navigation = tui.diff_navigation_area(focused)
+  let clicked =
+    tui.update(
+      backend.MousePress(
+        navigation.position.x + 1,
+        navigation.position.y,
+        backend.MouseLeft,
+      ),
+      focused,
+    )
+  assert clicked.worktree.selected == 1
+    as "the top visible row maps through the shared navigation offset"
+
+  let covered = tui.Model(..focused, notes_open: True)
+  let ignored =
+    tui.update(
+      backend.MousePress(
+        navigation.position.x + 1,
+        navigation.position.y,
+        backend.MouseLeft,
+      ),
+      covered,
+    )
+  assert ignored.worktree.selected == 6
+}
+
+pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
+  let resized =
+    model_with_patch()
+    |> key("ctrl+d")
+    |> key("down")
+    |> fn(model) { tui.update(backend.Resize(40, 12), model) }
+  let height = tui.diff_patch_area(resized).size.height
+  let trapped = tui.Model(..resized, diff_scroll_offset: 10_000)
+  let paged = key(trapped, "pageup")
+  let maximum = int.max(0, paged.diff_row_count - height)
+  assert paged.diff_scroll_offset == maximum
+  let newer = key(paged, "pagedown")
+  assert newer.diff_scroll_offset == int.max(0, maximum - height)
+
+  let composing = key(resized, "enter")
+  let refocused =
+    key(tui.Model(..composing, diff_scroll_offset: 10_000), "ctrl+d")
+  let focused_maximum =
+    int.max(
+      0,
+      refocused.diff_row_count - tui.diff_patch_area(refocused).size.height,
+    )
+  assert refocused.diff_scroll_offset == focused_maximum
+}
+
+pub fn borrowed_side_patch_routes_wheel_without_moving_transcript_test() {
+  let focused =
+    model_with_patch()
+    |> fn(model) { tui.update(backend.Resize(160, 12), model) }
+    |> key("ctrl+d")
+    |> key("down")
+  let patch = tui.diff_patch_area(focused)
+  let moved =
+    tui.update(
+      backend.MouseScroll(patch.position.x, patch.position.y, True),
+      focused,
+    )
+  assert moved.scroll_offset == focused.scroll_offset
+  assert moved.diff_scroll_offset > focused.diff_scroll_offset
 }
 
 pub fn mouse_selection_replaces_cached_patch_without_resize_test() {

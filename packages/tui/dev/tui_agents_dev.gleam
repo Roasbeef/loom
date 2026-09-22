@@ -396,7 +396,7 @@ fn fixture_worktree() -> worktree_view.State {
           "docs/review/native-layout.md",
           "A",
           " ",
-          "+native agent workspace findings\n",
+          "@@ -0,0 +1,12 @@\n+native agent workspace findings\n+wide navigation verified\n+compact navigation verified\n+selected identity retained\n+added status visible\n+deleted status visible\n+binary status visible\n+sticky file header visible\n+page one complete\n+page two begins\n+composer draft retained\n+native patch paging tail\n",
           "text",
           "complete",
         ),
