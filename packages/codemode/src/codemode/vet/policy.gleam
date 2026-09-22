@@ -724,7 +724,7 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert policy.harness_only_cap_modules() == ["cap/mcp", "cap/runtime"]
+/// assert policy.harness_only_cap_modules() == ["cap/notes", "cap/mcp", "cap/runtime"]
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
