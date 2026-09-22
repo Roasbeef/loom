@@ -12,6 +12,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/catalog
 import client/escalate
 import client/wiring
 import core/clock
@@ -206,9 +207,12 @@ fn config(
     ])
 
   wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: gw,
     role: model.Main,
-    facts: fn(_identity) { Ok(#(resolved, "openai-responses")) },
+    facts: fn(_identity) {
+      Ok(#(resolved, "openai-responses", catalog.ReadsImages))
+    },
     system: Some("Use the supplied tool once."),
     api: "openai-responses",
     fallback_context_window: 200_000,

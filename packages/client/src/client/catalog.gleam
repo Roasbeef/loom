@@ -439,8 +439,8 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking", "pricing", "vision", "max_images",
-      "auth", "profile",
+      "max_output_tokens", "thinking", "pricing", "vision", "max_images", "auth",
+      "profile",
     ],
     place,
   ))
@@ -648,7 +648,7 @@ fn validate_auth(
       case dict.has_key(fields, "auth") {
         True -> Error(place <> ".auth is only supported for openai-responses")
         False -> Ok(Nil)
-    }
+      }
   }
 }
 

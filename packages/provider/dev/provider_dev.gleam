@@ -172,6 +172,7 @@ fn stop_category(reason: message.StopReason) -> String {
 
 fn failure_category(error: stream.ProviderError) -> String {
   case error {
+    stream.WithContext(inner, _) -> failure_category(inner)
     stream.ProviderCancelled -> "cancelled"
     stream.CancellationUnconfirmed -> "cancellation unconfirmed"
     stream.DrainProofLost -> "drain proof lost"

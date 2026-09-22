@@ -6,8 +6,8 @@ import client/catalog
 import client/mcp
 import core/clock
 import core/message
-import gleam/float
 import gleam/erlang/process
+import gleam/float
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
