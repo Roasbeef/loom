@@ -4,7 +4,8 @@ This file records the current collaboration implementation, its verification
 boundary and the next scoped work. Rewrite it after the next body of work;
 use the architecture and protocol documents for enduring contracts.
 
-Baseline: `fc9528e4` on `feature/async-collaboration`, September 22, 2026.
+Baseline: `e2a3ec27` on `feature/async-collaboration`, September 22, 2026,
+rebased onto `9378c019` from `main`.
 The source, issue scope and validation claims below were checked for this
 edition. The complete local and documentation gates passed on this head;
 hosted platform checks remain separate.
@@ -17,7 +18,7 @@ hosted platform checks remain separate.
 | Peer messaging, #382 | Exact directional grants, resident routing, atomic receipt/message admission, owner-authenticated control send and structured peer origins are implemented. |
 | Named workflows | Named steps reconcile original child operations and durable results; version, input and assignment remain immutable. |
 | Presentation and examples | TUI linking is #485, CLI conveniences are #488, and a complete collaboration workflow example is #489. |
-| Validation | `make check` passed, including 2,067/2,067 client tests; `make doc-check` passed with zero errors. Hosted checks have not run on this head. |
+| Validation | `make check` passed, including 2,067 client and 702 TUI tests; `make doc-check` passed with zero errors. Hosted checks have not run on the rebased head. |
 | Merge state | PR #484 is the integration vehicle. Its closing references target #107 and #382 on merge; neither issue is closed by local implementation alone. |
 
 The [architecture](architecture/async-collaboration.md) explains host and
@@ -39,9 +40,10 @@ retains the observed repository identity with `branch: null`, and the source
 Agency refuses a 65th distinct outgoing link before its index becomes
 unreadable. A repeat link remains valid at the bound.
 
-The hosted checks for `93032b53`, before these fixes, completed successfully on
-the applicable platforms. They do not certify this head. Read the new head's
-checks separately from the local client and documentation results below.
+The hosted run for `80d22845`, before this rebase, passed the Linux gate and
+macOS advisory check. Its macOS end-to-end job twice reached the 180-second
+bootstrap test budget while compiling client dependencies, before tests ran.
+The rebased head needs its own hosted result.
 
 ## Integration with current main
 
@@ -126,11 +128,12 @@ None of these is unfinished work somebody forgot.
 
 ## Validation evidence
 
-The complete `make check` passed with its own exit status **0** on `fc9528e4`.
+The complete `make check` passed with its own exit status **0** on `e2a3ec27`.
 It includes script/release checks, generated-prelude checks, all package gates,
 sandbox Go formatting/vet/build/tests, and house lint. The client package passed
-**2,067** tests, including both new regressions. `make doc-check` passed with
-zero errors. Hosted checks still need to run on the pushed head.
+**2,067** tests, including both new regressions; TUI passed **702** tests.
+`make doc-check` passed with zero errors. Hosted checks still need to run on the
+pushed head.
 
 The unchanged MCP deadline regression took 119 ms against its 500 ms ceiling.
 Earlier staged runs exposed a queued-provenance assertion error and a goal-check
