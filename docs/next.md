@@ -1,12 +1,36 @@
 # Next
 
+## Queue component, September 21
+
+Phase 4 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at `44190709`. It adds a selectable queue inspector. Rows
+distinguish queue from steer and editable from read-only. The selected body is
+explicitly the captured excerpt and owns
+independent PgUp/PgDn paging. Enter uses the existing fetch-and-edit path only
+for editable items; read-only input cannot fetch text absent from the capture.
+The revision-fenced editor now makes its priority, delivery state, save,
+reconcile, Escape, and newline controls visible.
+
+Source review is closed, including terminal-cell padding and resized-offset
+clamping fixes. Native QA opened `/queue`, reopened the fixture's retained draft,
+returned to the inspector with Escape, and covered 132×42, 80×24, and 40×12. It
+verified arrow selection, read-only Enter refusal, compact paging to a
+twelve-line tail, and resize recovery without another key. Automated tests,
+rather than this no-daemon fixture, cover the complete-text wire fetch. The
+design note links wide, compact, and editor captures. No mutation was submitted
+to a real daemon.
+
+The closing TUI gate passed 687 tests with exit zero in 9.29 seconds. It was
+incremental; the latest compile took 8.02 seconds. Hosted CI and a latest-head
+full-repository gate remain pending.
+
 ## Goal inspector, September 21
 
 Phase 3 of the [TUI component pass](design-notes/tui-component-pass.md) is
 implemented at `39a735f5`. It adds a raised goal inspector that groups the
-server-owned status and cause, objective,
-budget consumption, age, latest check and output, and reviewer feedback. It uses
-the existing read, pause, and resume commands. Status controls appear only when
+server-owned status and cause, objective, budget consumption, age, latest check
+and output, and reviewer feedback. It uses the existing read, pause, and resume
+commands. Status controls appear only when
 applicable; pending requests disable them, and the panel never treats consumed
 budget as completion. Paging is independent of the preserved composer.
 

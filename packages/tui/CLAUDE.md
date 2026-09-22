@@ -785,13 +785,21 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   patch cache stores the board and selection that produced its rows, so a
   reply applied before a terminal tick still replaces the previous patch.
 - **Queued-input editing**: bare `/queue` opens `tui/queue_editor`; `/queue text`
-  still submits a queued turn. Enter fetches the complete selected item,
-  ordinary Enter inserts a newline in its editor, and Ctrl+s saves its exact
+  still submits a queued turn. `queue_panel` labels each captured row as queue or
+  steer and editable or read-only. The selected body is explicitly a captured
+  excerpt with independent PgUp/PgDn paging. Up/Down changes the selected opaque
+  identity. Enter fetches the complete revision only for an editable item;
+  read-only items cannot request text the capture did not carry.
+  Ordinary Enter inserts a newline in its editor, and Ctrl+s saves its exact
   revision. Images remain on the server. The draft is separate from the
   ordinary composer and survives Escape, conflict, or an uncertain save.
   Ctrl+r explicitly reconciles the same item and queue namespace. A changed
   session, epoch, or incarnation cannot adopt an old draft, even if the opaque
-  item ID repeats; a new connection within that namespace may reconcile it.
+  item ID repeats; a new connection within that namespace may reconcile it. The
+  editor header names priority, delivery state, save, reconcile, Escape, and
+  newline controls without adding another mutation path. Queue rows pad by
+  terminal cells, and presentation clamps the retained excerpt offset to the
+  current geometry, so widening a paged compact view cannot leave it blank.
 - **Completion and live jobs**: `tui/completion_summary` retains observed
   operation start boundaries and processes a result before a successor in the
   same cut. It attributes captured edits and paired tool outcomes only within

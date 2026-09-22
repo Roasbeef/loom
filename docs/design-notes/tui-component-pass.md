@@ -1,6 +1,6 @@
 # TUI component pass
 
-Status: Phases 1 through 3 verified through `39a735f5`, September 21, 2026. The
+Status: Phases 1 through 4 verified through `44190709`, September 21, 2026. The
 implementation baseline is `ef469716` on PR 478. The PR is open and ready for
 review; it has no automatic merge. This note records settled scope and the
 evidence each phase must produce. Later phases remain planned.
@@ -180,6 +180,38 @@ Acceptance evidence must cover queue versus steer priority, unavailable and
 read-only state, long full-message detail, changed authoritative text, stale
 revision refusal, local draft preservation, focus ownership, and narrow layout.
 
+### Phase 4 evidence
+
+Commit `44190709` adds `queue_panel`, which renders selectable `[QUEUE]` or
+`[STEER]` rows with `[EDIT]` or `[READ-ONLY]` access. Its selected preview says
+that the text is a captured excerpt and owns a scroll offset separate from the
+editor and composer.
+Up/Down changes identity, PgUp/PgDn pages the excerpt, and Enter fetches the
+complete revision only for an editable item. Read-only input remains inspectable
+but cannot request complete text.
+
+The existing revision-fenced editor retains full source and attachments. Its
+styled header names priority, delivery state, Ctrl+s save, Ctrl+r reconcile,
+Escape, and newline behavior; it adds no mutation. Source review is closed,
+including fixes that pad by terminal cell width and clamp the render offset after
+a resize.
+
+Native QA opened `/queue`, reopened the fixture's retained draft, and returned
+with Escape to the inspector. It covered 132×42, 80×24, and 40×12, arrow
+selection, and a read-only Enter refusal. The wire fetch of complete text is
+covered by automated tests, not this no-daemon native fixture. On the compact
+view, PgDown reached the tail of a twelve-line excerpt; resizing to 132 columns
+without another key restored the visible start instead of leaving a blank
+preview. The
+[wide capture](tui-agent-workspace/queue-component.png),
+[40×12 capture](tui-agent-workspace/queue-component-40.png), and
+[editor capture](tui-agent-workspace/queue-editor-component.png) have adjacent
+ANSI recordings.
+
+The closing TUI gate passed all 687 tests with exit zero in 9.29 seconds. It was
+incremental; the latest compile took 8.02 seconds. Native testing submitted no
+mutation to a real daemon.
+
 ## Phase 5: diff navigation
 
 Give the existing worktree observation a selected-file list with status accents,
@@ -213,12 +245,12 @@ omitted jobs, refresh transitions, stable selection, and narrow layout.
 
 ## Evidence ledger
 
-Phases 1 through 3 are verified by commits `27da4a7d`, `157c5207`, and
-`39a735f5`, their closing TUI gates, native captures, and independently confirmed
-review repairs recorded above. For later phases, focused and full gate results,
-timings, native captures, review findings, and commit IDs remain pending. The
-final documentation refresh
-must repair the known line-citation drift in `docs/architecture/advisor.md` and
+Phases 1 through 4 are verified by commits `27da4a7d`, `157c5207`, `39a735f5`,
+and `44190709`, their closing TUI gates, native captures, and confirmed review
+repairs recorded above. For later phases, focused and full gate results, timings,
+native captures, review findings, and commit IDs remain pending. The final
+documentation refresh must repair the known line-citation drift in
+`docs/architecture/advisor.md` and
 add the new panels to the `docs/architecture/client.md` code-location table.
 Avoid churning those anchors between phases. The final full-repository gate and
 hosted CI also remain pending. The unrelated `.blobs/` directory is outside this
