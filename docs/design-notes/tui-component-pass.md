@@ -2,8 +2,10 @@
 
 Status: all six phases implemented, reviewed, component-verified, and pushed at
 `ff4c5fa3`, September 22, 2026. The inline queue follow-up is committed at
-`6c796795`, with test calibration at `0003f32f`. Its closing full-repository
-gate and hosted validation remain pending.
+`6c796795`, with test calibration at `0003f32f`; both are pushed through
+documentation head `a4107579`. The closing local full-repository gate passed.
+[PR 478 checks](https://github.com/Roasbeef/loom/pull/478/checks) are the live
+source for hosted validation.
 
 ## Purpose and constraints
 
@@ -364,11 +366,11 @@ its private `loom-visual-review` tmux session are stopped; the installed daemon
 was untouched. Push and hosted CI were pending at this validation point; the
 status above and follow-up record below supersede that snapshot.
 
-## Inline queue follow-up: final validation pending
+## Inline queue follow-up: local validation complete
 
-Commit `6c796795` places queued messages above the composer, with message text before their
-priority and access badges. `Alt+q` and bare `/queue` focus the same bounded
-inspector while retaining the transcript, ordinary draft, and attachments.
+Commit `6c796795` places queued messages above the composer, with message text
+before their priority and access badges. `Alt+q` and bare `/queue` focus the
+same bounded inspector while retaining the transcript, ordinary draft, and attachments.
 The queue reserves its rectangle before transcript rendering. The passive
 card shows up to three entries; the focused inspector owns selection and
 excerpt paging within that rectangle.
@@ -391,8 +393,8 @@ pages the excerpt. Both title and body clamp offsets on resize.
 
 All 22 focused queue tests pass; the source rebuild took 9.04 seconds and the
 incremental compile took 0.5 seconds. Native verification covered the passive
-card, Alt+q inspection, and
-explicit draft resume at 132×42, preserving the ordinary composer throughout.
+card, Alt+q inspection, and explicit draft resume at 132×42, preserving the
+ordinary composer throughout.
 The editor and cursor were checked at 80×24. At 40×12, an active status and two
 wrapped composer rows left a paged title; paging reached the final
 `reached.` text. A width-only resize to 80×12 immediately showed the complete
@@ -405,8 +407,15 @@ The [passive card](tui-agent-workspace/queue-inline-wide.png),
 [inspector](tui-agent-workspace/queue-inline-inspector.png),
 [editor](tui-agent-workspace/queue-inline-editor.png), and
 [compact view](tui-agent-workspace/queue-inline-40.png) have adjacent ANSI
-recordings. Each capture was inspected during native verification. The closing
-full-repository gate remains pending.
+recordings. Each capture was inspected during native verification.
+
+The closing `make check` passed with exit zero at documentation head
+`a4107579`, validating source commits `6c796795` and `0003f32f`. It passed
+2,041 client tests, 702 TUI tests, 306 code-mode tests, 83 conformance tests,
+and 139 lint tests, plus every other package, release-update checks, and Go
+checks. House lint reported zero errors and 841 warnings. The four earlier
+process/bootstrap failures passed outside the sandbox. `make doc-check`
+separately passed with zero errors and 152 warnings.
 
 The approval review comment about the hidden action digest was assessed against
 the capture-to-decision path. Readable mode presents the action preview and
@@ -420,14 +429,16 @@ not remove.
 
 Hosted CI for the completed six-phase head `ff4c5fa3` passed every job except
 the Linux client job. Its retry repeated an MCP timing failure. The test-only
-repair in `0003f32f` changes the shared shutdown budget from 100 ms to 500 ms and checks an aggregate bound of
-3,000 ms. That bound accommodates the existing 1,000 ms collector margin and
-scheduler delay while rejecting eight sequential 500 ms waits. Six correct
+repair in `0003f32f` changes the shared shutdown budget from 100 ms to 500 ms
+and checks an aggregate bound of 3,000 ms. That bound accommodates the
+existing 1,000 ms collector margin and scheduler delay while rejecting eight sequential 500 ms waits. Six correct
 runs passed at about 532 ms; an actual serial mutation took 4,010 ms and failed
 the assertion.
 
 Independent source review confirmed that production deadlines are unchanged.
-`make doc-check` passed with zero errors and 153 warnings. Hosted validation of the repair remains pending. The failed hosted result
-predates the inline queue follow-up.
-The prior local full-repository gate at `3ce4d7ce` remains historical evidence,
-and does not establish validation of these follow-up commits.
+The failed hosted result belongs to the earlier `ff4c5fa3` head. The follow-up
+is pushed through `a4107579`; [run 35765586806](https://github.com/Roasbeef/loom/actions/runs/35765586806)
+was still running when this note was written. Consult
+[PR 478 checks](https://github.com/Roasbeef/loom/pull/478/checks) for the current
+hosted result. The earlier local gate at `3ce4d7ce` remains historical;
+the closing local gate above validates these follow-up commits.

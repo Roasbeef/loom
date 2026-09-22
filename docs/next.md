@@ -17,14 +17,22 @@ the incremental compile took 0.5 seconds. Native verification covered passive
 preview, inspection, draft resume, editor cursor, compact paging, and resize
 recovery at 132×42, 80×24, 40×12, and 80×12. The component note links four
 inspected captures with ANSI recordings; the private fixture is stopped.
-The closing full-repository gate remains pending.
+The closing `make check` passed with exit zero at documentation head
+`a4107579`, validating source commits `6c796795` and `0003f32f`. It passed
+2,041 client tests, 702 TUI tests, 306 code-mode tests, 83 conformance tests,
+and 139 lint tests, plus every other package, release-update checks, and Go
+checks. House lint reported zero errors and 841 warnings. Running outside the
+sandbox resolved the four earlier process/bootstrap failures.
 
 Hosted CI on `ff4c5fa3` repeated a Linux MCP timing failure. A test-only repair
 allows the existing collector margin while retaining a bound below eight
 serial shutdown budgets. Six correct runs passed, and a serial mutation failed
 at 4,010 ms. The repair is committed as `0003f32f`; production deadlines are
-unchanged. `make doc-check` passed with zero errors and 153 warnings. Push and
-hosted validation of this follow-up remain pending; PR 478 has not been merged.
+unchanged. `make doc-check` passed with zero errors and 152 warnings. The
+follow-up is pushed through documentation head `a4107579`. Consult
+[PR 478 checks](https://github.com/Roasbeef/loom/pull/478/checks) for the current
+hosted result; [run 35765586806](https://github.com/Roasbeef/loom/actions/runs/35765586806)
+was still running when this note was written. PR 478 has not been merged.
 
 This status supersedes the pending push and CI claims in the historical
 sections below. Their test totals and captures describe the named earlier
@@ -272,7 +280,7 @@ Captures and silent automatic goal reads preserve existing operator feedback.
 
 The full TUI gate passed with 664 tests and exit zero; the rebuild took 6.96
 seconds. House lint reported zero errors and 129 warnings. Documentation checking
-also returned zero errors and 153 warnings. Native QA exercised the current
+also returned zero errors and 152 warnings. Native QA exercised the current
 BEAM build at 100×40, 80×24, and 40×12. It covered the readable and raw approval
 views, scrolling, and Escape's deferral behavior without submitting a decision.
 The [100×40 capture](design-notes/tui-agent-workspace/approval-compact.png) and
