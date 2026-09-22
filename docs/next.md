@@ -1,5 +1,23 @@
 # Next
 
+## Cache usage PR follow-up, September 22
+
+PR #480 merged into `main` at `4759a331`. PR #482 has been rebased onto that
+merge. Its network gateway now sends a bounded `usage_observation` only when
+the usage row links to an entry claimed by one scanned strand. Rows with no
+entry, fallback ownership, or shared branch ownership still send a committed
+notice and remain in authoritative captured totals. This closes the
+nested-summary case where an unowned row could otherwise alter the main
+strand's cache baseline. Protocol change 047 and the client package docs state
+the attribution rule.
+
+The pre-rebase client gate passed 2,044 tests. The post-rebase TUI gate passed
+722 tests, including the rendered cache footer at wide and 40-column widths
+and the transcript-spacing tests merged from #480. `make doc-check` passed
+with zero errors after the citation conflict was resolved. The post-rebase
+full gate, hosted CI, and Linux signoff are the remaining validation steps;
+their results must be read from the final pushed head before merging #482.
+
 ## Inline queue follow-up, September 22
 
 Commit `6c796795` adds a composer-adjacent queue card on top of the pushed
