@@ -10204,13 +10204,16 @@ fn captured_approval_panel(model: Model, review: approval.Review) {
       Ok(json.String(operation)) -> Ok(operation)
       _ -> Error(Nil)
     })
-    Ok("Requested by " <> owner <> " · operation " <> operation)
+    Ok(#(owner, operation))
   }
   approval_panel.new(review)
-  |> approval_panel.with_context(result.unwrap(
-    context,
-    "Request owner unavailable in this capture",
-  ))
+  |> approval_panel.with_context(case context {
+    Ok(#(owner, operation)) -> approval_panel.CapturedRequest(owner, operation)
+    Error(_) ->
+      approval_panel.RequestContextUnavailable(
+        "Request owner unavailable in this capture",
+      )
+  })
 }
 
 // Inspection opens the existing exact-request panel. It never chooses or sends

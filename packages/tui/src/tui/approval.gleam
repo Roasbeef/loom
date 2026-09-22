@@ -333,22 +333,7 @@ pub fn details(record: Review) -> Result(String, String) {
       "Incomplete detail: exact approval exceeds the 16KiB display bound; approve is disabled, deny remains available",
     ),
   )
-  let literal =
-    encoded
-    |> string.to_utf_codepoints
-    |> list.map(fn(point) {
-      let code = string.utf_codepoint_to_int(point)
-      case code {
-        code if code < 0x7F -> string.from_utf_codepoints([point])
-        code if code <= 0xFFFF -> escaped_unit(code)
-        code -> {
-          let adjusted = code - 0x10000
-          escaped_unit(0xD800 + adjusted / 1024)
-          <> escaped_unit(0xDC00 + adjusted % 1024)
-        }
-      }
-    })
-    |> string.concat
+  let literal = escaped_json(encoded)
   use <- bool.guard(
     string.byte_size(literal) > detail_limit,
     Error(
@@ -356,6 +341,165 @@ pub fn details(record: Review) -> Result(String, String) {
     ),
   )
   Ok(literal)
+}
+
+fn escaped_json(encoded: String) -> String {
+  encoded
+  |> string.to_utf_codepoints
+  |> list.map(fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+    case code {
+      code if code < 0x7F -> string.from_utf_codepoints([point])
+      code if code <= 0xFFFF -> escaped_unit(code)
+      code -> {
+        let adjusted = code - 0x10000
+        escaped_unit(0xD800 + adjusted / 1024)
+        <> escaped_unit(0xDC00 + adjusted % 1024)
+      }
+    }
+  })
+  |> string.concat
+}
+
+/// Presents the complete captured request as readable, literal text.
+///
+/// Every authority value remains JSON encoded so terminal controls and bidi
+/// characters stay visible. Unknown grant shapes fall back to their complete
+/// literal encoding rather than a summary that could omit authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.readable_details(captured_request)
+/// ```
+pub fn readable_details(record: Review) -> Result(String, String) {
+  use _ <- result.try(details(record))
+  use #(_, grants) <- result.try(case record.permission {
+    Exact(action, grants) -> Ok(#(action, grants))
+    Unavailable(reason) -> Error(reason)
+  })
+  let tool = case record.tool {
+    "" -> "Unavailable"
+    tool -> literal_text(tool)
+  }
+  let preview = case record.preview {
+    "" -> "No action preview was captured."
+    preview -> readable_preview(record.tool, preview)
+  }
+  let authority = case grants {
+    [] -> ["- No additional grants requested."]
+    grants -> list.map(grants, readable_grant)
+  }
+  Ok(
+    [
+      "Requested authority:",
+      ..list.append(authority, ["Tool: " <> tool, "Action: " <> preview])
+    ]
+    |> string.join("\n"),
+  )
+}
+
+fn readable_preview(tool: String, preview: String) -> String {
+  let projected = {
+    use value <- result.try(
+      json.parse(preview) |> result.replace_error("invalid preview JSON"),
+    )
+    use fields <- result.try(object(value))
+    case tool {
+      "fs_read" -> {
+        use _ <- result.try(only_keys(fields, ["path", "offset", "limit"]))
+        use path <- result.try(text(fields, "path"))
+        use _ <- result.try(optional_integer(fields, "offset"))
+        use _ <- result.try(optional_integer(fields, "limit"))
+        Ok(
+          "Read "
+          <> literal_text(path)
+          <> integer_suffix(fields, "offset", " from line ")
+          <> integer_suffix(fields, "limit", " for at most ")
+          <> case list.key_find(fields, "limit") {
+            Ok(json.Int(_)) -> " lines"
+            _ -> ""
+          },
+        )
+      }
+      "bash" | "shell" -> {
+        use _ <- result.try(only_keys(fields, ["command", "timeout_ms"]))
+        use command <- result.try(text(fields, "command"))
+        use _ <- result.try(optional_integer(fields, "timeout_ms"))
+        Ok(
+          "Run "
+          <> literal_text(command)
+          <> integer_suffix(fields, "timeout_ms", " · timeout ")
+          <> case list.key_find(fields, "timeout_ms") {
+            Ok(json.Int(_)) -> " ms"
+            _ -> ""
+          },
+        )
+      }
+      _ -> Error("no readable preview")
+    }
+  }
+  result.lazy_unwrap(projected, fn() { literal_text(preview) })
+}
+
+fn only_keys(fields, allowed: List(String)) -> Result(Nil, String) {
+  case
+    list.all(fields, fn(field) {
+      let #(key, _) = field
+      list.contains(allowed, key)
+    })
+  {
+    True -> Ok(Nil)
+    False -> Error("preview has unrepresented arguments")
+  }
+}
+
+fn optional_integer(fields, key: String) -> Result(Nil, String) {
+  case list.key_find(fields, key) {
+    Error(_) | Ok(json.Int(_)) -> Ok(Nil)
+    Ok(_) -> Error("preview has an invalid integer")
+  }
+}
+
+fn integer_suffix(fields, key: String, prefix: String) -> String {
+  case list.key_find(fields, key) {
+    Ok(json.Int(value)) -> prefix <> int.to_string(value)
+    _ -> ""
+  }
+}
+
+fn readable_grant(value: json.JsonValue) -> String {
+  let exact = value |> json.to_string |> escaped_json
+  let readable = {
+    use fields <- result.try(object(value))
+    use kind <- result.try(text(fields, "type"))
+    case kind {
+      "readable_root" -> {
+        use path <- result.try(text(fields, "path"))
+        Ok("Read files under: " <> literal_text(path))
+      }
+      "writable_root" -> {
+        use path <- result.try(text(fields, "path"))
+        Ok("Write files under: " <> literal_text(path))
+      }
+      "env" -> {
+        use name <- result.try(text(fields, "name"))
+        Ok("Read environment variable: " <> literal_text(name))
+      }
+      "network" -> {
+        use network <- result.try(field(fields, "network"))
+        Ok("Network access: " <> { network |> json.to_string |> escaped_json })
+      }
+      "limit" -> Ok("Resource limit: " <> exact)
+      "scratch" -> Ok("Scratch storage: " <> exact)
+      _ -> Error("unknown grant")
+    }
+  }
+  "- " <> result.lazy_unwrap(readable, fn() { "Exact grant: " <> exact })
+}
+
+fn literal_text(text: String) -> String {
+  text |> json.String |> json.to_string |> escaped_json
 }
 
 fn escaped_unit(code) {
