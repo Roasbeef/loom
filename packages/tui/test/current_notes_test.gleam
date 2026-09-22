@@ -14,6 +14,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/note_panel
 import tui/notes_view
 import tui/protocol
 import tui/session_channel
@@ -61,6 +62,32 @@ fn delivered(model, raw) {
     as "notes travel through the version-two auxiliary decoder"
   tui.apply_channel_update(model, session_channel.Auxiliary(event))
   |> fn(updated) { tui.update(backend.Resize(120, 30), updated) }
+}
+
+fn board_rows(
+  strand: String,
+  revision: Int,
+  total: Int,
+  rows: List(#(String, Int, String, String)),
+) {
+  json.Object([
+    #("strand", json.String(strand)),
+    #("as_of", json.Int(revision)),
+    #("total", json.Int(total)),
+    #(
+      "notes",
+      json.Array(
+        list.map(rows, fn(row) {
+          json.Object([
+            #("key", json.String(row.0)),
+            #("seq", json.Int(row.1)),
+            #("text", json.String(row.2)),
+            #("extent", json.String(row.3)),
+          ])
+        }),
+      ),
+    ),
+  ])
 }
 
 fn text(model) {
@@ -129,7 +156,68 @@ pub fn structured_notes_render_paragraphs_and_keep_raw_inspection_test() {
   assert string.contains(text(expanded), "\\n\\n")
     as "raw JSON remains available without replacing the stored note"
   assert expanded.note_board == shown.note_board
+  assert expanded.details_expanded == shown.details_expanded
+  assert expanded.note_mode == note_panel.Raw
   assert notes_view.readable("{incomplete") == "{incomplete"
+}
+
+pub fn stable_key_refresh_reorder_and_foreign_owner_preserve_state_test() {
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let initial =
+    delivered(
+      tui.Model(..base, notes_open: True),
+      board_rows("main", 20, 2, [
+        #("plan", 20, "first", "complete"),
+        #("next", 19, "second", "complete"),
+      ]),
+    )
+    |> fn(model) { tui.Model(..model, scroll_offset: 7) }
+  let selected =
+    tui.update(backend.KeyPress("]"), initial)
+    |> fn(model) { tui.Model(..model, note_scroll: 3) }
+  assert selected.note_selected == Some("next")
+  assert selected.scroll_offset == 7
+
+  let reordered =
+    delivered(
+      selected,
+      board_rows("main", 30, 2, [
+        #("next", 29, "updated second", "complete"),
+        #("plan", 30, "updated first", "complete"),
+      ]),
+    )
+  assert reordered.note_selected == Some("next")
+  assert reordered.note_scroll == 1
+    as "a shorter same-key refresh clamps the retained body offset"
+  assert reordered.scroll_offset == 7
+
+  let foreign =
+    delivered(
+      reordered,
+      board_rows("worker", 31, 1, [
+        #("next", 31, "foreign", "complete"),
+      ]),
+    )
+  assert foreign.note_board == reordered.note_board
+  assert foreign.note_selected == reordered.note_selected
+  assert foreign.note_scroll == reordered.note_scroll
+}
+
+pub fn note_body_remains_visible_at_supported_native_geometry_test() {
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let shown =
+    delivered(
+      tui.Model(..base, notes_open: True),
+      board(20, "visible-note-body", "complete"),
+    )
+  list.each([#(132, 42), #(80, 24), #(40, 12)], fn(size) {
+    let resized = tui.update(backend.Resize(size.0, size.1), shown)
+    let #(buffer, _) =
+      tui.view(resized, geometry.rect_new(0, 0, size.0, size.1))
+    assert string.contains(frame.buffer_to_text(buffer), "visible-note-body")
+  })
 }
 
 // A stale read and a note written before this turn are different facts. Only

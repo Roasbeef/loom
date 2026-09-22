@@ -74,6 +74,7 @@ import tui/internal/ffi_terminal
 import tui/live_jobs
 import tui/markdown
 import tui/model_selector
+import tui/note_panel
 import tui/notes_view
 import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
@@ -684,6 +685,10 @@ pub type Model {
     note_board: Option(notes_view.Board),
     /// Stable cell key within the inspected notes board.
     note_selected: Option(String),
+    /// Selected note representation, independent of transcript detail mode.
+    note_mode: note_panel.Mode,
+    /// Selected note body offset, independent of transcript reading position.
+    note_scroll: Int,
     /// Latest explicit notes target waiting for the existing command lane.
     notes_requested: Option(String),
     overlay: Overlay,
@@ -1162,6 +1167,8 @@ pub fn new_model_with_clock(
     diff_worktree_source: #(None, 0),
     note_board: None,
     note_selected: None,
+    note_mode: note_panel.Readable,
+    note_scroll: 0,
     notes_requested: None,
     overlay: NoOverlay,
     models: demo_models(),
@@ -3161,9 +3168,15 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  case main_shows_diff(model) {
-    True -> render_diff_view(buf, area, model)
-    False ->
+  case model.notes_open, main_shows_diff(model) {
+    True, _ ->
+      paragraph.render_styled(
+        buffer.clear(buf, area),
+        area,
+        notes_content(model, area, model.active_strand).lines,
+      )
+    False, True -> render_diff_view(buf, area, model)
+    False, False ->
       render_rows(
         buf,
         area,
@@ -3541,9 +3554,7 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
         agent_message_content(model, selected, message, scroll, area).lines
       })
     agents.Notes ->
-      Some(fn(area: Rect) {
-        notes_content(model, area.size.width, selected).lines
-      })
+      Some(fn(area: Rect) { notes_content(model, area, selected).lines })
   }
 }
 
@@ -3559,11 +3570,152 @@ fn agent_message_content(
   |> agent_message_panel.render(message, scroll, area)
 }
 
-fn notes_content(model: Model, width: Int, target: String) -> span.Text {
+fn notes_content(model: Model, area: Rect, target: String) -> span.Text {
+  let rows = prepared_notes(model, target, area)
+  let context = note_context(model, target)
+  note_panel.render(rows, model.note_selected, model.note_scroll, context, area)
+}
+
+fn prepared_notes(
+  model: Model,
+  target: String,
+  area: Rect,
+) -> List(note_panel.Row) {
+  let width = note_panel.body_width(area)
   case model.note_board {
-    None -> historical_notes_content(model, width, target)
-    Some(board) -> current_notes_content(board, model, width, target)
+    Some(board) if board.strand == target -> {
+      let chosen = selected_note(model, board)
+      list.map(board.notes, fn(note) {
+        let extent = case note.extent {
+          notes_view.Complete -> "Complete"
+          notes_view.Excerpt -> "Excerpt"
+        }
+        let body = case chosen == Some(note.key) {
+          False -> []
+          True -> {
+            let value = case model.note_mode, note.extent {
+              note_panel.Raw, notes_view.Complete -> raw_note_line(note.text)
+              note_panel.Readable, notes_view.Complete ->
+                Line(ToolDetail, notes_view.readable(note.text))
+              note_panel.Raw, notes_view.Excerpt
+              | note_panel.Readable, notes_view.Excerpt
+              -> Line(ToolResult, note.text)
+            }
+            transcript_content([value], width).lines
+          }
+        }
+        note_panel.Row(
+          key: note.key,
+          seq: note.seq,
+          excerpt: compact(
+            case note.extent {
+              notes_view.Complete -> notes_view.readable(note.text)
+              notes_view.Excerpt -> note.text
+            },
+            48,
+          ),
+          extent:,
+          relation: note_turn_relation(note.seq, model, target),
+          body:,
+        )
+      })
+    }
+    Some(_) | None -> historical_note_rows(model, target, width)
   }
+}
+
+fn historical_note_rows(model: Model, target: String, width: Int) {
+  case historical_note_payload(model, target) {
+    None -> []
+    Some(payload) -> [
+      note_panel.Row(
+        key: "historical run-start digest",
+        seq: 0,
+        excerpt: compact(notes_view.historical(payload), 48),
+        extent: "Historical",
+        relation: " · not a current read",
+        body: transcript_content(
+          [
+            case model.note_mode {
+              note_panel.Raw ->
+                Line(ToolDetail, "```text\n" <> payload <> "\n```")
+              note_panel.Readable ->
+                Line(ToolDetail, notes_view.historical(payload))
+            },
+          ],
+          width,
+        ).lines,
+      ),
+    ]
+  }
+}
+
+fn note_context(model: Model, target: String) -> List(String) {
+  case model.note_board {
+    Some(board) if board.strand == target -> [
+      "notes for "
+        <> target
+        <> " · read at revision "
+        <> int.to_string(board.as_of),
+      note_read_status(board, model),
+      note_compact_status(board, model),
+    ]
+    Some(_) -> missing_note_context(model, target)
+    None ->
+      case historical_note_payload(model, target) {
+        Some(_) -> ["Historical run-start digest · r fetches current notes"]
+        None ->
+          case model.overlay {
+            AgentInspector(_) -> [
+              "no agent notes are available for " <> target <> " · r refresh",
+            ]
+            NoOverlay
+            | ModelSelector(_)
+            | SessionSelector(_)
+            | DaemonSelector(_)
+            | ApprovalInspector(_) -> ["No observed notes for " <> target]
+          }
+      }
+  }
+}
+
+fn missing_note_context(model: Model, target: String) -> List(String) {
+  case model.overlay {
+    AgentInspector(_) -> [
+      "no agent notes are available for " <> target <> " · r refresh",
+    ]
+    NoOverlay
+    | ModelSelector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> ["No observed notes for " <> target]
+  }
+}
+
+fn note_compact_status(board: notes_view.Board, model: Model) -> String {
+  let freshness = case model.captured {
+    Some(#(cut, _)) if cut.next_seq - 1 > board.as_of -> "stale · "
+    _ -> "current read · "
+  }
+  let omitted = case board.total - list.length(board.notes) {
+    count if count > 0 -> int.to_string(count) <> " more notes omitted · "
+    _ -> ""
+  }
+  freshness <> omitted <> "[/] select · r refresh · Ctrl+g readable/raw"
+}
+
+fn historical_note_payload(model: Model, target: String) -> Option(String) {
+  model.records
+  |> list.find_map(fn(record) {
+    let protocol.EntryRecord(strand:, entry:) = record
+    case strand == target, entry {
+      True, entry.MessageEntry(message: value, ..) ->
+        agent_notes_payload(value) |> option.to_result(Nil)
+      _, _ -> Error(Nil)
+    }
+  })
+  |> result.map(Some)
+  |> result.unwrap(None)
 }
 
 fn note_read_status(board: notes_view.Board, model: Model) -> String {
@@ -3605,105 +3757,6 @@ fn raw_note_line(text: String) -> Line {
   }
 }
 
-fn current_notes_content(
-  board: notes_view.Board,
-  model: Model,
-  width: Int,
-  active_strand: String,
-) -> span.Text {
-  case board.strand == active_strand {
-    False ->
-      transcript_content(
-        [
-          Line(
-            System,
-            "No observed notes for " <> active_strand <> " · r refresh",
-          ),
-        ],
-        width,
-      )
-    True -> {
-      let heading =
-        "notes for "
-        <> board.strand
-        <> " · read at revision "
-        <> int.to_string(board.as_of)
-        <> " · r to refresh"
-      let selected = selected_note(model, board)
-      let index =
-        list.index_map(board.notes, fn(note, position) { #(note.key, position) })
-        |> list.key_find(option.unwrap(selected, ""))
-        |> result.unwrap(0)
-      let #(visible, _) = agents.selection_window(board.notes, index, 5)
-      let navigation = [
-        Line(
-          System,
-          list.map(visible, fn(note) {
-            case Some(note.key) == selected {
-              True -> "▸ " <> note.key
-              False -> "  " <> note.key
-            }
-          })
-            |> string.join("\n"),
-        ),
-      ]
-      let rows =
-        list.filter(board.notes, fn(note) { Some(note.key) == selected })
-        |> list.flat_map(fn(note) {
-          let extent = case note.extent {
-            notes_view.Complete -> ""
-            notes_view.Excerpt -> " · excerpt"
-          }
-          [
-            Line(
-              System,
-              note.key
-                <> " · updated at revision "
-                <> int.to_string(note.seq)
-                <> note_turn_relation(note.seq, model, active_strand)
-                <> extent,
-            ),
-            case model.details_expanded, note.extent {
-              _, notes_view.Excerpt -> Line(ToolResult, note.text)
-              True, notes_view.Complete -> raw_note_line(note.text)
-              False, notes_view.Complete ->
-                Line(ToolDetail, notes_view.readable(note.text))
-            },
-          ]
-        })
-      let rows = case rows {
-        [] -> [Line(System, "No saved notes in this observed board.")]
-        rows -> list.append(navigation, rows)
-      }
-      let omitted = board.total - list.length(board.notes)
-      let tail = case omitted > 0 {
-        True -> [
-          Line(
-            System,
-            int.to_string(omitted) <> " more notes exceed this display budget",
-          ),
-        ]
-        False -> []
-      }
-      transcript_content(
-        [
-          Line(
-            System,
-            heading
-              <> "\n"
-              <> int.to_string(list.length(board.notes))
-              <> " saved notes · [/] select · PgUp/PgDn scroll · Ctrl+g raw"
-              <> "\n"
-              <> note_read_status(board, model),
-          ),
-          ..list.append(rows, tail)
-        ],
-        width,
-      )
-    }
-  }
-}
-
 fn selected_note(model: Model, board: notes_view.Board) -> Option(String) {
   case
     list.find(board.notes, fn(note) { Some(note.key) == model.note_selected })
@@ -3740,56 +3793,10 @@ fn select_note(model: Model, direction: Int) -> Model {
 
       // Note navigation moves only the surface that owns this key. The
       // transcript beneath an inspector retains its independent anchor.
-      let #(overlay, scroll_offset) = case model.overlay {
-        AgentInspector(inspector) -> #(
-          AgentInspector(agents.Inspector(..inspector, scroll: 0)),
-          model.scroll_offset,
-        )
-        other -> #(other, 0)
-      }
-      Model(..model, note_selected: selected, scroll_offset:, overlay:)
+      Model(..model, note_selected: selected, note_scroll: 0)
       |> invalidate_transcript
     }
     _ -> model
-  }
-}
-
-fn historical_notes_content(
-  model: Model,
-  width: Int,
-  target: String,
-) -> span.Text {
-  let latest =
-    model.records
-    |> list.find_map(fn(record) {
-      let protocol.EntryRecord(strand:, entry:) = record
-      case strand == target, entry {
-        True, entry.MessageEntry(message: value, ..) ->
-          agent_notes_payload(value) |> option.to_result(Nil)
-        _, _ -> Error(Nil)
-      }
-    })
-    |> result.map(Some)
-    |> result.unwrap(None)
-  case latest {
-    Some(payload) ->
-      transcript_content(
-        [
-          Line(System, "historical run-start digest · r to fetch current notes"),
-          case model.details_expanded {
-            True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
-            False -> Line(ToolDetail, notes_view.historical(payload))
-          },
-        ],
-        width,
-      )
-    None ->
-      transcript_content(
-        [
-          Line(System, "no agent notes are available for " <> target),
-        ],
-        width,
-      )
   }
 }
 
@@ -5340,14 +5347,33 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
         revealed_rows:,
         rendered_anchors:,
         rendered_gutters:,
-        scroll_offset: bounded_scroll_offset(
-          anchored,
-          rendered_row_count,
-          transcript_viewport_height(after),
-        ),
+        scroll_offset: case notes_surface(after) {
+          True -> after.scroll_offset
+          False ->
+            bounded_scroll_offset(
+              anchored,
+              rendered_row_count,
+              transcript_viewport_height(after),
+            )
+        },
       )
     }
     False -> after
+  }
+}
+
+fn notes_surface(model: Model) -> Bool {
+  case model.notes_open, model.overlay {
+    True, _
+    | False, AgentInspector(agents.Inspector(detail: agents.Notes, ..))
+    -> True
+    False, NoOverlay
+    | False, ModelSelector(_)
+    | False, SessionSelector(_)
+    | False, DaemonSelector(_)
+    | False, AgentInspector(_)
+    | False, ApprovalInspector(_)
+    -> False
   }
 }
 
@@ -5728,9 +5754,8 @@ fn rendered_layout_for(
       #(rows, list.repeat(0, list.length(rows)))
     }
     False, True -> {
-      let rows =
-        notes_content(model, width, model.active_strand).lines |> list.reverse
-      #(rows, list.repeat(0, list.length(rows)))
+      // Notes render against their actual rectangle in `render_transcript`.
+      #([], [])
     }
     False, False -> {
       let lines =
@@ -7087,11 +7112,26 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           }
           let selected =
             selected_note(Model(..model, note_selected: previous), board)
+          let scroll = case model.note_board, selected == model.note_selected {
+            Some(old), True if old.strand == board.strand ->
+              int.min(
+                model.note_scroll,
+                note_max_scroll(
+                  Model(
+                    ..model,
+                    note_board: Some(board),
+                    note_selected: selected,
+                  ),
+                ),
+              )
+            None, True | Some(_), True | None, False | Some(_), False -> 0
+          }
           invalidate_transcript(
             Model(
               ..model,
               note_board: Some(board),
               note_selected: selected,
+              note_scroll: scroll,
               notice: "notes refreshed for " <> board.strand,
             ),
           )
@@ -10056,6 +10096,7 @@ fn update_agent_inspector(
     keys.Char("[") if inspector.detail == agents.Notes -> select_note(model, -1)
     keys.Char("]") if inspector.detail == agents.Notes -> select_note(model, 1)
     keys.Char("r") if inspector.detail == agents.Notes -> refresh_notes(model)
+    keys.Ctrl("g") if inspector.detail == agents.Notes -> toggle_note_mode(model)
     keys.Ctrl("g") -> toggle_details(model)
     keys.Char("n") ->
       Model(
@@ -10065,24 +10106,53 @@ fn update_agent_inspector(
           |> select_inspector_message(model.agent_messages),
         ),
       )
-    keys.PageUp if inspector.detail == agents.Messages ->
+    keys.PageUp if inspector.detail == agents.Messages -> {
+      let maximum = message_max_scroll(model, inspector)
       Model(
         ..model,
         overlay: AgentInspector(
           agents.Inspector(
             ..inspector,
-            scroll: int.max(0, inspector.scroll - message_page_step(model)),
+            scroll: int.max(
+              0,
+              int.min(inspector.scroll, maximum) - message_page_step(model),
+            ),
           ),
         ),
       )
-    keys.PageDown if inspector.detail == agents.Messages ->
+    }
+    keys.PageDown if inspector.detail == agents.Messages -> {
+      let maximum = message_max_scroll(model, inspector)
       Model(
         ..model,
         overlay: AgentInspector(
           agents.Inspector(
             ..inspector,
-            scroll: inspector.scroll + message_page_step(model),
+            scroll: int.min(
+              maximum,
+              int.min(inspector.scroll, maximum) + message_page_step(model),
+            ),
           ),
+        ),
+      )
+    }
+    keys.PageUp if inspector.detail == agents.Notes -> {
+      let maximum = note_max_scroll(model)
+      Model(
+        ..model,
+        note_scroll: int.max(
+          0,
+          int.min(model.note_scroll, maximum) - note_page_step(model),
+        ),
+      )
+    }
+    keys.PageDown if inspector.detail == agents.Notes ->
+      Model(
+        ..model,
+        note_scroll: int.min(
+          note_max_scroll(model),
+          int.min(model.note_scroll, note_max_scroll(model))
+            + note_page_step(model),
         ),
       )
     keys.PageUp ->
@@ -10119,7 +10189,15 @@ fn update_agent_inspector(
   case changed.overlay {
     AgentInspector(next)
       if next.detail == agents.Notes && next.selected != inspector.selected
-    -> refresh_notes(Model(..changed, note_selected: None))
+    ->
+      refresh_notes(
+        Model(
+          ..changed,
+          note_selected: None,
+          note_scroll: 0,
+          note_mode: note_panel.Readable,
+        ),
+      )
     _ -> changed
   }
 }
@@ -10171,6 +10249,45 @@ fn message_page_step(model: Model) -> Int {
   agent_message_panel.page_step(message_detail_area(model))
 }
 
+fn message_max_scroll(model: Model, inspector: agents.Inspector) -> Int {
+  let area = message_detail_area(model)
+  model.agent_messages
+  |> agent_messages.for_strand(inspector.selected)
+  |> agent_message_panel.max_scroll(inspector.message, area)
+}
+
+fn note_page_step(model: Model) -> Int {
+  case model.overlay {
+    AgentInspector(_) -> note_panel.page_step(message_detail_area(model))
+    _ -> note_panel.page_step(note_detail_area(model))
+  }
+}
+
+fn note_max_scroll(model: Model) -> Int {
+  let area = case model.overlay {
+    AgentInspector(_) -> message_detail_area(model)
+    _ -> note_detail_area(model)
+  }
+  prepared_notes(model, notes_target(model), area)
+  |> note_panel.max_scroll(model.note_selected)
+}
+
+fn note_detail_area(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(transcript, _, _) = body_layout(body, model)
+  panel_inner(transcript)
+}
+
+fn toggle_note_mode(model: Model) -> Model {
+  let mode = case model.note_mode {
+    note_panel.Readable -> note_panel.Raw
+    note_panel.Raw -> note_panel.Readable
+  }
+  Model(..model, note_mode: mode, note_scroll: 0)
+  |> invalidate_transcript
+}
+
 /// Returns the message preview's actual rectangle for viewport regressions.
 ///
 /// ## Examples
@@ -10197,9 +10314,21 @@ fn select_agent_detail(
       |> option.map(agent_message_panel.identity)
     agents.Overview | agents.Notes -> inspector.message
   }
+  let owner_changed = case model.note_board {
+    Some(board) -> board.strand != inspector.selected
+    None -> True
+  }
   let selected =
     Model(
       ..model,
+      note_selected: case detail, owner_changed {
+        agents.Notes, True -> None
+        _, _ -> model.note_selected
+      },
+      note_scroll: case detail, owner_changed {
+        agents.Notes, True -> 0
+        _, _ -> model.note_scroll
+      },
       overlay: AgentInspector(
         agents.Inspector(..inspector, detail:, scroll: 0, message:),
       ),
@@ -10458,7 +10587,27 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.Char("r"), False, True -> refresh_notes(model)
     keys.Char("["), False, True -> select_note(model, -1)
     keys.Char("]"), False, True -> select_note(model, 1)
+    keys.Ctrl("g"), False, True -> toggle_note_mode(model)
     keys.Ctrl("g"), _, _ -> toggle_details(model)
+    keys.PageUp, False, True -> {
+      let maximum = note_max_scroll(model)
+      Model(
+        ..model,
+        note_scroll: int.max(
+          0,
+          int.min(model.note_scroll, maximum) - note_page_step(model),
+        ),
+      )
+    }
+    keys.PageDown, False, True ->
+      Model(
+        ..model,
+        note_scroll: int.min(
+          note_max_scroll(model),
+          int.min(model.note_scroll, note_max_scroll(model))
+            + note_page_step(model),
+        ),
+      )
     keys.PageUp, _, _ -> scroll_reading_panel(model, Older, 10)
     keys.PageDown, _, _ -> scroll_reading_panel(model, Newer, 10)
     keys.Escape, True, _ ->
@@ -10475,6 +10624,8 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
         notes_open: False,
         note_board: None,
         note_selected: None,
+        note_mode: note_panel.Readable,
+        note_scroll: 0,
         notes_requested: None,
         scroll_offset: 0,
         repaint_phase: !model.repaint_phase,
@@ -11373,6 +11524,8 @@ fn submit_text(model: Model) -> Model {
             focus: worktree_view.Composer,
           ),
           notes_open: True,
+          note_mode: note_panel.Readable,
+          note_scroll: 0,
           scroll_offset: 0,
           repaint_phase: !cleared.repaint_phase,
           notice: "agent notes",

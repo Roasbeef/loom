@@ -337,7 +337,8 @@ fn render_compact_inspection(
           Browsing ->
             case inspector.detail {
               Messages -> "[/] message · o sender · Pg body · Esc close"
-              Overview | Notes -> "↑↓ inspect · 1/2/3 view · Esc close"
+              Notes -> "[/] note · ^g raw · Pg body · Esc close"
+              Overview -> "↑↓ inspect · 1/2/3 view · Esc close"
             }
           Composing -> "Editing composer · Esc inspects"
         },

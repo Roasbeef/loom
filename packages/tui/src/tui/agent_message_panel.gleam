@@ -135,6 +135,37 @@ pub fn page_step(area: Rect) -> Int {
   }
 }
 
+/// Returns the greatest preview offset which still displays message content.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_message_panel.max_scroll(messages, selected, area)
+/// ```
+@internal
+pub fn max_scroll(
+  messages: List(agent_messages.Item),
+  wanted: Option(String),
+  area: Rect,
+) -> Int {
+  case selected(messages, wanted) {
+    Some(item) -> {
+      let width = case area.size.width >= 72 && area.size.height >= 8 {
+        True -> area.size.width - int.min(38, { area.size.width * 2 } / 5) - 2
+        False -> area.size.width - 1
+      }
+      item.body
+      |> text_hygiene.multiline
+      |> string.split("\n")
+      |> list.flat_map(fn(line) { text.wrap(line, int.max(1, width)) })
+      |> list.length
+      |> int.add(-1)
+      |> int.max(0)
+    }
+    None -> 0
+  }
+}
+
 fn empty(width: Int) -> List(span.Line) {
   [
     styled("MESSAGES", width, theme.overlay_current()),
