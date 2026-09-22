@@ -37,6 +37,7 @@ type PanelPair {
 pub fn main() {
   case argv.load().arguments {
     ["agents", palette] -> tui_agents_dev.run(palette)
+    ["agents-context", palette] -> tui_agents_dev.run_context(palette)
     ["history", path] -> tui_history_dev.run(path)
     ["replay", path, count] -> {
       let assert Ok(expected) = int.parse(count)

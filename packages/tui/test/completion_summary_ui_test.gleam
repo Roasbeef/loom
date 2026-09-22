@@ -17,6 +17,8 @@ import tui/frame
 import tui/live_jobs
 import tui/protocol
 import tui/queue_editor
+import tui/session_channel
+import tui/summary_panel
 import tui/workspace
 
 fn model() {
@@ -33,6 +35,10 @@ fn painted(model) {
   frame.buffer_to_text(buffer)
 }
 
+fn key(model, value) {
+  tui.update(backend.KeyPress(value), model)
+}
+
 pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test() {
   let initial = model()
   let opened = tui.open_summary(initial)
@@ -44,9 +50,12 @@ pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test
     text,
     "No completed operation captured for this strand",
   )
-  assert string.contains(text, "Queued input count unavailable")
-  assert string.contains(text, "Live jobs unavailable")
-  assert !string.contains(text, "Live jobs: 0")
+  assert string.contains(text, "1 Completion")
+  let usage = opened |> key("2") |> painted
+  assert string.contains(usage, "Queued input count unavailable")
+  let jobs = opened |> key("3") |> painted
+  assert string.contains(jobs, "Live jobs unavailable")
+  assert !string.contains(jobs, "Observed roster: 0")
   let closed = tui.update(backend.KeyPress("esc"), opened)
   assert closed.summary_surface == queue_editor.Closed
   assert closed.input == initial.input
@@ -73,16 +82,14 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
       0,
     )
   let initial = tui.Model(..model(), jobs: Some(board))
-  let opened = tui.open_summary(initial)
+  let opened = tui.open_summary(initial) |> key("3")
   let text = painted(opened)
-  assert string.contains(
-    text,
-    "No completed operation captured for this strand",
-  )
-  assert string.contains(text, "Live jobs: 1 · at last refresh")
-  assert string.contains(text, "job-7 · running · started by earlier-operation")
-  assert string.contains(text, "sleep 30")
-  assert string.contains(text, "age 2s · deadline in 28s")
+  assert string.contains(text, "3 Jobs")
+  assert string.contains(text, "Observed roster: 1 total · 0 omitted")
+  assert string.contains(text, "▸ [RUNNING] job-7")
+  assert string.contains(text, "Started by earlier-operation")
+  assert string.contains(text, "Command excerpt: sleep 30")
+  assert string.contains(text, "Age 2s · deadline in 28s")
   assert !string.contains(text, "Completed by assistant")
   assert opened.jobs == Some(board)
   assert opened.input == initial.input
@@ -92,7 +99,15 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
   // work for the newly selected strand.
   let other = tui.Model(..opened, active_strand: "other")
   assert !string.contains(painted(other), "job-7")
-  assert string.contains(painted(other), "Live jobs unavailable")
+  assert string.contains(
+    painted(
+      tui.Model(
+        ..other,
+        jobs_notice: "Live jobs observed separately from completion",
+      ),
+    ),
+    "Live jobs unavailable for the current strand",
+  )
 }
 
 // Current request input includes cached input once. Reasoning is already a
@@ -140,10 +155,41 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
       records: [protocol.EntryRecord("main", measured)],
       usage: cumulative,
     )
-  let text = painted(tui.open_summary(updated))
-  assert string.contains(text, "uncached input 9k")
-  assert string.contains(text, "cache read 20k")
+  let text = painted(tui.open_summary(updated) |> key("2"))
+  assert string.contains(text, "Input 9000")
+  assert string.contains(text, "cache read 20000")
   assert string.contains(text, "610 input tokens (including cache)")
   assert string.contains(text, "output 70 (includes 20 reasoning)")
   assert !string.contains(text, "output 90")
+}
+
+pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
+  let first = live_jobs.Job("a", "running", "op-a", "first", 1, 100)
+  let second = live_jobs.Job("b", "draining", "op-b", "second", 2, 90)
+  let board = live_jobs.Board("main", 50, [first, second], 3, 1)
+  let opened =
+    tui.Model(..model(), jobs: Some(board))
+    |> tui.open_summary
+    |> fn(model) {
+      tui.Model(
+        ..model,
+        jobs_notice: "Refreshing live jobs; previous observation may be stale",
+      )
+    }
+    |> key("3")
+    |> key("]")
+  assert opened.summary_tab == summary_panel.Jobs
+  assert opened.summary_job_selected == 1
+  let stale = painted(opened)
+  assert string.contains(stale, "previous observation may be stale")
+  assert string.contains(stale, "1 omitted")
+
+  let reordered = live_jobs.Board("main", 60, [second, first], 2, 0)
+  let refreshed =
+    tui.apply_channel_update(
+      tui.Model(..opened, jobs_awaiting: Some(#("", "main"))),
+      session_channel.Auxiliary(protocol.LiveJobsSnapshot(reordered)),
+    )
+  assert refreshed.summary_job_selected == 0
+  assert string.contains(painted(refreshed), "▸ [DRAINING] b")
 }

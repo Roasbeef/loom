@@ -26,8 +26,10 @@ import tui/advisor_pending
 import tui/agents
 import tui/appearance
 import tui/connection
+import tui/context_view
 import tui/goal_view
 import tui/internal/ffi_terminal
+import tui/live_jobs
 import tui/notes_view
 import tui/protocol
 import tui/queue_editor
@@ -60,6 +62,39 @@ type Agent {
 /// ```
 pub fn run(palette: String) -> Nil {
   ffi_terminal.silence_logger()
+  run_model(fixture_model(palette))
+}
+
+/// Opens the illustrative context observation without requesting a daemon.
+///
+/// This entry point exists only for native presentation review. The board is
+/// fixture evidence, not a provider observation, and production `/context`
+/// continues to require the live read lifecycle.
+///
+/// ## Examples
+///
+/// ```sh
+/// gleam dev agents-context plain
+/// ```
+pub fn run_context(palette: String) -> Nil {
+  ffi_terminal.silence_logger()
+  let initial = fixture_model(palette)
+  run_model(
+    tui.Model(
+      ..initial,
+      overlay: tui.NoOverlay,
+      peer: tui.Replaying,
+      context: context_view.State(
+        ..initial.context,
+        surface: context_view.Overview,
+        request: context_view.Idle,
+        notice: "Illustrative captured observation · no provider calls",
+      ),
+    ),
+  )
+}
+
+fn fixture_model(palette: String) -> tui.Model {
   let base =
     tui.new_model(
       connection.new_inbox(),
@@ -169,6 +204,10 @@ pub fn run(palette: String) -> Nil {
       note_board: Some(fixture_notes()),
       note_selected: Some("plan"),
       goal: Some(fixture_goal()),
+      context: fixture_context(),
+      jobs: Some(fixture_jobs()),
+      jobs_observed_ms: Some(initial.last_frame_ms),
+      jobs_notice: "Illustrative live-job observation · no provider calls",
       queue_editor: fixture_queue_editor(),
       nudges: Some(advisor_pending.Board(
         "main",
@@ -179,6 +218,10 @@ pub fn run(palette: String) -> Nil {
         1,
       )),
     )
+  initial
+}
+
+fn run_model(initial: tui.Model) -> Nil {
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
@@ -189,6 +232,66 @@ pub fn run(palette: String) -> Nil {
       tui.terminal_poll_timeout,
     )
   Nil
+}
+
+fn fixture_context() -> context_view.State {
+  context_view.State(
+    "native-fixture:fixture:fixture:review",
+    "main",
+    context_view.Hidden,
+    Some(context_view.Board(
+      51,
+      "main",
+      42,
+      "fixture-model",
+      128_000,
+      51_200,
+      "reported_plus_estimate",
+      49_500,
+      Some(96_000),
+      16_000,
+      [
+        context_view.Item("System prompt", "System prompt", 12_400),
+        context_view.Item("Messages", "Messages", 31_800),
+        context_view.Item("Tools", "Tools", 7000),
+      ],
+      [
+        context_view.Item("message", "Native fixture summary", 1200),
+        context_view.Item("tool", "worktree observation", 640),
+      ],
+      3,
+    )),
+    context_view.Requested,
+    "Illustrative observation; refresh pending without a provider",
+    0,
+  )
+}
+
+fn fixture_jobs() -> live_jobs.Board {
+  live_jobs.Board(
+    "main",
+    1_120_000,
+    [
+      live_jobs.Job(
+        "job-native-layout",
+        "running",
+        "fixture-operation-a",
+        "gleam run -m tui_agents_dev -- agents plain --verify-all-terminal-widths-and-capture-the-final-native-summary",
+        62_000,
+        1_300_000,
+      ),
+      live_jobs.Job(
+        "job-review",
+        "draining",
+        "fixture-operation-b",
+        "review illustrative context and summary panels",
+        125_000,
+        1_110_000,
+      ),
+    ],
+    3,
+    1,
+  )
 }
 
 fn fixture_queue() -> List(json.JsonValue) {

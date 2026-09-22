@@ -60,6 +60,7 @@ import tui/command
 import tui/completion_summary
 import tui/composer
 import tui/connection
+import tui/context_panel
 import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
@@ -91,6 +92,7 @@ import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
+import tui/summary_panel
 import tui/text_hygiene
 import tui/theme
 import tui/tool_activity
@@ -631,6 +633,10 @@ pub type Model {
     summary_surface: queue_editor.Surface,
     /// Independent detailed-summary scroll offset.
     summary_scroll: Int,
+    /// Focused evidence section in the completion summary.
+    summary_tab: summary_panel.Tab,
+    /// Stable-index projection of the selected current job.
+    summary_job_selected: Int,
     /// Current job observation is separate from the result timestamp.
     jobs: Option(live_jobs.Board),
     /// Local receipt time; server and terminal clocks are never subtracted.
@@ -1146,6 +1152,8 @@ pub fn new_model_with_clock(
     completion_owner: "",
     summary_surface: queue_editor.Closed,
     summary_scroll: 0,
+    summary_tab: summary_panel.Completion,
+    summary_job_selected: 0,
     jobs: None,
     jobs_observed_ms: None,
     jobs_refresh: worktree_view.Settled,
@@ -13703,6 +13711,8 @@ pub fn open_summary(model: Model) -> Model {
       ..model,
       summary_surface: queue_editor.Inspector,
       summary_scroll: 0,
+      summary_tab: summary_panel.Completion,
+      summary_job_selected: 0,
       jobs_refresh: worktree_view.Requested,
     ),
   )
@@ -14185,16 +14195,33 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
       case owner == queue_owner(model) {
-        True ->
+        True -> {
+          let old = case model.jobs {
+            Some(previous) if previous.strand == board.strand ->
+              previous.jobs
+              |> list.drop(model.summary_job_selected)
+              |> list.first
+            Some(_) | None -> Error(Nil)
+          }
+          let selected = case old {
+            Ok(job) ->
+              board.jobs
+              |> list.index_map(fn(item, index) { #(item.id, index) })
+              |> list.key_find(job.id)
+              |> result.unwrap(0)
+            Error(Nil) -> 0
+          }
           Model(
             ..model,
             jobs: Some(board),
+            summary_job_selected: selected,
             jobs_observed_ms: Some(model.monotonic_time_ms()),
             jobs_awaiting: None,
             jobs_request: None,
             jobs_notice: "Live jobs observed separately from operation completion",
           )
           |> invalidate_transcript
+        }
         False -> model
       }
     Some(_) | None -> model
@@ -14218,56 +14245,38 @@ fn queue_count_line(model: Model) -> String {
   }
 }
 
-fn jobs_brief(model: Model) -> String {
-  case model.jobs {
-    Some(board) if board.strand == model.active_strand ->
-      "Live jobs: "
-      <> int.to_string(board.total)
-      <> case model.jobs_observed_ms {
-        Some(observed) ->
-          " · refreshed "
-          <> live_jobs.duration(model.last_frame_ms - observed)
-          <> " ago"
-        None -> " · at last refresh"
-      }
-    Some(_) -> "Live jobs unavailable for this strand; /summary refreshes"
-    None -> model.jobs_notice
+fn summary_lines(model: Model, width: Int) -> List(span.Line) {
+  let #(jobs, jobs_notice) = case model.jobs {
+    Some(board) if board.strand == model.active_strand -> #(
+      Some(board),
+      model.jobs_notice,
+    )
+    Some(_) -> #(None, "Live jobs unavailable for the current strand")
+    None -> #(None, model.jobs_notice)
   }
+  summary_panel.lines(
+    model.summary_tab,
+    completion_summary.latest(model.completion, model.active_strand),
+    model.usage,
+    context_usage_line(model),
+    queue_count_line(model),
+    jobs,
+    jobs_notice,
+    jobs_observation_line(model),
+    model.summary_job_selected,
+    width,
+  )
 }
 
-fn summary_lines(model: Model) -> List(String) {
-  let completed = case
-    completion_summary.latest(model.completion, model.active_strand)
-  {
-    None -> ["No completed operation captured for this strand"]
-    Some(summary) -> completion_summary.lines(summary)
+fn jobs_observation_line(model: Model) -> String {
+  case model.jobs_observed_ms {
+    Some(observed) ->
+      "Job ages and deadlines are at last refresh · observation received "
+      <> live_jobs.duration(int.max(0, model.last_frame_ms - observed))
+      <> " ago"
+    None ->
+      "Job ages and deadlines are at last refresh · receipt age unavailable"
   }
-  let jobs = case model.jobs {
-    Some(board) if board.strand == model.active_strand -> [
-      jobs_brief(model),
-      ..list.drop(live_jobs.lines(board), 1)
-    ]
-    Some(_) -> ["Live jobs unavailable for this strand; r refreshes"]
-    None -> [model.jobs_notice]
-  }
-  list.append(completed, [
-    "",
-    usage_summary(model.usage),
-    "Cumulative tokens: uncached input "
-      <> tokens(model.usage.input)
-      <> " · cache read "
-      <> tokens(model.usage.cache_read)
-      <> " · cache write "
-      <> tokens(model.usage.cache_write)
-      <> " · output "
-      <> tokens(model.usage.output)
-      <> " (includes reasoning)",
-    context_usage_line(model),
-    "",
-    queue_count_line(model),
-    "",
-    ..jobs
-  ])
 }
 
 // Context belongs to one measured provider request. Session usage accumulates
@@ -14303,18 +14312,54 @@ fn context_usage_line(model: Model) -> String {
 }
 
 fn update_summary_key(key: keys.Key, model: Model) -> Model {
+  let screen = model_screen(model)
+  let body = summary_body_area(screen)
+  let viewport = body.size.height
+  let maximum =
+    int.max(0, list.length(summary_lines(model, body.size.width)) - viewport)
+  let current = int.min(model.summary_scroll, maximum)
   case key {
     keys.Ctrl("c") -> quit(model)
     keys.Escape -> Model(..model, summary_surface: queue_editor.Closed)
     keys.Char("r") ->
-      service_jobs_read(Model(..model, jobs_refresh: worktree_view.Requested))
-    keys.Up ->
-      Model(..model, summary_scroll: int.max(0, model.summary_scroll - 1))
-    keys.Down -> Model(..model, summary_scroll: model.summary_scroll + 1)
+      service_jobs_read(
+        Model(..model, jobs_refresh: worktree_view.Requested, summary_scroll: 0),
+      )
+    keys.Char("1") ->
+      Model(..model, summary_tab: summary_panel.Completion, summary_scroll: 0)
+    keys.Char("2") ->
+      Model(..model, summary_tab: summary_panel.Usage, summary_scroll: 0)
+    keys.Char("3") ->
+      Model(..model, summary_tab: summary_panel.Jobs, summary_scroll: 0)
+    keys.Char("[") -> select_summary_job(model, -1)
+    keys.Char("]") -> select_summary_job(model, 1)
+    keys.Up -> Model(..model, summary_scroll: int.max(0, current - 1))
+    keys.Down -> Model(..model, summary_scroll: int.min(maximum, current + 1))
     keys.PageUp ->
-      Model(..model, summary_scroll: int.max(0, model.summary_scroll - 10))
-    keys.PageDown -> Model(..model, summary_scroll: model.summary_scroll + 10)
+      Model(..model, summary_scroll: int.max(0, current - viewport))
+    keys.PageDown ->
+      Model(..model, summary_scroll: int.min(maximum, current + viewport))
     _ -> model
+  }
+}
+
+fn select_summary_job(model: Model, delta: Int) -> Model {
+  case model.summary_tab, model.jobs {
+    summary_panel.Jobs, Some(board) if board.strand == model.active_strand ->
+      Model(
+        ..model,
+        summary_job_selected: int.clamp(
+          model.summary_job_selected + delta,
+          0,
+          int.max(0, list.length(board.jobs) - 1),
+        ),
+        summary_scroll: 0,
+      )
+    summary_panel.Completion, _
+    | summary_panel.Usage, _
+    | summary_panel.Jobs, None
+    | summary_panel.Jobs, Some(_)
+    -> model
   }
 }
 
@@ -14323,28 +14368,48 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
     queue_editor.Closed -> #(buf, cursor)
     queue_editor.Inspector | queue_editor.Editor -> {
       let inner = panel_inner(screen)
-      let lines =
-        summary_lines(model)
-        |> list.flat_map(fn(text) {
-          markdown.render(text_hygiene.multiline(text), inner.size.width)
-        })
-        |> markdown.wrap_lines(inner.size.width)
+      let body = summary_body_area(screen)
+      let lines = summary_lines(model, body.size.width)
       let offset =
         int.min(
           model.summary_scroll,
-          int.max(0, list.length(lines) - inner.size.height),
+          int.max(0, list.length(lines) - body.size.height),
         )
       let rendered =
         buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " latest completion · Esc: back · r: refresh live jobs ",
-          theme.signal,
+        |> render_panel_border(screen, " summary ", theme.signal)
+        |> paragraph.render_styled(
+          geometry.rect_new(
+            inner.position.x,
+            inner.position.y,
+            inner.size.width,
+            int.min(2, inner.size.height),
+          ),
+          [
+            summary_panel.tab_line(model.summary_tab, inner.size.width),
+            span.line_new([
+              span.span_styled(
+                "[] job · PgUp/Dn · r jobs · Esc back",
+                theme.overlay_signal(),
+              ),
+            ]),
+          ],
         )
-        |> paragraph.render_styled(inner, list.drop(lines, offset))
+        |> paragraph.render_styled(body, list.drop(lines, offset))
       #(rendered, Error(Nil))
     }
   }
+}
+
+fn summary_body_area(screen: Rect) -> Rect {
+  let inner = panel_inner(screen)
+  let tabs = int.min(2, inner.size.height)
+  geometry.rect_new(
+    inner.position.x,
+    inner.position.y + tabs,
+    inner.size.width,
+    int.max(0, inner.size.height - tabs),
+  )
 }
 
 fn normal_diff_panel(model: Model) -> Rect {
@@ -14659,6 +14724,7 @@ pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
 
 fn update_context_key(key: keys.Key, model: Model) -> Model {
   let state = model.context
+  let viewport = panel_inner(model_screen(model)).size.height
   case key {
     keys.Ctrl("c") -> quit(model)
     keys.Escape ->
@@ -14668,7 +14734,13 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
       )
     keys.Char("r") ->
       service_context_read(
-        Model(..model, context: context_view.invalidate(state)),
+        Model(
+          ..model,
+          context: context_view.State(
+            ..context_view.invalidate(state),
+            scroll: 0,
+          ),
+        ),
       )
     keys.Char("a") ->
       Model(
@@ -14684,18 +14756,26 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
       )
     keys.Up -> scroll_context(model, -1)
     keys.Down -> scroll_context(model, 1)
-    keys.PageUp -> scroll_context(model, -10)
-    keys.PageDown -> scroll_context(model, 10)
+    keys.PageUp -> scroll_context(model, 0 - viewport)
+    keys.PageDown -> scroll_context(model, viewport)
     _ -> model
   }
 }
 
 fn scroll_context(model: Model, delta: Int) -> Model {
+  let inner = panel_inner(model_screen(model))
+  let maximum =
+    int.max(
+      0,
+      list.length(context_panel.lines(model.context, inner.size.width))
+        - inner.size.height,
+    )
+  let current = int.min(model.context.scroll, maximum)
   Model(
     ..model,
     context: context_view.State(
       ..model.context,
-      scroll: int.max(0, model.context.scroll + delta),
+      scroll: int.clamp(current + delta, 0, maximum),
     ),
   )
 }
@@ -14705,12 +14785,11 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
     context_view.Hidden -> #(buf, cursor)
     context_view.Overview | context_view.All -> {
       let inner = panel_inner(screen)
-      let lines =
-        context_view.lines(model.context)
-        |> list.flat_map(fn(line) {
-          markdown.render(text_hygiene.multiline(line), inner.size.width)
-        })
-        |> markdown.wrap_lines(inner.size.width)
+      let title = case screen.size.width < 60 {
+        True -> " context · a · PgUp/Dn · r · Esc "
+        False -> " context · a detail · PgUp/Dn · r refresh · Esc back "
+      }
+      let lines = context_panel.lines(model.context, inner.size.width)
       let offset =
         int.min(
           model.context.scroll,
@@ -14718,11 +14797,7 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
         )
       let rendered =
         buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " context · Esc: back · r: refresh · a: detail ",
-          theme.signal,
-        )
+        |> render_panel_border(screen, title, theme.signal)
         |> paragraph.render_styled(inner, list.drop(lines, offset))
       #(rendered, Error(Nil))
     }

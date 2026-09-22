@@ -210,7 +210,8 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
   let ignored = tui.update(backend.Paste("do not edit"), opened)
   let scrolled = tui.update(backend.KeyPress("pagedown"), ignored)
   assert textarea.value(scrolled.input) == "unfinished draft"
-  assert scrolled.context.scroll > 0
+  assert scrolled.context.scroll == 0
+    as "an unavailable one-line observation has no phantom scroll range"
   let resumed = tui.update(backend.KeyPress("esc"), scrolled)
   assert resumed.context.surface == context.Hidden
   assert textarea.value(resumed.input) == "unfinished draft"
@@ -240,7 +241,7 @@ pub fn wheel_scrolls_the_visible_inspector_without_moving_transcript_test() {
     tui.open_context(base, context.All)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let moved = tui.update(backend.MouseScroll(5, 5, False), opened)
-  assert moved.context.scroll == opened.context.scroll + 3
+  assert moved.context.scroll == 0
   assert moved.scroll_offset == opened.scroll_offset
 }
 
