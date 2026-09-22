@@ -17,13 +17,16 @@ the terminal does not exercise production delivery.
 
 ## Decision
 
-For a newly committed usage row, the network gateway pushes a distinct
-`usage_observation` event after its `committed` notice. The observation carries the row's
-durable sequence in the envelope, the attributed strand and operation in the
-body when known, and the provider's fixed-shape usage counters. The gateway
-checks the encoded frame against the 64 KiB response limit before sending it.
-If the observation exceeds that limit, it sends only the notice. Other durable
-records still travel only through credited captures.
+For a newly committed usage row whose entry belongs to one scanned strand,
+the network gateway pushes a distinct `usage_observation` event after its
+`committed` notice. The observation carries the row's durable sequence in the
+envelope, that strand and the operation when known, and the provider's
+fixed-shape usage counters. An entry assigned only by the gateway's display
+fallback, a shared branch ancestor, or a row with no entry cannot establish
+ownership; those rows produce only the notice. The gateway checks the encoded
+frame against the 64 KiB response limit before sending it. If the observation
+exceeds that limit, it sends only the notice. Other durable records still
+travel only through credited captures.
 
 The notice continues to trigger capture. Captured cumulative usage remains
 authoritative; a pushed row never adds to that total. The terminal keeps the

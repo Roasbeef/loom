@@ -2966,10 +2966,12 @@ these forks because they define the same modules.
   reaches the existing one from the network side.
 - **A pushed durable frame is a notice, with one bounded usage exception.**
   The hub emits one `committed` per new emit — the seq and the strand — and
-  records still travel the credited snapshot path. For a usage row it also
-  pushes the fixed-shape counters under the distinct `usage_observation` name
-  after checking the encoded frame against
-  64 KiB. This observation can drive a live cache reading but does not own
+  records still travel the credited snapshot path. A usage row linked to an
+  entry claimed by one branch scan also pushes its fixed-shape counters under
+  the distinct `usage_observation` name after checking the encoded frame
+  against 64 KiB. A row with no entry, a fallback attribution, or an entry
+  shared by branches sends only the notice. This observation can drive a live
+  cache reading but does not own
   cumulative totals; a missed push is repaired by the capture. Protocol 047
   narrows protocol 018 at this boundary. Delta text is
   clipped with `preview_text` before it is encoded, so a pushed frame is
