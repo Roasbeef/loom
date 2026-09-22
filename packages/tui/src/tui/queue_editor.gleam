@@ -154,6 +154,8 @@ pub type State {
     surface: Surface,
     /// Selected inspector row, clamped against each fresh view.
     selected: Int,
+    /// Independent offset into the selected captured excerpt.
+    preview_scroll: Int,
     /// A draft survives refusal, disconnect, and closing the modal.
     draft: Option(Draft),
     /// Read waiting for a free conversation command lane.
@@ -178,11 +180,12 @@ pub fn new() -> State {
   State(
     Closed,
     0,
+    0,
     None,
     None,
     None,
     None,
-    "Enter: edit selected input · Esc: close",
+    "Captured queue · complete text requires an editable item",
   )
 }
 
@@ -194,9 +197,10 @@ pub fn new() -> State {
 /// queue_editor.open(queue_editor.new())
 /// ```
 pub fn open(state: State) -> State {
-  State(..state, surface: case state.draft {
-    Some(_) -> Editor
-    None -> Inspector
+  State(..state, surface: Inspector, message: case state.draft {
+    Some(_) ->
+      "Retained draft available · e resumes editing · selection remains captured queue"
+    None -> "Captured queue · Enter fetches complete text for editable items"
   })
 }
 

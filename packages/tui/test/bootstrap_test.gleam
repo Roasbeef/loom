@@ -488,6 +488,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let model =
     tui.Model(
       ..model,
+      // Local startup clears the demonstration identity before selection.
+      // This draft is unassigned until the first session is adopted.
+      session: "",
       local_options: Some(options),
       daemon_host: Some(host),
       overlay: tui.DaemonSelector(session_selector.new(empty, "")),
@@ -522,6 +525,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let adopted =
     tui.candidate_outcome(creating, attachment.idle(), Some(switched))
   assert adopted.current_model == "fixture"
+  assert text_area.value(adopted.input) == "retained draft"
   assert adopted.creation_key == None
   let assert Some(server_build) = daemon.hello(first.control).build
     as "the built daemon launcher exports its own artifact identity"

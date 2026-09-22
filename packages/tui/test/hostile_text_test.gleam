@@ -5,9 +5,8 @@
 //// all carry arbitrary bytes, and a terminal reads some of those bytes as
 //// commands: move the cursor, reset the colours, clear the screen, open a
 //// hyperlink. The approval overlay is where that stops being a cosmetic
-//// problem — it is a full-screen redraw asking a human to authorize a
-//// command, so a payload that can repaint it can forge the thing being
-//// consented to.
+//// problem — it asks a human to authorize a command, so a payload that can
+//// repaint the compact panel can forge the thing being consented to.
 ////
 //// `tui/text_hygiene` and the escaped literal in `tui/approval` exist to
 //// prevent that, and this module is the adversary that holds them to it.
@@ -32,6 +31,7 @@
 
 import core/json
 import etui/backend
+import etui/keys
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
@@ -130,7 +130,10 @@ pub fn hostile_agent_names_render_inert_test() {
 
   let overlay_inbox = connection.new_inbox()
   let opened =
-    tui.Model(..quiet_model(overlay_inbox), overlay: tui.AgentInspector(0))
+    tui.Model(
+      ..quiet_model(overlay_inbox),
+      overlay: tui.AgentInspector(agents.inspect("main")),
+    )
   let inspector = last_rows(opened, 120, 30, [deliver(names)])
   assert_shows(inspector, [
     "active-sentinel",
@@ -155,19 +158,43 @@ pub fn hostile_agent_names_render_inert_test() {
 /// the path carries a screen clear.
 pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
   let review = hostile_review()
+  let panel = approval_panel.new(review)
   let model =
     tui.Model(
       ..quiet_model(connection.new_inbox()),
       approvals: [review],
-      overlay: tui.ApprovalInspector(approval_panel.new(review)),
+      overlay: tui.ApprovalInspector(panel),
     )
   let rows = last_rows(model, 110, 30, [])
 
-  // The tool field is one bare ESC and sits near the head of the literal,
-  // where no wrap can split it, so this pins the escaped form itself
-  // rather than the accident of where a long line broke.
-  assert_shows(rows, ["\"tool\":\"\\u001b\""])
+  // Readable mode keeps the action, exact grant path and every control
+  // visible as inert ASCII before the operator chooses a decision.
+  assert_shows(rows, [
+    "Allow \"\\u001b\" to proceed?",
+    "preview-sentinel",
+    "path-sentinel",
+    "\\u009b",
+    "\\u0085",
+  ])
   assert_inert(rows)
+
+  let assert approval_panel.Continue(raw) =
+    approval_panel.update(keys.Ctrl("g"), panel)
+  let raw_rows =
+    last_rows(
+      tui.Model(..model, overlay: tui.ApprovalInspector(raw)),
+      110,
+      30,
+      [],
+    )
+  assert_shows(raw_rows, [
+    "Raw captured request",
+    "\"tool\":\"\\u001b\"",
+    "preview-sentinel",
+    "action-sentinel",
+    "path-sentinel",
+  ])
+  assert_inert(raw_rows)
 }
 
 // One captured escalation whose every displayed field is hostile: the

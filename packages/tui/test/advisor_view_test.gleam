@@ -61,13 +61,16 @@ pub fn an_expanded_advice_row_shows_the_whole_body_test() {
     == [tui.Line(tui.System, "advisor"), tui.Line(tui.ToolDetail, body)]
 }
 
-pub fn a_nudges_frame_collapses_to_the_number_of_bullets_test() {
+pub fn a_compact_nudges_frame_keeps_every_bullet_test() {
   let value = nudges(["re-read the failing test", "the branch is not rebased"])
   let body = "- re-read the failing test\n- the branch is not rebased"
 
   assert tui.advisor_payload(value) == Some(tui.Nudges(body))
   assert tui.advisor_lines(tui.Nudges(body), notes_view.Excerpt)
-    == [tui.Line(tui.System, "advisor nudges (2)  [Ctrl+G to expand]")]
+    == [
+      tui.Line(tui.System, "advisor nudges (2)"),
+      tui.Line(tui.ToolDetail, body),
+    ]
   assert tui.advisor_lines(tui.Nudges(body), notes_view.Complete)
     == [
       tui.Line(tui.System, "advisor nudges (2)"),
@@ -84,7 +87,10 @@ pub fn a_multi_line_nudge_counts_once_test() {
   let body = "- the assertion at\n    foo_test.gleam:12\n  is vacuous\n- rebase"
 
   assert tui.advisor_lines(tui.Nudges(body), notes_view.Excerpt)
-    == [tui.Line(tui.System, "advisor nudges (2)  [Ctrl+G to expand]")]
+    == [
+      tui.Line(tui.System, "advisor nudges (2)"),
+      tui.Line(tui.ToolDetail, body),
+    ]
 }
 
 /// A feed row names the advisor's branch for what it is.

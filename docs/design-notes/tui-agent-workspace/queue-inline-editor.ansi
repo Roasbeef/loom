@@ -1,0 +1,42 @@
+[1m[38;2;255;189;105m[48;2;24;27;31m ◆ loom [0m[38;2;231;237;245m[48;2;24;27;31m                             native-fixture · native UI fixture                             [38;2;160;171;184m fixture-model · Ctrl+g details
+[49m transcript / main [39m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   Confirm the eighth row.                                                                                                        [39m[49m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   Confirm the ninth row.                                                                                                         [39m[49m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   Confirm the tenth row.                                                                                                         [39m[49m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   Confirm the eleventh row.                                                                                                      [39m[49m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   Native paging tail reached.                                                                                                    [39m[49m
+[2m [0m
+[2m [0m[38;2;160;171;184m◇ [39msteer · runs next
+[2m [0m
+[2m [0m
+[2m [0;1m[38;2;255;189;105m[48;2;38;34;29m › User                                                                                                                           [0m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   Prepare the native layout report with the wide and compact evidence attached.                                                  [39m[49m
+[2m [0m
+[2m [0m[38;2;160;171;184m◇ [39mqueued · after this turn
+[2m [0m
+[2m [0m
+[2m [0;1m[38;2;255;189;105m[48;2;38;34;29m › User                                                                                                                           [0m
+[2m [0m[38;2;231;237;245m[48;2;38;34;29m   This captured input belongs to an attachment without replacement authority.                                                    [39m[49m
+[2m [0m
+[2m [0m[38;2;160;171;184m◇ [39mqueued · after this turn
+[2m [0m
+[2m [0m
+[38;2;255;189;105m╭ queued input · fixture-queued · revision 12 ─────────────────────────────────────────────────────────────────────────────────────╮
+│[39mqueue · editable revision · 1 image attachments retained                                                                          [38;2;255;189;105m│
+│[39mRetained draft resumed · Ctrl+s saves · Esc returns to inspection                                                                 [38;2;255;189;105m│
+│[1m[48;2;24;27;31mCtrl+s save · Ctrl+r reconcile · Esc back · Enter newline[0m                                                                         [38;2;255;189;105m│
+│[39mPrepare the native layout report with the wide and compact evidence attached.                                                     [38;2;255;189;105m│
+│[39m                                                                                                                                  [38;2;255;189;105m│
+│[39mKeep this authoritative original separate from the local unsaved line.                                                            [38;2;255;189;105m│
+│[39mLocal unsaved draft: add the compact queue capture.[7m [0m                                                                              [38;2;255;189;105m│
+│[39m                                                                                                                                  [38;2;255;189;105m│
+│[39m                                                                                                                                  [38;2;255;189;105m│
+│[39m                                                                                                                                  [38;2;255;189;105m│
+│[39m                                                                                                                                  [38;2;255;189;105m│
+│[39m                                                                                                                                  [38;2;255;189;105m│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+─ To main · enter queues · tab steers                                                                                              ─
+[2m[39m [0m[38;2;160;171;184m◒ Message to sub:protocol-review (1m 40s)[39m
+[2m [0m[38;2;231;237;245mKeep this draft while I inspect queued messages.[1m[38;2;24;27;31m[48;2;255;189;105m [0m[38;2;231;237;245m                                                                                 [39m
+[38;2;60;74;91m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;2;170;176;182m agents closed · fixture-model · ctx — · est $0.00                                                6 agents · 2 working · 3 attention

@@ -472,7 +472,13 @@ tree and that it must not write anything.
   `pub`, flattening nested calls into pipes, or hiding the expensive
   expression behind a local call while the steps stay in the caller does
   nothing, and the last of those measures worse; only the parameter shape
-  or a cross-module call changes the count.
+  or a cross-module call changes the count. The September 21 notes read exposed
+  the same shape inside `update_tick`: the read-service chain was still applied
+  to the expensive drain expression. Passing that result into `settle_tick`
+  reduced `core_inline_module` from 51.445 s to 1.632 s in generated Erlang;
+  the actual Gleam rebuild took 7.80 s and all 654 TUI tests passed. Preserve
+  both the original model and drained model as parameters so quiet-time
+  accounting keeps the same before/after comparison.
 
 ---
 

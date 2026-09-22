@@ -1,0 +1,42 @@
+[1m ◆ loom [0m                             native-fixture · native UI fixture                              fixture-model · Ctrl+g details
+
+ ╭[1m AGENT WORKSPACE [0m6 agents · 2 working · 3 attention ────────────────────────────────────────────────────────────────────────────╮
+ │ SESSION                             [1mmain[0m                                                                                       │
+ │ [1m▸ main · to                       [0m  ◷ Waiting                                                                                  │
+ │   Integrate the agent workspace a…                                                                                             │
+ │   ◷ Waiting · …sub:terminal-checks  TASK                                                                                       │
+ │                                     Integrate the agent workspace and preserve message targeting.                              │
+ │ STRANDS                                                                                                                        │
+ │ [1m  sub:viewport-review             [0m  CURRENT STATE                                                                              │
+ │   Review scroll anchors and per-s…  Waiting for sub:terminal-checks                                                            │
+ │   ✓ Finished · Finished                                                                                                        │
+ │                                     LATEST UPDATE                                                                              │
+ │ [1m  sub:terminal-checks             [0m  Drafts now stay with their original session and strand. Checking the native layouts next.  │
+ │   Exercise small terminals, Unico…                                                                                             │
+ │   × Failed · …n-label check failed  RECENT ACTIVITY                                                                            │
+ │                                     · Result unavailable · agent_wait                                                          │
+ │ [1m  sub:protocol-review             [0m                                                                                             │
+ │   Verify exact-request approval o…  INPUT                                                                                      │
+ │   ? Needs input · …proval required  No pending input                                                                           │
+ │                                                                                                                                │
+ │ [1m  sub:paused-review               [0m  IDENTITY                                                                                   │
+ │   Review restart behavior without…  main · fixture-model                                                                       │
+ │   ! Halted · Operation aborted                                                                                                 │
+ │                                                                                                                                │
+ │ ADVISOR · independent review                                                                                                   │
+ │ [1m  advisor                         [0m                                                                                             │
+ │   Review the primary strand's imp…                                                                                             │
+ │   ● Working · …s/tui/src/tui.gleam                                                                                             │
+ │                                                                                                                                │
+ │                                                                                                                                │
+ │                                                                                                                                │
+ │ [1mTo: main · Enter opens selected transcript[0m                                                                                     │
+ │ ↑/↓ inspect · n attention · a approval · PgUp/PgDn detail                                                                      │
+ │ Tab write to main · Esc conversation                                                                                           │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+─ To main · Tab writes · Enter opens agent                                                                                         ─
+ ◒ agent_wait · 1 subagent (30s)
+ [1m [0m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ illustrative fixture · no provider calls · fixture-model · ctx — · est $0.00                     6 agents · 2 working · 3 attention

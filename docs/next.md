@@ -1,5 +1,392 @@
 # Next
 
+## Inline queue follow-up, September 22
+
+Commit `6c796795` adds a composer-adjacent queue card on top of the pushed
+six-phase head `ff4c5fa3`, based on `f440f381`. `Alt+q` and `/queue`
+open its inspector while preserving the transcript and ordinary draft. `e`
+explicitly resumes a retained queue edit; a clean editable draft can switch
+items, while dirty and uncertain drafts remain protected. The package docs
+and [component note](design-notes/tui-component-pass.md) describe the controls
+and retained authority checks.
+
+Independent source review is closed after repairs for late fetch replies,
+capture paging geometry, compact excerpt visibility, and mouse list bounds.
+All 22 focused queue tests pass; the source rebuild took 9.04 seconds and
+the incremental compile took 0.5 seconds. Native verification covered passive
+preview, inspection, draft resume, editor cursor, compact paging, and resize
+recovery at 132×42, 80×24, 40×12, and 80×12. The component note links four
+inspected captures with ANSI recordings; the private fixture is stopped.
+The closing `make check` passed with exit zero at documentation head
+`a4107579`, validating source commits `6c796795` and `0003f32f`. It passed
+2,041 client tests, 702 TUI tests, 306 code-mode tests, 83 conformance tests,
+and 139 lint tests, plus every other package, release-update checks, and Go
+checks. House lint reported zero errors and 841 warnings. Running outside the
+sandbox resolved the four earlier process/bootstrap failures.
+
+Hosted CI on `ff4c5fa3` repeated a Linux MCP timing failure. A test-only repair
+allows the existing collector margin while retaining a bound below eight
+serial shutdown budgets. Six correct runs passed, and a serial mutation failed
+at 4,010 ms. The repair is committed as `0003f32f`; production deadlines are
+unchanged. `make doc-check` passed with zero errors and 152 warnings. The
+follow-up is pushed through documentation head `a4107579`. Consult
+[PR 478 checks](https://github.com/Roasbeef/loom/pull/478/checks) for the current
+hosted result; [run 35765586806](https://github.com/Roasbeef/loom/actions/runs/35765586806)
+was still running when this note was written. PR 478 has not been merged.
+
+The required `signoff/linux` run at `7414762e` exposed two capability test
+modules missing from `scripts/serial-tests`. Both install the same VM-global
+channel. Parallel execution reproduced eight failures; declaring `notes_test`
+and `strand_map_test` serial restored all 97 cap tests under parallelism eight.
+Independent review confirmed these were the only omitted channel fixtures.
+Hosted macOS also timed out waiting for a shipped code-mode result. Three
+isolated local module runs passed all three tests each, with the original
+8-second wait. Isolation omitted operator hook imports from the child daemon;
+no installed settings or production behavior changed. Fresh hosted checks and
+the canonical Linux signoff must validate the final head before merging.
+
+This status supersedes the pending push and CI claims in the historical
+sections below. Their test totals and captures describe the named earlier
+commits, including the full-repository pass at `3ce4d7ce`; they do not validate
+the inline queue follow-up.
+
+## Post-rebase validation complete, September 22
+
+The tested code is `3ce4d7ce`, based on `f440f381`. Commit `ec62d0fa` corrected
+the real-context end-to-end label, and `3ce4d7ce` strengthened the
+styled-approval end-to-end assertions. The first full `make check` stopped in
+the client package after 2,036 passes and five failures. Two newly merged
+code-mode examples had used an offline seed from before the `cap` and `notes`
+APIs; regenerating the seed passed,
+and the real code-mode suite then passed all 15 tests, including notes and
+recipes. The remaining failures were stale semantic UI expectations for current
+labels, concrete multiplayer command previews, and opening raw details before
+checking the captured sequence. Their corrections change tests only: they do
+not change production lifecycle behavior or weaken a deadline.
+
+Focused validation passed the five real TUI end-to-end tests, the one
+approval-effect test, and both multiplayer tests. The final full `make check`
+then passed with exit zero: 2,041 client tests, 693 TUI tests, 306 code-mode
+tests, 83 conformance tests, and 139 lint tests, along with every other package,
+the sandbox Go checks, and release-update checks. The house lint reported zero
+errors and 842 warnings. `make doc-check` separately passed with zero errors and
+152 warnings.
+
+The built-in shipped-daemon tests remained skipped because
+`LOOM_BOOTSTRAP_E2E_SERVER` was unset, as did the real MCP process-death case on
+macOS because `/proc` is unavailable. The task-owned native capture client and
+its private `loom-visual-review` tmux session are stopped; the installed daemon
+was untouched. Push and hosted CI remain pending.
+
+## Component pass rebased, September 22
+
+The six-phase TUI component pass is rebased onto `f440f381`. At rebase
+completion, the documentation head was `cc27610c`. The phase implementation
+commits are now `8622ce94`, `c599661c`, `62a43f93`, `cc7e0671`, `8a568ae3`, and
+`1b04a549`. Recorded component timings and captures predate the rebase, whose
+corresponding TUI source commits changed identity but not content. PR 478
+remains open and ready without automatic merge; at that point its remote head
+was the pre-rebase `ef469716`. These snapshot claims are historical; the
+validation section above supersedes their pending-gate status. Push and hosted
+CI remain pending.
+
+## Context and summary components, September 22
+
+Phase 6 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at rebased commit `1b04a549`. It adds an estimated context card
+with aligned component rows, compaction facts, bounded item inventory, and
+explicit freshness. Component estimates remain independent of the headline
+capacity estimate. The current summary separates Completion,
+Usage, and Jobs: captured outcome evidence, cumulative versus latest-request
+accounting, and a separately refreshed selectable job roster.
+
+Job selection retains stable observed identity and exposes only captured owner,
+command excerpt, age, and deadline facts. Context and summary paging remain
+separate from the composer, preserving its draft. Independent review is closed
+after bounded-evidence, relative-job-time, wrong-strand, and pure-render fixes.
+
+Native `/summary` verified sections 1, 2, and 3 at 80 columns, a populated
+Completion for `sub:viewport-review`, a correctly missing Completion on active
+`main`, and immediate bracket-selected job identity at 132×42 and 40×12. Paging
+reached roster timing, and `r` reset the viewport. Real Preview `/context`
+correctly refused live observation. The provider-free Replaying fixture covered
+132×42, 80×24, and 40×12 capacity, components, compaction threshold, inventory,
+and the three-item omitted tail. No fixture made a daemon or provider call or
+performed a mutation.
+
+Compact context help keeps `Esc` visible at 40 columns. All six final context,
+jobs, completion, and usage PNGs and their ANSI recordings were inspected; the
+design note links them. The focused 13-test pass compiled in 8.44 seconds. The
+closing TUI gate passed all 693 tests with exit zero in 9.46 seconds; it was
+incremental. The private native tmux fixture was closed and made no daemon or
+provider call.
+
+All six phases are implemented, source-reviewed, and component-verified. The
+architecture table and symbol citations are refreshed after the rebase.
+Full-repository validation passes at `3ce4d7ce`; push and hosted CI remain
+pending.
+
+## Diff component, September 21
+
+Phase 5 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at rebased commit `8a568ae3`. It provides a shared diff layout for
+rendering, keyboard navigation, mouse hits, and wheel routing. It adds a
+status-accented file list, full-row selection, sticky selected header, and
+explicit Navigator or Composer focus while retaining the existing
+patch renderer, numbering, raw identity, and cache. A compact focused panel may
+borrow status-band space only above the actual editor and footer.
+
+Independent review is closed after fixes to active wheel bounds, focus-time cache
+clamping, overlay borrowing, and compact stale-state presentation. Native QA at
+132×42, 80×24, and 40×12 verified arrow selection, compact patch paging, draft
+and file selection retention across Enter and Ctrl+d, and F2 replacing the
+borrowed view. Automated tests cover mouse hits and wheel routing; the native
+pass did not use a physical mouse. The design note links wide and compact
+captures. The regenerated footer-one-row snapshot changed only intentional diff
+rows; its editor and footer remained unchanged.
+
+The closing TUI gate passed 692 tests with exit zero in 9.30 seconds. It was
+incremental; the latest compile took 8.15 seconds. Hosted CI and a latest-head
+full-repository gate remain pending.
+
+Origin `main` is `f440f381`. The post-rebase full-repository gate and hosted CI
+remain pending.
+
+## Queue component, September 21
+
+Phase 4 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at rebased commit `cc7e0671`. It adds a selectable queue inspector. Rows
+distinguish queue from steer and editable from read-only. The selected body is
+explicitly the captured excerpt and owns independent PgUp/PgDn paging. Enter
+uses the existing fetch-and-edit path only
+for editable items; read-only input cannot fetch text absent from the capture.
+The revision-fenced editor now makes its priority, delivery state, save,
+reconcile, Escape, and newline controls visible.
+
+Source review is closed, including terminal-cell padding and resized-offset
+clamping fixes. Native QA opened `/queue`, reopened the fixture's retained draft,
+returned to the inspector with Escape, and covered 132×42, 80×24, and 40×12. It
+verified arrow selection, read-only Enter refusal, compact paging to a
+twelve-line tail, and resize recovery without another key. Automated tests,
+rather than this no-daemon fixture, cover the complete-text wire fetch. The
+design note links wide, compact, and editor captures. No mutation was submitted
+to a real daemon.
+
+The closing TUI gate passed 687 tests with exit zero in 9.29 seconds. It was
+incremental; the latest compile took 8.02 seconds. Hosted CI and a latest-head
+full-repository gate remain pending.
+
+## Goal inspector, September 21
+
+Phase 3 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at rebased commit `62a43f93`. It adds a raised goal inspector that
+groups the server-owned status and cause, objective, budget consumption, age,
+latest check and output, and reviewer feedback. It uses the existing read,
+pause, and resume commands. Status controls appear only when
+applicable; pending requests disable them, and the panel never treats consumed
+budget as completion. Paging is independent of the preserved composer.
+
+All independent-review findings are closed, including stale-board retention,
+warning and scroll placement, palette entry, and compact geometry. Native QA
+typed and opened `/goal`, then verified 132×42, 80×24, and 40×12 layouts. End
+reached reviewer feedback, Home returned to the start, the wide gutter cleared,
+and a busy compact fixture retained status, objective, and controls while
+preserving the real editor and footer. The design note links the captures.
+
+The closing TUI gate passed 685 tests with exit zero in 9.15 seconds. It was
+incremental; the latest worker compile took 7.75 seconds. Hosted CI and a
+latest-head full-repository gate remain pending.
+
+## Shared notes browser, September 21
+
+Phase 2 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at rebased commit `c599661c`. The inspector and standalone `/notes` now share a
+selectable notes browser. Note mode and body scroll are independent of transcript
+detail and scroll state. Owner changes reset to the new owner's first key;
+same-owner refresh retains the key and clamps scroll to the refreshed body. Only
+the selected body is formatted, with modifiers and links preserved. Compact
+layouts keep stale and omitted facts visible.
+
+Brackets select notes, Ctrl+g switches readable/raw mode, PgUp/PgDn scroll the
+body, and `r` refreshes. Independent review found five issues; all were fixed and
+reverified. The pass also fixed adjacent message-body overscroll. Native QA
+covered 132×42, 80×24, and 40×12 inspector layouts and standalone `/notes` at 80
+columns, including selection and raw mode. The design note links the wide and
+compact captures. The closing TUI gate passed 678 tests with exit zero in 9.30
+seconds. This was incremental and makes no fresh compiler-timing claim.
+
+Hosted CI and a latest-head full-repository gate remain pending. The final
+documentation refresh must repair the recorded architecture citation drift and
+add the new panels to the client architecture code-location table.
+
+## Selectable agent messages, September 21
+
+Phase 1 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at rebased commit `8622ce94`. The Messages tab now presents observed sends as a
+selectable invocation-identity list with direction, delivery-state badges, body
+excerpts, and an independently scrollable retained preview. Brackets select a
+message, arrows select an agent, Tab transfers to the composer, Enter opens the
+inspected agent, and `o` explicitly opens the selected sender. Captures preserve
+selection and body scroll. Opening the sender explicitly changes the composer
+recipient. Accepted and started states remain delivery evidence, not read
+receipts.
+
+Independent review found and confirmed fixes for capture-time scroll reset and
+a short wide view that hid the body. Native QA passed at 132×42, 80×24, and
+40×12; the design note links the wide and compact captures. The closing TUI gate
+passed 676 tests with exit zero in 9.16 seconds. This was an incremental run; the
+prior measured compile was 7.38 seconds.
+
+Hosted CI has not run for rebased commit `8622ce94`. At the preceding
+`ef469716` head, macOS
+passed while the Linux client job passed 2,027 tests and failed three deadline
+checks: MCP cleanup took 1,040 ms against 500 ms, plus approval-effect and
+session-socket deadline tests. No latest-head full-repository result is claimed.
+
+## Styled approval review, September 21
+
+The automatic permission sheet now separates the tool-specific question,
+requester, raised action preview, and exact requested authority. Allow once,
+Allow for session, and Deny remain vertical at every width. Focus fills the
+selected row and retains a `›` marker without color. The sheet still opens with
+no selection: arrows or Tab choose an available decision, Enter confirms it,
+and Escape defers. `d` or Ctrl+g switches to the exact raw request; PgUp, PgDn,
+Home, and End scroll its independently bounded detail.
+
+Known file writes show the path and content as separate fields. Actual content
+newlines form preview rows, and each row independently escapes terminal controls,
+bidi marks, and literal backslash sequences. Unknown fields and complete file
+edits retain escaped JSON fallback, so the readable view cannot silently omit
+authority-relevant arguments. Independent review found and repaired ASCII
+control escaping and added coverage proving page navigation reaches every row.
+
+The final TUI gate passed 669 tests with exit zero; compilation took 7.38
+seconds. House lint reported zero errors and 129 warnings. Documentation checking
+reported zero errors and 152 warnings. Native QA exercised the current BEAM at
+100×40, 80×24, and 40×12. It verified the readable view and complete scope, End
+then PgUp paging, the `d` raw view, and Escape deferral without submitting an
+approval. The panel is capped at eighteen rows on a large screen; at 100×40, the
+remaining 22 rows preserve most of the transcript. The
+[100×40 capture](design-notes/tui-agent-workspace/approval-styled.png) and
+[40×12 capture](design-notes/tui-agent-workspace/approval-styled-40.png) record
+the styled and compact layouts. No latest-head full-repository gate or hosted CI
+run has verified this final change set.
+
+## Goal architecture and compact approvals, September 21
+
+The workspace documentation now includes a source-verified
+[goal architecture](architecture/goals.md), revised with the technical-writing
+and roasbeef-prose passes. It separates the durable goal cell, advisor-only
+mutation authority, read-only gateway projection, recovery loop, jailed checks,
+accounting bounds, and TUI behavior. The historical design note now points to
+the architecture and Protocol Change 044 as the current contract.
+
+The permission dialog is compact and bottom-anchored. It shows the exact action
+and grants in its readable view, switches to the complete escaped request with
+`d` or Ctrl+g, and requires an explicit available choice before Enter can decide.
+The decision still echoes the captured action, grants, and sequence without
+changing authority. A known idle advisor retains its two-row composer band on
+terminals at least 20 rows high, so reviewer completion does not move the editor.
+Captures and silent automatic goal reads preserve existing operator feedback.
+
+The full TUI gate passed with 664 tests and exit zero; the rebuild took 6.96
+seconds. House lint reported zero errors and 129 warnings. Documentation checking
+also returned zero errors and 152 warnings. Native QA exercised the current
+BEAM build at 100×40, 80×24, and 40×12. It covered the readable and raw approval
+views, scrolling, and Escape's deferral behavior without submitting a decision.
+The [100×40 capture](design-notes/tui-agent-workspace/approval-compact.png) and
+[40×12 capture](design-notes/tui-agent-workspace/approval-compact-40.png) record
+the bounded layouts.
+
+Hosted CI has not yet verified the latest work, and no latest-head
+full-repository gate has run. The prior pushed head, `ebd99fe1`, passed the
+macOS gate and every substantive job except the Linux client check. That check
+failed one unchanged MCP cleanup timing assertion: elapsed time was 1,076 ms
+against a 500 ms ceiling. The TUI change did not modify the test or its MCP
+implementation, which is consistent with an unrelated scheduling delay; the final head still needs hosted confirmation.
+
+## Proactive compile review, September 21
+
+The optional [BEAM compile review skill](../skills/beam-compile-review/SKILL.md)
+records the inliner diagnosis and a bounded profiler for existing generated
+Erlang. It preserves build artifacts and cleans up its compiler process group
+on timeout or interruption. The tick services now use a pipeline while retaining
+the `settle_tick` parameter boundary; the rebuild took 7.04 seconds and all
+654 TUI tests passed.
+
+## TUI compile-time repair, September 21
+
+The notes-read step extended a tick-handler chain whose expensive drain
+expression was repeatedly expanded by Erlang's inliner. The existing
+`settle_update` boundary was intact; `update_tick` needed the same structure.
+It now passes the drained model to `settle_tick`, preserving call order and
+quiet-time accounting. Profiling isolated 51.445 seconds in `core_inline_module`;
+the equivalent generated-code split took 1.632 seconds in that phase. The actual
+Gleam rebuild took 7.80 seconds and all 654 TUI tests passed. The full repository
+gate below belongs to the preceding implementation head, `6eb46007`.
+
+## Agent messages and notebooks, September 21
+
+The workspace branch is rebased onto `543d641a`. The inspector now separates
+Activity, Messages, and Notes while preserving the existing composer target.
+Message projection follows each sender's accepted operation boundary, joins
+results by call occurrence, and retains a bounded observed history through
+operation completion. It does not infer read receipts or invent older history.
+Notes follow the inspected strand, retain selection by key, reject another
+strand's late reply, and expose both readable and raw values. `/notes` now
+replaces a visible diff, and approval dialogs name the exact captured owner.
+
+The complete `make check` returned zero: 654 TUI tests, 2,030 client tests,
+306 code-mode tests, conformance, sandbox checks, and zero house-lint errors.
+The real native TUI/server round-trip passed, and interactive native tests
+covered messages, notes, approval ownership, diff navigation, and the compact
+40×12 fallback. Independent review verified all three ownership/provenance
+repairs. The implementation note records the captures and explicit macOS and
+opt-in fixture skips. The older sections below retain historical counts and
+limits. Check hosted CI at the final proposed head before merge.
+
+## Native TUI overhaul, September 20
+
+The native implementation for [#473](https://github.com/Roasbeef/loom/issues/473)
+starts at `9c9bb576`. Focus has quieter framing, a compact attention-aware footer,
+six-line pending code previews, summarized successes, and expandable multiline
+failures. Studio separates session, strands, advisor, and available changes.
+Agents keeps the real composer visible while inspection retains its own strand
+identity. Tab edits the existing recipient; Enter in the roster explicitly
+opens a strand. Commands expose the surface that owns the next key.
+
+Task, current action, named dependencies, recent tools, result, and exact pending
+permission all follow captured operation evidence. Missing data stays unknown.
+Drafts and command history remain keyed by session/strand; history buffers and
+reading positions restore across strand switches within the current session.
+Session changes deliberately release those old history buffers. Full compact
+advisor nudges and the existing exact-request approval authority remain intact.
+
+The [implementation note](design-notes/tui-agent-workspace.md) maps every issue
+acceptance item to native behavior and regression evidence, and contains the
+updated terminal captures. The [review record](review/tui-agent-workspace.md)
+explains both independent review passes and each verified repair. The final TUI suite passes 635 tests and the client gate passes 2,025.
+House lint and documentation checks have zero errors. A full gate was
+interrupted by Hex rate limiting; the implementation note records the complete
+component results without claiming an uninterrupted full-command success.
+
+A Baseten GLM-5.3 run completed the two requested file reads and rendered its
+answer in the native client. Its configured stop hook then launched an unwanted
+mail watcher, which was stopped; the implementation note records this limit.
+No live approval decision or code-mode batch was exercised.
+
+Hosted CI exposed the initial-attachment draft path. The editor now binds to
+the first selected session once; subsequent sessions retain separate drafts.
+The credited-v2 regression and real-daemon creation/reconnect test cover this
+boundary. The latter fixture now uses live startup's empty session identity.
+The broader bootstrap script passed the lifecycle and hostile-shell checks,
+then stopped when an operator hook altered a scripted-provider request in the
+multiplayer fixture. Check hosted Linux CI at the final head before merge. The independent main/advisor split in #448 is still an
+exploration, not a default-layout decision made by this change.
+
+The older handoffs below describe their own revisions. Their counts are not
+validation evidence for this workspace change.
+
 ## Blackboard reads preserve failures, September 21
 
 The follow-up to `b3a8c9f9` removes Agency's conversion of failed note scans

@@ -10,6 +10,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/protocol
 import tui/workspace
 import tui_test/gateway
 
@@ -161,4 +162,29 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
   // guard rather than the fixture produced the two assertions above.
   let live = tui.Model(..interrupting, peer: tui.Preview)
   assert string.contains(border_text(live), "stopped · enter sends held input")
+}
+
+pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test() {
+  let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
+  let reading =
+    tui.Model(..reading, strands: [
+      protocol.Strand("main", Some("main"), Some("assistant")),
+      protocol.Strand("worker", Some("worker"), Some("assistant")),
+    ])
+  let worker =
+    reading
+    |> tui.update(backend.KeyPress("f2"), _)
+    |> tui.update(backend.KeyPress("down"), _)
+    |> tui.update(backend.KeyPress("enter"), _)
+  assert worker.reading_lines == None
+  assert worker.scroll_offset == 0
+  let returned =
+    worker
+    |> tui.update(backend.KeyPress("f2"), _)
+    |> tui.update(backend.KeyPress("up"), _)
+    |> tui.update(backend.KeyPress("enter"), _)
+  assert returned.active_strand == "main"
+  assert returned.reading_lines == reading.reading_lines
+  assert returned.scroll_offset == reading.scroll_offset
+  assert returned.rendered_rows == reading.rendered_rows
 }

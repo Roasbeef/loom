@@ -590,11 +590,13 @@ pub fn layer_cleanup_uses_one_deadline_for_failed_starters_test() {
     )
   let clock = poll.monotonic()
   let started = clock.now()
-  assert mcp.close(layer, within: 100) != Ok(Nil)
+  assert mcp.close(layer, within: 500) != Ok(Nil)
 
-  // Eight unavailable servers must not consume eight sequential budgets.
-  // The generous bound tolerates scheduling noise but rejects an 800ms wait.
-  assert clock.now() - started < 500
+  // Eight unavailable servers must not consume eight sequential 500ms
+  // budgets. The bound covers the shared 500ms proof deadline, its 1000ms
+  // collector margin, and scheduler delay while still rejecting a 4000ms
+  // serial wait.
+  assert clock.now() - started < 3000
   list.each(clients, fn(entry) {
     process.send(entry.1, transport.TransportClosed("selected native exit"))
     let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =

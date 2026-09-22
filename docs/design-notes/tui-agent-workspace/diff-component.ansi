@@ -1,0 +1,42 @@
+[1m[38;2;255;189;105m[48;2;24;27;31m ◆ loom [0m[38;2;231;237;245m[48;2;24;27;31m                             native-fixture · native UI fixture                             [38;2;160;171;184m fixture-model · Ctrl+g details
+[49m  worktree · NAV ↑↓ r Enter PgUp/Dn  / main [39m
+[2m [0m[38;2;160;171;184m[48;2;24;27;31mcaptured fixture worktree · 1 added · 1 deleted[39m[49m
+[2m [0;1m[38;2;255;189;105m[48;2;24;27;31mNavigator focus · ↑/↓ files · r refresh · PgUp/PgDn patch · Enter composer · Esc close[0m
+[2m [0m[38;2;110;219;232m[48;2;24;27;31m  [ALL] 2 files                                                                                                                   [39m[49m
+[2m [0m[38;2;142;214;161m[48;2;37;48;63m▸ [A] docs/review/native-layout.md                                                                                                [39m[49m
+[2m [0m[38;2;255;142;155m[48;2;24;27;31m  [D] packages/tui/src/tui.gleam                                                                                                  [39m[49m
+[2m [0m[38;2;160;171;184m[48;2;24;27;31m  [COMMITS] Since session start                                                                                                   [39m[49m
+[2m [0m[38;2;231;237;245m[48;2;37;48;63mdocs/review/native-layout.md · text · complete                                                                                    [39m[49m
+[2m [0m[38;2;160;171;184m◇ [39mdocs/review/native-layout.md · text · complete
+[2m [0m
+[2m [0m[38;2;160;171;184m   [1m[38;2;255;189;105m▎ [38;2;110;219;232m@@ -0,0 +1,12 @@[0m
+[2m [0m[38;2;160;171;184m 1 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+native agent workspace findings[39m[49m
+[2m [0m[38;2;160;171;184m 2 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+wide navigation verified[39m[49m
+[2m [0m[38;2;160;171;184m 3 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+compact navigation verified[39m[49m
+[2m [0m[38;2;160;171;184m 4 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+selected identity retained[39m[49m
+[2m [0m[38;2;160;171;184m 5 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+added status visible[39m[49m
+[2m [0m[38;2;160;171;184m 6 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+deleted status visible[39m[49m
+[2m [0m[38;2;160;171;184m 7 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+binary status visible[39m[49m
+[2m [0m[38;2;160;171;184m 8 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+sticky file header visible[39m[49m
+[2m [0m[38;2;160;171;184m 9 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+page one complete[39m[49m
+[2m [0m[38;2;160;171;184m10 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+page two begins[39m[49m
+[2m [0m[38;2;160;171;184m11 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+composer draft retained[39m[49m
+[2m [0m[38;2;160;171;184m12 [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+native patch paging tail[39m[49m
+[2m [0m[38;2;160;171;184m   [1m[38;2;255;189;105m▎ [0m
+[2m [0m[38;2;160;171;184m◇ [39mObservation complete · 0 files omitted
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[38;2;255;189;105m─ To main · enter queues · tab steers                                                                                              ─
+[2m[39m [0m[38;2;160;171;184m◓ Message to sub:protocol-review (6m 44s)[39m
+[2m [0m[38;2;160;171;184mReviewer sub:protocol-review · agent_send · no pending input[39m
+[2m [0m[38;2;160;171;184m  Task: Verify exact-request approval ownership across refreshes.
+[2m[39m [0m[38;2;160;171;184mReviewer advisor · fs_read · no pending input[39m
+[2m [0m[38;2;160;171;184m  Task: Review the primary strand's implementation and validation claims.[39m
+[2m [0m[38;2;160;171;184mgoal paused (you paused it) · 51200/400000 tokens · 3 continuations · Finish the native agent workspace, preserve every session d…[39m
+[2m [0m[38;2;160;171;184mReceived · steer before queued turns · +2 pending · /queue edits · Review the failed compact-layout assertion. Confirm the select…[39m
+[2m [0;1m[38;2;24;27;31m[48;2;255;189;105m [0m[38;2;231;237;245m                                                                                                                                 [39m
+[38;2;60;74;91m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;2;170;176;182m agents closed · fixture-model · ctx — · est $0.00                                                6 agents · 2 working · 3 attention

@@ -1,0 +1,42 @@
+[1m[38;2;255;189;105m[48;2;24;27;31m ◆ loom [0m[38;2;231;237;245m[48;2;24;27;31m                             native-fixture · native UI fixture                             [38;2;160;171;184m fixture-model · Ctrl+g details
+[49m  worktree changes  / main [39m
+[2m [0mcaptured fixture worktree · 1 added · 1 deleted
+[2m [0mCtrl+d: file navigation · PgUp/PgDn: patch · Esc: close
+[2m [0m> All files (2)
+[2m [0m  A  docs/review/native-layout.md
+[2m [0m   D packages/tui/src/tui.gleam
+[2m [0m  Commits since session start
+[2m [0m
+[2m [0m
+[2m [0m[38;2;160;171;184m◇ [39mdocs/review/native-layout.md · text · complete
+[2m [0m
+[2m [0;1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+native agent workspace findings[39m[49m
+[2m [0;1m[38;2;255;189;105m▎ [0m
+[2m [0m[38;2;160;171;184m◇ [39mpackages/tui/src/tui.gleam · text · complete
+[2m [0m
+[2m [0;1m[38;2;255;189;105m▎ [0m[38;2;255;142;155m[48;2;57;27;31m-legacy agent overlay path[39m[49m
+[2m [0;1m[38;2;255;189;105m▎ [0m
+[2m [0m[38;2;160;171;184m◇ [39mObservation complete · 0 files omitted
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[2m [0m
+[38;2;255;189;105m─ To main · enter queues · tab steers                                                                                              ─
+[2m[39m [0m[38;2;160;171;184m◑ Message to sub:protocol-review (16s)[39m
+[2m [0m[38;2;160;171;184mReviewer sub:protocol-review · agent_send · no pending input[39m
+[2m [0m[38;2;160;171;184m  Task: Verify exact-request approval ownership across refreshes.
+[2m[39m [0m[38;2;160;171;184mReviewer advisor · fs_read · no pending input[39m
+[2m [0m[38;2;160;171;184m  Task: Review the primary strand's implementation and validation claims.[39m
+[2m [0;1m[38;2;24;27;31m[48;2;255;189;105m [0m[38;2;231;237;245m                                                                                                                                 [39m
+[38;2;60;74;91m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;2;170;176;182m agents closed · fixture-model · ctx — · est $0.00                                                6 agents · 2 working · 3 attention

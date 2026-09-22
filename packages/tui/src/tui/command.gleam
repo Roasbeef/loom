@@ -343,7 +343,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/summary", "inspect the latest completed operation", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
-    Suggestion("/goal", "pin a session goal; bare /goal shows its status", True),
+    Suggestion("/goal", "show status; add a space for goal actions", False),
     Suggestion("/strands", "list session strands", False),
     Suggestion("/strand", "switch the active strand", True),
     Suggestion("/schedules", "list session schedules", False),

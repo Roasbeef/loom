@@ -865,6 +865,8 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
     |> run_command("/strand sub:reviewer")
     |> run_command("/strand main")
   assert returned.active_strand == "main"
+  assert returned.scrollback.mode == loaded.scrollback.mode
+  assert returned.scroll_offset == loaded.scroll_offset
   assert list.length(returned.records) == full
   assert history_view.branch(returned.scrollback, current).unloaded == None
   assert list.first(returned.transcript)
@@ -901,7 +903,10 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
     two_strand_model(all, current)
     |> run_command("/strand sub:reviewer")
     |> run_command("/strand main")
-  assert dict.has_key(visited.parked_scrollback, "sub:reviewer")
+  assert dict.has_key(visited.strand_workspaces, #(
+    visited.session,
+    "sub:reviewer",
+  ))
 
   // A cut that no longer carries the reviewer retires it: no later switch can
   // select that strand, so its parked window is unreachable and is released
@@ -920,8 +925,12 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
       ),
     )
     |> tui.update(backend.Tick, _)
-  assert dict.has_key(retired.parked_scrollback, "sub:reviewer") == False
-  assert dict.has_key(retired.parked_scrollback, "main") == False
+  let assert Ok(parked) =
+    dict.get(retired.strand_workspaces, #(retired.session, "sub:reviewer"))
+    as "draft ownership survives retirement"
+  assert parked.scrollback == history_view.empty()
+    as "retired history is released independently of the draft"
+  assert !dict.has_key(retired.strand_workspaces, #(retired.session, "main"))
     as "the active strand's window is held directly, not parked beside it"
 }
 

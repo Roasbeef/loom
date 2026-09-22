@@ -468,3 +468,24 @@ pub fn late_lookup_preserves_the_open_question_and_selection_test() {
     as "the existing selection remains attached to the captured question"
   assert review.seq == 31
 }
+
+/// Metadata refreshes preserve footer feedback while adopting fresh presence.
+pub fn metadata_refresh_preserves_the_footer_notice_test() {
+  let captured = cut(metadata([]), snapshot.empty())
+  let assert Ok(view) = snapshot_view.decode(captured)
+    as "the empty observation must decode"
+  let initial =
+    tui.apply_channel_update(
+      pushed.attached(),
+      session_channel.Captured(captured, view, session_channel.Refreshed),
+    )
+  let prior = tui.Model(..initial, notice: "streaming thinking")
+  let refreshed =
+    tui.apply_channel_update(
+      prior,
+      session_channel.Captured(captured, view, session_channel.Refreshed),
+    )
+  assert refreshed.notice == prior.notice
+    as "a metadata refresh replaced current feedback with presence"
+  assert refreshed.captured == Some(#(captured, view))
+}

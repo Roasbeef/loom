@@ -150,7 +150,13 @@ Live provider text is scoped to a request generation within an operation.
 Terminal markers retire only their own request, and stale cuts cannot erase a
 newer pushed answer. Compact tool groups preserve call identity. `/notes` reads current values through `client/notes_view` and
 validates them in `tui/notes_view`, independently of the conversation transfer.
-The panel names capture and last-write revisions and labels excerpts. See
+The panel names capture and last-write revisions and labels excerpts. The agent
+inspector's Notes tab uses its selected strand independently of the composer,
+with stable note-key selection and stale-reply rejection. The Messages tab
+projects `agent_send` invocations after each sender's accepted operation prompt;
+its bounded cache retains verified sends after operations end. Tool acceptance
+is visible delivery evidence, not a read receipt. These views reuse existing
+captures and notes queries without adding wire authority. See
 [protocol 021](../../protocol-change/021-request-scoped-streams.md) and
 [protocol 023](../../protocol-change/023-current-client-observations.md).
 
@@ -930,6 +936,41 @@ or build information in it; every other path was a static `404`. The default
 daemon returns `404` for both of those retired routes. Its two v2 route families
 authenticate against the manager before upgrading.
 
+## Native agent workspace
+
+The terminal's `agent_view` projection combines one captured strand/operation
+view with bounded task and designated-assistant excerpts. It never derives
+success from an absent phase or a failed operation from a single tool failure.
+Exact pending approvals are scoped to the captured strand and operation; opening
+one delegates to the existing `approval_panel` with no decision selected.
+`agent_activity` adds current `agent_wait` dependencies and a bounded recent-tool
+history from the same operation's accepted-prompt boundary. Questions without a
+separate runtime fact remain assistant text; the client does not infer a pending
+question from prose.
+
+`agents.Inspector` stores selection by strand ID independently of the active
+recipient. The composer remains visible below it; Tab enters ordinary editing
+without changing either identity, and Escape returns keyboard ownership to the
+roster. Explicitly opening a transcript transfers the editor and reader to
+that strand's `(session, strand)` workspace. Snapshot refreshes cannot redirect a
+missing recipient. Each saved reading endpoint carries the anchors used to
+relocate it after width changes, and retired reading windows are released
+without evicting unsent drafts. Pending advisor observations stay transient and
+are labeled separately from durable delivered advice.
+
+Ordinary conversation uses a heading and gutter, with horizontal input rules.
+Compact mode replaces successful code source with an activity/result summary;
+unresolved source is six lines, diagnostics stay multiline, and Ctrl+G retains
+full source, results and accounting. The Studio rail keeps Advisor distinct from
+worker tasks and labels Git observations as observations. Scrollback controls
+occupy the existing reading heading rather than changing the composer height.
+
+Palette adaptation is pure and occurs before a completed frame is cached.
+Light and ANSI terminals preserve the same content, links and wide-character
+cells; `NO_COLOR` preserves textual statuses and focus. See the
+[implementation review](../design-notes/tui-agent-workspace.md) for interaction
+keys, native captures, evidence boundaries and validation limits.
+
 ## Historical: the terminal client
 
 `loom` is the native Gleam client in `packages/tui`. Etui owns raw
@@ -1223,6 +1264,12 @@ multiplayer scenario has run against production providers.
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
+| `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
+| `packages/tui/src/tui/agent_message_panel.gleam`, `focused_goal_panel.gleam` | Selectable observed-send presentation and the server-owned goal inspector. |
+| `packages/tui/src/tui/note_panel.gleam` | Shared standalone and agent-inspector note selection, detail modes, and body paging. |
+| `packages/tui/src/tui/queue_panel.gleam`, `diff_panel.gleam` | Captured queue-excerpt inspection and shared worktree navigation geometry. |
+| `packages/tui/src/tui/context_panel.gleam`, `summary_panel.gleam` | Estimated context-capacity presentation and separated completion, usage, and live-job evidence. |
+| `packages/tui/src/tui/appearance.gleam`, `theme.gleam` | Semantic palette and terminal-capability adaptation before frame caching. |
 | `packages/host/src/host/websocket.gleam`, `packages/tui/src/tui/connection.gleam` | Shared owned WebSocket transport and its thin terminal event adapter. |
 | `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |
 | `packages/tui/src/tui/daemon/bootstrap.gleam` | Default daemon discovery, authenticated readiness, and serialized launch policy. |

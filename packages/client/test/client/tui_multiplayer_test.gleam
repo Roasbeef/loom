@@ -177,14 +177,15 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
         tui_v2_test.await(driver, fn(sample) {
           case sample.model.overlay {
             tui.ApprovalInspector(_) ->
-              string.contains(sample.frame, "PERMISSION REQUEST")
+              string.contains(sample.frame, "Permission required")
             _ -> False
           }
         })
-      assert string.contains(inspected.frame, "same-action")
+      assert string.contains(inspected.frame, "sleep 60")
       assert string.contains(inspected.frame, "wall_seconds")
+      let raw = tui_driver.play(driver, [backend.KeyPress("d")])
       assert string.contains(
-        inspected.frame,
+        raw.frame,
         "\"seq\":" <> int.to_string(a_question.seq),
       )
       let closed = tui_driver.play(driver, [backend.KeyPress("esc")])

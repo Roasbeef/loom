@@ -25,6 +25,14 @@ The [.claude entry point](.claude/skills/beam-memory-review/SKILL.md) carries
 the same guidance for skill discovery. Keep both copies aligned, adjusting
 relative links for their directory depth.
 
+[BEAM compile review](skills/beam-compile-review/SKILL.md) is an optional review
+for compile-time regressions. Consider it proactively when extending local
+transformation chains around large handlers, or when builds slow down. The
+[.claude entry point](.claude/skills/beam-compile-review/SKILL.md) carries the same
+guidance; keep the two copies aligned with their relative links adjusted. Its
+bounded profiler measures existing generated Erlang without replacing build
+artifacts. It is not a mandatory gate on unrelated changes.
+
 ## Required reading
 
 Before writing any code, read these in order:

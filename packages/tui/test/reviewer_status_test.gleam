@@ -10,7 +10,9 @@ import etui/backend
 import etui/geometry
 import etui/widgets/textarea
 import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import machine/codec
 import machine/operation
@@ -137,4 +139,58 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   assert string.contains(text, "1 received, awaiting delivery")
   assert painted.diff_view == tui.DiffAutomatic
   assert string.contains(text, "follow-up draft")
+}
+
+/// Reviewer completion replaces the two live rows with a truthful idle slot.
+/// The composer title and cursor therefore stay fixed while no completed task
+/// or running state survives the transition.
+pub fn reviewer_completion_keeps_the_composer_fixed_test() {
+  let #(window, view) = fixture()
+  let live_rows =
+    reviewer_status.observe([], window, view)
+    |> list.map(fn(row) { reviewer_status.Row(..row, strand: "advisor") })
+  let live =
+    tui.Model(
+      ..model(),
+      strands: [protocol.Strand("advisor", Some("advisor"), Some("assistant"))],
+      reviewer_rows: live_rows,
+      input: textarea.state_from_string("follow-up draft"),
+    )
+    |> tui.update(backend.Resize(80, 24), _)
+  let idle =
+    tui.Model(
+      ..live,
+      strands: [protocol.Strand("advisor", Some("advisor"), None)],
+      reviewer_rows: [],
+      frame_cache: None,
+    )
+    |> tui.update(backend.Resize(80, 24), _)
+  let #(live_buffer, live_cursor) =
+    tui.view(live, geometry.rect_new(0, 0, 80, 24))
+  let #(idle_buffer, idle_cursor) =
+    tui.view(idle, geometry.rect_new(0, 0, 80, 24))
+  let live_text = frame.buffer_to_text(live_buffer)
+  let idle_text = frame.buffer_to_text(idle_buffer)
+  let title_row = fn(text) {
+    text
+    |> string.split("\n")
+    |> list.index_map(fn(line, index) { #(line, index) })
+    |> list.find(fn(pair) { string.contains(pair.0, "To main") })
+    |> result.map(fn(pair) { pair.1 })
+  }
+  let assert Ok(live_title) = title_row(live_text) as "live composer is visible"
+  let assert Ok(idle_title) = title_row(idle_text) as "idle composer is visible"
+  let assert Ok(_) = live_cursor as "the live editor has a cursor"
+  assert live_title == idle_title
+    as "reviewer completion moved the composer title"
+  assert live_cursor == idle_cursor as "reviewer completion moved the cursor"
+  assert string.contains(idle_text, "Advisor · idle")
+  assert !string.contains(idle_text, "Review queue delivery")
+    as "the idle slot retained a completed task"
+}
+
+pub fn no_advisor_does_not_reserve_an_idle_reviewer_slot_test() {
+  let without = model() |> tui.update(backend.Resize(80, 24), _)
+  let #(rendered, _) = tui.view(without, geometry.rect_new(0, 0, 80, 24))
+  assert !string.contains(frame.buffer_to_text(rendered), "Advisor · idle")
 }

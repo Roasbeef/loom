@@ -84,10 +84,10 @@ type Pane {
 }
 
 // Five failing tool results, each a summary line followed by twenty lines
-// of detail. Collapsed, a result is its one truncated summary row;
-// expanded, it is the tool name and every line, so the same transcript is
-// ten rows in one mode and well over a hundred in the other. That gap is
-// the repro: the pane has to shrink by more than it is tall.
+// of detail. Compact failures retain eight diagnostic lines and an expansion
+// hint, so a 72-row terminal leaves a visible blank tail after collapse.
+// Expanded, the same transcript exceeds a hundred rows and fills the pane.
+// Both premises above are required for the stale-cell regression.
 fn traffic() -> List(virtual_backend.Step) {
   [
     deliver(gateway.full_snapshot("demo")),
@@ -152,7 +152,7 @@ fn pane(steps: List(virtual_backend.Step)) -> Pane {
   let inbox = connection.new_inbox()
   let script =
     virtual_backend.script(
-      backend.TerminalSize(width: 96, height: 30),
+      backend.TerminalSize(width: 96, height: 72),
       steps,
       inbox,
     )

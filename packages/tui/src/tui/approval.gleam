@@ -71,6 +71,18 @@ pub type Review {
   )
 }
 
+/// Human-readable fields for the compact consent surface.
+pub type Presentation {
+  Presentation(
+    /// The question the operator is deciding.
+    question: String,
+    /// Complete safe action preview, with no surrounding display quotes.
+    action: String,
+    /// Complete requested authority, one literal line per grant.
+    authority: List(String),
+  )
+}
+
 /// Decodes only escalation cells from a completed metadata cut.
 ///
 /// ## Examples
@@ -333,22 +345,7 @@ pub fn details(record: Review) -> Result(String, String) {
       "Incomplete detail: exact approval exceeds the 16KiB display bound; approve is disabled, deny remains available",
     ),
   )
-  let literal =
-    encoded
-    |> string.to_utf_codepoints
-    |> list.map(fn(point) {
-      let code = string.utf_codepoint_to_int(point)
-      case code {
-        code if code < 0x7F -> string.from_utf_codepoints([point])
-        code if code <= 0xFFFF -> escaped_unit(code)
-        code -> {
-          let adjusted = code - 0x10000
-          escaped_unit(0xD800 + adjusted / 1024)
-          <> escaped_unit(0xDC00 + adjusted % 1024)
-        }
-      }
-    })
-    |> string.concat
+  let literal = escaped_json(encoded)
   use <- bool.guard(
     string.byte_size(literal) > detail_limit,
     Error(
@@ -356,6 +353,222 @@ pub fn details(record: Review) -> Result(String, String) {
     ),
   )
   Ok(literal)
+}
+
+fn escaped_json(encoded: String) -> String {
+  encoded
+  |> string.to_utf_codepoints
+  |> list.map(fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+    case code {
+      code if code < 0x7F -> string.from_utf_codepoints([point])
+      code if code <= 0xFFFF -> escaped_unit(code)
+      code -> {
+        let adjusted = code - 0x10000
+        escaped_unit(0xD800 + adjusted / 1024)
+        <> escaped_unit(0xDC00 + adjusted % 1024)
+      }
+    }
+  })
+  |> string.concat
+}
+
+/// Presents the complete captured request as readable, literal text.
+///
+/// Every authority value remains JSON encoded so terminal controls and bidi
+/// characters stay visible. Unknown grant shapes fall back to their complete
+/// literal encoding rather than a summary that could omit authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.readable_details(captured_request)
+/// ```
+pub fn readable_details(record: Review) -> Result(String, String) {
+  use presented <- result.try(presentation(record))
+  Ok(
+    [
+      presented.question,
+      "Action",
+      presented.action,
+      "Access requested",
+      ..presented.authority
+    ]
+    |> string.join("\n"),
+  )
+}
+
+/// Projects one complete request into safe fields for the compact panel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.presentation(captured_request)
+/// ```
+pub fn presentation(record: Review) -> Result(Presentation, String) {
+  use _ <- result.try(details(record))
+  use #(_, grants) <- result.try(case record.permission {
+    Exact(action, grants) -> Ok(#(action, grants))
+    Unavailable(reason) -> Error(reason)
+  })
+  let preview = case record.preview {
+    "" -> "No action preview was captured."
+    preview -> readable_preview(record.tool, preview)
+  }
+  let authority = case grants {
+    [] -> ["- No additional grants requested."]
+    grants -> list.map(grants, readable_grant)
+  }
+  Ok(Presentation(question(record.tool), preview, authority))
+}
+
+fn question(tool: String) -> String {
+  case tool {
+    "bash" | "shell" -> "Allow this command?"
+    "fs_read" -> "Allow this file read?"
+    "fs_write" -> "Allow this file write?"
+    "fs_edit" -> "Allow this file edit?"
+    "" -> "Allow this request?"
+    tool -> "Allow " <> literal_text(tool) <> " to proceed?"
+  }
+}
+
+fn readable_preview(tool: String, preview: String) -> String {
+  let projected = {
+    use value <- result.try(
+      json.parse(preview) |> result.replace_error("invalid preview JSON"),
+    )
+    use fields <- result.try(object(value))
+    case tool {
+      "fs_read" -> {
+        use _ <- result.try(only_keys(fields, ["path", "offset", "limit"]))
+        use path <- result.try(text(fields, "path"))
+        use _ <- result.try(optional_integer(fields, "offset"))
+        use _ <- result.try(optional_integer(fields, "limit"))
+        Ok(
+          "Read "
+          <> literal_text(path)
+          <> integer_suffix(fields, "offset", " from line ")
+          <> integer_suffix(fields, "limit", " for at most ")
+          <> case list.key_find(fields, "limit") {
+            Ok(json.Int(_)) -> " lines"
+            _ -> ""
+          },
+        )
+      }
+      "fs_write" -> {
+        use _ <- result.try(only_keys(fields, ["path", "content"]))
+        use path <- result.try(text(fields, "path"))
+        use content <- result.try(text(fields, "content"))
+        Ok(
+          "File: "
+          <> literal_body(path)
+          <> "\nContent:\n"
+          <> readable_file_content(content),
+        )
+      }
+      "bash" | "shell" -> {
+        use _ <- result.try(only_keys(fields, ["command", "timeout_ms"]))
+        use command <- result.try(text(fields, "command"))
+        use _ <- result.try(optional_integer(fields, "timeout_ms"))
+        Ok(
+          "Run "
+          <> literal_text(command)
+          <> integer_suffix(fields, "timeout_ms", " · timeout ")
+          <> case list.key_find(fields, "timeout_ms") {
+            Ok(json.Int(_)) -> " ms"
+            _ -> ""
+          },
+        )
+      }
+      _ -> Error("no readable preview")
+    }
+  }
+  result.lazy_unwrap(projected, fn() { safe_preview_fallback(preview) })
+}
+
+fn safe_preview_fallback(preview: String) -> String {
+  case json.parse(preview) {
+    Ok(value) -> value |> json.to_string |> escaped_json
+    Error(_) -> literal_body(preview)
+  }
+}
+
+fn literal_body(text: String) -> String {
+  text
+  |> literal_text
+  |> string.drop_start(1)
+  |> string.drop_end(1)
+}
+
+// Newlines owned by the file become rows in the preview. Each row is escaped
+// independently, so a literal `\n`, terminal control or bidi mark remains
+// visibly distinct from that structure, including empty and trailing rows.
+fn readable_file_content(content: String) -> String {
+  content
+  |> string.split("\n")
+  |> list.map(literal_body)
+  |> string.join("\n")
+}
+
+fn only_keys(fields, allowed: List(String)) -> Result(Nil, String) {
+  case
+    list.all(fields, fn(field) {
+      let #(key, _) = field
+      list.contains(allowed, key)
+    })
+  {
+    True -> Ok(Nil)
+    False -> Error("preview has unrepresented arguments")
+  }
+}
+
+fn optional_integer(fields, key: String) -> Result(Nil, String) {
+  case list.key_find(fields, key) {
+    Error(_) | Ok(json.Int(_)) -> Ok(Nil)
+    Ok(_) -> Error("preview has an invalid integer")
+  }
+}
+
+fn integer_suffix(fields, key: String, prefix: String) -> String {
+  case list.key_find(fields, key) {
+    Ok(json.Int(value)) -> prefix <> int.to_string(value)
+    _ -> ""
+  }
+}
+
+fn readable_grant(value: json.JsonValue) -> String {
+  let exact = value |> json.to_string |> escaped_json
+  let readable = {
+    use fields <- result.try(object(value))
+    use kind <- result.try(text(fields, "type"))
+    case kind {
+      "readable_root" -> {
+        use path <- result.try(text(fields, "path"))
+        Ok("Read files under: " <> literal_text(path))
+      }
+      "writable_root" -> {
+        use path <- result.try(text(fields, "path"))
+        Ok("Write files under: " <> literal_text(path))
+      }
+      "env" -> {
+        use name <- result.try(text(fields, "name"))
+        Ok("Read environment variable: " <> literal_text(name))
+      }
+      "network" -> {
+        use network <- result.try(field(fields, "network"))
+        Ok("Network access: " <> { network |> json.to_string |> escaped_json })
+      }
+      "limit" -> Ok("Resource limit: " <> exact)
+      "scratch" -> Ok("Scratch storage: " <> exact)
+      _ -> Error("unknown grant")
+    }
+  }
+  "- " <> result.lazy_unwrap(readable, fn() { "Exact grant: " <> exact })
+}
+
+fn literal_text(text: String) -> String {
+  text |> json.String |> json.to_string |> escaped_json
 }
 
 fn escaped_unit(code) {

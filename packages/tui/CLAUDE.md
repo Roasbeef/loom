@@ -1,19 +1,125 @@
 # tui
 
+## Agent workspace
+
+`F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
+Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
+the selected transcript and recipient. Missing selections stay visible as
+unavailable until navigation chooses another row. `n` visits the next attention
+state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
+the selected detail. The real composer stays visible below the workspace. Tab
+transfers keyboard ownership to it without changing the inspected ID or recipient;
+Escape returns to the roster. Editing uses the existing submission and command
+completion paths, including the visible command palette. The ordinary
+`Shift+Tab` rail shares the same task summaries, with a reserved Advisor section
+and a separately labelled worktree observation. A missing Git observation is
+never a clean-worktree claim. A `sub:` prefix is an identity convention, not evidence of a parent relation.
+
+`agent_view.Row` is projected from one coherent `snapshot_view.View` and window.
+It reuses `reviewer_status` for accepted task excerpts and effect-pending tools,
+then decodes `op.state` and `strand.last_result` for waits and terminal outcomes.
+An idle strand with captured pending input is shown as halted; queued input on
+a live operation is receipt evidence, never an operator question. Pending
+approvals match both strand and a live current operation; stale journal records
+cannot replace a terminal outcome. Update excerpts retain their
+exact assistant entry ID as well as operation identity; successors and missing
+newer answers cannot inherit a misleading old update. Disconnect makes current
+state unavailable while leaving the previous observation readable.
+
+`agent_activity` names dependency waits only from current effect-pending
+`agent_wait` calls with valid run handles. Recent tool summaries join invocation
+and result identity on the captured branch after the operation's accepted prompt.
+An absent prompt boundary yields unavailable history rather than older-run tools.
+Approval previews show the captured action before opening the exact decision
+surface; they never choose a grant. General assistant questions remain in their
+update and transcript because the protocol has no separate pending-question fact.
+
+The inspector keeps Activity, Messages and Notes under `agents.Detail`, switched
+with 1/2/3. `agent_messages` admits sends only after the sending strand's
+accepted operation prompt. It joins results within that branch and before a
+later reuse of the call ID. `Model.agent_messages` retains the latest twenty
+verified sends across operation completion, with message bodies bounded to 4096
+characters plus an excerpt marker; changing sessions releases this cache.
+Acceptance means the tool accepted the send, not that the recipient read it.
+Unobserved older history remains explicitly unavailable. The Messages tab
+renders a selectable invocation-identity list. Wide rows use three lines for
+direction, a short observed-result badge, and the body excerpt; the selected
+body occupies the adjacent preview. Stacked layouts preserve the same facts and
+PgDn pages by the visible body viewport without skipping wrapped lines; in the
+40×12 fixture that viewport is one line. `[` and `]` select a message,
+Up/Down select an agent, Enter opens the inspected agent, and `o` explicitly
+opens the selected sender and changes the composer recipient. Tab transfers to
+the composer. Captures preserve message identity and body scroll instead of
+resetting either while the observation remains present.
+
+The inspector and standalone `/notes` share one notes browser. It uses the
+inspected strand in the Notes tab and the active strand when standalone.
+`notes_requested` coalesces reads behind the existing session channel;
+`NotesSnapshot` values from a different target cannot replace the visible board.
+Entering another owner resets selection to that owner's first key. Refreshing
+the same owner retains the stable key through reorder and clamps the note scroll
+to the refreshed body. Note mode and scroll remain independent of transcript
+detail mode and transcript scroll. Only the selected body is formatted, with
+modifiers and links preserved. Compact layouts retain stale and omitted facts
+and give the body the rows actually available. Brackets select notes, Ctrl+g
+switches readable/raw note mode, PgUp/PgDn scroll the body, and `r` refreshes.
+The composer remains intact, and opening `/notes` clears the competing diff
+surface.
+
+`StrandWorkspace` parks the complete editor, attachments, command history,
+submission mode and bounded reader under `(session, strand)`. Navigation restores
+that owner before rendering. Retired strands and old sessions release history
+buffers while retaining unsent drafts. A missing captured recipient cannot submit
+and cannot silently fall back to another strand. Reading anchors are relocated
+from the restored endpoint, never from the strand being left. A daemon-returned
+held prompt appends only to its original strand's draft. Session replacement
+clears advice and goal observations and their pending request identities, then
+refreshes the new session, even when both primaries are already running.
+
+`appearance.Palette` adapts semantic colors once per completed frame. Launch
+reads `COLORTERM`, `TERM`, `COLORFGBG`, and `NO_COLOR`; rendering performs no I/O.
+Truecolor uses the dark palette unless the background hint names ANSI 7 or 15;
+limited-color terminals use their ANSI palette, and `NO_COLOR` uses terminal
+defaults. Content, links, wide-cell markers and modifiers survive adaptation.
+`theme.quiet_text` is readable secondary text without a dim modifier; structural
+dividers have their own color. Status labels and selection marks carry meaning
+without color. `gleam dev agents dark|light|ansi|plain` runs an illustrative,
+provider-free native fixture through the capture decoder and the shipped loop.
+
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
-The dialog captures the record's sequence, action and grants. Metadata refreshes
-cannot replace that question before a decision. The terminal tracks presented
-questions by ID and sequence, so dismissal does not reopen the same question
-and a reopened request with a new sequence is offered again.
+The compact dialog is anchored to the bottom of the terminal, capped at eighteen
+rows on an ordinary screen, and bounded by the available height on smaller ones.
+Its readable view asks a tool-specific question, names the requester, shows the
+captured action on a raised background, and lists the exact requested authority.
+It also states whether session persistence is available. A known `fs_write`
+shows `File` and `Content`; actual content newlines become preview rows, while
+each row escapes control bytes, bidi marks, and literal backslash sequences
+independently. Unknown fields and complete `fs_edit` payloads retain escaped JSON
+fallback instead of dropping fields. `d` or Ctrl+g switches to the complete
+escaped raw request, including the captured action digest and the exact owner
+and operation. PgUp, PgDn, Home,
+and End scroll request detail independently while the choices remain visible.
 
-No action is selected on opening. Left/right or Tab selects Allow once, Allow
-for session, or Deny; Enter confirms and Escape defers. Session approval sends
-`approve` with `scope: "session"` and is available only for complete filesystem
-or full-network grant sets. Other grants and incomplete details cannot receive
-session approval. Legacy `/approve` retains once-only behavior. The server
-commits the session authority and exact decision atomically. See protocol 041.
+The dialog captures the record's sequence, action and grants. Its owner label
+comes from the exact escalation ID and sequence in the captured register; absent
+scope stays unavailable instead of borrowing the selected strand's identity.
+Metadata refreshes cannot replace that question before a decision. The terminal
+tracks presented questions by ID and sequence, so dismissal does not reopen the
+same question and a reopened request with a new sequence is offered again.
+
+The three choices remain vertical at every width, including the 40×12 fallback.
+No action is selected on opening. Up/down, left/right, or Tab explicitly selects
+Allow once, Allow for session, or Deny; Enter confirms and Escape defers. A
+choice the captured request cannot encode stays visible as unavailable and
+navigation skips it. Denial remains available. Session approval sends `approve`
+with `scope: "session"` and is available only for complete filesystem or
+full-network grant sets. The styled question, preview, and focus treatment do
+not change consent: the panel never widens, substitutes, or invents authority,
+and a decision echoes the exact captured action, grants and sequence. Legacy
+`/approve` retains once-only behavior. The server commits the session authority
+and exact decision atomically. See protocol 041.
 
 
 ## Session directory access
@@ -169,15 +275,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   cut's oldest sequence; otherwise the cut stands alone, because an interval
   between the two was never read and `before_seq` would sit beneath it. The
   same rule covers a parked strand's window and a reconnect's.
-- A strand switch parks the outgoing strand's scrollback in
-  `Model.parked_scrollback` and restores the incoming strand's, so switching
-  never discards loaded history. The window is per strand because ancestry is,
-  and the cut window alone holds only the newest hundred records of the whole
-  session across every strand. `render_cut` prunes the parked dictionary to
-  the strands the cut still carries, and adopting a different session clears
-  it, because strand names are reused. `history_view.capture` still discards a
-  window whose strand does not match, as the safety net for paths that change
-  strands without going through the switch.
+- A strand switch parks its editing and reading endpoint in
+  `Model.strand_workspaces`, keyed by `(session, strand)`. It restores the
+  incoming owner's complete editor and bounded ancestry before applying the
+  current capture. `render_cut` releases parked reading buffers for retired
+  strands and other sessions without evicting unsent drafts. The selected
+  source anchor survives returning at a different terminal width.
+
 - `tui/transcript_anchor.Row` identifies a durable entry and its source block
   or tool call. Wrapped row offsets relocate the reading position through
   incoming output, older pages, detail changes and width changes. Equal text
@@ -195,8 +299,12 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   once it settles — and `Ctrl+G` shows the block itself; a redacted block is
   its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
-  Code-mode calls retain a syntax-highlighted preview of up to 60 submitted
-  source lines, with an omission marker; Ctrl+G shows the complete program.
+  Unresolved code-mode calls retain a syntax-highlighted preview of six
+  submitted source lines, with an omission marker. Confirmed success replaces
+  source bulk with an activity/result summary; Ctrl+G shows the complete program
+  and exact output. Failed diagnostics remain multiline in compact mode, bounded
+  to eight lines and 1,600 characters with an explicit full-error expansion hint.
+  Success marks derive from matched results rather than generic invocations.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
   worktree observation.
@@ -464,10 +572,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - `tui/approval.Review` binds the displayed action, requested grants and
   register seq. Exact resolution lookups have their own channel lane; sparse
   lookup metadata cannot replace conversation history or configuration.
-  `tui/approval_panel` displays the exact captured action, grants, tool and
-  sequence as escaped literal JSON in a scrollable panel. Its 16 KiB displayed
-  detail limit is a presentation bound: incomplete detail refuses approval,
-  while denial remains available under the captured sequence.
+  `tui/approval_panel` presents a typed question, action preview and exact grant
+  list, with the complete captured action, grants, tool and sequence available
+  as escaped literal JSON. Its 16 KiB displayed-detail limit is a presentation
+  bound: incomplete detail refuses approval, while denial remains available
+  under the captured sequence.
   `tui/sessions` and workspace-record bootstrap remain historical host-test
   seams, not the live default selector.
 - `host/bootstrap` is called directly, with no shim between. Shared
@@ -516,18 +625,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   joins the worker before the caller sees the timeout. It performs no path
   expansion or shell evaluation.
 - `tui/advisor_pending.{Board, decode, lines, primary_strand,
-  advisor_strand, visible_nudges}` draws the advisor's undelivered nudge
-  queue beside the composer. `decode` is a total decoder over a board this
-  terminal did not write — own row and byte caps rather than a trust of
-  the server's — and `lines` renders it in the advisor's voice: nothing at
-  all for an empty queue, since the band is taken from the conversation
-  and costs nothing when there is nothing to say; otherwise a heading
-  naming the total and the strand, up to `visible_nudges` (3) sanitized
-  bullets, and a `+N more waiting` line for the remainder. `primary_strand`
-  and `advisor_strand` are copies of `client/advisor`'s constants, not
-  imports — the terminal links no server package — and `gateway_test`
-  pins both pairs against each other so a rename on either side fails a
-  test rather than quietly disarming the panel's read triggers.
+  advisor_strand}` validates an observation of undelivered advice. The composer
+  uses the count/recipient heading from `lines`; `pending_nudge_lines` exposes
+  every received body in the scrollable transient tail, with a pending and
+  not-delivered label. A server-omitted suffix is explicitly reported. The
+  terminal neither drains this queue nor adds its observation to durable
+  records. The primary/advisor constants remain copied from the server and
+  pinned by gateway tests, because the terminal links no server package.
 
 - `tui/goal_view.{Board, Status, PauseCause, LimitCause, CheckRun,
   check_output_limit, decode, lines, row, refusal}` is the session goal's
@@ -674,21 +778,45 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   from the attached session. `/diff` requests an observation; Up/Down selects
   all changes or a raw file identity, Enter returns to the composer, Ctrl+d
   changes focus, and `r` refreshes while the navigator has focus. Mouse file
-  selection and patch scrolling use the rendered pane geometry. Refresh keeps
+  selection and patch scrolling use `diff_panel`'s rendered geometry. The shared
+  layout gives the file list semantic status accents, a full-row text-marked
+  selection, a sticky selected-file header, and explicit Navigator or Composer
+  focus hints. PgUp/PgDn scroll the existing patch renderer and numbering.
+  Focused navigation on a short terminal may borrow status-band rows only above
+  the actual editor; it cannot cover the editor or footer. Compact mode retains
+  the observation line and a readable Navigator help title. Focusing clamps the
+  patch cache and scroll to the active geometry. Another overlay cannot borrow
+  or receive mouse hits from the hidden diff. Refresh keeps
   the selected raw path when it still exists. A pending reply releases the
   command lane; the final push must match the actual sent request ID and
   attachment. Failed refresh retains the previous board with a stale label.
   Selection and received observations invalidate the render revision. The
   patch cache stores the board and selection that produced its rows, so a
   reply applied before a terminal tick still replaces the previous patch.
-- **Queued-input editing**: bare `/queue` opens `tui/queue_editor`; `/queue text`
-  still submits a queued turn. Enter fetches the complete selected item,
-  ordinary Enter inserts a newline in its editor, and Ctrl+s saves its exact
-  revision. Images remain on the server. The draft is separate from the
-  ordinary composer and survives Escape, conflict, or an uncertain save.
-  Ctrl+r explicitly reconciles the same item and queue namespace. A changed
-  session, epoch, or incarnation cannot adopt an old draft, even if the opaque
-  item ID repeats; a new connection within that namespace may reconcile it.
+- **Queued-input editing**: the passive card above the composer shows up to
+  three captured messages with queue/steer and editable/read-only badges.
+  `Alt+q` or bare `/queue` focuses its inspector; `/queue text` still submits a
+  queued turn. Opening the inspector preserves the transcript, ordinary draft,
+  and attachments, even when a queue edit is retained. Up/Down changes the
+  selected opaque identity, and PgUp/PgDn pages its captured excerpt. Enter
+  fetches the complete revision only for an editable item; read-only items
+  cannot request text the capture did not carry.
+  `e` explicitly resumes the retained queue draft and cancels ownership of any
+  pending full-text fetch, so a late response cannot replace the resumed edit.
+  A clean editable draft permits fetching another item. Dirty, Saving, and
+  Unknown drafts prevent a fetch from replacing them with another identity or
+  namespace. Escape moves from Editor to Inspector, then to the composer.
+  Ordinary Enter inserts a newline in the queue editor; Ctrl+s saves its exact
+  revision. Images remain on the server. Ctrl+r explicitly reconciles the same
+  item and queue namespace. A changed session, epoch, or incarnation cannot
+  reconcile or save an old draft, even if its opaque item ID repeats; a new
+  connection within that namespace may reconcile it.
+  The queue reserves its rectangle before transcript rendering. Paging and
+  capture refresh use that rectangle, and mouse hits exclude the inspector's
+  controls and list heading. Compact cards share their excerpt width with the
+  paging calculation and clamp retained offsets during rendering. At 40×12,
+  the focused footer uses one row; a card with no inner row pages its excerpt
+  in the title while preserving the composer and transcript row.
 - **Completion and live jobs**: `tui/completion_summary` retains observed
   operation start boundaries and processes a result before a successor in the
   same cut. It attributes captured edits and paired tool outcomes only within
@@ -699,6 +827,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   is free. Ordinary transcript refreshes do not query job history or run Git.
   `session_channel.RequestRefused` carries the command and actual request ID,
   so an unrelated refusal cannot settle a queue, worktree, or jobs request.
+  `summary_panel` presents Completion, Usage, and Jobs as separate numbered
+  sections. Completion renders captured terminal outcome and attributable
+  ancestry, file-tool, and tool-result evidence. Usage separates cumulative
+  all-strand accounting from the latest measured active request. Jobs remains a
+  separately refreshed observation; brackets select a stable retained job and
+  show only its captured owner, command excerpt, age, and deadline. `r` refreshes
+  jobs and resets the section viewport. A roster for another strand is
+  unavailable rather than borrowed. Job ages and deadlines are relative facts
+  from one server observation; rendering does not read a clock. Section paging
+  does not alter the composer draft.
 - **Current context**: `/context` opens aggregate usage and `/context all`
   (also `/contextall`) adds bounded item estimates. `tui/context_view.State`
   retains one attachment and strand's request identity, board, and independent
@@ -710,7 +848,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `ctx ~N%` ahead of cumulative billing. Missing observations show `ctx —`.
   Context and worktree reads wait for each other's final push before borrowing
   the same server worker slot. An unsupported optional command stays unavailable
-  until attachment replacement. Escape returns without discarding the composer.
+  until attachment replacement. `context_panel` renders estimated capacity,
+  basis, durable sequence, aligned component estimates, compaction boundary, and
+  optional bounded item inventory. It labels freshness and unavailable states,
+  and states that component rows need not sum to the headline. Page movement is
+  clamped to the current geometry. Preview refuses a live observation rather
+  than presenting illustrative data as fetched state. Compact help retains the
+  Escape control at 40 columns. Escape returns without discarding the composer.
 - **Advisor pending-nudge panel**: `tui.sync_advisor_nudges` issues an
   `advisor_pending` read itself, with no operator keystroke, on exactly
   three transitions — `tui.advisor_nudges_action` names them `ReadNudges`:
@@ -723,10 +867,13 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   edges above. The primary starting a run is `DropNudges` — a local
   submission counts, so the operator's own send clears the panel before
   the server confirms the phase — because that run start is what drains
-  the queue into the prompt; the panel is drawn beside the composer as
-  context for the prompt about to be written, never as a transcript row,
-  since a transcript row would claim the model had already read advice it
-  has not. It never enters model context.
+  the queue into the prompt. A compact heading stays beside the composer;
+  complete bodies live in the explicitly pending transient tail. Neither
+  presentation enters model context or claims that observing a nudge delivers it.
+  On terminals at least 20 rows high, a known idle advisor retains a stable
+  two-row composer slot when no reviewer rows are live. The empty task row keeps
+  reviewer completion from moving the composer while still showing that the
+  advisor is idle. Tiny terminals keep those rows for the transcript and editor.
 - **Session goal panel**: `/goal` shows the status block, `/goal <objective>`
   pins one, and `/goal clear|pause|resume` are subcommands **only as the
   whole argument**, so `/goal clear the failing test` is an objective. The
@@ -752,7 +899,22 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   common one is an older daemon or a session with no advisor answering
   `code_unsupported`, and a panel that silently fails to appear looks
   exactly like a session with no goal. An automatic refresh refused stays
-  silent; the operator's own `/goal` and every mutation do not.
+  silent; the operator's own `/goal` and every mutation do not. Captures preserve
+  an existing operator-facing footer notice, and sending a background `goal_get`
+  preserves it too. An explicit `/goal` still reports its own send while it waits
+  for the board.
+  The explicit observation opens `focused_goal_panel`, which groups the
+  server-owned status and cause, objective, budget consumption, age, latest
+  check and output, and reviewer feedback in one raised card. Its viewport owns
+  PgUp, PgDn, Home and End; `r` requests the existing read, and Escape returns to
+  the unchanged composer. An Active board offers `p` through the existing pause
+  command. Paused and Limited boards offer `c` through the existing resume
+  command. NoGoal and Complete offer neither. A pending correlated request
+  disables actions until its board arrives. These controls add no authority or
+  wire message, and budget consumption is never presented as completion. When
+  status bands would leave no body at 40×12, the goal temporarily uses their
+  area while preserving the actual editor and footer. Status, objective, and
+  controls therefore remain inspectable in the compact busy layout.
 - **A new observation command must be taught to every command-name table
   by hand — the compiler checks none of them.** `advisor_pending` needed
   three, and missing one is not cosmetic: `tui/session_channel`'s
@@ -788,21 +950,16 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
-- **Footer**: completed coherent cuts establish cumulative input, output,
-  cache-read, cache-write, and cost fields. The
-  footer never infers a price from a model name. It discovers the surrounding
-  repository once before the event loop, then shows workspace and branch beside
-  the model. Repository marker and HEAD reads validate and read one descriptor,
-  accept only regular files up to 4 KiB, and keep displayed refs shape- and
-  length-bounded. When all sections
-  cannot share one row, usage and agent status move to a second row; if those
-  collide, status takes a third row so the usage tail remains visible. The
-  row count comes from fixed caps so it cannot flap with the notice text,
-  but the status section grows into every column a wider terminal has past
-  the single-row threshold (`footer_status_limit`), and on the stacked
-  layouts the workspace label grows into the primary row it shares with
-  the model alone (`footer_project_limit`), so a long notice or path is cut
-  only when the screen is actually short of room.
+- **Conversation and footer**: the reading surface has a heading and gutter;
+  horizontal rules separate the composer. Scrollback controls replace the
+  transcript heading, so Enter's send mode remains visible and entering history
+  does not change the viewport height. Compact mode shows model, context estimate,
+  estimated session cost, notices and an attention summary in one row, or two
+  below 100 columns. The attention summary reserves its own space. Ctrl+G exposes
+  the complete input/output/cache/rate accounting in the existing adaptive footer.
+  Coherent cuts supply usage and cost; model names never imply prices. Workspace
+  and branch discovery still runs once before the event loop, through bounded
+  regular-file reads, and the header shows the resulting workspace label.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.
@@ -965,6 +1122,14 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   measures worse than the original; `erlc +time` on the generated `tui.erl`
   shows it as `core_inline_module`, and `docs/execution.md` has the
   measurement.
+- **Tick settling has the same parameter boundary.** `update_tick` drains
+  replay, control, reconnect and connection events before passing the result
+  to `settle_tick`. The helper applies the existing read-service chain to its
+  `drained` parameter and retains the original model for quiet-time and activity
+  comparisons. Adding the notes read to the former single body exposed another
+  inliner blow-up: `core_inline_module` took 51.445 seconds. The boundary reduced
+  that phase to 1.632 seconds in the generated-code experiment; the actual Gleam
+  package build took 7.80 seconds. Keep the service order and this boundary.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read
@@ -973,7 +1138,8 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   recording timestamps retain their real clocks. `test/clock_test.gleam`
   exercises the event handler at negative epochs and pins repeated scripted
   intermediate frames with a fixed clock.
-- **Panels draw borders, not interiors.** `render_panel_border` puts the same
+- **Auxiliary panels draw borders, not interiors.** The ordinary conversation
+  has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
   pins that, but it skips the block's area-dependent interior clear over cells
   the canvas already painted. `make bench-tui` compares both paths over the
@@ -1054,8 +1220,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `tui.advisor_payload` recognizes each by its whole frame — a header line
   with its footer, or the header with the `advisor-nudges` fence — and
   `tui.advisor_lines` draws the row as `System` under the advisor's name:
-  collapsed to one attribution line, expanded to the body with the frame
-  lines dropped, since those address the model rather than the operator. Both
+  advice and feeds collapse to one attribution line, while nudges retain their
+  full body in both modes. Expanded advice and feeds drop their frame lines,
+  since those address the model rather than the operator. Both
   tokens are required, so an operator quoting a verdict back keeps their own
   attribution. The frame literals are copies of `client/advisorslice`'s,
   because this package links no server package; `advisor_view_test` pins all

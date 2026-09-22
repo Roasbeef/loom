@@ -733,7 +733,7 @@ pub fn aborted_turns_show_stopped_above_an_unconfirmed_diagnostic_test() {
 
 // Exercise the grouped transcript path, which previously bypassed the source
 // renderer and left compact code-mode calls as a truncated JSON argument row.
-pub fn compact_code_mode_keeps_formatted_source_when_it_settles_test() {
+pub fn compact_code_mode_summarizes_success_and_keeps_exact_expansion_test() {
   let source =
     "import cap/report\n\npub fn main() {\n  report.text(\"hello\")\n}"
   let arguments = json.Object([#("program", json.String(source))])
@@ -747,23 +747,19 @@ pub fn compact_code_mode_keeps_formatted_source_when_it_settles_test() {
     pending |> received(code_outcome(2, "code", False)) |> painted
   assert !completed.details_expanded
   assert string.contains(after, "✓ code_mode")
-  assert string.contains(after, "import cap/report")
-  assert string.contains(after, "report.text(\"hello\")")
+  assert !string.contains(after, "import cap/report")
+  assert !string.contains(after, "report.text(\"hello\")")
+  let #(_, expanded) =
+    completed |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "import cap/report")
+  assert string.contains(expanded, "report.text(\"hello\")")
   assert !string.contains(after, "{\"program\"")
   assert !string.contains(after, "awaiting result")
 
-  // The source rows are identical across settlement, so successful completion
-  // does not change the compact transcript's height or duplicate the program.
-  let details = fn(state: tui.Model) {
-    state.compact_call_cache
-    |> dict.values
-    |> list.flatten
-    |> list.filter(fn(line) { line.speaker == tui.ToolDetail })
-  }
-  assert details(pending) == details(completed)
-  assert list.length(details(completed)) == 1
+  // The compact result replaces source bulk; the durable program is still
+  // available above through the ordinary expanded-history path.
   assert list.length(pending.rendered_rows)
-    == list.length(completed.rendered_rows)
+    > list.length(completed.rendered_rows)
   let #(_, failed) =
     pending |> received(code_outcome(2, "code", True)) |> painted
   assert string.contains(failed, "import cap/report")
@@ -778,9 +774,9 @@ pub fn compact_code_mode_is_bounded_and_expandable_in_the_frame_test() {
     |> received(call(1, "code", "code_mode", arguments))
     |> received(code_outcome(2, "code", False))
     |> painted
-  assert string.contains(visible, "LINE_60")
+  assert string.contains(visible, "✓ code_mode")
+  assert !string.contains(visible, "LINE_60")
   assert !string.contains(visible, "LINE_61")
-  assert string.contains(visible, "// …")
   let #(_, expanded) =
     compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
   assert string.contains(expanded, "LINE_61")
@@ -795,4 +791,53 @@ fn code_outcome(seq, id, failed) {
     ..placed,
     message: message.ToolResultMessage(..body, tool_name: "code_mode"),
   )
+}
+
+// Narrative-bearing calls and orphan results take the generic renderer. Both
+// must retain useful multiline diagnostics and the same expansion boundary.
+pub fn generic_failures_keep_bounded_multiline_diagnostics_test() {
+  let #(placed, body) = original(1)
+  let assert entry.MessageEntry(..) = placed as "message fixture"
+  let assert message.AssistantMessage(..) = body as "assistant fixture"
+  let invocation =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(..body, content: [
+        message.AssistantText("Checking the file.", None),
+        message.AssistantToolCall(message.ToolCall(
+          "failure",
+          "fs_edit",
+          args(),
+          None,
+          None,
+        )),
+      ]),
+    )
+  let diagnostic =
+    "first diagnostic\nsecond diagnostic\n"
+    <> string.repeat("extra detail\n", 7)
+    <> "FINAL_DIAGNOSTIC"
+  let assert entry.MessageEntry(message: result_body, ..) as result_entry =
+    outcome(2, "failure", True, None)
+    as "result entry"
+  let assert message.ToolResultMessage(..) = result_body as "result message"
+  let result_entry =
+    entry.MessageEntry(
+      ..result_entry,
+      message: message.ToolResultMessage(..result_body, content: [
+        message.ToolResultText(diagnostic, None),
+      ]),
+    )
+  list.each([[], [invocation]], fn(prefix) {
+    let initial =
+      list.fold(prefix, model(), fn(model, value) { received(model, value) })
+    let #(compact, visible) = initial |> received(result_entry) |> painted
+    assert string.contains(visible, "first diagnostic")
+    assert string.contains(visible, "second diagnostic")
+    assert string.contains(visible, "Ctrl+g shows the full error")
+    assert !string.contains(visible, "FINAL_DIAGNOSTIC")
+    let #(_, expanded) =
+      compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+    assert string.contains(expanded, "FINAL_DIAGNOSTIC")
+  })
 }

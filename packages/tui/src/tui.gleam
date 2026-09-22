@@ -44,7 +44,11 @@ import host/endpoint
 import machine/strand as machine_strand
 import simplifile
 import tui/advisor_pending
+import tui/agent_message_panel
+import tui/agent_messages
+import tui/agent_view
 import tui/agents
+import tui/appearance
 import tui/approval
 import tui/approval_panel
 import tui/attachment
@@ -56,11 +60,14 @@ import tui/command
 import tui/completion_summary
 import tui/composer
 import tui/connection
+import tui/context_panel
 import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/diff_panel
 import tui/file_read_view
+import tui/focused_goal_panel
 import tui/frame
 import tui/goal_view
 import tui/herdr
@@ -70,10 +77,12 @@ import tui/internal/ffi_terminal
 import tui/live_jobs
 import tui/markdown
 import tui/model_selector
+import tui/note_panel
 import tui/notes_view
 import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
+import tui/queue_panel
 import tui/recording
 import tui/reviewer_status
 import tui/selection
@@ -83,6 +92,7 @@ import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
+import tui/summary_panel
 import tui/text_hygiene
 import tui/theme
 import tui/tool_activity
@@ -177,7 +187,7 @@ pub const live_stream_limit = 24_576
 const patch_preview_lines = 60
 
 // Submitted code stays readable in compact mode; expansion retains every line.
-const code_preview_lines = 60
+const code_preview_lines = 6
 
 /// The undurable fragments of one strand-and-kind generation.
 ///
@@ -234,7 +244,8 @@ pub type ToolTail {
 pub type Overlay {
   NoOverlay
   ModelSelector(model_selector.State)
-  AgentInspector(selected: Int)
+  AgentInspector(selected: agents.Inspector)
+  GoalInspector(state: focused_goal_panel.State)
   SessionSelector(sessions.State)
   DaemonSelector(session_selector.State)
   ApprovalInspector(approval_panel.State)
@@ -517,6 +528,41 @@ pub type CacheNotice {
   )
 }
 
+/// Local editing and reading state belongs to an exact session and strand.
+///
+/// A parked workspace holds the editor itself, including its cursor, rather
+/// than only its text. Neither inspecting another agent nor reconnecting can
+/// turn that draft into input for another recipient.
+@internal
+pub type StrandWorkspace {
+  StrandWorkspace(
+    /// The complete editor, including cursor and selection state.
+    input: text_area.TextAreaState,
+    /// Exact unsent text and image attachments.
+    attachments: List(composer.Attachment),
+    /// Submitted command history for this recipient.
+    history: List(String),
+    /// Current position in the recipient's command history.
+    history_index: Int,
+    /// Draft displaced while browsing command history.
+    history_draft: String,
+    /// Whether this recipient's next message queues or steers.
+    submission_mode: SubmissionMode,
+    /// The bounded ancestry window and its live/reading mode.
+    scrollback: history_view.State,
+    /// Frozen transient content held while reading above the live tail.
+    reading_lines: Option(List(Line)),
+    /// Bottom-relative viewport offset at departure.
+    offset: Int,
+    /// Durable row identities used to restore the same reading position.
+    anchors: List(Option(transcript_anchor.Row)),
+    /// Unanchored row count below those durable identities.
+    prefix: Int,
+    /// Original viewport height for anchor relocation after a resize.
+    height: Int,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -528,7 +574,13 @@ pub type Model {
     quit: Bool,
     width: Int,
     height: Int,
+    /// Launch-time color capability, never read while rendering.
+    palette: appearance.Palette,
     input: text_area.TextAreaState,
+    /// Unsent drafts and reading endpoints never cross session identities.
+    strand_workspaces: Dict(#(String, String), StrandWorkspace),
+    /// The saved endpoint being restored on the next row-cache rebuild.
+    restored_workspace: Option(StrandWorkspace),
     attachments: List(composer.Attachment),
     history: List(String),
     history_index: Int,
@@ -566,19 +618,6 @@ pub type Model {
     cache_notices: List(CacheNotice),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
-    /// Retained scrollback of every strand other than the active one, keyed
-    /// by strand name. The window is per strand because ancestry is: the
-    /// projection walks one leaf's parent chain, and the six hundred
-    /// descriptors retained for `main` say nothing about a sub-agent. A
-    /// switch therefore has to put one window down and pick another up.
-    /// Parking here rather than holding a window per strand inside
-    /// `history_view` keeps that module owning exactly one reading endpoint,
-    /// which is what `freeze`, `older` and `accept` are written against;
-    /// only the switch knows that two endpoints exist. `history_view.capture`
-    /// still discards a window whose strand does not match, which remains the
-    /// safety net for every path that changes strands without coming through
-    /// here.
-    parked_scrollback: dict.Dict(String, history_view.State),
     notice: String,
     /// A complete queue draft never borrows the ordinary composer.
     queue_editor: queue_editor.State,
@@ -594,6 +633,10 @@ pub type Model {
     summary_surface: queue_editor.Surface,
     /// Independent detailed-summary scroll offset.
     summary_scroll: Int,
+    /// Focused evidence section in the completion summary.
+    summary_tab: summary_panel.Tab,
+    /// Stable-index projection of the selected current job.
+    summary_job_selected: Int,
     /// Current job observation is separate from the result timestamp.
     jobs: Option(live_jobs.Board),
     /// Local receipt time; server and terminal clocks are never subtracted.
@@ -650,6 +693,14 @@ pub type Model {
     diff_worktree_source: #(Option(worktree_view.Board), Int),
     /// Latest explicit read of the notes board, with its own revision.
     note_board: Option(notes_view.Board),
+    /// Stable cell key within the inspected notes board.
+    note_selected: Option(String),
+    /// Selected note representation, independent of transcript detail mode.
+    note_mode: note_panel.Mode,
+    /// Selected note body offset, independent of transcript reading position.
+    note_scroll: Int,
+    /// Latest explicit notes target waiting for the existing command lane.
+    notes_requested: Option(String),
     overlay: Overlay,
     models: List(protocol.ModelInfo),
     /// Slash commands loaded by the currently attached daemon.
@@ -660,6 +711,10 @@ pub type Model {
     agent_summary: String,
     /// Current reviewer progress, with operation-owned task excerpts.
     reviewer_rows: List(reviewer_status.Row),
+    /// Stable, operation-owned summaries of the captured agent roster.
+    agent_rows: List(agent_view.Row),
+    /// At most twenty provenance-verified sends observed in this attachment.
+    agent_messages: List(agent_messages.Item),
     active_strand: String,
     session: String,
     /// One catalogue display name, paired with the identity that owns it.
@@ -1058,7 +1113,10 @@ pub fn new_model_with_clock(
     quit: False,
     width: 80,
     height: 24,
+    palette: appearance.Dark,
     input: text_area.state_new(),
+    strand_workspaces: dict.new(),
+    restored_workspace: None,
     attachments: [],
     history: [],
     history_index: 0,
@@ -1086,7 +1144,6 @@ pub fn new_model_with_clock(
     cache_watch: dict.new(),
     cache_notices: [],
     scrollback: history_view.empty(),
-    parked_scrollback: dict.new(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
     worktree: worktree_view.new(),
@@ -1095,6 +1152,8 @@ pub fn new_model_with_clock(
     completion_owner: "",
     summary_surface: queue_editor.Closed,
     summary_scroll: 0,
+    summary_tab: summary_panel.Completion,
+    summary_job_selected: 0,
     jobs: None,
     jobs_observed_ms: None,
     jobs_refresh: worktree_view.Settled,
@@ -1119,6 +1178,10 @@ pub fn new_model_with_clock(
     diff_row_count: 0,
     diff_worktree_source: #(None, 0),
     note_board: None,
+    note_selected: None,
+    note_mode: note_panel.Readable,
+    note_scroll: 0,
+    notes_requested: None,
     overlay: NoOverlay,
     models: demo_models(),
     skills: [],
@@ -1127,6 +1190,8 @@ pub fn new_model_with_clock(
     strands:,
     agent_summary: agents.summary(strands),
     reviewer_rows: [],
+    agent_rows: [],
+    agent_messages: [],
     active_strand: "main",
     session: "demo",
     session_label: None,
@@ -1251,7 +1316,19 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // Only here does a copy reach a terminal: every other way of running the
   // loop shares stdout with something that is not one.
   let initial =
-    open_recording(Model(..launched, clipboard: TerminalClipboard), record)
+    open_recording(
+      Model(
+        ..launched,
+        clipboard: TerminalClipboard,
+        palette: appearance.detect(
+          host_bootstrap.getenv("COLORTERM") |> result.unwrap(""),
+          host_bootstrap.getenv("TERM") |> result.unwrap(""),
+          host_bootstrap.getenv("COLORFGBG") |> result.unwrap(""),
+          host_bootstrap.getenv("NO_COLOR") |> option.from_result,
+        ),
+      ),
+      record,
+    )
     |> start_herdr_reporter
 
   let _ =
@@ -2481,6 +2558,7 @@ fn finish_control(model: Model, result) {
           NoOverlay
           | ModelSelector(_)
           | AgentInspector(_)
+          | GoalInspector(_)
           | ApprovalInspector(_)
           | SessionSelector(_) -> model.overlay
         },
@@ -2513,6 +2591,7 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       NoOverlay
       | ModelSelector(_)
       | AgentInspector(_)
+      | GoalInspector(_)
       | ApprovalInspector(_)
       | SessionSelector(_) -> model.overlay
     },
@@ -2650,8 +2729,9 @@ fn render_frame(
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
   let #(header_area, body_area, input_area, footer_area) = layout(screen, model)
+  let #(conversation_area, queue_area) = queue_body_layout(body_area, model)
   let #(transcript_panel, agent_panel, changes_panel) =
-    body_layout(body_area, model)
+    body_layout(conversation_area, model)
   let transcript_area = panel_inner(transcript_panel)
   let #(pending_area, composer_area) =
     pending_layout(panel_inner(input_area), model)
@@ -2676,34 +2756,57 @@ fn render_frame(
   let base =
     repaint_canvas(screen, model.repaint_phase)
     |> render_header(header_area, model)
-    |> render_panel_border(
-      transcript_panel,
-      transcript_title(model),
-      theme.quiet,
-    )
+    |> render_conversation_heading(transcript_panel, model)
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
-    |> render_panel_border(input_area, input_title(model), theme.signal)
+    |> render_inline_queue(queue_area, model)
+    |> render_composer_chrome(input_area, input_title(model))
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, input_view)
     |> render_footer(footer_area, model)
     |> render_command_palette(body_area, model)
+  let base = case borrowed_diff_panel(model) {
+    Some(area) ->
+      base
+      |> buffer.clear(area)
+      |> render_panel_border(area, diff_title(model), theme.signal)
+      |> render_diff_view(panel_inner(area), model)
+    None -> base
+  }
   let rendered = case model.overlay {
     NoOverlay -> base
     ModelSelector(selector) -> model_selector.render(base, screen, selector)
     AgentInspector(selected) ->
-      agents.render_overlay(
+      agents.render_inspection(
         base,
-        screen,
-        model.strands,
+        body_area,
+        displayed_agents(model),
         model.active_strand,
         selected,
+        agent_detail_content(model, selected),
+      )
+    GoalInspector(state) ->
+      focused_goal_panel.render(
+        base,
+        goal_inspector_area(body_area, editor_area),
+        state,
+        goal_availability(model),
       )
     SessionSelector(selector) -> sessions.render(base, screen, selector)
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
+  }
+
+  let rendered = case model.overlay {
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+      render_command_palette(
+        rendered,
+        body_area,
+        Model(..model, overlay: NoOverlay),
+      )
+    _ -> rendered
   }
 
   // Selected cells keep their original contents. A growing pending/reviewer
@@ -2737,19 +2840,24 @@ fn render_frame(
     }
     None -> rendered
   }
-  let cursor = case model.overlay {
-    NoOverlay -> text_area.cursor_screen_pos(input_view, editor_area)
-    ModelSelector(_)
-    | AgentInspector(_)
-    | SessionSelector(_)
-    | DaemonSelector(_)
-    | ApprovalInspector(_) -> Error(Nil)
+  let cursor = case model.overlay, model.queue_editor.surface {
+    NoOverlay, queue_editor.Editor -> queue_editor_cursor(model, queue_area)
+    NoOverlay, _ -> text_area.cursor_screen_pos(input_view, editor_area)
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)), _ ->
+      text_area.cursor_screen_pos(input_view, editor_area)
+    ModelSelector(_), _
+    | AgentInspector(_), _
+    | GoalInspector(_), _
+    | SessionSelector(_), _
+    | DaemonSelector(_), _
+    | ApprovalInspector(_), _
+    -> Error(Nil)
   }
   let #(rendered, cursor) =
     render_summary_surface(rendered, cursor, screen, model)
   let #(rendered, cursor) =
     render_context_surface(rendered, cursor, screen, model)
-  render_queue_surface(rendered, cursor, screen, model)
+  #(appearance.apply(rendered, model.palette), cursor)
 }
 
 /// The area inside a one-cell rounded border.
@@ -2860,7 +2968,7 @@ fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
       Length(1),
       Fill,
       Length(input_height(model)),
-      Length(footer_height(screen.size.width)),
+      Length(footer_height(model)),
     ])
   {
     [header, body, input, footer] -> #(header, body, input, footer)
@@ -2888,6 +2996,31 @@ fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
   }
 }
 
+// Queue geometry is reserved before the transcript is painted. A focused card
+// may use half the body, while every size retains a bordered conversation row;
+// passive observation spends only the rows needed for three bounded entries.
+fn queue_body_layout(body: Rect, model: Model) -> #(Rect, Rect) {
+  queue_body_layout_for(body, model, queue_rows(model))
+}
+
+fn queue_body_layout_for(
+  body: Rect,
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> #(Rect, Rect) {
+  let wanted = case model.queue_editor.surface, rows {
+    queue_editor.Closed, [] -> 0
+    queue_editor.Closed, _ -> int.min(5, list.length(rows) + 2)
+    queue_editor.Inspector, _ | queue_editor.Editor, _ ->
+      int.min(14, int.max(3, body.size.height / 2))
+  }
+  let height = int.min(wanted, int.max(0, body.size.height - 3))
+  case geometry.split_v(body, [Fill, Length(height)]) {
+    [conversation, queue] -> #(conversation, queue)
+    _ -> #(body, geometry.rect_zero())
+  }
+}
+
 fn diff_pane_width(model: Model) -> Int {
   case model.diff_view != DiffHidden && model.width >= 140 {
     True -> int.min(72, model.width / 2)
@@ -2911,7 +3044,7 @@ fn render_changes_panel(
   case area.size.width > 0 {
     True ->
       buf
-      |> render_panel_border(area, diff_title(model), theme.quiet)
+      |> render_panel_border(area, diff_title(model), theme.divider)
       |> render_diff_view(panel_inner(area), model)
     False -> buf
   }
@@ -2923,9 +3056,72 @@ fn render_agent_rail(
   model: Model,
 ) -> buffer.Buffer {
   case area.size.width > 0 {
-    True -> agents.render_rail(buf, area, model.strands, model.active_strand)
+    True -> {
+      let extra = studio_observation_lines(model)
+      let panes =
+        geometry.split_v(area, [
+          Fill,
+          Length(int.min(6, list.length(extra) + 1)),
+        ])
+      case panes {
+        [roster, observations] ->
+          buf
+          |> agents.render_rail(
+            roster,
+            displayed_agents(model),
+            model.active_strand,
+          )
+          |> paragraph.render_styled(
+            observations,
+            list.map(extra, fn(row) {
+              span.line_new([
+                span.span_styled(
+                  text.truncate(" " <> row, observations.size.width, "…"),
+                  theme.quiet_text(),
+                ),
+              ])
+            }),
+          )
+        _ ->
+          agents.render_rail(
+            buf,
+            area,
+            displayed_agents(model),
+            model.active_strand,
+          )
+      }
+    }
     False -> buf
   }
+}
+
+// The rail reports captured observations. Opening /diff owns refreshing Git;
+// a missing or stale observation must not become a fabricated clean worktree.
+fn studio_observation_lines(model: Model) -> List(String) {
+  let advice = case model.nudges {
+    Some(board) -> list.take(advisor_pending.lines(board), 1)
+    None ->
+      case list.any(model.strands, fn(strand) { strand.id == "advisor" }) {
+        True -> ["Advisor nudges · not observed"]
+        False -> []
+      }
+  }
+  let changes = case model.worktree.board {
+    None -> ["CHANGES · /diff (not observed)"]
+    Some(board) -> [
+      "CHANGES · " <> int.to_string(board.total) <> " files · /diff",
+      ..board.files
+      |> list.take(2)
+      |> list.map(fn(file) {
+        file.index_status
+        <> file.worktree_status
+        <> " "
+        <> text_hygiene.single_line(file.path)
+      })
+      |> list.append([model.worktree.message])
+    ]
+  }
+  list.append(advice, changes)
 }
 
 // Names are presentation only. Pairing one with its identity prevents a
@@ -2942,33 +3138,86 @@ fn render_header(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  let identity = " ◆ loom "
+  let details =
+    text.truncate(
+      " "
+        <> text_hygiene.single_line(model.current_model)
+        <> " · Ctrl+g details ",
+      int.max(0, area.size.width / 3),
+      "…",
+    )
+
+  // A long checkout path must not hide which session owns this terminal.
+  // Reserve the two fixed ends before fitting the session and its context.
+  let room =
+    int.max(
+      0,
+      area.size.width - text.cell_width(identity) - text.cell_width(details),
+    )
+  let context =
+    text.truncate(
+      text_hygiene.single_line(session_title(model))
+        <> " · "
+        <> text_hygiene.single_line(workspace.label(model.workspace)),
+      room,
+      "…",
+    )
   let bar =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([
-      span.line_new([span.span_styled(" ◆ ", theme.signal_bold())]),
+      span.line_new([span.span_styled(identity, theme.signal_bold())]),
     ])
-    |> statusbar.with_center([
-      span.line_new([
-        span.span_styled("session ", theme.quiet_text()),
-        span.span_plain(text_hygiene.single_line(session_title(model))),
-      ]),
-    ])
+    |> statusbar.with_center([span.line_plain(context)])
     |> statusbar.with_right([
-      span.line_new([
-        span.span_styled(
-          " "
-            <> text_hygiene.single_line(model.current_model)
-            <> " · "
-            <> int.to_string(model.width)
-            <> "×"
-            <> int.to_string(model.height)
-            <> " ",
-          theme.quiet_text(),
-        ),
-      ]),
+      span.line_new([span.span_styled(details, theme.quiet_text())]),
     ])
   statusbar.render(buf, area, bar)
+}
+
+// A reading surface needs a heading and gutter, not four persistent edges.
+// Keeping its interior geometry preserves selection and semantic anchors.
+fn render_conversation_heading(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  buffer.set_string(
+    buf,
+    area.position,
+    text.truncate(
+      case reading_history(model) {
+        True -> " ↓ Scrollback · click for latest · End with empty prompt "
+        False -> transcript_title(model)
+      },
+      area.size.width,
+      "…",
+    ),
+    theme.quiet_text(),
+  )
+}
+
+// Horizontal rules distinguish input from output without boxing the whole
+// conversation. The editor keeps its established inset for selection/copy.
+fn render_composer_chrome(
+  buf: buffer.Buffer,
+  area: Rect,
+  title: String,
+) -> buffer.Buffer {
+  let width = int.max(0, area.size.width - 2)
+  let border = style.new(theme.signal, style.Default, style.none())
+  buf
+  |> buffer.set_string(
+    area.position,
+    "─" <> text.pad_right(text.truncate(title, width, "…"), width) <> "─",
+    border,
+  )
+  |> buffer.set_string(
+    geometry.Position(area.position.x, geometry.bottom(area) - 1),
+    string.repeat("─", area.size.width),
+    style.new(theme.divider, style.Default, style.none()),
+  )
 }
 
 fn render_transcript(
@@ -2976,9 +3225,15 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  case main_shows_diff(model) {
-    True -> render_diff_view(buf, area, model)
-    False ->
+  case model.notes_open, main_shows_diff(model) {
+    True, _ ->
+      paragraph.render_styled(
+        buffer.clear(buf, area),
+        area,
+        notes_content(model, area, model.active_strand).lines,
+      )
+    False, True -> render_diff_view(buf, area, model)
+    False, False ->
       render_rows(
         buf,
         area,
@@ -3083,12 +3338,22 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
-    ToolCall -> #("● ", theme.success_text())
+    ToolCall ->
+      case string.starts_with(line.text, "✓ ") {
+        True -> #("✓ ", theme.success_text())
+        False -> #("● ", theme.current_bold())
+      }
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error ", theme.danger_text())
     Spacer -> #("", theme.quiet_text())
+  }
+  let body = case
+    line.speaker == ToolCall && string.starts_with(line.text, "✓ ")
+  {
+    True -> string.drop_start(line.text, 2)
+    False -> line.text
   }
   case line.speaker {
     User -> {
@@ -3139,7 +3404,7 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
       markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     System | ToolCall | ToolResult | ToolFailure | Failure ->
-      line.text
+      body
       |> text_hygiene.multiline
       |> string.split("\n")
       |> list.index_map(fn(text, index) {
@@ -3292,18 +3557,224 @@ fn help_content() -> span.Text {
   ])
 }
 
+// Inspection has its own target. Reading a worker's notes never changes the
+// active strand, its parked draft, or the next submitted message.
+fn notes_target(model: Model) -> String {
+  case model.overlay {
+    AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)) ->
+      selected
+    _ -> model.active_strand
+  }
+}
+
 fn refresh_notes(model: Model) -> Model {
-  send_frame(
-    Model(..model, notice: "refreshing notes"),
-    protocol.notes(model.next_id, model.active_strand),
+  service_notes_read(
+    Model(
+      ..model,
+      notes_requested: Some(notes_target(model)),
+      notice: "refreshing notes for " <> notes_target(model),
+    ),
   )
 }
 
-fn notes_content(model: Model, width: Int) -> span.Text {
-  case model.note_board {
-    None -> historical_notes_content(model, width)
-    Some(board) -> current_notes_content(board, model, width)
+// Reads coalesce to the latest inspected target while the existing channel
+// owns an earlier command. Old replies may be retained, but never relabelled.
+fn service_notes_read(model: Model) -> Model {
+  case model.notes_requested, model.channel {
+    None, _ -> model
+    Some(target), Some(channel) -> {
+      case session_channel.ready_for_read(channel) {
+        False -> model
+        True ->
+          send_frame(
+            Model(..model, notes_requested: None),
+            protocol.notes(model.next_id, target),
+          )
+      }
+    }
+    Some(target), None ->
+      send_frame(
+        Model(..model, notes_requested: None),
+        protocol.notes(model.next_id, target),
+      )
   }
+}
+
+fn agent_detail_content(model: Model, inspector: agents.Inspector) {
+  let selected = inspector.selected
+  let message = inspector.message
+  let scroll = inspector.scroll
+  case inspector.detail {
+    agents.Overview -> None
+    agents.Messages ->
+      Some(fn(area: Rect) {
+        agent_message_content(model, selected, message, scroll, area).lines
+      })
+    agents.Notes ->
+      Some(fn(area: Rect) { notes_content(model, area, selected).lines })
+  }
+}
+
+fn agent_message_content(
+  model: Model,
+  selected: String,
+  message: Option(String),
+  scroll: Int,
+  area: Rect,
+) -> span.Text {
+  model.agent_messages
+  |> agent_messages.for_strand(selected)
+  |> agent_message_panel.render(message, scroll, area)
+}
+
+fn notes_content(model: Model, area: Rect, target: String) -> span.Text {
+  let rows = prepared_notes(model, target, area)
+  let context = note_context(model, target)
+  note_panel.render(rows, model.note_selected, model.note_scroll, context, area)
+}
+
+fn prepared_notes(
+  model: Model,
+  target: String,
+  area: Rect,
+) -> List(note_panel.Row) {
+  let width = note_panel.body_width(area)
+  case model.note_board {
+    Some(board) if board.strand == target -> {
+      let chosen = selected_note(model, board)
+      list.map(board.notes, fn(note) {
+        let extent = case note.extent {
+          notes_view.Complete -> "Complete"
+          notes_view.Excerpt -> "Excerpt"
+        }
+        let body = case chosen == Some(note.key) {
+          False -> []
+          True -> {
+            let value = case model.note_mode, note.extent {
+              note_panel.Raw, notes_view.Complete -> raw_note_line(note.text)
+              note_panel.Readable, notes_view.Complete ->
+                Line(ToolDetail, notes_view.readable(note.text))
+              note_panel.Raw, notes_view.Excerpt
+              | note_panel.Readable, notes_view.Excerpt
+              -> Line(ToolResult, note.text)
+            }
+            transcript_content([value], width).lines
+          }
+        }
+        note_panel.Row(
+          key: note.key,
+          seq: note.seq,
+          excerpt: compact(
+            case note.extent {
+              notes_view.Complete -> notes_view.readable(note.text)
+              notes_view.Excerpt -> note.text
+            },
+            48,
+          ),
+          extent:,
+          relation: note_turn_relation(note.seq, model, target),
+          body:,
+        )
+      })
+    }
+    Some(_) | None -> historical_note_rows(model, target, width)
+  }
+}
+
+fn historical_note_rows(model: Model, target: String, width: Int) {
+  case historical_note_payload(model, target) {
+    None -> []
+    Some(payload) -> [
+      note_panel.Row(
+        key: "historical run-start digest",
+        seq: 0,
+        excerpt: compact(notes_view.historical(payload), 48),
+        extent: "Historical",
+        relation: " · not a current read",
+        body: transcript_content(
+          [
+            case model.note_mode {
+              note_panel.Raw ->
+                Line(ToolDetail, "```text\n" <> payload <> "\n```")
+              note_panel.Readable ->
+                Line(ToolDetail, notes_view.historical(payload))
+            },
+          ],
+          width,
+        ).lines,
+      ),
+    ]
+  }
+}
+
+fn note_context(model: Model, target: String) -> List(String) {
+  case model.note_board {
+    Some(board) if board.strand == target -> [
+      "notes for "
+        <> target
+        <> " · read at revision "
+        <> int.to_string(board.as_of),
+      note_read_status(board, model),
+      note_compact_status(board, model),
+    ]
+    Some(_) -> missing_note_context(model, target)
+    None ->
+      case historical_note_payload(model, target) {
+        Some(_) -> ["Historical run-start digest · r fetches current notes"]
+        None ->
+          case model.overlay {
+            AgentInspector(_) -> [
+              "no agent notes are available for " <> target <> " · r refresh",
+            ]
+            NoOverlay
+            | ModelSelector(_)
+            | GoalInspector(_)
+            | SessionSelector(_)
+            | DaemonSelector(_)
+            | ApprovalInspector(_) -> ["No observed notes for " <> target]
+          }
+      }
+  }
+}
+
+fn missing_note_context(model: Model, target: String) -> List(String) {
+  case model.overlay {
+    AgentInspector(_) -> [
+      "no agent notes are available for " <> target <> " · r refresh",
+    ]
+    NoOverlay
+    | ModelSelector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> ["No observed notes for " <> target]
+  }
+}
+
+fn note_compact_status(board: notes_view.Board, model: Model) -> String {
+  let freshness = case model.captured {
+    Some(#(cut, _)) if cut.next_seq - 1 > board.as_of -> "stale · "
+    _ -> "current read · "
+  }
+  let omitted = case board.total - list.length(board.notes) {
+    count if count > 0 -> int.to_string(count) <> " more notes omitted · "
+    _ -> ""
+  }
+  freshness <> omitted <> "[/] select · r refresh · Ctrl+g readable/raw"
+}
+
+fn historical_note_payload(model: Model, target: String) -> Option(String) {
+  model.records
+  |> list.find_map(fn(record) {
+    let protocol.EntryRecord(strand:, entry:) = record
+    case strand == target, entry {
+      True, entry.MessageEntry(message: value, ..) ->
+        agent_notes_payload(value) |> option.to_result(Nil)
+      _, _ -> Error(Nil)
+    }
+  })
+  |> result.map(Some)
+  |> result.unwrap(None)
 }
 
 fn note_read_status(board: notes_view.Board, model: Model) -> String {
@@ -3317,12 +3788,12 @@ fn note_read_status(board: notes_view.Board, model: Model) -> String {
 
 // Only the accepted operation's own revision establishes that a note predates
 // this turn. Unrelated session activity says nothing about the note's accuracy.
-fn note_turn_relation(seq: Int, model: Model) -> String {
+fn note_turn_relation(seq: Int, model: Model, target: String) -> String {
   case model.captured {
     None -> ""
     Some(#(_, view)) -> {
       let started = {
-        use current <- result.try(dict.get(view.operations, model.active_strand))
+        use current <- result.try(dict.get(view.operations, target))
         list.find(view.cells, fn(cell) {
           cell.namespace == register.OpMeta && cell.key == current
         })
@@ -3345,102 +3816,46 @@ fn raw_note_line(text: String) -> Line {
   }
 }
 
-fn current_notes_content(
-  board: notes_view.Board,
-  model: Model,
-  width: Int,
-) -> span.Text {
-  let active_strand = model.active_strand
-  case board.strand == active_strand {
-    False ->
-      transcript_content([Line(System, "refresh notes for this strand")], width)
-    True -> {
-      let heading =
-        "notes for "
-        <> board.strand
-        <> " · read at revision "
-        <> int.to_string(board.as_of)
-        <> " · r to refresh"
-      let rows =
-        list.flat_map(board.notes, fn(note) {
-          let extent = case note.extent {
-            notes_view.Complete -> ""
-            notes_view.Excerpt -> " · excerpt"
-          }
-          [
-            Line(
-              System,
-              note.key
-                <> " · updated at revision "
-                <> int.to_string(note.seq)
-                <> note_turn_relation(note.seq, model)
-                <> extent,
-            ),
-            case model.details_expanded, note.extent {
-              _, notes_view.Excerpt -> Line(ToolResult, note.text)
-              True, notes_view.Complete -> raw_note_line(note.text)
-              False, notes_view.Complete ->
-                Line(ToolDetail, notes_view.readable(note.text))
-            },
-          ]
-        })
-      let omitted = board.total - list.length(board.notes)
-      let tail = case omitted > 0 {
-        True -> [
-          Line(
-            System,
-            int.to_string(omitted) <> " more notes exceed this display budget",
-          ),
-        ]
-        False -> []
-      }
-      transcript_content(
-        [
-          Line(System, heading),
-          Line(System, note_read_status(board, model)),
-          ..list.append(rows, tail)
-        ],
-        width,
-      )
-    }
+fn selected_note(model: Model, board: notes_view.Board) -> Option(String) {
+  case
+    list.find(board.notes, fn(note) { Some(note.key) == model.note_selected })
+  {
+    Ok(note) -> Some(note.key)
+    Error(Nil) ->
+      list.first(board.notes)
+      |> result.map(fn(note) { note.key })
+      |> option.from_result
   }
 }
 
-fn historical_notes_content(model: Model, width: Int) -> span.Text {
-  let latest =
-    model.records
-    |> list.find_map(fn(record) {
-      let protocol.EntryRecord(strand:, entry:) = record
-      case strand == model.active_strand, entry {
-        True, entry.MessageEntry(message: value, ..) ->
-          agent_notes_payload(value) |> option.to_result(Nil)
-        _, _ -> Error(Nil)
-      }
-    })
-    |> result.map(Some)
-    |> result.unwrap(None)
-  case latest {
-    Some(payload) ->
-      transcript_content(
-        [
-          Line(System, "historical run-start digest · r to fetch current notes"),
-          case model.details_expanded {
-            True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
-            False -> Line(ToolDetail, notes_view.historical(payload))
-          },
-        ],
-        width,
-      )
-    None ->
-      transcript_content(
-        [
-          Line(
-            System,
-            "no agent notes are available for " <> model.active_strand,
-          ),
-        ],
-        width,
-      )
+fn select_note(model: Model, direction: Int) -> Model {
+  let target = notes_target(model)
+  case model.note_board {
+    Some(board) if board.strand == target -> {
+      let index =
+        list.index_map(board.notes, fn(note, position) {
+          #(Some(note.key), position)
+        })
+        |> list.key_find(selected_note(model, board))
+        |> result.unwrap(0)
+      let next =
+        int.clamp(
+          index + direction,
+          0,
+          int.max(0, list.length(board.notes) - 1),
+        )
+      let selected =
+        list.drop(board.notes, next)
+        |> list.first
+        |> result.map(fn(note) { note.key })
+        |> option.from_result
+
+      // Note navigation moves only the surface that owns this key. The
+      // transcript beneath an inspector retains its independent anchor.
+      Model(..model, note_selected: selected, note_scroll: 0)
+      |> invalidate_transcript
+    }
+    _ -> model
   }
 }
 
@@ -3449,11 +3864,60 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  use <- bool.lazy_guard(!model.details_expanded, fn() {
+    render_compact_footer(buf, area, model)
+  })
   let #(project, model_name, usage, status, combined) = footer_sections(model)
   case area.size.height {
     1 -> render_single_footer(buf, area, project, usage, combined)
     2 -> render_stacked_footer(buf, area, project, model_name, usage, status)
     _ -> render_split_footer(buf, area, project, model_name, usage, status)
+  }
+}
+
+// Billing detail is available with Ctrl+g. Everyday work needs the model,
+// context estimate, session cost, and attention state rather than cache totals.
+fn render_compact_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  let info =
+    text_hygiene.single_line(model.current_model)
+    <> " · "
+    <> context_view.footer(model.context)
+    <> " · est $"
+    <> money(model.usage.cost.total)
+  let status = agents.summary_rows(displayed_agents(model))
+  let context = case model.notice {
+    "" -> info
+    notice -> text_hygiene.single_line(notice) <> " · " <> info
+  }
+  case area.size.height > 1 {
+    True ->
+      paragraph.render_styled(
+        buf,
+        area,
+        list.map([context, status], fn(row) {
+          span.line_new([
+            span.span_styled(
+              text.truncate(" " <> row, area.size.width, "…"),
+              theme.footer_text(),
+            ),
+          ])
+        }),
+      )
+    False -> {
+      let left_width = int.max(0, area.size.width - text.cell_width(status) - 3)
+      let row =
+        " "
+        <> text.pad_right(text.truncate(context, left_width, "…"), left_width)
+        <> "  "
+        <> status
+      paragraph.render_styled(buf, area, [
+        span.line_new([span.span_styled(row, theme.footer_text())]),
+      ])
+    }
   }
 }
 
@@ -3611,8 +4075,19 @@ pub fn footer_usage_limit(width: Int) -> Int {
   }
 }
 
-fn footer_height(width: Int) -> Int {
-  footer_rows(width)
+fn footer_height(model: Model) -> Int {
+  case model.queue_editor.surface != queue_editor.Closed && model.height <= 12 {
+    True -> 1
+    False ->
+      case model.details_expanded {
+        True -> footer_rows(model.width)
+        False ->
+          case model.width < 100 {
+            True -> 2
+            False -> 1
+          }
+      }
+  }
 }
 
 /// The most cells each footer section may take, including the space each
@@ -3902,23 +4377,70 @@ fn composer_status_lines(model: Model) -> List(String) {
   // it is context for the prompt about to be written, not a report on one
   // already sent. An empty queue renders nothing, so the band keeps its
   // height when the advisor has nothing waiting.
-  let nudges = case model.nudges {
-    None -> []
-    Some(board) -> advisor_pending.lines(board)
+  let queue_focused = model.queue_editor.surface != queue_editor.Closed
+  let nudges = case model.nudges, queue_focused {
+    _, True | None, False -> []
+    Some(board), False -> list.take(advisor_pending.lines(board), 1)
   }
 
   // A pinned goal keeps one row above the nudges for as long as it is
   // pinned. It is the standing objective the next prompt is written
   // against, so unlike the nudge queue it is not consumed by a run start
   // and does not disappear while the session works.
-  let goal = case model.goal {
+  let goal = case model.goal, queue_focused {
+    _, True | None, False -> []
+    Some(board), False -> goal_view.row(board)
+  }
+  let active = case active_status_label(model) {
     None -> []
-    Some(board) -> goal_view.row(board)
+    Some(status) -> [
+      activity_glyph(model.activity_frame)
+      <> " "
+      <> text_hygiene.single_line(status)
+      <> elapsed_label(model.activity_elapsed_s),
+    ]
+  }
+
+  // The workspace and visible rail already own the roster. Repeating it
+  // above the editor would spend its typing space on the same observation.
+  let reviewers = case model.overlay, queue_focused {
+    _, True | AgentInspector(_), False -> []
+    _, False ->
+      case
+        model.agent_rail_visible
+        && model.width >= 100
+        && diff_pane_width(model) == 0
+      {
+        True -> []
+        False -> reviewer_band_lines(model)
+      }
   }
   list.append(
-    reviewer_status.lines(model.reviewer_rows, model.active_strand),
-    list.append(goal, list.append(nudges, pending)),
+    active,
+    list.append(reviewers, list.append(goal, list.append(nudges, pending))),
   )
+}
+
+// An ordinary-height narrow terminal has no agent rail, so the composer owns
+// one reviewer's two-row status. Keep that small slot when the reviewer
+// settles: otherwise the title and cursor jump down by two rows at exactly the
+// moment the operator is likely to start typing a follow-up. The idle row is a
+// current fact and the task slot is empty, so completion does not leave stale
+// work looking live. Tiny terminals keep every row for the transcript and
+// editor instead.
+fn reviewer_band_lines(model: Model) -> List(String) {
+  let idle_advisor =
+    model.height >= 20
+    && model.active_strand != advisor_pending.advisor_strand
+    && strand_listed(model, advisor_pending.advisor_strand)
+    && !strand_running(model, advisor_pending.advisor_strand)
+  case
+    reviewer_status.lines(model.reviewer_rows, model.active_strand),
+    idle_advisor
+  {
+    [], True -> ["Advisor · idle · /agents to inspect", ""]
+    lines, _ -> lines
+  }
 }
 
 fn pending_layout(area: Rect, model: Model) -> #(Rect, Rect) {
@@ -3934,25 +4456,7 @@ fn pending_status(model: Model) -> Option(String) {
   case model.pending_submission, model.awaiting_outcome {
     Some(_), _ -> Some("Not sent yet · waiting for session sync · Esc cancels")
     None, Some(_) -> Some("Sent · waiting for receipt")
-    None, None -> {
-      case queue_rows(model) {
-        [] -> None
-        [first, ..rest] ->
-          Some(
-            "Received · "
-            <> case first.kind {
-              snapshot_view.Queue -> "queued after this turn"
-              snapshot_view.Steer -> "steer before queued turns"
-            }
-            <> case rest {
-              [] -> ""
-              more -> " · +" <> int.to_string(list.length(more)) <> " pending"
-            }
-            <> " · /queue edits · "
-            <> text_hygiene.single_line(first.text),
-          )
-      }
-    }
+    None, None -> None
   }
 }
 
@@ -3979,31 +4483,44 @@ fn editor_content_width(model: Model) -> Int {
 }
 
 fn input_title(model: Model) -> String {
+  let behavior = case model.overlay {
+    AgentInspector(agents.Inspector(focus: agents.Browsing, ..)) ->
+      " Tab writes · Enter opens agent "
+    _ -> input_behavior(model)
+  }
+  " To " <> recipient_label(model) <> " ·" <> behavior
+}
+
+// A long child ID must not hide whether Enter sends, queues, or steers.
+// Its distinguishing suffix remains visible; the workspace shows it in full.
+fn recipient_label(model: Model) -> String {
+  model.active_strand
+  |> text_hygiene.single_line
+  |> string.reverse
+  |> text.truncate(int.max(8, int.min(32, model.width / 3)), "…")
+  |> string.reverse
+}
+
+fn input_behavior(model: Model) -> String {
+  use <- bool.guard(
+    model.captured != None
+      && !is_known_strand(model.strands, model.active_strand),
+    " recipient unavailable · draft retained · F2 agents ",
+  )
   use <- bool.guard(model.peer == Disconnected, case model.reconnect {
     ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "
     ReconnectIdle | ReconnectSpent ->
       " Disconnected · /sessions to reconnect · draft retained "
   })
-  use <- bool.guard(
-    reading_history(model),
-    " ↓ Scrollback · click for latest · End with empty prompt ",
-  )
   case
     active_interrupt(model),
     active_status_label(model),
     model.submission_mode
   {
     Some(_), _, _ -> " stopped · enter sends held input with your message "
-    None, None, _ -> " prompt · / commands "
+    None, None, _ -> " prompt · enter sends · / commands "
     None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
-    None, Some(status), PromptNext ->
-      " "
-      <> activity_glyph(model.activity_frame)
-      <> " "
-      <> status
-      <> " · turn"
-      <> elapsed_label(model.activity_elapsed_s)
-      <> " · enter queues · tab steers "
+    None, Some(_), PromptNext -> " enter queues · tab steers "
   }
 }
 
@@ -4139,6 +4656,7 @@ fn render_command_palette(
     [], _
     | _, ModelSelector(_)
     | _, AgentInspector(_)
+    | _, GoalInspector(_)
     | _, SessionSelector(_)
     | _, DaemonSelector(_)
     | _, ApprovalInspector(_)
@@ -4432,18 +4950,24 @@ fn update_tick(model: Model) -> Model {
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let switched = drain_reconnect(switched)
   let drained = drain_connection(switched, 64)
+  settle_tick(model, drained)
+}
+
+// Keep the read-service chain on a parameter, as `settle_update` does for
+// event dispatch. Otherwise each inlining attempt revisits the entire drain
+// expression; adding another service can double compilation time. Preserve
+// the original model for the quiet-time comparison after all reads settle.
+fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
-    tick_channel(
-      service_goal_read(
-        service_advisor_nudges_read(
-          service_context_read(
-            service_jobs_read(
-              service_worktree_read(service_queue_read(drained)),
-            ),
-          ),
-        ),
-      ),
-    )
+    drained
+    |> service_queue_read
+    |> service_worktree_read
+    |> service_notes_read
+    |> service_jobs_read
+    |> service_context_read
+    |> service_advisor_nudges_read
+    |> service_goal_read
+    |> tick_channel
   let quiet_for_ms =
     pacing.next_quiet_for(
       model.quiet_for_ms,
@@ -4485,22 +5009,27 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
       )
     attempt_replay.Rejected(reason) ->
       append_error(model, "open session: " <> reason)
-    attempt_replay.Adopt(cut, view) ->
+    attempt_replay.Adopt(cut, view) -> {
+      let model =
+        select_workspace(
+          model,
+          cut.attachment.expected.session,
+          case model.session == cut.attachment.expected.session {
+            True -> model.active_strand
+            False -> "main"
+          },
+        )
       Model(
         ..model,
         session: cut.attachment.expected.session,
         captured: None,
         scrollback: case model.session == cut.attachment.expected.session {
           True -> history_view.cancel(model.scrollback)
-          False -> history_view.empty()
-        },
-        parked_scrollback: case
-          model.session == cut.attachment.expected.session
-        {
-          True -> model.parked_scrollback
-          False -> dict.new()
+          False -> model.scrollback
         },
         note_board: None,
+        note_selected: None,
+        notes_requested: None,
         approvals: [],
         prompted_approvals: [],
         inspecting_approval: None,
@@ -4523,14 +5052,14 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         interrupt: None,
       )
       |> apply_cut(cut, view)
-
-    // Every update, cuts included, goes through the live reducer. A cut used
-    // to be special-cased into `apply_cut`, which always invalidates the
-    // transcript and restarts the activity indicator; `reconcile_cut`'s
-    // equal-cut fast path is what the live client does instead, and a replay
-    // that rendered frames the live client did not is not a replay. The
-    // outbound half of that path is made inert by `request_decisions`, which
-    // sends nothing while the peer is `Replaying`.
+      // Every update, cuts included, goes through the live reducer. A cut used
+      // to be special-cased into `apply_cut`, which always invalidates the
+      // transcript and restarts the activity indicator; `reconcile_cut`'s
+      // equal-cut fast path is what the live client does instead, and a replay
+      // that rendered frames the live client did not is not a replay. The
+      // outbound half of that path is made inert by `request_decisions`, which
+      // sends nothing while the peer is `Replaying`.
+    }
     attempt_replay.Update(update) -> apply_channel_update(model, update)
   }
 }
@@ -4749,7 +5278,10 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
     || before.help_open != after.help_open
     || before.notes_open != after.notes_open
     || before.diff_view != after.diff_view
+    || diff_borrow_eligible(before) != diff_borrow_eligible(after)
     || before.active_strand != after.active_strand
+    || before.session != after.session
+    || before.nudges != after.nudges
     || viewport_height_changed(
       transcript_viewport_height(before),
       transcript_viewport_height(after),
@@ -4757,16 +5289,19 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
-      let reading_lines = case reading_history(after) {
-        False -> None
-        True ->
-          case before.reading_lines {
-            Some(lines)
-              if before.active_strand == after.active_strand
-              && before.session == after.session
-            -> Some(lines)
-            Some(_) | None -> Some(transient_lines(before))
-          }
+      let same_workspace =
+        before.active_strand == after.active_strand
+        && before.session == after.session
+      let reading_lines = case
+        reading_history(after),
+        same_workspace,
+        before.reading_lines,
+        after.reading_lines
+      {
+        False, _, _, _ -> None
+        True, True, Some(lines), _ -> Some(lines)
+        True, _, _, Some(lines) -> Some(lines)
+        True, _, _, None -> Some(transient_lines(after))
       }
       let cached =
         refresh_diff_cache(before, Model(..after, reading_lines:))
@@ -4784,25 +5319,57 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       let rendered_anchors = case
         after.help_open || after.notes_open || !reading_history(after),
         record_cache_matches(after, width)
-        && list.is_empty(after.pending_records),
+        && list.is_empty(after.pending_records)
+        && before.active_strand == after.active_strand
+        && before.session == after.session,
         before.rendered_anchors
       {
         True, _, _ -> []
         False, True, [_, ..] -> before.rendered_anchors
         False, _, _ -> record_anchors_for(cached, width)
       }
+      let endpoint = case after.restored_workspace {
+        Some(saved) -> #(saved.anchors, saved.height, saved.prefix)
+        None ->
+          case
+            before.active_strand == after.active_strand
+            && before.session == after.session
+          {
+            True -> #(
+              before.rendered_anchors,
+              transcript_viewport_height(before),
+              before.rendered_row_count - list.length(before.rendered_anchors),
+            )
+            False -> #([], transcript_viewport_height(after), 0)
+          }
+      }
       let anchored = case reading_history(after) {
         False -> 0
         True ->
           transcript_anchor.relocate(
-            before.rendered_anchors,
+            endpoint.0,
             rendered_anchors,
             after.scroll_offset,
-            transcript_viewport_height(before),
-            before.rendered_row_count - list.length(before.rendered_anchors),
+            endpoint.1,
+            endpoint.2,
             rendered_row_count - list.length(rendered_anchors),
           )
           |> option.unwrap(after.scroll_offset)
+      }
+
+      // A notebook opens at its index and selected cell heading, rather than
+      // at the end of a long value. Paging then uses the ordinary copy-safe
+      // row viewport; unrelated stream updates cannot reset that position.
+      let anchored = case
+        after.notes_open
+        && {
+          !before.notes_open
+          || before.note_selected != after.note_selected
+          || { before.note_board == None && after.note_board != None }
+        }
+      {
+        True -> rendered_row_count
+        False -> anchored
       }
 
       // Reading history owns the viewport through the scroll offset, and a
@@ -4812,6 +5379,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       // viewport claiming rows that no longer exist.
       let revealed_rows = case
         reading_history(after)
+        || after.notes_open
         || before.active_strand != after.active_strand
         || before.session != after.session
       {
@@ -4820,20 +5388,41 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       }
       Model(
         ..cached,
+        restored_workspace: None,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
         rendered_rows:,
         revealed_rows:,
         rendered_anchors:,
         rendered_gutters:,
-        scroll_offset: bounded_scroll_offset(
-          anchored,
-          rendered_row_count,
-          transcript_viewport_height(after),
-        ),
+        scroll_offset: case notes_surface(after) {
+          True -> after.scroll_offset
+          False ->
+            bounded_scroll_offset(
+              anchored,
+              rendered_row_count,
+              transcript_viewport_height(after),
+            )
+        },
       )
     }
     False -> after
+  }
+}
+
+fn notes_surface(model: Model) -> Bool {
+  case model.notes_open, model.overlay {
+    True, _
+    | False, AgentInspector(agents.Inspector(detail: agents.Notes, ..))
+    -> True
+    False, NoOverlay
+    | False, ModelSelector(_)
+    | False, GoalInspector(_)
+    | False, SessionSelector(_)
+    | False, DaemonSelector(_)
+    | False, AgentInspector(_)
+    | False, ApprovalInspector(_)
+    -> False
   }
 }
 
@@ -5214,8 +5803,8 @@ fn rendered_layout_for(
       #(rows, list.repeat(0, list.length(rows)))
     }
     False, True -> {
-      let rows = notes_content(model, width).lines |> list.reverse
-      #(rows, list.repeat(0, list.length(rows)))
+      // Notes render against their actual rectangle in `render_transcript`.
+      #([], [])
     }
     False, False -> {
       let lines =
@@ -5280,6 +5869,37 @@ fn transient_lines(model: Model) -> List(Line) {
   )
   |> list.append(tool_tail_lines(model))
   |> list.append(pending_input_lines(model))
+  |> list.append(pending_nudge_lines(model))
+}
+
+// Pending advice is a labeled, disposable observation in the scrollable tail.
+// It is never appended to durable records, and inspecting it does not deliver
+// it. Keeping its complete body here prevents a long queue from taking the
+// composer offscreen while still making every received line readable.
+fn pending_nudge_lines(model: Model) -> List(Line) {
+  case model.nudges {
+    Some(board) if board.strand == model.active_strand && board.pending != [] -> {
+      let heading =
+        "Advisor · pending, not delivered · "
+        <> int.to_string(board.total)
+        <> " nudges"
+      let rows =
+        list.flat_map(board.pending, fn(body) {
+          [Line(System, "Pending advisor nudge"), Line(ToolDetail, body)]
+        })
+      let omitted = case board.total > list.length(board.pending) {
+        True -> [
+          Line(
+            System,
+            "Additional nudges were not included in this observation",
+          ),
+        ]
+        False -> []
+      }
+      [Line(System, heading), ..list.append(rows, omitted)]
+    }
+    Some(_) | None -> []
+  }
 }
 
 // The rename overlay owns pasted text just as it owns character keys. It
@@ -5420,20 +6040,17 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // and a sent request keeps that identity rather than acquiring the new
       // session's.
       let model = retire_previous(model)
-
-      // Parked windows are keyed by strand name alone, and two sessions reuse
-      // the same names. Adopting a different session must drop them, or a
-      // later switch to `main` would restore another session's ancestry.
-      let model = case model.session == cut.attachment.expected.session {
-        True ->
-          Model(..model, scrollback: history_view.cancel(model.scrollback))
-        False ->
-          Model(
-            ..model,
-            scrollback: history_view.empty(),
-            parked_scrollback: dict.new(),
-          )
+      let target_strand = case
+        model.session == cut.attachment.expected.session
+      {
+        True -> model.active_strand
+        False -> "main"
       }
+      let model =
+        select_workspace(model, cut.attachment.expected.session, target_strand)
+
+      let model =
+        Model(..model, scrollback: history_view.cancel(model.scrollback))
 
       // Only then is the old inbox drained. Draining first would discard
       // frames the retirement is entitled to reduce.
@@ -5449,6 +6066,8 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           channel: Some(channel),
           captured: None,
           note_board: None,
+          note_selected: None,
+          notes_requested: None,
           approvals: [],
           prompted_approvals: [],
           overlay: NoOverlay,
@@ -5457,6 +6076,11 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             Some(_) | None -> model.creation_key
           },
           workspace: workspace,
+          active_strand: target_strand,
+          agent_rows: case model.session == cut.attachment.expected.session {
+            True -> model.agent_rows
+            False -> []
+          },
           session: cut.attachment.expected.session,
           session_label: Some(#(cut.attachment.expected.session, name)),
           records: [],
@@ -5703,6 +6327,10 @@ pub fn apply_channel_update(
           goal_awaiting: None,
           goal_request: None,
           goal_report: HoldGoalReport,
+          overlay: case model.overlay {
+            GoalInspector(_) -> NoOverlay
+            other -> other
+          },
           worktree: case model.worktree.awaiting {
             Some(id) ->
               worktree_view.receive(
@@ -5818,7 +6446,7 @@ fn present_pending_approval(model: Model) -> Model {
           Model(
             ..model,
             prompted_approvals: [#(record.id, record.seq), ..seen],
-            overlay: ApprovalInspector(approval_panel.new(record)),
+            overlay: ApprovalInspector(captured_approval_panel(model, record)),
           )
       }
     }
@@ -5832,14 +6460,9 @@ fn render_cut(
   view: snapshot_view.View,
   reviews: List(approval.Review),
 ) -> Model {
-  let active = case is_known_strand(view.strands, model.active_strand) {
-    True -> model.active_strand
-    False ->
-      case view.strands {
-        [first, ..] -> first.id
-        [] -> "main"
-      }
-  }
+  // A disappearing strand never retargets a draft. The composer keeps its
+  // identity and submission is refused until that target is available again.
+  let active = model.active_strand
   let model = observe_completion(model, cut, view, active)
   let model = retain_queue_selection(model, view, active)
   let same_operation = case model.captured {
@@ -5942,28 +6565,31 @@ fn render_cut(
       && !snapshot_view.has_result(view, tail.strand, tail.operation)
     })
 
-  // A strand the cut no longer carries cannot be selected again, so its
-  // parked window is unreachable. Dropping it here is what bounds the
-  // dictionary over a long session that retires sub-agents continuously.
-  let parked =
-    dict.filter(model.parked_scrollback, fn(strand, _) {
-      is_known_strand(view.strands, strand)
-    })
+  // Retired strands keep unsent drafts but release their bounded reading
+  // windows. A future appearance must rebuild history from its own capture.
+  let workspaces =
+    prune_workspace_history(
+      model.strand_workspaces,
+      model.session,
+      view.strands,
+    )
+  let reviewers = reviewer_status.observe(model.reviewer_rows, cut.window, view)
+  let rows = agent_view.observe(model.agent_rows, cut.window, view, reviewers)
+  let captured_messages =
+    agent_messages.capture(model.agent_messages, view, cut.window)
   Model(
     ..model,
     captured: Some(#(cut, view)),
     approvals: reviews,
     active_strand: active,
     strands: view.strands,
-    agent_summary: agents.summary(view.strands),
-    reviewer_rows: reviewer_status.observe(
-      model.reviewer_rows,
-      cut.window,
-      view,
-    ),
+    agent_summary: agents.summary_rows(rows),
+    reviewer_rows: reviewers,
+    agent_rows: rows,
+    agent_messages: captured_messages,
     records: branch.records,
     scrollback: history,
-    parked_scrollback: parked,
+    strand_workspaces: workspaces,
     activity_started_ms: case same_operation {
       True -> model.activity_started_ms
       False -> None
@@ -5983,9 +6609,15 @@ fn render_cut(
     },
     submitting: None,
     record_cache_valid:,
-    notice: notice,
+    // Presence already has its own banner. Repeated metadata captures must
+    // not alternate that banner with streaming or operator feedback below.
+    notice: case model.captured {
+      None -> notice
+      Some(_) -> model.notice
+    },
     transcript:,
   )
+  |> reconcile_agent_message_selection
   |> invalidate_transcript
   // A completed cut can make the operation idle before the next animation
   // tick. Invalidate the painted frame too; rebuilding transcript rows alone
@@ -6093,7 +6725,7 @@ fn inspect_looked_up(model: Model, records, missing) {
         Ok(record) ->
           Model(
             ..model,
-            overlay: ApprovalInspector(approval_panel.new(record)),
+            overlay: ApprovalInspector(captured_approval_panel(model, record)),
             inspecting_approval: None,
           )
         Error(Nil) ->
@@ -6235,6 +6867,7 @@ fn adopt_session(
   inbox: Subject(connection.Message),
   socket: connection.Connection,
 ) -> Model {
+  let model = select_workspace(model, target.session, "main")
   case model.peer {
     Attached(socket: previous) -> connection.close(previous)
     Preview | Replaying | Disconnected -> Nil
@@ -6249,6 +6882,8 @@ fn adopt_session(
     help_open: False,
     notes_open: False,
     note_board: None,
+    note_selected: None,
+    notes_requested: None,
     overlay: NoOverlay,
     session: target.session,
     local_options: Some(options),
@@ -6390,10 +7025,16 @@ fn handle_presentation_message(
 
 fn apply_event(model: Model, event: protocol.Event) -> Model {
   let updated = case event {
-    protocol.FullSnapshot(session:, strands:, entries:, usage:) ->
+    protocol.FullSnapshot(session:, strands:, entries:, usage:) -> {
+      let target = case model.session == session {
+        True -> model.active_strand
+        False -> "main"
+      }
+      let model = select_workspace(model, session, target)
       Model(
         ..model,
         session:,
+        active_strand: target,
         strands:,
         agent_summary: agents.summary(strands),
         usage:,
@@ -6420,9 +7061,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         transcript: [Line(System, "attached to session " <> session)],
       )
       |> invalidate_transcript
+    }
     protocol.StrandsSnapshot(strands:) -> {
       let summary = agents.summary(strands)
-      Model(..model, strands:, agent_summary: summary, notice: summary)
+      Model(..model, strands:, agent_summary: summary)
     }
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
@@ -6453,6 +7095,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ))
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
+        GoalInspector(state) -> GoalInspector(state)
         SessionSelector(selector) -> SessionSelector(selector)
         DaemonSelector(selector) -> DaemonSelector(selector)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
@@ -6515,9 +7158,40 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
       )
     protocol.NotesSnapshot(board) ->
-      invalidate_transcript(
-        Model(..model, note_board: Some(board), notice: "notes refreshed"),
-      )
+      case board.strand == notes_target(model) {
+        True -> {
+          let previous = case model.note_board {
+            Some(old) if old.strand == board.strand -> selected_note(model, old)
+            _ -> model.note_selected
+          }
+          let selected =
+            selected_note(Model(..model, note_selected: previous), board)
+          let scroll = case model.note_board, selected == model.note_selected {
+            Some(old), True if old.strand == board.strand ->
+              int.min(
+                model.note_scroll,
+                note_max_scroll(
+                  Model(
+                    ..model,
+                    note_board: Some(board),
+                    note_selected: selected,
+                  ),
+                ),
+              )
+            None, True | Some(_), True | None, False | Some(_), False -> 0
+          }
+          invalidate_transcript(
+            Model(
+              ..model,
+              note_board: Some(board),
+              note_selected: selected,
+              note_scroll: scroll,
+              notice: "notes refreshed for " <> board.strand,
+            ),
+          )
+        }
+        False -> model
+      }
     protocol.EntryAdded(record:) -> {
       let protocol.EntryRecord(strand:, ..) = record
       let updated =
@@ -6731,10 +7405,23 @@ fn restore_returned_draft(
   text: String,
   attachment_count: Int,
 ) -> Model {
-  let current = text_area.value(model.input)
-  let restored = case string.trim(current) {
-    "" -> text
-    _ -> current <> "\n\n" <> text
+  // A return follows the prompt's original recipient even if the operator
+  // has opened another strand since submitting it. Only that owner's draft
+  // can accept the returned text.
+  let model = case strand == model.active_strand {
+    True -> Model(..model, input: append_returned_text(model.input, text))
+    False -> {
+      let owner = #(model.session, strand)
+      let saved =
+        dict.get(model.strand_workspaces, owner)
+        |> result.unwrap(empty_workspace())
+      let saved =
+        StrandWorkspace(..saved, input: append_returned_text(saved.input, text))
+      Model(
+        ..model,
+        strand_workspaces: dict.insert(model.strand_workspaces, owner, saved),
+      )
+    }
   }
   let images = case attachment_count {
     0 -> ""
@@ -6744,7 +7431,7 @@ fn restore_returned_draft(
       <> " attachment(s) stayed on the dead daemon — re-attach them"
   }
   append_notice(
-    Model(..model, input: text_area.state_from_string(restored)),
+    model,
     "daemon returned the "
       <> kind
       <> " prompt held for "
@@ -6752,6 +7439,19 @@ fn restore_returned_draft(
       <> " — restored as a draft"
       <> images,
   )
+}
+
+// Keep both copies when the owner has continued typing before custody returns.
+fn append_returned_text(
+  input: text_area.TextAreaState,
+  returned: String,
+) -> text_area.TextAreaState {
+  let current = text_area.value(input)
+  let restored = case string.trim(current) {
+    "" -> returned
+    _ -> current <> "\n\n" <> returned
+  }
+  text_area.state_from_string(restored)
 }
 
 // One line per schedule, in the listing's own order — the operator's
@@ -7774,7 +8474,7 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
         content
           |> list.map(tool_result_text)
           |> string.join("\n")
-          |> compact(110),
+          |> failure_preview,
       ),
     ]
     Some(message.ToolResultMessage(
@@ -7807,6 +8507,10 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     Some(message.UserMessage(..))
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+  let program = case call.outcome {
+    Some(message.ToolResultMessage(is_error: False, ..)) -> None
+    _ -> program
   }
   let rows = case rows, program {
     [heading, ..details], Some(source) -> [
@@ -8231,12 +8935,16 @@ pub fn advisor_lines(
   // `System` rather than `User` in both: the row is context the harness put
   // on this branch, and the shaded `› User` block a user turn is drawn in
   // would say the operator typed it.
-  case extent {
-    notes_view.Excerpt -> [
+  case value, extent {
+    Nudges(..), _ -> [Line(System, heading), Line(ToolDetail, value.body)]
+    _, notes_view.Excerpt -> [
       Line(System, heading <> advisor_preview(value) <> composer.expand_hint),
     ]
 
-    notes_view.Complete -> [Line(System, heading), Line(ToolDetail, value.body)]
+    _, notes_view.Complete -> [
+      Line(System, heading),
+      Line(ToolDetail, value.body),
+    ]
   }
 }
 
@@ -8617,6 +9325,19 @@ fn string_field(
   }
 }
 
+// Diagnostics stay multiline and prominent. Extremely long errors have an
+// explicit expansion path rather than retaining an unbounded compact layout.
+fn failure_preview(value: String) -> String {
+  let clipped = string.slice(value, 0, 1600)
+  let lines = string.split(clipped, "\n")
+  case list.drop(lines, 8) == [] && clipped == value {
+    True -> value
+    False ->
+      string.join(list.take(lines, 8), "\n")
+      <> "\n… Ctrl+g shows the full error"
+  }
+}
+
 fn tool_result_lines(
   tool_name: String,
   content: List(message.ToolResultBlock),
@@ -8651,10 +9372,15 @@ fn tool_result_lines(
         details_extent(details_expanded),
       )
     _, True, _ -> [
-      Line(ToolFailure, case details_expanded {
-        True -> tool_name <> "\n" <> result
-        False -> tool_name <> " · " <> compact(result, 120)
-      }),
+      Line(
+        ToolFailure,
+        tool_name
+          <> "\n"
+          <> case details_expanded {
+          True -> result
+          False -> failure_preview(result)
+        },
+      ),
     ]
     _, False, _ -> [
       Line(ToolResult, case details_expanded {
@@ -9237,6 +9963,7 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
       case model.overlay {
         ModelSelector(selector) -> update_model_selector(key, model, selector)
         AgentInspector(selected) -> update_agent_inspector(key, model, selected)
+        GoalInspector(state) -> update_goal_inspector(key, model, state)
         SessionSelector(selector) ->
           update_session_selector(key, model, selector)
         DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
@@ -9268,6 +9995,66 @@ fn update_session_selector(
         notice: "session selection cancelled",
       )
     sessions.Choose(choice) -> begin_session_switch(model, choice)
+  }
+}
+
+fn goal_availability(model: Model) -> focused_goal_panel.Availability {
+  case model.goal_request {
+    Some(_) -> focused_goal_panel.Pending
+    None -> focused_goal_panel.Ready
+  }
+}
+
+// A compact goal inspector may cover the pending status bands, but never the
+// editable composer. Busy reviewers and the standing goal row can consume the
+// ordinary body completely at 40x12; the editor's real top is the stable lower
+// boundary both rendering and navigation use.
+fn goal_inspector_area(body: Rect, editor: Rect) -> Rect {
+  case body.size.height >= 6 {
+    True -> body
+    False ->
+      geometry.rect_new(
+        body.position.x,
+        body.position.y,
+        body.size.width,
+        int.max(0, editor.position.y - body.position.y),
+      )
+  }
+}
+
+fn model_goal_inspector_area(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, input, _) = layout(screen, model)
+  let #(_, composer) = pending_layout(panel_inner(input), model)
+  let #(_, editor) = input_layout(composer, model.attachments)
+  goal_inspector_area(body, editor)
+}
+
+fn update_goal_inspector(
+  key: keys.Key,
+  model: Model,
+  state: focused_goal_panel.State,
+) -> Model {
+  case
+    focused_goal_panel.update(
+      key,
+      state,
+      model_goal_inspector_area(model),
+      goal_availability(model),
+    )
+  {
+    focused_goal_panel.Close ->
+      Model(
+        ..model,
+        overlay: NoOverlay,
+        repaint_phase: !model.repaint_phase,
+        notice: "goal inspector closed",
+      )
+    focused_goal_panel.Continue(next) ->
+      Model(..model, overlay: GoalInspector(next))
+    focused_goal_panel.Refresh -> request_goal_status(model)
+    focused_goal_panel.Pause -> submit_goal_action(model, command.GoalPause)
+    focused_goal_panel.Resume -> submit_goal_action(model, command.GoalResume)
   }
 }
 
@@ -9338,9 +10125,60 @@ fn update_model_selector(
   }
 }
 
-fn update_agent_inspector(key: keys.Key, model: Model, selected: Int) -> Model {
-  case key {
-    keys.Escape | keys.Tab ->
+// Legacy fixtures have no captured register cut. Their rows explicitly expose
+// unavailable task and result evidence instead of inventing successful work.
+fn displayed_agents(model: Model) -> List(agent_view.Row) {
+  let rows = case model.captured {
+    Some(_) -> model.agent_rows
+    None -> agent_view.legacy(model.strands)
+  }
+  case model.peer {
+    Disconnected ->
+      list.map(rows, fn(row) {
+        agent_view.Row(
+          ..row,
+          status: agent_view.Unavailable,
+          activity: "Disconnected · last observation may be stale",
+          approvals: [],
+        )
+      })
+    Attached(_) | Preview | Replaying -> rows
+  }
+}
+
+fn open_agents(model: Model) -> Model {
+  Model(
+    ..model,
+    overlay: AgentInspector(agents.inspect(model.active_strand)),
+    repaint_phase: !model.repaint_phase,
+    notice: "agent workspace",
+  )
+}
+
+fn update_agent_inspector(
+  key: keys.Key,
+  model: Model,
+  inspector: agents.Inspector,
+) -> Model {
+  use <- bool.lazy_guard(inspector.focus == agents.Composing, fn() {
+    update_workspace_composer(key, model, inspector)
+  })
+  let rows = displayed_agents(model)
+  let changed = case key {
+    keys.Tab ->
+      Model(
+        ..model,
+        help_open: False,
+        notes_open: False,
+        worktree: worktree_view.State(
+          ..model.worktree,
+          focus: worktree_view.Composer,
+        ),
+        overlay: AgentInspector(
+          agents.Inspector(..inspector, focus: agents.Composing),
+        ),
+      )
+    keys.Escape | keys.F(2) ->
       Model(
         ..model,
         overlay: NoOverlay,
@@ -9350,46 +10188,418 @@ fn update_agent_inspector(key: keys.Key, model: Model, selected: Int) -> Model {
     keys.Up ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.move_selection(
-          selected,
-          list.length(model.strands),
-          False,
-        )),
+        overlay: AgentInspector(
+          agents.navigate(inspector, rows, agents.Previous)
+          |> select_inspector_message(model.agent_messages),
+        ),
       )
     keys.Down ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.move_selection(
-          selected,
-          list.length(model.strands),
-          True,
+        overlay: AgentInspector(
+          agents.navigate(inspector, rows, agents.Next)
+          |> select_inspector_message(model.agent_messages),
+        ),
+      )
+    keys.Char("1") -> select_agent_detail(model, inspector, agents.Overview)
+    keys.Char("2") -> select_agent_detail(model, inspector, agents.Messages)
+    keys.Char("3") -> select_agent_detail(model, inspector, agents.Notes)
+    keys.Char("[") if inspector.detail == agents.Messages ->
+      select_agent_message(model, inspector, -1)
+    keys.Char("]") if inspector.detail == agents.Messages ->
+      select_agent_message(model, inspector, 1)
+    keys.Char("[") if inspector.detail == agents.Notes -> select_note(model, -1)
+    keys.Char("]") if inspector.detail == agents.Notes -> select_note(model, 1)
+    keys.Char("r") if inspector.detail == agents.Notes -> refresh_notes(model)
+    keys.Ctrl("g") if inspector.detail == agents.Notes -> toggle_note_mode(model)
+    keys.Ctrl("g") -> toggle_details(model)
+    keys.Char("n") ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.next_attention(inspector, rows)
+          |> select_inspector_message(model.agent_messages),
+        ),
+      )
+    keys.PageUp if inspector.detail == agents.Messages -> {
+      let maximum = message_max_scroll(model, inspector)
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            scroll: int.max(
+              0,
+              int.min(inspector.scroll, maximum) - message_page_step(model),
+            ),
+          ),
+        ),
+      )
+    }
+    keys.PageDown if inspector.detail == agents.Messages -> {
+      let maximum = message_max_scroll(model, inspector)
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            scroll: int.min(
+              maximum,
+              int.min(inspector.scroll, maximum) + message_page_step(model),
+            ),
+          ),
+        ),
+      )
+    }
+    keys.PageUp if inspector.detail == agents.Notes -> {
+      let maximum = note_max_scroll(model)
+      Model(
+        ..model,
+        note_scroll: int.max(
+          0,
+          int.min(model.note_scroll, maximum) - note_page_step(model),
+        ),
+      )
+    }
+    keys.PageDown if inspector.detail == agents.Notes ->
+      Model(
+        ..model,
+        note_scroll: int.min(
+          note_max_scroll(model),
+          int.min(model.note_scroll, note_max_scroll(model))
+            + note_page_step(model),
+        ),
+      )
+    keys.PageUp ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            scroll: int.max(0, inspector.scroll - 5),
+          ),
+        ),
+      )
+    keys.PageDown ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(..inspector, scroll: inspector.scroll + 5),
+        ),
+      )
+    keys.Char("a") -> inspect_agent_approval(model, inspector.selected)
+    keys.Char("o") if inspector.detail == agents.Messages ->
+      open_agent_message_sender(model, inspector)
+    keys.Enter ->
+      case is_known_strand(model.strands, inspector.selected) {
+        True -> switch_active_strand(model, inspector.selected)
+        False ->
+          Model(
+            ..model,
+            notice: "Selected agent is unavailable; recipient unchanged",
+          )
+      }
+    _ -> model
+  }
+  case changed.overlay {
+    AgentInspector(next)
+      if next.detail == agents.Notes && next.selected != inspector.selected
+    ->
+      refresh_notes(
+        Model(
+          ..changed,
+          note_selected: None,
+          note_scroll: 0,
+          note_mode: note_panel.Readable,
+        ),
+      )
+    _ -> changed
+  }
+}
+
+fn select_inspector_message(
+  inspector: agents.Inspector,
+  messages: List(agent_messages.Item),
+) -> agents.Inspector {
+  case inspector.detail {
+    agents.Overview | agents.Notes -> inspector
+    agents.Messages -> {
+      let selected =
+        messages
+        |> agent_messages.for_strand(inspector.selected)
+        |> agent_message_panel.selected(inspector.message)
+        |> option.map(agent_message_panel.identity)
+      let scroll = case selected == inspector.message {
+        True -> inspector.scroll
+        False -> 0
+      }
+      agents.Inspector(..inspector, message: selected, scroll:)
+    }
+  }
+}
+
+/// Reconciles a message browser after a new captured projection arrives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.reconcile_agent_message_selection(model)
+/// ```
+@internal
+pub fn reconcile_agent_message_selection(model: Model) -> Model {
+  case model.overlay {
+    AgentInspector(inspector) if inspector.detail == agents.Messages ->
+      Model(
+        ..model,
+        overlay: AgentInspector(select_inspector_message(
+          inspector,
+          model.agent_messages,
         )),
       )
-    keys.Enter ->
-      case agents.selected_strand(model.strands, selected) {
-        Some(strand) -> switch_active_strand(model, strand)
-        None -> model
+    _ -> model
+  }
+}
+
+fn message_page_step(model: Model) -> Int {
+  agent_message_panel.page_step(message_detail_area(model))
+}
+
+fn message_max_scroll(model: Model, inspector: agents.Inspector) -> Int {
+  let area = message_detail_area(model)
+  model.agent_messages
+  |> agent_messages.for_strand(inspector.selected)
+  |> agent_message_panel.max_scroll(inspector.message, area)
+}
+
+fn note_page_step(model: Model) -> Int {
+  case model.overlay {
+    AgentInspector(_) -> note_panel.page_step(message_detail_area(model))
+    _ -> note_panel.page_step(note_detail_area(model))
+  }
+}
+
+fn note_max_scroll(model: Model) -> Int {
+  let area = case model.overlay {
+    AgentInspector(_) -> message_detail_area(model)
+    _ -> note_detail_area(model)
+  }
+  prepared_notes(model, notes_target(model), area)
+  |> note_panel.max_scroll(model.note_selected)
+}
+
+fn note_detail_area(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  let #(transcript, _, _) = body_layout(conversation, model)
+  panel_inner(transcript)
+}
+
+fn toggle_note_mode(model: Model) -> Model {
+  let mode = case model.note_mode {
+    note_panel.Readable -> note_panel.Raw
+    note_panel.Raw -> note_panel.Readable
+  }
+  Model(..model, note_mode: mode, note_scroll: 0)
+  |> invalidate_transcript
+}
+
+/// Returns the message preview's actual rectangle for viewport regressions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.message_detail_area(model)
+/// ```
+@internal
+pub fn message_detail_area(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  agents.inspection_detail_area(body)
+}
+
+fn select_agent_detail(
+  model: Model,
+  inspector: agents.Inspector,
+  detail: agents.Detail,
+) -> Model {
+  let message = case detail {
+    agents.Messages ->
+      agent_messages.for_strand(model.agent_messages, inspector.selected)
+      |> agent_message_panel.selected(inspector.message)
+      |> option.map(agent_message_panel.identity)
+    agents.Overview | agents.Notes -> inspector.message
+  }
+  let owner_changed = case model.note_board {
+    Some(board) -> board.strand != inspector.selected
+    None -> True
+  }
+  let selected =
+    Model(
+      ..model,
+      note_selected: case detail, owner_changed {
+        agents.Notes, True -> None
+        _, _ -> model.note_selected
+      },
+      note_scroll: case detail, owner_changed {
+        agents.Notes, True -> 0
+        _, _ -> model.note_scroll
+      },
+      overlay: AgentInspector(
+        agents.Inspector(..inspector, detail:, scroll: 0, message:),
+      ),
+    )
+  case detail {
+    agents.Notes -> refresh_notes(selected)
+    agents.Overview | agents.Messages -> selected
+  }
+}
+
+fn select_agent_message(
+  model: Model,
+  inspector: agents.Inspector,
+  amount: Int,
+) -> Model {
+  let messages =
+    agent_messages.for_strand(model.agent_messages, inspector.selected)
+  Model(
+    ..model,
+    overlay: AgentInspector(
+      agents.Inspector(
+        ..inspector,
+        message: agent_message_panel.move(messages, inspector.message, amount),
+        scroll: 0,
+      ),
+    ),
+  )
+}
+
+// Opening a sender is an explicit workspace switch. Merely inspecting a send
+// never moves the composer recipient or the transcript reading position.
+fn open_agent_message_sender(
+  model: Model,
+  inspector: agents.Inspector,
+) -> Model {
+  let messages =
+    agent_messages.for_strand(model.agent_messages, inspector.selected)
+  case agent_message_panel.selected(messages, inspector.message) {
+    None -> Model(..model, notice: "No observed message is selected")
+    Some(item) ->
+      case is_known_strand(model.strands, item.source) {
+        True -> switch_active_strand(model, item.source)
+        False ->
+          Model(
+            ..model,
+            notice: "Message sender is unavailable; recipient unchanged",
+          )
       }
-    keys.PageUp
-    | keys.PageDown
-    | keys.Backspace
-    | keys.Left
-    | keys.Right
-    | keys.Delete
-    | keys.BackTab
-    | keys.Home
-    | keys.End
-    | keys.Alt(_)
-    | keys.Ctrl(_)
-    | keys.Char(_)
-    | keys.Insert
-    | keys.F(_)
-    | keys.Unknown(_) -> model
+  }
+}
+
+// The editor uses the ordinary submission path and its existing owner. A
+// command may open another surface; only an ordinary edit returns to inspection.
+fn update_workspace_composer(
+  key: keys.Key,
+  model: Model,
+  inspector: agents.Inspector,
+) -> Model {
+  case key {
+    keys.Escape | keys.F(2) ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(..inspector, focus: agents.Browsing),
+        ),
+      )
+    _ -> {
+      let next = update_main_key(key, Model(..model, overlay: NoOverlay))
+
+      // Commands transfer keyboard ownership to their visible destination.
+      // Retaining inspection would conceal help or a diff navigator while
+      // that surface was already consuming the next key.
+      let editing =
+        !next.help_open
+        && !next.notes_open
+        && next.worktree.focus == worktree_view.Composer
+        && next.diff_view == model.diff_view
+        && next.context.surface == context_view.Hidden
+        && next.queue_editor.surface == queue_editor.Closed
+        && next.summary_surface == queue_editor.Closed
+      case next.overlay, editing {
+        NoOverlay, True -> Model(..next, overlay: AgentInspector(inspector))
+        _, _ -> next
+      }
+    }
+  }
+}
+
+// Owner context is read from the same exact escalation revision. A newer
+// metadata cut cannot silently rename the request whose grants are displayed.
+fn captured_approval_panel(model: Model, review: approval.Review) {
+  let context = {
+    use captured <- result.try(option.to_result(model.captured, Nil))
+    use cell <- result.try(
+      list.find(captured.1.cells, fn(cell) {
+        cell.namespace == register.FactCustom
+        && cell.key == "escalation/" <> review.id
+        && cell.seq == review.seq
+      }),
+    )
+    use fields <- result.try(case cell.value {
+      json.Object(fields) -> Ok(fields)
+      _ -> Error(Nil)
+    })
+    use scope <- result.try(list.key_find(fields, "scope"))
+    use fields <- result.try(case scope {
+      json.Object(fields) -> Ok(fields)
+      _ -> Error(Nil)
+    })
+    use owner <- result.try(case list.key_find(fields, "strand") {
+      Ok(json.String(owner)) -> Ok(owner)
+      _ -> Error(Nil)
+    })
+    use operation <- result.try(case list.key_find(fields, "operation") {
+      Ok(json.String(operation)) -> Ok(operation)
+      _ -> Error(Nil)
+    })
+    Ok(#(owner, operation))
+  }
+  approval_panel.new(review)
+  |> approval_panel.with_context(case context {
+    Ok(#(owner, operation)) -> approval_panel.CapturedRequest(owner, operation)
+    Error(_) ->
+      approval_panel.RequestContextUnavailable(
+        "Request owner unavailable in this capture",
+      )
+  })
+}
+
+// Inspection opens the existing exact-request panel. It never chooses or sends
+// a decision, and a disappeared request cannot be replaced by a different one.
+fn inspect_agent_approval(model: Model, strand: String) -> Model {
+  let found =
+    displayed_agents(model)
+    |> list.find(fn(row) { row.id == strand })
+    |> result.try(fn(row) { list.first(row.approvals) })
+    |> result.try(fn(id) {
+      list.find(model.approvals, fn(review) {
+        review.id == id && review.status == approval.Pending
+      })
+    })
+  case found {
+    Ok(review) ->
+      Model(
+        ..model,
+        overlay: ApprovalInspector(captured_approval_panel(model, review)),
+      )
+    Error(Nil) -> Model(..model, notice: "No current approval for this agent")
   }
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
   case diff_shown(model), model.worktree.focus, key {
+    _, _, keys.Alt("q") -> open_queue(model)
+    _, _, keys.F(2) -> open_agents(model)
     True, _, keys.Ctrl("d") ->
       Model(
         ..model,
@@ -9492,7 +10702,29 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
     keys.Char("r"), False, True -> refresh_notes(model)
+    keys.Char("["), False, True -> select_note(model, -1)
+    keys.Char("]"), False, True -> select_note(model, 1)
+    keys.Ctrl("g"), False, True -> toggle_note_mode(model)
     keys.Ctrl("g"), _, _ -> toggle_details(model)
+    keys.PageUp, False, True -> {
+      let maximum = note_max_scroll(model)
+      Model(
+        ..model,
+        note_scroll: int.max(
+          0,
+          int.min(model.note_scroll, maximum) - note_page_step(model),
+        ),
+      )
+    }
+    keys.PageDown, False, True ->
+      Model(
+        ..model,
+        note_scroll: int.min(
+          note_max_scroll(model),
+          int.min(model.note_scroll, note_max_scroll(model))
+            + note_page_step(model),
+        ),
+      )
     keys.PageUp, _, _ -> scroll_reading_panel(model, Older, 10)
     keys.PageDown, _, _ -> scroll_reading_panel(model, Newer, 10)
     keys.Escape, True, _ ->
@@ -9508,6 +10740,10 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
         ..model,
         notes_open: False,
         note_board: None,
+        note_selected: None,
+        note_mode: note_panel.Readable,
+        note_scroll: 0,
+        notes_requested: None,
         scroll_offset: 0,
         repaint_phase: !model.repaint_phase,
         notice: "agent notes closed",
@@ -9625,37 +10861,55 @@ fn clear_selection(model: Model) -> Model {
 // selection in the area the press landed in.
 fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let #(_, _, input_area, _) = layout(screen, model)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, queue) = queue_body_layout(body, model)
+  let #(transcript, _, _) = body_layout(conversation, model)
   use <- bool.lazy_guard(
-    reading_history(model) && at.y == input_area.position.y,
+    reading_history(model)
+      && at.y == transcript.position.y
+      && at.x < geometry.right(transcript),
     fn() {
       scroll_transcript(clear_selection(model), False, model.rendered_row_count)
     },
   )
-  case diff_navigation_hit(model, at) {
+  case queue_row_hit(model, queue, at) {
     Some(selected) ->
       Model(
-        ..model,
-        selection: None,
-        selection_frame: None,
-        selection_gutters: [],
-        diff_scroll_offset: 0,
-        worktree: worktree_view.State(
-          ..model.worktree,
+        ..clear_selection(model),
+        queue_editor: queue_editor.State(
+          ..model.queue_editor,
+          surface: queue_editor.Inspector,
           selected:,
-          focus: worktree_view.Navigator,
+          preview_scroll: 0,
         ),
+        notice: "queued input selected",
       )
-      |> invalidate_transcript
-    None -> {
-      let #(shown, selection_gutters) = selection_display(model)
-      Model(
-        ..model,
-        selection: Some(selection.start(hit_area(model, at), at)),
-        selection_frame: Some(shown),
-        selection_gutters:,
-      )
-    }
+    None ->
+      case diff_navigation_hit(model, at) {
+        Some(selected) ->
+          Model(
+            ..model,
+            selection: None,
+            selection_frame: None,
+            selection_gutters: [],
+            diff_scroll_offset: 0,
+            worktree: worktree_view.State(
+              ..model.worktree,
+              selected:,
+              focus: worktree_view.Navigator,
+            ),
+          )
+          |> invalidate_transcript
+        None -> {
+          let #(shown, selection_gutters) = selection_display(model)
+          Model(
+            ..model,
+            selection: Some(selection.start(hit_area(model, at), at)),
+            selection_frame: Some(shown),
+            selection_gutters:,
+          )
+        }
+      }
   }
 }
 
@@ -9722,7 +10976,8 @@ fn selection_covers_transcript(
 ) -> Bool {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, _, _) = layout(screen, model)
-  let #(transcript_panel, _, _) = body_layout(body_area, model)
+  let #(conversation, _) = queue_body_layout(body_area, model)
+  let #(transcript_panel, _, _) = body_layout(conversation, model)
   selected.area == panel_inner(transcript_panel) && !main_shows_diff(model)
 }
 
@@ -9770,7 +11025,8 @@ pub fn transcript_selection_text(
 fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, _, _) = layout(screen, model)
-  let #(transcript_panel, _, _) = body_layout(body_area, model)
+  let #(conversation, _) = queue_body_layout(body_area, model)
+  let #(transcript_panel, _, _) = body_layout(conversation, model)
   let area = panel_inner(transcript_panel)
   model.rendered_gutters
   |> list.drop(model.scroll_offset + viewport_backlog(model))
@@ -9822,13 +11078,15 @@ fn write_clipboard(clipboard: Clipboard, text: String) -> Nil {
 pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
+  let #(conversation, queue) = queue_body_layout(body_area, model)
   let #(transcript_panel, agent_panel, changes_panel) =
-    body_layout(body_area, model)
+    body_layout(conversation, model)
   [
     panel_inner(transcript_panel),
     panel_inner(agent_panel),
     panel_inner(changes_panel),
     panel_inner(input_area),
+    panel_inner(queue),
   ]
   |> list.find(fn(area) { geometry.contains(area, at) })
   |> result.unwrap(screen)
@@ -9967,7 +11225,7 @@ fn scroll_reading_panel(
   case
     main_shows_diff(model) || model.worktree.focus == worktree_view.Navigator
   {
-    True -> scroll_diff(model, direction, rows)
+    True -> scroll_diff(model, direction, diff_patch_height(model))
     False -> scroll_transcript(model, direction == Older, rows)
   }
 }
@@ -9983,18 +11241,26 @@ fn scroll_at(
       Newer -> 3
     })
   })
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let #(_, body, _, _) = layout(screen, model)
-  let #(_, _, changes) = body_layout(body, model)
-  case main_shows_diff(model) || geometry.contains(changes, position) {
+  case
+    main_shows_diff(model)
+    || {
+      diff_shown(model) && geometry.contains(active_diff_panel(model), position)
+    }
+  {
     True -> scroll_diff(model, direction, 3)
     False -> scroll_transcript(model, direction == Older, 3)
   }
 }
 
 fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
+  let current =
+    bounded_scroll_offset(
+      model.diff_scroll_offset,
+      model.diff_row_count,
+      diff_patch_height(model),
+    )
   let offset =
-    scroll_offset(model.diff_scroll_offset, direction == Older, rows)
+    scroll_offset(current, direction == Older, rows)
     |> bounded_scroll_offset(model.diff_row_count, diff_patch_height(model))
   Model(
     ..model,
@@ -10004,11 +11270,10 @@ fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
 }
 
 fn transcript_viewport_height(model: Model) -> Int {
-  transcript_height(
-    model.height,
-    input_height(model),
-    footer_height(model.width),
-  )
+  let screen = model_screen(model)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  int.max(1, panel_inner(conversation).size.height)
 }
 
 /// Returns the transcript rows left after fixed terminal surfaces are reserved.
@@ -10023,8 +11288,10 @@ pub fn transcript_height(
 }
 
 fn transcript_width(model: Model) -> Int {
-  let #(main, _, _) =
-    body_layout(geometry.rect_new(0, 0, model.width, model.height), model)
+  let screen = model_screen(model)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  let #(main, _, _) = body_layout(conversation, model)
   int.max(1, main.size.width - 2)
 }
 
@@ -10124,6 +11391,12 @@ fn submit(model: Model) -> Model {
 
 fn mutation_refusal(model: Model, command: command.Command) -> Option(String) {
   let mutates = mutating_submission(model, command)
+  use <- bool.guard(
+    mutates
+      && model.captured != None
+      && !is_known_strand(model.strands, model.active_strand),
+    Some("recipient unavailable; draft retained for " <> model.active_strand),
+  )
   case mutates, model.peer, model.channel {
     False, _, _ -> None
     True, Disconnected, _ -> Some("no conversation is attached; draft retained")
@@ -10309,6 +11582,8 @@ fn submit_text(model: Model) -> Model {
         help_open: True,
         notes_open: False,
         note_board: None,
+        note_selected: None,
+        notes_requested: None,
         scroll_offset: 0,
         repaint_phase: !cleared.repaint_phase,
         notice: "/help",
@@ -10355,16 +11630,7 @@ fn submit_text(model: Model) -> Model {
         ))
       append_system(switched, "active model changed to " <> name)
     }
-    command.Strands | command.Agents ->
-      Model(
-        ..cleared,
-        overlay: AgentInspector(active_strand_index(
-          cleared.strands,
-          cleared.active_strand,
-        )),
-        repaint_phase: !cleared.repaint_phase,
-        notice: "agent inspector",
-      )
+    command.Strands | command.Agents -> open_agents(cleared)
     command.Schedules ->
       send_frame(cleared, protocol.schedules(cleared.next_id))
     command.Unschedule(name:, target:) -> {
@@ -10401,7 +11667,14 @@ fn submit_text(model: Model) -> Model {
         Model(
           ..cleared,
           help_open: False,
+          diff_view: DiffHidden,
+          worktree: worktree_view.State(
+            ..cleared.worktree,
+            focus: worktree_view.Composer,
+          ),
           notes_open: True,
+          note_mode: note_panel.Readable,
+          note_scroll: 0,
           scroll_offset: 0,
           repaint_phase: !cleared.repaint_phase,
           notice: "agent notes",
@@ -10471,16 +11744,8 @@ fn submit_text(model: Model) -> Model {
         confirming(cleared, "the session goal is cleared"),
         protocol.goal_clear(cleared.next_id),
       )
-    command.GoalPause ->
-      send_frame(
-        confirming(cleared, "the session goal is held"),
-        protocol.goal_pause(cleared.next_id),
-      )
-    command.GoalResume ->
-      send_frame(
-        confirming(cleared, "the session goal continues"),
-        protocol.goal_resume(cleared.next_id),
-      )
+    command.GoalPause -> submit_goal_action(cleared, command.GoalPause)
+    command.GoalResume -> submit_goal_action(cleared, command.GoalResume)
 
     // The word is shown back because the operator has to see which of
     // their words was read as the budget, and a goal must never be pinned
@@ -11278,6 +12543,11 @@ fn apply_submission(
         notice: case command {
           // Automatic observation must not erase a user's command outcome.
           "context" -> sent.notice
+          "goal_get" ->
+            case sent.goal_report {
+              HoldGoalReport -> sent.notice
+              ReportGoal | ConfirmGoal(..) -> command <> " sent"
+            }
           _ -> command <> " sent"
         },
       )
@@ -11379,34 +12649,146 @@ fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
   })
 }
 
+// Keep draft ownership across sessions while retaining history only for
+// strands still present in the current session. Draft text is never evicted.
+fn prune_workspace_history(
+  workspaces: Dict(#(String, String), StrandWorkspace),
+  session: String,
+  strands: List(protocol.Strand),
+) -> Dict(#(String, String), StrandWorkspace) {
+  dict.map_values(workspaces, fn(owner, saved) {
+    case owner.0 == session && is_known_strand(strands, owner.1) {
+      True -> saved
+      False ->
+        StrandWorkspace(
+          ..saved,
+          scrollback: history_view.empty(),
+          reading_lines: None,
+          offset: 0,
+          anchors: [],
+          prefix: 0,
+        )
+    }
+  })
+}
+
+// New destinations begin with their own editor and an empty history window.
+fn empty_workspace() -> StrandWorkspace {
+  StrandWorkspace(
+    text_area.state_new(),
+    [],
+    [],
+    0,
+    "",
+    PromptNext,
+    history_view.empty(),
+    None,
+    0,
+    [],
+    0,
+    1,
+  )
+}
+
+// Save before changing identity; both empty drafts and submission mode belong
+// to the destination, so a first visit starts with a fresh editor.
+fn select_workspace(model: Model, session: String, strand: String) -> Model {
+  use <- bool.guard(
+    model.session == session && model.active_strand == strand,
+    model,
+  )
+
+  // Session observations belong to the attachment that read them. Reusing
+  // the common strand name "main" cannot transfer advice or a goal.
+  let model = case model.session == session {
+    True -> model
+    False ->
+      Model(
+        ..model,
+        nudges: None,
+        nudges_refresh: worktree_view.Settled,
+        nudges_awaiting: None,
+        nudges_request: None,
+        goal: None,
+        goal_refresh: worktree_view.Settled,
+        goal_awaiting: None,
+        goal_request: None,
+        goal_report: HoldGoalReport,
+        overlay: case model.overlay {
+          GoalInspector(_) -> NoOverlay
+          other -> other
+        },
+      )
+  }
+
+  // Before the first attachment there is no previous session to park in.
+  // Bind that unassigned editor to the explicitly chosen session once;
+  // later switches keep their existing session identities and own drafts.
+  let draft_session = case model.session {
+    "" -> session
+    previous -> previous
+  }
+  let parked =
+    dict.insert(
+      model.strand_workspaces,
+      #(draft_session, model.active_strand),
+      StrandWorkspace(
+        model.input,
+        model.attachments,
+        model.history,
+        model.history_index,
+        model.history_draft,
+        model.submission_mode,
+        model.scrollback,
+        model.reading_lines,
+        model.scroll_offset,
+        model.rendered_anchors,
+        model.rendered_row_count - list.length(model.rendered_anchors),
+        transcript_viewport_height(model),
+      ),
+    )
+  let saved = dict.get(parked, #(session, strand)) |> option.from_result
+  let restored = option.unwrap(saved, empty_workspace())
+  Model(
+    ..model,
+    strand_workspaces: dict.delete(parked, #(session, strand)),
+    agent_rows: case model.session == session {
+      True -> model.agent_rows
+      False -> []
+    },
+    agent_messages: case model.session == session {
+      True -> model.agent_messages
+      False -> []
+    },
+    reviewer_rows: case model.session == session {
+      True -> model.reviewer_rows
+      False -> []
+    },
+    restored_workspace: saved,
+    input: restored.input,
+    attachments: restored.attachments,
+    history: restored.history,
+    history_index: restored.history_index,
+    history_draft: restored.history_draft,
+    command_selected: 0,
+    submission_mode: restored.submission_mode,
+    scrollback: history_view.cancel(restored.scrollback),
+    reading_lines: restored.reading_lines,
+    scroll_offset: restored.offset,
+  )
+}
+
 fn switch_active_strand(model: Model, strand: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
-
-  // The outgoing strand's window is put down before the incoming one is
-  // picked up, so the switch never discards loaded history. Without this the
-  // only surviving history would be whatever `cut.window` holds, and that is
-  // the newest hundred records of the whole session across every strand: with
-  // two busy sub-agents running, a return to `main` would show one or two of
-  // its own entries and then spend the rest of the session scanning the
-  // global sequence space backwards to find the ancestry it already had.
-  let parked =
-    dict.insert(model.parked_scrollback, model.active_strand, model.scrollback)
-  let restored = dict.get(parked, strand) |> result.unwrap(history_view.empty())
-
-  // The incoming strand's window is held directly from here on, so its parked
-  // copy is removed rather than left to go stale behind the live one.
-  let parked = dict.delete(parked, strand)
+  let model = select_workspace(model, model.session, strand)
   let selected =
     Model(
       ..model,
       overlay: NoOverlay,
       active_strand: strand,
-      parked_scrollback: parked,
-      scrollback: restored,
       queued: [],
       awaiting_outcome: None,
       current_model: "loading…",
-      scroll_offset: 0,
       record_cache_valid: False,
       repaint_phase: !model.repaint_phase,
       notice: "active strand: " <> strand,
@@ -11415,25 +12797,6 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
   case model.captured {
     Some(#(cut, view)) -> apply_cut(selected, cut, view)
     None -> send_frame(selected, protocol.config(model.next_id, strand))
-  }
-}
-
-fn active_strand_index(strands: List(protocol.Strand), active: String) -> Int {
-  active_strand_index_loop(strands, active, 0)
-}
-
-fn active_strand_index_loop(
-  strands: List(protocol.Strand),
-  active: String,
-  index: Int,
-) -> Int {
-  case strands {
-    [] -> 0
-    [Strand(id:, ..), ..rest] ->
-      case id == active {
-        True -> index
-        False -> active_strand_index_loop(rest, active, index + 1)
-      }
   }
 }
 
@@ -11568,6 +12931,60 @@ fn queue_rows(model: Model) -> List(snapshot_view.PendingInput) {
   }
 }
 
+// Mouse selection reuses the rectangle already reserved for rendering. The
+// passive card maps one visible message per row; the wide inspector maps its
+// left-hand list after the heading. Compact inspection shows only the selected
+// preview, so a click there leaves identity unchanged.
+fn queue_row_hit(
+  model: Model,
+  area: Rect,
+  at: geometry.Position,
+) -> Option(Int) {
+  use <- bool.guard(!geometry.contains(panel_inner(area), at), None)
+  let rows = queue_rows(model)
+  let inner = panel_inner(area)
+  let index = case model.queue_editor.surface {
+    queue_editor.Closed -> at.y - inner.position.y
+    queue_editor.Inspector -> {
+      let content = queue_content_area(area)
+      let list_width = int.min(36, { content.size.width * 2 } / 5)
+      let visible = int.max(1, content.size.height - 1)
+      let list_area =
+        geometry.rect_new(
+          content.position.x,
+          content.position.y + 1,
+          list_width,
+          int.min(visible, list.length(rows)),
+        )
+      case
+        content.size.width >= 70
+        && content.size.height >= 6
+        && geometry.contains(list_area, at)
+      {
+        True -> {
+          let offset =
+            int.min(
+              model.queue_editor.selected,
+              int.max(0, list.length(rows) - visible),
+            )
+          offset + at.y - list_area.position.y
+        }
+        False -> -1
+      }
+    }
+    queue_editor.Editor -> -1
+  }
+  let visible = case model.queue_editor.surface {
+    queue_editor.Closed -> int.min(3, list.length(rows))
+    queue_editor.Inspector -> list.length(rows)
+    queue_editor.Editor -> 0
+  }
+  case index >= 0 && index < visible {
+    True -> Some(index)
+    False -> None
+  }
+}
+
 fn update_queue_key(key: keys.Key, model: Model) -> Model {
   let state = model.queue_editor
   case key, state.surface {
@@ -11598,6 +13015,7 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
         queue_editor: queue_editor.State(
           ..state,
           selected: int.max(0, state.selected - 1),
+          preview_scroll: 0,
         ),
       )
     keys.Down, queue_editor.Inspector ->
@@ -11609,8 +13027,40 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
             int.max(0, list.length(queue_rows(model)) - 1),
             state.selected + 1,
           ),
+          preview_scroll: 0,
         ),
       )
+    keys.PageUp, queue_editor.Inspector -> {
+      let area = queue_preview_area(model)
+      let maximum =
+        queue_panel.max_scroll(queue_rows(model), state.selected, area)
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          preview_scroll: int.max(
+            0,
+            int.min(state.preview_scroll, maximum) - queue_panel.page_rows(area),
+          ),
+        ),
+      )
+    }
+    keys.PageDown, queue_editor.Inspector -> {
+      let area = queue_preview_area(model)
+      let maximum =
+        queue_panel.max_scroll(queue_rows(model), state.selected, area)
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          preview_scroll: int.min(
+            maximum,
+            int.min(state.preview_scroll, maximum) + queue_panel.page_rows(area),
+          ),
+        ),
+      )
+    }
+    keys.Char("e"), queue_editor.Inspector -> resume_queue_draft(model)
     keys.Enter, queue_editor.Inspector -> select_queue_input(model)
     keys.Ctrl("r"), queue_editor.Editor -> reconcile_queue_draft(model)
     keys.Ctrl("s"), queue_editor.Editor -> save_queue_draft(model)
@@ -11620,39 +13070,99 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
-fn select_queue_input(model: Model) -> Model {
-  let state = model.queue_editor
-  case list.first(list.drop(queue_rows(model), state.selected)) {
-    Ok(row) if row.editing == snapshot_view.Editable -> {
-      let fetch =
-        queue_editor.Fetch(
-          queue_owner(model),
-          queue_namespace(model),
-          row.strand,
-          row.id,
-        )
-      service_queue_read(
-        Model(
-          ..model,
-          queue_editor: queue_editor.State(
-            ..state,
-            fetch: Some(fetch),
-            awaiting: None,
-            request_id: None,
-            message: "Waiting for the full queued input…",
-          ),
-        ),
-      )
-    }
-    Ok(_) ->
+fn resume_queue_draft(model: Model) -> Model {
+  case model.queue_editor.draft {
+    Some(_) ->
       Model(
         ..model,
         queue_editor: queue_editor.State(
-          ..state,
-          message: "This queued input is read-only for this attachment",
+          ..model.queue_editor,
+          surface: queue_editor.Editor,
+          fetch: None,
+          awaiting: None,
+          request_id: None,
+          message: "Retained draft resumed · Ctrl+s saves · Esc returns to inspection",
         ),
       )
+    None ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..model.queue_editor,
+          message: "No retained queue draft to resume",
+        ),
+      )
+  }
+}
+
+fn select_queue_input(model: Model) -> Model {
+  let state = model.queue_editor
+  case list.first(list.drop(queue_rows(model), state.selected)) {
+    Ok(row) ->
+      case
+        retained_other_draft(state.draft, row, queue_namespace(model)),
+        row.editing
+      {
+        True, _ ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.State(
+              ..state,
+              message: "Retained draft belongs to another input · e resumes it; browsing remains available",
+            ),
+          )
+        False, snapshot_view.Editable -> {
+          let fetch =
+            queue_editor.Fetch(
+              queue_owner(model),
+              queue_namespace(model),
+              row.strand,
+              row.id,
+            )
+          service_queue_read(
+            Model(
+              ..model,
+              queue_editor: queue_editor.State(
+                ..state,
+                fetch: Some(fetch),
+                awaiting: None,
+                request_id: None,
+                message: "Waiting for the full queued input…",
+              ),
+            ),
+          )
+        }
+        False, snapshot_view.ReadOnly ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.State(
+              ..state,
+              message: "This queued input is read-only for this attachment",
+            ),
+          )
+      }
     Error(Nil) -> model
+  }
+}
+
+fn retained_other_draft(
+  draft: Option(queue_editor.Draft),
+  row: snapshot_view.PendingInput,
+  namespace: String,
+) -> Bool {
+  case draft {
+    Some(draft) -> {
+      let dirty =
+        text_area.value(draft.input) != draft.document.text
+        || draft.delivery != queue_editor.Editable
+      dirty
+      && {
+        draft.namespace != namespace
+        || draft.document.id != row.id
+        || draft.document.strand != row.strand
+      }
+    }
+    None -> False
   }
 }
 
@@ -11828,79 +13338,219 @@ fn insert_queue_paste(
   })
 }
 
-fn render_queue_surface(buf, cursor, screen, model: Model) {
+fn render_inline_queue(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
   let state = model.queue_editor
-  case state.surface {
-    queue_editor.Closed -> #(buf, cursor)
-    queue_editor.Inspector -> {
+  case state.surface, area.size.height {
+    _, 0 -> buf
+    queue_editor.Closed, _ -> {
       let rows = queue_rows(model)
-      let labels =
-        list.index_map(rows, fn(row, index) {
-          let prefix = case index == state.selected {
-            True -> "> "
-            False -> "  "
-          }
-          let access = case row.editing {
-            snapshot_view.Editable -> "editable"
-            snapshot_view.ReadOnly -> "read-only"
-          }
-          span.line_plain(
-            prefix
-            <> case row.kind {
-              snapshot_view.Queue -> "queue "
-              snapshot_view.Steer -> "steer "
-            }
-            <> text_hygiene.single_line(row.id)
-            <> " · "
-            <> access
-            <> " · "
-            <> text_hygiene.single_line(row.text),
-          )
-        })
-      let labels = case labels {
-        [] -> [
-          span.line_plain("No queued inputs in the current captured view"),
-        ]
-        _ -> labels
-      }
-      let inner = panel_inner(screen)
-      let body =
-        geometry.rect_new(
-          inner.position.x,
-          inner.position.y + 2,
-          inner.size.width,
-          int.max(0, inner.size.height - 2),
-        )
-      let rendered =
-        buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " queued inputs · " <> model.active_strand <> " ",
-          theme.signal,
-        )
-        |> paragraph.render_styled(inner, [span.line_plain(state.message)])
-        |> paragraph.render_styled(
-          body,
-          list.drop(labels, int.max(0, state.selected - body.size.height + 1)),
-        )
-      #(rendered, Error(Nil))
+      buf
+      |> render_panel_border(
+        area,
+        case area.size.height <= 2 {
+          True -> tiny_queue_title(rows, 0, 0, "Alt+q", area.size.width)
+          False ->
+            " queue · "
+            <> int.to_string(list.length(rows))
+            <> " pending · Alt+q inspect "
+        },
+        theme.signal,
+      )
+      |> paragraph.render_styled(
+        panel_inner(area),
+        queue_panel.compact(rows, panel_inner(area)),
+      )
     }
-    queue_editor.Editor -> render_queue_draft(buf, screen, state)
+    queue_editor.Inspector, _ -> {
+      let rows = queue_rows(model)
+      let inner = panel_inner(area)
+      let body = queue_content_area(area)
+      let title = case area.size.height {
+        height if height <= 2 ->
+          tiny_queue_title(
+            rows,
+            state.selected,
+            state.preview_scroll,
+            tiny_queue_controls(),
+            area.size.width,
+          )
+        height if height <= 4 -> " queue · ↑↓ Pg ↵ e Esc "
+        _ -> " queued inputs · " <> model.active_strand <> " "
+      }
+      buf
+      |> buffer.clear(area)
+      |> render_panel_border(area, title, theme.signal)
+      |> paragraph.render_styled(inner, queue_inspector_controls(state, inner))
+      |> paragraph.render_styled(body, case area.size.height <= 4 {
+        True -> [
+          queue_panel.tiny_line(
+            rows,
+            state.selected,
+            state.preview_scroll,
+            body.size.width,
+          ),
+        ]
+        False ->
+          queue_panel.lines(rows, state.selected, state.preview_scroll, body)
+      })
+    }
+    queue_editor.Editor, _ -> render_queue_draft(buf, area, state)
   }
 }
 
-fn render_queue_draft(buf, screen, state: queue_editor.State) {
+fn tiny_queue_title(
+  rows: List(snapshot_view.PendingInput),
+  selected: Int,
+  preview_scroll: Int,
+  controls: String,
+  width: Int,
+) -> String {
+  case list.first(list.drop(rows, selected)) {
+    Error(Nil) -> " queue · " <> controls <> " "
+    Ok(row) -> {
+      let #(suffix, preview_width) = tiny_queue_measure(row, controls, width)
+      let wrapped =
+        row.text
+        |> text_hygiene.multiline
+        |> string.split("\n")
+        |> list.flat_map(fn(line) { text.wrap(line, preview_width) })
+      let offset = int.min(preview_scroll, int.max(0, list.length(wrapped) - 1))
+      let preview =
+        wrapped
+        |> list.drop(offset)
+        |> list.first
+        |> result.unwrap("")
+      " "
+      <> text.truncate(text_hygiene.single_line(preview), preview_width, "")
+      <> suffix
+      <> " "
+    }
+  }
+}
+
+fn tiny_queue_controls() -> String {
+  "Pg ↵ e Esc"
+}
+
+fn tiny_queue_measure(
+  row: snapshot_view.PendingInput,
+  controls: String,
+  width: Int,
+) -> #(String, Int) {
+  let badges = case row.kind, row.editing {
+    snapshot_view.Queue, snapshot_view.Editable -> "Q EDIT"
+    snapshot_view.Queue, snapshot_view.ReadOnly -> "Q READ-ONLY"
+    snapshot_view.Steer, snapshot_view.Editable -> "STEER EDIT"
+    snapshot_view.Steer, snapshot_view.ReadOnly -> "STEER READ-ONLY"
+  }
+  let suffix = " · " <> badges <> " · " <> controls
+  #(suffix, int.max(1, width - text.cell_width(suffix) - 3))
+}
+
+fn queue_inspector_controls(
+  state: queue_editor.State,
+  area: Rect,
+) -> List(span.Line) {
+  let lines = [
+    span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+    span.line_new([
+      span.span_styled(
+        "↑/↓ select · Enter fetch/edit · e resume draft · Esc back",
+        theme.overlay_signal(),
+      ),
+    ]),
+    span.line_new([
+      span.span_styled(
+        "PgUp/PgDn scroll captured excerpt",
+        theme.overlay_signal(),
+      ),
+    ]),
+  ]
+  list.take(lines, queue_control_rows(area))
+}
+
+fn model_screen(model: Model) -> geometry.Rect {
+  geometry.rect_new(0, 0, model.width, model.height)
+}
+
+fn model_queue_area_for(
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> geometry.Rect {
+  let #(_, body, _, _) = layout(model_screen(model), model)
+  queue_body_layout_for(body, model, rows).1
+}
+
+fn queue_preview_area(model: Model) -> geometry.Rect {
+  queue_preview_area_for(model, queue_rows(model))
+}
+
+fn queue_preview_area_for(
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> geometry.Rect {
+  let area = model_queue_area_for(model, rows)
+  let content = queue_content_area(area)
+  case area.size.height {
+    height if height <= 2 ->
+      case list.first(list.drop(rows, model.queue_editor.selected)) {
+        Error(Nil) -> content
+        Ok(row) -> {
+          let #(_, width) =
+            tiny_queue_measure(row, tiny_queue_controls(), area.size.width)
+          geometry.rect_new(area.position.x, area.position.y, width, 3)
+        }
+      }
+    height if height <= 4 ->
+      case list.first(list.drop(rows, model.queue_editor.selected)) {
+        Error(Nil) -> content
+        Ok(row) -> {
+          let width = queue_panel.tiny_preview_width(row, content.size.width)
+          geometry.rect_new(content.position.x, content.position.y, width, 3)
+        }
+      }
+    _ -> content
+  }
+}
+
+fn queue_content_area(area: geometry.Rect) -> geometry.Rect {
+  let inner = panel_inner(area)
+  let controls = queue_control_rows(area)
+  geometry.rect_new(
+    inner.position.x,
+    inner.position.y + controls,
+    inner.size.width,
+    int.max(0, inner.size.height - controls),
+  )
+}
+
+fn queue_control_rows(area: Rect) -> Int {
+  int.min(3, int.max(0, panel_inner(area).size.height - 1))
+}
+
+fn render_queue_draft(
+  buf: buffer.Buffer,
+  area: Rect,
+  state: queue_editor.State,
+) -> buffer.Buffer {
   case state.draft {
-    None -> #(buf, Error(Nil))
+    None -> buf
     Some(draft) -> {
-      let inner = panel_inner(screen)
-      let area =
-        geometry.rect_new(
-          inner.position.x,
-          inner.position.y + 2,
-          inner.size.width,
-          int.max(0, inner.size.height - 3),
-        )
+      let inner = panel_inner(area)
+      let editor_area = queue_draft_area(area)
+      let priority = case draft.document.kind {
+        queue_editor.Queue -> "queue"
+        queue_editor.Steer -> "steer"
+      }
+      let delivery = case draft.delivery {
+        queue_editor.Editable -> "editable revision"
+        queue_editor.Saving -> "save awaiting acknowledgement"
+        queue_editor.Unknown -> "save outcome unknown"
+      }
 
       // Presentation removes terminal controls while the full source remains
       // unchanged in the draft. Saving never round-trips displayed excerpts.
@@ -11909,32 +13559,86 @@ fn render_queue_draft(buf, screen, state: queue_editor.State) {
           ..draft.input,
           lines: list.map(draft.input.lines, text_hygiene.single_line),
         )
-      let input = input_view_state(safe, area.size.width)
-      let rendered =
-        buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " queued input · "
-            <> text_hygiene.single_line(draft.document.id)
-            <> " · revision "
-            <> int.to_string(draft.document.revision)
-            <> " ",
-          theme.signal,
-        )
-        |> paragraph.render_styled(inner, [
-          span.line_plain(state.message),
-          span.line_plain(
-            int.to_string(draft.document.attachment_count)
-            <> " image attachments retained",
-          ),
-        ])
-        |> text_area.render(
-          area,
-          text_area.textarea_new() |> text_area.with_max_lines(0),
-          input,
-        )
-      #(rendered, text_area.cursor_screen_pos(input, area))
+      let input = queue_input_view(safe, editor_area)
+      buf
+      |> buffer.clear(area)
+      |> render_panel_border(
+        area,
+        " queued input · "
+          <> text_hygiene.single_line(draft.document.id)
+          <> " · revision "
+          <> int.to_string(draft.document.revision)
+          <> " ",
+        theme.signal,
+      )
+      |> paragraph.render_styled(
+        inner,
+        list.take(
+          [
+            span.line_plain(
+              priority
+              <> " · "
+              <> delivery
+              <> " · "
+              <> int.to_string(draft.document.attachment_count)
+              <> " image attachments retained",
+            ),
+            span.line_plain(state.message),
+            span.line_new([
+              span.span_styled(
+                "Ctrl+s save · Ctrl+r reconcile · Esc back · Enter newline",
+                theme.overlay_signal(),
+              ),
+            ]),
+          ],
+          queue_control_rows(area),
+        ),
+      )
+      |> text_area.render(
+        editor_area,
+        text_area.textarea_new() |> text_area.with_max_lines(0),
+        input,
+      )
     }
+  }
+}
+
+fn queue_draft_area(area: Rect) -> Rect {
+  let inner = panel_inner(area)
+  let controls = queue_control_rows(area)
+  geometry.rect_new(
+    inner.position.x,
+    inner.position.y + controls,
+    inner.size.width,
+    int.max(0, inner.size.height - controls),
+  )
+}
+
+fn queue_input_view(input: text_area.TextAreaState, area: Rect) {
+  let wrapped = input_view_state(input, area.size.width)
+  let offset = int.max(0, wrapped.cursor_y - int.max(1, area.size.height) + 1)
+  text_area.TextAreaState(
+    ..wrapped,
+    lines: wrapped.lines |> list.drop(offset) |> list.take(area.size.height),
+    cursor_y: wrapped.cursor_y - offset,
+  )
+}
+
+fn queue_editor_cursor(model: Model, area: Rect) {
+  case model.queue_editor.draft {
+    Some(draft) -> {
+      let editor_area = queue_draft_area(area)
+      let safe =
+        text_area.TextAreaState(
+          ..draft.input,
+          lines: list.map(draft.input.lines, text_hygiene.single_line),
+        )
+      text_area.cursor_screen_pos(
+        queue_input_view(safe, editor_area),
+        editor_area,
+      )
+    }
+    None -> Error(Nil)
   }
 }
 
@@ -12028,8 +13732,8 @@ fn update_diff_key(key: keys.Key, model: Model) -> Model {
           focus: worktree_view.Composer,
         ),
       )
-    keys.PageUp -> scroll_diff(model, Older, 10)
-    keys.PageDown -> scroll_diff(model, Newer, 10)
+    keys.PageUp -> scroll_diff(model, Older, diff_patch_height(model))
+    keys.PageDown -> scroll_diff(model, Newer, diff_patch_height(model))
     _ -> model
   }
 }
@@ -12050,10 +13754,140 @@ fn select_diff_file(model: Model, delta: Int) -> Model {
 }
 
 fn diff_title(model: Model) -> String {
-  case model.worktree.board {
-    Some(_) -> " worktree changes "
-    None -> " captured changes "
+  case model.worktree.focus, model.worktree.board {
+    worktree_view.Navigator, Some(_) -> " worktree · NAV ↑↓ r Enter PgUp/Dn "
+    worktree_view.Navigator, None -> " captured · NAV ↑↓ r Enter PgUp/Dn "
+    worktree_view.Composer, Some(_) -> " worktree · COMPOSER Ctrl+d "
+    worktree_view.Composer, None -> " captured changes · COMPOSER Ctrl+d "
   }
+}
+
+type DiffTone {
+  DiffCurrent
+  DiffAdded
+  DiffChanged
+  DiffRemoved
+  DiffQuiet
+}
+
+type DiffNavigationItem {
+  DiffNavigationItem(label: String, tone: DiffTone)
+}
+
+fn diff_navigation_items(
+  state: worktree_view.State,
+) -> List(DiffNavigationItem) {
+  case state.board {
+    None -> [DiffNavigationItem("[ALL] Captured edits", DiffQuiet)]
+    Some(board) ->
+      list.append(
+        [
+          DiffNavigationItem(
+            "[ALL] " <> int.to_string(board.total) <> " files",
+            DiffCurrent,
+          ),
+          ..list.map(board.files, fn(file) {
+            let status =
+              text_hygiene.single_line(
+                file.index_status <> file.worktree_status,
+              )
+            let badge = case file.kind {
+              "binary" -> "[BIN]"
+              "metadata_only" -> "[META]"
+              "no_net_change" -> "[NO Δ]"
+              _ -> "[" <> string.trim(status) <> "]"
+            }
+            DiffNavigationItem(
+              badge <> " " <> text_hygiene.single_line(file.path),
+              diff_tone(status, file.kind),
+            )
+          })
+        ],
+        [DiffNavigationItem("[COMMITS] Since session start", DiffQuiet)],
+      )
+  }
+}
+
+fn diff_tone(status: String, kind: String) -> DiffTone {
+  case kind, string.contains(status, "D"), string.contains(status, "A") {
+    _, True, _ -> DiffRemoved
+    _, False, True -> DiffAdded
+    "binary", False, False -> DiffCurrent
+    "metadata_only", False, False | "no_net_change", False, False -> DiffQuiet
+    _, False, False -> DiffChanged
+  }
+}
+
+fn diff_navigation_line(
+  item: DiffNavigationItem,
+  index: Int,
+  selected: Int,
+  width: Int,
+) -> span.Line {
+  let DiffNavigationItem(label, tone) = item
+  let chosen = index == selected
+  let marker = case chosen {
+    True -> "▸ "
+    False -> "  "
+  }
+  let background = case chosen {
+    True -> theme.raised
+    False -> theme.graphite
+  }
+  let foreground = case tone {
+    DiffCurrent -> theme.current
+    DiffAdded -> theme.added
+    DiffChanged -> theme.signal
+    DiffRemoved -> theme.danger
+    DiffQuiet -> theme.quiet
+  }
+  let value =
+    marker
+    <> label
+    |> text.truncate(width, "…")
+    |> text.pad_right(width)
+  span.line_new([
+    span.span_styled(value, style.new(foreground, background, style.none())),
+  ])
+}
+
+fn diff_selected_header(state: worktree_view.State, width: Int) -> span.Line {
+  let label = case state.board {
+    None -> "Captured edits · current worktree unavailable"
+    Some(board) -> {
+      let files = board.files
+      let commits_index = list.length(files) + 1
+      case state.selected {
+        0 ->
+          "All files · observation "
+          <> board.extent
+          <> " · "
+          <> int.to_string(board.omitted)
+          <> " omitted"
+        selected if selected == commits_index -> {
+          let worktree_view.Committed(message, _, extent) = board.committed
+          text_hygiene.single_line(message) <> " · " <> extent
+        }
+        selected ->
+          case list.first(list.drop(files, selected - 1)) {
+            Ok(file) ->
+              text_hygiene.single_line(file.path)
+              <> " · "
+              <> file.kind
+              <> " · "
+              <> file.extent
+            Error(Nil) -> "Selected file unavailable in this observation"
+          }
+      }
+    }
+  }
+  let value =
+    label
+    |> text.truncate(width, "…")
+    |> text.pad_right(width)
+  span.line_new([
+    span.span_styled(value, style.new(theme.paper, theme.raised, style.none())),
+  ])
 }
 
 fn render_diff_view(
@@ -12061,48 +13895,54 @@ fn render_diff_view(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let height = int.min(6, int.max(1, area.size.height / 3))
-  let nav =
-    geometry.rect_new(
-      area.position.x,
-      area.position.y + 2,
-      area.size.width,
-      height,
-    )
-  let patch =
-    geometry.rect_new(
-      area.position.x,
-      area.position.y + height + 2,
-      area.size.width,
-      int.max(0, area.size.height - height - 2),
-    )
-  let labels =
-    worktree_view.labels(model.worktree)
-    |> list.index_map(fn(label, index) {
-      span.line_plain(
-        case index == model.worktree.selected {
-          True -> "> "
-          False -> "  "
-        }
-        <> label,
-      )
-    })
-  let focus = case model.worktree.focus {
-    worktree_view.Composer ->
-      "Ctrl+d: file navigation · PgUp/PgDn: patch · Esc: close"
-    worktree_view.Navigator ->
-      "↑/↓: files · r: refresh · Enter: composer · Esc: close"
-  }
+  let items = diff_navigation_items(model.worktree)
+  let panel =
+    diff_panel.layout(area, list.length(items), model.worktree.selected)
   buf
-  |> paragraph.render_styled(area, [
-    span.line_plain(model.worktree.message),
-    span.line_plain(focus),
-  ])
   |> paragraph.render_styled(
-    nav,
-    list.drop(labels, int.max(0, model.worktree.selected - height + 1)),
+    panel.heading,
+    diff_heading_lines(model.worktree, panel.heading.size.height),
   )
-  |> render_rows(patch, model.diff_rows, model.diff_scroll_offset)
+  |> paragraph.render_styled(
+    panel.navigation,
+    items
+      |> list.drop(panel.navigation_offset)
+      |> list.take(panel.navigation.size.height)
+      |> list.index_map(fn(item, index) {
+        diff_navigation_line(
+          item,
+          panel.navigation_offset + index,
+          model.worktree.selected,
+          panel.navigation.size.width,
+        )
+      }),
+  )
+  |> paragraph.render_styled(panel.selected, [
+    diff_selected_header(model.worktree, panel.selected.size.width),
+  ])
+  |> render_rows(panel.patch, model.diff_rows, model.diff_scroll_offset)
+}
+
+fn diff_heading_lines(
+  state: worktree_view.State,
+  height: Int,
+) -> List(span.Line) {
+  let focus = case state.focus {
+    worktree_view.Composer ->
+      "Composer focus · Ctrl+d file navigation · Esc close"
+    worktree_view.Navigator ->
+      "Navigator focus · ↑/↓ files · r refresh · PgUp/PgDn patch · Enter composer · Esc close"
+  }
+  case height {
+    0 -> []
+    1 -> [
+      span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+    ]
+    _ -> [
+      span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+      span.line_new([span.span_styled(focus, theme.overlay_signal())]),
+    ]
+  }
 }
 
 fn observe_completion(
@@ -12168,9 +14008,38 @@ fn retain_queue_selection(
       |> result.unwrap(0)
     Error(Nil) -> 0
   }
+  let preview_scroll = case old {
+    Ok(row) ->
+      case list.first(list.drop(rows, selected)) {
+        Ok(current) if current.id == row.id ->
+          int.min(
+            model.queue_editor.preview_scroll,
+            queue_panel.max_scroll(
+              rows,
+              selected,
+              queue_preview_area_for(
+                Model(
+                  ..model,
+                  queue_editor: queue_editor.State(
+                    ..model.queue_editor,
+                    selected:,
+                  ),
+                ),
+                rows,
+              ),
+            ),
+          )
+        Ok(_) | Error(Nil) -> 0
+      }
+    Error(Nil) -> 0
+  }
   Model(
     ..model,
-    queue_editor: queue_editor.State(..model.queue_editor, selected:),
+    queue_editor: queue_editor.State(
+      ..model.queue_editor,
+      selected:,
+      preview_scroll:,
+    ),
   )
 }
 
@@ -12188,6 +14057,8 @@ pub fn open_summary(model: Model) -> Model {
       ..model,
       summary_surface: queue_editor.Inspector,
       summary_scroll: 0,
+      summary_tab: summary_panel.Completion,
+      summary_job_selected: 0,
       jobs_refresh: worktree_view.Requested,
     ),
   )
@@ -12286,7 +14157,8 @@ fn idle_boundary(before: Model, after: Model) -> NudgeAction {
     !strand_listed(before, advisor_pending.primary_strand)
     && strand_listed(after, advisor_pending.primary_strand)
 
-  case primary_settled || review_settled || newly_listed {
+  let session_changed = before.session != after.session
+  case primary_settled || review_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges
   }
@@ -12371,6 +14243,7 @@ fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
             nudges_awaiting: None,
             nudges_request: None,
           )
+          |> invalidate_transcript
           |> invalidate_frame
 
         False -> model
@@ -12436,8 +14309,11 @@ pub type GoalAction {
 @internal
 pub fn goal_action(before: Model, after: Model) -> GoalAction {
   let started =
-    !strand_running(before, advisor_pending.primary_strand)
-    && strand_running(after, advisor_pending.primary_strand)
+    before.session != after.session
+    || {
+      !strand_running(before, advisor_pending.primary_strand)
+      && strand_running(after, advisor_pending.primary_strand)
+    }
 
   case started, advisor_nudges_action(before, after) {
     True, _ -> ReadGoal
@@ -12453,10 +14329,9 @@ fn sync_goal(before: Model, after: Model) -> Model {
   }
 }
 
-// The operator's own `/goal`. The panel is printed when the board arrives
-// rather than from whatever is held, because a status the operator asked
-// for must be the current one and the row beside the composer may be as
-// old as the last edge.
+// The operator's own `/goal` opens the retained observation immediately and
+// requests a current board. Its label distinguishes that retained board from
+// the correlated refresh which replaces it.
 // Arms the one line a committed goal mutation prints. The board that
 // commits it is the mutation's own reply, so nothing else has to be
 // scheduled: `report_goal` finds the line where `receive_goal` leaves it.
@@ -12464,8 +14339,69 @@ fn confirming(model: Model, line: String) -> Model {
   Model(..model, goal_report: ConfirmGoal(line:))
 }
 
+// Slash commands and inspector keys enter one gate. The pending-submission
+// marker tells the shared send path whether a composer draft belongs to this
+// command; an inspector action supplies `OverlaySubmission`, so the draft is
+// never cleared as though the operator had submitted it.
+fn submit_goal_action(model: Model, action: command.Command) -> Model {
+  case mutation_refusal(model, action) {
+    Some(reason) -> append_error(model, reason)
+    None -> {
+      let prepared = case model.pending_submission {
+        Some(_) -> model
+        None -> Model(..model, pending_submission: Some(OverlaySubmission))
+      }
+      case action {
+        command.GoalPause ->
+          send_frame(
+            confirming(prepared, "the session goal is held"),
+            protocol.goal_pause(prepared.next_id),
+          )
+        command.GoalResume ->
+          send_frame(
+            confirming(prepared, "the session goal continues"),
+            protocol.goal_resume(prepared.next_id),
+          )
+        _ -> prepared
+      }
+    }
+  }
+}
+
 fn request_goal_status(model: Model) -> Model {
-  Model(..model, goal_refresh: worktree_view.Requested, goal_report: ReportGoal)
+  let panel = case model.overlay {
+    GoalInspector(state) -> state
+    _ -> focused_goal_panel.new(model.goal, goal_observation(model))
+  }
+  case model.peer {
+    Preview ->
+      Model(
+        ..model,
+        overlay: GoalInspector(panel),
+        goal_report: HoldGoalReport,
+        repaint_phase: !model.repaint_phase,
+        notice: "goal inspector · illustrative observation",
+      )
+    Attached(_) | Disconnected | Replaying ->
+      Model(
+        ..model,
+        overlay: GoalInspector(panel),
+        goal_refresh: worktree_view.Requested,
+        goal_report: ReportGoal,
+        repaint_phase: !model.repaint_phase,
+      )
+  }
+}
+
+fn goal_observation(model: Model) -> String {
+  case model.goal, model.peer {
+    Some(_), Attached(_) -> "Last server observation · refreshing"
+    Some(_), Disconnected -> "Last server observation · disconnected"
+    Some(_), Preview | Some(_), Replaying -> "Illustrative observation"
+    None, Attached(_) -> "Reading current goal"
+    None, Disconnected -> "Goal unavailable · disconnected"
+    None, Preview | None, Replaying -> "Goal unavailable in this preview"
+  }
 }
 
 // The read waits for a free command lane like every other observation.
@@ -12491,7 +14427,19 @@ fn service_goal_read(model: Model) -> Model {
 }
 
 fn unreachable_goal(model: Model) -> Model {
-  let settled = Model(..model, goal_refresh: worktree_view.Settled)
+  let settled =
+    Model(
+      ..model,
+      goal_refresh: worktree_view.Settled,
+      overlay: case model.overlay {
+        GoalInspector(state) ->
+          GoalInspector(focused_goal_panel.unavailable(
+            state,
+            "no conversation is attached",
+          ))
+        other -> other
+      },
+    )
   case model.goal_report {
     HoldGoalReport -> settled
 
@@ -12514,6 +14462,11 @@ fn receive_goal(model: Model, board: goal_view.Board) -> Model {
         Model(
           ..model,
           goal: Some(board),
+          overlay: case model.overlay {
+            GoalInspector(state) ->
+              GoalInspector(focused_goal_panel.observe(state, board))
+            other -> other
+          },
           goal_awaiting: None,
           goal_request: None,
         ),
@@ -12559,6 +14512,14 @@ fn refuse_goal(
     Model(
       ..model,
       goal: None,
+      overlay: case model.overlay {
+        GoalInspector(state) ->
+          GoalInspector(focused_goal_panel.unavailable(
+            state,
+            goal_view.refusal(code, message),
+          ))
+        other -> other
+      },
       goal_request: None,
       goal_awaiting: None,
       goal_report: HoldGoalReport,
@@ -12580,16 +14541,33 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
       case owner == queue_owner(model) {
-        True ->
+        True -> {
+          let old = case model.jobs {
+            Some(previous) if previous.strand == board.strand ->
+              previous.jobs
+              |> list.drop(model.summary_job_selected)
+              |> list.first
+            Some(_) | None -> Error(Nil)
+          }
+          let selected = case old {
+            Ok(job) ->
+              board.jobs
+              |> list.index_map(fn(item, index) { #(item.id, index) })
+              |> list.key_find(job.id)
+              |> result.unwrap(0)
+            Error(Nil) -> 0
+          }
           Model(
             ..model,
             jobs: Some(board),
+            summary_job_selected: selected,
             jobs_observed_ms: Some(model.monotonic_time_ms()),
             jobs_awaiting: None,
             jobs_request: None,
             jobs_notice: "Live jobs observed separately from operation completion",
           )
           |> invalidate_transcript
+        }
         False -> model
       }
     Some(_) | None -> model
@@ -12613,56 +14591,38 @@ fn queue_count_line(model: Model) -> String {
   }
 }
 
-fn jobs_brief(model: Model) -> String {
-  case model.jobs {
-    Some(board) if board.strand == model.active_strand ->
-      "Live jobs: "
-      <> int.to_string(board.total)
-      <> case model.jobs_observed_ms {
-        Some(observed) ->
-          " · refreshed "
-          <> live_jobs.duration(model.last_frame_ms - observed)
-          <> " ago"
-        None -> " · at last refresh"
-      }
-    Some(_) -> "Live jobs unavailable for this strand; /summary refreshes"
-    None -> model.jobs_notice
+fn summary_lines(model: Model, width: Int) -> List(span.Line) {
+  let #(jobs, jobs_notice) = case model.jobs {
+    Some(board) if board.strand == model.active_strand -> #(
+      Some(board),
+      model.jobs_notice,
+    )
+    Some(_) -> #(None, "Live jobs unavailable for the current strand")
+    None -> #(None, model.jobs_notice)
   }
+  summary_panel.lines(
+    model.summary_tab,
+    completion_summary.latest(model.completion, model.active_strand),
+    model.usage,
+    context_usage_line(model),
+    queue_count_line(model),
+    jobs,
+    jobs_notice,
+    jobs_observation_line(model),
+    model.summary_job_selected,
+    width,
+  )
 }
 
-fn summary_lines(model: Model) -> List(String) {
-  let completed = case
-    completion_summary.latest(model.completion, model.active_strand)
-  {
-    None -> ["No completed operation captured for this strand"]
-    Some(summary) -> completion_summary.lines(summary)
+fn jobs_observation_line(model: Model) -> String {
+  case model.jobs_observed_ms {
+    Some(observed) ->
+      "Job ages and deadlines are at last refresh · observation received "
+      <> live_jobs.duration(int.max(0, model.last_frame_ms - observed))
+      <> " ago"
+    None ->
+      "Job ages and deadlines are at last refresh · receipt age unavailable"
   }
-  let jobs = case model.jobs {
-    Some(board) if board.strand == model.active_strand -> [
-      jobs_brief(model),
-      ..list.drop(live_jobs.lines(board), 1)
-    ]
-    Some(_) -> ["Live jobs unavailable for this strand; r refreshes"]
-    None -> [model.jobs_notice]
-  }
-  list.append(completed, [
-    "",
-    usage_summary(model.usage),
-    "Cumulative tokens: uncached input "
-      <> tokens(model.usage.input)
-      <> " · cache read "
-      <> tokens(model.usage.cache_read)
-      <> " · cache write "
-      <> tokens(model.usage.cache_write)
-      <> " · output "
-      <> tokens(model.usage.output)
-      <> " (includes reasoning)",
-    context_usage_line(model),
-    "",
-    queue_count_line(model),
-    "",
-    ..jobs
-  ])
 }
 
 // Context belongs to one measured provider request. Session usage accumulates
@@ -12698,18 +14658,54 @@ fn context_usage_line(model: Model) -> String {
 }
 
 fn update_summary_key(key: keys.Key, model: Model) -> Model {
+  let screen = model_screen(model)
+  let body = summary_body_area(screen)
+  let viewport = body.size.height
+  let maximum =
+    int.max(0, list.length(summary_lines(model, body.size.width)) - viewport)
+  let current = int.min(model.summary_scroll, maximum)
   case key {
     keys.Ctrl("c") -> quit(model)
     keys.Escape -> Model(..model, summary_surface: queue_editor.Closed)
     keys.Char("r") ->
-      service_jobs_read(Model(..model, jobs_refresh: worktree_view.Requested))
-    keys.Up ->
-      Model(..model, summary_scroll: int.max(0, model.summary_scroll - 1))
-    keys.Down -> Model(..model, summary_scroll: model.summary_scroll + 1)
+      service_jobs_read(
+        Model(..model, jobs_refresh: worktree_view.Requested, summary_scroll: 0),
+      )
+    keys.Char("1") ->
+      Model(..model, summary_tab: summary_panel.Completion, summary_scroll: 0)
+    keys.Char("2") ->
+      Model(..model, summary_tab: summary_panel.Usage, summary_scroll: 0)
+    keys.Char("3") ->
+      Model(..model, summary_tab: summary_panel.Jobs, summary_scroll: 0)
+    keys.Char("[") -> select_summary_job(model, -1)
+    keys.Char("]") -> select_summary_job(model, 1)
+    keys.Up -> Model(..model, summary_scroll: int.max(0, current - 1))
+    keys.Down -> Model(..model, summary_scroll: int.min(maximum, current + 1))
     keys.PageUp ->
-      Model(..model, summary_scroll: int.max(0, model.summary_scroll - 10))
-    keys.PageDown -> Model(..model, summary_scroll: model.summary_scroll + 10)
+      Model(..model, summary_scroll: int.max(0, current - viewport))
+    keys.PageDown ->
+      Model(..model, summary_scroll: int.min(maximum, current + viewport))
     _ -> model
+  }
+}
+
+fn select_summary_job(model: Model, delta: Int) -> Model {
+  case model.summary_tab, model.jobs {
+    summary_panel.Jobs, Some(board) if board.strand == model.active_strand ->
+      Model(
+        ..model,
+        summary_job_selected: int.clamp(
+          model.summary_job_selected + delta,
+          0,
+          int.max(0, list.length(board.jobs) - 1),
+        ),
+        summary_scroll: 0,
+      )
+    summary_panel.Completion, _
+    | summary_panel.Usage, _
+    | summary_panel.Jobs, None
+    | summary_panel.Jobs, Some(_)
+    -> model
   }
 }
 
@@ -12718,33 +14714,144 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
     queue_editor.Closed -> #(buf, cursor)
     queue_editor.Inspector | queue_editor.Editor -> {
       let inner = panel_inner(screen)
-      let lines =
-        summary_lines(model)
-        |> list.flat_map(fn(text) {
-          markdown.render(text_hygiene.multiline(text), inner.size.width)
-        })
-        |> markdown.wrap_lines(inner.size.width)
+      let body = summary_body_area(screen)
+      let lines = summary_lines(model, body.size.width)
       let offset =
         int.min(
           model.summary_scroll,
-          int.max(0, list.length(lines) - inner.size.height),
+          int.max(0, list.length(lines) - body.size.height),
         )
       let rendered =
         buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " latest completion · Esc: back · r: refresh live jobs ",
-          theme.signal,
+        |> render_panel_border(screen, " summary ", theme.signal)
+        |> paragraph.render_styled(
+          geometry.rect_new(
+            inner.position.x,
+            inner.position.y,
+            inner.size.width,
+            int.min(2, inner.size.height),
+          ),
+          [
+            summary_panel.tab_line(model.summary_tab, inner.size.width),
+            span.line_new([
+              span.span_styled(
+                "[] job · PgUp/Dn · r jobs · Esc back",
+                theme.overlay_signal(),
+              ),
+            ]),
+          ],
         )
-        |> paragraph.render_styled(inner, list.drop(lines, offset))
+        |> paragraph.render_styled(body, list.drop(lines, offset))
       #(rendered, Error(Nil))
     }
   }
 }
 
+fn summary_body_area(screen: Rect) -> Rect {
+  let inner = panel_inner(screen)
+  let tabs = int.min(2, inner.size.height)
+  geometry.rect_new(
+    inner.position.x,
+    inner.position.y + tabs,
+    inner.size.width,
+    int.max(0, inner.size.height - tabs),
+  )
+}
+
+fn normal_diff_panel(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(conversation, _) = queue_body_layout(body, model)
+  let #(main, _, changes) = body_layout(conversation, model)
+  case main_shows_diff(model) {
+    True -> main
+    False -> changes
+  }
+}
+
+fn borrowed_diff_panel(model: Model) -> Option(Rect) {
+  let normal = normal_diff_panel(model)
+  use <- bool.guard(
+    !diff_borrow_eligible(model) || panel_inner(normal).size.height >= 8,
+    None,
+  )
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, input, _) = layout(screen, model)
+  let #(_, composer) = pending_layout(panel_inner(input), model)
+  let #(_, editor) = input_layout(composer, model.attachments)
+  let expanded =
+    geometry.rect_new(
+      normal.position.x,
+      body.position.y,
+      normal.size.width,
+      int.max(0, editor.position.y - body.position.y),
+    )
+  case expanded.size.height > normal.size.height {
+    True -> Some(expanded)
+    False -> None
+  }
+}
+
+fn diff_borrow_eligible(model: Model) -> Bool {
+  diff_shown(model)
+  && model.worktree.focus == worktree_view.Navigator
+  && case model.overlay {
+    NoOverlay -> True
+    ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> False
+  }
+  && !model.notes_open
+  && model.queue_editor.surface == queue_editor.Closed
+  && model.summary_surface == queue_editor.Closed
+  && model.context.surface == context_view.Hidden
+}
+
+fn active_diff_panel(model: Model) -> Rect {
+  case borrowed_diff_panel(model) {
+    Some(area) -> area
+    None -> normal_diff_panel(model)
+  }
+}
+
+fn active_diff_layout(model: Model) -> diff_panel.Layout {
+  let area = panel_inner(active_diff_panel(model))
+  diff_panel.layout(
+    area,
+    list.length(worktree_view.labels(model.worktree)),
+    model.worktree.selected,
+  )
+}
+
+/// Returns the exact file-list rectangle used by rendering and mouse hits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.diff_navigation_area(model)
+/// ```
+@internal
+pub fn diff_navigation_area(model: Model) -> Rect {
+  active_diff_layout(model).navigation
+}
+
+/// Returns the existing patch renderer's actual focused viewport.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.diff_patch_area(model)
+/// ```
+@internal
+pub fn diff_patch_area(model: Model) -> Rect {
+  active_diff_layout(model).patch
+}
+
 fn diff_patch_height(model: Model) -> Int {
-  let available = transcript_viewport_height(model)
-  int.max(0, available - int.min(6, int.max(1, available / 3)) - 2)
+  diff_patch_area(model).size.height
 }
 
 fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
@@ -12755,30 +14862,23 @@ fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
       || model.context.surface != context_view.Hidden,
     None,
   )
-  let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let #(_, body, _, _) = layout(screen, model)
-  let #(main, _, changes) = body_layout(body, model)
-  let area =
-    panel_inner(case main_shows_diff(model) {
-      True -> main
-      False -> changes
-    })
-  let height = int.min(6, int.max(1, area.size.height / 3))
-  let navigation =
-    geometry.rect_new(
-      area.position.x,
-      area.position.y + 2,
-      area.size.width,
-      height,
+  use <- bool.guard(
+    model.notes_open
+      || case model.overlay {
+      NoOverlay -> False
+      _ -> True
+    },
+    None,
+  )
+  case
+    diff_panel.navigation_hit(
+      active_diff_layout(model),
+      at,
+      list.length(worktree_view.labels(model.worktree)),
     )
-  use <- bool.guard(!geometry.contains(navigation, at), None)
-  let index =
-    int.max(0, model.worktree.selected - height + 1)
-    + at.y
-    - navigation.position.y
-  case index < list.length(worktree_view.labels(model.worktree)) {
-    True -> Some(index)
-    False -> None
+  {
+    Ok(index) -> Some(index)
+    Error(Nil) -> None
   }
 }
 
@@ -12971,6 +15071,7 @@ pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
 
 fn update_context_key(key: keys.Key, model: Model) -> Model {
   let state = model.context
+  let viewport = panel_inner(model_screen(model)).size.height
   case key {
     keys.Ctrl("c") -> quit(model)
     keys.Escape ->
@@ -12980,7 +15081,13 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
       )
     keys.Char("r") ->
       service_context_read(
-        Model(..model, context: context_view.invalidate(state)),
+        Model(
+          ..model,
+          context: context_view.State(
+            ..context_view.invalidate(state),
+            scroll: 0,
+          ),
+        ),
       )
     keys.Char("a") ->
       Model(
@@ -12996,18 +15103,26 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
       )
     keys.Up -> scroll_context(model, -1)
     keys.Down -> scroll_context(model, 1)
-    keys.PageUp -> scroll_context(model, -10)
-    keys.PageDown -> scroll_context(model, 10)
+    keys.PageUp -> scroll_context(model, 0 - viewport)
+    keys.PageDown -> scroll_context(model, viewport)
     _ -> model
   }
 }
 
 fn scroll_context(model: Model, delta: Int) -> Model {
+  let inner = panel_inner(model_screen(model))
+  let maximum =
+    int.max(
+      0,
+      list.length(context_panel.lines(model.context, inner.size.width))
+        - inner.size.height,
+    )
+  let current = int.min(model.context.scroll, maximum)
   Model(
     ..model,
     context: context_view.State(
       ..model.context,
-      scroll: int.max(0, model.context.scroll + delta),
+      scroll: int.clamp(current + delta, 0, maximum),
     ),
   )
 }
@@ -13017,12 +15132,11 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
     context_view.Hidden -> #(buf, cursor)
     context_view.Overview | context_view.All -> {
       let inner = panel_inner(screen)
-      let lines =
-        context_view.lines(model.context)
-        |> list.flat_map(fn(line) {
-          markdown.render(text_hygiene.multiline(line), inner.size.width)
-        })
-        |> markdown.wrap_lines(inner.size.width)
+      let title = case screen.size.width < 60 {
+        True -> " context · a · PgUp/Dn · r · Esc "
+        False -> " context · a detail · PgUp/Dn · r refresh · Esc back "
+      }
+      let lines = context_panel.lines(model.context, inner.size.width)
       let offset =
         int.min(
           model.context.scroll,
@@ -13030,11 +15144,7 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
         )
       let rendered =
         buffer.buffer_new(screen)
-        |> render_panel_border(
-          screen,
-          " context · Esc: back · r: refresh · a: detail ",
-          theme.signal,
-        )
+        |> render_panel_border(screen, title, theme.signal)
         |> paragraph.render_styled(inner, list.drop(lines, offset))
       #(rendered, Error(Nil))
     }

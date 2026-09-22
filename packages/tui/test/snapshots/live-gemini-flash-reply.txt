@@ -1,40 +1,40 @@
- ◆                                         session loom-rec-1788512865                                         gemini-flash · 133×40
-╭ transcript / main ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│◇ attached to session loom-rec-1788512865                                                                                          │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│ › User                                                                                                                            │
-│   Reply with exactly this sentence and nothing else: The recording works.                                                         │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│◆ The recording works.                                                                                                             │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-│                                                                                                                                   │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ prompt · / commands ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│                                                                                                                                   │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- replay                                                                                                                 gemini-flash
- ctx — · Total est $0.00 · in 17k · out 4 · cache 0/0                                                 0 live / 1 agents · main: done
+ ◆ loom                                  loom-rec-1788512865 · replay                                  gemini-flash · Ctrl+g details
+ transcript / main
+ ◇ attached to session loom-rec-1788512865
+
+
+  › User
+    Reply with exactly this sentence and nothing else: The recording works.
+
+
+ ◆ The recording works.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+─ To main · prompt · enter sends · / commands                                                                                       ─
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ main: done · gemini-flash · ctx — · est $0.00                                                     1 agents · 0 working · 0 attention

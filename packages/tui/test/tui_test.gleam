@@ -19,6 +19,7 @@ import gleeunit
 import simplifile
 import snapshot_test
 import tui
+import tui/agent_view
 import tui/agents
 import tui/bootstrap
 import tui/command
@@ -821,9 +822,9 @@ pub fn agent_inspector_rows_stay_inside_the_overlay_test() {
     agents.render_overlay(
       buffer.buffer_new(screen),
       screen,
-      strands,
+      agent_view.legacy(strands),
       "sub:worker-0",
-      7,
+      agents.inspect("sub:worker-7"),
     )
 
   // The inspector reserves three rows per strand and two more for its
@@ -1532,7 +1533,7 @@ pub fn code_mode_program_renders_as_gleam_test() {
 }
 
 pub fn code_mode_program_preview_is_bounded_test() {
-  let source = string.repeat("// preview row\n", 59) <> "// LINE_60\n// LINE_61"
+  let source = string.repeat("// preview row\n", 5) <> "// LINE_6\n// LINE_7"
   let arguments = json.Object([#("program", json.String(source))])
   let assert Some(collapsed) =
     tui.code_mode_program("code_mode", arguments, False)
@@ -1541,10 +1542,10 @@ pub fn code_mode_program_preview_is_bounded_test() {
     tui.code_mode_program("code_mode", arguments, True)
     as "A valid source field can be expanded"
 
-  assert string.contains(collapsed, "LINE_60")
-  assert !string.contains(collapsed, "LINE_61")
+  assert string.contains(collapsed, "LINE_6")
+  assert !string.contains(collapsed, "LINE_7")
   assert string.contains(collapsed, "// …")
-  assert string.contains(expanded, "LINE_61")
+  assert string.contains(expanded, "LINE_7")
 }
 
 pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
@@ -1879,12 +1880,10 @@ pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   assert !reversed(Position(x + 5, y + 1))
 
   // What was copied is what the frame showed under the selection the loop
-  // stored, read back from the same buffer. The transcript is tail-anchored
-  // with a spacer row above each line, so on twelve rows the press lands on
-  // the spacer and the release on the head of the last line, in the
-  // transcript's own columns and without its border.
+  // stored, read back from the same buffer. The compact footer leaves room
+  // for both lines, so this range covers the first line and its separator.
   let assert Some(selected) = run.final.selection
-  assert selection.text(last, selected) == "\n\u{25C7} gam"
+  assert selection.text(last, selected) == "alpha beta\n"
 }
 
 pub fn assistant_rows_use_the_subtle_background_test() {
@@ -2250,7 +2249,7 @@ pub fn a_replay_invents_no_catalogue_test() {
     tui.replay_steps(script, backend.TerminalSize(width: 133, height: 20))
   let assert Ok(drawn) = list.last(frames)
   let text = frame.buffer_to_text(drawn)
-  assert string.contains(text, "session replay")
+  assert string.contains(text, "replay")
   assert !string.contains(text, "baseten-deepseek-v4-flash")
 }
 
@@ -2288,7 +2287,7 @@ pub fn a_live_recording_replays_to_its_settled_frame_test() {
   // live strand paints the elapsed seconds of the *replay* into the
   // prompt border, so a fixture truncated mid-turn would flake under
   // load; the idle border title is that property, asserted.
-  assert string.contains(text, "prompt · / commands")
+  assert string.contains(text, "prompt · enter sends · / commands")
   assert !string.contains(text, "Design-preview echo received.")
   assert count_occurrences(text, "Reply with exactly this sentence") == 1
   snapshot_test.assert_snapshot("live-gemini-flash-reply", text)
@@ -2426,7 +2425,7 @@ pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
   let assert Ok(last) = list.last(run.frames)
     as "the script painted a final frame"
   assert selection.text(last, selected) == selection.text(original, selected)
-  assert selection.text(last, selected) == "\n\u{25C7} gam"
+  assert selection.text(last, selected) == "alpha beta\n"
   assert list.any(run.final.records, fn(record) { record.entry.seq == 4 })
     as "incoming output still advances the model behind the selected pane"
 }

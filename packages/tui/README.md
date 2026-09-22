@@ -89,7 +89,7 @@ sequenceDiagram
 ```
 
 Reasoning and tool material stay subordinate to the answer. The normal view
-uses one dim, bounded preview row for each; `Ctrl+G` or `/details` reveals the
+uses one readable, bounded preview row for each; `Ctrl+G` or `/details` reveals the
 full durable content. Page Up, Page Down, and the mouse wheel move backward and
 forward through the wrapped transcript while the default position follows its
 newest row. Speaker identity uses compact marks rather than repeating product
@@ -123,14 +123,41 @@ prefix, and substring matches outrank initials-style fuzzy matches. The
 server's active routes are marked, but being active never lets a non-match
 survive a search.
 
-The agent display is also a projection, not a registry. ClientGateway strands
-provide identity and `live_op.phase` provides activity. A `sub:` strand is
-indented beneath its parent. The compact rail is hidden by default and
-`Shift+Tab` reveals it only on terminals wide enough to leave the conversation useful;
-`/agents` is the deliberate full view.
-Up and Down move its selected row, and Enter closes the modal and opens that
-strand's ordinary transcript view. Every modal paints its own complete
-background so stale transcript attributes cannot leak through its text rows.
+Press `F2` to inspect agents while retaining the current draft. `/agents`
+opens the same workspace. The task roster shows accepted work, current activity,
+recorded outcomes, and attention states. Arrows inspect another agent; only
+Enter opens its transcript and changes the recipient. `n` visits the next
+attention state, `a` opens that agent's exact pending approval, PgUp/PgDn scroll
+the detail, and Escape returns to the conversation. The composer remains visible:
+Tab moves from inspection into editing the existing recipient's draft, and
+Escape returns to inspection. Its title names the recipient and actual Enter/Tab
+behavior. `Shift+Tab` toggles the Studio rail when the terminal is wide enough;
+Advisor has its own section and changes retain their observation status.
+
+Drafts, attachments, and command history belong to a session and strand.
+Reading windows and positions restore across strand switches within the current
+session; a session change releases old history buffers. Opening another agent
+restores that agent's editor; returning brings back the original draft. A
+removed recipient stays unavailable until the operator chooses an available
+strand, and its unsent text never falls back to another agent. Task and update
+excerpts come from captured operation evidence. Missing evidence is unavailable;
+a completed strand does not mean the session goal is complete.
+
+Full advisor nudges remain visible in compact mode. Observed pending nudges are
+labeled as not delivered and are scrollable without growing the composer. The
+goal panel and advisor attribution retain their existing ownership.
+
+The semantic palette uses readable secondary text without ANSI dim. Truecolor
+terminals use a light palette when `COLORFGBG` reports background 7 or 15, and a
+dark palette otherwise. Without a truecolor capability hint, Loom uses the
+terminal's ANSI colors and default background. A nonempty `NO_COLOR` disables
+color. Status labels and focus marks remain visible in every palette.
+
+For repeatable native review without provider calls, run `gleam dev agents dark`
+from this package; substitute `light`, `ansi`, or `plain` to check a palette.
+These are illustrative decoded captures, not live provider sessions. Native
+before/after frames and the implementation's validation limits are recorded in
+[the agent workspace review](../../docs/design-notes/tui-agent-workspace.md).
 
 The server's run-start note digest currently crosses the frozen entry schema as
 an ordinary user-role message with a server-owned fenced preamble. The client
@@ -154,9 +181,9 @@ line into styled spans without rewriting its text, so indentation and invalid
 syntax remain exactly as the model emitted them. Other fenced languages retain
 the code-rail treatment without pretending that Loom has parsed them.
 
-A structured `code_mode` call takes this same path: the `program` field is
-shown as fenced Gleam rather than escaped JSON. The normal view bounds long
-programs to twelve source rows, while `/details` reveals the full call. Code
+An unresolved `code_mode` call shows up to six fenced Gleam source rows.
+Confirmed success shows a compact result summary; Ctrl+G or `/details` reveals
+the complete submitted source and exact result. Code
 rows bypass etui's prose word wrapper so leading indentation survives the
 terminal projection. Its result is labelled separately from the sandbox
 enforcement summary, so report values such as file counts cannot be mistaken
@@ -164,7 +191,10 @@ for client metadata.
 
 Tool activity uses a call-and-result hierarchy rather than a flat stream of
 JSON. Bash calls expose the command, structured patch calls render a bounded
-unified diff, and failures retain a distinct mark. Incremental tool-call JSON is
+unified diff, and failures retain a distinct mark and multiline diagnostics.
+Long errors show an explicit Ctrl+G expansion hint after eight lines or 1,600
+characters. Ordinary conversation has an open reading surface and a separate
+composer; detailed token/cache accounting appears with the expanded view. Incremental tool-call JSON is
 not rendered as text while it is incomplete, which prevents repeated partial
 keys from bleeding together during streaming.
 
@@ -282,7 +312,8 @@ opens and reads with a monitored one-second deadline.
 | `src/tui/connection.gleam` | The websocket-owning Stratus actor and terminal inbox. |
 | `src/tui/markdown.gleam` | Mork `Document` to styled etui line rendering. |
 | `src/tui/model_selector.gleam` | Search ranking, selection state, and modal rendering. |
-| `src/tui/agents.gleam` | Strand projection, hidden rail, and topology inspector. |
+| `src/tui/agents.gleam` | Stable inspection, role sections, and responsive task/detail rendering. |
+| `src/tui/agent_activity.gleam` | Captured dependency waits and operation-owned recent tools. |
 | `src/tui/text_hygiene.gleam` | The terminal-control boundary shared by every visible field. |
 | `test/` | Command, selector, markdown, and text-hygiene regression tests. |
 

@@ -37,13 +37,23 @@ fn cell(namespace, value) {
 }
 
 fn pending(id) {
+  pending_as(id, "queue", "same instruction", 3, snapshot_view.Editable)
+}
+
+fn pending_as(id, kind, text, revision, editing: snapshot_view.Editing) {
   json.Object([
     #("id", json.String(id)),
     #("strand", json.String("main")),
-    #("kind", json.String("queue")),
-    #("text", json.String("same instruction")),
-    #("revision", json.Int(3)),
-    #("editable", json.Bool(True)),
+    #("kind", json.String(kind)),
+    #("text", json.String(text)),
+    #("revision", json.Int(revision)),
+    #(
+      "editable",
+      json.Bool(case editing {
+        snapshot_view.Editable -> True
+        snapshot_view.ReadOnly -> False
+      }),
+    ),
   ])
 }
 
@@ -167,8 +177,12 @@ fn key(model, name) {
 }
 
 fn painted(model) {
-  let model = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  painted_at(model, 120, 30)
+}
+
+fn painted_at(model, width, height) {
+  let model = tui.update(backend.Resize(width, height), model)
+  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, width, height))
   frame.buffer_to_text(buffer)
 }
 
@@ -234,8 +248,11 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
   assert opened.input == model.input
   assert opened.attachments == model.attachments
   assert string.contains(painted(opened), "queued inputs")
-  assert string.contains(painted(opened), "A · editable · same instruction")
-  assert string.contains(painted(opened), "B · editable · same instruction")
+  assert string.contains(painted(opened), "▸ same instruction · [QUEUE] [EDIT]")
+  assert string.contains(painted(opened), "same instruction · [QUEUE] [EDIT]")
+  assert string.contains(painted(opened), "Captured excerpt · revision 3")
+  assert string.contains(painted(opened), "same instruction")
+  assert string.contains(painted(opened), "ordinary composer draft")
 
   // The slash command consumes its own text, while pasted context remains
   // owned by the ordinary composer rather than becoming a queue mutation.
@@ -250,10 +267,187 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
   assert slash.queued == model.queued
 }
 
+pub fn passive_queue_is_message_first_and_alt_q_focuses_without_mutation_test() {
+  let #(model, events) = ready([pending("A"), pending("B")])
+  let frame = painted(model)
+  assert string.contains(frame, "queue · 2 pending · Alt+q inspect")
+  assert string.contains(frame, "same instruction · [QUEUE] [EDIT] · 1/2")
+  assert !string.contains(frame, "Received · queued after this turn")
+
+  let opened = key(model, "alt+q")
+  assert opened.queue_editor.surface == queue_editor.Inspector
+  assert textarea.value(opened.input) == "ordinary composer draft"
+  assert opened.attachments == model.attachments
+  assert requests(events, []) == []
+}
+
+pub fn queue_inspector_labels_priority_access_and_excerpt_provenance_test() {
+  let rows = [
+    pending_as(
+      "普通-input",
+      "steer",
+      "urgent captured excerpt",
+      7,
+      snapshot_view.Editable,
+    ),
+    pending_as(
+      "locked",
+      "queue",
+      "visible but not fetchable",
+      8,
+      snapshot_view.ReadOnly,
+    ),
+  ]
+  let #(model, events) = ready(rows)
+  let opened = tui.open_queue(model)
+  let wide = painted(opened)
+  assert string.contains(wide, "▸ urgent captured")
+  assert string.contains(wide, "[STEER] [EDIT]")
+  assert string.contains(wide, "visible but")
+  assert string.contains(wide, "[QUEUE] [READ-ONLY]")
+  assert string.contains(wide, "Captured excerpt · revision 7")
+  assert string.contains(wide, "Enter fetches full text")
+
+  let locked = opened |> key("down") |> key("enter")
+  assert requests(events, []) == []
+  assert locked.queue_editor.awaiting == None
+  assert string.contains(painted(locked), "read-only for this attachment")
+  assert string.contains(painted(locked), "full text unavailable")
+}
+
+pub fn compact_excerpt_paging_reaches_tail_and_resize_clamps_render_test() {
+  let excerpt =
+    "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12-tail"
+  let #(model, _) =
+    ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
+  let compact =
+    model
+    |> tui.update(backend.Resize(40, 12), _)
+    |> tui.open_queue
+  let first = painted_at(compact, 40, 12)
+  assert string.contains(first, "line-01")
+  assert !string.contains(first, "line-12-tail")
+
+  let paged =
+    list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
+      key(current, "pagedown")
+    })
+  assert paged.queue_editor.preview_scroll > 0
+  let tail = painted_at(paged, 40, 12)
+  assert string.contains(tail, "line-12-tail")
+  assert !string.contains(tail, "line-01")
+
+  // Width alone can reduce the wrapped row count below the retained offset.
+  // Presentation clamps against the rows at the new width immediately.
+  let widened = painted_at(paged, 80, 12)
+  assert string.contains(widened, "line-12-tail")
+
+  // A larger bounded card clamps the retained offset during presentation, so
+  // resize alone cannot leave a blank preview waiting for another key.
+  let enlarged = painted_at(paged, 80, 24)
+  assert string.contains(enlarged, "line-09")
+  assert string.contains(enlarged, "line-12-tail")
+}
+
+pub fn compact_single_line_paging_reaches_a_twenty_cell_suffix_test() {
+  let text = string.repeat("x", 29) <> "ABCDEFGHIJKLMNOPQRST"
+  let #(model, _) =
+    ready([pending_as("A", "queue", text, 3, snapshot_view.Editable)])
+  let compact =
+    model
+    |> tui.update(backend.Resize(40, 12), _)
+    |> tui.open_queue
+    |> key("pagedown")
+  assert string.contains(painted_at(compact, 40, 12), "ABCDEFGHIJKLMNOPQRST")
+}
+
+pub fn two_row_queue_title_pages_beside_a_multiline_composer_test() {
+  let excerpt =
+    "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12-tail"
+  let #(model, _) =
+    ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
+  let compact =
+    tui.Model(
+      ..model,
+      input: textarea.state_from_string("ordinary draft\nsecond draft line"),
+    )
+    |> tui.update(backend.Resize(40, 12), _)
+    |> tui.open_queue
+  let first = painted_at(compact, 40, 12)
+  assert string.contains(first, "line-01")
+  assert string.contains(first, "ordinary draft")
+  assert string.contains(first, "second draft line")
+  assert string.contains(first, "[pasted ~10 tokens]")
+
+  let paged =
+    list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
+      key(current, "pagedown")
+    })
+  let tail = painted_at(paged, 40, 12)
+  assert string.contains(tail, "line-12-tail")
+  assert string.contains(tail, "ordinary draft")
+  assert string.contains(tail, "second draft line")
+}
+
+pub fn two_row_queue_title_pages_beside_an_active_status_test() {
+  let excerpt =
+    "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12-tail"
+  let #(model, _) =
+    ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
+  let compact =
+    tui.Model(..model, submitting: Some("main"))
+    |> tui.update(backend.Resize(40, 12), _)
+    |> tui.open_queue
+  let first = painted_at(compact, 40, 12)
+  assert string.contains(first, "line-01")
+  assert string.contains(first, "submitting")
+  assert string.contains(first, "ordinary composer draft")
+  assert string.contains(first, "[pasted ~10 tokens]")
+
+  let paged =
+    list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
+      key(current, "pagedown")
+    })
+  let tail = painted_at(paged, 40, 12)
+  assert string.contains(tail, "line-12-tail")
+  assert string.contains(tail, "submitting")
+  assert string.contains(tail, "ordinary composer draft")
+}
+
+pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
+  let excerpt =
+    "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12-tail"
+  let row = pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)
+  let #(model, _) = ready([row])
+  let compact =
+    model
+    |> tui.update(backend.Resize(40, 12), _)
+    |> tui.open_queue
+  let paged =
+    list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
+      key(current, "pagedown")
+    })
+  assert paged.queue_editor.preview_scroll == 11
+  let assert Some(#(previous, _)) = paged.captured
+  let assert Ok(data) = json.parse(metadata([row]))
+  let cut = snapshot.Captured(..previous, metadata: data, next_seq: 11)
+  let assert Ok(view) = snapshot_view.decode(cut)
+  let refreshed =
+    tui.apply_channel_update(
+      paged,
+      session_channel.Captured(cut, view, session_channel.Notified),
+    )
+  assert refreshed.queue_editor.preview_scroll == 11
+  assert string.contains(painted_at(refreshed, 40, 12), "line-12-tail")
+}
+
 pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
   let selected = model |> tui.open_queue |> key("down")
-  assert string.contains(painted(selected), "> queue B · editable")
+  assert string.contains(
+    painted(selected),
+    "▸ same instruction · [QUEUE] [EDIT]",
+  )
   let waiting = key(selected, "enter")
   let request = issued(events, "queued_input")
   let assert Some(queue_editor.Fetch(id: "B", strand: "main", ..)) =
@@ -267,6 +461,76 @@ pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
   let answered = full_reply(waiting, request, "B", 3, "the second item")
   assert draft(answered).document.id == "B"
   assert textarea.value(draft(answered).input) == "the second item"
+}
+
+pub fn clean_retained_draft_allows_editing_another_item_test() {
+  let #(model, events) = ready([pending("A"), pending("B")])
+  let waiting = model |> tui.open_queue |> key("enter")
+  let request = issued(events, "queued_input")
+  let clean = full_reply(waiting, request, "A", 3, "same instruction")
+  let selected = clean |> key("esc") |> key("down") |> key("enter")
+  let _ = issued(events, "queued_input")
+  let assert Some(queue_editor.Fetch(id: "B", ..)) =
+    selected.queue_editor.awaiting
+    as "an unchanged editable draft must not force a save before browsing another item"
+}
+
+pub fn resuming_a_draft_cancels_another_items_late_fetch_test() {
+  let #(model, events) = ready([pending("A"), pending("B")])
+  let waiting_a = model |> tui.open_queue |> key("enter")
+  let request_a = issued(events, "queued_input")
+  let clean_a = full_reply(waiting_a, request_a, "A", 3, "same instruction")
+  let waiting_b = clean_a |> key("esc") |> key("down") |> key("enter")
+  let request_b = issued(events, "queued_input")
+  let resumed = waiting_b |> key("e") |> key("end") |> key("!")
+  assert resumed.queue_editor.awaiting == None
+  assert resumed.queue_editor.request_id == None
+  assert draft(resumed).document.id == "A"
+
+  let late = full_reply(resumed, request_b, "B", 9, "late B text")
+  assert draft(late).document.id == "A"
+  assert textarea.value(draft(late).input) == "same instruction!"
+}
+
+pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
+  let rows =
+    ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
+    |> list.map(pending)
+  let #(model, _) = ready(rows)
+  let opened =
+    model
+    |> tui.update(backend.Resize(120, 30), _)
+    |> tui.open_queue
+  let selected =
+    list.fold(list.repeat(Nil, 11), opened, fn(current, _) {
+      key(current, "down")
+    })
+  assert selected.queue_editor.selected == 11
+
+  let controls =
+    tui.update(backend.MousePress(2, 14, backend.MouseLeft), selected)
+  let heading =
+    tui.update(backend.MousePress(2, 17, backend.MouseLeft), selected)
+  assert controls.queue_editor.selected == 11
+  assert heading.queue_editor.selected == 11
+
+  let row = tui.update(backend.MousePress(2, 18, backend.MouseLeft), selected)
+  assert row.queue_editor.selected == 6
+}
+
+pub fn reopening_queue_browses_before_resuming_a_retained_draft_test() {
+  let #(editor, _) = opened("original complete text")
+  let closed = editor |> key("esc") |> key("esc")
+  let browsing = tui.open_queue(closed)
+  assert browsing.queue_editor.surface == queue_editor.Inspector
+  assert textarea.value(browsing.input) == "ordinary composer draft"
+  assert string.contains(painted(browsing), "e resumes editing")
+
+  let resumed = key(browsing, "e")
+  assert resumed.queue_editor.surface == queue_editor.Editor
+  assert textarea.value(draft(resumed).input) == "original complete text"
+  assert string.contains(painted(resumed), "ordinary composer draft")
+  assert string.contains(painted(resumed), "same instruction")
 }
 
 pub fn complete_fetch_and_save_preserve_text_beyond_the_excerpt_test() {
@@ -384,7 +648,7 @@ pub fn attachment_change_cannot_save_an_old_editor_test() {
   assert string.contains(painted(saved), "Attachment changed")
 }
 
-pub fn selecting_another_item_does_not_rebind_an_uncertain_draft_test() {
+pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let #(model, events) = opened("A original")
   let edited = model |> key("end") |> key("!")
   let saving = key(edited, "ctrl+s")
@@ -401,11 +665,15 @@ pub fn selecting_another_item_does_not_rebind_an_uncertain_draft_test() {
     |> key("esc")
     |> key("down")
     |> key("enter")
-  let request = issued(reads, "queued_input")
-  let answered = full_reply(switched, request, "B", 9, "B complete text")
-  assert draft(answered).document.id == "B"
-  assert textarea.value(draft(answered).input) == "B complete text"
-  assert !string.contains(painted(answered), "A original")
+  assert requests(reads, []) == []
+  assert switched.queue_editor.awaiting == None
+  assert draft(switched).document.id == "A"
+  assert textarea.value(draft(switched).input) == "A original!"
+  assert string.contains(painted(switched), "e resumes it")
+
+  let resumed = key(switched, "e")
+  assert resumed.queue_editor.surface == queue_editor.Editor
+  assert textarea.value(draft(resumed).input) == "A original!"
 }
 
 pub fn explicit_refresh_after_stale_refusal_keeps_same_item_draft_test() {
@@ -455,7 +723,10 @@ pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test
       selected,
       session_channel.Captured(cut, view, session_channel.Notified),
     )
-  assert string.contains(painted(reordered), "> queue B · editable")
+  assert string.contains(
+    painted(reordered),
+    "▸ same instruction · [QUEUE] [EDIT]",
+  )
   let waiting = key(reordered, "enter")
   let _ = issued(events, "queued_input")
   let assert Some(queue_editor.Fetch(id: "B", ..)) =
@@ -493,5 +764,12 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
       as "a retained draft cannot become a replacement in another session or runtime"
     assert draft(saved) == retained
     assert string.contains(painted(saved), "draft retained")
+
+    let browsing = switched |> key("esc") |> key("enter")
+    assert requests(events, []) == []
+      as "Enter cannot fetch a reused row identity from another queue namespace"
+    assert browsing.queue_editor.awaiting == None
+    assert draft(browsing) == retained
+    assert string.contains(painted(browsing), "e resumes it")
   })
 }
