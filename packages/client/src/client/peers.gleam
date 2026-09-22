@@ -179,7 +179,7 @@ fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {
   use value <- result.try(wiring.own.call(peer_mail.Links(strand)))
   case value {
     json.Array(links) ->
-      case list.length(links) <= 64 {
+      case list.length(links) <= peer_mail.outgoing_link_limit {
         True -> Ok(links)
         False -> Error("peer roster exceeds the 64-link bound")
       }

@@ -96,6 +96,9 @@ const grant_prefix = "client/peers/grant/"
 
 const link_prefix = "client/peers/link/"
 
+/// Maximum number of outgoing links recorded for one source strand.
+pub const outgoing_link_limit = 64
+
 const receipt_prefix = "client/peers/receipt/"
 
 fn digest(value: JsonValue) -> String {
@@ -136,6 +139,19 @@ fn link_value(source: String, session: String, target: String) -> JsonValue {
   ])
 }
 
+fn outgoing_links(
+  runtime: api.Runtime,
+  source: String,
+) -> Result(List(#(String, JsonValue)), String) {
+  use links <- result.try(
+    api.reserved_facts(runtime, link_prefix)
+    |> result.map_error(string.inspect),
+  )
+  Ok(
+    list.filter(links, fn(pair) { text(pair.1, "source_strand") == Ok(source) }),
+  )
+}
+
 /// Executes one endpoint command in the recipient's serialized Agency actor.
 ///
 /// ## Examples
@@ -168,7 +184,17 @@ pub fn handle(
       |> result.map_error(string.inspect)
     Link(source, session, target) -> {
       let value = link_value(source, session, target)
-      api.put_reserved_fact(runtime, link_prefix <> digest(value), value)
+      let key = link_prefix <> digest(value)
+      use links <- result.try(outgoing_links(runtime, source))
+      use Nil <- result.try(case list.any(links, fn(pair) { pair.0 == key }) {
+        True -> Ok(Nil)
+        False ->
+          case list.length(links) < outgoing_link_limit {
+            True -> Ok(Nil)
+            False -> Error("peer roster exceeds the 64-link bound")
+          }
+      })
+      api.put_reserved_fact(runtime, key, value)
       |> result.replace(json.Null)
       |> result.map_error(string.inspect)
     }
@@ -180,20 +206,8 @@ pub fn handle(
       |> result.replace(json.Null)
       |> result.map_error(string.inspect)
     Links(source) -> {
-      use links <- result.try(
-        api.reserved_facts(runtime, link_prefix)
-        |> result.map_error(string.inspect),
-      )
-      Ok(
-        json.Array(
-          list.filter_map(links, fn(pair) {
-            case text(pair.1, "source_strand") {
-              Ok(strand) if strand == source -> Ok(pair.1)
-              _ -> Error(Nil)
-            }
-          }),
-        ),
-      )
+      use links <- result.try(outgoing_links(runtime, source))
+      Ok(json.Array(list.map(links, fn(pair) { pair.1 })))
     }
     Deliver(source, target, id, body) ->
       deliver(runtime, clock, source, target, id, body)
