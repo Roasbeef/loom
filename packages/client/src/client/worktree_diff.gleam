@@ -1043,7 +1043,11 @@ pub fn peer_observation(wiring: Wiring) -> json.JsonValue {
       4096,
     ))
     use Nil <- result.try(complete(branch))
-    use branch <- result.try(line_value(branch.stdout))
+    use branch <- result.try(case branch.code, branch.stdout, branch.stderr {
+      0, stdout, _ -> line_value(stdout)
+      1, <<>>, <<>> -> Ok("")
+      code, _, stderr -> Error(GitFailed(code, diagnostic(stderr)))
+    })
     Ok(
       json.Object([
         #("repository_root", json.String(root)),
