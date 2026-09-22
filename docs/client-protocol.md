@@ -1344,7 +1344,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:5505`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5530`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2893,7 +2893,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3182`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3211`) and `navigating`
    (`client/gateway.gleam:3027`).
 
 9. **The spec's control command list is incomplete.**
