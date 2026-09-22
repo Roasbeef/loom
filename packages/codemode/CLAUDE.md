@@ -827,3 +827,10 @@ The `notes.read` operation returns serialized JSON for `cap/fs.read` without
 passing a virtual URI through the filesystem router.
 
 See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+The notes and orchestration value adapter delegates to core/json_wire, sharing
+lossless conversion with satellite report helpers. Offering both server
+surfaces does not change either import allowlist or the per-submission seam
+selection.

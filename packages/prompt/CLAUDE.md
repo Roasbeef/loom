@@ -271,3 +271,9 @@ while the program returns a small summary. It distinguishes this from evictable
 cap/kv scratch and makes virtual note reads conditional on the advertised API.
 
 See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+The context guidance points agents to the advertised executable recipes,
+separates workspace and orchestration work, and explains JSON value conversion
+and partial strand.map outcomes.

@@ -4028,3 +4028,11 @@ structured analysis, closes SQLite, and consumes it from a fresh program after
 reopening through both the typed notes API and the note:// JSON view.
 
 See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+The server defaults to BothSeams; unnamed programs still select workspace and
+explicit flags can restrict the offered surfaces. The advertised recipe
+fixture runs both exact model-visible programs through the jail, using
+scripted child answers and real SQLite notes, then reads orchestration results
+from a fresh workspace execution.

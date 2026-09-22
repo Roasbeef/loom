@@ -817,3 +817,10 @@ note:// JSON views. Existing agent_note and agent_notes retain their names,
 full returned keys, and storage semantics.
 
 See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+`codemode_recipes` holds complete program strings included in the tool
+description only when the corresponding imports are offered. Client live tests
+execute those exact strings and compare them with docs/examples. The generated
+prelude advertises report JSON conversion and bounded strand.map.

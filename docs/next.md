@@ -1,8 +1,39 @@
 # Next
 
+## Default orchestration and code-mode utilities, September 21
+
+This follow-up to `c14a27b3` on `codemode-notes` makes the server offer both
+workspace and orchestration by default. Every program still selects one seam;
+an omitted seam selects workspace. Explicit workspace-only configuration
+remains supported. The shared notes door carries data between executions.
+
+`report.decode_json` and `report.encode_json` now bridge JSON text and the
+Value used by notes and child results. They reuse core's parser and a shared
+pure conversion, refusing ambiguous or lossy data. `strand.map` starts and
+joins bounded batches, preserving one ordered result per assignment. Pending
+children, admission failures, and failed joins stop further admission with
+known handles and unstarted assignments intact. It adds no new capability or
+process machinery. [Protocol 046](../protocol-change/046-code-mode-utilities.md)
+records these contracts.
+
+The agent-facing tool description includes executable workspace-analysis and
+child-review recipes only when their imports are offered. The live fixture
+runs those exact strings through both jailed pipelines, using scripted child
+responses and real SQLite notes, then reuses the saved reviews from workspace
+code mode. Capability tests cover conversion boundaries and partial map
+progress. The independent review found no actionable issue. The final full
+`make check` passed with exit zero, including 2039 client tests; the prompt
+budget regression stayed intact after shortening duplicated guidance.
+[The review](review/code-mode-utilities.md) records validation and the prior
+head's unrelated Linux MCP cleanup timing failure.
+
+The running daemon is unchanged. Rebuild the seed and daemon to deploy; hosted
+CI and Linux jail validation remain separate gates. Older sections below
+retain the defaults and validation of their historical baselines.
+
 ## Durable workspace code-mode notes, September 21
 
-This change starts at `543d641a` on `codex/codemode-notes`. The default
+This change starts at `543d641a` on `codemode-notes`. The default
 workspace seam now exposes `cap/notes` when the host wires its Agency door.
 Programs can save structured analysis with `notes.put`, retrieve exact values
 with `notes.get`, and discover namespace-qualified keys with `notes.list`.

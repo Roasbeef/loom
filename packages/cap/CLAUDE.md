@@ -442,3 +442,11 @@ policies do not admit the notes module. Static allowlists remain unchanged;
 `client/codemode.seam_allowlist` installs this module per host.
 
 See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+`report.decode_json` and `report.encode_json` bridge JSON text and Value
+through core/json_wire. `strand.map` runs bounded batches with one output per
+assignment; pending/failed joins and refused admissions stop further spawning
+while retaining known handles and unstarted assignments. It introduces no
+process machinery or new capability.

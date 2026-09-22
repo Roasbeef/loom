@@ -28,7 +28,7 @@ layer.
 
 ## Durable analysis between executions
 
-The default server selects workspace code mode and installs a shared notes
+The default server offers workspace and orchestration code mode and installs a shared notes
 door through `client/codemode.serving`. That host advertises `cap/notes` in
 both workspace and orchestration code mode. `notes.put(key, value)` writes a
 JSON-compatible value under the caller's own `agent/<strand>/` namespace.
@@ -65,6 +65,31 @@ result by the full key. Stored values and list replies have a 1 MiB encoded-JSON
 oversized results fail explicitly. Legacy strand note calls retain their own
 quotas. [Protocol 045](../../protocol-change/045-code-mode-notes.md) records the
 contract and the deliberate absence of filesystem mounts and subscriptions.
+
+## Reusable programs on both surfaces
+
+The server now offers both seams by default. Each submission still selects a
+single surface, and omitting `seam` selects workspace. Explicit
+`--codemode-seams workspace` retains the earlier restriction.
+
+`report.decode_json` and `report.encode_json` bridge JSON text with the
+structured Value used by notes and child results. They use the existing core
+parser and shared conversion, preserving integer/float distinctions and
+refusing binary values, non-text keys, duplicates, and excessive nesting.
+Ordinary `gleam/json` parsing remains available for application-specific decoders.
+
+`strand.map` accepts assignments and a concurrency bound, starts one batch,
+and joins it before admitting another. A pending child or admission/join error
+stops the helper with all known handles and explicit NotStarted assignments.
+It does not cancel children or retry uncertain admissions. Its join window is
+per batch; the host's execution deadline bounds the whole program. See
+[Protocol 046](../../protocol-change/046-code-mode-utilities.md) for the contract.
+
+The model-facing description includes a [workspace analysis recipe](../examples/workspace_analysis.gleam)
+and a [bounded child review recipe](../examples/strand_map.gleam), conditioned
+on the imports the host offers. Tests execute the advertised strings verbatim
+and compare them with these files. Workspace data can be saved into notes and
+consumed by orchestration, or the reverse, without combining their authority.
 
 ## Why Gleam is safe to run
 
@@ -557,8 +582,8 @@ sibling resolves.
 ### Who chooses the seam
 
 The host chooses which seams it *serves* (`client/codemode.Surface`, and
-`--codemode-seams` on the shipped server, which defaults to the workspace
-seam alone). Where it serves both, the **submission** chooses between them:
+`--codemode-seams` on the shipped server, which defaults to both
+seams). Where it serves both, the **submission** chooses between them:
 `code_mode` takes a `seam` argument and a program is judged against
 exactly the one it names, defaulting to the workspace seam when it names
 none. Nothing infers the seam from a program's imports — classifying a
