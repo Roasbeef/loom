@@ -1,5 +1,36 @@
 # Next
 
+## Inline queue follow-up, September 22
+
+Commit `6c796795` adds a composer-adjacent queue card on top of the pushed
+six-phase head `ff4c5fa3`, based on `f440f381`. `Alt+q` and `/queue`
+open its inspector while preserving the transcript and ordinary draft. `e`
+explicitly resumes a retained queue edit; a clean editable draft can switch
+items, while dirty and uncertain drafts remain protected. The package docs
+and [component note](design-notes/tui-component-pass.md) describe the controls
+and retained authority checks.
+
+Independent source review is closed after repairs for late fetch replies,
+capture paging geometry, compact excerpt visibility, and mouse list bounds.
+All 22 focused queue tests pass; the source rebuild took 9.04 seconds and
+the incremental compile took 0.5 seconds. Native verification covered passive
+preview, inspection, draft resume, editor cursor, compact paging, and resize
+recovery at 132×42, 80×24, 40×12, and 80×12. The component note links four
+inspected captures with ANSI recordings; the private fixture is stopped.
+The closing full-repository gate remains pending.
+
+Hosted CI on `ff4c5fa3` repeated a Linux MCP timing failure. A test-only repair
+allows the existing collector margin while retaining a bound below eight
+serial shutdown budgets. Six correct runs passed, and a serial mutation failed
+at 4,010 ms. The repair is committed as `0003f32f`; production deadlines are
+unchanged. `make doc-check` passed with zero errors and 153 warnings. Push and
+hosted validation of this follow-up remain pending; PR 478 has not been merged.
+
+This status supersedes the pending push and CI claims in the historical
+sections below. Their test totals and captures describe the named earlier
+commits, including the full-repository pass at `3ce4d7ce`; they do not validate
+the inline queue follow-up.
+
 ## Post-rebase validation complete, September 22
 
 The tested code is `3ce4d7ce`, based on `f440f381`. Commit `ec62d0fa` corrected

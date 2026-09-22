@@ -1,11 +1,9 @@
 # TUI component pass
 
-Status: all six phases implemented, reviewed, and component-verified through
-rebased commit `1b04a549`, September 22, 2026. The branch is rebased onto
-`f440f381`; its current documentation head is `cc27610c`. PR 478 remains open
-and ready for review without automatic merge, but its remote head is still the
-pre-rebase `ef469716` until push. Local full-repository validation passes at
-`3ce4d7ce`; push and hosted CI remain separate pending work.
+Status: all six phases implemented, reviewed, component-verified, and pushed at
+`ff4c5fa3`, September 22, 2026. The inline queue follow-up is committed at
+`6c796795`, with test calibration at `0003f32f`. Its closing full-repository
+gate and hosted validation remain pending.
 
 ## Purpose and constraints
 
@@ -330,9 +328,9 @@ All phases are component-verified by rebased commits `8622ce94`, `c599661c`,
 captures were produced before the rebase; the corresponding TUI source commits
 are unchanged apart from commit identity. Their closing TUI gates, native
 captures, and confirmed review repairs remain the evidence recorded above. The
-final full-repository gate passes at `3ce4d7ce`; push and hosted CI remain
-pending. The unrelated `.blobs/` directory is outside this work and must remain
-untouched.
+final full-repository gate passes at `3ce4d7ce`. The completed pass was later
+pushed at `ff4c5fa3`; its current hosted-CI exception is recorded below. The
+unrelated `.blobs/` directory is outside this work and must remain untouched.
 
 ## Post-rebase validation
 
@@ -363,4 +361,73 @@ The built-in shipped-daemon tests remained skipped because
 `LOOM_BOOTSTRAP_E2E_SERVER` was unset, as did the real MCP process-death case on
 macOS because `/proc` is unavailable. The task-owned native capture client and
 its private `loom-visual-review` tmux session are stopped; the installed daemon
-was untouched. Push and hosted CI remain pending.
+was untouched. Push and hosted CI were pending at this validation point; the
+status above and follow-up record below supersede that snapshot.
+
+## Inline queue follow-up: final validation pending
+
+Commit `6c796795` places queued messages above the composer, with message text before their
+priority and access badges. `Alt+q` and bare `/queue` focus the same bounded
+inspector while retaining the transcript, ordinary draft, and attachments.
+The queue reserves its rectangle before transcript rendering. The passive
+card shows up to three entries; the focused inspector owns selection and
+excerpt paging within that rectangle.
+
+Opening the inspector always browses the captured queue. `e` explicitly
+resumes a retained edit, and Escape returns first to inspection and then to
+the composer. A clean editable draft permits fetching another item. A dirty,
+Saving, or Unknown draft prevents a fetch from replacing it with another item
+or namespace. Resuming also clears pending fetch ownership, so a late reply
+for another item cannot replace a draft the operator has resumed editing.
+Ctrl+s remains the explicit save action, with the existing owner, namespace,
+and revision checks.
+
+Independent source review found and closed four issues: a late fetch replacing
+a resumed draft, capture refresh using fullscreen paging geometry, compact
+excerpt text becoming unreachable, and clicks on controls selecting list rows.
+Compact rendering and paging share the displayed excerpt width. When a 40×12
+card has no inner row beside a multiline draft or active status, its title
+pages the excerpt. Both title and body clamp offsets on resize.
+
+All 22 focused queue tests pass; the source rebuild took 9.04 seconds and the
+incremental compile took 0.5 seconds. Native verification covered the passive
+card, Alt+q inspection, and
+explicit draft resume at 132×42, preserving the ordinary composer throughout.
+The editor and cursor were checked at 80×24. At 40×12, an active status and two
+wrapped composer rows left a paged title; paging reached the final
+`reached.` text. A width-only resize to 80×12 immediately showed the complete
+`Native paging tail reached.` line. Escape restored composer focus without
+saving.
+
+The private fixture is stopped.
+
+The [passive card](tui-agent-workspace/queue-inline-wide.png),
+[inspector](tui-agent-workspace/queue-inline-inspector.png),
+[editor](tui-agent-workspace/queue-inline-editor.png), and
+[compact view](tui-agent-workspace/queue-inline-40.png) have adjacent ANSI
+recordings. Each capture was inspected during native verification. The closing
+full-repository gate remains pending.
+
+The approval review comment about the hidden action digest was assessed against
+the capture-to-decision path. Readable mode presents the action preview and
+requested grants; raw mode retains the exact escaped digest. The panel keeps
+its captured `Review`, and confirmation echoes its digest, grants, and sequence
+without a fresh lookup. The gateway checks the sequence and action before
+committing approval. Displaying the hash by default is a presentation choice;
+omitting it from readable mode does not change the consent binding. The bounded
+preview remains the existing visibility limit, which displaying a hash would
+not remove.
+
+Hosted CI for the completed six-phase head `ff4c5fa3` passed every job except
+the Linux client job. Its retry repeated an MCP timing failure. The test-only
+repair in `0003f32f` changes the shared shutdown budget from 100 ms to 500 ms and checks an aggregate bound of
+3,000 ms. That bound accommodates the existing 1,000 ms collector margin and
+scheduler delay while rejecting eight sequential 500 ms waits. Six correct
+runs passed at about 532 ms; an actual serial mutation took 4,010 ms and failed
+the assertion.
+
+Independent source review confirmed that production deadlines are unchanged.
+`make doc-check` passed with zero errors and 153 warnings. Hosted validation of the repair remains pending. The failed hosted result
+predates the inline queue follow-up.
+The prior local full-repository gate at `3ce4d7ce` remains historical evidence,
+and does not establish validation of these follow-up commits.

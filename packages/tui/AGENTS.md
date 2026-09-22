@@ -98,7 +98,8 @@ shows `File` and `Content`; actual content newlines become preview rows, while
 each row escapes control bytes, bidi marks, and literal backslash sequences
 independently. Unknown fields and complete `fs_edit` payloads retain escaped JSON
 fallback instead of dropping fields. `d` or Ctrl+g switches to the complete
-escaped raw request, including the exact owner and operation. PgUp, PgDn, Home,
+escaped raw request, including the captured action digest and the exact owner
+and operation. PgUp, PgDn, Home,
 and End scroll request detail independently while the choices remain visible.
 
 The dialog captures the record's sequence, action and grants. Its owner label
@@ -792,22 +793,30 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   Selection and received observations invalidate the render revision. The
   patch cache stores the board and selection that produced its rows, so a
   reply applied before a terminal tick still replaces the previous patch.
-- **Queued-input editing**: bare `/queue` opens `tui/queue_editor`; `/queue text`
-  still submits a queued turn. `queue_panel` labels each captured row as queue or
-  steer and editable or read-only. The selected body is explicitly a captured
-  excerpt with independent PgUp/PgDn paging. Up/Down changes the selected opaque
-  identity. Enter fetches the complete revision only for an editable item;
-  read-only items cannot request text the capture did not carry.
-  Ordinary Enter inserts a newline in its editor, and Ctrl+s saves its exact
-  revision. Images remain on the server. The draft is separate from the
-  ordinary composer and survives Escape, conflict, or an uncertain save.
-  Ctrl+r explicitly reconciles the same item and queue namespace. A changed
-  session, epoch, or incarnation cannot adopt an old draft, even if the opaque
-  item ID repeats; a new connection within that namespace may reconcile it. The
-  editor header names priority, delivery state, save, reconcile, Escape, and
-  newline controls without adding another mutation path. Queue rows pad by
-  terminal cells, and presentation clamps the retained excerpt offset to the
-  current geometry, so widening a paged compact view cannot leave it blank.
+- **Queued-input editing**: the passive card above the composer shows up to
+  three captured messages with queue/steer and editable/read-only badges.
+  `Alt+q` or bare `/queue` focuses its inspector; `/queue text` still submits a
+  queued turn. Opening the inspector preserves the transcript, ordinary draft,
+  and attachments, even when a queue edit is retained. Up/Down changes the
+  selected opaque identity, and PgUp/PgDn pages its captured excerpt. Enter
+  fetches the complete revision only for an editable item; read-only items
+  cannot request text the capture did not carry.
+  `e` explicitly resumes the retained queue draft and cancels ownership of any
+  pending full-text fetch, so a late response cannot replace the resumed edit.
+  A clean editable draft permits fetching another item. Dirty, Saving, and
+  Unknown drafts prevent a fetch from replacing them with another identity or
+  namespace. Escape moves from Editor to Inspector, then to the composer.
+  Ordinary Enter inserts a newline in the queue editor; Ctrl+s saves its exact
+  revision. Images remain on the server. Ctrl+r explicitly reconciles the same
+  item and queue namespace. A changed session, epoch, or incarnation cannot
+  reconcile or save an old draft, even if its opaque item ID repeats; a new
+  connection within that namespace may reconcile it.
+  The queue reserves its rectangle before transcript rendering. Paging and
+  capture refresh use that rectangle, and mouse hits exclude the inspector's
+  controls and list heading. Compact cards share their excerpt width with the
+  paging calculation and clamp retained offsets during rendering. At 40×12,
+  the focused footer uses one row; a card with no inner row pages its excerpt
+  in the title while preserving the composer and transcript row.
 - **Completion and live jobs**: `tui/completion_summary` retains observed
   operation start boundaries and processes a result before a successor in the
   same cut. It attributes captured edits and paired tool outcomes only within
