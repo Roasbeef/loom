@@ -1,5 +1,76 @@
 # Next
 
+## Blackboard reads preserve failures, September 21
+
+The follow-up to `b3a8c9f9` removes Agency's conversion of failed note scans
+into empty results. Direct note reads and completed-child joins now propagate
+PlaneFailed through their existing Result interfaces. Code-mode get/list and
+note:// reads therefore distinguish unavailable/corrupt storage from absence.
+Regressions inject real backend read failures after notes have been stored;
+the full client gate passed all 2041 tests, and lint/doc checks passed.
+[The review record](review/code-mode-notes.md) tracks the regression proof. No public
+interface or capability changed.
+
+
+## Default orchestration and code-mode utilities, September 21
+
+This follow-up to `c14a27b3` on `codemode-notes` makes the server offer both
+workspace and orchestration by default. Every program still selects one seam;
+an omitted seam selects workspace. Explicit workspace-only configuration
+remains supported. The shared notes door carries data between executions.
+
+`report.decode_json` and `report.encode_json` now bridge JSON text and the
+Value used by notes and child results. They reuse core's parser and a shared
+pure conversion, refusing ambiguous or lossy data. `strand.map` starts and
+joins bounded batches, preserving one ordered result per assignment. Pending
+children, admission failures, and failed joins stop further admission with
+known handles and unstarted assignments intact. It adds no new capability or
+process machinery. [Protocol 046](../protocol-change/046-code-mode-utilities.md)
+records these contracts.
+
+The agent-facing tool description includes executable workspace-analysis and
+child-review recipes only when their imports are offered. The live fixture
+runs those exact strings through both jailed pipelines, using scripted child
+responses and real SQLite notes, then reuses the saved reviews from workspace
+code mode. Capability tests cover conversion boundaries and partial map
+progress. The independent review found no actionable issue. The final full
+`make check` passed with exit zero, including 2039 client tests; the prompt
+budget regression stayed intact after shortening duplicated guidance.
+[The review](review/code-mode-utilities.md) records validation and the prior
+head's unrelated Linux MCP cleanup timing failure.
+
+The running daemon is unchanged. Rebuild the seed and daemon to deploy; hosted
+CI and Linux jail validation remain separate gates. Older sections below
+retain the defaults and validation of their historical baselines.
+
+## Durable workspace code-mode notes, September 21
+
+This change starts at `543d641a` on `codemode-notes`. The default
+workspace seam now exposes `cap/notes` when the host wires its Agency door.
+Programs can save structured analysis with `notes.put`, retrieve exact values
+with `notes.get`, and discover namespace-qualified keys with `notes.list`.
+`cap/fs.read("note://main/analysis")` supplies a read-only JSON view. The
+prompts and generated capability reference advertise these calls only when
+the host offers them. [Protocol 045](../protocol-change/045-code-mode-notes.md)
+records the contract, and [the review](review/code-mode-notes.md) records the
+boundary checks and independent review.
+
+Notes reuse the SQLite-backed Agency register and survive reopening that
+session's store. They are not global cross-session memory. The virtual paths
+are not OS mounts; shell programs need an explicit workspace-file copy.
+Extensions and resident hooks do not gain the notes door, and workspace
+programs still cannot import the agent lifecycle surface in `cap/strand`.
+
+The complete `make check` passed on macOS with zero lint errors. The final
+focused suite passed all 65 tests, and the jailed examples saved an analysis,
+closed and reopened SQLite, then consumed it in a fresh code-mode program.
+The exact structured result and virtual-read quota were verified. Independent
+review found and verified the fix for namespace-qualified maximum-length keys.
+
+Next, run hosted CI and Linux jail validation before merge. Rebuild the
+capability seed and daemon to deploy this surface; no installed daemon has
+been changed. Older sections retain their own historical baselines.
+
 ## Configurable daemon connection admission, September 18
 
 The connection-limit change is based on `a65aa2f0` and its implementation is

@@ -81,6 +81,11 @@ IDs to retrieve the complete entry. context_remaining reports estimated
 room before compaction; it does not initiate compaction or reserve a final
 note-writing turn.
 
+Follow code_mode's advertised recipes: workspace for files/processes,
+orchestration for agents. When cap/notes is offered, persist analysis for
+later programs and return summaries; cap/kv is evictable. Use report's JSON
+helpers and inspect strand.map's partial outcomes before retrying.
+
 %% section tool_discipline
 Your tools and their schemas are given to you separately and are
 authoritative. They are not repeated here; the rest of this section is

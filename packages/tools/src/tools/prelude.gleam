@@ -25,23 +25,24 @@
 //// names the file that moved:
 ////
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
-////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
+////   17119de5a23f5b9a19fa25ed70d56921ae4588ff097408e124d31bc81b70c365  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
-////   37332eb8a0ad5118fdf4391729121e71ea153714d53fed8592813308e240b010  packages/cap/src/cap/kv.gleam
+////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
 ////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
+////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
-////   9f573452d1333b42e16a9521c08a7c3597e4daa4cb09a937307095641b1a232f  packages/cap/src/cap/report.gleam
+////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   a2d7bafec7c934c3b07f4a8eb52b406956be678f97682a4fb8fa8abea192490b  packages/cap/src/cap/strand.gleam
+////   456f230634d9858f7c187ea9192278e5af7a854e35308d313ef85c74d7022e4d  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 22ed190172010a86bcfb52b52eb13f66827e82821006ad2d942d0900dfa7dd87
+//// Body digest (every line after the marker): 4239264da91e32abe9509c7927137e5714b27ae10f223fde9527351c26d0f64b
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -173,9 +174,12 @@ pub fn edit(String, List(Replacement)) -> Result(Nil, FsError)
 ///
 /// Capability: `fs.list`.
 pub fn list(String) -> Result(List(DirEntry), FsError)
-/// Reads a file's contents as text.
-///
-/// Capability: `fs.read`.
+/// Reads a file's contents as text. With a notes-enabled host,
+/// note://<strand>/<key> returns the exact note serialized as JSON. The
+/// suffix is an opaque key, not an OS path. Missing notes are NotFound.
+/// Virtual reads admit at most 64 calls per execution; they are not
+/// mounted files, so shell tools require an explicit copy to a workspace
+/// file.
 pub fn read(String) -> Result(String, FsError)
 /// Writes `contents` to `path`, creating or replacing the whole file.
 ///
@@ -574,6 +578,34 @@ pub fn request(Request) -> Result(Response, NetError)
 ",
   ),
   #(
+    "cap/notes",
+    "### cap/notes
+Durable structured notes shared by code-mode calls and agent_note.
+
+/// A storage, validation, admission, or transport refusal.
+pub type NotesError {
+  /// The host refused this call, retaining its error code and
+  /// explanation.
+  NotesDenied(code: String, message: String)
+  /// The host could not be reached or answered with an invalid value.
+  NotesUnavailable(reason: String)
+}
+/// Reads one exact shared key, relative to agent/. A missing key returns
+/// None; a stored JSON null returns Some(report.null()). Capability:
+/// notes.get. The execution allows at most 64 calls.
+pub fn get(String) -> Result(option.Option(report.Value), NotesError)
+/// Reads cells matching a relative prefix. Returned keys can be passed
+/// directly to get, or prefixed with note:// for cap/fs.read. None scans
+/// the session's shared agent notes. Oversized replies fail explicitly.
+/// Capability: notes.list. The execution allows at most 64 calls.
+pub fn list(option.Option(String)) -> Result(List(#(String, report.Value)), NotesError)
+/// Stores JSON-compatible data under the caller's own key. Reusing a key
+/// replaces its current value; a child's result key retains schema
+/// checks. Capability: notes.put. The execution allows at most 256 calls.
+pub fn put(String, report.Value) -> Result(Nil, NotesError)
+",
+  ),
+  #(
     "cap/proc",
     "### cap/proc
 `cap/proc` — run a command in a jailed executor.
@@ -669,11 +701,19 @@ pub fn as_list(Value) -> Result(List(Value), Nil)
 pub fn as_string(Value) -> Result(String, Nil)
 /// A boolean value.
 pub fn bool(Bool) -> Value
+/// Parses JSON into the same structured value used by notes and child
+/// results. Rejects duplicate object keys, excessive nesting, and
+/// trailing input.
+pub fn decode_json(String) -> Result(Value, String)
 /// Emits an artifact and returns a durable reference to it.
 ///
 /// Capability: `report.emit`. `content_type` is a MIME-ish label the
 /// broker stores alongside the bytes.
 pub fn emit(name: String, content_type: String, bytes: BitArray) -> Result(ArtifactRef, ReportError)
+/// Encodes a structured value as compact JSON without coercing its
+/// contents. Binary values, non-text keys, duplicate keys, and excessive
+/// nesting fail.
+pub fn encode_json(Value) -> Result(String, String)
 /// An `Errored` outcome from a message alone, with nil details.
 pub fn failure(String) -> Outcome
 /// One field of an object value, or `Error(Nil)` when the value is not an
@@ -1227,6 +1267,19 @@ pub type FieldType {
 pub type Handle {
   Handle(strand: String, operation: String)
 }
+/// One assignment's result from a bounded map, in input order.
+pub type Mapped {
+  /// Admission failed. The helper stops admitting further assignments.
+  SpawnFailed(error: StrandError)
+  /// A child was admitted and its join answered, possibly still Pending.
+  Joined(waited: Waited)
+  /// A child was admitted but the join failed. Keep its handle for a
+  /// later wait.
+  JoinFailed(handle: Handle, error: StrandError)
+  /// The helper stopped before admitting this assignment. It can be
+  /// retried.
+  NotStarted(assignment: Assignment)
+}
 /// How a child's operation ended.
 pub type Outcome {
   /// The run finished normally.
@@ -1376,6 +1429,19 @@ pub fn from_my_conversation(Assignment) -> Assignment
 /// A handle rendered as the text the harness and the model both use,
 /// `{strand}#{operation}`.
 pub fn handle_text(Handle) -> String
+/// Runs assignments in batches of at most `max_concurrency` children.
+/// Returns one entry per assignment in input order, retaining every known
+/// handle. The concurrency bound covers children started by this call,
+/// not other work already running on the parent. Each batch shares one
+/// `within_ms` join window; the host's execution deadline remains the
+/// outer bound for the entire call.
+///
+/// A pending child, failed admission, or failed join stops further
+/// admissions. Remaining assignments are NotStarted; admitted children
+/// are not cancelled. Ready children with Failed/Aborted outcomes or
+/// unusable results remain explicit Joined entries and do not prevent the
+/// next batch from starting.
+pub fn map(List(Assignment), max_concurrency: Int, within_ms: Int) -> Result(List(Mapped), StrandError)
 /// Writes one blackboard cell under the calling strand's own namespace.
 /// The key is forced under that namespace by the harness, so a program
 /// cannot address another strand's notes or a reserved cell.

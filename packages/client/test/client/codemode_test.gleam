@@ -32,12 +32,14 @@ import codemode/codemode as pipeline
 import codemode/compile
 import codemode/identity
 import codemode/launch
+import codemode/notes
 import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
+import core/corruption
 import core/ids.{type OpId}
 import core/json
 import core/message
@@ -54,6 +56,7 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import storage/storage
 import support/addresses
 import support/tool_registry
 import tools/agent
@@ -802,7 +805,8 @@ pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   assert list.contains(seam.allowed_imports, "cap/report")
   assert !list.contains(seam.allowed_imports, "cap/fs")
   assert !list.contains(seam.allowed_imports, "cap/proc")
-  assert seam.serviced_caps == orchestration.serviced_caps
+  assert seam.serviced_caps
+    == list.append(orchestration.serviced_caps, notes.serviced_caps)
   assert codemode.surface_seam(config.surface) == vet_policy.OrchestrationSeam
   // And the workspace surface is unmoved by it.
   let workspace = codemode.seam(config_for(broker_actor)).seams.default
@@ -812,7 +816,7 @@ pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   broker.stop(broker_actor)
 }
 
-pub fn only_the_orchestration_surface_carries_admission_ceilings_test() {
+pub fn configured_surfaces_carry_their_admission_ceilings_test() {
   // A call is throttled by turn cost and a loop pays nothing, so the seam
   // that replaces the turn with a loop is the one that needs explicit
   // ceilings — on every call that mints something outliving the
@@ -836,6 +840,7 @@ pub fn only_the_orchestration_surface_carries_admission_ceilings_test() {
       orchestration.default_spawn_ceiling,
       emit_admissions: artifact.default_emit_ceiling,
     )
+    |> list.append(notes.ceilings())
   let plain =
     codemode.exec_config(
       config_for(broker_actor),
@@ -951,7 +956,8 @@ pub fn a_host_serving_both_offers_both_and_defaults_to_the_workspace_test() {
   assert orchestration_offer.seam == codemode_tool.OrchestrationSeam
   assert list.contains(orchestration_offer.allowed_imports, "cap/strand")
   assert !list.contains(orchestration_offer.allowed_imports, "cap/proc")
-  assert orchestration_offer.serviced_caps == orchestration.serviced_caps
+  assert orchestration_offer.serviced_caps
+    == list.append(orchestration.serviced_caps, notes.serviced_caps)
   broker.stop(broker_actor)
 }
 
@@ -1174,6 +1180,10 @@ type Live {
 }
 
 fn start_runtime() -> Live {
+  start_runtime_over(fn(sess) { sess })
+}
+
+fn start_runtime_over(shape: fn(session.Session) -> session.Session) -> Live {
   let session_clock = counting_clock(1_756_000_000_000, 3)
   let assert Ok(sess) = session.open_memory(session_clock)
     as "the memory session must open"
@@ -1207,7 +1217,7 @@ fn start_runtime() -> Live {
   let base = api.default_options(configuration)
   let assert Ok(runtime) =
     api.open(
-      sess,
+      shape(sess),
       effects.Effects(
         clock: session_clock,
         entropy:,
@@ -1668,4 +1678,416 @@ pub fn a_glob_renders_its_entries_workspace_relative_test() {
     as "a walk of a contained root must succeed"
   assert list.map(listing.entries, fn(entry) { entry.path })
     == ["src/app.gleam"]
+}
+
+// The default production selection installs notes without agent lifecycle
+// authority. The description, vetted imports, router, and quotas must agree.
+pub fn workspace_notes_are_available_only_when_the_host_wires_them_test() {
+  let base = config_for(idle_broker())
+  let config =
+    codemode.serving(base, codemode.WorkspaceOnly, over: start_runtime().seam)
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(base, vet_policy.WorkspaceSeam),
+    "cap/notes",
+  )
+  assert vet_policy.contains(
+    codemode.seam_allowlist(config, vet_policy.WorkspaceSeam),
+    "cap/notes",
+  )
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(config, vet_policy.WorkspaceSeam),
+    "cap/strand",
+  )
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(config, vet_policy.ExtensionSeam),
+    "cap/notes",
+  )
+  assert !vet_policy.contains(
+    codemode.seam_allowlist(config, vet_policy.ResidentSeam),
+    "cap/notes",
+  )
+  assert list.contains(
+    codemode.seam_caps_on(config, vet_policy.WorkspaceSeam),
+    "notes.read",
+  )
+  assert !list.contains(
+    codemode.seam_caps_on(base, vet_policy.WorkspaceSeam),
+    "notes.read",
+  )
+  let text = codemode_tool.description(codemode.seam(config))
+  assert string.contains(text, "notes.get")
+  assert string.contains(text, "note://")
+  assert !string.contains(
+    codemode_tool.description(codemode.seam(base)),
+    "### cap/notes",
+  )
+}
+
+pub fn workspace_notes_use_the_real_blackboard_and_exact_keys_test() {
+  let live = start_runtime()
+  let config =
+    codemode.serving(
+      config_for(idle_broker()),
+      codemode.WorkspaceOnly,
+      over: live.seam,
+    )
+  let value =
+    msgpack.MapValue([
+      pair("items", msgpack.ArrayValue([msgpack.IntValue(3), msgpack.NilValue])),
+    ])
+  assert workspace_note_call(
+      config,
+      "notes.put",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue("analysis-old")),
+        pair("value", msgpack.IntValue(9)),
+      ]),
+    )
+    == framing.CapOk(msgpack.NilValue)
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue("main/analysis"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([pair("found", msgpack.BoolValue(False))]),
+    )
+  assert workspace_note_call(
+      config,
+      "notes.put",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue("analysis")),
+        pair("value", value),
+      ]),
+    )
+    == framing.CapOk(msgpack.NilValue)
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue("main/analysis"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([
+        pair("found", msgpack.BoolValue(True)),
+        pair("value", value),
+      ]),
+    )
+  assert workspace_note_call(
+      config,
+      "notes.read",
+      msgpack.MapValue([pair("key", msgpack.StringValue("main/analysis"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([
+        pair("contents", msgpack.StringValue("{\"items\":[3,null]}")),
+      ]),
+    )
+  let assert framing.CapOk(msgpack.MapValue(cells)) =
+    workspace_note_call(
+      config,
+      "notes.list",
+      msgpack.MapValue([pair("prefix", msgpack.StringValue("main/analysis"))]),
+    )
+    as "list must read both cells"
+  assert list.key_find(cells, msgpack.StringValue("notes"))
+    == Ok(
+      msgpack.ArrayValue([
+        msgpack.MapValue([
+          pair("key", msgpack.StringValue("main/analysis")),
+          pair("value", value),
+        ]),
+        msgpack.MapValue([
+          pair("key", msgpack.StringValue("main/analysis-old")),
+          pair("value", msgpack.IntValue(9)),
+        ]),
+      ]),
+    )
+}
+
+fn workspace_note_call(
+  config: codemode.Config,
+  cap: String,
+  args: msgpack.MsgPackValue,
+) -> framing.CapOutcome {
+  let request =
+    codemode_tool.Request(..request_for("notes-test"), strand: "main")
+  let pipeline =
+    codemode.exec_config(
+      config,
+      request,
+      "/work/notes",
+      9_000_000,
+      widened_by: [],
+    )
+  let cap_request =
+    satellite.CapRequest(
+      cap:,
+      args:,
+      identity: identity.run_phase(pipeline.identity),
+      base_policy: request.base_policy,
+      demand: request.demand,
+      env: [],
+      cwd: request.workspace,
+      ordinal: 0,
+    )
+  case pipeline.satellite.router(cap_request) {
+    Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
+    Ok(satellite.ServedHere(serve)) -> serve()
+    Ok(satellite.ClearedCall(..)) -> panic as "notes must use the blackboard"
+  }
+}
+
+pub fn notes_reject_non_json_and_oversized_payloads_before_persistence_test() {
+  // Duplicate keys are rejected before the capability router receives a value.
+  let assert Ok(duplicate_frame) =
+    msgpack.encode(
+      msgpack.MapValue([
+        pair(
+          "value",
+          msgpack.MapValue([
+            pair("duplicate", msgpack.IntValue(1)),
+            pair("duplicate", msgpack.IntValue(2)),
+          ]),
+        ),
+      ]),
+    )
+    as "the hostile frame can be encoded"
+  let assert Error(_) = msgpack.decode(duplicate_frame)
+    as "the inbound wire decoder rejects nested duplicate keys"
+
+  let live = start_runtime()
+  let config =
+    codemode.serving(
+      config_for(idle_broker()),
+      codemode.WorkspaceOnly,
+      over: live.seam,
+    )
+  list.each(
+    [
+      msgpack.BinaryValue(<<1>>),
+      msgpack.MapValue([#(msgpack.IntValue(1), msgpack.StringValue("bad"))]),
+    ],
+    fn(value) {
+      let assert framing.CapErr(code: "invalid_argument", ..) =
+        workspace_note_call(
+          config,
+          "notes.put",
+          msgpack.MapValue([
+            pair("key", msgpack.StringValue("invalid")),
+            pair("value", value),
+          ]),
+        )
+        as "lossy JSON conversions must be refused"
+    },
+  )
+  let huge = msgpack.StringValue(string.repeat("x", notes.max_bytes))
+  let assert framing.CapErr(code: "note_too_large", ..) =
+    workspace_note_call(
+      config,
+      "notes.put",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue("huge")),
+        pair("value", huge),
+      ]),
+    )
+    as "quoted JSON exceeds the bound"
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue("main/huge"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([pair("found", msgpack.BoolValue(False))]),
+    )
+  let plain = config_for(idle_broker())
+  let assert framing.CapErr(code: "unsupported_cap", ..) =
+    workspace_note_call(plain, "notes.put", msgpack.MapValue([]))
+    as "an absent door cannot write"
+}
+
+pub fn note_put_cannot_select_another_writers_namespace_test() {
+  let config =
+    codemode.serving(
+      config_for(idle_broker()),
+      codemode.WorkspaceOnly,
+      over: start_runtime().seam,
+    )
+  assert workspace_note_call(
+      config,
+      "notes.put",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue("other/analysis")),
+        pair("value", msgpack.NilValue),
+        pair("strand", msgpack.StringValue("other")),
+      ]),
+    )
+    == framing.CapOk(msgpack.NilValue)
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue("other/analysis"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([pair("found", msgpack.BoolValue(False))]),
+    )
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue("main/other/analysis"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([
+        pair("found", msgpack.BoolValue(True)),
+        pair("value", msgpack.NilValue),
+      ]),
+    )
+}
+
+pub fn an_accepted_note_at_the_size_limit_remains_readable_test() {
+  let config =
+    codemode.serving(
+      config_for(idle_broker()),
+      codemode.WorkspaceOnly,
+      over: start_runtime().seam,
+    )
+  let value = msgpack.StringValue(string.repeat("x", notes.max_bytes - 2))
+  assert workspace_note_call(
+      config,
+      "notes.put",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue("limit")),
+        pair("value", value),
+      ]),
+    )
+    == framing.CapOk(msgpack.NilValue)
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue("main/limit"))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([
+        pair("found", msgpack.BoolValue(True)),
+        pair("value", value),
+      ]),
+    )
+}
+
+pub fn maximum_note_keys_round_trip_through_list_get_and_virtual_reads_test() {
+  let config =
+    codemode.serving(
+      config_for(idle_broker()),
+      codemode.WorkspaceOnly,
+      over: start_runtime().seam,
+    )
+  let key = string.repeat("k", 128)
+  let qualified = "main/" <> key
+  assert workspace_note_call(
+      config,
+      "notes.put",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue(key)),
+        pair("value", msgpack.IntValue(7)),
+      ]),
+    )
+    == framing.CapOk(msgpack.NilValue)
+  let assert framing.CapOk(msgpack.MapValue(fields)) =
+    workspace_note_call(
+      config,
+      "notes.list",
+      msgpack.MapValue([pair("prefix", msgpack.NilValue)]),
+    )
+    as "the shared listing must return the accepted note"
+  let assert Ok(msgpack.ArrayValue([msgpack.MapValue(cell)])) =
+    list.key_find(fields, msgpack.StringValue("notes"))
+    as "the sole returned cell must be reusable"
+  let assert Ok(msgpack.StringValue(returned)) =
+    list.key_find(cell, msgpack.StringValue("key"))
+    as "list returns the relative key"
+  assert returned == qualified
+  assert workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([pair("key", msgpack.StringValue(returned))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([
+        pair("found", msgpack.BoolValue(True)),
+        pair("value", msgpack.IntValue(7)),
+      ]),
+    )
+  assert workspace_note_call(
+      config,
+      "notes.read",
+      msgpack.MapValue([pair("key", msgpack.StringValue(returned))]),
+    )
+    == framing.CapOk(
+      msgpack.MapValue([pair("contents", msgpack.StringValue("7"))]),
+    )
+  let assert framing.CapErr(code: "invalid_argument", ..) =
+    workspace_note_call(
+      config,
+      "notes.get",
+      msgpack.MapValue([
+        pair("key", msgpack.StringValue(string.repeat("x", 4097))),
+      ]),
+    )
+    as "read prefixes remain bounded"
+}
+
+pub fn note_reads_propagate_storage_failures_instead_of_absence_test() {
+  let faults = [
+    storage.BackendFault("injected blackboard read failure"),
+    storage.CorruptRow(corruption.report(
+      at: "notes regression",
+      on: "agent/main/saved",
+      expected: "valid JSON",
+      context: "bad stored bytes",
+    )),
+  ]
+  list.each(faults, fn(fault) {
+    list.each(["notes.get", "notes.list", "notes.read"], fn(cap) {
+      let live =
+        start_runtime_over(fn(sess) {
+          let store =
+            storage.Storage(
+              ..sess.store,
+              list_registers: fn(handle, namespace, prefix) {
+                case prefix {
+                  Some(key) if key == "agent/" || key == "agent/main/saved" ->
+                    Error(fault)
+                  _ -> sess.store.list_registers(handle, namespace, prefix)
+                }
+              },
+            )
+          session.Session(..sess, store:)
+        })
+      let config =
+        codemode.serving(
+          config_for(idle_broker()),
+          codemode.WorkspaceOnly,
+          over: live.seam,
+        )
+      assert workspace_note_call(
+          config,
+          "notes.put",
+          msgpack.MapValue([
+            pair("key", msgpack.StringValue("saved")),
+            pair("value", msgpack.IntValue(7)),
+          ]),
+        )
+        == framing.CapOk(msgpack.NilValue)
+      let assert framing.CapErr(code: "plane_failed", message: reason) =
+        workspace_note_call(
+          config,
+          cap,
+          msgpack.MapValue([
+            pair("key", msgpack.StringValue("main/saved")),
+            pair("prefix", msgpack.NilValue),
+          ]),
+        )
+        as "a failed durable read must not look like an absent note"
+      assert reason != ""
+    })
+  })
 }

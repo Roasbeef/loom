@@ -3,7 +3,7 @@
 //// across the calls of a kept-alive satellite cell.
 ////
 //// It is **ephemeral by design** (design §6.5). Anything worth keeping
-//// leaves through a `cap/report` artifact; the scratch store may be
+//// belongs in a durable cap/notes cell or cap/report artifact; the scratch store may be
 //// evicted or reset between calls, so a program must always tolerate a
 //// vanished value — `get` returns `Ok(None)`, never an error, when a key
 //// is absent. Treat it as a cache, never a database.

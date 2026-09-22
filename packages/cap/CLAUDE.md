@@ -430,3 +430,23 @@ cannot hide the capability error. This does not grant the program a new effect.
 - [docs/review/m4-triage.md](../../docs/review/m4-triage.md) — the review
   wave this package's current shape answers.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Durable code-mode notes
+
+The host-installed `cap/notes` data surface adds `put`, `get`, and `list`
+to workspace and orchestration programs that have a notes door. It uses the
+existing JSON blackboard, with relative read keys and caller-owned writes.
+`cap/fs.read` dispatches `note://` reads as `notes.read`; virtual paths are
+read-only and never mounted for shell processes. Extension and resident
+policies do not admit the notes module. Static allowlists remain unchanged;
+`client/codemode.seam_allowlist` installs this module per host.
+
+See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+`report.decode_json` and `report.encode_json` bridge JSON text and Value
+through core/json_wire. `strand.map` runs bounded batches with one output per
+assignment; pending/failed joins and refused admissions stop further spawning
+while retaining known handles and unstarted assignments. It introduces no
+process machinery or new capability.

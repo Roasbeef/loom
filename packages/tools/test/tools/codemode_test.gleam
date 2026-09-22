@@ -1362,3 +1362,37 @@ fn parse_failure_at(
     [#("program", json.String(source))],
   )
 }
+
+pub fn recipes_are_advertised_only_with_their_required_imports_test() {
+  let workspace =
+    codemode.SeamOffer(..workspace_offer(), allowed_imports: [
+      "cap/fs",
+      "cap/task",
+      "cap/notes",
+      "cap/report",
+      "gleam/list",
+      "gleam/result",
+    ])
+  let orchestration =
+    codemode.SeamOffer(..orchestration_offer(), allowed_imports: [
+      "cap/strand",
+      "cap/notes",
+      "cap/report",
+      "gleam/list",
+      "gleam/result",
+    ])
+  let both = codemode.Seams(default: workspace, alternates: [orchestration])
+  let description = codemode.description(echoing_over(both))
+  assert string.contains(description, "Workspace recipe")
+  assert string.contains(description, "Orchestration recipe")
+  let limited =
+    codemode.SeamOffer(..workspace, allowed_imports: ["cap/notes", "cap/report"])
+  let description =
+    codemode.description(echoing_over(codemode.one_seam(limited)))
+  assert !string.contains(description, "Workspace recipe")
+  assert !string.contains(description, "Orchestration recipe")
+  let description =
+    codemode.description(echoing_over(codemode.one_seam(orchestration)))
+  assert string.contains(description, "Orchestration recipe")
+  assert !string.contains(description, "Workspace recipe")
+}

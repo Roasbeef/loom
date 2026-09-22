@@ -95,7 +95,7 @@ shared domain services before closing the listener. Its flags:
 --helper <path>        loom-exec location (default: beside the server, then PATH, then ./bin)
 --config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
 --codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed, then the bundled one)
---codemode-seams <s>   workspace, orchestration, or both (default workspace)
+--codemode-seams <s>   workspace, orchestration, or both (default both)
 --full-enforcement     require every layer, including the ones Darwin cannot provide
 --best-effort          accept broader sandbox degradation for development
 ```

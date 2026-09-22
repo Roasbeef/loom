@@ -806,3 +806,21 @@ wait/roster keep wire outcome `aborted` while reporting a recorded
 outcome variants; unknown aborts remain `Aborted`. Tool guidance distinguishes
 continuing a strand with `agent_send` from observing one operation with
 `agent_wait`, and makes clear that the old handle remains historical.
+
+## Durable code-mode notes
+
+The code_mode description adds durable-analysis guidance only when an
+offer admits cap/notes. Generated prelude signatures expose its put/get/list
+API, and the guidance distinguishes session blackboard notes, evictable KV
+scratch, and artifacts. The filesystem API documents conditional read-only
+note:// JSON views. Existing agent_note and agent_notes retain their names,
+full returned keys, and storage semantics.
+
+See [protocol 045](../../protocol-change/045-code-mode-notes.md).
+
+## Code-mode utilities
+
+`codemode_recipes` holds complete program strings included in the tool
+description only when the corresponding imports are offered. Client live tests
+execute those exact strings and compare them with docs/examples. The generated
+prelude advertises report JSON conversion and bounded strand.map.

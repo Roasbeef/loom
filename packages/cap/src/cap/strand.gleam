@@ -59,7 +59,7 @@
 //// |---|---|---|
 //// | `spawn` | 32 | a child strand, durable |
 //// | `send` | 128 | a durable commit, and to an idle child it starts a run |
-//// | `note` | 256 | a durable write-once register under a chosen key |
+//// | `note` | 256 | a durable register update under a chosen key |
 //// | `notes` | 64 | a full prefix scan of the session's agent namespaces |
 //// | `wait` | none | its cost is time, which the clamp and the deadline bind |
 //// | `roster` | none | bounded by `session_strands`, a structural constant |
@@ -900,5 +900,140 @@ fn outcome_text(outcome: Outcome) -> String {
     Completed -> "completed"
     Failed(reason:) -> "failed: " <> reason
     Aborted -> "aborted"
+  }
+}
+
+/// One assignment's result from a bounded map, in input order.
+pub type Mapped {
+  /// Admission failed. The helper stops admitting further assignments.
+  SpawnFailed(error: StrandError)
+
+  /// A child was admitted and its join answered, possibly still Pending.
+  Joined(waited: Waited)
+
+  /// A child was admitted but the join failed. Keep its handle for a later wait.
+  JoinFailed(handle: Handle, error: StrandError)
+
+  /// The helper stopped before admitting this assignment. It can be retried.
+  NotStarted(assignment: Assignment)
+}
+
+/// Runs assignments in batches of at most `max_concurrency` children.
+/// Returns one entry per assignment in input order, retaining every known handle.
+/// The concurrency bound covers children started by this call, not other work
+/// already running on the parent. Each batch shares one `within_ms` join window;
+/// the host's execution deadline remains the outer bound for the entire call.
+///
+/// A pending child, failed admission, or failed join stops further admissions.
+/// Remaining assignments are NotStarted; admitted children are not cancelled.
+/// Ready children with Failed/Aborted outcomes or unusable results remain explicit
+/// Joined entries and do not prevent the next batch from starting.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // strand.map(assignments, max_concurrency: 3, within_ms: 30_000)
+/// // Match every Joined, SpawnFailed, JoinFailed, and NotStarted result.
+/// ```
+pub fn map(
+  assignments: List(Assignment),
+  max_concurrency max_concurrency: Int,
+  within_ms within_ms: Int,
+) -> Result(List(Mapped), StrandError) {
+  case max_concurrency >= 1 && max_concurrency <= 32 && within_ms >= 0 {
+    False ->
+      Error(InvalidArgument(
+        "map requires concurrency 1..32 and a nonnegative join window",
+      ))
+    True -> Ok(map_batches(assignments, max_concurrency, within_ms, []))
+  }
+}
+
+// A completed batch releases all its child slots. Any unresolved child stops
+// admission, so a timeout can never silently turn the bound into extra fan-out.
+fn map_batches(
+  assignments: List(Assignment),
+  width: Int,
+  within_ms: Int,
+  reversed: List(Mapped),
+) -> List(Mapped) {
+  case assignments {
+    [] -> list.reverse(reversed)
+    [_, ..] -> {
+      let #(admitted, remaining) = admit_batch(assignments, width, [])
+      let joined = join_batch(admitted, within_ms)
+      let reversed =
+        list.fold(joined, reversed, fn(acc, item) { [item, ..acc] })
+      case list.all(joined, batch_settled) {
+        True -> map_batches(remaining, width, within_ms, reversed)
+        False ->
+          list.append(list.reverse(reversed), list.map(remaining, NotStarted))
+      }
+    }
+  }
+}
+
+// Stop on the first refused or uncertain admission. Keeping earlier handles is
+// essential: an error in a later spawn does not roll back children already born.
+fn admit_batch(
+  assignments: List(Assignment),
+  slots: Int,
+  reversed: List(Result(Handle, StrandError)),
+) -> #(List(Result(Handle, StrandError)), List(Assignment)) {
+  case slots, assignments {
+    0, _ | _, [] -> #(list.reverse(reversed), assignments)
+    _, [assignment, ..remaining] -> {
+      let admitted = spawn(assignment)
+      case admitted {
+        Ok(_) -> admit_batch(remaining, slots - 1, [admitted, ..reversed])
+        Error(_) -> #(list.reverse([admitted, ..reversed]), remaining)
+      }
+    }
+  }
+}
+
+fn join_batch(
+  admitted: List(Result(Handle, StrandError)),
+  within_ms: Int,
+) -> List(Mapped) {
+  let handles = list.filter_map(admitted, fn(item) { item })
+  let joined = case handles {
+    [] -> Ok([])
+    [_, ..] -> wait(handles, within_ms:)
+  }
+  let joined =
+    result.try(joined, fn(waited) {
+      case list.map(waited, fn(item) { item.handle }) == handles {
+        True -> Ok(waited)
+        False ->
+          Error(StrandsUnavailable("map join returned mismatched handles"))
+      }
+    })
+  case joined {
+    Error(error) ->
+      list.map(admitted, fn(item) {
+        case item {
+          Ok(handle) -> JoinFailed(handle, error)
+          Error(error) -> SpawnFailed(error)
+        }
+      })
+    Ok(waited) ->
+      list.append(
+        list.map(waited, Joined),
+        list.filter_map(admitted, fn(item) {
+          case item {
+            Ok(_) -> Error(Nil)
+            Error(error) -> Ok(SpawnFailed(error))
+          }
+        }),
+      )
+  }
+}
+
+fn batch_settled(item: Mapped) -> Bool {
+  case item {
+    Joined(Ready(..)) -> True
+    Joined(Pending(..)) | SpawnFailed(..) | JoinFailed(..) | NotStarted(..) ->
+      False
   }
 }

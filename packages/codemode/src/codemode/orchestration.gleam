@@ -92,6 +92,7 @@ import broker/framing.{type CapOutcome}
 import codemode/artifact.{type Emit}
 import codemode/identity
 import codemode/internal/args as decode
+import codemode/internal/json_value
 import codemode/satellite.{
   type CapCeiling, type CapDenial, type CapPlan, type CapRequest, type CapRouter,
   CapCeiling, CapDenial, ServedHere,
@@ -179,7 +180,7 @@ pub const send_ceiling = 128
 
 /// The lifetime ceiling on `strand.note` admissions in one execution.
 ///
-/// One durable write-once register per call, under a key the program
+/// One durable register update per call, under a key the program
 /// chooses — so a loop mints unbounded *distinct* registers and the
 /// session store grows by exactly as much as the program felt like
 /// writing, permanently, after the execution is gone. That is the "mints
@@ -628,7 +629,7 @@ fn terminal_value(result: agent.TerminalResult) -> MsgPackValue {
     agent.ResultGiven(value:) ->
       msgpack.MapValue([
         field("kind", text("given")),
-        field("value", of_json(value)),
+        field("value", json_value.of_json(value)),
       ])
     agent.ResultAbsent(schema:) ->
       msgpack.MapValue([
@@ -639,7 +640,7 @@ fn terminal_value(result: agent.TerminalResult) -> MsgPackValue {
       msgpack.MapValue([
         field("kind", text("unusable")),
         field("schema", text(schema_text(schema))),
-        field("received", of_json(received)),
+        field("received", json_value.of_json(received)),
         field("reason", text(agent.describe_mismatch(mismatch))),
       ])
   }
@@ -688,7 +689,7 @@ fn note_plan(
   use key <- result.try(decode.string(request.args, "key"))
   use held <- result.try(decode.field(request.args, "value"))
   use value <- result.try(
-    to_json(held)
+    json_value.to_json(held)
     |> result.map_error(fn(reason) {
       decode.invalid("a note's `value` " <> reason)
     }),
@@ -772,7 +773,7 @@ fn notes_value(cells: List(#(String, JsonValue))) -> MsgPackValue {
     list.map(cells, fn(cell) {
       msgpack.MapValue([
         field("key", text(cell.0)),
-        field("value", of_json(cell.1)),
+        field("value", json_value.of_json(cell.1)),
       ])
     }),
   )
@@ -798,59 +799,6 @@ fn operation_text(handle: agent.Handle) -> String {
 // raw binary, and a map keyed by something other than text. Those are
 // refused in band rather than coerced, because a note silently stored
 // under a stringified key is a note the program cannot read back.
-
-/// One `JsonValue` as the msgpack value the wire carries.
-fn of_json(value: JsonValue) -> MsgPackValue {
-  case value {
-    json.Null -> msgpack.NilValue
-    json.Bool(value:) -> msgpack.BoolValue(value)
-    json.Int(value:) -> msgpack.IntValue(value)
-    json.Float(value:) -> msgpack.FloatValue(value)
-    json.String(value:) -> msgpack.StringValue(value)
-    json.Array(items:) -> msgpack.ArrayValue(list.map(items, of_json))
-    json.Object(fields:) ->
-      msgpack.MapValue(
-        list.map(fields, fn(entry) { field(entry.0, of_json(entry.1)) }),
-      )
-  }
-}
-
-/// One msgpack value as a `JsonValue`, or why it has no JSON form.
-fn to_json(value: MsgPackValue) -> Result(JsonValue, String) {
-  case value {
-    msgpack.NilValue -> Ok(json.Null)
-    msgpack.BoolValue(value:) -> Ok(json.Bool(value))
-    msgpack.IntValue(value:) -> Ok(json.Int(value))
-    msgpack.FloatValue(value:) -> Ok(json.Float(value))
-    msgpack.StringValue(value:) -> Ok(json.String(value))
-    msgpack.BinaryValue(bytes: _) ->
-      Error(
-        "must not hold raw bytes: the blackboard stores JSON, which has no "
-        <> "binary form; send text instead",
-      )
-    msgpack.ArrayValue(items:) ->
-      list.try_map(items, to_json) |> result.map(json.Array)
-    msgpack.MapValue(entries:) ->
-      list.try_map(entries, fn(entry) {
-        case entry.0 {
-          msgpack.StringValue(key) ->
-            to_json(entry.1) |> result.map(fn(held) { #(key, held) })
-          msgpack.NilValue
-          | msgpack.BoolValue(..)
-          | msgpack.IntValue(..)
-          | msgpack.FloatValue(..)
-          | msgpack.BinaryValue(..)
-          | msgpack.ArrayValue(..)
-          | msgpack.MapValue(..) ->
-            Error(
-              "must key its objects by text: the blackboard stores JSON, "
-              <> "whose object keys are always strings",
-            )
-        }
-      })
-      |> result.map(json.Object)
-  }
-}
 
 // --- argument decoding -----------------------------------------------------
 //

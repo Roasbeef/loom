@@ -159,3 +159,10 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-A (`core`)":
   the mint signature, `RegisterValue` representation, numeric edges.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Code-mode utilities
+
+`core/json_wire` converts the shared JSON and msgpack value types. It refuses
+binary data, non-text or duplicate object keys, and excessive nesting on the
+msgpack-to-JSON path. The satellite report helpers and host note/orchestration
+routers share this pure conversion.

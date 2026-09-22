@@ -39,6 +39,8 @@
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
+import core/json
+import core/json_wire
 import core/msgpack.{type MsgPackValue}
 import gleam/list
 import gleam/result
@@ -382,4 +384,32 @@ fn map_error(error: CallError) -> ReportError {
     Denied(code:, message:) -> EmitDenied(code:, message:)
     Unreachable(reason:) -> EmitUnavailable(reason:)
   }
+}
+
+/// Parses JSON into the same structured value used by notes and child results.
+/// Rejects duplicate object keys, excessive nesting, and trailing input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// report.decode_json("{\"count\":3}")
+///   == Ok(report.object([#("count", report.int(3))]))
+/// ```
+pub fn decode_json(text: String) -> Result(Value, String) {
+  json.parse(text)
+  |> result.map(json_wire.of_json)
+  |> result.map_error(fn(error) { error.subject <> ": " <> error.expected })
+}
+
+/// Encodes a structured value as compact JSON without coercing its contents.
+/// Binary values, non-text keys, duplicate keys, and excessive nesting fail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// report.encode_json(report.object([#("count", report.int(3))]))
+///   == Ok("{\"count\":3}")
+/// ```
+pub fn encode_json(value: Value) -> Result(String, String) {
+  json_wire.to_json(value) |> result.map(json.to_string)
 }

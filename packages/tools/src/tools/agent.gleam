@@ -1969,7 +1969,8 @@ pub fn notes_tool(
   tool.Tool(
     name: "agent_notes",
     description: "Read the shared blackboard. Omit the prefix to read every "
-      <> "agent's notes in this session; pass one to narrow (for example "
+      <> "agent's notes in this session; pass a namespace-qualified prefix "
+      <> "of at most 4096 characters to narrow (for example "
       <> "another agent's strand name).",
     prompt_snippet: Some("`agent_notes` reads the shared blackboard."),
     schema: tool.object_schema(
