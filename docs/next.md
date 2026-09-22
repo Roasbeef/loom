@@ -34,6 +34,17 @@ follow-up is pushed through documentation head `a4107579`. Consult
 hosted result; [run 35765586806](https://github.com/Roasbeef/loom/actions/runs/35765586806)
 was still running when this note was written. PR 478 has not been merged.
 
+The required `signoff/linux` run at `7414762e` exposed two capability test
+modules missing from `scripts/serial-tests`. Both install the same VM-global
+channel. Parallel execution reproduced eight failures; declaring `notes_test`
+and `strand_map_test` serial restored all 97 cap tests under parallelism eight.
+Independent review confirmed these were the only omitted channel fixtures.
+Hosted macOS also timed out waiting for a shipped code-mode result. Three
+isolated local module runs passed all three tests each, with the original
+8-second wait. Isolation omitted operator hook imports from the child daemon;
+no installed settings or production behavior changed. Fresh hosted checks and
+the canonical Linux signoff must validate the final head before merging.
+
 This status supersedes the pending push and CI claims in the historical
 sections below. Their test totals and captures describe the named earlier
 commits, including the full-repository pass at `3ce4d7ce`; they do not validate
