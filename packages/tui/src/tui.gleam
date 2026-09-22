@@ -5961,7 +5961,14 @@ fn handle_paste(model: Model, text: String) -> Model {
     DaemonSelector(
       session_selector.State(prompt: session_selector.Renaming(..), ..) as selector,
     ) -> update_daemon_selector(keys.Char(text), model, selector)
-    _ -> handle_underlay_paste(model, text)
+    NoOverlay | AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+      handle_underlay_paste(model, text)
+    AgentInspector(_)
+    | ModelSelector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> model
   }
 }
 
@@ -9865,6 +9872,7 @@ fn configured_model(
   |> option.from_result
   |> option.map(fn(config) { config.configuration.model })
 }
+
 // A replay has no idle time of its own to report.
 fn replaying(model: Model) -> Bool {
   case model.peer {
@@ -10239,7 +10247,6 @@ fn update_model_selector(
         Model(
           ..switched,
           overlay: NoOverlay,
-          current_model: name,
           repaint_phase: !model.repaint_phase,
           notice: "model: " <> name,
         )

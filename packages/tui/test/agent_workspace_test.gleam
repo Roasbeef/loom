@@ -597,6 +597,33 @@ pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
   assert inspector.selected == "main"
 }
 
+/// Bracketed paste obeys the same workspace focus as ordinary key presses.
+///
+/// Browsing exposes a composer underneath the inspector. A paste there must
+/// not silently change the draft that a later Enter could submit.
+pub fn paste_edits_only_while_the_workspace_composer_has_focus_test() {
+  let initial =
+    tui.Model(
+      ..model(),
+      strands: roster(),
+      input: textarea.state_from_string("main draft"),
+    )
+  let browsing = press(initial, "f2")
+  let ignored = tui.update(backend.Paste(" hidden"), browsing)
+  assert textarea.value(ignored.input) == "main draft"
+    as "browsing must not change the hidden composer"
+
+  let composing = press(browsing, "tab")
+  let pasted = tui.update(backend.Paste(" visible"), composing)
+  assert textarea.value(pasted.input) == "main draft visible"
+    as "paste should edit after Tab gives the composer focus"
+
+  let returned = press(pasted, "esc")
+  let ignored_again = tui.update(backend.Paste(" hidden"), returned)
+  assert textarea.value(ignored_again.input) == "main draft visible"
+    as "Escape must restore the browsing paste fence"
+}
+
 pub fn opening_selected_message_sender_preserves_drafts_until_the_action_test() {
   let send =
     agent_messages.Item(
