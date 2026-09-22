@@ -185,7 +185,117 @@ pub fn expanded_history_separates_calls_but_not_outcomes_test() {
     as "a failed result must stay adjacent to the call it answers"
 }
 
+/// A collapsed reasoning row stands one blank row below the result above it.
+///
+/// The digest is drawn with no blank of its own, so that its live and
+/// settled forms keep one height, and a failed result closes bare so that it
+/// stays adjacent to its call. Nothing then separated the two: the reasoning
+/// that opened the next response sat on the row directly under the failure
+/// output, and read as more of it.
+pub fn a_reasoning_row_is_one_blank_row_below_a_result_test() {
+  let rows = transcript_rows(reasoned_after_failure(Compact))
+  let output = row_index(rows, "failure-output")
+  let reasoning = row_index(rows, "weighing the failure")
+  let next = row_index(rows, "second-command")
+
+  assert reasoning == output + 2
+    as "a reasoning row must sit exactly one blank row below the result"
+  assert at(rows, output + 1) == "" as "that row between them is blank"
+  assert next == reasoning + 2
+    as "the call after the reasoning keeps its one blank row"
+}
+
+/// A live reasoning digest keeps the settled row's position below a result.
+///
+/// Both panes come from the actual etui buffer. The streamed counter and the
+/// durable excerpt differ in text, but settling them must not move the call
+/// output or add another blank row under it.
+pub fn a_live_reasoning_row_settles_without_moving_the_gap_test() {
+  let live =
+    transcript_rows(
+      reasoned_after_failure_with(Compact, [
+        gateway.stream_delta("main", "thinking", "weighing the failure"),
+      ]),
+    )
+  let settled = transcript_rows(reasoned_after_failure(Compact))
+  let live_output = row_index(live, "failure-output")
+  let settled_output = row_index(settled, "failure-output")
+
+  assert row_index(live, "1 line so far") == live_output + 2
+    as "the stream opens one blank row below the failed result"
+  assert row_index(settled, "weighing the failure") == settled_output + 2
+    as "the durable excerpt takes the same row after settlement"
+  assert at(live, live_output + 1) == ""
+  assert at(settled, settled_output + 1) == ""
+}
+
+/// A streamed call keeps its row when the preceding thought settles.
+///
+/// The live stream and the durable response each contain a thought followed
+/// by a call. The tool label changes at settlement, but its row does not.
+pub fn a_streamed_call_keeps_its_row_after_the_thought_settles_test() {
+  let live =
+    transcript_rows(
+      reasoned_after_failure_with(Compact, [
+        gateway.stream_delta("main", "thinking", "weighing the failure"),
+        gateway.stream_delta("main", "tool_call", "bash"),
+      ]),
+    )
+  let settled = transcript_rows(reasoned_after_failure(Compact))
+  let live_thought = row_index(live, "1 line so far")
+  let settled_thought = row_index(settled, "weighing the failure")
+
+  assert live_thought == settled_thought
+    as "the thought starts on the same row before and after settlement"
+  assert row_index(live, "tool · preparing arguments") == live_thought + 2
+    as "the live call is separated from its thought"
+  assert row_index(settled, "second-command") == settled_thought + 2
+    as "the durable call retains that row"
+}
+
 // --- fixtures --------------------------------------------------------------
+
+// A failed call, then a response that reasons before its next call: the
+// transcript the collapsed reasoning row was first seen welded into.
+fn reasoned_after_failure(details: TranscriptView) -> Pane {
+  reasoned_after_failure_with(details, [
+    gateway.thinking_tool_call_entry(
+      "main",
+      "call-b",
+      "weighing the failure",
+      "second-command",
+      3,
+    ),
+  ])
+}
+
+fn reasoned_after_failure_with(
+  details: TranscriptView,
+  endings: List(String),
+) -> Pane {
+  let model = quiet_model(connection.new_inbox(), details)
+  let steps =
+    list.append(
+      [
+        deliver(gateway.full_snapshot("demo")),
+        deliver(gateway.identified_tool_call_entry(
+          "main",
+          "call-a",
+          "bash",
+          "first-command",
+          1,
+        )),
+        deliver(gateway.identified_tool_failure_entry(
+          "main",
+          "call-a",
+          "failure-output",
+          2,
+        )),
+      ],
+      list.map(endings, deliver),
+    )
+  run(model, steps)
+}
 
 // One assistant turn per call, each answered by its own result, which is the
 // shape `tool_activity` folds into a single group of two rows. The call IDs

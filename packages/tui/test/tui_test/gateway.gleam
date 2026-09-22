@@ -288,6 +288,38 @@ pub fn thinking_entry(strand: String, thinking: String, seq: Int) -> String {
   )
 }
 
+/// One durable assistant turn that reasons and then calls a tool, the shape
+/// a model takes when it thinks between one command and the next.
+///
+/// Collapsed, the reasoning is a single row with no blank of its own, so
+/// this is the fixture for the gap above that row and the gap below it.
+pub fn thinking_tool_call_entry(
+  strand: String,
+  call_id: String,
+  thinking: String,
+  command: String,
+  seq: Int,
+) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([
+      message.AssistantThinking(
+        thinking:,
+        redacted: False,
+        thinking_signature: None,
+      ),
+      message.AssistantToolCall(call: message.ToolCall(
+        id: call_id,
+        name: "bash",
+        arguments: json.Object([#("command", json.String(command))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ]),
+  )
+}
+
 /// One durable assistant turn of reasoning the provider withheld. There is
 /// no text behind the marker, so expanding it can only show the marker
 /// again.
