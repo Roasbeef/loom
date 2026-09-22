@@ -11,7 +11,7 @@
 //// clock.
 ////
 //// The same rows carry the forward-looking fact too. A provider that
-//// reports `cache_write_1h` bills one-hour retention, which only the
+//// reports a positive `cache_write_1h` bills one-hour retention, which only the
 //// Anthropic dialect's split breakpoints produce, so that bucket is the
 //// evidence for a five-minute tail and one-hour head; a provider that
 //// reports none gets an idle-age label that never claims an expiry it
@@ -123,11 +123,11 @@ pub type CacheMiss {
 
 /// Whether a provider is known to hold an hour-long cache head.
 ///
-/// Only a row that reports `cache_write_1h` proves the provider bills
+/// Only a row that reports positive `cache_write_1h` proves the provider bills
 /// one-hour retention, because that bucket exists solely for the
 /// Anthropic dialect's `ttl: "1h"` breakpoints. Every other dialect —
 /// and an Anthropic row that wrote nothing to the head this turn —
-/// reports `None`, which is the absence of the fact rather than a denial
+/// reports `None` or zero, which is the absence of the fact rather than a denial
 /// of it, so the horizon stays sticky once learned.
 pub type HourHead {
   /// No row on this strand has reported a one-hour write.
@@ -179,7 +179,7 @@ pub type Outlook {
 /// it as the baseline would compare the next real request against zero.
 ///
 /// The watch's cache horizon is learned from the row and sticky once
-/// learned: `cache_write_1h` proves the one-hour split, and its absence
+/// learned: a positive `cache_write_1h` proves the one-hour split, and its absence
 /// on a later row is not a denial of it, so an established horizon is
 /// carried forward rather than reset.
 ///
@@ -199,8 +199,8 @@ pub fn observe(
     None -> Unproven
   }
   let hour_head = case usage.cache_write_1h {
-    Some(_) -> Split
-    None -> hour_head
+    Some(count) if count > 0 -> Split
+    Some(_) | None -> hour_head
   }
   case reads_context(usage), watch {
     // An adjustment carries no request of its own to compare against, so

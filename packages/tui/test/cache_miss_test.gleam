@@ -262,8 +262,15 @@ pub fn the_horizon_is_learned_once_and_never_unlearned_test() {
       hour_head: cache_miss.Unproven,
     ))
 
+  // Anthropic reports an explicit zero when the one-hour head wrote no
+  // tokens. Its presence identifies a field, not a retained head.
+  let zero = message.Usage(..held_prefix(), cache_write_1h: Some(0))
+  let #(_, unproven) = cache_miss.observe(first, zero, 30_000)
+  let assert Some(unproven_watch) = unproven
+  assert unproven_watch.hour_head == cache_miss.Unproven
+
   let #(_, learned) =
-    cache_miss.observe(first, split_row(0, 250_000, 0), 60_000)
+    cache_miss.observe(unproven, split_row(0, 250_000, 0), 60_000)
   assert learned
     == Some(cache_miss.Watch(
       previous: split_row(0, 250_000, 0),
