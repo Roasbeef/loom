@@ -52,13 +52,19 @@ opens the selected sender and changes the composer recipient. Tab transfers to
 the composer. Captures preserve message identity and body scroll instead of
 resetting either while the observation remains present.
 
-Notes use the inspected strand while the Notes tab owns focus, and the active
-strand in standalone `/notes`. `notes_requested` coalesces reads behind the
-existing session channel; `NotesSnapshot` values from a different target cannot
-replace the visible board. `note_selected` holds a stable key through reorder,
-falling back to the first key only when the old key disappears. Brackets select
-notes, Ctrl+g switches between readable and raw values, and refresh preserves
-the composer. Opening `/notes` clears the competing diff surface.
+The inspector and standalone `/notes` share one notes browser. It uses the
+inspected strand in the Notes tab and the active strand when standalone.
+`notes_requested` coalesces reads behind the existing session channel;
+`NotesSnapshot` values from a different target cannot replace the visible board.
+Entering another owner resets selection to that owner's first key. Refreshing
+the same owner retains the stable key through reorder and clamps the note scroll
+to the refreshed body. Note mode and scroll remain independent of transcript
+detail mode and transcript scroll. Only the selected body is formatted, with
+modifiers and links preserved. Compact layouts retain stale and omitted facts
+and give the body the rows actually available. Brackets select notes, Ctrl+g
+switches readable/raw note mode, PgUp/PgDn scroll the body, and `r` refreshes.
+The composer remains intact, and opening `/notes` clears the competing diff
+surface.
 
 `StrandWorkspace` parks the complete editor, attachments, command history,
 submission mode and bounded reader under `(session, strand)`. Navigation restores

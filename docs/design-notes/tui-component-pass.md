@@ -1,9 +1,10 @@
 # TUI component pass
 
-Status: Phase 1 implemented, reviewed, and verified at `27da4a7d`, September 21,
-2026. The implementation baseline is `ef469716` on PR 478. The PR is open and
-ready for review; it has no automatic merge. This note records settled scope and
-the evidence each phase must produce. Later phases remain planned.
+Status: Phases 1 and 2 implemented, reviewed, and verified through `157c5207`,
+September 21, 2026. The implementation baseline is `ef469716` on PR 478. The PR
+is open and ready for review; it has no automatic merge. This note records
+settled scope and the evidence each phase must produce. Later phases remain
+planned.
 
 ## Purpose and constraints
 
@@ -96,6 +97,28 @@ Build on [`notes_view`](../../packages/tui/src/tui/notes_view.gleam) and the
 existing read path. Acceptance evidence must distinguish current, historical,
 stale, unavailable, malformed, empty, and reordered notes in both entry points.
 
+### Phase 2 evidence
+
+Commit `157c5207` installs one notes browser for the agent inspector and
+standalone `/notes`. Note display mode and body scroll are independent of
+transcript detail mode and transcript scroll. Entering a different owner resets
+to that owner's first key; refreshing the same owner retains its key and clamps
+the existing scroll to the refreshed body. Only the selected body is formatted,
+and its modifiers and links survive rendering. Compact layouts keep stale and
+omitted facts visible and size the body from the available height.
+
+`[` and `]` select notes, Ctrl+g switches the selected note between readable and
+raw form, PgUp/PgDn scroll its body, and `r` refreshes it. Independent review
+found five issues; all five were fixed and reverified. The same pass repaired an
+adjacent message-body overscroll boundary. Native QA covered 132×42, 80×24, and
+40×12 inspector layouts plus standalone `/notes` at 80 columns, including raw
+mode, selection, and controls. The [wide capture](tui-agent-workspace/notes-component.png)
+and [40×12 capture](tui-agent-workspace/notes-component-40.png) have adjacent
+ANSI recordings.
+
+The closing TUI gate passed all 678 tests with exit zero in 9.30 seconds. It was
+an incremental run, so it establishes no fresh compiler timing.
+
 ## Phase 3: goals
 
 Group status, objective, budget consumption, latest check result, and reviewer
@@ -164,9 +187,12 @@ omitted jobs, refresh transitions, stable selection, and narrow layout.
 
 ## Evidence ledger
 
-Phase 1 is verified by commit `27da4a7d`, the 676-test closing TUI gate, native
-captures at all three sizes, and the independently confirmed review repairs
-recorded above. For later phases, focused and full gate results, timings, native
-captures, review findings, and commit IDs remain pending. The final
-full-repository gate and hosted CI also remain pending. The unrelated `.blobs/`
-directory is outside this work and must remain untouched.
+Phases 1 and 2 are verified by commits `27da4a7d` and `157c5207`, their closing
+TUI gates, native captures, and independently confirmed review repairs recorded
+above. For later phases, focused and full gate results, timings, native captures,
+review findings, and commit IDs remain pending. The final documentation refresh
+must repair the known line-citation drift in `docs/architecture/advisor.md` and
+add the new panels to the `docs/architecture/client.md` code-location table.
+Avoid churning those anchors between phases. The final full-repository gate and
+hosted CI also remain pending. The unrelated `.blobs/` directory is outside this
+work and must remain untouched.

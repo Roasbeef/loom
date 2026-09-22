@@ -1,5 +1,27 @@
 # Next
 
+## Shared notes browser, September 21
+
+Phase 2 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at `157c5207`. The inspector and standalone `/notes` now share a
+selectable notes browser. Note mode and body scroll are independent of transcript
+detail and scroll state. Owner changes reset to the new owner's first key;
+same-owner refresh retains the key and clamps scroll to the refreshed body. Only
+the selected body is formatted, with modifiers and links preserved. Compact
+layouts keep stale and omitted facts visible.
+
+Brackets select notes, Ctrl+g switches readable/raw mode, PgUp/PgDn scroll the
+body, and `r` refreshes. Independent review found five issues; all were fixed and
+reverified. The pass also fixed adjacent message-body overscroll. Native QA
+covered 132×42, 80×24, and 40×12 inspector layouts and standalone `/notes` at 80
+columns, including selection and raw mode. The design note links the wide and
+compact captures. The closing TUI gate passed 678 tests with exit zero in 9.30
+seconds. This was incremental and makes no fresh compiler-timing claim.
+
+Hosted CI and a latest-head full-repository gate remain pending. The final
+documentation refresh must repair the recorded architecture citation drift and
+add the new panels to the client architecture code-location table.
+
 ## Selectable agent messages, September 21
 
 Phase 1 of the [TUI component pass](design-notes/tui-component-pass.md) is
