@@ -2964,26 +2964,14 @@ fn new_usage(
     Error(_) -> []
     Ok(rows) ->
       list.map(rows, fn(row: UsageRow) {
-        let observation_strand = case row.entry_id {
-          Some(id) ->
-            case dict.get(entry_strand, ids.entry_id_to_string(id)) {
-              Ok(BranchOwned(strand)) -> Some(strand)
-              Ok(Unverified(_)) | Ok(Shared(_)) -> None
-              Error(Nil) -> None
-            }
-          None -> None
+        let attribution = usage_entry_attribution(entry_strand, row.entry_id)
+        let observation_strand = case attribution {
+          Some(BranchOwned(strand)) -> Some(strand)
+          Some(Unverified(_)) | Some(Shared(_)) | None -> None
         }
-        let strand = case observation_strand {
-          Some(strand) -> strand
-          None ->
-            case row.entry_id {
-              Some(id) ->
-                case dict.get(entry_strand, ids.entry_id_to_string(id)) {
-                  Ok(attribution) -> entry_attribution_strand(attribution)
-                  Error(Nil) -> single_live_strand(state)
-                }
-              None -> single_live_strand(state)
-            }
+        let strand = case attribution {
+          Some(attribution) -> entry_attribution_strand(attribution)
+          None -> single_live_strand(state)
         }
         let op = case dict.get(state.live, strand) {
           Ok(op) -> Some(op)
@@ -2995,6 +2983,22 @@ fn new_usage(
           observation_strand:,
         )
       })
+  }
+}
+
+// A usage row may carry an entry identity without the gateway having seen
+// that entry yet. Only the attribution cache can supply ownership evidence.
+fn usage_entry_attribution(
+  entry_strand: Dict(String, EntryAttribution),
+  entry_id: Option(EntryId),
+) -> Option(EntryAttribution) {
+  case entry_id {
+    Some(id) ->
+      case dict.get(entry_strand, ids.entry_id_to_string(id)) {
+        Ok(attribution) -> Some(attribution)
+        Error(Nil) -> None
+      }
+    None -> None
   }
 }
 
