@@ -190,6 +190,8 @@ daemon epoch and canonical session IDs are required:
 Peer messaging is disabled until the owner grants a link. There is no automatic
 link for sessions in the same repository, and granting A-to-B does not grant
 B-to-A. Both sessions must be open when the owner creates the link.
+Each source strand can hold 64 outgoing links. The next distinct link is
+refused at admission; replacing an existing link does not consume another slot.
 
 `busy_only` permits messages during an existing run. `may_wake` also permits a
 new run on that exported strand. Neither opens a saved session. A link permits
@@ -237,6 +239,8 @@ Discovery shows linked resident and saved sessions, catalogue name and workspace
 exported strands, current operation and state sequence, latest terminal result,
 and a separately labeled model self-description. Git root, common directory and
 branch are timestamped **activation observations**, not a live branch guarantee.
+For a detached HEAD, the observation retains the root and common directory
+and reports `branch: null`.
 Unavailable or deleted targets remain individual unavailable rows. Repository
 similarity never creates a grant.
 
