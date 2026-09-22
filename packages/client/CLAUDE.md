@@ -4020,7 +4020,7 @@ accounting remain the owners of capacity release.
 
 `codemode.serving` installs a narrow `codemode/notes.Door` from Agency's
 note and notes callbacks for every selected code-mode surface, including the
-default WorkspaceOnly posture. `notes_on` excludes extensions and resident
+explicit WorkspaceOnly deployments. `notes_on` excludes extensions and resident
 hooks. The same optional door controls host imports, advertised capabilities,
 router wrapping, and quotas. It gives workspace code mode durable data access
 without cap/strand lifecycle authority. The real jailed notes fixture writes
@@ -4036,3 +4036,11 @@ explicit flags can restrict the offered surfaces. The advertised recipe
 fixture runs both exact model-visible programs through the jail, using
 scripted child answers and real SQLite notes, then reads orchestration results
 from a fresh workspace execution.
+
+## Blackboard read failures
+
+Agency note scans preserve runtime read and decode failures as PlaneFailed.
+An empty list means a successful scan found no cells. Child joins propagate
+that same refusal when loading saved notes, so a failed scan cannot fabricate
+an absent structured result for a completed child. Code-mode get/list and
+virtual note reads use this shared path and retain the refusal.

@@ -1080,13 +1080,13 @@ fn wait(
   // registered from evaporating.
   reap_overdue(config, runtime, ledger)
   let #(started, _clock) = clock.read(config.clock)
-  Ok(wait_loop(
+  wait_loop(
     config,
     runtime,
     handles,
     started,
     clamp(within_ms, 0, config.max_wait_ms),
-  ))
+  )
 }
 
 // One handle's non-blocking settlement check, folded into the running
@@ -1136,7 +1136,7 @@ fn wait_loop(
   handles: List(Handle),
   started: Int,
   budget: Int,
-) -> List(Waited) {
+) -> Result(List(Waited), Refusal) {
   // The probe never reports `Broken`: a handle that cannot be read yet is
   // simply unsettled, so there is no failure to distinguish from waiting.
   let verdict: poll.Verdict(_, Nil, _) =
@@ -1158,10 +1158,13 @@ fn wait_loop(
   }
 
   let #(now, _clock) = clock.read(config.clock)
-  list.map(handles, fn(handle) {
+
+  // Settled children still need their saved notes read. A failed scan must
+  // refuse the join rather than synthesize an empty structured result.
+  list.try_map(handles, fn(handle) {
     case dict.get(settled, agent.handle_to_string(handle)) {
       Ok(last) -> ready(runtime, handle, last)
-      Error(Nil) -> Pending(handle:, waited_ms: now - started)
+      Error(Nil) -> Ok(Pending(handle:, waited_ms: now - started))
     }
   })
 }
@@ -1193,11 +1196,17 @@ fn settle_pass(
   }
 }
 
-fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
-  let notes =
-    notes_under(runtime, agent.blackboard_prefix <> handle.strand <> "/")
+fn ready(
+  runtime: api.Runtime,
+  handle: Handle,
+  last: LastResult,
+) -> Result(Waited, Refusal) {
+  use notes <- result.try(notes_under(
+    runtime,
+    agent.blackboard_prefix <> handle.strand <> "/",
+  ))
   let outcome = run_outcome(runtime, handle, last)
-  Ready(
+  Ok(Ready(
     handle:,
     outcome:,
     report: partial_report(outcome, report_of(runtime, last), notes),
@@ -1207,7 +1216,7 @@ fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
     // it rather than a channel of its own.
     result: terminal_result(runtime, handle.strand, notes),
     notes:,
-  )
+  ))
 }
 
 // A failed reviewer can still have useful saved observations. These notes
@@ -1537,17 +1546,19 @@ fn notes(
       validate_key(text, within: 4096)
       |> result.map(fn(key) { agent.blackboard_prefix <> key })
   })
-  Ok(notes_under(runtime, prefix))
+  notes_under(runtime, prefix)
 }
 
+// A failed scan is not evidence that the register is empty. Preserve the
+// refusal for direct reads and for child joins that include saved notes.
 fn notes_under(
   runtime: api.Runtime,
   prefix: String,
-) -> List(#(String, JsonValue)) {
-  case api.facts(runtime, prefix: Some(prefix)) {
-    Ok(cells) -> cells
-    Error(_error) -> []
-  }
+) -> Result(List(#(String, JsonValue)), Refusal) {
+  api.facts(runtime, prefix: Some(prefix))
+  |> result.map_error(fn(error) {
+    agent.PlaneFailed(reason: describe_api(error))
+  })
 }
 
 // A blackboard key is model text that becomes half of a register key, so

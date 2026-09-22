@@ -31,6 +31,7 @@ import runtime/child_run
 import runtime/effects
 import runtime/lineage
 import session/session
+import storage/storage
 import support/addresses
 import support/tool_registry
 import tools/agent.{type Caller, type Handle, Caller}
@@ -97,6 +98,14 @@ fn start_harness_with(
   provider: Provider,
   shape: fn(agency.Config) -> agency.Config,
 ) -> Harness {
+  start_harness_over(provider, shape, fn(sess) { sess })
+}
+
+fn start_harness_over(
+  provider: Provider,
+  shape: fn(agency.Config) -> agency.Config,
+  storage_shape: fn(session.Session) -> session.Session,
+) -> Harness {
   let session_clock = counting_clock(1_756_000_000_000, 3)
   let assert Ok(sess) = session.open_memory(session_clock)
     as "the memory session must open"
@@ -130,7 +139,7 @@ fn start_harness_with(
   let base = api.default_options(configuration())
   let assert Ok(runtime) =
     api.open(
-      sess,
+      storage_shape(sess),
       effects.Effects(
         clock: session_clock,
         entropy:,
@@ -1940,5 +1949,43 @@ pub fn a_finished_parent_cannot_admit_more_child_work_test() {
   let assert Ok([peer]) = harness.seam.roster(parent)
     as "refused admission must preserve the original handle"
   assert peer.handle == Some(child.handle)
+  close(harness)
+}
+
+pub fn joining_a_completed_child_preserves_blackboard_read_failure_test() {
+  let harness =
+    start_harness_over(Settles("done"), fn(config) { config }, fn(sess) {
+      let store =
+        storage.Storage(
+          ..sess.store,
+          list_registers: fn(handle, namespace, prefix) {
+            case prefix {
+              Some(key) ->
+                case string.starts_with(key, "agent/") {
+                  True ->
+                    Error(storage.BackendFault("injected child notes failure"))
+                  False -> sess.store.list_registers(handle, namespace, prefix)
+                }
+              None -> sess.store.list_registers(handle, namespace, prefix)
+            }
+          },
+        )
+      session.Session(..sess, store:)
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn before the read failure"
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      json.Object([#("files", json.Array([])), #("count", json.Int(7))]),
+    )
+    as "the child's structured result is actually stored"
+  assert settled(harness, child.handle) as "the child has finished its run"
+  let assert Error(agent.PlaneFailed(reason)) =
+    harness.seam.wait(caller, [child.handle], 200)
+    as "a failed result-note read must not become ResultAbsent"
+  assert string.contains(reason, "injected child notes failure")
   close(harness)
 }

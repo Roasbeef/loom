@@ -1,5 +1,17 @@
 # Next
 
+## Blackboard reads preserve failures, September 21
+
+The follow-up to `b3a8c9f9` removes Agency's conversion of failed note scans
+into empty results. Direct note reads and completed-child joins now propagate
+PlaneFailed through their existing Result interfaces. Code-mode get/list and
+note:// reads therefore distinguish unavailable/corrupt storage from absence.
+Regressions inject real backend read failures after notes have been stored;
+the full client gate passed all 2041 tests, and lint/doc checks passed.
+[The review record](review/code-mode-notes.md) tracks the regression proof. No public
+interface or capability changed.
+
+
 ## Default orchestration and code-mode utilities, September 21
 
 This follow-up to `c14a27b3` on `codemode-notes` makes the server offer both

@@ -48,3 +48,23 @@ and real jailed fixture were rerun. The doc gate has zero errors and
 152 existing warnings. Linux jail enforcement and hosted CI have not been run;
 the local real-program tests use macOS Seatbelt with the platform's reported
 resource and process-lifecycle limitations.
+
+## Follow-up: preserve blackboard read failures
+
+The PR review correctly identified that Agency's shared notes_under helper
+converted api.facts errors into an empty list. This affected direct notes
+and the saved notes attached to child joins. It could turn a storage failure
+into None, an empty list, a virtual not_found, or an absent child result.
+
+The helper now returns Result and maps the runtime error to PlaneFailed.
+Both callers propagate the refusal through their existing Result interfaces.
+No RPC or public type changed. The independent review found no actionable
+issue in the fix and confirmed that all notes routes already preserve refusals.
+
+A regression writes a real note, injects backend and corruption errors in
+storage.list_registers behind the real writer/Agency, then verifies plane_failed
+from notes.get, notes.list, and notes.read. It failed against the original
+implementation and passed with the fix. A second regression saves a completed
+child's structured result and verifies that a failed note scan refuses its join
+instead of reporting ResultAbsent. Both focused tests passed, followed by `make check-client` with all 2041
+tests passing, client lint with zero errors, and documentation checks.

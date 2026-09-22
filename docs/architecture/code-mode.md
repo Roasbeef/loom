@@ -62,7 +62,8 @@ door adds data access, not agent lifecycle authority.
 Each execution allows 256 puts and 64 each of get, list, and virtual reads.
 All three reads use the existing prefix query, with exact reads filtering its
 result by the full key. Stored values and list replies have a 1 MiB encoded-JSON bound;
-oversized results fail explicitly. Legacy strand note calls retain their own
+oversized results fail explicitly. Storage and decoding failures propagate as
+`plane_failed`; absence is reported only after a successful read. Legacy strand note calls retain their own
 quotas. [Protocol 045](../../protocol-change/045-code-mode-notes.md) records the
 contract and the deliberate absence of filesystem mounts and subscriptions.
 

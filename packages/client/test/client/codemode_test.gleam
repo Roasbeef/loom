@@ -39,6 +39,7 @@ import codemode/search as search_router
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
+import core/corruption
 import core/ids.{type OpId}
 import core/json
 import core/message
@@ -55,6 +56,7 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import storage/storage
 import support/addresses
 import support/tool_registry
 import tools/agent
@@ -1178,6 +1180,10 @@ type Live {
 }
 
 fn start_runtime() -> Live {
+  start_runtime_over(fn(sess) { sess })
+}
+
+fn start_runtime_over(shape: fn(session.Session) -> session.Session) -> Live {
   let session_clock = counting_clock(1_756_000_000_000, 3)
   let assert Ok(sess) = session.open_memory(session_clock)
     as "the memory session must open"
@@ -1211,7 +1217,7 @@ fn start_runtime() -> Live {
   let base = api.default_options(configuration)
   let assert Ok(runtime) =
     api.open(
-      sess,
+      shape(sess),
       effects.Effects(
         clock: session_clock,
         entropy:,
@@ -2022,4 +2028,61 @@ pub fn maximum_note_keys_round_trip_through_list_get_and_virtual_reads_test() {
       ]),
     )
     as "read prefixes remain bounded"
+}
+
+pub fn note_reads_propagate_storage_failures_instead_of_absence_test() {
+  let faults = [
+    storage.BackendFault("injected blackboard read failure"),
+    storage.CorruptRow(corruption.report(
+      at: "notes regression",
+      on: "agent/main/saved",
+      expected: "valid JSON",
+      context: "bad stored bytes",
+    )),
+  ]
+  list.each(faults, fn(fault) {
+    list.each(["notes.get", "notes.list", "notes.read"], fn(cap) {
+      let live =
+        start_runtime_over(fn(sess) {
+          let store =
+            storage.Storage(
+              ..sess.store,
+              list_registers: fn(handle, namespace, prefix) {
+                case prefix {
+                  Some(key) if key == "agent/" || key == "agent/main/saved" ->
+                    Error(fault)
+                  _ -> sess.store.list_registers(handle, namespace, prefix)
+                }
+              },
+            )
+          session.Session(..sess, store:)
+        })
+      let config =
+        codemode.serving(
+          config_for(idle_broker()),
+          codemode.WorkspaceOnly,
+          over: live.seam,
+        )
+      assert workspace_note_call(
+          config,
+          "notes.put",
+          msgpack.MapValue([
+            pair("key", msgpack.StringValue("saved")),
+            pair("value", msgpack.IntValue(7)),
+          ]),
+        )
+        == framing.CapOk(msgpack.NilValue)
+      let assert framing.CapErr(code: "plane_failed", message: reason) =
+        workspace_note_call(
+          config,
+          cap,
+          msgpack.MapValue([
+            pair("key", msgpack.StringValue("main/saved")),
+            pair("prefix", msgpack.NilValue),
+          ]),
+        )
+        as "a failed durable read must not look like an absent note"
+      assert reason != ""
+    })
+  })
 }
