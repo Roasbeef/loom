@@ -109,7 +109,7 @@ pub fn accept(
     list.fold(selected, 0, fn(total, pair) {
       total + hooks.estimate_message(pair.1)
     })
-  case list.length(selected) <= max_selected && spent <= max_tokens {
+  case list.drop(selected, max_selected) == [] && spent <= max_tokens {
     True -> Ok(selected)
     False ->
       Error("automatic skills exceed the shared count or token allowance")
@@ -127,7 +127,7 @@ fn names(answer: JsonValue) -> Result(List(String), String) {
   )
   case value {
     json.Array(items:) -> {
-      use Nil <- result.try(case list.length(items) <= max_selected {
+      use Nil <- result.try(case list.drop(items, max_selected) == [] {
         True -> Ok(Nil)
         False -> Error("selection has too many names")
       })
