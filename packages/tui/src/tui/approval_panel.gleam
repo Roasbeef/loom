@@ -8,6 +8,7 @@ import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
 import etui/span
+import etui/style
 import etui/widgets/block
 import etui/widgets/paragraph
 import gleam/int
@@ -56,14 +57,24 @@ type PanelWidth {
   WidePanel
 }
 
+type Availability {
+  Enabled
+  Disabled
+}
+
+type ScrollPosition {
+  FromStart(page: Int)
+  FromEnd(pages: Int)
+}
+
 /// Captured consent, a scroll position and an explicitly selected decision.
 pub opaque type State {
   State(
-    readable: String,
+    presentation: approval.Presentation,
     raw: String,
     context: RequestContext,
     detail_mode: DetailMode,
-    offset: Int,
+    scroll: ScrollPosition,
     review: approval.Review,
     selected: Option(Choice),
   )
@@ -93,11 +104,22 @@ pub fn new(review: approval.Review) -> State {
     Ok(text) -> text
     Error(reason) -> reason
   }
-  let readable = case approval.readable_details(review) {
-    Ok(text) -> text
-    Error(reason) -> "Approval unavailable: " <> reason
+  let presentation = case approval.presentation(review) {
+    Ok(presentation) -> presentation
+    Error(reason) ->
+      approval.Presentation("Approval unavailable", reason, [
+        "Only Deny is available.",
+      ])
   }
-  State(readable, raw, NoRequestContext, Readable, 0, review, None)
+  State(
+    presentation,
+    raw,
+    NoRequestContext,
+    Readable,
+    FromStart(0),
+    review,
+    None,
+  )
 }
 
 /// Adds captured owner context without changing the exact consent record.
@@ -145,29 +167,33 @@ pub fn update(key: keys.Key, state: State) -> Action {
             Readable -> Raw
             Raw -> Readable
           },
-          offset: 0,
+          scroll: FromStart(0),
         ),
       )
-    keys.Right | keys.Tab ->
+    keys.Right | keys.Tab | keys.Down ->
       Continue(State(..state, selected: Some(next(state))))
-    keys.Left -> Continue(State(..state, selected: Some(previous(state))))
-    keys.Up -> Continue(State(..state, offset: int.max(0, state.offset - 1)))
-    keys.Down ->
-      Continue(
-        State(..state, offset: int.min(approval.detail_limit, state.offset + 1)),
-      )
-    keys.PageUp ->
-      Continue(State(..state, offset: int.max(0, state.offset - 10)))
-    keys.PageDown ->
-      Continue(
-        State(
-          ..state,
-          offset: int.min(approval.detail_limit, state.offset + 10),
-        ),
-      )
-    keys.Home -> Continue(State(..state, offset: 0))
-    keys.End -> Continue(State(..state, offset: approval.detail_limit))
+    keys.Left | keys.Up ->
+      Continue(State(..state, selected: Some(previous(state))))
+    keys.PageUp -> Continue(State(..state, scroll: previous_page(state.scroll)))
+    keys.PageDown -> Continue(State(..state, scroll: next_page(state.scroll)))
+    keys.Home -> Continue(State(..state, scroll: FromStart(0)))
+    keys.End -> Continue(State(..state, scroll: FromEnd(0)))
     _ -> Continue(state)
+  }
+}
+
+fn previous_page(position: ScrollPosition) -> ScrollPosition {
+  case position {
+    FromStart(page) -> FromStart(int.max(0, page - 1))
+    FromEnd(pages) -> FromEnd(pages + 1)
+  }
+}
+
+fn next_page(position: ScrollPosition) -> ScrollPosition {
+  case position {
+    FromStart(page) -> FromStart(page + 1)
+    FromEnd(0) -> FromEnd(0)
+    FromEnd(pages) -> FromEnd(pages - 1)
   }
 }
 
@@ -212,14 +238,7 @@ fn session_approvable(review: approval.Review) -> Bool {
   }
 }
 
-fn label(choice: Choice, selected: Option(Choice), text: String) -> String {
-  case selected == Some(choice) {
-    True -> "[ " <> text <> " ]"
-    False -> "  " <> text <> "  "
-  }
-}
-
-/// Renders bounded literal JSON through the existing span and paragraph widgets.
+/// Renders a compact, styled consent sheet over the transcript tail.
 ///
 /// ## Examples
 ///
@@ -232,16 +251,12 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     True -> NarrowPanel
     False -> WidePanel
   }
-  let body = detail_text(state, panel_width)
-  let wrapped =
-    span.wrap(
-      span.text_new(string.split(body, "\n") |> list.map(span.line_plain)),
-      int.max(1, width - 2),
-    ).lines
-  let wanted_height = int.max(10, list.length(wrapped) + 6)
+  let content_width = int.max(1, width - 4)
+  let lines = detail_lines(state, panel_width, content_width)
+  let wanted_height = int.max(12, list.length(lines) + 7)
   let max_height = case screen.size.height < 14 {
     True -> screen.size.height
-    False -> int.max(10, int.min(16, screen.size.height * 3 / 5))
+    False -> int.max(10, int.min(18, screen.size.height * 3 / 5))
   }
   let height = int.max(1, int.min(wanted_height, max_height))
   let area =
@@ -251,9 +266,16 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       width,
       height,
     )
+  let band =
+    geometry.rect_new(
+      screen.position.x,
+      area.position.y,
+      screen.size.width,
+      area.size.height,
+    )
   let title = case panel_width {
-    NarrowPanel -> " Permission · d details · Esc defer "
-    WidePanel -> " Permission request · d/Ctrl+g details · Esc defer "
+    NarrowPanel -> " Permission required · Esc defer "
+    WidePanel -> " Permission required · Esc defers "
   }
 
   // The frame sits at the terminal bottom, leaving every row above it intact.
@@ -266,18 +288,15 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
 
   // Choices remain visible while the exact grant details scroll independently.
   let inside = block.inner(area, frame)
-  let wanted_button_height = case panel_width {
-    NarrowPanel -> 5
-    WidePanel -> 3
-  }
+  let wanted_button_height = 5
   let button_height =
     int.min(wanted_button_height, int.max(1, inside.size.height - 1))
   let detail_height = int.max(1, inside.size.height - button_height)
   let detail =
     geometry.rect_new(
-      inside.position.x,
+      inside.position.x + 1,
       inside.position.y,
-      inside.size.width,
+      int.max(1, inside.size.width - 2),
       detail_height,
     )
   let buttons =
@@ -287,65 +306,174 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       inside.size.width,
       int.max(0, inside.size.height - detail_height),
     )
-  let session_note = case approval.rememberable(state.review) {
-    Ok(_) ->
-      "Session access survives restart; exactly these grants will be remembered."
-    Error(reason) -> "Session approval unavailable: " <> reason
+  let max_offset = int.max(0, list.length(lines) - detail.size.height)
+  let offset = case state.scroll {
+    FromStart(page) -> int.min(max_offset, page * detail.size.height)
+    FromEnd(pages) -> int.max(0, max_offset - pages * detail.size.height)
   }
   let once = case approvable(state.review) {
-    True -> label(AllowOnce, state.selected, "Allow once")
-    False -> "  Allow once (unavailable)  "
+    True -> Enabled
+    False -> Disabled
   }
   let session = case session_approvable(state.review) {
-    True -> label(AllowSession, state.selected, "Allow for session")
-    False -> "  Allow for session (unavailable)  "
+    True -> Enabled
+    False -> Disabled
   }
-  let deny = label(Deny, state.selected, "Deny")
-  let choice_lines = case panel_width {
-    NarrowPanel -> [once, session, deny]
-    WidePanel -> [once <> session <> deny]
+  let choice_lines = [
+    choice_line(AllowOnce, "Allow once", once, state, inside.size.width),
+    choice_line(
+      AllowSession,
+      "Allow for session",
+      session,
+      state,
+      inside.size.width,
+    ),
+    choice_line(Deny, "Deny", Enabled, state, inside.size.width),
+  ]
+  let more = case offset, max_offset {
+    0, 0 -> ""
+    offset, max if offset < max -> "PgDn more request details"
+    _, _ -> "PgUp earlier request details"
   }
   let controls = case panel_width {
-    NarrowPanel -> "Tab choose · Enter · ↑↓ scroll"
-    WidePanel -> "←/→ or Tab choose · Enter confirm · ↑/↓ scroll"
+    NarrowPanel -> "↑↓ choose · Enter · d raw"
+    WidePanel -> "↑↓ choose · Enter confirm · d raw · Esc defer"
   }
 
   // Wrap only the bounded literal, then select its viewport. No markdown parser
   // can reinterpret a grant path or turn the preview into a link or control.
-  let lines = wrapped
-  let offset =
-    int.min(state.offset, int.max(0, list.length(lines) - detail.size.height))
   buf
-  |> buffer.clear(area)
+  |> buffer.clear(band)
   |> block.render(area, frame)
   |> paragraph.render_styled(detail, list.drop(lines, offset))
   |> paragraph.render_styled(
     buttons,
-    list.append(choice_lines |> list.map(span.line_plain), [
-      span.line_plain(session_note),
-      span.line_plain(controls),
+    list.append(choice_lines, [
+      span.line_new([span.span_styled(more, theme.overlay_signal())]),
+      span.line_new([span.span_styled(controls, theme.overlay_quiet())]),
     ]),
   )
 }
 
-fn detail_text(state: State, panel_width: PanelWidth) -> String {
-  let detail = case state.detail_mode {
-    Raw -> "Raw captured request:\n" <> state.raw
-    Readable -> state.readable
+fn detail_lines(
+  state: State,
+  panel_width: PanelWidth,
+  width: Int,
+) -> List(span.Line) {
+  let context = case state.context, panel_width, state.detail_mode {
+    NoRequestContext, _, _ -> []
+    RequestContextUnavailable(reason), _, _ ->
+      styled_lines(reason, theme.overlay_quiet(), width)
+    CapturedRequest(owner, operation), _, Raw ->
+      styled_lines(
+        "Requested by " <> owner <> " · operation " <> operation,
+        theme.overlay_current(),
+        width,
+      )
+    CapturedRequest(owner, _), NarrowPanel, Readable ->
+      styled_lines("From " <> owner, theme.overlay_current(), width)
+    CapturedRequest(owner, _), WidePanel, Readable ->
+      styled_lines("Requested by " <> owner, theme.overlay_current(), width)
   }
-  let context = case state.context, state.detail_mode {
-    NoRequestContext, _ -> ""
-    RequestContextUnavailable(reason), _ -> reason
-    CapturedRequest(owner, operation), Raw ->
-      "Requested by " <> owner <> " · operation " <> operation
-    CapturedRequest(owner, _), Readable ->
-      case panel_width {
-        NarrowPanel -> "From " <> owner
-        WidePanel -> "Requested by " <> owner
+  case state.detail_mode {
+    Raw ->
+      list.flatten([
+        context,
+        [
+          span.line_new([
+            span.span_styled("Raw captured request", theme.overlay_signal()),
+          ]),
+        ],
+        styled_lines(state.raw, theme.overlay_plain(), width),
+      ])
+    Readable -> {
+      let approval.Presentation(question, action, authority) =
+        state.presentation
+      let session = case approval.rememberable(state.review) {
+        Ok(_) ->
+          styled_lines(
+            "Session approval persists across restart.",
+            theme.overlay_quiet(),
+            width,
+          )
+        Error(reason) ->
+          styled_lines(
+            "Session option unavailable: " <> reason,
+            theme.overlay_quiet(),
+            width,
+          )
       }
+      list.flatten([
+        styled_lines(question, theme.overlay_signal(), width),
+        context,
+        [span.line_new([span.span_styled("Action", theme.overlay_quiet())])],
+        card_lines(
+          "  ▏ " <> action,
+          style.new(theme.paper, theme.raised, style.none()),
+          width,
+        ),
+        [
+          span.line_new([
+            span.span_styled("Access requested", theme.overlay_quiet()),
+          ]),
+        ],
+        authority
+          |> list.map(fn(line) {
+            styled_lines("  " <> line, theme.overlay_plain(), width)
+          })
+          |> list.flatten,
+        session,
+      ])
+    }
   }
-  case context {
-    "" -> detail
-    context -> context <> "\n" <> detail
+}
+
+fn styled_lines(text: String, appearance: style.Style, width: Int) {
+  text
+  |> string.split("\n")
+  |> list.map(fn(line) { span.line_new([span.span_styled(line, appearance)]) })
+  |> span.text_new
+  |> span.wrap(width)
+  |> fn(wrapped) { wrapped.lines }
+}
+
+fn card_lines(text: String, appearance: style.Style, width: Int) {
+  text
+  |> styled_lines(appearance, width)
+  |> list.map(fn(line) {
+    let padding = int.max(0, width - span.line_width(line))
+    span.Line(
+      ..line,
+      spans: list.append(line.spans, [
+        span.span_styled(string.repeat(" ", padding), appearance),
+      ]),
+    )
+  })
+}
+
+fn choice_line(
+  choice: Choice,
+  label: String,
+  availability: Availability,
+  state: State,
+  width: Int,
+) -> span.Line {
+  let selected = state.selected == Some(choice)
+  let label = case availability {
+    Enabled -> label
+    Disabled -> label <> " (unavailable)"
   }
+  let marker = case selected {
+    True -> "› "
+    False -> "  "
+  }
+  let content = marker <> label
+  let content =
+    content <> string.repeat(" ", int.max(0, width - string.length(content)))
+  let appearance = case selected, availability {
+    True, Enabled -> style.new(theme.paper, theme.raised, style.bold())
+    True, Disabled | False, Disabled -> theme.overlay_quiet()
+    False, Enabled -> theme.overlay_plain()
+  }
+  span.line_new([span.span_styled(content, appearance)])
 }

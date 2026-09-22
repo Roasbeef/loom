@@ -520,12 +520,35 @@ fn agent_cells(agent: Agent, n: Int) -> List(json.JsonValue) {
           #(
             "preview",
             json.String(
-              "Write docs/review/native-layout.md with the native layout findings.\nNo other files are included in this request.",
+              json.to_string(
+                json.Object([
+                  #("path", json.String("docs/review/native-layout.md")),
+                  #(
+                    "content",
+                    json.String(
+                      "Native layout checks passed.\nApproval keeps the transcript visible.\n",
+                    ),
+                  ),
+                ]),
+              ),
             ),
           ),
           #("action", json.String("fixture-action")),
           #("origin", json.Null),
-          #("denial", json.Object([#("wanted", json.Array([]))])),
+          #(
+            "denial",
+            json.Object([
+              #(
+                "wanted",
+                json.Array([
+                  json.Object([
+                    #("grant", json.String("writable_root")),
+                    #("path", json.String("docs/review/native-layout.md")),
+                  ]),
+                ]),
+              ),
+            ]),
+          ),
           #(
             "scope",
             json.Object([
@@ -590,6 +613,12 @@ fn agent_entries(
             "fs_write" ->
               json.Object([
                 #("path", json.String("docs/review/native-layout.md")),
+                #(
+                  "content",
+                  json.String(
+                    "Native layout checks passed.\nApproval keeps the transcript visible.\n",
+                  ),
+                ),
               ])
             _ ->
               json.Object([#("path", json.String("packages/tui/src/tui.gleam"))])

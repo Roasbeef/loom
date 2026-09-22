@@ -170,7 +170,7 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
   // Readable mode keeps the action, exact grant path and every control
   // visible as inert ASCII before the operator chooses a decision.
   assert_shows(rows, [
-    "Tool: \"\\u001b\"",
+    "Allow \"\\u001b\" to proceed?",
     "preview-sentinel",
     "path-sentinel",
     "\\u009b",

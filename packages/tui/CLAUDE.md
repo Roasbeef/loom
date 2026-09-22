@@ -74,11 +74,17 @@ provider-free native fixture through the capture decoder and the shipped loop.
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
-The compact dialog is anchored to the bottom of the terminal and bounds its
-height by both its content and the available screen. Its readable view names the
-captured action and renders every exact requested grant; `d` or Ctrl+g switches
-to the complete escaped raw request. Grant details scroll independently while
-the choices remain visible.
+The compact dialog is anchored to the bottom of the terminal, capped at sixteen
+rows on an ordinary screen, and bounded by the available height on smaller ones.
+Its readable view asks a tool-specific question, names the requester, shows the
+captured action on a raised background, and lists the exact requested authority.
+It also states whether session persistence is available. A known `fs_write`
+shows `File` and `Content`; actual content newlines become preview rows, while
+each row escapes control bytes, bidi marks, and literal backslash sequences
+independently. Unknown fields and complete `fs_edit` payloads retain escaped JSON
+fallback instead of dropping fields. `d` or Ctrl+g switches to the complete
+escaped raw request, including the exact owner and operation. PgUp, PgDn, Home,
+and End scroll request detail independently while the choices remain visible.
 
 The dialog captures the record's sequence, action and grants. Its owner label
 comes from the exact escalation ID and sequence in the captured register; absent
@@ -87,15 +93,17 @@ Metadata refreshes cannot replace that question before a decision. The terminal
 tracks presented questions by ID and sequence, so dismissal does not reopen the
 same question and a reopened request with a new sequence is offered again.
 
-No action is selected on opening. Left/right or Tab explicitly selects Allow
-once, Allow for session, or Deny; Enter confirms and Escape defers. A choice the
-captured request cannot encode stays visible as unavailable and navigation skips
-it. Denial remains available. Session approval sends `approve` with `scope:
-"session"` and is available only for complete filesystem or full-network grant
-sets. The panel never widens, substitutes, or invents authority: a decision
-echoes the exact captured action, grants and sequence. Legacy `/approve` retains
-once-only behavior. The server commits the session authority and exact decision
-atomically. See protocol 041.
+The three choices remain vertical at every width, including the 40×12 fallback.
+No action is selected on opening. Up/down, left/right, or Tab explicitly selects
+Allow once, Allow for session, or Deny; Enter confirms and Escape defers. A
+choice the captured request cannot encode stays visible as unavailable and
+navigation skips it. Denial remains available. Session approval sends `approve`
+with `scope: "session"` and is available only for complete filesystem or
+full-network grant sets. The styled question, preview, and focus treatment do
+not change consent: the panel never widens, substitutes, or invents authority,
+and a decision echoes the exact captured action, grants and sequence. Legacy
+`/approve` retains once-only behavior. The server commits the session authority
+and exact decision atomically. See protocol 041.
 
 
 ## Session directory access
@@ -548,10 +556,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 - `tui/approval.Review` binds the displayed action, requested grants and
   register seq. Exact resolution lookups have their own channel lane; sparse
   lookup metadata cannot replace conversation history or configuration.
-  `tui/approval_panel` displays the exact captured action, grants, tool and
-  sequence as escaped literal JSON in a scrollable panel. Its 16 KiB displayed
-  detail limit is a presentation bound: incomplete detail refuses approval,
-  while denial remains available under the captured sequence.
+  `tui/approval_panel` presents a typed question, action preview and exact grant
+  list, with the complete captured action, grants, tool and sequence available
+  as escaped literal JSON. Its 16 KiB displayed-detail limit is a presentation
+  bound: incomplete detail refuses approval, while denial remains available
+  under the captured sequence.
   `tui/sessions` and workspace-record bootstrap remain historical host-test
   seams, not the live default selector.
 - `host/bootstrap` is called directly, with no shim between. Shared

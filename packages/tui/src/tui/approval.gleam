@@ -71,6 +71,18 @@ pub type Review {
   )
 }
 
+/// Human-readable fields for the compact consent surface.
+pub type Presentation {
+  Presentation(
+    /// The question the operator is deciding.
+    question: String,
+    /// Complete safe action preview, with no surrounding display quotes.
+    action: String,
+    /// Complete requested authority, one literal line per grant.
+    authority: List(String),
+  )
+}
+
 /// Decodes only escalation cells from a completed metadata cut.
 ///
 /// ## Examples
@@ -373,15 +385,32 @@ fn escaped_json(encoded: String) -> String {
 /// // approval.readable_details(captured_request)
 /// ```
 pub fn readable_details(record: Review) -> Result(String, String) {
+  use presented <- result.try(presentation(record))
+  Ok(
+    [
+      presented.question,
+      "Action",
+      presented.action,
+      "Access requested",
+      ..presented.authority
+    ]
+    |> string.join("\n"),
+  )
+}
+
+/// Projects one complete request into safe fields for the compact panel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.presentation(captured_request)
+/// ```
+pub fn presentation(record: Review) -> Result(Presentation, String) {
   use _ <- result.try(details(record))
   use #(_, grants) <- result.try(case record.permission {
     Exact(action, grants) -> Ok(#(action, grants))
     Unavailable(reason) -> Error(reason)
   })
-  let tool = case record.tool {
-    "" -> "Unavailable"
-    tool -> literal_text(tool)
-  }
   let preview = case record.preview {
     "" -> "No action preview was captured."
     preview -> readable_preview(record.tool, preview)
@@ -390,13 +419,18 @@ pub fn readable_details(record: Review) -> Result(String, String) {
     [] -> ["- No additional grants requested."]
     grants -> list.map(grants, readable_grant)
   }
-  Ok(
-    [
-      "Requested authority:",
-      ..list.append(authority, ["Tool: " <> tool, "Action: " <> preview])
-    ]
-    |> string.join("\n"),
-  )
+  Ok(Presentation(question(record.tool), preview, authority))
+}
+
+fn question(tool: String) -> String {
+  case tool {
+    "bash" | "shell" -> "Allow this command?"
+    "fs_read" -> "Allow this file read?"
+    "fs_write" -> "Allow this file write?"
+    "fs_edit" -> "Allow this file edit?"
+    "" -> "Allow this request?"
+    tool -> "Allow " <> literal_text(tool) <> " to proceed?"
+  }
 }
 
 fn readable_preview(tool: String, preview: String) -> String {
@@ -422,6 +456,17 @@ fn readable_preview(tool: String, preview: String) -> String {
           },
         )
       }
+      "fs_write" -> {
+        use _ <- result.try(only_keys(fields, ["path", "content"]))
+        use path <- result.try(text(fields, "path"))
+        use content <- result.try(text(fields, "content"))
+        Ok(
+          "File: "
+          <> literal_body(path)
+          <> "\nContent:\n"
+          <> readable_file_content(content),
+        )
+      }
       "bash" | "shell" -> {
         use _ <- result.try(only_keys(fields, ["command", "timeout_ms"]))
         use command <- result.try(text(fields, "command"))
@@ -439,7 +484,31 @@ fn readable_preview(tool: String, preview: String) -> String {
       _ -> Error("no readable preview")
     }
   }
-  result.lazy_unwrap(projected, fn() { literal_text(preview) })
+  result.lazy_unwrap(projected, fn() { safe_preview_fallback(preview) })
+}
+
+fn safe_preview_fallback(preview: String) -> String {
+  case json.parse(preview) {
+    Ok(value) -> value |> json.to_string |> escaped_json
+    Error(_) -> literal_body(preview)
+  }
+}
+
+fn literal_body(text: String) -> String {
+  text
+  |> literal_text
+  |> string.drop_start(1)
+  |> string.drop_end(1)
+}
+
+// Newlines owned by the file become rows in the preview. Each row is escaped
+// independently, so a literal `\n`, terminal control or bidi mark remains
+// visibly distinct from that structure, including empty and trailing rows.
+fn readable_file_content(content: String) -> String {
+  content
+  |> string.split("\n")
+  |> list.map(literal_body)
+  |> string.join("\n")
 }
 
 fn only_keys(fields, allowed: List(String)) -> Result(Nil, String) {
