@@ -15,6 +15,7 @@ import core/register
 import etui/app
 import etui/backend
 import etui/backend/default
+import etui/widgets/textarea
 import gleam/list
 import gleam/option.{None, Some}
 import machine/codec
@@ -29,6 +30,7 @@ import tui/goal_view
 import tui/internal/ffi_terminal
 import tui/notes_view
 import tui/protocol
+import tui/queue_editor
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -125,7 +127,7 @@ pub fn run(palette: String) -> Nil {
         ]),
       ),
       #("peers", json.Array([])),
-      #("pending_inputs", json.Array([])),
+      #("pending_inputs", json.Array(fixture_queue())),
     ])
   let captured =
     snapshot.Captured(
@@ -167,6 +169,7 @@ pub fn run(palette: String) -> Nil {
       note_board: Some(fixture_notes()),
       note_selected: Some("plan"),
       goal: Some(fixture_goal()),
+      queue_editor: fixture_queue_editor(),
       nudges: Some(advisor_pending.Board(
         "main",
         1,
@@ -186,6 +189,86 @@ pub fn run(palette: String) -> Nil {
       tui.terminal_poll_timeout,
     )
   Nil
+}
+
+fn fixture_queue() -> List(json.JsonValue) {
+  [
+    fixture_pending(
+      "fixture-steer",
+      "steer",
+      "Review the failed compact-layout assertion.\nConfirm the selected identity.\nCheck the steer badge.\nCheck the edit badge.\nInspect the captured excerpt label.\nPage to the next block.\nKeep the list selection stable.\nConfirm the eighth row.\nConfirm the ninth row.\nConfirm the tenth row.\nConfirm the eleventh row.\nNative paging tail reached.",
+      11,
+      snapshot_view.Editable,
+    ),
+    fixture_pending(
+      "fixture-queued",
+      "queue",
+      "Prepare the native layout report with the wide and compact evidence attached.",
+      12,
+      snapshot_view.Editable,
+    ),
+    fixture_pending(
+      "fixture-read-only",
+      "queue",
+      "This captured input belongs to an attachment without replacement authority.",
+      13,
+      snapshot_view.ReadOnly,
+    ),
+  ]
+}
+
+fn fixture_pending(
+  id,
+  kind,
+  text,
+  revision,
+  editing: snapshot_view.Editing,
+) -> json.JsonValue {
+  json.Object([
+    #("id", json.String(id)),
+    #("strand", json.String("main")),
+    #("kind", json.String(kind)),
+    #("text", json.String(text)),
+    #("revision", json.Int(revision)),
+    #(
+      "editable",
+      json.Bool(case editing {
+        snapshot_view.Editable -> True
+        snapshot_view.ReadOnly -> False
+      }),
+    ),
+  ])
+}
+
+fn fixture_queue_editor() -> queue_editor.State {
+  let document =
+    queue_editor.Document(
+      "fixture-queued",
+      "main",
+      12,
+      queue_editor.Queue,
+      "Prepare the native layout report with the wide and compact evidence attached.\n\nKeep this authoritative original separate from the local unsaved line.",
+      1,
+    )
+  queue_editor.State(
+    ..queue_editor.new(),
+    message: "Retained unsaved draft · illustrative fixture",
+    draft: Some(queue_editor.Draft(
+      document,
+      "native-fixture:fixture:fixture:review",
+      json.to_string(
+        json.Array([
+          json.String("native-fixture"),
+          json.String("fixture"),
+          json.String("fixture"),
+        ]),
+      ),
+      textarea.state_from_string(
+        document.text <> "\nLocal unsaved draft: add the compact queue capture.",
+      ),
+      queue_editor.Editable,
+    )),
+  )
 }
 
 fn fixture_goal() -> goal_view.Board {

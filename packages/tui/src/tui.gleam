@@ -80,6 +80,7 @@ import tui/notes_view
 import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
+import tui/queue_panel
 import tui/recording
 import tui/reviewer_status
 import tui/selection
@@ -12894,6 +12895,7 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
         queue_editor: queue_editor.State(
           ..state,
           selected: int.max(0, state.selected - 1),
+          preview_scroll: 0,
         ),
       )
     keys.Down, queue_editor.Inspector ->
@@ -12905,8 +12907,39 @@ fn update_queue_key(key: keys.Key, model: Model) -> Model {
             int.max(0, list.length(queue_rows(model)) - 1),
             state.selected + 1,
           ),
+          preview_scroll: 0,
         ),
       )
+    keys.PageUp, queue_editor.Inspector -> {
+      let area = queue_content_area(model_screen(model))
+      let maximum =
+        queue_panel.max_scroll(queue_rows(model), state.selected, area)
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          preview_scroll: int.max(
+            0,
+            int.min(state.preview_scroll, maximum) - queue_panel.page_rows(area),
+          ),
+        ),
+      )
+    }
+    keys.PageDown, queue_editor.Inspector -> {
+      let area = queue_content_area(model_screen(model))
+      let maximum =
+        queue_panel.max_scroll(queue_rows(model), state.selected, area)
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          preview_scroll: int.min(
+            maximum,
+            int.min(state.preview_scroll, maximum) + queue_panel.page_rows(area),
+          ),
+        ),
+      )
+    }
     keys.Enter, queue_editor.Inspector -> select_queue_input(model)
     keys.Ctrl("r"), queue_editor.Editor -> reconcile_queue_draft(model)
     keys.Ctrl("s"), queue_editor.Editor -> save_queue_draft(model)
@@ -13130,43 +13163,8 @@ fn render_queue_surface(buf, cursor, screen, model: Model) {
     queue_editor.Closed -> #(buf, cursor)
     queue_editor.Inspector -> {
       let rows = queue_rows(model)
-      let labels =
-        list.index_map(rows, fn(row, index) {
-          let prefix = case index == state.selected {
-            True -> "> "
-            False -> "  "
-          }
-          let access = case row.editing {
-            snapshot_view.Editable -> "editable"
-            snapshot_view.ReadOnly -> "read-only"
-          }
-          span.line_plain(
-            prefix
-            <> case row.kind {
-              snapshot_view.Queue -> "queue "
-              snapshot_view.Steer -> "steer "
-            }
-            <> text_hygiene.single_line(row.id)
-            <> " · "
-            <> access
-            <> " · "
-            <> text_hygiene.single_line(row.text),
-          )
-        })
-      let labels = case labels {
-        [] -> [
-          span.line_plain("No queued inputs in the current captured view"),
-        ]
-        _ -> labels
-      }
       let inner = panel_inner(screen)
-      let body =
-        geometry.rect_new(
-          inner.position.x,
-          inner.position.y + 2,
-          inner.size.width,
-          int.max(0, inner.size.height - 2),
-        )
+      let body = queue_content_area(screen)
       let rendered =
         buffer.buffer_new(screen)
         |> render_panel_border(
@@ -13174,15 +13172,43 @@ fn render_queue_surface(buf, cursor, screen, model: Model) {
           " queued inputs · " <> model.active_strand <> " ",
           theme.signal,
         )
-        |> paragraph.render_styled(inner, [span.line_plain(state.message)])
+        |> paragraph.render_styled(inner, [
+          span.line_new([span.span_styled(state.message, theme.overlay_quiet())]),
+          span.line_new([
+            span.span_styled(
+              "↑/↓ select · Enter edit · Esc back",
+              theme.overlay_signal(),
+            ),
+          ]),
+          span.line_new([
+            span.span_styled(
+              "PgUp/PgDn scroll captured excerpt",
+              theme.overlay_signal(),
+            ),
+          ]),
+        ])
         |> paragraph.render_styled(
           body,
-          list.drop(labels, int.max(0, state.selected - body.size.height + 1)),
+          queue_panel.lines(rows, state.selected, state.preview_scroll, body),
         )
       #(rendered, Error(Nil))
     }
     queue_editor.Editor -> render_queue_draft(buf, screen, state)
   }
+}
+
+fn model_screen(model: Model) -> geometry.Rect {
+  geometry.rect_new(0, 0, model.width, model.height)
+}
+
+fn queue_content_area(screen: geometry.Rect) -> geometry.Rect {
+  let inner = panel_inner(screen)
+  geometry.rect_new(
+    inner.position.x,
+    inner.position.y + 3,
+    inner.size.width,
+    int.max(0, inner.size.height - 3),
+  )
 }
 
 fn render_queue_draft(buf, screen, state: queue_editor.State) {
@@ -13193,10 +13219,19 @@ fn render_queue_draft(buf, screen, state: queue_editor.State) {
       let area =
         geometry.rect_new(
           inner.position.x,
-          inner.position.y + 2,
+          inner.position.y + 3,
           inner.size.width,
-          int.max(0, inner.size.height - 3),
+          int.max(0, inner.size.height - 4),
         )
+      let priority = case draft.document.kind {
+        queue_editor.Queue -> "queue"
+        queue_editor.Steer -> "steer"
+      }
+      let delivery = case draft.delivery {
+        queue_editor.Editable -> "editable revision"
+        queue_editor.Saving -> "save awaiting acknowledgement"
+        queue_editor.Unknown -> "save outcome unknown"
+      }
 
       // Presentation removes terminal controls while the full source remains
       // unchanged in the draft. Saving never round-trips displayed excerpts.
@@ -13218,11 +13253,21 @@ fn render_queue_draft(buf, screen, state: queue_editor.State) {
           theme.signal,
         )
         |> paragraph.render_styled(inner, [
-          span.line_plain(state.message),
           span.line_plain(
-            int.to_string(draft.document.attachment_count)
+            priority
+            <> " · "
+            <> delivery
+            <> " · "
+            <> int.to_string(draft.document.attachment_count)
             <> " image attachments retained",
           ),
+          span.line_plain(state.message),
+          span.line_new([
+            span.span_styled(
+              "Ctrl+s save · Ctrl+r reconcile · Esc back · Enter newline",
+              theme.overlay_signal(),
+            ),
+          ]),
         ])
         |> text_area.render(
           area,
@@ -13464,9 +13509,29 @@ fn retain_queue_selection(
       |> result.unwrap(0)
     Error(Nil) -> 0
   }
+  let preview_scroll = case old {
+    Ok(row) ->
+      case list.first(list.drop(rows, selected)) {
+        Ok(current) if current.id == row.id ->
+          int.min(
+            model.queue_editor.preview_scroll,
+            queue_panel.max_scroll(
+              rows,
+              selected,
+              queue_content_area(model_screen(model)),
+            ),
+          )
+        Ok(_) | Error(Nil) -> 0
+      }
+    Error(Nil) -> 0
+  }
   Model(
     ..model,
-    queue_editor: queue_editor.State(..model.queue_editor, selected:),
+    queue_editor: queue_editor.State(
+      ..model.queue_editor,
+      selected:,
+      preview_scroll:,
+    ),
   )
 }
 
