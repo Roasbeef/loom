@@ -139,6 +139,9 @@
 ////                      value {"inject": str | null}
 //// context              args {"op_id": str, "messages": [message, …]}
 ////                      value {"messages": [message, …]}
+//// select_skills        args {"op_id": str, "messages": [message, …],
+////                            "candidates": [{"name": str, "description": str, "excerpt": str}]}
+////                      value {"skills": [str, …]}
 //// tool_call            args {"op_id": str, "tool": str,
 ////                            "arguments": json, "source_index": int}
 ////                      value {"verdict": "allow"}
@@ -216,6 +219,7 @@
 //// discarded whole.
 
 import client/extension/manifest
+import client/extension/skill_selection
 import client/notes
 import core/clock.{type Clock}
 import core/codec
@@ -229,6 +233,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import host/skill
 import runtime/effects.{type CompactionCue, type Effects}
 import runtime/hooks as runtime_hooks
 import session/session.{type Session}
@@ -763,6 +768,41 @@ pub fn fold_context(
     })
     |> result.try(fn(produced) { within_cap(carried, produced) })
   keep(bus, extension, manifest.context_event, carried, asked)
+}
+
+/// Collects validated skill selections after context transforms. Every extension
+/// sees the same projection; neither another selector's instructions nor its
+/// names become relevance evidence. One shared budget bounds all selectors.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.select_skills(bus, operation, [], messages) == messages
+/// ```
+pub fn select_skills(
+  bus: Bus,
+  operation: OpId,
+  catalogue: List(skill.Skill),
+  messages: List(AgentMessage),
+) -> List(AgentMessage) {
+  let eligible = skill_selection.eligible(catalogue)
+  case eligible {
+    [] -> messages
+    [_, ..] -> {
+      let args = skill_selection.arguments(operation, messages, eligible)
+      let selected =
+        list.fold(bus.chain, [], fn(carried, extension) {
+          let asked =
+            ask(extension, manifest.select_skills_event, args)
+            |> result.try(fn(answer) {
+              skill_selection.accept(eligible, carried, extension.name, answer)
+              |> result.map_error(Refused)
+            })
+          keep(bus, extension, manifest.select_skills_event, carried, asked)
+        })
+      list.append(messages, list.map(selected, fn(pair) { pair.1 }))
+    }
+  }
 }
 
 /// Folds every extension's `tool_result` hook over a settled reply,
@@ -1664,4 +1704,27 @@ fn ran(bus: Bus, outcome: effects.ToolOutcome) -> effects.ToolOutcome {
 
     effects.ToolFailed(..) -> outcome
   }
+}
+
+/// Adds catalogue-backed selection to an already assembled hook surface.
+/// Captures only the eligible catalogue, never the full effects record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.with_skills(effects, bus, skill.entries(catalogue))
+/// ```
+pub fn with_skills(
+  effects: Effects,
+  bus: Bus,
+  catalogue: List(skill.Skill),
+) -> Effects {
+  let context = effects.hooks.context
+  let catalogue = skill_selection.eligible(catalogue)
+  effects.Effects(
+    ..effects,
+    hooks: effects.Hooks(..effects.hooks, context: fn(operation, messages) {
+      select_skills(bus, operation, catalogue, context(operation, messages))
+    }),
+  )
 }

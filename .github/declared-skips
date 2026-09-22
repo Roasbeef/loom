@@ -35,3 +35,6 @@
 # the MCP exchange or shutdown runs. This declaration stops matching when the
 # fixture gains a Darwin process observation and the census demands removal.
 declared|darwin|no /proc on this host, so a stopped server's death cannot be observed by pid|Darwin has no procfs, so the prerequisite skips the whole real-MCP fixture before setup
+
+# The external selector repository runs this fixture as a mandatory CI check.
+declared|darwin|SKIP skill selector: set LOOM_SKILL_SELECTOR_SOURCE|The independent extension source is not part of the Loom checkout; loom-skill-selector CI supplies it and requires the real jailed provider-path test.

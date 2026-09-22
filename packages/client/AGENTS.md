@@ -4022,3 +4022,14 @@ captures the limits in its handle and accounting state, and the control hello
 reports those captured values. Count and byte refusals name the exhausted
 setting before parser activation. Existing transfer, cancellation and DOWN
 accounting remain the owners of capacity release.
+
+## Catalogue-backed automatic skills
+
+Protocol 045 adds `select_skills` and hook-only installs. The SDK issues opaque
+`ext/hook.SkillCandidate` previews. The client sends at most 64 eligible skills
+and validates returned names against that same snapshot; `skill_selection`
+materialises full, attributed instructions after context transforms. All
+selectors share three distinct skills and 8,000 estimated tokens. Explicit-only
+skills are neither advertised nor accepted. Repeated projections rebuild the
+instructions without writing them to the conversation. Ranking and HTTP remain
+extension policy; no provider dependency or filesystem capability is added.

@@ -251,3 +251,23 @@ fn rerendered(message: Dynamic) -> json.Json {
     as "a message the harness sent is a JSON document"
   kept
 }
+
+pub fn skill_selections_return_only_issued_names_test() {
+  let selector =
+    hook.OnSelectSkills(fn(context) {
+      assert context.op_id == "op"
+      let assert [candidate] = context.candidates as "one issued preview"
+      assert hook.skill_name(candidate) == "review"
+      assert hook.skill_description(candidate) == "Review code"
+      assert hook.skill_excerpt(candidate) == "Check invariants"
+      [candidate]
+    })
+  assert hook.event(selector) == "select_skills"
+  assert hook.answer(
+      selector,
+      "{\"op_id\":\"op\",\"messages\":[],\"candidates\":[{\"name\":\"review\",\"description\":\"Review code\",\"excerpt\":\"Check invariants\"}]}",
+    )
+    == Ok("{\"skills\":[\"review\"]}")
+  assert hook.answer(selector, "{\"op_id\":\"op\",\"messages\":[]}")
+    == Error("invalid skill candidates")
+}

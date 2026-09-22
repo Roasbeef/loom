@@ -192,6 +192,57 @@ pub type Context {
   )
 }
 
+/// A catalogue preview issued by the harness. Only issued candidates can be
+/// returned by a typed selector; the harness still validates the wire answer.
+pub opaque type SkillCandidate {
+  SkillCandidate(name: String, description: String, excerpt: String)
+}
+
+/// The current projection and the bounded, automatically invocable catalogue.
+pub type SkillContext {
+  SkillContext(
+    /// The request's operation identity.
+    op_id: String,
+    /// The same durable JSON messages delivered to a context hook.
+    messages: List(Dynamic),
+    /// At most 64 eligible previews, in catalogue order.
+    candidates: List(SkillCandidate),
+  )
+}
+
+/// Returns the candidate's catalogue name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let names = list.map(context.candidates, skill_name)
+/// ```
+pub fn skill_name(candidate: SkillCandidate) -> String {
+  candidate.name
+}
+
+/// Returns the candidate's declared relevance description.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let descriptions = list.map(context.candidates, skill_description)
+/// ```
+pub fn skill_description(candidate: SkillCandidate) -> String {
+  candidate.description
+}
+
+/// Returns a bounded preview of the instructions, never an executable action.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let previews = list.map(context.candidates, skill_excerpt)
+/// ```
+pub fn skill_excerpt(candidate: SkillCandidate) -> String {
+  candidate.excerpt
+}
+
 /// The typed behaviour behind one `[[hook]]` entry.
 ///
 /// One variant per event, so an entry that answers the wrong event is a
@@ -217,6 +268,11 @@ pub type Hook {
   /// not come for has to re-render it: `rendered` does that, totally,
   /// and is the intended first line of an implementation.
   OnContext(run: fn(Context) -> List(Json))
+
+  /// Select up to three catalogue skills before the provider request. Returning
+  /// candidates asks the harness to load their instructions, never execute code
+  /// or grant permissions. An empty list declines automatic activation.
+  OnSelectSkills(run: fn(SkillContext) -> List(SkillCandidate))
 
   /// `tool_call`: a call was planned, before dispatch.
   OnToolCall(run: fn(Call) -> Verdict)
@@ -262,6 +318,7 @@ pub fn event(hook: Hook) -> String {
     OnSessionStart(..) -> "session_start"
     OnBeforeAgentStart(..) -> "before_agent_start"
     OnContext(..) -> "context"
+    OnSelectSkills(..) -> "select_skills"
     OnToolCall(..) -> "tool_call"
     OnToolResult(..) -> "tool_result"
     OnAgentEnd(..) -> "agent_end"
@@ -306,6 +363,22 @@ pub fn answer(hook: Hook, args: String) -> Result(String, String) {
       Ok(
         json.to_string(
           json.object([#("messages", json.preprocessed_array(run(context)))]),
+        ),
+      )
+    }
+
+    OnSelectSkills(run:) -> {
+      use context <- result.try(skill_context_of(document))
+      Ok(
+        json.to_string(
+          json.object([
+            #(
+              "skills",
+              json.array(run(context), fn(candidate) {
+                json.string(skill_name(candidate))
+              }),
+            ),
+          ]),
         ),
       )
     }
@@ -562,4 +635,19 @@ fn field_list(
 ) -> Result(List(Dynamic), String) {
   decode.run(document, decode.at([name], decode.list(decode.dynamic)))
   |> result.replace_error("the hook arguments have no array " <> name)
+}
+
+fn skill_context_of(document: Dynamic) -> Result(SkillContext, String) {
+  use context <- result.try(context_of(document))
+  let candidate = {
+    use name <- decode.field("name", decode.string)
+    use description <- decode.field("description", decode.string)
+    use excerpt <- decode.field("excerpt", decode.string)
+    decode.success(SkillCandidate(name:, description:, excerpt:))
+  }
+  use candidates <- result.try(
+    decode.run(document, decode.at(["candidates"], decode.list(candidate)))
+    |> result.replace_error("invalid skill candidates"),
+  )
+  Ok(SkillContext(context.op_id, context.messages, candidates))
 }

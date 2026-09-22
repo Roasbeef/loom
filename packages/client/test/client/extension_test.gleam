@@ -1127,3 +1127,26 @@ fn repository_root() -> String {
     as "the working directory must be readable"
   here <> "/../.."
 }
+
+pub fn hook_only_manifests_install_without_dummy_tools_test() {
+  let files = [
+    #(
+      "extension.toml",
+      "[extension]\nname = \"selector\"\nversion = \"0.1.0\"\ndescription = \"Select skills\"\nlicense = \"MIT\"\ntier = \"jailed\"\n[[hook]]\nevent = \"select_skills\"\nentry = \"selector\"\n",
+    ),
+    #(
+      "src/selector.gleam",
+      "import ext/hook\npub fn on_event() { hook.OnSelectSkills(fn(_) { [] }) }\n",
+    ),
+  ]
+  let assert Ok(decoded) = decode(files) as "a hook is sufficient surface"
+  assert decoded.tools == []
+  assert list.map(decoded.hooks, fn(hook) { hook.event }) == ["select_skills"]
+  let assert Ok(text) = list.key_find(files, "extension.toml")
+    as "fixture manifest exists"
+  let assert [header, ..] = string.split(text, "[[hook]]")
+    as "manifest has an extension header"
+  let empty = [#("extension.toml", header)]
+  assert decode(empty)
+    == Error("an extension registers at least one tool or hook")
+}

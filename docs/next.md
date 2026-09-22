@@ -1,5 +1,62 @@
 # Next
 
+## Proactive skill selection, September 21
+
+This scoped handoff is based on `a216d837`, with the generic hook implementation
+in `f894f231`. The older sections below remain historical handoffs and were not
+revalidated for this change.
+
+Loom already prompted the model to call `load_skill`; the missing behavior was
+an independent selector. Protocol 045 adds `select_skills`, opaque SDK candidate
+previews, captured-document loading and hook-only installs. Ranking stays in
+[loom-skill-selector](https://github.com/Roasbeef/loom-skill-selector), using the
+now-public [Jevelin](https://github.com/Roasbeef/jevelin) library. No Jev provider
+or dependency was added to the trusted harness.
+
+The selection boundary advertises the first 64 eligible previews and validates
+names against that exact snapshot. Three distinct documents share an 8,000-token
+allowance across selectors; explicit-only skills remain unavailable. Full
+instructions are recreated in the provider projection, not appended to the
+conversation. The extension caches by operation/task/previews in existing scoped
+memory and filters native note wrappers before extracting the task. Context
+text is not authenticated operator provenance; other installed context hooks
+can still rewrite it. The independent review found this wrapper-filtering issue,
+which is now fixed and covered by realistic notes and image-bearing prompts.
+
+Validation: 38 SDK tests, five standalone selector tests and the final five
+selection-boundary tests passed. The real jailed TLS-to-provider integration
+passed with Loom's actual scoped-memory door, proving that a repeated projection
+loads one copy without another Jev request. The extension's mandatory Linux CI
+passed at `c909d67` (run `35669751434`). Documentation and house-rule lint gates
+reported zero errors; non-gating warning censuses remain.
+
+The full local `make check` reached 2,036 passing client tests and one unchanged
+MCP cleanup timing failure (516 ms against a 500 ms bound). That test passed
+twice in isolation; a third attempt was blocked before execution by Hex rate
+limiting. The packages after client were then checked separately: TUI (609),
+conformance (83), lint tests (139) and the Go sandbox passed. This is not a claim
+that the original full command was green. The first PR CI also observed soak
+seed 88's `run/terminated` failure once in two internal runs; a local replay
+passed. No simulation or MCP implementation was changed to conceal either
+result. Check the current PR head's hosted gates before merge.
+
+The extension's CI pins `f894f231` and requires the external-source integration
+test; ordinary Loom checks explicitly report the absent external fixture. To
+rerun it, stage the extension with its `scripts/package.sh`, set
+`LOOM_SKILL_SELECTOR_SOURCE` to that clean absolute directory, and run
+`bash scripts/test.sh client --match skill_selector_reaches_provider` after
+`make binaries codemode-seed`.
+
+No authenticated Jev inference was run: no key was configured. The next quality
+gate is a labelled task/skill evaluation against the prompt-only baseline,
+including near misses, no-skill tasks and overlapping candidates. Measure
+false activations, relevant-use recall, total tokens/cost and p50/p95 latency.
+The 0.85 threshold and first-64 catalogue policy are explicit initial limits.
+The broader context/routing/background-work ideas remain experiments in
+[the founder-note distillation](design-notes/jev-context-selection.md), not
+unfinished implementation scope. Do not merge until the PR's required gates
+and normal review are satisfied.
+
 ## Configurable daemon connection admission, September 18
 
 The connection-limit change is based on `a65aa2f0` and its implementation is
