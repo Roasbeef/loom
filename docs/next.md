@@ -1,14 +1,44 @@
 # Next
 
+## Post-rebase validation complete, September 22
+
+The tested code is `3ce4d7ce`, based on `f440f381`. Commit `ec62d0fa` corrected
+the real-context end-to-end label, and `3ce4d7ce` strengthened the
+styled-approval end-to-end assertions. The first full `make check` stopped in
+the client package after 2,036 passes and five failures. Two newly merged
+code-mode examples had used an offline seed from before the `cap` and `notes`
+APIs; regenerating the seed passed,
+and the real code-mode suite then passed all 15 tests, including notes and
+recipes. The remaining failures were stale semantic UI expectations for current
+labels, concrete multiplayer command previews, and opening raw details before
+checking the captured sequence. Their corrections change tests only: they do
+not change production lifecycle behavior or weaken a deadline.
+
+Focused validation passed the five real TUI end-to-end tests, the one
+approval-effect test, and both multiplayer tests. The final full `make check`
+then passed with exit zero: 2,041 client tests, 693 TUI tests, 306 code-mode
+tests, 83 conformance tests, and 139 lint tests, along with every other package,
+the sandbox Go checks, and release-update checks. The house lint reported zero
+errors and 842 warnings. `make doc-check` separately passed with zero errors and
+152 warnings.
+
+The built-in shipped-daemon tests remained skipped because
+`LOOM_BOOTSTRAP_E2E_SERVER` was unset, as did the real MCP process-death case on
+macOS because `/proc` is unavailable. The task-owned native capture client and
+its private `loom-visual-review` tmux session are stopped; the installed daemon
+was untouched. Push and hosted CI remain pending.
+
 ## Component pass rebased, September 22
 
-The six-phase TUI component pass is rebased onto `f440f381`; the current local
-documentation head is `cc27610c`. The phase implementation commits are now
-`8622ce94`, `c599661c`, `62a43f93`, `cc7e0671`, `8a568ae3`, and `1b04a549`.
-Recorded component timings and captures predate the rebase, whose corresponding
-TUI source commits changed identity but not content. PR 478 remains open and
-ready without automatic merge; its remote head is still pre-rebase `ef469716`
-until push. The post-rebase full-repository gate and hosted CI remain pending.
+The six-phase TUI component pass is rebased onto `f440f381`. At rebase
+completion, the documentation head was `cc27610c`. The phase implementation
+commits are now `8622ce94`, `c599661c`, `62a43f93`, `cc7e0671`, `8a568ae3`, and
+`1b04a549`. Recorded component timings and captures predate the rebase, whose
+corresponding TUI source commits changed identity but not content. PR 478
+remains open and ready without automatic merge; at that point its remote head
+was the pre-rebase `ef469716`. These snapshot claims are historical; the
+validation section above supersedes their pending-gate status. Push and hosted
+CI remain pending.
 
 ## Context and summary components, September 22
 
@@ -43,7 +73,8 @@ provider call.
 
 All six phases are implemented, source-reviewed, and component-verified. The
 architecture table and symbol citations are refreshed after the rebase.
-Full-repository validation and hosted CI remain pending.
+Full-repository validation passes at `3ce4d7ce`; push and hosted CI remain
+pending.
 
 ## Diff component, September 21
 

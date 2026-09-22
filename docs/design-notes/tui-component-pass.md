@@ -4,8 +4,8 @@ Status: all six phases implemented, reviewed, and component-verified through
 rebased commit `1b04a549`, September 22, 2026. The branch is rebased onto
 `f440f381`; its current documentation head is `cc27610c`. PR 478 remains open
 and ready for review without automatic merge, but its remote head is still the
-pre-rebase `ef469716` until push. Full-repository validation and hosted CI remain
-separate pending work.
+pre-rebase `ef469716` until push. Local full-repository validation passes at
+`3ce4d7ce`; push and hosted CI remain separate pending work.
 
 ## Purpose and constraints
 
@@ -330,5 +330,37 @@ All phases are component-verified by rebased commits `8622ce94`, `c599661c`,
 captures were produced before the rebase; the corresponding TUI source commits
 are unchanged apart from commit identity. Their closing TUI gates, native
 captures, and confirmed review repairs remain the evidence recorded above. The
-final full-repository gate and hosted CI remain pending. The unrelated `.blobs/`
-directory is outside this work and must remain untouched.
+final full-repository gate passes at `3ce4d7ce`; push and hosted CI remain
+pending. The unrelated `.blobs/` directory is outside this work and must remain
+untouched.
+
+## Post-rebase validation
+
+The tested code is `3ce4d7ce`, based on `f440f381`. Commit `ec62d0fa` corrected
+the real-context end-to-end label, and `3ce4d7ce` strengthened the
+styled-approval end-to-end assertions. The first full `make check` reached 2,036
+client passes before five failures. Two newly merged code-mode examples used an
+offline seed from before the `cap` and `notes` APIs. `make codemode-seed` passed,
+after which the real code-mode suite passed all 15 tests, including notes and
+recipes.
+
+The other three failures were stale semantic UI expectations: `CONTEXT USAGE`
+had become `CAPACITY`, `ITEM ESTIMATES` had become `INVENTORY`, and `PERMISSION
+REQUEST` had become `Permission required`; the multiplayer fixtures also needed
+the concrete command preview and opening raw details before checking the
+captured sequence. The fixes change tests only. They do not change production
+lifecycle behavior or weaken a deadline.
+
+The five real TUI end-to-end tests, the approval-effect test, and both
+multiplayer tests passed in focused runs. The final full `make check` then
+passed with exit zero: 2,041 client tests, 693 TUI tests, 306 code-mode tests, 83
+conformance tests, and 139 lint tests, along with every other package, the
+sandbox Go checks, and release-update checks. The house lint reported zero
+errors and 842 warnings. `make doc-check` separately passed with zero errors and
+152 warnings.
+
+The built-in shipped-daemon tests remained skipped because
+`LOOM_BOOTSTRAP_E2E_SERVER` was unset, as did the real MCP process-death case on
+macOS because `/proc` is unavailable. The task-owned native capture client and
+its private `loom-visual-review` tmux session are stopped; the installed daemon
+was untouched. Push and hosted CI remain pending.
