@@ -5,6 +5,26 @@ This record covers issue #117 Track A on `provider/responses-api`, based on
 coverage, and documentation commits. It does not close the subscription
 track or the separate provider transport/redaction issues.
 
+## September 22 rebase
+
+The branch was rebased onto `origin/main` at `9378c019`. The integrated
+`make check` exited zero after updating the Responses fixtures for current
+client and provider interfaces. It passed 256 provider, 2,048 client, 702
+TUI, 84 conformance, and 139 lint-package tests, as well as the other
+packages, generated-surface checks, house lint, and Go sandbox checks.
+Main then advanced to `4759a331` with TUI spacing changes. The second rebase
+replayed all seven PR commits unchanged by `git range-diff`; `make check-tui`
+passed all 705 tests, and `make doc-check` exited zero. The original live
+API smoke still needs a funded Platform API account, and hosted CI must
+validate the pushed rebased head.
+
+Main advanced again through #482 and #490 to `d8963862`. The third rebase
+kept the provider, catalogue, test, and auth-boundary commits unchanged by
+`git range-diff`; only the handoff and shifted documentation citations needed
+integration. The previous published head `b27197c2` passed hosted Linux and
+macOS gates. Validation of the third rebase is recorded separately from those
+earlier results.
+
 ## Contract and coverage
 
 | Boundary | Evidence |
