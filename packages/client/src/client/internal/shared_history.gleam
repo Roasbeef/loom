@@ -80,7 +80,7 @@ type Message {
   Begin(process.Subject(Result(Nil, String)))
   Stop(process.Subject(String))
   Notify(ids.SessionId)
-  Query(ids.SessionId, Lookup, Int, tool.Scope, process.Subject(Reply))
+  Query(ids.SessionId, Lookup, Int, process.Subject(Reply))
   Read(ids.SessionId, ids.SessionId, ids.EntryId, process.Subject(Reply))
   Step
 }
@@ -113,18 +113,20 @@ type Phase {
 
 // What a search asks the index for. A browse rides the same request as a
 // ranked search, because it owes the caller the same refresh first: rows a
-// sibling committed since the last sync are exactly the recent ones.
+// sibling committed since the last sync are exactly the recent ones. Only a
+// ranked search carries a scope, so a browse of the whole repository cannot
+// be asked for.
 type Lookup {
   // Ranked full-text hits for a trimmed, non-empty query.
-  Matching(String)
+  Matching(String, tool.Scope)
 
-  // The calling session's newest rows, newest first; always `ThisSession`.
+  // The calling session's newest rows, newest first.
   Newest
 }
 
 type Request {
   Background
-  SearchRequest(ids.SessionId, Lookup, Int, tool.Scope, process.Subject(Reply))
+  SearchRequest(ids.SessionId, Lookup, Int, process.Subject(Reply))
   EntryRequest(
     ids.SessionId,
     ids.SessionId,
@@ -240,11 +242,9 @@ pub fn notify(shared: Shared, session: ids.SessionId) -> Nil {
 pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
   tool.History(
     search: fn(text, limit, scope) {
-      hits(shared, Query(current, Matching(text), limit, scope, _))
+      hits(shared, Query(current, Matching(text, scope), limit, _))
     },
-    recent: fn(limit) {
-      hits(shared, Query(current, Newest, limit, tool.ThisSession, _))
-    },
+    recent: fn(limit) { hits(shared, Query(current, Newest, limit, _)) },
     read: fn(session, entry) {
       use reply <- result.try(
         exchange(shared, Read(current, session, entry, _))
@@ -318,8 +318,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(state)
         }
       }
-    Query(current, lookup, limit, scope, reply) ->
-      admit(state, SearchRequest(current, lookup, limit, scope, reply))
+    Query(current, lookup, limit, reply) ->
+      admit(state, SearchRequest(current, lookup, limit, reply))
     Read(current, session, entry, reply) ->
       admit(state, EntryRequest(current, session, entry, reply))
     Step -> step(state)
@@ -464,12 +464,11 @@ fn admit(state: State, request: Request) {
       let permitted = {
         use sources <- result.try(authorized(state.config))
         case request {
-          SearchRequest(current, _, _, scope, _) -> {
-            use _current <- result.try(member(sources, current))
-            case scope {
-              tool.Repository -> Ok(sources)
-              tool.ThisSession ->
-                result.map(member(sources, current), fn(item) { [item] })
+          SearchRequest(current, lookup, _, _) -> {
+            use item <- result.try(member(sources, current))
+            case lookup {
+              Matching(_, tool.Repository) -> Ok(sources)
+              Matching(_, tool.ThisSession) | Newest -> Ok([item])
             }
           }
           EntryRequest(current, target, _, _) -> {
@@ -557,8 +556,7 @@ fn begin_job(state: State, request: Request, sources: List(distill.Source)) {
 fn refuse(request: Request, refusal: tool.Refusal) {
   case request {
     Background -> Nil
-    SearchRequest(_, _, _, _, reply) ->
-      process.send(reply, Hits(Error(refusal)))
+    SearchRequest(_, _, _, reply) -> process.send(reply, Hits(Error(refusal)))
     EntryRequest(_, _, _, reply) -> process.send(reply, Entry(Error(refusal)))
   }
 }
@@ -927,7 +925,7 @@ fn finish_job(state: State, job: Job) {
     Background -> advance(State(..state, phase: Ready))
     EntryRequest(_, _, _, _) ->
       fail_job(state, job, "history entry was not found")
-    SearchRequest(current, lookup, limit, scope, reply) -> {
+    SearchRequest(current, lookup, limit, reply) -> {
       let answer = {
         use sources <- result.try(authorized(state.config))
         use _ <- result.try(member(sources, current))
@@ -941,12 +939,13 @@ fn finish_job(state: State, job: Job) {
           Some(index) -> Ok(index)
           None -> Error("history index custody was lost")
         })
-        let ids = case scope {
-          tool.ThisSession -> [current]
-          tool.Repository -> list.map(sources, fn(item) { item.session })
-        }
         case lookup {
-          Matching(text) -> search.query_authorized(index, ids, text, limit)
+          Matching(text, tool.ThisSession) ->
+            search.query_authorized(index, [current], text, limit)
+          Matching(text, tool.Repository) -> {
+            let ids = list.map(sources, fn(item) { item.session })
+            search.query_authorized(index, ids, text, limit)
+          }
           Newest -> search.recent_in_session(index, session: current, limit:)
         }
         |> result.map_error(string.inspect)
