@@ -7,7 +7,7 @@ Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
 state, `a` opens the existing exact-request approval panel, and PgUp/PgDn scroll
-only the detail. The real composer stays visible below the workspace. Tab
+the selected detail. The real composer stays visible below the workspace. Tab
 transfers keyboard ownership to it without changing the inspected ID or recipient;
 Escape returns to the roster. Editing uses the existing submission and command
 completion paths, including the visible command palette. The ordinary
@@ -41,7 +41,16 @@ later reuse of the call ID. `Model.agent_messages` retains the latest twenty
 verified sends across operation completion, with message bodies bounded to 4096
 characters plus an excerpt marker; changing sessions releases this cache.
 Acceptance means the tool accepted the send, not that the recipient read it.
-Unobserved older history remains explicitly unavailable.
+Unobserved older history remains explicitly unavailable. The Messages tab
+renders a selectable invocation-identity list. Wide rows use three lines for
+direction, a short observed-result badge, and the body excerpt; the selected
+body occupies the adjacent preview. Stacked layouts preserve the same facts and
+PgDn pages by the visible body viewport without skipping wrapped lines; in the
+40×12 fixture that viewport is one line. `[` and `]` select a message,
+Up/Down select an agent, Enter opens the inspected agent, and `o` explicitly
+opens the selected sender and changes the composer recipient. Tab transfers to
+the composer. Captures preserve message identity and body scroll instead of
+resetting either while the observation remains present.
 
 Notes use the inspected strand while the Notes tab owns focus, and the active
 strand in standalone `/notes`. `notes_requested` coalesces reads behind the
@@ -74,7 +83,7 @@ provider-free native fixture through the capture decoder and the shipped loop.
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
-The compact dialog is anchored to the bottom of the terminal, capped at sixteen
+The compact dialog is anchored to the bottom of the terminal, capped at eighteen
 rows on an ordinary screen, and bounded by the available height on smaller ones.
 Its readable view asks a tool-specific question, names the requester, shows the
 captured action on a raised background, and lists the exact requested authority.

@@ -1,5 +1,28 @@
 # Next
 
+## Selectable agent messages, September 21
+
+Phase 1 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at `27da4a7d`. The Messages tab now presents observed sends as a
+selectable invocation-identity list with direction, delivery-state badges, body
+excerpts, and an independently scrollable retained preview. Brackets select a
+message, arrows select an agent, Tab transfers to the composer, Enter opens the
+inspected agent, and `o` explicitly opens the selected sender. Captures preserve
+selection and body scroll. Opening the sender explicitly changes the composer
+recipient. Accepted and started states remain delivery evidence, not read
+receipts.
+
+Independent review found and confirmed fixes for capture-time scroll reset and
+a short wide view that hid the body. Native QA passed at 132×42, 80×24, and
+40×12; the design note links the wide and compact captures. The closing TUI gate
+passed 676 tests with exit zero in 9.16 seconds. This was an incremental run; the
+prior measured compile was 7.38 seconds.
+
+Hosted CI has not run for `27da4a7d`. At the preceding `ef469716` head, macOS
+passed while the Linux client job passed 2,027 tests and failed three deadline
+checks: MCP cleanup took 1,040 ms against 500 ms, plus approval-effect and
+session-socket deadline tests. No latest-head full-repository result is claimed.
+
 ## Styled approval review, September 21
 
 The automatic permission sheet now separates the tool-specific question,
