@@ -1,5 +1,9 @@
 # The advisor strand
 
+The advisor also judges persistent session goals through a separate
+`continue`/`complete` verdict path. [Session goals](goals.md) describes that
+durable loop, its authority boundary, and its accounting.
+
 A session may run a second strand whose only job is to read what the
 primary strand has been doing and say whether it should carry on. It is
 called the **advisor**. At the end of each of the primary's runs, and
@@ -668,8 +672,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:8732`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8837`) renders
+`advisor_payload` (`tui.gleam:8755`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8860`) renders
 them. Nudges always show their complete body, including in compact mode.
 The other variants collapse to one attribution row (`advisor`, `advisor feed`,
 `advisor goal feed`, or `goal continuation`) with an opening excerpt and expand

@@ -1,5 +1,38 @@
 # Next
 
+## Goal architecture and compact approvals, September 21
+
+The workspace documentation now includes a source-verified
+[goal architecture](architecture/goals.md), revised with the technical-writing
+and roasbeef-prose passes. It separates the durable goal cell, advisor-only
+mutation authority, read-only gateway projection, recovery loop, jailed checks,
+accounting bounds, and TUI behavior. The historical design note now points to
+the architecture and Protocol Change 044 as the current contract.
+
+The permission dialog is compact and bottom-anchored. It shows the exact action
+and grants in its readable view, switches to the complete escaped request with
+`d` or Ctrl+g, and requires an explicit available choice before Enter can decide.
+The decision still echoes the captured action, grants, and sequence without
+changing authority. A known idle advisor retains its two-row composer band on
+terminals at least 20 rows high, so reviewer completion does not move the editor.
+Captures and silent automatic goal reads preserve existing operator feedback.
+
+The full TUI gate passed with 664 tests and exit zero; the rebuild took 6.96
+seconds. House lint reported zero errors and 129 warnings. Documentation checking
+also returned zero errors and 153 warnings. Native QA exercised the current
+BEAM build at 100×40, 80×24, and 40×12. It covered the readable and raw approval
+views, scrolling, and Escape's deferral behavior without submitting a decision.
+The [100×40 capture](design-notes/tui-agent-workspace/approval-compact.png) and
+[40×12 capture](design-notes/tui-agent-workspace/approval-compact-40.png) record
+the bounded layouts.
+
+Hosted CI has not yet verified the latest work, and no latest-head
+full-repository gate has run. The prior pushed head, `ebd99fe1`, passed the
+macOS gate and every substantive job except the Linux client check. That check
+failed one unchanged MCP cleanup timing assertion: elapsed time was 1,076 ms
+against a 500 ms ceiling. The TUI change did not modify the test or its MCP
+implementation, which is consistent with an unrelated scheduling delay; the final head still needs hosted confirmation.
+
 ## Proactive compile review, September 21
 
 The optional [BEAM compile review skill](../skills/beam-compile-review/SKILL.md)

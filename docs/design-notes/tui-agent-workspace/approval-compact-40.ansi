@@ -1,0 +1,12 @@
+[38;2;255;189;105m[48;2;24;27;31m╭ Permission · d details · Esc defer ──╮
+│[39m[49mFrom sub:protocol-review[38;2;255;189;105m[48;2;24;27;31m              │
+│[39m[49mRequested authority:[38;2;255;189;105m[48;2;24;27;31m                  │
+│[39m[49m- No additional grants requested.[38;2;255;189;105m[48;2;24;27;31m     │
+│[39m[49mTool: "fs_write"[38;2;255;189;105m[48;2;24;27;31m                      │
+│[39m[49mAction: "Write[38;2;255;189;105m[48;2;24;27;31m                        │
+│[39m[49m  Allow once  [38;2;255;189;105m[48;2;24;27;31m                        │
+│[39m[49m  Allow for session (unavailable)  [38;2;255;189;105m[48;2;24;27;31m   │
+│[39m[49m  Deny  [38;2;255;189;105m[48;2;24;27;31m                              │
+│[39m[49mSession approval unavailable: Only fil[38;2;255;189;105m[48;2;24;27;31m│
+│[39m[49mTab choose · Enter · ↑↓ scroll[38;2;255;189;105m[48;2;24;27;31m        │
+╰──────────────────────────────────────╯

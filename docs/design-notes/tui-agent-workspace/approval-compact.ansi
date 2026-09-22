@@ -1,0 +1,40 @@
+[1m[38;2;255;189;105m[48;2;24;27;31m ◆ loom [0m[38;2;231;237;245m[48;2;24;27;31m             native-fixture · native UI fixture             [38;2;160;171;184m fixture-model · Ctrl+g details
+[49m  worktree changes  / main [39m
+ captured fixture worktree · 1 added · 1 deleted
+ Ctrl+d: file navigation · PgUp/PgDn: patch · Esc: close
+ > All files (2)
+   A  docs/review/native-layout.md
+    D packages/tui/src/tui.gleam
+   Commits since session start
+
+
+ [38;2;160;171;184m◇ [39mdocs/review/native-layout.md · text · complete
+
+ [1m[38;2;255;189;105m▎ [0m[38;2;142;214;161m[48;2;24;52;35m+native agent workspace findings[39m[49m
+ [1m[38;2;255;189;105m▎ [0m
+ [38;2;160;171;184m◇ [39mpackages/tui/src/tui.gleam · text · complete
+
+ [1m[38;2;255;189;105m▎ [0m[38;2;255;142;155m[48;2;57;27;31m-legacy agent overlay path[39m[49m
+ [1m[38;2;255;189;105m▎ [0m
+ [38;2;160;171;184m◇ [39mObservation complete · 0 files omitted
+
+
+
+
+
+
+
+
+
+  [38;2;255;189;105m[48;2;24;27;31m╭ Permission request · d/Ctrl+g details · Esc defer ───────────────────────────────────────────╮[39m[49m
+  [38;2;255;189;105m[48;2;24;27;31m│[39m[49mRequested by sub:protocol-review[38;2;255;189;105m[48;2;24;27;31m                                                              │[39m[49m
+  [38;2;255;189;105m[48;2;24;27;31m│[39m[49mRequested authority:[38;2;255;189;105m[48;2;24;27;31m                                                                          │[39m[49m
+[38;2;255;189;105m─ [48;2;24;27;31m│[39m[49m- No additional grants requested.[38;2;255;189;105m[48;2;24;27;31m                                                             │[49m ─
+[39m [38;2;160;171;184m◐[38;2;255;189;105m[48;2;24;27;31m│[39m[49mTool: "fs_write"[38;2;255;189;105m[48;2;24;27;31m                                                                              │[39m[49m
+ [38;2;160;171;184mR[38;2;255;189;105m[48;2;24;27;31m│[39m[49mAction: "Write docs/review/native-layout.md with the native layout findings.\nNo other files[38;2;255;189;105m[48;2;24;27;31m  │[39m[49m
+ [38;2;160;171;184m [38;2;255;189;105m[48;2;24;27;31m│[39m[49mare included in this request."[38;2;255;189;105m[48;2;24;27;31m                                                                │[39m[49m
+ [38;2;160;171;184mR[38;2;255;189;105m[48;2;24;27;31m│                                                                                              │[39m[49m
+ [38;2;160;171;184m [38;2;255;189;105m[48;2;24;27;31m│[39m[49m  Allow once    Allow for session (unavailable)    Deny  [38;2;255;189;105m[48;2;24;27;31m                                     │[39m[49m
+ [1m[38;2;24;27;31m[48;2;255;189;105m [0m[38;2;255;189;105m[48;2;24;27;31m│[39m[49mSession approval unavailable: Only filesystem and full-network permissions can be remembered.[38;2;255;189;105m[48;2;24;27;31m │[38;2;231;237;245m[49m [39m
+[38;2;60;74;91m──[38;2;255;189;105m[48;2;24;27;31m│[39m[49m←/→ or Tab choose · Enter confirm · ↑/↓ scroll[38;2;255;189;105m[48;2;24;27;31m                                                │[38;2;60;74;91m[49m──
+[38;2;170;176;182m i[38;2;255;189;105m[48;2;24;27;31m╰──────────────────────────────────────────────────────────────────────────────────────────────╯[38;2;170;176;182m[49mon

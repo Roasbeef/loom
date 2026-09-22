@@ -1,5 +1,11 @@
 # Session goals
 
+> Historical design record. The current implementation is documented in
+> [Session goals architecture](../architecture/goals.md), and
+> [Protocol Change 044](../../protocol-change/044-session-goals.md) owns the
+> contract. Sections below preserve the proposals and review history that led to
+> it; some deferred-language descriptions no longer describe the current source.
+
 Exploratory design note for the `/goal` feature: a persistent objective the
 operator pins to a session, which the session keeps working toward
 autonomously — continuing while idle, accounting the primary's token spend

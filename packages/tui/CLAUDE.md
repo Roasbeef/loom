@@ -74,19 +74,28 @@ provider-free native fixture through the capture decoder and the shipped loop.
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
+The compact dialog is anchored to the bottom of the terminal and bounds its
+height by both its content and the available screen. Its readable view names the
+captured action and renders every exact requested grant; `d` or Ctrl+g switches
+to the complete escaped raw request. Grant details scroll independently while
+the choices remain visible.
+
 The dialog captures the record's sequence, action and grants. Its owner label
 comes from the exact escalation ID and sequence in the captured register; absent
-scope stays unavailable instead of borrowing the selected strand's identity. Metadata refreshes
-cannot replace that question before a decision. The terminal tracks presented
-questions by ID and sequence, so dismissal does not reopen the same question
-and a reopened request with a new sequence is offered again.
+scope stays unavailable instead of borrowing the selected strand's identity.
+Metadata refreshes cannot replace that question before a decision. The terminal
+tracks presented questions by ID and sequence, so dismissal does not reopen the
+same question and a reopened request with a new sequence is offered again.
 
-No action is selected on opening. Left/right or Tab selects Allow once, Allow
-for session, or Deny; Enter confirms and Escape defers. Session approval sends
-`approve` with `scope: "session"` and is available only for complete filesystem
-or full-network grant sets. Other grants and incomplete details cannot receive
-session approval. Legacy `/approve` retains once-only behavior. The server
-commits the session authority and exact decision atomically. See protocol 041.
+No action is selected on opening. Left/right or Tab explicitly selects Allow
+once, Allow for session, or Deny; Enter confirms and Escape defers. A choice the
+captured request cannot encode stays visible as unavailable and navigation skips
+it. Denial remains available. Session approval sends `approve` with `scope:
+"session"` and is available only for complete filesystem or full-network grant
+sets. The panel never widens, substitutes, or invents authority: a decision
+echoes the exact captured action, grants and sequence. Legacy `/approve` retains
+once-only behavior. The server commits the session authority and exact decision
+atomically. See protocol 041.
 
 
 ## Session directory access
@@ -796,6 +805,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   the queue into the prompt. A compact heading stays beside the composer;
   complete bodies live in the explicitly pending transient tail. Neither
   presentation enters model context or claims that observing a nudge delivers it.
+  On terminals at least 20 rows high, a known idle advisor retains a stable
+  two-row composer slot when no reviewer rows are live. The empty task row keeps
+  reviewer completion from moving the composer while still showing that the
+  advisor is idle. Tiny terminals keep those rows for the transcript and editor.
 - **Session goal panel**: `/goal` shows the status block, `/goal <objective>`
   pins one, and `/goal clear|pause|resume` are subcommands **only as the
   whole argument**, so `/goal clear the failing test` is an objective. The
@@ -821,7 +834,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   common one is an older daemon or a session with no advisor answering
   `code_unsupported`, and a panel that silently fails to appear looks
   exactly like a session with no goal. An automatic refresh refused stays
-  silent; the operator's own `/goal` and every mutation do not.
+  silent; the operator's own `/goal` and every mutation do not. Captures preserve
+  an existing operator-facing footer notice, and sending a background `goal_get`
+  preserves it too. An explicit `/goal` still reports its own send while it waits
+  for the board.
 - **A new observation command must be taught to every command-name table
   by hand — the compiler checks none of them.** `advisor_pending` needed
   three, and missing one is not cosmetic: `tui/session_channel`'s
