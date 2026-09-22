@@ -20,6 +20,8 @@ import machine/operation
 import machine/strand
 import tui
 import tui/advisor_pending
+import tui/agent_message_panel
+import tui/agent_messages
 import tui/agent_view
 import tui/agents
 import tui/composer
@@ -593,6 +595,145 @@ pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
   let assert tui.AgentInspector(inspector) = navigated.overlay
     as "Escape returned keyboard ownership to inspection"
   assert inspector.selected == "main"
+}
+
+pub fn opening_selected_message_sender_preserves_drafts_until_the_action_test() {
+  let send =
+    agent_messages.Item(
+      entry_id: "entry",
+      call_id: "call",
+      source: "worker",
+      target: "main",
+      body: "Please review this result",
+      body_extent: agent_messages.Complete,
+      seq: 7,
+      state: agent_messages.Accepted,
+    )
+  let initial =
+    tui.Model(
+      ..model(),
+      strands: roster(),
+      agent_messages: [send],
+      input: textarea.state_from_string("main draft"),
+    )
+  let inspected = initial |> press("f2") |> press("2")
+  assert inspected.active_strand == "main"
+  assert textarea.value(inspected.input) == "main draft"
+  let opened = inspected |> press("o")
+  assert opened.active_strand == "worker"
+  assert textarea.value(opened.input) == ""
+  let restored = opened |> press("f2") |> press("up") |> press("enter")
+  assert restored.active_strand == "main"
+  assert textarea.value(restored.input) == "main draft"
+}
+
+pub fn unknown_message_sender_is_refused_without_retargeting_test() {
+  let send =
+    agent_messages.Item(
+      entry_id: "entry",
+      call_id: "call",
+      source: "evicted",
+      target: "main",
+      body: "Old send",
+      body_extent: agent_messages.Complete,
+      seq: 7,
+      state: agent_messages.SendPending,
+    )
+  let initial =
+    tui.Model(
+      ..model(),
+      strands: roster(),
+      agent_messages: [send],
+      input: textarea.state_from_string("main draft"),
+    )
+  let refused = initial |> press("f2") |> press("2") |> press("o")
+  assert refused.active_strand == "main"
+  assert textarea.value(refused.input) == "main draft"
+  assert string.contains(refused.notice, "sender is unavailable")
+}
+
+pub fn short_detail_with_multiline_draft_keeps_selected_body_visible_test() {
+  let send =
+    agent_messages.Item(
+      entry_id: "entry",
+      call_id: "call",
+      source: "main",
+      target: "worker",
+      body: "visible-message-body",
+      body_extent: agent_messages.Complete,
+      seq: 7,
+      state: agent_messages.Accepted,
+    )
+  let inspector = agents.inspect("main")
+  let inspected =
+    tui.Model(
+      ..model(),
+      strands: roster(),
+      agent_messages: [send],
+      input: textarea.state_from_string("one\ntwo\nthree\nfour"),
+      overlay: tui.AgentInspector(
+        agents.Inspector(
+          ..inspector,
+          detail: agents.Messages,
+          message: Some(agent_message_panel.identity(send)),
+        ),
+      ),
+    )
+    |> tui.update(backend.Resize(80, 24), _)
+  let rendered =
+    tui.view(inspected, geometry.rect_new(0, 0, 80, 24)).0
+    |> frame.buffer_to_text
+  assert string.contains(rendered, "visible-message-body")
+}
+
+pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
+  let retained =
+    agent_messages.Item(
+      entry_id: "old-entry",
+      call_id: "old-call",
+      source: "main",
+      target: "worker",
+      body: "retained body",
+      body_extent: agent_messages.Complete,
+      seq: 7,
+      state: agent_messages.Accepted,
+    )
+  let fresh =
+    agent_messages.Item(
+      entry_id: "new-entry",
+      call_id: "new-call",
+      source: "main",
+      target: "worker",
+      body: "new body",
+      body_extent: agent_messages.Complete,
+      seq: 8,
+      state: agent_messages.Started,
+    )
+  let inspector = agents.inspect("main")
+  let model =
+    tui.Model(
+      ..model(),
+      agent_messages: [fresh, retained],
+      overlay: tui.AgentInspector(
+        agents.Inspector(
+          ..inspector,
+          detail: agents.Messages,
+          message: Some(agent_message_panel.identity(retained)),
+          scroll: 3,
+        ),
+      ),
+    )
+    |> tui.reconcile_agent_message_selection
+  let assert tui.AgentInspector(preserved) = model.overlay
+  assert preserved.message == Some(agent_message_panel.identity(retained))
+  assert preserved.scroll == 3
+
+  let evicted =
+    tui.Model(..model, agent_messages: [fresh])
+    |> tui.reconcile_agent_message_selection
+  let assert tui.AgentInspector(fallback) = evicted.overlay
+  assert fallback.message == Some(agent_message_panel.identity(fresh))
+  assert fallback.scroll == 0
 }
 
 pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test() {

@@ -44,6 +44,7 @@ import host/endpoint
 import machine/strand as machine_strand
 import simplifile
 import tui/advisor_pending
+import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_view
 import tui/agents
@@ -3530,61 +3531,32 @@ fn service_notes_read(model: Model) -> Model {
 }
 
 fn agent_detail_content(model: Model, inspector: agents.Inspector) {
+  let selected = inspector.selected
+  let message = inspector.message
+  let scroll = inspector.scroll
   case inspector.detail {
     agents.Overview -> None
     agents.Messages ->
-      Some(fn(width) {
-        agent_message_content(model, inspector.selected, width).lines
+      Some(fn(area: Rect) {
+        agent_message_content(model, selected, message, scroll, area).lines
       })
     agents.Notes ->
-      Some(fn(width) { notes_content(model, width, inspector.selected).lines })
+      Some(fn(area: Rect) {
+        notes_content(model, area.size.width, selected).lines
+      })
   }
 }
 
 fn agent_message_content(
   model: Model,
   selected: String,
-  width: Int,
+  message: Option(String),
+  scroll: Int,
+  area: Rect,
 ) -> span.Text {
-  let messages = agent_messages.for_strand(model.agent_messages, selected)
-  let heading = [
-    Line(System, "MESSAGES · " <> selected),
-    Line(
-      System,
-      "Observed sends · latest 20 retained · acceptance is not a read receipt",
-    ),
-  ]
-  let body = case messages {
-    [] -> [
-      Line(
-        System,
-        "No sends observed for this agent in the retained captures. Older or unloaded history may be absent.",
-      ),
-    ]
-    messages ->
-      list.flat_map(messages, fn(item) {
-        let state = case item.state {
-          agent_messages.SendPending -> "Outcome not captured"
-          agent_messages.SendFailed -> "Send failed"
-          agent_messages.Accepted -> "Accepted by recipient"
-          agent_messages.Started -> "Started recipient run"
-        }
-        let extent = case item.body_extent {
-          agent_messages.Complete -> ""
-          agent_messages.Excerpt ->
-            " · excerpt; open sender transcript for full body"
-        }
-        [
-          Line(System, item.source <> " → " <> item.target),
-          Line(
-            System,
-            state <> " · revision " <> int.to_string(item.seq) <> extent,
-          ),
-          Line(ToolDetail, item.body),
-        ]
-      })
-  }
-  transcript_content(list.append(heading, body), width)
+  model.agent_messages
+  |> agent_messages.for_strand(selected)
+  |> agent_message_panel.render(message, scroll, area)
 }
 
 fn notes_content(model: Model, width: Int, target: String) -> span.Text {
@@ -6525,6 +6497,8 @@ fn render_cut(
     )
   let reviewers = reviewer_status.observe(model.reviewer_rows, cut.window, view)
   let rows = agent_view.observe(model.agent_rows, cut.window, view, reviewers)
+  let captured_messages =
+    agent_messages.capture(model.agent_messages, view, cut.window)
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -6534,11 +6508,7 @@ fn render_cut(
     agent_summary: agents.summary_rows(rows),
     reviewer_rows: reviewers,
     agent_rows: rows,
-    agent_messages: agent_messages.capture(
-      model.agent_messages,
-      view,
-      cut.window,
-    ),
+    agent_messages: captured_messages,
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -6569,6 +6539,7 @@ fn render_cut(
     },
     transcript:,
   )
+  |> reconcile_agent_message_selection
   |> invalidate_transcript
   // A completed cut can make the operation idle before the next animation
   // tick. Invalidate the painted frame too; rebuilding transcript rows alone
@@ -10062,28 +10033,57 @@ fn update_agent_inspector(
     keys.Up ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.navigate(
-          inspector,
-          rows,
-          agents.Previous,
-        )),
+        overlay: AgentInspector(
+          agents.navigate(inspector, rows, agents.Previous)
+          |> select_inspector_message(model.agent_messages),
+        ),
       )
     keys.Down ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.navigate(inspector, rows, agents.Next)),
+        overlay: AgentInspector(
+          agents.navigate(inspector, rows, agents.Next)
+          |> select_inspector_message(model.agent_messages),
+        ),
       )
     keys.Char("1") -> select_agent_detail(model, inspector, agents.Overview)
     keys.Char("2") -> select_agent_detail(model, inspector, agents.Messages)
     keys.Char("3") -> select_agent_detail(model, inspector, agents.Notes)
-    keys.Char("[") -> select_note(model, -1)
-    keys.Char("]") -> select_note(model, 1)
+    keys.Char("[") if inspector.detail == agents.Messages ->
+      select_agent_message(model, inspector, -1)
+    keys.Char("]") if inspector.detail == agents.Messages ->
+      select_agent_message(model, inspector, 1)
+    keys.Char("[") if inspector.detail == agents.Notes -> select_note(model, -1)
+    keys.Char("]") if inspector.detail == agents.Notes -> select_note(model, 1)
     keys.Char("r") if inspector.detail == agents.Notes -> refresh_notes(model)
     keys.Ctrl("g") -> toggle_details(model)
     keys.Char("n") ->
       Model(
         ..model,
-        overlay: AgentInspector(agents.next_attention(inspector, rows)),
+        overlay: AgentInspector(
+          agents.next_attention(inspector, rows)
+          |> select_inspector_message(model.agent_messages),
+        ),
+      )
+    keys.PageUp if inspector.detail == agents.Messages ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            scroll: int.max(0, inspector.scroll - message_page_step(model)),
+          ),
+        ),
+      )
+    keys.PageDown if inspector.detail == agents.Messages ->
+      Model(
+        ..model,
+        overlay: AgentInspector(
+          agents.Inspector(
+            ..inspector,
+            scroll: inspector.scroll + message_page_step(model),
+          ),
+        ),
       )
     keys.PageUp ->
       Model(
@@ -10103,6 +10103,8 @@ fn update_agent_inspector(
         ),
       )
     keys.Char("a") -> inspect_agent_approval(model, inspector.selected)
+    keys.Char("o") if inspector.detail == agents.Messages ->
+      open_agent_message_sender(model, inspector)
     keys.Enter ->
       case is_known_strand(model.strands, inspector.selected) {
         True -> switch_active_strand(model, inspector.selected)
@@ -10122,19 +10124,130 @@ fn update_agent_inspector(
   }
 }
 
+fn select_inspector_message(
+  inspector: agents.Inspector,
+  messages: List(agent_messages.Item),
+) -> agents.Inspector {
+  case inspector.detail {
+    agents.Overview | agents.Notes -> inspector
+    agents.Messages -> {
+      let selected =
+        messages
+        |> agent_messages.for_strand(inspector.selected)
+        |> agent_message_panel.selected(inspector.message)
+        |> option.map(agent_message_panel.identity)
+      let scroll = case selected == inspector.message {
+        True -> inspector.scroll
+        False -> 0
+      }
+      agents.Inspector(..inspector, message: selected, scroll:)
+    }
+  }
+}
+
+/// Reconciles a message browser after a new captured projection arrives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.reconcile_agent_message_selection(model)
+/// ```
+@internal
+pub fn reconcile_agent_message_selection(model: Model) -> Model {
+  case model.overlay {
+    AgentInspector(inspector) if inspector.detail == agents.Messages ->
+      Model(
+        ..model,
+        overlay: AgentInspector(select_inspector_message(
+          inspector,
+          model.agent_messages,
+        )),
+      )
+    _ -> model
+  }
+}
+
+fn message_page_step(model: Model) -> Int {
+  agent_message_panel.page_step(message_detail_area(model))
+}
+
+/// Returns the message preview's actual rectangle for viewport regressions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.message_detail_area(model)
+/// ```
+@internal
+pub fn message_detail_area(model: Model) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  agents.inspection_detail_area(body)
+}
+
 fn select_agent_detail(
   model: Model,
   inspector: agents.Inspector,
   detail: agents.Detail,
 ) -> Model {
+  let message = case detail {
+    agents.Messages ->
+      agent_messages.for_strand(model.agent_messages, inspector.selected)
+      |> agent_message_panel.selected(inspector.message)
+      |> option.map(agent_message_panel.identity)
+    agents.Overview | agents.Notes -> inspector.message
+  }
   let selected =
     Model(
       ..model,
-      overlay: AgentInspector(agents.Inspector(..inspector, detail:, scroll: 0)),
+      overlay: AgentInspector(
+        agents.Inspector(..inspector, detail:, scroll: 0, message:),
+      ),
     )
   case detail {
     agents.Notes -> refresh_notes(selected)
     agents.Overview | agents.Messages -> selected
+  }
+}
+
+fn select_agent_message(
+  model: Model,
+  inspector: agents.Inspector,
+  amount: Int,
+) -> Model {
+  let messages =
+    agent_messages.for_strand(model.agent_messages, inspector.selected)
+  Model(
+    ..model,
+    overlay: AgentInspector(
+      agents.Inspector(
+        ..inspector,
+        message: agent_message_panel.move(messages, inspector.message, amount),
+        scroll: 0,
+      ),
+    ),
+  )
+}
+
+// Opening a sender is an explicit workspace switch. Merely inspecting a send
+// never moves the composer recipient or the transcript reading position.
+fn open_agent_message_sender(
+  model: Model,
+  inspector: agents.Inspector,
+) -> Model {
+  let messages =
+    agent_messages.for_strand(model.agent_messages, inspector.selected)
+  case agent_message_panel.selected(messages, inspector.message) {
+    None -> Model(..model, notice: "No observed message is selected")
+    Some(item) ->
+      case is_known_strand(model.strands, item.source) {
+        True -> switch_active_strand(model, item.source)
+        False ->
+          Model(
+            ..model,
+            notice: "Message sender is unavailable; recipient unchanged",
+          )
+      }
   }
 }
 
