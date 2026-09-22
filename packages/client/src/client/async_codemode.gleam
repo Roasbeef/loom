@@ -50,6 +50,10 @@ pub fn seam(
             tool.Join -> #(async_runs.Check, int.max(0, within))
             tool.Cancel -> #(async_runs.Cancel, 0)
             tool.Send(value) -> #(async_runs.Send(value), 0)
+            tool.SendTo(endpoint, value) -> #(
+              async_runs.SendTo(endpoint, value),
+              0,
+            )
           }
           async_runs.interact(service, strand, handle, action, wait)
         },
@@ -162,9 +166,86 @@ fn input_router(
             )
         }
       }
+      "execution.ready" -> {
+        use endpoints <- result.try(args.string_array(request.args, "endpoints"))
+        use idle <- result.try(args.int(request.args, "idle_within_ms"))
+        case idle >= 1 && idle <= 300_000 {
+          False ->
+            Error(satellite.CapDenial(
+              "invalid_argument",
+              "ready requires an idle interval from 1 to 300000 ms",
+            ))
+          True ->
+            served(service, strand, id, async_runs.Ready(endpoints, idle), 0)
+        }
+      }
+      "execution.receive_enveloped" -> {
+        use after <- result.try(args.int(request.args, "after"))
+        use within <- result.try(args.int(request.args, "within_ms"))
+        case after >= 0 && within >= 0 && within <= 30_000 {
+          False ->
+            Error(satellite.CapDenial(
+              "invalid_argument",
+              "receive requires a nonnegative cursor and a wait from 0 to 30000 ms",
+            ))
+          True ->
+            served(
+              service,
+              strand,
+              id,
+              async_runs.ReceiveEnveloped(after),
+              within,
+            )
+        }
+      }
+      "execution.progress" -> {
+        use value <- result.try(args.field(request.args, "value"))
+        served(
+          service,
+          strand,
+          id,
+          async_runs.Progress(tool.value_json(value)),
+          0,
+        )
+      }
+      "execution.delivery" -> {
+        use sequence <- result.try(args.int(request.args, "sequence"))
+        use endpoint <- result.try(args.string(request.args, "endpoint"))
+        use delivered <- result.try(args.bool(request.args, "delivered"))
+        use outcome <- result.try(case delivered {
+          True -> Ok(async_runs.Delivered)
+          False ->
+            args.string(request.args, "reason")
+            |> result.map(async_runs.Rejected)
+        })
+        served(
+          service,
+          strand,
+          id,
+          async_runs.Delivery(sequence:, endpoint:, outcome:),
+          0,
+        )
+      }
       _ -> fallback(request)
     }
   }
+}
+
+fn served(
+  service: address.Address(async_runs.Message),
+  strand: String,
+  id: String,
+  action: async_runs.Action,
+  within_ms: Int,
+) -> Result(satellite.CapPlan, satellite.CapDenial) {
+  Ok(
+    satellite.ServedHere(fn() {
+      case async_runs.interact(service, strand, id, action, within_ms) {
+        Ok(value) -> framing.CapOk(json_value(value))
+        Error(reason) -> framing.CapErr("execution_unavailable", reason)
+      }
+    }),
+  )
 }
 
 fn json_value(value: json.JsonValue) -> msgpack.MsgPackValue {

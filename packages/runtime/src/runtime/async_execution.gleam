@@ -55,6 +55,16 @@ pub type Execution {
   )
 }
 
+/// The immutable endpoint set a live execution has made ready.
+pub type Readiness {
+  Readiness(
+    /// Names accepted by later host-side sends.
+    endpoints: List(String),
+    /// Typed service idle interval; zero belongs only to legacy raw receive.
+    idle_within_ms: Int,
+  )
+}
+
 /// Names the one authoritative execution record.
 ///
 /// ## Examples
@@ -64,6 +74,107 @@ pub type Execution {
 /// ```
 pub fn key(id: String) -> String {
   prefix <> "record/" <> id
+}
+
+/// Names the immutable readiness fact published by the satellite.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert async_execution.readiness_key("abc") == "client/async/ready/abc"
+/// ```
+pub fn readiness_key(id: String) -> String {
+  prefix <> "ready/" <> id
+}
+
+/// Whether an endpoint name is bounded and safe in a durable fact.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert async_execution.valid_endpoint("control.main")
+/// ```
+pub fn valid_endpoint(name: String) -> Bool {
+  string.byte_size(name) > 0
+  && string.byte_size(name) <= 64
+  && list.all(string.to_graphemes(name), fn(char) {
+    string.contains("abcdefghijklmnopqrstuvwxyz0123456789._-", char)
+  })
+}
+
+/// Validates the complete endpoint set before it becomes immutable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert async_execution.valid_endpoints(["default"])
+/// ```
+pub fn valid_endpoints(endpoints: List(String)) -> Bool {
+  let count = list.length(endpoints)
+  count > 0
+  && count <= 16
+  && list.all(endpoints, valid_endpoint)
+  && list.length(list.unique(endpoints)) == count
+}
+
+/// Encodes one immutable readiness fact.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // async_execution.encode_readiness(Readiness(["default"], 0))
+/// ```
+pub fn encode_readiness(readiness: Readiness) -> JsonValue {
+  json.Object([
+    #("version", json.Int(1)),
+    #("endpoints", json.Array(list.map(readiness.endpoints, json.String))),
+    #("idle_within_ms", json.Int(readiness.idle_within_ms)),
+  ])
+}
+
+/// Decodes and validates one immutable readiness fact.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert async_execution.decode_readiness(json.Null) |> result.is_error
+/// ```
+pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
+  use fields <- result.try(case value {
+    json.Object(fields) -> Ok(fields)
+    _ -> Error("an object")
+  })
+  use version <- result.try(field(fields, "version"))
+  use Nil <- result.try(case version {
+    json.Int(1) -> Ok(Nil)
+    _ -> Error("readiness version 1")
+  })
+  use encoded <- result.try(field(fields, "endpoints"))
+  use endpoints <- result.try(case encoded {
+    json.Array(values) ->
+      list.try_map(values, fn(value) {
+        case value {
+          json.String(name) -> Ok(name)
+          _ -> Error("text endpoint names")
+        }
+      })
+    _ -> Error("an endpoint array")
+  })
+  use Nil <- result.try(case valid_endpoints(endpoints) {
+    True -> Ok(Nil)
+    False -> Error("one to sixteen unique bounded endpoint names")
+  })
+  use idle <- result.try(field(fields, "idle_within_ms"))
+  use idle_within_ms <- result.try(case idle {
+    json.Int(value) if value >= 0 && value <= 300_000 -> Ok(value)
+    _ -> Error("an idle interval from 0 to 300000 ms")
+  })
+  use Nil <- result.try(case endpoints, idle_within_ms {
+    ["default"], 0 -> Ok(Nil)
+    _, value if value > 0 -> Ok(Nil)
+    _, _ -> Error("zero idle only for the legacy default endpoint")
+  })
+  Ok(Readiness(endpoints:, idle_within_ms:))
 }
 
 /// Whether a handle can be used as one bounded fact-key component.

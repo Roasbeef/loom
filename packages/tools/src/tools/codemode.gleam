@@ -450,6 +450,9 @@ pub type Interaction {
 
   /// Append a JSON value to the execution's durable inbox.
   Send(value: JsonValue)
+
+  /// Append a JSON value to one registered typed endpoint.
+  SendTo(endpoint: String, value: JsonValue)
 }
 
 /// Host closures behind the asynchronous modes of code_mode.
@@ -472,10 +475,14 @@ fn async_properties(
         "mode",
         tool.enum_property(
           ["run", "launch", "send", "check", "join", "cancel"],
-          "run synchronously (default), or launch and interact with a background execution",
+          "run synchronously (default), or launch a fixed-lifetime background execution; check readiness before send",
         ),
       ),
       #("handle", tool.string_property("execution handle returned by launch")),
+      #(
+        "endpoint",
+        tool.string_property("registered endpoint targeted by send"),
+      ),
       #("value", json.Object([])),
     ]
   }
@@ -526,10 +533,13 @@ pub fn tools(mode: CodeMode) -> List(Tool) {
 /// one, and no digest-bound pre-image, the way `fs_edit` has one. A crash
 /// mid-execution must therefore synthesize an interrupted result rather
 /// than run the program a second time. `execution_mode: tool.Exclusive`
-/// for two reasons: a program may mutate the workspace, and the broker
-/// pools budget per `{op_id, step_id}` — a concurrent call in the same
-/// step would open that ledger with *its* budget, and a satellite needs
-/// two outstanding effects to exist at all.
+/// serializes one tool invocation's admission for two reasons: a program may
+/// mutate the workspace, and the broker pools budget per `{op_id, step_id}` —
+/// a concurrent call in the same step would open that ledger with *its*
+/// budget, and a satellite needs two outstanding effects to exist at all.
+/// A background launch returns after admission, so exclusivity ends with that
+/// invocation; the session-owned execution lifetime is bounded separately by
+/// live capacity, cumulative launch count, idle service and wall deadline.
 ///
 /// ## Examples
 ///
@@ -672,10 +682,23 @@ pub fn description(mode: CodeMode) -> String {
   <> "`report.text(...)` or `report.value(...)`. "
   <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
+  <> async_text(mode.background)
   <> recipes_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
   <> signatures_text(mode.seams)
+}
+
+fn async_text(background: Option(Background)) -> String {
+  case background {
+    None -> ""
+    Some(_) ->
+      " A background launch is admitted while readiness is `preparing`; "
+      <> "check for `ready` and its endpoints before send. A send sequence "
+      <> "confirms admission, not callback completion. Check exposes only "
+      <> "the latest volatile progress. Background lifetimes may overlap "
+      <> "and retain their original idle and wall limits."
+  }
 }
 
 // The legend the signature blocks need and cannot carry themselves.
@@ -938,7 +961,13 @@ fn interact(
       use value <- result.try(tool.optional_value(args, "value"))
       case value {
         None -> Error("send requires value")
-        Some(value) -> Ok(Send(value))
+        Some(value) -> {
+          use endpoint <- result.try(tool.optional_string(args, "endpoint"))
+          case endpoint {
+            None -> Ok(Send(value))
+            Some(endpoint) -> Ok(SendTo(endpoint, value))
+          }
+        }
       }
     }
     _ -> Error("unknown code_mode mode")
