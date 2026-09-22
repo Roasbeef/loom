@@ -1,5 +1,26 @@
 # Next
 
+## Goal inspector, September 21
+
+Phase 3 of the [TUI component pass](design-notes/tui-component-pass.md) is
+implemented at `39a735f5`. It adds a raised goal inspector that groups the
+server-owned status and cause, objective,
+budget consumption, age, latest check and output, and reviewer feedback. It uses
+the existing read, pause, and resume commands. Status controls appear only when
+applicable; pending requests disable them, and the panel never treats consumed
+budget as completion. Paging is independent of the preserved composer.
+
+All independent-review findings are closed, including stale-board retention,
+warning and scroll placement, palette entry, and compact geometry. Native QA
+typed and opened `/goal`, then verified 132×42, 80×24, and 40×12 layouts. End
+reached reviewer feedback, Home returned to the start, the wide gutter cleared,
+and a busy compact fixture retained status, objective, and controls while
+preserving the real editor and footer. The design note links the captures.
+
+The closing TUI gate passed 685 tests with exit zero in 9.15 seconds. It was
+incremental; the latest worker compile took 7.75 seconds. Hosted CI and a
+latest-head full-repository gate remain pending.
+
 ## Shared notes browser, September 21
 
 Phase 2 of the [TUI component pass](design-notes/tui-component-pass.md) is

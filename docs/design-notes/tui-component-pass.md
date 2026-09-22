@@ -1,10 +1,9 @@
 # TUI component pass
 
-Status: Phases 1 and 2 implemented, reviewed, and verified through `157c5207`,
-September 21, 2026. The implementation baseline is `ef469716` on PR 478. The PR
-is open and ready for review; it has no automatic merge. This note records
-settled scope and the evidence each phase must produce. Later phases remain
-planned.
+Status: Phases 1 through 3 verified through `39a735f5`, September 21, 2026. The
+implementation baseline is `ef469716` on PR 478. The PR is open and ready for
+review; it has no automatic merge. This note records settled scope and the
+evidence each phase must produce. Later phases remain planned.
 
 ## Purpose and constraints
 
@@ -141,12 +140,39 @@ must show its required budget fields and consumed amount; budget unavailability
 belongs to an unavailable board, not to missing fields on a pinned goal. Cover
 check and reviewer absence, explicit Pause/Resume dispatch, and narrow rendering.
 
+### Phase 3 evidence
+
+Commit `39a735f5` adds a raised, independently paged goal inspector.
+It groups status and cause, objective, token and cost consumption, continuation
+count, pinned and updated ages, the latest check and its output, and reviewer
+feedback. `r` uses the existing `goal_get` read, `p` uses the existing pause
+command only for Active, and `c` uses the existing resume command only for
+Paused or Limited. PgUp, PgDn, Home, and End own the viewport; Escape restores
+the unchanged composer. While a correlated request is pending, the card disables
+actions and waits for the server board rather than predicting a transition. On
+a busy 40×12 fixture, the goal temporarily owns the space otherwise consumed by
+status bands while preserving the actual editor and footer, so status, objective,
+and controls remain visible.
+
+Independent review findings, including stale-board retention, warning and scroll
+placement, and compact geometry, are closed. Native QA typed `/goal` and pressed
+Enter through the real palette path, then inspected 132×42, 80×24, and 40×12.
+End reached reviewer feedback, Home returned to the start, the wide gutter was
+clear, and the compact busy fixture retained status, objective, and controls.
+The [wide capture](tui-agent-workspace/goals-component.png) and
+[40×12 capture](tui-agent-workspace/goals-component-40.png) have adjacent ANSI
+recordings.
+
+The closing TUI gate passed all 685 tests with exit zero in 9.15 seconds. It was
+incremental; the latest worker compile took 7.75 seconds.
+
 ## Phase 4: queued inputs
 
 Make queue, steer, and read-only state visible as text badges. Selecting an item
-shows its complete fetched message and makes the existing revision-safe edit
-actions easy to find. Preserve the current fetch-before-edit, authoritative
-revision fence, conflict handling, and retained local draft in
+shows its explicitly captured excerpt and makes the existing revision-safe edit
+actions easy to find. The complete document remains available through the
+existing fetch-and-edit path; a read-only item cannot fetch it. Preserve the
+current fetch-before-edit, authoritative revision fence, conflict handling, and retained local draft in
 [`queue_editor`](../../packages/tui/src/tui/queue_editor.gleam). Presentation
 must not add a deletion, reorder, replacement, or delivery capability.
 
@@ -187,10 +213,11 @@ omitted jobs, refresh transitions, stable selection, and narrow layout.
 
 ## Evidence ledger
 
-Phases 1 and 2 are verified by commits `27da4a7d` and `157c5207`, their closing
-TUI gates, native captures, and independently confirmed review repairs recorded
-above. For later phases, focused and full gate results, timings, native captures,
-review findings, and commit IDs remain pending. The final documentation refresh
+Phases 1 through 3 are verified by commits `27da4a7d`, `157c5207`, and
+`39a735f5`, their closing TUI gates, native captures, and independently confirmed
+review repairs recorded above. For later phases, focused and full gate results,
+timings, native captures, review findings, and commit IDs remain pending. The
+final documentation refresh
 must repair the known line-citation drift in `docs/architecture/advisor.md` and
 add the new panels to the `docs/architecture/client.md` code-location table.
 Avoid churning those anchors between phases. The final full-repository gate and

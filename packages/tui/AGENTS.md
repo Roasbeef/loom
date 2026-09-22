@@ -862,6 +862,18 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   an existing operator-facing footer notice, and sending a background `goal_get`
   preserves it too. An explicit `/goal` still reports its own send while it waits
   for the board.
+  The explicit observation opens `focused_goal_panel`, which groups the
+  server-owned status and cause, objective, budget consumption, age, latest
+  check and output, and reviewer feedback in one raised card. Its viewport owns
+  PgUp, PgDn, Home and End; `r` requests the existing read, and Escape returns to
+  the unchanged composer. An Active board offers `p` through the existing pause
+  command. Paused and Limited boards offer `c` through the existing resume
+  command. NoGoal and Complete offer neither. A pending correlated request
+  disables actions until its board arrives. These controls add no authority or
+  wire message, and budget consumption is never presented as completion. When
+  status bands would leave no body at 40×12, the goal temporarily uses their
+  area while preserving the actual editor and footer. Status, objective, and
+  controls therefore remain inspectable in the compact busy layout.
 - **A new observation command must be taught to every command-name table
   by hand — the compiler checks none of them.** `advisor_pending` needed
   three, and missing one is not cosmetic: `tui/session_channel`'s
