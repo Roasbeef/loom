@@ -6,7 +6,28 @@ compiler's own view of what it will accept, which is the only source that
 cannot drift from what a submitted program is compiled against. Output is
 the body of `packages/tools/src/tools/prelude.gleam`: one rendered block
 per module, keyed by module name, for `tools/codemode` to filter through
-a seam's allowlist and paste into the `code_mode` description.
+a seam's allowlist and show to a model.
+
+Two renderings of the same modules, in the same order, because the two
+readers want different amounts of it. `surfaces` is the whole public
+surface and is what `fs_read` of `cap://<module>` reads out on demand.
+`type_surfaces` is the same block cut after the `pub type` declarations —
+the heading, the module's purpose line, and the types with their docs —
+and is what the `code_mode` description carries. Each `type_surfaces`
+entry is a character-for-character prefix of its `surfaces` counterpart,
+so the block a model reads on demand extends the block it was shown
+instead of restating it in different words.
+
+The cut is where it is because of what the two cost. A description is the
+byte prefix of the provider's cached region, paid on every request of
+every strand for the life of the session, and function signatures are the
+bulk of a module. A signature a program needs can be read when it is
+needed, and the read lands in the conversation tail rather than the
+prefix. A type is different: `proc.run` returns a `proc.Output`, and a
+program that cannot name the `stdout` field cannot read the output it
+just paid for — a model that skips the read and guesses a field name pays
+a compile either way, so the declarations stay where they cannot be
+missed.
 
 Nothing here decides *which* modules a seam admits. This renders every
 module the interface reports, `cap/runtime` included; the allowlist filter
@@ -24,8 +45,7 @@ match against the language it is emitting needs no legend beyond the two
 sentences `tools/codemode` states, and a bespoke notation would need
 teaching in the same bytes it saved.
 
-Three deliberate omissions, each measured over the nine workspace modules
-(characters, and tokens at the usual four-characters-per-token estimate):
+Three deliberate omissions keep the rendered blocks focused on callable APIs:
 
   * **Parameter names.** The interface carries a parameter's *label* and
     not its name, because the label is all a caller may write. A labelled
@@ -33,30 +53,25 @@ Three deliberate omissions, each measured over the nine workspace modules
     bare type. Inventing names for the unlabelled ones would read as
     labels and teach a call the compiler rejects, which is the one
     failure this rendering exists to prevent.
-  * **`## Examples` sections** (1,014 chars, ~250 tok). These are the
+  * **`## Examples` sections**. These are the
     prelude's doctests. They are assertions about return values that the
     signature above them already states, they exist to be run rather than
     read, and they are the one part of a doc comment written for a
     maintainer instead of a caller. Everything before the first `#`
     heading is kept in full — including the `Capability: \\`fs.read\\`.`
     line, which names the exact capability a refusal will cite.
-  * **All but the first sentence of a module's own doc** (7,900 of 8,850
-    chars, ~1,970 tok). A module doc runs to the design rationale — Rule
+  * **All but the first sentence of a module's own doc**. A module doc runs to the design rationale — Rule
     Zero, the two-channel doctrine, what a satellite's death means — which
     is written for someone changing the prelude, not for someone calling
     it. The first sentence is the house convention's purpose line
     (`\\`cap/fs\\` — workspace filesystem access, as typed calls over the
     broker.`) and carries the whole of what a caller needs to choose
-    between modules. The reader loses the "why"; it gains nine modules of
-    "what" for the price of one module's preamble.
+    between modules. The reader loses design rationale from this API view
+    while retaining the module's purpose and callable declarations.
 
-Type declarations *are* included, at about 1,640 tok per seam, and that is
-the largest single line item here. They were not in the estimate this work
-was scoped against (issue #36 measured function signatures and their docs
-alone). They are not optional: `proc.run` returns a `proc.Output`, and a
-program that cannot name the `stdout` field cannot read the output it just
-paid for. A signature without the record it returns is a contract half
-stated.
+The omissions above apply to both renderings, since the shorter block is
+a cut of the full one. `tools/codemode` chooses which offered modules
+appear in the description and which are available through `cap://`.
 """
 
 import json
@@ -201,12 +216,23 @@ def parameter_list(parameters, here, aliases):
 
 
 def render_module(module, body, aliases, all_modules):
-    lines = ["### " + module]
+    """One module, rendered twice: the whole surface and its types alone.
+
+    The two renderings are the same lines cut at one point, not two
+    passes: `header` is the heading and the purpose line, `types` the
+    `pub type` declarations, and `rest` the constants and functions. The
+    description pastes header + types and the `cap://` scheme reads out
+    all three, so the block a model reads on demand is a superset of the
+    block it was shown, character for character, rather than a second
+    rendering that can disagree with the first.
+    """
+    header = ["### " + module]
     summary = paragraphs(body.get("documentation"))
     if summary:
-        lines.extend(textwrap.wrap(first_sentence(summary[0]), WIDTH))
-    lines.append("")
+        header.extend(textwrap.wrap(first_sentence(summary[0]), WIDTH))
+    header.append("")
 
+    lines = []
     for name in sorted(body.get("type-aliases", {})):
         alias = body["type-aliases"][name]
         lines.extend(doc_block(alias.get("documentation"), ""))
@@ -250,6 +276,8 @@ def render_module(module, body, aliases, all_modules):
             lines.append("  " + constructor["name"] + suffix)
         lines.append("}")
 
+    types = lines
+    lines = []
     for name in sorted(body.get("constants", {})):
         constant = body["constants"][name]
         lines.extend(doc_block(constant.get("documentation"), ""))
@@ -270,7 +298,10 @@ def render_module(module, body, aliases, all_modules):
             + render_type(function["return"], module, aliases)
         )
 
-    return "\n".join(lines).rstrip() + "\n"
+    rest = lines
+    whole = "\n".join(header + types + rest).rstrip() + "\n"
+    typed = "\n".join(header + types).rstrip() + "\n"
+    return whole, typed
 
 
 def gleam_string(text):
@@ -291,11 +322,14 @@ def main():
     modules = interface["modules"]
     aliases = build_alias_map(modules)
 
-    entries = []
+    whole_entries, typed_entries = [], []
     for module in sorted(modules):
-        rendered = render_module(module, modules[module], aliases, set(modules))
-        entries.append(
-            "  #(" + gleam_string(module) + ", " + gleam_string(rendered) + "),"
+        whole, typed = render_module(module, modules[module], aliases, set(modules))
+        whole_entries.append(
+            "  #(" + gleam_string(module) + ", " + gleam_string(whole) + "),"
+        )
+        typed_entries.append(
+            "  #(" + gleam_string(module) + ", " + gleam_string(typed) + "),"
         )
 
     out = sys.stdout
@@ -309,9 +343,33 @@ def main():
         "/// decides what a model is shown is the one place that already\n"
         "/// knows what vetting will accept. `cap/runtime` is in here and is\n"
         "/// on neither seam's allowlist; it must never reach a description.\n"
+        "///\n"
+        "/// This is the whole surface, which is what `cap://<module>` reads\n"
+        "/// out on demand. What the tool description carries is the shorter\n"
+        "/// `type_surfaces` below.\n"
         "pub const surfaces: List(#(String, String)) = [\n"
     )
-    out.write("\n".join(entries))
+    out.write("\n".join(whole_entries))
+    out.write("\n]\n\n")
+    out.write(
+        "/// The same modules in the same order, cut after their `pub type`\n"
+        "/// declarations: the heading, the module's purpose line, and the\n"
+        "/// types with their docs, and nothing else.\n"
+        "///\n"
+        "/// This is what the `code_mode` description renders. A description\n"
+        "/// is the byte prefix of the provider's cached region, paid on\n"
+        "/// every request of every strand, and the functions are the bulk of\n"
+        "/// a module's surface while the types are what a program cannot\n"
+        "/// work around: a signature can be read from `cap://<module>` when\n"
+        "/// it is wanted, but a field name guessed wrong is a compile the\n"
+        "/// model pays for either way.\n"
+        "///\n"
+        "/// Each entry is a prefix of its `surfaces` counterpart, so the\n"
+        "/// block a model reads on demand extends the block it was shown\n"
+        "/// rather than restating it differently.\n"
+        "pub const type_surfaces: List(#(String, String)) = [\n"
+    )
+    out.write("\n".join(typed_entries))
     out.write("\n]\n")
 
 
