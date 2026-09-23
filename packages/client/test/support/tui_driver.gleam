@@ -19,6 +19,7 @@ import tui/attachment
 import tui/connection
 import tui/frame
 import tui/inbound
+import tui/interaction
 import tui/model as tui_model
 import tui/session_channel
 import tui/session_control
@@ -147,7 +148,7 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
       continue(Driver(..driver, model: run.final))
     }
     Candidate(message) -> {
-      let run = run(tui.accept_candidate_event(model, message), [])
+      let run = run(interaction.accept_candidate_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Catalogue(message) -> {

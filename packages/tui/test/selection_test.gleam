@@ -3,8 +3,8 @@ import etui/geometry.{Position}
 import etui/style
 import gleam/list
 import gleam/string
-import tui
 import tui/frame
+import tui/interaction
 import tui/selection
 import tui/theme
 
@@ -114,7 +114,7 @@ pub fn transcript_copy_drops_layout_gutters_but_keeps_indentation_test() {
     selection.start(screen, Position(0, 0))
     |> selection.extend(Position(23, 3))
 
-  assert tui.transcript_selection_text(buf, selected, [
+  assert interaction.transcript_selection_text(buf, selected, [
       #(1, 2),
       #(2, 2),
       #(3, 3),
@@ -126,13 +126,14 @@ pub fn transcript_copy_drops_layout_gutters_but_keeps_indentation_test() {
   let partial =
     selection.start(screen, Position(1, 1))
     |> selection.extend(Position(23, 2))
-  assert tui.transcript_selection_text(buf, partial, [#(1, 2), #(2, 2)])
+  assert interaction.transcript_selection_text(buf, partial, [#(1, 2), #(2, 2)])
     == "continued\n  authored"
 
   let gutter_only =
     selection.start(screen, Position(0, 1))
     |> selection.extend(Position(1, 1))
-  assert tui.transcript_selection_text(buf, gutter_only, [#(1, 2)]) == ""
+  assert interaction.transcript_selection_text(buf, gutter_only, [#(1, 2)])
+    == ""
 }
 
 pub fn the_clipboard_write_is_osc_52_over_base64_test() {

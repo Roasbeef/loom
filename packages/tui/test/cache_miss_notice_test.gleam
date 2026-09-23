@@ -24,6 +24,7 @@ import tui/cache_miss
 import tui/connection
 import tui/frame
 import tui/inbound
+import tui/interaction
 import tui/model as tui_model
 import tui/protocol
 import tui/render
@@ -540,7 +541,7 @@ fn adopt_session(model: tui_model.Model, session: String) -> tui_model.Model {
     )
   let assert [session_channel.Captured(cut, view, _)] = updates
     as "the switch's first cut is fully validated"
-  tui.candidate_outcome(
+  interaction.candidate_outcome(
     model,
     attachment.idle(),
     Some(attachment.Adopted(

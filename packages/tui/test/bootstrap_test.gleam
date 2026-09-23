@@ -21,6 +21,7 @@ import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol as control
 import tui/daemon/selection
 import tui/inbound
+import tui/interaction
 import tui/model as tui_model
 import tui/session_channel
 import tui/session_control
@@ -526,7 +527,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     switched
     as "the terminal validates the bounded capture before actual adoption"
   let adopted =
-    tui.candidate_outcome(creating, attachment.idle(), Some(switched))
+    interaction.candidate_outcome(creating, attachment.idle(), Some(switched))
   assert adopted.current_model == "fixture"
   assert text_area.value(adopted.input) == "retained draft"
   assert adopted.creation_key == None
@@ -678,7 +679,11 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert reopened_name == saved.name
   assert reopened_cut.attachment.expected.epoch != target.expected.epoch
   let readopted =
-    tui.candidate_outcome(reattaching, attachment.idle(), Some(reopened))
+    interaction.candidate_outcome(
+      reattaching,
+      attachment.idle(),
+      Some(reopened),
+    )
   assert readopted.session == adopted.session
   assert text_area.value(readopted.input) == "retained draft"
   assert_build_notice(readopted)

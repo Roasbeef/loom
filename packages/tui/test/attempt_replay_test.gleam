@@ -31,6 +31,7 @@ import tui/frame
 import tui/goal_view
 import tui/history_view
 import tui/inbound
+import tui/interaction
 import tui/model as tui_model
 import tui/protocol
 import tui/recording
@@ -1049,7 +1050,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
       goal_request: Some(43),
     )
   let failed =
-    tui.candidate_outcome(
+    interaction.candidate_outcome(
       model,
       attachment.idle(),
       Some(attachment.Failed("replacement refused")),
@@ -1069,7 +1070,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   let assert [session_channel.Captured(cut, view, _)] = updates
     as "replacement first cut was fully validated"
   let adopted =
-    tui.candidate_outcome(
+    interaction.candidate_outcome(
       model,
       attachment.idle(),
       Some(attachment.Adopted(
@@ -1125,7 +1126,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   let assert [session_channel.Captured(cut, view, _)] = updates
     as "the original session is independently captured again"
   let returned =
-    tui.candidate_outcome(
+    interaction.candidate_outcome(
       adopted,
       attachment.idle(),
       Some(attachment.Adopted(
@@ -1171,7 +1172,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
   let assert [session_channel.Captured(cut, view, _)] = updates
     as "B has a validated first cut"
   let adopted =
-    tui.candidate_outcome(
+    interaction.candidate_outcome(
       model,
       attachment.idle(),
       Some(attachment.Adopted(
@@ -1695,7 +1696,7 @@ fn receive_session(model, session) {
     )
   let assert [session_channel.Captured(cut, view, _)] = updates
     as "the selected session provides a fully credited cut"
-  tui.candidate_outcome(
+  interaction.candidate_outcome(
     model,
     attachment.idle(),
     Some(attachment.Adopted(

@@ -28,6 +28,7 @@ import tui/connection
 import tui/frame
 import tui/image_drop
 import tui/inbound
+import tui/interaction
 import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/layout
@@ -440,8 +441,8 @@ pub fn slash_command_palette_filters_and_completes_test() {
   assert list.map(command.suggestions("/effort hi"), fn(s) { s.command })
     == ["/effort high"]
   assert command.suggestions("/effort nope") == []
-  assert tui.command_palette_escape(keys.Escape)
-  assert !tui.command_palette_escape(keys.Char("x"))
+  assert interaction.command_palette_escape(keys.Escape)
+  assert !interaction.command_palette_escape(keys.Char("x"))
 }
 
 pub fn models_test() {
@@ -874,9 +875,9 @@ fn symbol_row(
 }
 
 pub fn transcript_scroll_clamps_at_the_live_tail_test() {
-  assert tui.scroll_offset(12, True, 3) == 15
-  assert tui.scroll_offset(12, False, 3) == 9
-  assert tui.scroll_offset(2, False, 3) == 0
+  assert interaction.scroll_offset(12, True, 3) == 15
+  assert interaction.scroll_offset(12, False, 3) == 9
+  assert interaction.scroll_offset(2, False, 3) == 0
 }
 
 pub fn transcript_scroll_clamps_at_the_oldest_viewport_test() {
@@ -1963,7 +1964,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
   let assert Some(selected) = run.final.selection
   let assert Some(original) = run.final.selection_frame
   let copied =
-    tui.transcript_selection_text(
+    interaction.transcript_selection_text(
       original,
       selected,
       run.final.selection_gutters,
@@ -1997,7 +1998,11 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
 
   // This range begins after the speaker gutter, inside the code's authored
   // indentation. Its actual cached prefix must not trim any selected text.
-  assert tui.transcript_selection_text(drawn, partial, selection_gutters)
+  assert interaction.transcript_selection_text(
+      drawn,
+      partial,
+      selection_gutters,
+    )
     == selection.text(drawn, partial)
 
   let backwards =
@@ -2020,7 +2025,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let assert Ok(run) = tui.run_script(model, backwards)
   let assert Some(selected) = run.final.selection
   let assert Some(original) = run.final.selection_frame
-  assert tui.transcript_selection_text(
+  assert interaction.transcript_selection_text(
       original,
       selected,
       run.final.selection_gutters,
