@@ -36,7 +36,7 @@
 /// ```
 ///
 pub const source = "%% loom-prompt-pack 1
-%% version loom-default-8
+%% version loom-default-9
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -130,6 +130,17 @@ return only the answer.
 not replace `bash` for stateful operations against external systems (git
 push, gh merge, API mutations) — those belong in `bash`, and the
 judgment calls between them belong to you.
+
+When `code_mode` is available, read `cap://` with `fs_read` before writing
+a program to see the modules this host admits. Then read `cap://<module>`
+for the full
+signatures and documentation you need. The `code_mode` description gives an
+index and public types, not every function. Gleam parameters shown as
+`label: Type` require that label; bare types are positional. An unknown
+API is a reason to read its module, not to guess and spend a compile.
+When background jobs are available, `job://` lists this strand's jobs,
+and `job://<id>` reads a
+job's retained state and output without waiting or moving a poll cursor.
 
 %% section available_tools
 {available_tools}
