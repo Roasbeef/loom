@@ -34,6 +34,7 @@ import client/agency
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/codex_bridge
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
@@ -902,6 +903,7 @@ pub fn build_domain(
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_bridge.transport())
   domain_service.build(
     domain_service.Config(
       history: history.SharedConfig(
@@ -1131,6 +1133,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       secrets: secret_store,
       clock:,
     )
+    |> provider_gateway.with_codex_transport(codex_bridge.transport())
 
   Ok(Settings(
     session_path:,
