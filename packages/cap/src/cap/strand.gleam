@@ -1,16 +1,11 @@
-//// `cap/strand` — the orchestration seam: starting, joining, and
-//// addressing other agents from inside a code-mode program.
+//// `cap/strand` starts, joins, and addresses other agents from inside a
+//// code-mode program.
 ////
-//// This is the second of the prelude's two seams. A *workspace* program
-//// holds `cap/{fs, proc, net, git, lsp, report, task, actor, kv}` and
-//// orchestrates effects; an *orchestration* program holds this module and
-//// reporting, execution input, peer communication and named workflows,
-//// and orchestrates agents. Which
-//// capabilities travel together is the whole of the separation: an
-//// orchestrator that could also write files would be a materially worse
-//// thing to hand a model than one that cannot, so vetting judges a
-//// submission against one allowlist or the other and refuses a program
-//// that reaches into both (`codemode/vet/policy`).
+//// The default host admits this module in both workspace and orchestration
+//// mode. A program can inspect files, run tools, and start child strands in
+//// one jailed execution. An explicitly effect-only host has no Agency
+//// custody and rejects this import (`codemode/vet/policy`). Every call is
+//// still judged against the current strand's lineage and resource limits.
 ////
 //// # Why this exists at all
 ////

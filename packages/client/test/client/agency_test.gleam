@@ -2244,6 +2244,9 @@ fn async_satellite(
   let workspace = "/var/tmp/lac-" <> suffix
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
     as "the shallow socket workspace must exist"
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/README.md", "Test workspace contents.\n")
+    as "the combined program must read a real workspace file"
   let wall = clock.from_function(ffi_os.system_time_ms)
   let harness =
     start_harness_on(HoldsParent, fn(config) { config }, wall, wall, fn(sess) {
@@ -2933,8 +2936,26 @@ pub fn async_real_workflow_reuses_named_children_test_() -> AsyncEunitTest {
   })
 }
 
+pub fn workspace_mode_combines_files_and_named_children_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the package path exists"
+    let repo = here <> "/../.."
+    let assert Ok(toolchain) = codemode.discover(repo <> "/build/codemode-seed")
+      as "the real workflow test needs make codemode-seed"
+    async_satellite(
+      repo,
+      toolchain,
+      codemode_tool.WorkspaceSeam,
+      async_workflow_program(),
+      NamedWorkflow,
+    )
+  })
+}
+
 fn async_workflow_program() -> String {
-  "import cap/workflow
+  "import cap/fs
+import cap/workflow
 import cap/strand
 import cap/report
 import gleam/result
@@ -2947,6 +2968,7 @@ pub fn main() -> report.Outcome {
 }
 
 fn run() -> Result(Nil, String) {
+  use _readme <- result.try(fs.read(\"README.md\") |> result.map_error(fn(_) { \"workspace read refused\" }))
   let assignment = strand.assignment(purpose: \"security\", brief: \"Review the protocol\")
   use first <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment))
   use second <- result.try(workflow.step(\"review-e2e\", \"v1\", \"commit-a\", \"security\", assignment))

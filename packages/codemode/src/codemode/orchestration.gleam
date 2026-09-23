@@ -1,11 +1,11 @@
-//// The orchestration seam's capability router: `cap/strand` calls,
-//// serviced by the Agency closures the `agent_*` tools already call.
+//// The child-operation capability router: `cap/strand` calls serviced by
+//// the Agency closures the `agent_*` tools already call.
 ////
 //// # What this is, and what it deliberately is not
 ////
-//// A code-mode program on the orchestration seam holds `cap/strand` and
-//// `cap/report` and nothing else (`codemode/vet/policy.orchestration`).
-//// Every `strand.*` frame it sends arrives here, is decoded into the
+//// Both default code-mode program modes can import `cap/strand` alongside
+//// workspace effects (`codemode/vet/policy`). Every `strand.*` frame arrives
+//// here, is decoded into the
 //// vocabulary `tools/agent` declares, and is handed to one of the six
 //// `Agency` closures — the same record, the same closures, the same
 //// `Caller`-judged decisions that a model's own `agent_spawn` reaches.
@@ -348,7 +348,7 @@ pub fn router(seam: Orchestration) -> CapRouter {
           code: "unsupported_cap",
           message: "capability "
             <> other
-            <> " is not on the orchestration seam, which services only "
+            <> " is not handled by the child-operation router, which services "
             <> string.join(serviced_caps, ", "),
         ))
     }

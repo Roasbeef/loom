@@ -27,21 +27,15 @@
 //// model-written Gleam, and so would import an untrusted writer into a
 //// plane built for trusted ones — was answered rather than dropped, and
 //// the risk it named is still the reason the answer looks as it does.
-//// `cap/strand` exists now, on the **orchestration seam**: a code-mode
-//// allowlist of `cap/strand` and `cap/report` and nothing else, whose
-//// calls are serviced by these same Agency closures, judged against the
-//// same `Caller`, under the same descendant-only addressing rule and the
-//// same caps. What makes that safe is confinement, not trust — the seam
-//// carries no filesystem, no process, no network, so the untrusted
-//// writer on the far side of it reaches the store through exactly the
-//// door a model's own `agent_send` reaches it through and through no
-//// other. The one rule the seam adds is the one thing that changes when
-//// a loop replaces a turn: a lifetime ceiling on spawn admissions per
-//// execution, because `agent_spawn` is throttled by the cost of a
-//// provider round trip and a loop pays nothing.
-//// (`docs/design-notes/orchestration-comparison.md`, "The verdict:
-//// connect them, through a second seam"; `docs/architecture/code-mode.md`,
-//// "Two seams, and why the sets are disjoint".)
+//// `cap/strand` now runs in either default program mode. Its calls reach
+//// these same Agency closures under the same `Caller`, descendant-only
+//// addressing rule and admission caps. A program may also hold filesystem
+//// and process capabilities, but those still pass through the broker and
+//// satellite jail. A loop replacing turns adds one explicit rule: a ceiling
+//// on spawn admissions per execution, since `agent_spawn` otherwise pays a
+//// provider round trip per call and a loop does not. Protocol 048 records
+//// the wider import set; `docs/architecture/code-mode.md` describes how the
+//// host advertises and routes it.
 ////
 //// ## What the model is never allowed to say
 ////

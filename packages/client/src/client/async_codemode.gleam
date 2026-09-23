@@ -104,11 +104,7 @@ fn launch(
       fixed_deadline: Some(record.deadline_ms),
       wrap_router: fn(bound, router) {
         let router = config.wrap_router(bound, router)
-        let router = case request.seam {
-          tool.OrchestrationSeam ->
-            workflows.router(agents, custody, request, router)
-          tool.WorkspaceSeam -> router
-        }
+        let router = workflows.router(agents, custody, request, router)
         input_router(service, request.strand, id, router)
       },
     )

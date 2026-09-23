@@ -10,10 +10,10 @@
 ////
 //// ## Which seam a submission is judged against
 ////
-//// There is not one allowlist but two, and a submission is judged
-//// against exactly one of them: the **workspace** seam, a program that
-//// orchestrates effects, and the **orchestration** seam, a program that
-//// orchestrates agents (`docs/architecture/code-mode.md`, "Two seams").
+//// A submission is judged against one installed mode. On the default
+//// server, both **workspace** and **orchestration** admit the full effect
+//// and child-operation capability set. An operator may install a narrower
+//// workspace-only host (`docs/architecture/code-mode.md`, "Two seams").
 //// Which of them a host serves is the host's decision; which of the ones
 //// it serves a *submission* wants is the model's, named in the call's
 //// `seam` argument and defaulting to whichever the host put first.
@@ -93,12 +93,11 @@ pub const tool_name = "code_mode"
 /// variants and no third, because "which capabilities travel together"
 /// is a decision the vetting policy makes and this side only names.
 pub type Seam {
-  /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`: a program
-  /// that orchestrates *effects*.
+  /// The default program mode, with effects and child operations.
   WorkspaceSeam
 
-  /// Children and named workflows with reporting and communication: a program that
-  /// orchestrates *agents*.
+  /// An alternate program mode with the same full capability set on the
+  /// default server.
   OrchestrationSeam
 }
 
@@ -648,15 +647,10 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 /// dearest, so paying the prefix once beats paying a rewrite per
 /// unfamiliar program.
 ///
-/// Two full lists were rejected too, and for a plainer reason: the seams
-/// differ only in their `cap/*` modules and share the whole pure
-/// standard-library subset, so printing both in full duplicates a dozen
-/// module names and hands the model two long lists to diff for the
-/// difference that matters. The shared part is therefore stated once and
-/// each seam names only what it adds — derived from the offers rather
-/// than asserted, so it cannot go stale. A host serving one seam renders
-/// exactly the sentence it rendered before seams were selectable: the
-/// extra bytes are paid by the hosts that actually offer the choice.
+/// The default server's two modes admit the same imports and serviced
+/// capabilities, so their common list is stated once. If an installed host
+/// offers different modes, shared imports are still stated once and each
+/// mode names only what it adds. Both forms derive from the live offers.
 ///
 /// The prelude's own signatures are appended after all of that, on the
 /// same per-seam split and for a related reason; `signatures_text` has
@@ -680,16 +674,33 @@ pub fn description(mode: CodeMode) -> String {
   <> "switch to a program: fetch once, filter internally, return the "
   <> "answer. Write `pub fn main() -> report.Outcome`, returning "
   <> "`report.text(...)` or `report.value(...)`. "
+  <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
-  <> async_text(mode.background)
+  <> async_text(mode.background, mode.seams)
   <> recipes_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
   <> signatures_text(mode.seams)
 }
 
-fn async_text(background: Option(Background)) -> String {
+// State the combined surface only when one installed offer actually admits
+// both halves. Explicit effect-only hosts must never promise child custody.
+fn composition_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/fs")
+      && list.contains(offer.allowed_imports, "cap/strand")
+    })
+  {
+    True ->
+      "You can combine workspace effects and child operations in one program; "
+      <> "omitting `seam` uses the default offer. "
+    False -> ""
+  }
+}
+
+fn async_text(background: Option(Background), seams: Seams) -> String {
   case background {
     None -> ""
     Some(_) ->
@@ -698,6 +709,27 @@ fn async_text(background: Option(Background)) -> String {
       <> "confirms admission, not callback completion. Check exposes only "
       <> "the latest volatile progress. Background lifetimes may overlap "
       <> "and retain their original idle and wall limits."
+      <> case
+        list.any(offered(seams), fn(offer) {
+          list.contains(offer.allowed_imports, "cap/execution")
+        })
+      {
+        True ->
+          " Background launches service execution.ready, execution.receive, "
+          <> "execution.receive_enveloped, execution.progress, and "
+          <> "execution.delivery."
+        False -> ""
+      }
+      <> case
+        list.any(offered(seams), fn(offer) {
+          list.contains(offer.allowed_imports, "cap/workflow")
+        })
+      {
+        True ->
+          " workflow.step is serviced only inside a background execution; "
+          <> "a synchronous call has no workflow custody."
+        False -> ""
+      }
   }
 }
 
@@ -726,18 +758,16 @@ const signature_legend = "Each module's public surface, as the compiler reports 
 //
 // The blocks are generated (`tools/prelude`, `make gen-prelude`) and
 // rendered here, so these are the whole description as it goes on the
-// wire, measured rather than estimated. Against the real allowlists a
-// workspace-only host renders 37,167 bytes — about 9,300 tokens at the
-// usual four-bytes-per-token estimate — an orchestration-only host
-// 16,628 (~4,200), and a host serving both 49,402 (~12,400), in which
-// the `cap/report` block the two seams share is stated once.
+// wire. A host offering both default modes renders shared module surfaces
+// once; generated host-specific modules are included under the modes that
+// actually admit them.
 //
 // `cap/job` is the largest single block in the prelude and 7,823 bytes
-// (~1,950 tokens) of the two figures that carry it: a job's `Exit`
+// (~1,950 tokens) of the descriptions that carry it: a job's `Exit`
 // record and the six `State` variants are most of it, and they are
 // there for the reason the `pub type` argument below gives — a program
 // that cannot name `Exited` cannot tell a finished job from a killed
-// one. The orchestration seam does not admit it and is unchanged by it.
+// one. Both modes on the default server admit it.
 //
 // That is above the ~2,100/~1,900 the work was scoped against, and the
 // whole of the difference is the `pub type` declarations: issue #36
@@ -778,9 +808,8 @@ fn render_section(section: #(String, String)) -> String {
 
 // The same split the import lists take, applied to the same lists: the
 // modules every offered seam allows are rendered once, and each seam
-// renders only what it adds. An orchestration-only host therefore pays
-// for `cap/strand` and `cap/report` and for none of the other nine, and
-// a host serving both pays for `cap/report` once rather than twice.
+// renders only what it adds. The default server shares the whole shipped
+// capability surface between its two modes.
 //
 // A single-seam host renders one unheaded block, so its description is
 // the description it rendered before, with the surfaces appended and no
@@ -791,29 +820,53 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
     _alternates -> {
       let offers = offered(seams)
       let shared = shared_imports(offers)
+      let shared_extra = shared_extra_surfaces(offers)
       let added =
         list.map(offers, fn(offer) {
           let own =
             list.filter(offer.allowed_imports, fn(module) {
               !list.contains(shared, module)
             })
+          let own_extra =
+            list.filter(offer.extra_surfaces, fn(surface) {
+              !list.contains(shared_extra, surface)
+            })
           #(
             "## Only on the `" <> seam_name(offer.seam) <> "` seam",
-            seam_surface(offer, own),
+            seam_surface(SeamOffer(..offer, extra_surfaces: own_extra), own),
           )
         })
-      [#("## On every seam", surface_text(shared)), ..added]
+      [
+        #(
+          "## On every seam",
+          string.join([surface_text(shared), ..shared_extra], "\n"),
+        ),
+        ..added
+      ]
     }
+  }
+}
+
+// Host-generated modules may be offered on both modes. Render the common
+// surface once; a surface present on only one mode stays under that mode.
+fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
+  case offers {
+    [] -> []
+    [first, ..rest] ->
+      list.filter(first.extra_surfaces, fn(surface) {
+        list.all(rest, fn(offer) {
+          list.contains(offer.extra_surfaces, surface)
+        })
+      })
   }
 }
 
 // One seam's rendered surface: the committed blocks for the prelude
 // modules it admits, then whatever this host generated for it.
 //
-// The host's blocks come last and are never folded into the shared
-// section, however many seams are offered. A generated module belongs to
-// exactly the seam whose allowlist names it — nothing generates onto two
-// — so "shared" would be a claim about the other seam that no host makes.
+// Host-generated blocks follow the committed prelude. A block shared by
+// all installed modes is rendered once, and a mode-specific block stays
+// under that mode.
 fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
   [surface_text(modules), ..offer.extra_surfaces]
   |> list.filter(fn(block) { block != "" })
@@ -825,9 +878,8 @@ fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
 //
 // The filter runs the allowlist over the artifact rather than the
 // artifact over the allowlist, and that direction is the security-
-// relevant one. `gleam export package-interface` reports eleven modules;
-// the seams admit ten between them, and `cap/runtime` — the satellite's
-// trusted boot runtime — is on neither. Rendering the artifact and
+// relevant one. `cap/runtime` — the satellite's trusted boot runtime — is
+// never admitted by a program mode. Rendering the artifact and
 // trusting it to be filtered elsewhere would put a module vetting
 // rejects into the description, which is a lie of the same class as
 // classifying a submission by reading its imports. The stdlib modules on
@@ -856,6 +908,33 @@ fn seams_text(seams: Seams) -> String {
 // shared import subset once instead of twice.
 fn many_seams_text(seams: Seams) -> String {
   let offers = offered(seams)
+  case same_offers(offers) {
+    True ->
+      "Workspace and orchestration admit the same imports and capabilities; "
+      <> "`seam` defaults to `"
+      <> seam_name(seams.default.seam)
+      <> "`. Imports are restricted to: "
+      <> joined(seams.default.allowed_imports)
+      <> ". Capabilities serviced today: "
+      <> joined(seams.default.serviced_caps)
+      <> ". `@external` is refused."
+    False -> distinct_seams_text(seams, offers)
+  }
+}
+
+fn same_offers(offers: List(SeamOffer)) -> Bool {
+  case offers {
+    [] -> False
+    [first, ..rest] ->
+      list.all(rest, fn(offer) {
+        offer.allowed_imports == first.allowed_imports
+        && offer.serviced_caps == first.serviced_caps
+        && offer.extra_surfaces == first.extra_surfaces
+      })
+  }
+}
+
+fn distinct_seams_text(seams: Seams, offers: List(SeamOffer)) -> String {
   let shared = shared_imports(offers)
   let clauses =
     offers

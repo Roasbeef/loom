@@ -140,10 +140,6 @@ fn scripted_gateway() -> provider_gateway.Gateway {
   )
 }
 
-fn settings() -> serve.Settings {
-  settings_under(root)
-}
-
 // A repository-relative test path as the absolute one every policy path
 // must be.
 fn absolute(path: String) -> String {
@@ -916,35 +912,6 @@ fn recording_gateway(
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
-}
-
-// --- which seams can reach an MCP server ------------------------------------
-
-/// A host serving the orchestration seam alone starts no MCP server,
-/// however many are configured. A server's tools are a module only a
-/// *workspace* program can import — the orchestration seam is widened by
-/// none of it, ever — so `[mcp.*]` beside `--codemode-seams
-/// orchestration` would spawn third-party processes, each holding a
-/// configured secret in its environment, that no program could ever
-/// call. The boot says so on one `mcp.unavailable` line instead.
-pub fn orchestration_only_seams_cannot_reach_an_mcp_server_test() {
-  let orchestrating =
-    serve.Settings(
-      ..settings(),
-      codemode_seams: codemode.OrchestrationOnly,
-      catalog: catalog.Catalog(..scripted_catalog(), mcp_servers: [
-        catalog.McpServer(
-          name: "github",
-          command: ["mcp-server-github"],
-          api_key_env: Some("GITHUB_TOKEN"),
-        ),
-      ]),
-    )
-  assert !serve.mcp_reachable(orchestrating.codemode_seams)
-  // And both seams that do serve a workspace program reach one, so this
-  // is a gate on reachability rather than on MCP.
-  assert serve.mcp_reachable(codemode.WorkspaceOnly)
-  assert serve.mcp_reachable(codemode.BothSeams)
 }
 
 // --- the pinned system prompt ----------------------------------------------

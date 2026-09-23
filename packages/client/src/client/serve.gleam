@@ -1960,8 +1960,7 @@ fn code_mode_seam(
         field.text(key: "erl", value: toolchain.erl_path),
         field.text(key: "seed", value: toolchain.seed_root),
       ])
-      use layer <- result.try(start_mcp(
-        settings.codemode_seams,
+      use layer <- result.try(started_mcp(
         settings.catalog.mcp_servers,
         settings.secrets,
         logger,
@@ -1996,7 +1995,7 @@ fn code_mode_seam(
           // the model is offered jobs unconditionally, so a program that
           // could not even ask would be the surprise.
           |> codemode_wiring.over_jobs(Some(jobs_door))
-          // The MCP layer widens the workspace seam's allowlist, its
+          // The MCP layer widens both installed modes' allowlists, their
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
           |> codemode_wiring.over_mcp(layer),
@@ -2309,34 +2308,6 @@ fn subscription_of(
   option.to_result(registration.subscription, Nil)
 }
 
-/// Whether the seams this server offers can reach an MCP server at all.
-///
-/// A server's tools are a module a **workspace** program may import, and
-/// the orchestration seam is widened by none of it, ever
-/// (`client/codemode.over_mcp`) — so a host serving orchestration alone
-/// holds nothing that could ever call one, and starting third-party
-/// server processes for it, each with a configured secret in its
-/// environment, would be cost and attack surface bought for no
-/// capability. The same argument the absent-`code_mode` arm above makes,
-/// one decision further in.
-///
-/// A function rather than an inline `case` because it is the whole of
-/// the decision and the only part of this boot a hermetic test can hold
-/// still.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.mcp_reachable(codemode.WorkspaceOnly)
-/// ```
-///
-pub fn mcp_reachable(seams: codemode_wiring.Seams) -> Bool {
-  case seams {
-    codemode_wiring.WorkspaceOnly | codemode_wiring.BothSeams -> True
-    codemode_wiring.OrchestrationOnly -> False
-  }
-}
-
 // One `mcp.unavailable` line naming every server that was configured and
 // not started, and why. Worded as the layer's own refusals are: a
 // skipped server has no module, so a program importing it is refused by
@@ -2363,12 +2334,8 @@ fn skipped_mcp(
   }
 }
 
-// Every configured server this host can reach started, and one line
-// each way.
-//
-// The seam gate lives here rather than at the call site so there is one
-// place a server can be started from, and it is the place that asks
-// whether anything could call one.
+// Every configured server is started when code mode is installed, and one
+// line reports each success or failure.
 //
 // `mcp.ready` names the servers that answered and how many tools each
 // listed, because "how many" is the number that decides what the
@@ -2378,27 +2345,6 @@ fn skipped_mcp(
 // anybody will ever see about it: a refused server has no module, so a
 // program importing it is refused by vetting with no word about why the
 // module is absent.
-fn start_mcp(
-  seams: codemode_wiring.Seams,
-  servers: List(catalog.McpServer),
-  store: secret.SecretStore,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(mcp_wiring.Layer, String) {
-  case mcp_reachable(seams) {
-    True -> started_mcp(servers, store, logger, owner)
-    False -> {
-      skipped_mcp(
-        servers,
-        logger,
-        "MCP servers are reached from the workspace seam only, and this "
-          <> "host serves the orchestration seam alone, so none was started",
-      )
-      Ok(mcp_wiring.none())
-    }
-  }
-}
-
 fn started_mcp(
   servers: List(catalog.McpServer),
   store: secret.SecretStore,
@@ -2926,7 +2872,20 @@ fn assemble_in(
     })
   let code_mode =
     option.map(code_mode_host, fn(config) {
-      async_codemode.seam(config, async_name, agency_config)
+      let mode = async_codemode.seam(config, async_name, agency_config)
+      let with_peers = fn(offer: codemode_tool.SeamOffer) {
+        codemode_tool.SeamOffer(
+          ..offer,
+          serviced_caps: list.append(offer.serviced_caps, peers.serviced_caps),
+        )
+      }
+      codemode_tool.CodeMode(
+        ..mode,
+        seams: codemode_tool.Seams(
+          default: with_peers(mode.seams.default),
+          alternates: list.map(mode.seams.alternates, with_peers),
+        ),
+      )
     })
 
   // The environment every jailed child of this session inherits, tool

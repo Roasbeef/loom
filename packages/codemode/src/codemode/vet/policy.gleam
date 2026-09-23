@@ -60,39 +60,25 @@
 ////   removed — the seam a harness-resident hook body would be judged
 ////   against if one were ever loaded (`resident`).
 ////
-//// Workspace effects and child orchestration remain separate. Reporting,
-//// input and granted peer communication are shared. An extension is a workspace program with a
-//// different entry point, so its allowlist is the workspace seam's
-//// widened rather than a fourth set of capabilities that travel together.
+//// Workspace and orchestration submissions can compose effects with child
+//// operations. An extension remains an effect-only workspace program with a
+//// different entry point, so its allowlist does not gain child custody.
 //// The property that holds it is a superset claim rather than an
 //// intersection (`extension_cap_modules`), and it is asserted for the
 //// same reason the intersection is: so the relationship between the seams
 //// is checked rather than assumed.
 ////
-//// The separation is a rule about which capabilities travel together. An
-//// orchestrator that could also write files, run a process, or reach the
-//// network is a materially worse thing to hand a model than one that
-//// cannot: a compromised orchestration program can spawn and message
-//// within the lineage its own strand roots, and can touch neither the
-//// disk, the network, nor a process. That property holds only while the
-//// two sets stay disjoint in the capability dimension, which is why
-//// `orchestration_cap_modules` and `default_cap_modules` share no entry
-//// but `cap/report`, and a test pins the *intersection* rather than a
-//// snapshot of either side. Both lists are public for that test's sake:
-//// the seams also share `default_stdlib_modules`, so a capability added
-//// to that shared list would widen both seams at once, and the property
-//// that catches it has to be able to name the capability lists apart
-//// from the allowlists they end up in.
+//// Both program modes use the same union of effect and agent capabilities.
+//// The operator can still install a workspace-only host, which uses
+//// `workspace_effects` and does not advertise unserviceable child operations.
+//// The extension and resident policies remain separate because their
+//// execution contexts do not own the same child lifecycle.
 ////
 //// Nothing else about the mechanism changes: this module was already an
 //// opaque, per-submission allowlist, so two seams are a *configuration*
 //// of machinery that exists rather than a second mechanism to get right.
-//// Both directions of the confinement are the same one rule — an import
-//// outside the allowlist the submission is judged against is rejected —
-//// so an orchestration program reaching for `cap/fs` and a workspace
-//// program reaching for `cap/strand` are refused by the same code, and
-//// both refusals are the structured `ImportNotAllowed` rejection the
-//// model reads and repairs in band.
+//// An import outside the installed host's allowlist is still refused as
+//// `ImportNotAllowed`, with the rejected module named for in-band repair.
 
 import gleam/list
 import gleam/set.{type Set}
@@ -293,12 +279,11 @@ fn is_ident_continue(code: Int) -> Bool {
   is_lower_alpha(code) || { code >= 0x30 && code <= 0x39 } || code == 0x5f
 }
 
-/// The default allowlist — the **workspace** seam: the pinned capability
-/// prelude plus a curated subset of the standard library whose public API
-/// is provably effect-free.
+/// The default workspace-mode allowlist: all program capabilities and a
+/// curated subset of the standard library whose public API is effect-free.
 ///
-/// This is one of the two seams (`Seam`, `for_seam`); `orchestration` is
-/// the other. Reporting, background input and granted peer communication are shared.
+/// Both installed program modes admit this same full set. An explicitly
+/// effect-only host uses `workspace_effects`.
 ///
 /// # The capability prelude (`cap/*`)
 ///
@@ -306,9 +291,9 @@ fn is_ident_continue(code: Int) -> Bool {
 /// to the ToolBroker carrying the execution's token (design §6.2). They *are*
 /// the effect surface a program is allowed to reach; every effect a submitted
 /// program can have flows through one of them, token- and policy-checked at the
-/// broker. The precise set is owned by the prelude package; this default tracks
-/// the union named in design §6.2 and spec WP-J. Callers that know the exact
-/// shipped set should pass it to `new`.
+/// broker. The precise set is owned by the prelude package; this default uses
+/// the union of effect and child-operation modules. Narrower installed hosts
+/// pass an explicit policy.
 ///
 /// # The standard-library subset
 ///
@@ -331,23 +316,22 @@ fn is_ident_continue(code: Int) -> Bool {
 /// strings grants no authority: the caller receives data, not access to the
 /// runtime, and the pinned compiler seed already supplies `gleam_json`.
 pub fn default() -> VetPolicy {
+  new(list.append(program_cap_modules(), default_stdlib_modules()))
+}
+
+/// The effect-only policy for a host installed without Agency custody.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !policy.contains(policy.workspace_effects(), "cap/strand")
+/// ```
+///
+pub fn workspace_effects() -> VetPolicy {
   new(list.append(default_cap_modules(), default_stdlib_modules()))
 }
 
-/// The orchestration seam's allowlist includes named child workflows and the
-/// same pure standard-library subset the workspace seam gets.
-///
-/// `cap/strand` is the whole of what an orchestration program may reach
-/// out to, and `cap/report` is how it says what it found — a program that
-/// could not build an outcome could not report a fan-out's answer at all.
-/// Nothing else is here, and the omissions are the point rather than an
-/// oversight: no `cap/fs`, no `cap/proc`, no `cap/net`, no `cap/git`, so a
-/// compromised orchestrator reaches no disk, no process, and no socket.
-/// `cap/task` and `cap/actor` are absent too, and they are the omission a
-/// reader is most likely to think a mistake: an orchestration program does
-/// not need local concurrency, because `strand.spawn` returns at admission
-/// and `strand.wait` joins a whole list against one deadline — the fan-out
-/// happens on the strands, not in the satellite.
+/// The orchestration mode uses the same full capability set as the default.
 ///
 /// ## Examples
 ///
@@ -356,14 +340,14 @@ pub fn default() -> VetPolicy {
 /// ```
 ///
 /// ```gleam
-/// assert !policy.contains(policy.orchestration(), "cap/proc")
+/// assert policy.contains(policy.orchestration(), "cap/proc")
 /// ```
 ///
 pub fn orchestration() -> VetPolicy {
-  new(list.append(orchestration_cap_modules(), default_stdlib_modules()))
+  default()
 }
 
-/// The extension seam's allowlist: the workspace seam's capabilities plus
+/// The extension seam's allowlist: the workspace effect subset plus
 /// the `ext` prelude, and the workspace seam's standard-library subset
 /// plus the modules an extension needs for HTTP data.
 ///
@@ -524,20 +508,13 @@ pub fn extension_authority_modules() -> List(String) {
 /// on one more of its own: it is read-only navigation and search over the
 /// workspace, so it grants strictly less than `cap/fs` already grants, and
 /// a program that imports it instead of `cap/fs` has said in its imports
-/// that it cannot write. It is deliberately not on the orchestration seam,
-/// where reading the workspace is not the job.
+/// that it cannot write.
 ///
-/// `cap/strand` is deliberately not here. A workspace program that imports
-/// it is rejected by exactly the same rule that rejects an orchestration
-/// program importing `cap/fs`, which is what makes the confinement one
-/// rule read in two directions rather than two rules that could drift.
+/// `cap/strand` is absent from this effect subset. Installed program modes
+/// append it through `program_cap_modules`; extensions do not.
 ///
-/// Public because the confinement's real property is about *this* list and
-/// its orchestration counterpart, not about either seam's whole allowlist:
-/// the two seams also share `default_stdlib_modules`, so a test that could
-/// only see `default()` and `orchestration()` could not tell a capability
-/// added to both apart from a stdlib module added to both. See
-/// `orchestration_cap_modules`.
+/// Public so the effect-only installed host and extension policy share one
+/// named subset, while tests compare it with the full program surface.
 ///
 /// ## Examples
 ///
@@ -553,16 +530,9 @@ pub fn default_cap_modules() -> List(String) {
   ]
 }
 
-/// The capability-prelude modules on the orchestration seam. Shares
-/// exactly one entry with `default_cap_modules` — `cap/report`, which
-/// carries no authority of its own — and no other.
+/// The child-operation modules and shared collaboration modules.
 ///
-/// That intersection *is* the confinement, so it is asserted as an
-/// intersection rather than as a snapshot of one side of it. A snapshot
-/// catches a capability moved from one seam to the other and misses a
-/// capability added to both, which is the likelier mistake: the shared
-/// door is `default_stdlib_modules`, which both seams append, and a new
-/// module looks like it belongs there.
+/// Both program modes admit this list together with `default_cap_modules`.
 ///
 /// ## Examples
 ///
@@ -574,16 +544,30 @@ pub fn orchestration_cap_modules() -> List(String) {
   ["cap/strand", "cap/report", "cap/execution", "cap/peer", "cap/workflow"]
 }
 
+/// All capabilities admitted by either installed code-mode program mode.
+///
+/// The shared entries already occur in `default_cap_modules`, so only child
+/// custody modules need appending. The explicit effect-only host and extension
+/// policy keep using `default_cap_modules`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(policy.program_cap_modules(), "cap/strand")
+/// ```
+///
+pub fn program_cap_modules() -> List(String) {
+  list.append(default_cap_modules(), ["cap/strand", "cap/workflow"])
+}
+
 /// The capability-prelude and prelude-package modules on the extension
-/// seam: every workspace capability, plus `ext`, `ext/hook` and
+/// seam: every workspace effect capability, plus `ext`, `ext/hook` and
 /// `ext/memory`.
 ///
 /// Written as `default_cap_modules()` widened rather than as a list of
 /// its own, so the superset relation is a fact about the code and not a
-/// promise two literals have to keep. Add a capability to the workspace
-/// seam and the extension seam gets it; that is the intended coupling,
-/// because an extension tool is a workspace program with a different
-/// entry point.
+/// promise two literals have to keep. Add an effect capability to the base
+/// subset and the extension seam gets it; child custody remains excluded.
 ///
 /// `ext` and `ext/hook` are not `cap/*` modules and carry no authority:
 /// they are the vocabulary an extension's tools and hooks are typed
@@ -635,20 +619,14 @@ pub fn extension_stdlib_modules() -> List(String) {
   list.append(default_stdlib_modules(), ["gleam/bit_array", "gleam/uri"])
 }
 
-// Scheduling remains workspace-only. Protocol 045 deliberately widens the
-// shared surface to reporting, background input and peer communication. Input
-// is bound to the current execution; peer delivery requires an operator-owned
-// exact directional grant, with idle wake permission checked separately. Neither
-// exposes workspace effects or child ownership to the other seam. This is an
-// explicit authority change: shared peer delivery can induce work at a granted
-// recipient, unlike reporting alone. The intersection test pins these modules.
+// Protocol 048 admits effect and child modules on both default program modes.
+// Input remains bound to the execution, and peer delivery still requires an
+// operator-owned directional grant with separate idle-wake permission. An
+// explicitly effect-only host, extensions, and resident hooks stay narrower.
 //
-// The extension seam is different in kind and is not the exception it
-// looks like: `extension_cap_modules` is the workspace seam widened by
-// the `ext` vocabulary, a superset by construction, so `cap/schedule`
-// reaches an installed extension's tool exactly as `cap/fs` does — as a
-// workspace capability, never as a second shared entry between the two
-// seams whose intersection the test pins.
+// The extension seam still widens only the effect subset. `cap/schedule`
+// reaches an installed extension's tool exactly as `cap/fs` does, while
+// child custody stays with code-mode program executions.
 //
 // `cap/job` rides the same superset and is ruled the same way, with one
 // division the allowlist cannot express. An extension's tool call may
@@ -720,12 +698,9 @@ pub fn harness_only_cap_modules() -> List(String) {
 /// effect-free public API (see `default`); none exposes I/O, processes, atom
 /// creation, or an FFI-declaring surface to its caller.
 ///
-/// **Both seams append this list**, so a `cap/*` name added here would land
-/// on the orchestration seam and the workspace seam at once, widening the
-/// orchestration surface past `cap/strand` + `cap/report` with no
-/// intersection test able to see it. That is the one door the disjointness
-/// property does not close by itself, so a test asserts this list holds no
-/// capability module at all.
+/// **Both program modes append this list**, so a `cap/*` name added here would
+/// also reach the explicit effect-only host without appearing in its named
+/// capability subset. A test asserts this list holds no capability module.
 ///
 /// ## Examples
 ///

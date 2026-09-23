@@ -36,7 +36,7 @@
 /// ```
 ///
 pub const source = "%% loom-prompt-pack 1
-%% version loom-default-7
+%% version loom-default-8
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -81,10 +81,12 @@ IDs to retrieve the complete entry. context_remaining reports estimated
 room before compaction; it does not initiate compaction or reserve a final
 note-writing turn.
 
-Follow code_mode's advertised recipes: workspace for files/processes,
-orchestration for agents. When cap/notes is offered, persist analysis for
-later programs and return summaries; cap/kv is evictable. Use report's JSON
-helpers and inspect strand.map's partial outcomes before retrying.
+Default code-mode modes combine workspace effects and child work; omitting
+seam selects workspace. Check this host's imports and signatures. cap/strand
+manages children; cap/peer needs a directional grant. cap/execution carries
+background input and progress; workflow.step needs background launch. Use
+cap/notes for durable analysis when offered; cap/kv is evictable. Inspect
+strand.map partial outcomes before retrying.
 
 %% section tool_discipline
 Your tools and their schemas are given to you separately and are

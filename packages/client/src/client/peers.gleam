@@ -318,6 +318,9 @@ fn text(value: JsonValue, key: String) -> Result(String, String) {
   }
 }
 
+/// The peer calls this router services on every installed program mode.
+pub const serviced_caps = ["peer.roster", "peer.send"]
+
 /// Routes peer calls with the launching strand's authenticated identity.
 /// No argument can select a different sending session or strand.
 ///
