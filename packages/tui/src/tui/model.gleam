@@ -19,6 +19,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/todo_list
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
@@ -630,6 +631,11 @@ pub type Model {
     agent_rows: List(agent_view.Row),
     /// At most twenty provenance-verified sends observed in this attachment.
     agent_messages: List(agent_messages.Item),
+    /// Each strand's newest todo board seen in a capture or an arriving
+    /// entry. Kept across cuts so a window that has moved past the last
+    /// `todo` call does not blank the pinned panel; released with the
+    /// session.
+    todo_boards: Dict(String, todo_list.Board),
     active_strand: String,
     session: String,
     /// One catalogue display name, paired with the identity that owns it.

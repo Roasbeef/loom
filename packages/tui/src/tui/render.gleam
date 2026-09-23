@@ -69,6 +69,7 @@ import tui/snapshot_view
 import tui/summary_panel
 import tui/text_hygiene
 import tui/theme
+import tui/todo_panel
 import tui/transcript_lines
 import tui/workspace
 import tui/worktree_view
@@ -160,6 +161,7 @@ pub fn render_frame(
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
     |> render_inline_queue(queue_area, model)
+    |> render_todo_panel(layout.todo_area(body_area, model), model)
     |> render_composer_chrome(input_area, input_title(model))
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.attachments)
@@ -1621,6 +1623,37 @@ pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
         )
       })
     Attached(_) | Preview | Replaying -> rows
+  }
+}
+
+// The panel paints every cell of its rows, padded to the width, so it needs
+// no interior clear; it is inset one column to line up with the
+// conversation's own left margin.
+fn render_todo_panel(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  case layout.todo_board(model), area.size.height {
+    None, _ | _, 0 -> buf
+    Some(board), rows -> {
+      let inset =
+        geometry.Rect(
+          position: geometry.Position(
+            x: area.position.x + 1,
+            y: area.position.y,
+          ),
+          size: geometry.Size(
+            width: int.max(area.size.width - 2, 0),
+            height: rows,
+          ),
+        )
+      paragraph.render_styled(
+        buf,
+        inset,
+        todo_panel.lines(board, inset.size.width, rows),
+      )
+    }
   }
 }
 

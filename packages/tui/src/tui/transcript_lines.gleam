@@ -44,6 +44,7 @@ import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
 import tui/text_hygiene
+import tui/todo_panel
 import tui/tool_activity
 import tui/worktree_view
 
@@ -834,6 +835,22 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
         is_error: False,
         details_expanded: False,
       )
+    ]
+    // The pinned panel already shows the whole board, so a settled todo
+    // call stays one row, which also keeps the compact height rule: the
+    // pending row it replaces was one row too.
+    Some(message.ToolResultMessage(is_error: False, details: Some(details), ..))
+      if call.invocation.name == todo_panel.tool_name
+    -> [
+      Line(
+        ToolCall,
+        "✓ "
+          <> summary
+          <> case todo_panel.result_summary(details) {
+          Some(progress) -> " · " <> progress
+          None -> ""
+        },
+      ),
     ]
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
@@ -1636,6 +1653,7 @@ pub fn tool_call_summary(
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
     "context_remaining", json.Object(_) -> "context remaining"
+    "todo", json.Object(_) -> todo_panel.call_summary(arguments)
     _, _ -> generic_tool_call(name, json.to_string(arguments), details_expanded)
   }
 }

@@ -11,6 +11,7 @@
 //// height, such as the lines in the status band above the composer,
 //// because the composer's height depends on them.
 
+import core/todo_list
 import etui/geometry.{type Rect, Fill, Length}
 import etui/text
 import etui/widgets/textarea as text_area
@@ -37,6 +38,7 @@ import tui/queue_panel
 import tui/reviewer_status
 import tui/snapshot_view
 import tui/text_hygiene
+import tui/todo_panel
 import tui/tool_activity
 import tui/transcript_lines
 import tui/worktree_view
@@ -104,21 +106,69 @@ pub fn queue_body_layout(body: Rect, model: Model) -> #(Rect, Rect) {
   queue_body_layout_for(body, model, queue_rows(model))
 }
 
+// The body splits into the conversation, the pinned todo panel, and the
+// queue card, in that order from the top. Every hit-test and scroll path
+// asks for the conversation through here, so the todo rows are subtracted
+// in one place and no path can disagree about where the transcript ends.
 fn queue_body_layout_for(
   body: Rect,
   model: Model,
   rows: List(snapshot_view.PendingInput),
 ) -> #(Rect, Rect) {
+  let queue = queue_height(body, model, rows)
+  let panel = todo_height(body, model, queue)
+  case geometry.split_v(body, [Fill, Length(panel), Length(queue)]) {
+    [conversation, _panel, queue] -> #(conversation, queue)
+    _ -> #(body, geometry.rect_zero())
+  }
+}
+
+fn queue_height(
+  body: Rect,
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> Int {
   let wanted = case model.queue_editor.surface, rows {
     queue_editor.Closed, [] -> 0
     queue_editor.Closed, _ -> int.min(5, list.length(rows) + 2)
     queue_editor.Inspector, _ | queue_editor.Editor, _ ->
       int.min(14, int.max(3, body.size.height / 2))
   }
-  let height = int.min(wanted, int.max(0, body.size.height - 3))
-  case geometry.split_v(body, [Fill, Length(height)]) {
-    [conversation, queue] -> #(conversation, queue)
-    _ -> #(body, geometry.rect_zero())
+  int.min(wanted, int.max(0, body.size.height - 3))
+}
+
+/// The active strand's todo board, when it has one.
+@internal
+pub fn todo_board(model: Model) -> Option(todo_list.Board) {
+  dict.get(model.todo_boards, model.active_strand) |> option.from_result
+}
+
+// The panel may take a third of the body and must leave the conversation
+// at least four rows beside whatever the queue card took, so on a short
+// terminal it shrinks, windowing its phase, before the transcript does.
+fn todo_height(body: Rect, model: Model, queue: Int) -> Int {
+  let budget =
+    int.min(body.size.height / 3, body.size.height - queue - min_conversation)
+  todo_panel.height(todo_board(model), budget)
+}
+
+const min_conversation = 4
+
+/// The pinned todo panel's rectangle: between the conversation and the
+/// queue card, full body width, zero rows when there is no board.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // layout.todo_area(body, model).size.height == 0
+/// ```
+@internal
+pub fn todo_area(body: Rect, model: Model) -> Rect {
+  let queue = queue_height(body, model, queue_rows(model))
+  let panel = todo_height(body, model, queue)
+  case geometry.split_v(body, [Fill, Length(panel), Length(queue)]) {
+    [_, area, _] -> area
+    _ -> geometry.rect_zero()
   }
 }
 

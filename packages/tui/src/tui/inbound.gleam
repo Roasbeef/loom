@@ -76,6 +76,7 @@ import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
 import tui/surfaces
+import tui/todo_panel
 import tui/transcript_lines
 import tui/workspace
 import tui/worktree_view
@@ -671,6 +672,7 @@ fn render_cut(
     reviewer_rows: reviewers,
     agent_rows: rows,
     agent_messages: captured_messages,
+    todo_boards: todo_panel.remember(model.todo_boards, branch.records),
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -1303,6 +1305,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Model(
           ..model,
           records: [record, ..model.records],
+          todo_boards: todo_panel.remember(model.todo_boards, [record]),
           streams: transcript_lines.clear_streams(model.streams, strand),
           tool_tails: retire_recorded_tail(model.tool_tails, record),
           pending_records: case strand == model.active_strand {
@@ -2796,6 +2799,10 @@ pub fn select_workspace(
     agent_messages: case model.session == session {
       True -> model.agent_messages
       False -> []
+    },
+    todo_boards: case model.session == session {
+      True -> model.todo_boards
+      False -> dict.new()
     },
     reviewer_rows: case model.session == session {
       True -> model.reviewer_rows

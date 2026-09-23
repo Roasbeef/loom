@@ -3,15 +3,20 @@
 //// plain text, since the glyphs are what must survive a terminal without
 //// color.
 
+import core/clock
+import core/entry
+import core/ids
 import core/json
 import core/message
 import core/todo_list.{
   type Board, Active, Blocked, Board, Done, Dropped, Pending, Phase, Task,
 }
 import etui/span
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import tui/protocol
 import tui/todo_panel
 
 fn board() -> Board {
@@ -59,16 +64,55 @@ fn rows(board: Board, width: Int, budget: Int) -> List(String) {
   })
 }
 
-pub fn the_latest_successful_result_wins_test() {
+fn record(strand: String, seed: Int, body: message.AgentMessage) {
+  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(at: 0), seed:))
+  protocol.EntryRecord(
+    strand:,
+    entry: entry.MessageEntry(
+      id:,
+      parent: None,
+      seq: seed,
+      ts: 0,
+      message: body,
+      terminate: False,
+    ),
+  )
+}
+
+// Records arrive newest first, so the first board found is the newest; a
+// failed call never replaces the board the strand already showed.
+pub fn the_newest_successful_result_wins_test() {
   let first = Board([Phase("A", [Task("one", Active)])])
+  let later = Board([Phase("A", [Task("one", Done)])])
   let failed = Board([Phase("B", [Task("two", Active)])])
-  let messages = [
-    result(carrying(first), False),
-    result(carrying(failed), True),
-    message.UserMessage([], 0, None),
+  let records = [
+    record("main", 4, result(carrying(failed), True)),
+    record("main", 3, message.UserMessage([], 0, None)),
+    record("main", 2, result(carrying(later), False)),
+    record("main", 1, result(carrying(first), False)),
   ]
-  assert todo_panel.latest(messages, None) == Some(first)
-  assert todo_panel.latest([], Some(first)) == Some(first)
+  assert todo_panel.newest(records) == Some(later)
+  assert todo_panel.newest([]) == None
+}
+
+pub fn boards_are_remembered_per_strand_test() {
+  let main = Board([Phase("A", [Task("main task", Active)])])
+  let child = Board([Phase("B", [Task("child task", Active)])])
+  let boards =
+    todo_panel.remember(dict.new(), [
+      record("sub:main/review", 2, result(carrying(child), False)),
+      record("main", 1, result(carrying(main), False)),
+    ])
+  assert dict.get(boards, "main") == Ok(main)
+  assert dict.get(boards, "sub:main/review") == Ok(child)
+
+  // A later capture whose window no longer reaches the `todo` call keeps
+  // the board the strand already had.
+  let kept =
+    todo_panel.remember(boards, [
+      record("main", 9, message.UserMessage([], 0, None)),
+    ])
+  assert kept == boards
 }
 
 pub fn a_result_without_a_board_carries_nothing_test() {

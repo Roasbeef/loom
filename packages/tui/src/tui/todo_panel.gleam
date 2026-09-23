@@ -20,6 +20,7 @@
 //// This module is pure: it renders lines for a width and a row budget, and
 //// the caller decides where they go and how many rows it can spare.
 
+import core/entry
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/todo_list.{
@@ -28,10 +29,12 @@ import core/todo_list.{
 import etui/span
 import etui/style
 import etui/text
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import tui/protocol
 import tui/text_hygiene
 import tui/theme
 
@@ -91,22 +94,47 @@ pub fn from_details(details: JsonValue) -> Option(Board) {
   }
 }
 
-/// The latest board among messages in transcript order, or `fallback` when
-/// none of them carries one.
+/// The newest board in a newest-first record list, the order a captured
+/// branch and `Model.records` both hold.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert todo_panel.latest([], option.None) == option.None
+/// assert todo_panel.newest([]) == option.None
 /// ```
-pub fn latest(
-  messages: List(AgentMessage),
-  fallback: Option(Board),
-) -> Option(Board) {
-  list.fold(messages, fallback, fn(found, message) {
-    case from_message(message) {
-      Some(board) -> Some(board)
-      None -> found
+pub fn newest(records: List(protocol.EntryRecord)) -> Option(Board) {
+  list.find_map(records, fn(record) {
+    case record.entry {
+      entry.MessageEntry(message:, ..) ->
+        from_message(message) |> option.to_result(Nil)
+      entry.CompactionEntry(..)
+      | entry.BranchSummaryEntry(..)
+      | entry.CustomEntry(..) -> Error(Nil)
+    }
+  })
+  |> option.from_result
+}
+
+/// Folds newest-first records into the per-strand boards, keeping each
+/// strand's newest. A strand whose records carry no board keeps the board
+/// it had, which is what stops a capture whose window has moved past the
+/// last `todo` call from blanking the panel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert todo_panel.remember(dict.new(), []) == dict.new()
+/// ```
+pub fn remember(
+  boards: Dict(String, Board),
+  records: List(protocol.EntryRecord),
+) -> Dict(String, Board) {
+  records
+  |> list.group(fn(record) { record.strand })
+  |> dict.fold(boards, fn(boards, strand, owned) {
+    case newest(owned) {
+      Some(board) -> dict.insert(boards, strand, board)
+      None -> boards
     }
   })
 }
