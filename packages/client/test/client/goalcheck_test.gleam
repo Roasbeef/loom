@@ -114,6 +114,12 @@ fn scripted(
 // the run is waiting when the clearance asks for it, and a zero-millisecond
 // receive is the whole of the state machine. Every attempt records its spec, so
 // a test can say how many times the runner asked.
+//
+// Every token must be taken before the run ends. The test process outlives the
+// test: EUnit runs a sequential suite's modules on one process, so a token left
+// unread sits in that mailbox for every test after it, and each later selective
+// receive scans past it. A slot that never frees is `refusing`, not a countdown
+// longer than the wait.
 fn draining(
   refusals: Int,
   code: Int,
@@ -129,9 +135,7 @@ fn draining(
       Ok(Nil) -> {
         process.send(seen, spec)
 
-        Error(
-          broker.BudgetRefused(refusal: budget.OutstandingCapReached(cap: 1)),
-        )
+        Error(still_draining)
       }
 
       Error(Nil) -> admitting.clear_call(spec, events)
@@ -139,15 +143,25 @@ fn draining(
   })
 }
 
-// A runner nothing clears through. The spec is still recorded, so a test can
-// say how many times the runner asked before it gave up.
-fn refusing(seen: Subject(broker.CallSpec)) -> goalcheck.Runner {
+// The broker's answer to a clearance while an earlier check still holds the
+// one slot: the only refusal the runner waits out rather than reports.
+const still_draining = broker.BudgetRefused(
+  refusal: budget.OutstandingCapReached(cap: 1),
+)
+
+// A runner nothing clears through, answering every attempt with `refusal`. The
+// spec is still recorded, so a test can say how many times the runner asked
+// before it gave up.
+fn refusing(
+  seen: Subject(broker.CallSpec),
+  refusal: broker.Refusal,
+) -> goalcheck.Runner {
   goalcheck.Runner(
     ..scripted([], exited(0), seen),
     clear_call: fn(spec, _events) {
       process.send(seen, spec)
 
-      Error(broker.BrokerUnavailable)
+      Error(refusal)
     },
   )
 }
@@ -222,7 +236,7 @@ pub fn a_walled_check_reports_no_status_test() {
 // who has seen a `bash` call refused reads the same sentence here.
 pub fn a_refused_check_carries_the_brokers_words_test() {
   let seen = process.new_subject()
-  let result = run(refusing(seen), "make check")
+  let result = run(refusing(seen, broker.BrokerUnavailable), "make check")
 
   let assert goalstate.DidNotFinish(reason:) = result.ending
     as "a refused clearance produces no exit status"
@@ -263,7 +277,7 @@ pub fn a_slot_still_draining_is_waited_out_test() {
 // cap refusal's wording would not tell an operator.
 pub fn a_slot_that_never_comes_free_is_reported_as_unfinished_test() {
   let seen = process.new_subject()
-  let result = run(draining(1_000_000, 0, seen), "make check")
+  let result = run(refusing(seen, still_draining), "make check")
 
   assert result.ending
     == goalstate.DidNotFinish(reason: goalcheck.slot_never_came_free)
@@ -281,7 +295,7 @@ pub fn a_slot_that_never_comes_free_is_reported_as_unfinished_test() {
 // that much later for nothing.
 pub fn a_decided_refusal_is_not_waited_out_test() {
   let seen = process.new_subject()
-  let result = run(refusing(seen), "make check")
+  let result = run(refusing(seen, broker.BrokerUnavailable), "make check")
 
   let assert goalstate.DidNotFinish(reason:) = result.ending
     as "a refused clearance produces no exit status"
