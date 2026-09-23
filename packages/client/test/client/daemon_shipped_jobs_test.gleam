@@ -792,11 +792,20 @@ fn restart_script(identity: PayloadIdentity) -> List(provider.Exchange) {
       watch_arguments(identity),
     ),
     answered("start-call", "watching"),
-    provider.ToolUseExchange(
-      "what happened to it",
-      "list-call",
-      "job_poll",
-      json.Object([]),
+
+    // The reopened VM's sweep declares the job lost and tells its owner,
+    // so the next request is that notice rather than anything a person
+    // typed. The notice names the job, which is minted at run time, so it
+    // is matched on its opening words; the model answers by listing.
+    provider.ComputedExchange(
+      provider.AwaitPromptPrefix("[loom] background job "),
+      fn(_seen) {
+        provider.ReplyToolUse(
+          call_id: "list-call",
+          name: "job_poll",
+          arguments: json.Object([]),
+        )
+      },
     ),
     answered("list-call", "lost"),
   ]
@@ -874,11 +883,11 @@ fn reopen_and_read(
   assert simplifile.delete(workspace <> "/" <> start_marker) == Ok(Nil)
 
   // A fresh VM adopts the same state directory, and explicit open is what
-  // puts the sweep's verdict in front of the model.
+  // runs the sweep. Its completion notice is what puts the verdict in
+  // front of the model: nobody prompts, and the model still reads it.
   let second =
     connect(shipped.server, directory, workspace, paths)
     |> reopen(crashed.session)
-  prompt(second.driver, "what happened to it")
 
   // The reopened session carries its own transcript, so the barrier names
   // the first incarnation's answer as well as this one's.
