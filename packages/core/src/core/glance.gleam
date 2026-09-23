@@ -52,7 +52,11 @@ pub type Glance {
     summary: String,
     /// When the summary was written, in Unix milliseconds.
     at: Int,
-    /// Total tokens the operation had used when the summary was written.
+    /// The operation's current context size when the summary was written:
+    /// `input + cache_read + cache_write + output` from the newest usage
+    /// row that belongs to the operation, or zero before it has one. It is
+    /// a replacement value, never a sum over rows, so a reader may swap in
+    /// a newer figure from a live usage push without double counting.
     tokens: Int,
   )
 }
