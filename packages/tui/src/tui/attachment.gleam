@@ -12,6 +12,7 @@ import gleam/result
 import gleam/string
 import tui/attempt
 import tui/connection
+import tui/protocol
 import tui/session_channel as channel
 import tui/sessions
 import tui/snapshot
@@ -385,12 +386,14 @@ fn apply_updates(candidate: Candidate, updates) {
 
     // A candidate has no view to stream into yet, and a fragment pushed
     // during its initial capture is superseded by the capture itself. A
-    // notice says the same thing about durable state and is dropped for the
-    // same reason: the candidate's own capture is already fetching it. The
-    // adopted lane, not this one, is where notices are worth counting.
+    // notice or usage observation says the same thing about durable state
+    // and is dropped for the same reason: the candidate's own capture is
+    // already fetching it. The adopted lane is where these pushes matter.
     [channel.Streamed(..), ..rest]
     | [channel.ToolStreamed(..), ..rest]
-    | [channel.Noticed(_), ..rest] -> apply_updates(candidate, rest)
+    | [channel.Noticed(_), ..rest]
+    | [channel.Auxiliary(protocol.UsageChanged(..)), ..rest] ->
+      apply_updates(candidate, rest)
     [channel.Auxiliary(_), ..]
     | [channel.RequestRefused(..), ..]
     | [channel.Submission(_), ..]

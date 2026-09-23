@@ -637,7 +637,7 @@ whole effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2704`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2801`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That is deliberate: the isolation is between the two
 models, not between the harness and the person running it.
@@ -672,8 +672,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:8842`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:8947`) renders
+`advisor_payload` (`tui.gleam:8947`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9052`) renders
 them. Nudges always show their complete body, including in compact mode.
 The other variants collapse to one attribution row (`advisor`, `advisor feed`,
 `advisor goal feed`, or `goal continuation`) with an opening excerpt and expand

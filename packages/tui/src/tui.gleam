@@ -528,6 +528,25 @@ pub type CacheNotice {
   )
 }
 
+/// One pushed usage row waiting for a capture that covers its sequence.
+///
+/// The capture supplies the model configuration against which a cache
+/// comparison is safe. Only the latest row per strand is retained; losing an
+/// intermediate comparison can omit a warning but cannot invent one.
+@internal
+pub type CacheObservation {
+  CacheObservation(
+    /// Durable sequence of the observed usage row.
+    seq: Int,
+    /// Provider operation, when the gateway could attribute the row.
+    operation: Option(String),
+    /// Fixed-shape provider counters for this request.
+    usage: message.Usage,
+    /// Terminal-clock instant when the push arrived.
+    at: Int,
+  )
+}
+
 /// Local editing and reading state belongs to an exact session and strand.
 ///
 /// A parked workspace holds the editor itself, including its cursor, rather
@@ -611,11 +630,28 @@ pub type Model {
     /// strand because a sub-agent's request says nothing about whether the
     /// primary's cached prefix survived the operator's pause.
     cache_watch: Dict(String, cache_miss.Watch),
+    /// Highest live usage observation already folded on each strand. A
+    /// capture owns cumulative totals; this cursor prevents a delayed push
+    /// from reporting the same settlement twice.
+    cache_seen_seq: Dict(String, Int),
+    /// Latest row per strand awaiting a capture that covers its sequence.
+    cache_pending: Dict(String, CacheObservation),
+    /// A model switch fences the first observed operation on that strand.
+    /// Every row from it may bill the old provider, so only a later operation
+    /// can establish the new provider's baseline.
+    cache_fence: Dict(String, Option(String)),
     /// Cache-miss notices raised on this connection, oldest first. They are
     /// transient by design: a reattach rebuilds the durable transcript and
     /// these do not come back, which is acceptable for a notice about the
     /// moment it happened, and is what keeps them out of the store.
     cache_notices: List(CacheNotice),
+    /// The footer's cache label for the active strand, as of the last tick:
+    /// what `cache_miss.outlook` says rendered as text, or `""` when it
+    /// says nothing. Held as a string rather than an `Outlook` so the tick
+    /// can compare the new label against the old and repaint only when the
+    /// reading actually changed — the reading moves once a minute at most
+    /// until a countdown reaches its final stretch.
+    cache_outlook: String,
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
     notice: String,
@@ -1142,7 +1178,11 @@ pub fn new_model_with_clock(
     ],
     records: [],
     cache_watch: dict.new(),
+    cache_seen_seq: dict.new(),
+    cache_pending: dict.new(),
+    cache_fence: dict.new(),
     cache_notices: [],
+    cache_outlook: "",
     scrollback: history_view.empty(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
@@ -3882,6 +3922,9 @@ fn render_compact_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  // The outlook leads the line when present. The footer truncates from the
+  // right, so placing it after cost hid the only forward-looking reading at
+  // ordinary terminal widths.
   let info =
     text_hygiene.single_line(model.current_model)
     <> " · "
@@ -3889,9 +3932,12 @@ fn render_compact_footer(
     <> " · est $"
     <> money(model.usage.cost.total)
   let status = agents.summary_rows(displayed_agents(model))
-  let context = case model.notice {
-    "" -> info
-    notice -> text_hygiene.single_line(notice) <> " · " <> info
+  let context = case model.cache_outlook, model.notice {
+    "", "" -> info
+    "", notice -> text_hygiene.single_line(notice) <> " · " <> info
+    cache, "" -> cache <> " · " <> info
+    cache, notice ->
+      cache <> " · " <> text_hygiene.single_line(notice) <> " · " <> info
   }
   case area.size.height > 1 {
     True ->
@@ -3947,7 +3993,8 @@ fn footer_sections(
       span.span_styled(
         " "
           <> compact(
-          context_view.footer(model.context)
+          cache_section_label(model.cache_outlook)
+            <> context_view.footer(model.context)
             <> " · "
             <> usage_summary(model.usage)
             <> output_rate_label(model.output_rate_tps),
@@ -4968,6 +5015,7 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     |> service_advisor_nudges_read
     |> service_goal_read
     |> tick_channel
+    |> advance_cache_outlook
   let quiet_for_ms =
     pacing.next_quiet_for(
       model.quiet_for_ms,
@@ -5091,6 +5139,32 @@ fn advance_activity_indicator(model: Model) -> Model {
         False -> invalidate_frame(advanced)
       }
     }
+  }
+}
+
+// The tick is also where the cache outlook's clock is read, for the same
+// reason the elapsed count lives here: rendering stays a pure function of
+// the model, and the label repaints only when the reading actually moved.
+//
+// The reading is suppressed while the active strand is running. A request
+// in flight re-writes the prefix whatever the label says, so a countdown
+// shown mid-generation would name an expiry the request in progress is
+// about to reset — and the miss row, not the label, is the thing that
+// reports what the pause before the request cost.
+fn advance_cache_outlook(model: Model) -> Model {
+  let label = case active_strand_live(model) {
+    False ->
+      model.cache_watch
+      |> dict.get(model.active_strand)
+      |> option.from_result
+      |> cache_miss.outlook(model.monotonic_time_ms())
+      |> option.map(cache_miss.outlook_label)
+      |> option.unwrap("")
+    True -> ""
+  }
+  case label == model.cache_outlook {
+    True -> model
+    False -> invalidate_frame(Model(..model, cache_outlook: label))
   }
 }
 
@@ -5919,7 +5993,19 @@ fn handle_paste(model: Model, text: String) -> Model {
     DaemonSelector(
       session_selector.State(prompt: session_selector.Renaming(..), ..) as selector,
     ) -> update_daemon_selector(keys.Char(text), model, selector)
-    _ -> handle_underlay_paste(model, text)
+    NoOverlay ->
+      case diff_shown(model), model.worktree.focus {
+        True, worktree_view.Navigator -> model
+        _, _ -> handle_underlay_paste(model, text)
+      }
+    AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
+      handle_underlay_paste(model, text)
+    AgentInspector(_)
+    | ModelSelector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> model
   }
 }
 
@@ -6112,7 +6198,11 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           // would be compared to the old session's last one and drawn as a
           // miss that never happened.
           cache_watch: dict.new(),
+          cache_seen_seq: dict.new(),
+          cache_pending: dict.new(),
+          cache_fence: dict.new(),
           cache_notices: [],
+          cache_outlook: "",
           scroll_offset: case model.scrollback.mode {
             history_view.Reading -> model.scroll_offset
             history_view.Live -> 0
@@ -6488,6 +6578,11 @@ fn render_cut(
     Ok(config) -> config.configuration.model.model_id
     Error(Nil) -> "unconfigured"
   }
+  let #(cache_watch, cache_fence) = cache_watches_for_cut(model, view)
+  let cache_outlook = case dict.get(cache_watch, active) {
+    Ok(_) -> model.cache_outlook
+    Error(Nil) -> ""
+  }
   let role = case cut.attachment.role {
     snapshot.Owner -> "owner"
     snapshot.Operator -> "operator"
@@ -6610,6 +6705,9 @@ fn render_cut(
     },
     usage: view.usage,
     current_model: current_model,
+    cache_watch:,
+    cache_fence:,
+    cache_outlook:,
     streams: live,
     tool_tails: live_tails,
     interrupt: reconcile_interrupt(model.interrupt, view.operations),
@@ -6627,6 +6725,7 @@ fn render_cut(
     },
     transcript:,
   )
+  |> settle_pending_cache(cut.next_seq)
   |> reconcile_agent_message_selection
   |> invalidate_transcript
   // A completed cut can make the operation idle before the next animation
@@ -7121,8 +7220,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:, directories:) -> {
       let model = case model_name {
-        Some(name) ->
-          Model(..model, current_model: name, notice: "model: " <> name)
+        Some(name) -> {
+          let selected = select_model(model, name)
+          Model(..selected, notice: "model: " <> name)
+        }
         None -> model
       }
       case directories {
@@ -7330,8 +7431,12 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.UsageChanged(strand:, usage: settled) ->
-      receive_usage(model, strand, settled)
+    protocol.UsageChanged(strand:, seq:, operation:, usage: settled) ->
+      case seq {
+        Some(seq) ->
+          receive_usage_observation(model, strand, seq, operation, settled)
+        None -> receive_usage(model, strand, settled)
+      }
 
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
@@ -9697,6 +9802,136 @@ fn receive_usage(
   strand: String,
   settled: message.Usage,
 ) -> Model {
+  let usage = add_usage(model.usage, settled)
+  let updated =
+    settle_usage(
+      model,
+      strand,
+      settled,
+      tokens(usage.total_tokens) <> " tokens",
+    )
+  watch_cache(Model(..updated, usage:), strand, settled)
+}
+
+// A network push is an observation of one durable row, not a second owner of
+// session totals. A capture may already include its sequence, or a delayed
+// push may arrive after that capture; only the capture sets cumulative usage.
+// Sequence identity prevents duplicate pushes from resetting the cache clock.
+// The cache comparison waits for a cut that covers this sequence, since a
+// remote model change can reach the socket before its configuration capture.
+fn receive_usage_observation(
+  model: Model,
+  strand: String,
+  seq: Int,
+  operation: Option(String),
+  settled: message.Usage,
+) -> Model {
+  let seen = dict.get(model.cache_seen_seq, strand) |> result.unwrap(-1)
+  use <- bool.guard(when: seq <= seen, return: model)
+
+  // A first row already included in a capture may have belonged to an
+  // operation accepted under the previous model. The gateway can deliver
+  // its push after the cut, so it cannot seed this strand's cache baseline.
+  let already_covered = case
+    model.captured,
+    dict.get(model.cache_seen_seq, strand)
+  {
+    Some(#(cut, _)), Error(Nil) if seq < cut.next_seq -> True
+    _, _ -> False
+  }
+  let observed =
+    Model(
+      ..model,
+      cache_seen_seq: dict.insert(model.cache_seen_seq, strand, seq),
+      cache_pending: case already_covered {
+        True -> model.cache_pending
+        False ->
+          dict.insert(
+            model.cache_pending,
+            strand,
+            CacheObservation(
+              seq:,
+              operation:,
+              usage: settled,
+              at: model.monotonic_time_ms(),
+            ),
+          )
+      },
+    )
+    |> settle_usage(
+      strand,
+      settled,
+      tokens(settled.total_tokens) <> " tokens this turn",
+    )
+  case observed.captured {
+    Some(#(cut, _)) -> settle_pending_cache(observed, cut.next_seq)
+    None -> observed
+  }
+}
+
+// A cut covers every committed row below next_seq and supplies the model
+// configuration needed to compare its usage safely. Keep newer observations
+// pending; the committed notice or periodic refresh will fetch their cut.
+fn settle_pending_cache(model: Model, next_seq: Int) -> Model {
+  dict.to_list(model.cache_pending)
+  |> list.fold(model, fn(current, item) {
+    let #(strand, CacheObservation(seq:, operation:, usage:, at:)) = item
+    case seq < next_seq {
+      True ->
+        observed_cache_row(
+          Model(
+            ..current,
+            cache_pending: dict.delete(current.cache_pending, strand),
+          ),
+          strand,
+          operation,
+          usage,
+          at,
+        )
+      False -> current
+    }
+  })
+}
+
+fn observed_cache_row(
+  observed: Model,
+  strand: String,
+  operation: Option(String),
+  settled: message.Usage,
+  at: Int,
+) -> Model {
+  case dict.get(observed.cache_fence, strand), operation {
+    Ok(None), Some(op) ->
+      Model(
+        ..observed,
+        cache_fence: dict.insert(observed.cache_fence, strand, Some(op)),
+      )
+    Ok(None), None -> observed
+    Ok(Some(old)), Some(op) if old == op -> observed
+    Ok(Some(_)), Some(_) ->
+      watch_cache_at(
+        Model(
+          ..observed,
+          cache_fence: dict.delete(observed.cache_fence, strand),
+        ),
+        strand,
+        settled,
+        at,
+      )
+    Ok(Some(_)), None -> observed
+    Error(Nil), _ -> watch_cache_at(observed, strand, settled, at)
+  }
+}
+
+// The output rate and generation clock are per-row readings in both legacy
+// replay and live observations. Their common settlement does not touch the
+// cumulative usage figure, whose owner depends on the delivery path.
+fn settle_usage(
+  model: Model,
+  strand: String,
+  settled: message.Usage,
+  notice: String,
+) -> Model {
   // The settlement's own output count over the time since the request went
   // out. A settlement whose clock never started (a refusal, an empty turn)
   // leaves the last rate standing. `generation_clock` starts the clock only
@@ -9728,16 +9963,7 @@ fn receive_usage(
       None,
     )
   }
-  let usage = add_usage(model.usage, settled)
-  let settled_model =
-    Model(
-      ..model,
-      usage:,
-      generation_started_ms:,
-      output_rate_tps:,
-      notice: tokens(usage.total_tokens) <> " tokens",
-    )
-  watch_cache(settled_model, strand, settled)
+  Model(..model, generation_started_ms:, output_rate_tps:, notice:)
 }
 
 // Folds one row into its strand's cache watch and raises any notice it
@@ -9749,11 +9975,19 @@ fn receive_usage(
 // file far faster than the session originally ran, so the gaps it would
 // measure are not the gaps that happened; it observes nothing.
 fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
+  watch_cache_at(model, strand, settled, model.monotonic_time_ms())
+}
+
+fn watch_cache_at(
+  model: Model,
+  strand: String,
+  settled: message.Usage,
+  at: Int,
+) -> Model {
   use <- bool.lazy_guard(when: replaying(model), return: fn() { model })
 
-  let now = model.monotonic_time_ms()
   let held = dict.get(model.cache_watch, strand) |> option.from_result
-  let #(miss, watch) = cache_miss.observe(held, settled, now)
+  let #(miss, watch) = cache_miss.observe(held, settled, at)
   let watched =
     Model(..model, cache_watch: case watch {
       None -> model.cache_watch
@@ -9763,6 +9997,85 @@ fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
     None -> watched
     Some(value) -> note_cache_miss(watched, strand, value)
   }
+}
+
+// A watch describes one provider's prefix. A model change cannot inherit its
+// horizon or compare the new provider's first row with the old provider's
+// last row. Clear only the affected strand, leaving its historical notices
+// and other strands' watches in place.
+fn forget_cache(model: Model, strand: String) -> Model {
+  Model(
+    ..model,
+    cache_watch: dict.delete(model.cache_watch, strand),
+    cache_fence: dict.insert(model.cache_fence, strand, None),
+    cache_outlook: case strand == model.active_strand {
+      True -> ""
+      False -> model.cache_outlook
+    },
+  )
+}
+
+fn select_model(model: Model, name: String) -> Model {
+  let model = case name == model.current_model {
+    True -> model
+    False -> forget_cache(model, model.active_strand)
+  }
+  Model(..model, current_model: name)
+}
+
+// A captured configuration can change on another terminal. Compare the
+// effective model per strand instead of the whole configuration: changing a
+// directory or another setting does not erase a valid cache observation. An
+// initially live strand is fenced too, since its operation may have started
+// under a model selected before this terminal attached.
+fn cache_watches_for_cut(
+  model: Model,
+  view: snapshot_view.View,
+) -> #(Dict(String, cache_miss.Watch), Dict(String, Option(String))) {
+  case model.captured {
+    Some(#(_, previous)) if previous.configurations != view.configurations -> {
+      let watches =
+        dict.filter(model.cache_watch, fn(strand, _) {
+          configured_model(previous, strand) == configured_model(view, strand)
+        })
+      let fences =
+        dict.fold(view.configurations, model.cache_fence, fn(fences, strand, _) {
+          case
+            dict.has_key(previous.configurations, strand)
+            && configured_model(previous, strand)
+            != configured_model(view, strand)
+          {
+            True -> dict.insert(fences, strand, None)
+            False -> fences
+          }
+        })
+      let fences =
+        dict.fold(view.operations, fences, fn(fences, strand, _) {
+          case dict.has_key(previous.configurations, strand) {
+            True -> fences
+            False -> dict.insert(fences, strand, None)
+          }
+        })
+      #(watches, fences)
+    }
+    Some(_) -> #(model.cache_watch, model.cache_fence)
+    None -> #(
+      model.cache_watch,
+      dict.fold(view.operations, model.cache_fence, fn(fences, strand, _) {
+        dict.insert(fences, strand, None)
+      }),
+    )
+  }
+}
+
+fn configured_model(
+  view: snapshot_view.View,
+  strand: String,
+) -> Option(machine_strand.ModelIdentity) {
+  view.configurations
+  |> dict.get(strand)
+  |> option.from_result
+  |> option.map(fn(config) { config.configuration.model })
 }
 
 // A replay has no idle time of its own to report.
@@ -9930,6 +10243,15 @@ pub fn output_rate_label(rate: Option(Int)) -> String {
   case rate {
     Some(rate) -> " · " <> int.to_string(rate) <> " tok/s"
     None -> ""
+  }
+}
+
+// The outlook leads a bounded footer section so right-side truncation cannot
+// erase it. Nothing to say costs no cells.
+pub fn cache_section_label(label: String) -> String {
+  case label {
+    "" -> ""
+    text -> text <> " · "
   }
 }
 
@@ -10125,11 +10447,11 @@ fn update_model_selector(
         notice: "model selection cancelled",
       )
     model_selector.Choose(name) -> {
+      let switched = select_model(model, name)
       let selected =
         Model(
-          ..model,
+          ..switched,
           overlay: NoOverlay,
-          current_model: name,
           repaint_phase: !model.repaint_phase,
           notice: "model: " <> name,
         )
@@ -11640,7 +11962,7 @@ fn submit_text(model: Model) -> Model {
     }
     command.Model(name) -> {
       let switched =
-        Model(..cleared, current_model: name)
+        select_model(cleared, name)
         |> send_frame(protocol.set_model(
           cleared.next_id,
           cleared.active_strand,
@@ -12806,6 +13128,7 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
       active_strand: strand,
       queued: [],
       awaiting_outcome: None,
+      cache_outlook: "",
       current_model: "loading…",
       record_cache_valid: False,
       repaint_phase: !model.repaint_phase,

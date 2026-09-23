@@ -3151,6 +3151,15 @@ fn operator(id: String, name: String) -> access.Principal {
 // the fixture's commit forwarder and so gives the hub a real hint. Answers
 // the seq the notice must carry.
 fn commit_user_entry(harness: Harness, seed: Int, text: String) -> Int {
+  let #(_id, seq) = commit_user_entry_with_id(harness, seed, text)
+  seq
+}
+
+fn commit_user_entry_with_id(
+  harness: Harness,
+  seed: Int,
+  text: String,
+) -> #(ids.EntryId, Int) {
   let #(id, _) =
     ids.mint_entry(ids.generator(clock.fixed(1_700_000_000_001), seed))
   let row =
@@ -3167,8 +3176,47 @@ fn commit_user_entry(harness: Harness, seed: Int, text: String) -> Int {
       terminate: False,
     )
   let assert Ok(commit) =
-    writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertEntry(row)], []))
+    writer.commit(
+      harness.runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.InsertEntry(row),
+          tx.SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(id)),
+          ),
+        ],
+        [],
+      ),
+    )
     as "the fixture entry commits"
+  #(id, commit.first_seq)
+}
+
+// A real ledger append takes the network gateway's durable pull path. The
+// terminal test below must not manufacture a usage push that this hub never
+// emits.
+fn commit_usage_row(
+  harness: Harness,
+  seed: Int,
+  entry_id: Option(ids.EntryId),
+  usage: message.Usage,
+) -> Int {
+  let #(id, _) =
+    ids.mint_usage(ids.generator(clock.fixed(1_700_000_000_002), seed))
+  let row =
+    core_entry.UsageRow(
+      id:,
+      seq: 0,
+      entry_id:,
+      adjustment: False,
+      usage:,
+      details: None,
+    )
+  let assert Ok(commit) =
+    writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertUsage(row)], []))
+    as "the provider usage row commits"
   commit.first_seq
 }
 
@@ -3197,6 +3245,138 @@ pub fn a_network_commit_reaches_a_subscribed_socket_as_one_notice_test() {
   // And nothing else. An `entry` frame here would be the record itself on
   // a path with neither credit nor a size bound.
   assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+/// Network usage retains its notice and carries one bounded observation.
+///
+/// A subscribed terminal needs the per-request row to assess a cache miss.
+/// Its authoritative session total still comes from the credited capture
+/// triggered by the notice.
+pub fn a_network_usage_commit_pushes_its_row_and_notice_test() {
+  let harness = network_harness()
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let usage =
+    message.Usage(
+      input: 12,
+      output: 400,
+      cache_read: 250_000,
+      cache_write: 0,
+      cache_write_1h: Some(1000),
+      reasoning: None,
+      total_tokens: 250_412,
+      cost: message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let #(entry_id, _entry_seq) = commit_user_entry_with_id(harness, 74, "prompt")
+  let _entry_notice = next_on(inbox)
+  let seq = commit_usage_row(harness, 73, Some(entry_id), usage)
+
+  let notice = next_on(inbox)
+  assert notice.reply_to == None
+  assert notice.seq == Some(seq)
+  assert notice.event == protocol.CommittedEvent(strand: "main")
+
+  let observed = next_on(inbox)
+  assert observed.reply_to == None
+  assert observed.seq == Some(seq)
+  assert observed.event
+    == protocol.UsageObservationEvent(strand: "main", op: None, usage:)
+  assert process.receive(inbox, within: 100) == Error(Nil)
+    as "one durable usage row has one observation, not a repeated stream"
+}
+
+/// A summary settlement has no entry identity and cannot establish which
+/// strand owns its cache counters. Its notice still triggers authoritative
+/// capture, but the gateway must not invent a per-strand observation.
+pub fn a_network_unattributed_usage_commit_has_no_observation_test() {
+  let harness = network_harness()
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let usage =
+    message.Usage(
+      input: 12,
+      output: 400,
+      cache_read: 250_000,
+      cache_write: 0,
+      cache_write_1h: Some(1000),
+      reasoning: None,
+      total_tokens: 250_412,
+      cost: message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let seq = commit_usage_row(harness, 75, None, usage)
+
+  let notice = next_on(inbox)
+  assert notice.seq == Some(seq)
+  assert notice.event == protocol.CommittedEvent(strand: "main")
+  assert process.receive(inbox, within: 100) == Error(Nil)
+    as "a row with no entry cannot update an invented strand cache"
+}
+
+/// An entry found only by the completeness pass has a display strand, but
+/// no branch scan proved that strand owns its usage. That fallback must not
+/// become a cache observation when the usage row arrives later.
+pub fn a_network_fallback_entry_has_no_usage_observation_test() {
+  let harness = network_harness()
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let #(entry_id, _) =
+    ids.mint_entry(ids.generator(clock.fixed(1_700_000_000_003), 76))
+  let row =
+    core_entry.MessageEntry(
+      id: entry_id,
+      parent: None,
+      seq: 0,
+      ts: 0,
+      message: message.UserMessage(
+        content: [message.UserText(text: "unclaimed", text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+      terminate: False,
+    )
+  let assert Ok(_) =
+    writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertEntry(row)], []))
+    as "the unclaimed entry commits"
+  let _entry_notice = next_on(inbox)
+  let usage =
+    message.Usage(
+      input: 12,
+      output: 400,
+      cache_read: 250_000,
+      cache_write: 0,
+      cache_write_1h: Some(1000),
+      reasoning: None,
+      total_tokens: 250_412,
+      cost: message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
+    )
+  let seq = commit_usage_row(harness, 77, Some(entry_id), usage)
+
+  let notice = next_on(inbox)
+  assert notice.seq == Some(seq)
+  assert notice.event == protocol.CommittedEvent(strand: "main")
+  assert process.receive(inbox, within: 100) == Error(Nil)
+    as "the completeness-pass fallback cannot update the cache"
 }
 
 /// A hub that starts over a store with history in it must treat that

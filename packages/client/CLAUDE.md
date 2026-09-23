@@ -282,6 +282,7 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
   `EntryEvent`, `OpTransitionEvent`, `StreamDeltaEvent`, `UsageEvent`,
+  `UsageObservationEvent`,
   `EscalationEvent`, `StrandResultEvent`, `ErrorEvent`, `UnknownEvent`),
   with `Snapshot`, `Strand`, `LiveOp`, `EntryRecord`, `EscalationRecord`,
   `Denial`, and `ModelInfo` as the body shapes (`ModelsSnapshot` is the
@@ -2963,10 +2964,16 @@ these forks because they define the same modules.
   one frame and retires the attachment when the answer changed. Push
   therefore opens no second way out and needs no new authority path; it
   reaches the existing one from the network side.
-- **A pushed durable frame is a notice, never the record.** The hub emits
-  one `committed` per new emit — the seq and the strand — and the record
-  still travels the credited snapshot path, which is the one place the
-  64 KiB bound and the retention window are enforced. Delta text is
+- **A pushed durable frame is a notice, with one bounded usage exception.**
+  The hub emits one `committed` per new emit — the seq and the strand — and
+  records still travel the credited snapshot path. A usage row linked to an
+  entry claimed by one branch scan also pushes its fixed-shape counters under
+  the distinct `usage_observation` name after checking the encoded frame
+  against 64 KiB. A row with no entry, a fallback attribution, or an entry
+  shared by branches sends only the notice. This observation can drive a live
+  cache reading but does not own
+  cumulative totals; a missed push is repaired by the capture. Protocol 047
+  narrows protocol 018 at this boundary. Delta text is
   clipped with `preview_text` before it is encoded, so a pushed frame is
   under the reply ceiling by construction rather than by a second
   mechanism. A notice is idempotent and order-free: a client that already

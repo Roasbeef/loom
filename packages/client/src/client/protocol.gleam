@@ -596,6 +596,12 @@ pub type Event {
   /// One usage-ledger append.
   UsageEvent(strand: String, op: Option(String), usage: Usage)
 
+  /// A bounded, unsolicited reading of one usage row.
+  ///
+  /// Its distinct wire name keeps older terminals from treating a pushed
+  /// observation as another cumulative ledger append.
+  UsageObservationEvent(strand: String, op: Option(String), usage: Usage)
+
   /// An escalation lifecycle change.
   EscalationEvent(record: EscalationRecord)
 
@@ -1321,11 +1327,11 @@ fn event_body(event: Event) -> #(String, JsonValue) {
     )
     UsageEvent(strand:, op:, usage:) -> #(
       "usage",
-      object_of([
-        #("strand", Some(json.String(strand))),
-        #("op", option.map(op, json.String)),
-        #("usage", Some(codec.encode_usage(usage))),
-      ]),
+      usage_body(strand, op, usage),
+    )
+    UsageObservationEvent(strand:, op:, usage:) -> #(
+      "usage_observation",
+      usage_body(strand, op, usage),
     )
     EscalationEvent(record:) -> #("escalation", encode_escalation(record))
     StrandResultEvent(strand:, op:, status:, error:) -> #(
@@ -1355,6 +1361,16 @@ fn event_body(event: Event) -> #(String, JsonValue) {
     )
     UnknownEvent(event:, body:) -> #(event, body)
   }
+}
+
+// The credited ledger row and its unsolicited observation have identical
+// fixed-shape counters. Only their event names and delivery rules differ.
+fn usage_body(strand: String, op: Option(String), usage: Usage) -> JsonValue {
+  object_of([
+    #("strand", Some(json.String(strand))),
+    #("op", option.map(op, json.String)),
+    #("usage", Some(codec.encode_usage(usage))),
+  ])
 }
 
 fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
@@ -1722,18 +1738,12 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       ))
     }
     "usage" -> {
-      use fields <- result.try(body_fields(body))
-      use strand <- result.try(required_string(fields, "strand"))
-      use op <- result.try(optional_string(fields, "op"))
-      use usage_value <- result.try(case list.key_find(fields, "usage") {
-        Ok(value) -> Ok(value)
-        Error(Nil) -> Error("a usage object is required")
-      })
-      use usage <- result.try(
-        codec.decode_usage(usage_value)
-        |> result.map_error(fn(report) { report.expected }),
-      )
+      use #(strand, op, usage) <- result.try(decode_usage_body(body))
       Ok(UsageEvent(strand:, op:, usage:))
+    }
+    "usage_observation" -> {
+      use #(strand, op, usage) <- result.try(decode_usage_body(body))
+      Ok(UsageObservationEvent(strand:, op:, usage:))
     }
     "escalation" -> {
       use record <- result.try(decode_escalation(body))
@@ -1767,6 +1777,23 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
     }
     other -> Ok(UnknownEvent(event: other, body:))
   }
+}
+
+fn decode_usage_body(
+  body: JsonValue,
+) -> Result(#(String, Option(String), Usage), String) {
+  use fields <- result.try(body_fields(body))
+  use strand <- result.try(required_string(fields, "strand"))
+  use op <- result.try(optional_string(fields, "op"))
+  use usage_value <- result.try(case list.key_find(fields, "usage") {
+    Ok(value) -> Ok(value)
+    Error(Nil) -> Error("a usage object is required")
+  })
+  use usage <- result.try(
+    codec.decode_usage(usage_value)
+    |> result.map_error(fn(report) { report.expected }),
+  )
+  Ok(#(strand, op, usage))
 }
 
 // These checks bound each independent frame. The receiver additionally checks

@@ -710,8 +710,8 @@ type State {
     held: Dict(String, HeldQueue),
     // Monotonic item identity prevents reused client request IDs from aliasing.
     next_held: Int,
-    // entry id (text) → strand attribution cache.
-    entry_strand: Dict(String, String),
+    // Entry id (text) → strand and the evidence for its ownership.
+    entry_strand: Dict(String, EntryAttribution),
     // The effect plane's sweep of an aborted operation, when the host
     // has an effect plane at all.
     effect_abort: Option(fn(OpId) -> Nil),
@@ -746,9 +746,20 @@ type Delivery {
   HostOnly
 }
 
+// A branch scan proves membership, but a shared ancestor belongs to more
+// than one branch. Parent and first-strand fallbacks are display hints only.
+type EntryAttribution {
+  BranchOwned(strand: String)
+  Unverified(strand: String)
+  Shared(strand: String)
+}
+
 // One materialized durable event: its storage seq plus the wire event.
+// Only a usage row linked to an entry with known strand ownership may
+// carry a cache observation. The legacy event can retain its display
+// fallback without granting that guess authority over cache state.
 type Emit {
-  Emit(seq: Int, event: WireEvent)
+  Emit(seq: Int, event: WireEvent, observation_strand: Option(String))
 }
 
 /// One strand's held messages together with the policy deciding how many
@@ -2653,21 +2664,54 @@ fn pull_and_broadcast(state: State) -> State {
     // to respect and its fixtures read the entries themselves.
     HostOnly -> broadcast(state, emits)
 
-    // A network peer gets a notice per emit and fetches the record on the
-    // credited path (`protocol-change/018`). The seq is the emit's own, so
-    // a client that already holds it drops the frame without asking.
+    // A network peer gets a notice per emit and fetches records on the
+    // credited path (`protocol-change/018`). A usage row also has a bounded
+    // observational push (`protocol-change/047`): its fixed-shape counters
+    // let a terminal assess a cache miss without guessing from session
+    // totals, while the notice still drives authoritative catch-up.
     Network ->
       broadcast(
         state,
-        list.map(emits, fn(emit) {
-          Emit(
-            seq: emit.seq,
-            event: protocol.CommittedEvent(notice_strand(state, emit.event)),
-          )
+        list.flat_map(emits, fn(emit) {
+          let notice =
+            Emit(
+              seq: emit.seq,
+              event: protocol.CommittedEvent(notice_strand(state, emit.event)),
+              observation_strand: None,
+            )
+          case emit.event, emit.observation_strand {
+            protocol.UsageEvent(op:, usage:, ..), Some(strand) -> {
+              let observed =
+                Emit(
+                  seq: emit.seq,
+                  event: protocol.UsageObservationEvent(strand:, op:, usage:),
+                  observation_strand: None,
+                )
+              case bounded_usage_observation(observed) {
+                True -> [notice, observed]
+                False -> [notice]
+              }
+            }
+            _, _ -> [notice]
+          }
         }),
       )
   }
   state
+}
+
+// The usage envelope has a fixed set of counters, but a provider can still
+// report unusually large integers. A push spends no transfer credit, so an
+// oversized observation is omitted and its committed notice still repairs
+// the authoritative session total through the bounded capture.
+fn bounded_usage_observation(emit: Emit) -> Bool {
+  protocol.event_value(protocol.EventEnvelope(
+    reply_to: None,
+    seq: Some(emit.seq),
+    event: emit.event,
+  ))
+  |> transfer.encoded_size(65_536)
+  |> result.is_ok
 }
 
 // The strand a durable emit landed on, which is a notice's whole body.
@@ -2679,7 +2723,8 @@ fn pull_and_broadcast(state: State) -> State {
 fn notice_strand(state: State, event: WireEvent) -> String {
   case event {
     protocol.EntryEvent(record:) -> record.strand
-    protocol.UsageEvent(strand:, ..) -> strand
+    protocol.UsageEvent(strand:, ..)
+    | protocol.UsageObservationEvent(strand:, ..) -> strand
     protocol.OpTransitionEvent(strand:, ..) -> strand
     protocol.EscalationEvent(record:) -> record.strand
     protocol.StrandResultEvent(strand:, ..) -> strand
@@ -2773,8 +2818,8 @@ fn new_entries(
   state: State,
   strands: List(String),
   hw: Int,
-  cache: Dict(String, String),
-) -> #(Dict(String, String), List(Emit)) {
+  cache: Dict(String, EntryAttribution),
+) -> #(Dict(String, EntryAttribution), List(Emit)) {
   let store = state.runtime.session
 
   // Per-strand branch scans above the high-water attribute entries to
@@ -2812,8 +2857,8 @@ fn claim_branch(
   store: session.Session,
   strand: String,
   hw: Int,
-  accumulator: #(Dict(String, String), List(Emit)),
-) -> #(Dict(String, String), List(Emit)) {
+  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
+) -> #(Dict(String, EntryAttribution), List(Emit)) {
   case session.strand_leaf(store, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
       case
@@ -2837,18 +2882,26 @@ fn claim_branch(
 // Claims one row for `strand` unless the cache already has it (a row
 // another strand's branch already attributed).
 fn claim_row(
-  accumulator: #(Dict(String, String), List(Emit)),
+  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
   strand: String,
   row: Entry,
-) -> #(Dict(String, String), List(Emit)) {
+) -> #(Dict(String, EntryAttribution), List(Emit)) {
   let #(cache, emits) = accumulator
   let id = ids.entry_id_to_string(entry_id_of(row))
-  case dict.has_key(cache, id) {
-    True -> #(cache, emits)
-    False -> #(dict.insert(cache, id, strand), [
+  case dict.get(cache, id) {
+    Error(Nil) -> #(dict.insert(cache, id, BranchOwned(strand)), [
       entry_emit(strand, row),
       ..emits
     ])
+    Ok(BranchOwned(existing)) if existing == strand -> #(cache, emits)
+    Ok(Unverified(existing)) if existing == strand -> #(
+      dict.insert(cache, id, BranchOwned(strand)),
+      emits,
+    )
+    Ok(existing) -> #(
+      dict.insert(cache, id, Shared(entry_attribution_strand(existing))),
+      emits,
+    )
   }
 }
 
@@ -2856,10 +2909,10 @@ fn claim_row(
 // attribution (or the fallback strand when the parent is unattributed
 // too).
 fn claim_by_parent(
-  accumulator: #(Dict(String, String), List(Emit)),
+  accumulator: #(Dict(String, EntryAttribution), List(Emit)),
   row: Entry,
   fallback: String,
-) -> #(Dict(String, String), List(Emit)) {
+) -> #(Dict(String, EntryAttribution), List(Emit)) {
   let #(cache, emits) = accumulator
   let id = ids.entry_id_to_string(entry_id_of(row))
   case dict.has_key(cache, id) {
@@ -2868,13 +2921,22 @@ fn claim_by_parent(
       let strand = case entry_parent_of(row) {
         Some(parent) ->
           case dict.get(cache, ids.entry_id_to_string(parent)) {
-            Ok(strand) -> strand
+            Ok(attribution) -> entry_attribution_strand(attribution)
             Error(Nil) -> fallback
           }
         None -> fallback
       }
-      #(dict.insert(cache, id, strand), [entry_emit(strand, row), ..emits])
+      #(dict.insert(cache, id, Unverified(strand)), [
+        entry_emit(strand, row),
+        ..emits
+      ])
     }
+  }
+}
+
+fn entry_attribution_strand(attribution: EntryAttribution) -> String {
+  case attribution {
+    BranchOwned(strand:) | Unverified(strand:) | Shared(strand:) -> strand
   }
 }
 
@@ -2882,12 +2944,13 @@ fn entry_emit(strand: String, row: Entry) -> Emit {
   Emit(
     seq: entry_seq_of(row),
     event: protocol.EntryEvent(record: EntryRecord(strand:, entry: row)),
+    observation_strand: None,
   )
 }
 
 fn new_usage(
   state: State,
-  entry_strand: Dict(String, String),
+  entry_strand: Dict(String, EntryAttribution),
   hw: Int,
 ) -> List(Emit) {
   let store = state.runtime.session.store
@@ -2901,12 +2964,13 @@ fn new_usage(
     Error(_) -> []
     Ok(rows) ->
       list.map(rows, fn(row: UsageRow) {
-        let strand = case row.entry_id {
-          Some(id) ->
-            case dict.get(entry_strand, ids.entry_id_to_string(id)) {
-              Ok(strand) -> strand
-              Error(Nil) -> single_live_strand(state)
-            }
+        let attribution = usage_entry_attribution(entry_strand, row.entry_id)
+        let observation_strand = case attribution {
+          Some(BranchOwned(strand)) -> Some(strand)
+          Some(Unverified(_)) | Some(Shared(_)) | None -> None
+        }
+        let strand = case attribution {
+          Some(attribution) -> entry_attribution_strand(attribution)
           None -> single_live_strand(state)
         }
         let op = case dict.get(state.live, strand) {
@@ -2916,8 +2980,25 @@ fn new_usage(
         Emit(
           seq: row.seq,
           event: protocol.UsageEvent(strand:, op:, usage: row.usage),
+          observation_strand:,
         )
       })
+  }
+}
+
+// A usage row may carry an entry identity without the gateway having seen
+// that entry yet. Only the attribution cache can supply ownership evidence.
+fn usage_entry_attribution(
+  entry_strand: Dict(String, EntryAttribution),
+  entry_id: Option(EntryId),
+) -> Option(EntryAttribution) {
+  case entry_id {
+    Some(id) ->
+      case dict.get(entry_strand, ids.entry_id_to_string(id)) {
+        Ok(attribution) -> Some(attribution)
+        Error(Nil) -> None
+      }
+    None -> None
   }
 }
 
@@ -2986,6 +3067,7 @@ fn terminal_result_emits(
           Emit(
             seq: state_seq,
             event: protocol.OpTransitionEvent(op:, strand:, phase: "done"),
+            observation_strand: None,
           ),
           ..emits
         ]
@@ -2995,6 +3077,7 @@ fn terminal_result_emits(
         Emit(
           seq:,
           event: protocol.StrandResultEvent(strand:, op:, status:, error:),
+          observation_strand: None,
         ),
         ..emits
       ]
@@ -3028,6 +3111,7 @@ fn open_operation_phase(
                   strand:,
                   phase: phase_of(value),
                 ),
+                observation_strand: None,
               ),
               ..emits
             ])
@@ -3056,7 +3140,12 @@ fn escalation_events(state: State, hw: Int) -> List(Emit) {
           True ->
             case runtime_escalation.decode(value.payload) {
               Error(_) -> Error(Nil)
-              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record, seq)))
+              Ok(record) ->
+                Ok(Emit(
+                  seq:,
+                  event: escalation_event(record, seq),
+                  observation_strand: None,
+                ))
             }
         }
       })
@@ -4281,7 +4370,7 @@ fn replay_entry_emits(
       list.map(rows, fn(row) {
         let id_text = ids.entry_id_to_string(entry_id_of(row))
         let strand = case dict.get(state.entry_strand, id_text) {
-          Ok(strand) -> strand
+          Ok(attribution) -> entry_attribution_strand(attribution)
           Error(Nil) -> locate_entry(state, strands, entry_id_of(row))
         }
         entry_emit(strand, row)
@@ -4315,7 +4404,7 @@ fn replay_usage_row(
   let strand = case row.entry_id {
     Some(entry_id) ->
       case dict.get(state.entry_strand, ids.entry_id_to_string(entry_id)) {
-        Ok(strand) -> strand
+        Ok(attribution) -> entry_attribution_strand(attribution)
         Error(Nil) -> locate_entry(state, strands, entry_id)
       }
     None -> single_live_strand(state)
@@ -4323,6 +4412,7 @@ fn replay_usage_row(
   Emit(
     seq: row.seq,
     event: protocol.UsageEvent(strand:, op: None, usage: row.usage),
+    observation_strand: None,
   )
 }
 
@@ -4361,6 +4451,7 @@ fn replay_op_transition(
                   strand:,
                   phase: phase_of(op_state),
                 ),
+                observation_strand: None,
               ),
             ]
             _ -> []
@@ -4386,6 +4477,7 @@ fn replay_strand_result(
         Emit(
           seq:,
           event: protocol.StrandResultEvent(strand:, op:, status:, error:),
+          observation_strand: None,
         ),
       ]
     }
@@ -4414,7 +4506,12 @@ fn replay_escalation_emits(
           True ->
             case runtime_escalation.decode(value.payload) {
               Error(_) -> Error(Nil)
-              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record, seq)))
+              Ok(record) ->
+                Ok(Emit(
+                  seq:,
+                  event: escalation_event(record, seq),
+                  observation_strand: None,
+                ))
             }
         }
       })
@@ -4541,7 +4638,7 @@ fn recent_entries(state: State) -> List(EntryRecord) {
       |> list.map(fn(row) {
         let id_text = ids.entry_id_to_string(entry_id_of(row))
         let strand = case dict.get(state.entry_strand, id_text) {
-          Ok(strand) -> strand
+          Ok(attribution) -> entry_attribution_strand(attribution)
           Error(Nil) ->
             locate_entry(state, strand_names(state), entry_id_of(row))
         }
