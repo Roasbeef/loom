@@ -260,3 +260,55 @@ pub fn the_seed_waits_behind_an_operator_notes_read_test() {
     )
   assert surfaces.service_todo_seed(waiting) == waiting
 }
+
+// A response carrying prose beside the call is a narrative, drawn message
+// by message; its todo result is one progress row there too, not the
+// checklist text flattened onto one line.
+pub fn a_narrated_call_shows_progress_not_the_checklist_test() {
+  let assert entry.MessageEntry(message: body, ..) as placed = call("t1", 1)
+    as "the call has an entry envelope"
+  let assert message.AssistantMessage(content:, ..) = body
+    as "the call is an assistant message"
+  let narrated =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(..body, content: [
+        message.AssistantText("Tests pass; marking the pilot done.", None),
+        ..content
+      ]),
+    )
+  let assert entry.MessageEntry(..) as settled =
+    outcome("t1", 2, False, board())
+    as "the result has an entry envelope"
+  let checklist =
+    entry.MessageEntry(
+      ..settled,
+      message: message.ToolResultMessage(
+        tool_call_id: "t1",
+        tool_name: "todo",
+        content: [
+          message.ToolResultText(
+            "2/4 closed; active: Judge every unit (Judge)\n## Extract 1/1\n[x] Extract test units",
+            None,
+          ),
+        ],
+        details: Some(
+          json.Object([
+            #("op", json.String("done")),
+            #("todo", todo_list.encode(board())),
+          ]),
+        ),
+        usage: None,
+        added_tool_names: None,
+        is_error: False,
+        timestamp: 0,
+      ),
+    )
+  let #(compact, frame) =
+    base() |> received(narrated) |> received(checklist) |> text
+  assert string.contains(frame, "todo · 2/4 done")
+  assert !string.contains(frame, "## Extract")
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> text
+  assert string.contains(expanded, "[x] Extract test units")
+}

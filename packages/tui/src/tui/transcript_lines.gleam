@@ -1744,13 +1744,31 @@ fn tool_result_lines(
         },
       ),
     ]
-    _, False, _ -> [
-      Line(ToolResult, case details_expanded {
-        True -> tool_name <> "\n" <> result
-        False -> tool_name <> " · " <> compact(result, 120)
-      }),
-    ]
+
+    // The pinned panel carries the board, so a collapsed result names only
+    // the progress it left rather than the checklist flattened onto one
+    // row; Ctrl+g still shows the whole list the model read back.
+    "todo", False, Some(value) ->
+      case details_expanded, todo_panel.result_summary(value) {
+        False, Some(progress) -> [Line(ToolResult, "todo · " <> progress)]
+        True, _ | False, None ->
+          plain_result_lines(tool_name, result, details_expanded)
+      }
+    _, False, _ -> plain_result_lines(tool_name, result, details_expanded)
   }
+}
+
+fn plain_result_lines(
+  tool_name: String,
+  result: String,
+  details_expanded: Bool,
+) -> List(Line) {
+  [
+    Line(ToolResult, case details_expanded {
+      True -> tool_name <> "\n" <> result
+      False -> tool_name <> " · " <> compact(result, 120)
+    }),
+  ]
 }
 
 // The tool's prose is guidance for the model. The transcript already has the
