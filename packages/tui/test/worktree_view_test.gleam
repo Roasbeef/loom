@@ -18,6 +18,7 @@ import tui/model as tui_model
 import tui/protocol
 import tui/render
 import tui/session_channel
+import tui/submit
 import tui/workspace
 import tui/worktree_view
 import tui_test/pushed
@@ -476,13 +477,13 @@ pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
   assert !string.contains(painted(narrow), "captured changes")
   let wide_again = tui.update(backend.Resize(160, 35), narrow)
   assert string.contains(painted(wide_again), "captured changes")
-  let dismissed = tui.open_diff(wide_again)
+  let dismissed = submit.open_diff(wide_again)
   assert dismissed.diff_view == tui_model.DiffHidden
   let resized = tui.update(backend.Resize(170, 35), dismissed)
   assert !string.contains(painted(resized), "captured changes")
   assert textarea.value(resized.input) == "draft"
 
-  let manual = tui.open_diff(narrow)
+  let manual = submit.open_diff(narrow)
   assert manual.diff_view == tui_model.DiffVisible
   assert string.contains(painted(manual), "captured changes")
 }

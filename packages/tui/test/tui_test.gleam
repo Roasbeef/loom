@@ -42,6 +42,7 @@ import tui/render
 import tui/selection
 import tui/session_channel
 import tui/sessions
+import tui/submit
 import tui/text_hygiene
 import tui/theme
 import tui/transcript_lines
@@ -1196,18 +1197,18 @@ fn live_model(draft: String) -> tui_model.Model {
 pub fn prompt_history_restores_the_unsent_draft_test() {
   let history = ["newest", "older"]
   let #(index, draft, value) =
-    tui.history_selection(history, 0, "", "unsent draft", True)
+    submit.history_selection(history, 0, "", "unsent draft", True)
   assert #(index, draft, value) == #(1, "unsent draft", "newest")
 
   let #(index, draft, value) =
-    tui.history_selection(history, index, draft, value, True)
+    submit.history_selection(history, index, draft, value, True)
   assert #(index, draft, value) == #(2, "unsent draft", "older")
 
   let #(index, draft, value) =
-    tui.history_selection(history, index, draft, value, False)
+    submit.history_selection(history, index, draft, value, False)
   assert #(index, draft, value) == #(1, "unsent draft", "newest")
 
-  assert tui.history_selection(history, index, draft, value, False)
+  assert submit.history_selection(history, index, draft, value, False)
     == #(0, "unsent draft", "unsent draft")
 }
 
@@ -1348,7 +1349,7 @@ pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
   assert filename == "tui-golden-drop.png"
   assert mime_type == "image/png"
   assert byte_size == bit_array.byte_size(bytes)
-  let content = tui.image_prompt_content("inspect this", [image])
+  let content = submit.image_prompt_content("inspect this", [image])
   assert content
     == [
       message.UserText("inspect this", None),
@@ -1484,7 +1485,7 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   assert composer.drop_last(attachments) == [composer.ImageAttachment(first)]
   assert composer.summary(attachments)
     == Some("2 images · a.png image/png 1 B · b.jpg image/jpeg 1 B")
-  assert tui.image_prompt_content("", composer.images(attachments))
+  assert submit.image_prompt_content("", composer.images(attachments))
     == [
       message.UserImage("YQ==", "image/png"),
       message.UserImage("Yg==", "image/jpeg"),

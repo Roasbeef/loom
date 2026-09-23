@@ -27,6 +27,7 @@ import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/submit
 import tui/workspace
 import tui_test/pushed
 
@@ -225,7 +226,7 @@ fn draft(model: tui_model.Model) -> queue_editor.Draft {
 
 fn opened(text) {
   let #(model, events) = ready([pending("A")])
-  let waiting = model |> tui.open_queue |> key("enter")
+  let waiting = model |> submit.open_queue |> key("enter")
   let request = issued(events, "queued_input")
   #(full_reply(waiting, request, "A", 3, text), events)
 }
@@ -249,7 +250,7 @@ fn refused(model, request, code) {
 
 pub fn queue_inspector_preserves_composer_and_attachments_test() {
   let #(model, _) = ready([pending("A"), pending("B")])
-  let opened = tui.open_queue(model)
+  let opened = submit.open_queue(model)
   assert opened.queue_editor.surface == queue_editor.Inspector
   assert opened.input == model.input
   assert opened.attachments == model.attachments
@@ -305,7 +306,7 @@ pub fn queue_inspector_labels_priority_access_and_excerpt_provenance_test() {
     ),
   ]
   let #(model, events) = ready(rows)
-  let opened = tui.open_queue(model)
+  let opened = submit.open_queue(model)
   let wide = painted(opened)
   assert string.contains(wide, "▸ urgent captured")
   assert string.contains(wide, "[STEER] [EDIT]")
@@ -329,7 +330,7 @@ pub fn compact_excerpt_paging_reaches_tail_and_resize_clamps_render_test() {
   let compact =
     model
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let first = painted_at(compact, 40, 12)
   assert string.contains(first, "line-01")
   assert !string.contains(first, "line-12-tail")
@@ -362,7 +363,7 @@ pub fn compact_single_line_paging_reaches_a_twenty_cell_suffix_test() {
   let compact =
     model
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
     |> key("pagedown")
   assert string.contains(painted_at(compact, 40, 12), "ABCDEFGHIJKLMNOPQRST")
 }
@@ -378,7 +379,7 @@ pub fn two_row_queue_title_pages_beside_a_multiline_composer_test() {
       input: textarea.state_from_string("ordinary draft\nsecond draft line"),
     )
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let first = painted_at(compact, 40, 12)
   assert string.contains(first, "line-01")
   assert string.contains(first, "ordinary draft")
@@ -403,7 +404,7 @@ pub fn two_row_queue_title_pages_beside_an_active_status_test() {
   let compact =
     tui_model.Model(..model, submitting: Some("main"))
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let first = painted_at(compact, 40, 12)
   assert string.contains(first, "line-01")
   assert string.contains(first, "submitting")
@@ -428,7 +429,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
   let compact =
     model
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let paged =
     list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
       key(current, "pagedown")
@@ -449,7 +450,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
 
 pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let selected = model |> tui.open_queue |> key("down")
+  let selected = model |> submit.open_queue |> key("down")
   assert string.contains(
     painted(selected),
     "▸ same instruction · [QUEUE] [EDIT]",
@@ -471,7 +472,7 @@ pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
 
 pub fn clean_retained_draft_allows_editing_another_item_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let waiting = model |> tui.open_queue |> key("enter")
+  let waiting = model |> submit.open_queue |> key("enter")
   let request = issued(events, "queued_input")
   let clean = full_reply(waiting, request, "A", 3, "same instruction")
   let selected = clean |> key("esc") |> key("down") |> key("enter")
@@ -483,7 +484,7 @@ pub fn clean_retained_draft_allows_editing_another_item_test() {
 
 pub fn resuming_a_draft_cancels_another_items_late_fetch_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let waiting_a = model |> tui.open_queue |> key("enter")
+  let waiting_a = model |> submit.open_queue |> key("enter")
   let request_a = issued(events, "queued_input")
   let clean_a = full_reply(waiting_a, request_a, "A", 3, "same instruction")
   let waiting_b = clean_a |> key("esc") |> key("down") |> key("enter")
@@ -506,7 +507,7 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
   let opened =
     model
     |> tui.update(backend.Resize(120, 30), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let selected =
     list.fold(list.repeat(Nil, 11), opened, fn(current, _) {
       key(current, "down")
@@ -527,7 +528,7 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
 pub fn reopening_queue_browses_before_resuming_a_retained_draft_test() {
   let #(editor, _) = opened("original complete text")
   let closed = editor |> key("esc") |> key("esc")
-  let browsing = tui.open_queue(closed)
+  let browsing = submit.open_queue(closed)
   assert browsing.queue_editor.surface == queue_editor.Inspector
   assert textarea.value(browsing.input) == "ordinary composer draft"
   assert string.contains(painted(browsing), "e resumes editing")
@@ -716,7 +717,7 @@ pub fn full_document_decoder_bounds_encoded_bytes_and_image_counts_test() {
 
 pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let selected = model |> tui.open_queue |> key("down")
+  let selected = model |> submit.open_queue |> key("down")
   let assert Some(#(previous, _)) = selected.captured
     as "selection is tied to a completed metadata cut"
   let assert Ok(data) = json.parse(metadata([pending("B"), pending("A")]))
