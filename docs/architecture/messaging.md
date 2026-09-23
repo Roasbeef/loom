@@ -191,7 +191,7 @@ it has no `lineage/` cell, and its isolation from lineage tools follows from
 that absence: `agent_send` and `agent_wait` check the cell before one
 strand may address another and `strand.roster` lists from it, so neither strand can use those tools to address the other, and neither
 appears in the other's lineage roster. Peer links are a separate, explicit
-owner grant under Protocol 045; advisor isolation therefore also requires
+owner grant under Protocol 048; advisor isolation therefore also requires
 withholding those links. The one channel between them runs
 the other way and is built by the harness out of the machinery above:
 the advisor calls a tool, the harness decides what that verdict costs,
@@ -366,7 +366,7 @@ single writer.
 
 ## Explicit peers and background workflows
 
-[Protocol 045](../../protocol-change/045-async-collaboration.md) adds directional
+[Protocol 048](../../protocol-change/048-async-collaboration.md) adds directional
 peer links independently of lineage. The owner grants a source session and
 strand permission to message one target session and strand. Starting work on
 an idle target requires the separate `may_wake` permission.

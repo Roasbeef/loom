@@ -7,7 +7,7 @@ the satellite retains the actor heap. This separation determines what survives
 a restart and what a successful response proves.
 
 The [API guide](../async-collaboration.md) describes calls and examples.
-[Protocol 045](../../protocol-change/045-async-collaboration.md) records the
+[Protocol 048](../../protocol-change/048-async-collaboration.md) records the
 interface changes. This document explains the responsibilities behind them.
 
 ## From launch to useful input

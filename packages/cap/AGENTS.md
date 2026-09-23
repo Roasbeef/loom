@@ -11,18 +11,15 @@ blocks for the `cap_result`. This package runs *inside* the jailed
 satellite node, never in the harness VM, and is a separate build target so
 it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 
-The prelude serves **three seams**, and a submission is vetted against one
-of them (`codemode/vet/policy.Seam`). The *workspace* seam is
-`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search, execution, peer}` — a program that orchestrates effects. The *orchestration* seam
-is `cap/{strand, report, execution, peer, workflow}` — a program that
-orchestrates agents. The shared modules provide reporting and communication;
-filesystem and process effects remain exclusive to the workspace seam: an orchestrator that could also write files is a materially worse
-thing to hand a model than one that cannot. The *extension* seam is the
-workspace seam widened by the `ext` prelude alone, and its relation to
-the other two is a superset rather than a disjointness on purpose — an
-installed extension's tool is a workspace program with a different entry
-point. It widens by no *capability* at all: `cap/ext.call` was phase 1's
+The prelude serves three execution contexts (`codemode/vet/policy.Seam`).
+On the default server, workspace and orchestration programs admit the same
+effect and child-operation capabilities. An omitted mode selects workspace,
+so a program can read files and spawn children in one run. An explicit
+workspace-only host has no Agency custody and retains the effect-only subset.
+The extension seam widens that effect subset with the `ext` vocabulary; it
+does not gain `cap/strand` or `cap/workflow`. An installed extension's tool is
+a workspace program with a different entry point. It widens by no new base
+capability: `cap/ext.call` was phase 1's
 "which call am I serving?" pull, and `protocol-change/012` deleted it,
 because a satellite that lives for a session is *told* what to answer
 over a `hook_call`.
@@ -70,11 +67,11 @@ cannot hide the capability error. This does not grant the program a new effect.
   generated façade the vetting allowlist names. On no *static* seam
   (`harness_only_cap_modules`), and that is now permanent rather than a
   wait: a façade exists only where a server is configured, so a host with
-  MCP servers widens the workspace seam's allowlist at boot with
+  MCP servers widen each installed program mode's allowlist at boot with
   `cap/mcp` and each generated module (`client/codemode.seam_allowlist`),
   and a host with none allows neither.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
-  the orchestration seam. `assignment`/`within`/`detached`/
+  child operations in either default program mode. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_model`/`with_tools`/`expecting` build a spawn; `spawn`,
   `wait` (a list of handles against **one** deadline), `send`, `note`,
   `notes` and `roster` are the six calls, serviced by the same
@@ -176,11 +173,10 @@ cannot hide the capability error. This does not grant the program a new effect.
   subagent has finished. `Schedule.target` and `Created.target` are how
   a program tells the two apart, since one name may be in use on this
   strand and on a child's at once.
-  Scheduling remains workspace-only, as decided in issue #156. It creates
-  durable work that can outlive a program and may wake an idle strand.
-  Protocol 047 separately permits reporting, execution input, and granted peer
-  messaging on both seams. That shared set does not include `cap/schedule`;
-  the allowlist intersection test pins the distinction.
+  The default server admits scheduling from either program mode. A schedule
+  creates durable work that can outlive a program and may wake an idle strand;
+  its target and creator checks still run in the host. An explicit effect-only
+  host also admits it because scheduling does not require child custody.
 - `cap/job.{Started, State, StopCause, LostReason, Exit, Stream, Spill,
   Job, Row, Cursors, JobError}` with `start`, `start_within`, `poll`,
   `list`, `kill`, `send`, `send_last`, `from_start`, `after`,
@@ -422,17 +418,16 @@ cannot hide the capability error. This does not grant the program a new effect.
   wave this package's current shape answers.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
 
-## Background collaboration (protocol 047)
+## Background collaboration (protocol 048)
 
 `cap/execution.receive` reads the current background execution's durable input
 by cursor. `cap/peer` discovers and messages operator-linked peers; its JSON
-receipts prove admission. Both are shared by workspace and orchestration
-allowlists, with host routers supplying identity. `cap/workflow.step` is
-orchestration-only and requires a background host. It returns a normal
-`cap/strand.Handle` for a durable named child operation. None of these modules
-grants filesystem access to orchestration programs. Model code still executes
-only in the satellite VM. Ordinary code mode and extension boot remain
-separate lifecycles.
+receipts prove admission. The default server admits these modules from both
+program modes, with host routers supplying identity. `cap/workflow.step`
+requires a background execution and returns a `cap/strand.Handle` for a durable
+named child operation. Programs can combine these calls with filesystem and
+process effects; each effect still passes its broker check and the satellite
+jail. Extensions retain a separate lifecycle and allowlist.
 
 `execution.endpoint` couples a decoder and typed callback in an opaque endpoint.
 `execution.serve` registers the immutable names and idle interval, reads one

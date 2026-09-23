@@ -426,6 +426,10 @@ constructing a jail or admitting a command. The framed ExecProto is unchanged.
 
 ### WP-N `cap/strand` — the orchestration seam *(after J; independent of I's lsp/dap and of M)*
 
+This work package records the original split. Protocol 048 later gives both
+installed program modes the full capability set while preserving an explicit
+effect-only host posture.
+
 **Scope**: a **second** code-mode seam, so that a program can orchestrate
 subagents. A submission is vetted against one of two allowlists — the
 existing *workspace* seam (`cap/{fs, proc, net, git, lsp, report, task,
@@ -812,9 +816,9 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 - ~~TUI implementation substrate~~ — amended by the issue #114 evaluation: native Gleam over etui, shipped as a separate Erlang shipment over the unchanged client protocol. The client archive requires compatible OTP 29 because it does not carry a second ERTS.
 
 
-## Protocol 045: async collaboration
+## Protocol 048: async collaboration
 
-[Protocol 045](../protocol-change/045-async-collaboration.md) extends the
+[Protocol 048](../protocol-change/048-async-collaboration.md) extends the
 code-mode tool with opt-in background launch/send/check/join/cancel while
 retaining synchronous default behavior and the existing capability framing.
 A durable execution record owns its fixed deadline and child custody. Both
@@ -822,11 +826,13 @@ execution admission and async child admission compare operation-abort fence
 absence in their writer transaction. Reaping includes backgrounds launched
 by owned children, even if those children have already completed their turns.
 
-The workspace and orchestration import sets now share reporting, execution
-input and peer communication. `cap/workflow` remains orchestration-only;
-filesystem and process capabilities remain workspace-only. Peer communication
-is an explicit authority extension, requiring recipient-owned directional
-grants and separate idle-wake permission. Model input never names the sender.
+The default server admits the full capability set in both workspace and
+orchestration mode. A program can read files, run processes, spawn children and
+use named workflow steps without switching modes. An operator who configures
+workspace-only serving retains an effect-only policy because that host has no
+Agency custody. Extensions and resident hooks retain their separate policies.
+Peer communication still requires recipient-owned directional grants and
+separate idle-wake permission. Model input never names the sender.
 The recipient compares grant sequence while atomically committing receipt and
 message. Daemon resolution never implicitly activates a saved session.
 
@@ -843,7 +849,7 @@ only endpoint names and JSON values. Sends require readiness. Progress and
 latest delivery are bounded volatile observations, not durable completion
 records. Typed serving has an explicit idle limit, and each initiating
 operation has a cumulative launch ceiling. `Exclusive` serializes tool
-invocations, not admitted satellite lifetimes. Protocol 045 and the
+invocations, not admitted satellite lifetimes. Protocol 048 and the
 [async architecture](architecture/async-collaboration.md) define these limits.
 Conversation codecs preserve a distinct `PeerOrigin(session, strand)` while
 retaining the existing human-origin encoding.

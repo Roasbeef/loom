@@ -1683,11 +1683,11 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
-  widens the workspace seam's *allowlist*, its rendered *description*,
+  widens each installed program mode's *allowlist*, its rendered *description*,
   the *generated table* the hermetic build takes, and the capability
   *router*, and a host that could set those apart would eventually set
-  them apart. The orchestration seam is widened by none of it, ever —
-  which capabilities travel together is the whole of what the split buys.
+  them apart. The default workspace and orchestration modes both route the
+  configured MCP façade; an explicit workspace-only host stays effect-only.
 - `client/codemode.{Surface, Seams, serving, orchestrating,
   surface_seams, surface_seam, seam_policy, seam_caps, tool_seam,
   vetting_seam}` — which code-mode seams this host serves.
@@ -4041,7 +4041,7 @@ reports those captured values. Count and byte refusals name the exhausted
 setting before parser activation. Existing transfer, cancellation and DOWN
 accounting remain the owners of capacity release.
 
-## Async collaboration (protocol 047)
+## Async collaboration (protocol 048)
 
 `async_runs` is a session-owned weft actor. `Launch`, `Inspect`, `Reported`,
 `Sweep`, `Recover` and `AbortOperation` manage durable execution records and
@@ -4101,8 +4101,8 @@ retains its collection margin so a verdict at the proof cutoff can be observed.
 note and notes callbacks for every selected code-mode surface, including the
 explicit WorkspaceOnly deployments. `notes_on` excludes extensions and resident
 hooks. The same optional door controls host imports, advertised capabilities,
-router wrapping, and quotas. It gives workspace code mode durable data access
-without cap/strand lifecycle authority. The real jailed notes fixture writes
+router wrapping, and quotas. It gives an explicit workspace-only host durable
+data access without cap/strand lifecycle authority. The real jailed notes fixture writes
 structured analysis, closes SQLite, and consumes it from a fresh program after
 reopening through both the typed notes API and the note:// JSON view.
 

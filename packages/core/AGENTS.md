@@ -23,7 +23,7 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 - `core/message.Origin` distinguishes human attribution from peer-agent
   attribution. `Origin(principal, name)` preserves the human identity admitted
   under protocol 016. `PeerOrigin(session, strand)` records the host-bound peer
-  sender under protocol 045. Both carry attribution only, without credentials
+  sender under protocol 048. Both carry attribution only, without credentials
   or authority. Historical unattributed turns remain `None`.
 - `core/origin` owns validation, encoding, decoding and presentation of that
   field. Human records keep their legacy untagged encoding; peer records use

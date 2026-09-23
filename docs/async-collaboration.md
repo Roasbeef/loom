@@ -2,8 +2,9 @@
 
 `code_mode` can keep a sandboxed BEAM process (a satellite) alive after its
 launching tool call returns. A program can retain typed actors and receive data
-from later turns. On the orchestration seam, it can also start children and
-recover their durable results through named workflow steps.
+from later turns. On the default server, either workspace or orchestration
+mode can combine workspace effects with child operations and recover durable
+results through named workflow steps.
 
 For example, a review program can start security and performance reviewers,
 receive another commit to inspect, and collect each reviewer's result. Peer
@@ -138,7 +139,8 @@ effects.
 
 ## Named child workflows
 
-Background programs on the `orchestration` seam can import `cap/workflow`.
+Background programs can import `cap/workflow` in either mode on the default
+server. `workflow.step` is serviced only during a background execution.
 `workflow.step(run, version, input, name, assignment)` starts or recovers one
 named child. Use `cap/strand.wait` to read its durable outcome and validated
 result. The run name belongs to the launching strand. Version and input are

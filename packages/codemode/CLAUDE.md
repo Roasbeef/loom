@@ -428,13 +428,12 @@ session and sends it many invocations.
   against the modules `packages/cap` actually ships: every module must be
   on a seam or on that list, and every listed name must be a module that
   exists (issue #95). Both directions self-test.
-- **Each seam admits an explicit set of capabilities.** An orchestration
-  program importing `cap/fs` and a workspace program importing `cap/strand`
-  receive `ImportNotAllowed`. The two sets share exactly `cap/report`,
-  `cap/execution`, and `cap/peer`, as specified in Protocol 047. Tests compare
-  their intersection so an accidental addition to both lists is detected.
-  The shared standard-library list contains no `cap/*` entries, preventing a
-  capability from bypassing those explicit lists.
+- **Default program modes admit the same full set.** Workspace and
+  orchestration programs can import effect and child-operation modules in one
+  source, as specified in Protocol 048. An explicit effect-only host rejects
+  `cap/strand` and `cap/workflow`; extensions and resident hooks keep separate
+  policies. The shared standard-library list contains no `cap/*` entries, so a
+  capability cannot bypass the named policy subsets.
 - **The admission ceilings are the host's, not the router's, and they
   cover every call that mints.** A call is throttled by turn cost — the
   model pays a round trip per call — and a program's loop pays nothing, so
@@ -807,11 +806,12 @@ remains unchanged. The richer internal `Started` receipt and
 aborted capability results; direct agent tools expose the additional deadline
 and cause metadata specified by proposal 042.
 
-## Collaboration router composition (protocol 047)
+## Collaboration router composition (protocol 048)
 
-The allowlists now share `cap/execution` and `cap/peer` between workspace and
-orchestration; only orchestration admits `cap/workflow`. The client wraps the
-selected base router with host-bound peer and background-execution routes.
+The default server admits the full capability set in both program modes. The
+client composes effect, child-operation, search, notes and configured MCP
+routers for each selection. The daemon wraps both with host-bound peer routes;
+background launches add execution input and named workflow custody.
 `orchestration.decode_spawn` is the shared total assignment decoder for
 ordinary and named workflow steps. Capability ordinals bound named child
 steps and peer calls. Extensions do not receive background custody merely

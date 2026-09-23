@@ -274,6 +274,9 @@ See [protocol 045](../../protocol-change/045-code-mode-notes.md).
 
 ## Code-mode utilities
 
-The context guidance points agents to the advertised executable recipes,
-separates workspace and orchestration work, and explains JSON value conversion
-and partial strand.map outcomes.
+The context guidance points agents to the advertised executable recipes and
+states that the default code-mode program can combine workspace effects with
+agent orchestration. It names workspace as the default mode and directs the
+model to the tool's actual host imports and signatures. It flags partial
+strand.map outcomes and names granted peer
+messages and background-only workflow steps when their modules are offered.

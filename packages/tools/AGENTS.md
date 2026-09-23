@@ -690,20 +690,15 @@ was asked.
   the tool array and nothing varies between turns, because tool bytes are
   the byte prefix of the provider's cached region and a surface that
   changes per turn does not cost a cache write, it costs the cache
-  (issue #36). `gleam export package-interface` reports fourteen modules
-  and the three seams admit twelve between them: `cap/runtime` and
-  `cap/mcp` are on none,
-  so `surface_text` runs each `SeamOffer.allowed_imports` over
+  (issue #36). The generated prelude provides the shipped module set, so
+  `surface_text` runs each `SeamOffer.allowed_imports` over
   `prelude.surfaces` and not the other way round. Advertising a module
   vetting will reject is the same class of lie as classifying a
   submission by reading its imports. The signatures follow the same
-  per-seam split as the import lists — shared modules stated once, each
-  seam naming only what it adds — so an orchestration-only host pays for
-  `cap/strand` and `cap/report` and for none of the other nine. Measured
-  against the shipped allowlists, the whole description is 17,678 bytes
-  for a workspace-only host, 15,205 for an orchestration-only one, and
-  28,818 for a host serving both; about half of that is the `pub type`
-  declarations, which are not optional because a program that cannot name
+  per-seam split as the import lists. On the default server, workspace and
+  orchestration share the full effect and child-operation surface, so the
+  common signatures appear once. The `pub type` declarations are needed:
+  a program that cannot name
   `proc.Output`'s `stdout` field cannot read the output it paid for.
 - **A code-mode result never implies a jail that was not applied.** The
   seam hands back an `Enforcement` naming *both* jailed stages — the
@@ -814,7 +809,7 @@ outcome variants; unknown aborts remain `Aborted`. Tool guidance distinguishes
 continuing a strand with `agent_send` from observing one operation with
 `agent_wait`, and makes clear that the old handle remains historical.
 
-## Async code-mode modes (protocol 047)
+## Async code-mode modes (protocol 048)
 
 `codemode.CodeMode.background` optionally supplies `Background.launch` and
 `interact`. When present, `code_mode` accepts `run` (the existing default),

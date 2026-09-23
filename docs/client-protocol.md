@@ -846,7 +846,7 @@ Neither command opens a saved session.
 
 The response event uses the command name. See the
 [API guide](async-collaboration.md#peer-messaging) for a request example and
-[Protocol 045](../protocol-change/045-async-collaboration.md) for delivery and
+[Protocol 048](../protocol-change/048-async-collaboration.md) for delivery and
 retry semantics. The model-facing tools are `peer_roster`, `peer_send`, and
 `peer_describe`; they cannot create grants.
 

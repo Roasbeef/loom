@@ -114,7 +114,7 @@ The follow-up to the initial implementation adds structured peer origins,
 explicit input readiness, typed endpoint registration and dispatch, published
 intermediate progress, typed-service idle expiry, and cumulative launch limits.
 The exclusive tool contract now distinguishes an invocation from its admitted
-background lifetime. These contracts are recorded in Protocol 045 and explained
+background lifetime. These contracts are recorded in Protocol 048 and explained
 in the [async architecture](../architecture/async-collaboration.md).
 
 The source review found no confirmed production defect in this follow-up, but

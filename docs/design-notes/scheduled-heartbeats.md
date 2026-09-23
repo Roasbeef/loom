@@ -24,7 +24,7 @@ were used as reference, not as templates to copy structurally:
 This design originally predated the shared daemon and cross-session messaging.
 Loom now has both, but the scheduling boundary remains: a schedule may wake an
 idle strand only within a resident session. It does not open a Saved session.
-[Protocol 045](../../protocol-change/045-async-collaboration.md) applies the same
+[Protocol 048](../../protocol-change/048-async-collaboration.md) applies the same
 residency rule to peer messaging.
 
 ## The mechanism: `client/rules` + `client/rulescan`, time-triggered

@@ -4,11 +4,9 @@ This file records the current collaboration implementation, its verification
 boundary and the next scoped work. Rewrite it after the next body of work;
 use the architecture and protocol documents for enduring contracts.
 
-Baseline: `e2a3ec27` on `feature/async-collaboration`, September 22, 2026,
-rebased onto `9378c019` from `main`.
-The source, issue scope and validation claims below were checked for this
-edition. The complete local and documentation gates passed on this head;
-hosted platform checks remain separate.
+The collaboration implementation is in PR #484, rebased onto `main` after
+#482, #490 and #278. This edition records the current behavior and the follow-ups
+that remain after the platform gate and merge.
 
 ## Where the tree is
 
@@ -18,12 +16,12 @@ hosted platform checks remain separate.
 | Peer messaging, #382 | Exact directional grants, resident routing, atomic receipt/message admission, owner-authenticated control send and structured peer origins are implemented. |
 | Named workflows | Named steps reconcile original child operations and durable results; version, input and assignment remain immutable. |
 | Presentation and examples | TUI linking is #485, CLI conveniences are #488, and a complete collaboration workflow example is #489. |
-| Validation | `make check` passed, including 2,067 client and 702 TUI tests; `make doc-check` passed with zero errors. Hosted checks have not run on the rebased head. |
-| Merge state | PR #484 is the integration vehicle. Its closing references target #107 and #382 on merge; neither issue is closed by local implementation alone. |
+| Code-mode surface | The default server admits the full capability set from either program mode. Omitted `seam` selects workspace. An explicit workspace-only host remains effect-only; extensions and resident hooks keep their own policies. |
+| Integration | PR #484 carries the implementation for #107 and #382. GitHub closes both issues on merge. |
 
 The [architecture](architecture/async-collaboration.md) explains host and
 satellite ownership. The [API guide](async-collaboration.md) gives callable
-examples and limits. [Protocol 047](../protocol-change/047-async-collaboration.md)
+examples and limits. [Protocol 048](../protocol-change/048-async-collaboration.md)
 owns the wire and custody decisions, and the
 [follow-up review](review/async-collaboration-followups.md) records the adversarial
 finding and its validation.
@@ -40,10 +38,10 @@ retains the observed repository identity with `branch: null`, and the source
 Agency refuses a 65th distinct outgoing link before its index becomes
 unreadable. A repeat link remains valid at the bound.
 
-The hosted run for `80d22845`, before this rebase, passed the Linux gate and
-macOS advisory check. Its macOS end-to-end job twice reached the 180-second
-bootstrap test budget while compiling client dependencies, before tests ran.
-The rebased head needs its own hosted result.
+After the previous rebase, hosted CI passed both Linux and macOS gates at
+`fb1eff2a`. The later `main` merges and the broader code-mode surface require
+a new hosted result on the final PR head. The earlier macOS bootstrap timeout
+did not recur on `fb1eff2a`.
 
 ## Integration with current main
 
@@ -51,7 +49,8 @@ The branch also includes the code-mode notes and utilities work merged in #483.
 Both workspace and orchestration are offered by default; an omitted seam still
 selects workspace, and explicit workspace-only configuration remains supported.
 The host-installed `cap/notes` door exposes session-local durable data to both
-seams without giving workspace code agent lifecycle authority. Backend note-read
+program modes. It does not itself grant agent lifecycle authority to an explicit
+workspace-only host. Backend note-read
 failures remain refusals rather than empty results, including completed-child
 joins. `note://` is a capability view, not an operating-system mount.
 
@@ -66,24 +65,23 @@ integration with collaboration, including the regenerated prelude and seed.
 
 ## What to do next
 
-1. Complete PR #484's hosted checks and merge review for **#107** and **#382**.
-   **Exit:** passing applicable platform checks at the proposed head, followed
-   by an authorized merge. Do not treat local package results as release or
-   Linux certification, and do not use installed daemons as test fixtures.
-2. Implement operator convenience surfaces in **#488** and **#485**.
-   **Exit:** scripts and terminal users can inspect and administer directional
-   links through the existing owner/epoch-checked protocol. These issues do
-   not authorize saved-session activation or cross-machine routing.
-3. Add the complete collaboration workflow example in **#489**.
-   **Exit:** the example launches named children, exchanges granted messages,
-   observes progress and recovers durable results, with executable validation.
+1. Add operator convenience surfaces in **#488** and **#485**. Scripts and
+   terminal users need to inspect and administer directional links through
+   the existing owner/epoch-checked protocol. These issues do not authorize
+   saved-session activation or cross-machine routing.
+2. Add the complete collaboration workflow example in **#489**. The example
+   should launch named children, exchange granted messages, observe progress,
+   and recover durable results, with executable validation.
+3. Measure the enlarged model-facing code-mode description and decide whether
+   both equivalent mode names still earn their cached-prefix cost. Any narrower
+   deployment must advertise only capabilities its router services.
 
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
 
-**Authority and communication are separate.** Protocol 047 makes peer links
+**Authority and communication are separate.** Protocol 048 makes peer links
 directional, with a separate wake permission. They confer neither child
 custody nor join, cancel or filesystem authority. Peer identity is bound by
 the harness and stored as structured attribution; rendered text is not an
@@ -92,7 +90,7 @@ access-control record.
 **Readiness and custody are separate.** `Running` can include compilation and
 startup. Sends require an immutable registered endpoint. Progress and latest
 delivery are volatile observations, while input admission is durable. A callback
-which enqueues actor work has not proved that work complete. Protocol 047 and
+which enqueues actor work has not proved that work complete. Protocol 048 and
 the async architecture state these acknowledgement boundaries.
 
 **The execution retains its original limits.** Interaction never changes its
@@ -106,7 +104,7 @@ remaining lifetime of an admitted background.
 not replayed. Named step intents recover their original caller coordinates;
 the original-child-operation pointer commits with child admission. Completed
 and failed child results remain authoritative, and a new step name selects an
-intentional retry. Protocol 047 records this ordering.
+intentional retry. Protocol 048 records this ordering.
 
 **A peer receipt proves admission.** The recipient checks its grant and commits
 the receipt and message in one transaction. It does not prove model consumption.
@@ -128,12 +126,13 @@ None of these is unfinished work somebody forgot.
 
 ## Validation evidence
 
-The complete `make check` passed with its own exit status **0** on `e2a3ec27`.
-It includes script/release checks, generated-prelude checks, all package gates,
-sandbox Go formatting/vet/build/tests, and house lint. The client package passed
-**2,067** tests, including both new regressions; TUI passed **702** tests.
-`make doc-check` passed with zero errors. Hosted checks still need to run on the
-pushed head.
+The prior PR head `fb1eff2a` passed the complete local gate and hosted CI on
+Linux and macOS. The final rebase and full code-mode widening need their own
+complete local and hosted checks; the PR and CI run are the result authority.
+Focused codemode, tools and prompt gates passed after widening the capability
+policy. The client gate passed all 2,072 tests, including real jailed programs
+combining `cap/fs` with named child workflow steps in both modes. The
+model-facing description checks both offers and installed MCP surfaces.
 
 The unchanged MCP deadline regression took 119 ms against its 500 ms ceiling.
 Earlier staged runs exposed a queued-provenance assertion error and a goal-check
@@ -148,8 +147,10 @@ recovery and overlapping lifetimes. The idle-cancellation mutation compiled
 and failed the intended regression; restoring cancellation returned the source
 to the passing implementation.
 
-The integration review found no actionable issue in notes/router composition,
-caller identity, fixed authority or workflow/map coexistence.
+The earlier integration review found no actionable issue in notes/router
+composition, caller identity, fixed authority or workflow/map coexistence.
+An independent review of the broader program surface found no mismatch in
+host routing, the prompt or the model-facing capability description.
 
 The independent feature review found one weak idle test, which was strengthened to
 observe broker abort, durable loss and worker exit before teardown. It found

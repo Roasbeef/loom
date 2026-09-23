@@ -149,9 +149,11 @@ details.
 ## Code mode
 
 A model can write a Gleam program instead of issuing a sequence of tool calls.
-The program reads files, runs commands, branches on results, and returns the
-answer the model needs. Intermediate data stays inside the program, reducing
-the tool output carried into the next model turn.
+The program reads files, runs commands, starts child agents, branches on their
+results, and returns the answer the model needs. The default server admits
+these capabilities in both workspace and orchestration mode; an omitted mode
+selects workspace. Intermediate data stays inside the program, reducing the
+tool output carried into the next model turn.
 
 Code mode supports bounded parallel work, races with cancellation, and stateful
 actors. For example, an agent can inspect several packages concurrently, run
@@ -174,21 +176,23 @@ flowchart TB
     D <-->|Capability calls| F[Broker checks policy]
 ```
 
-Typed capability modules expose filesystem access, commands, shared state, and
-artifact reporting. Configured MCP servers become generated modules available
-through code mode. A separate, opt-in orchestration capability set lets programs
-spawn and coordinate subagents.
+Typed capability modules expose filesystem access, commands, shared state,
+artifact reporting, and child-agent coordination. The default server offers
+these modules in both program modes, so one program can inspect files and
+coordinate subagents. Configured MCP servers become generated modules in both
+modes. An explicit workspace-only host keeps an effect-only policy.
 
 With `code_mode` in `launch` mode, a program can keep typed actors alive after
 the tool call returns. Programs register named typed input endpoints and
 publish intermediate progress. Later turns can check readiness, send data,
-inspect progress, wait for the result, or cancel the execution. The execution keeps its original grants and
-deadline.
+inspect progress, wait for the result, or cancel the execution. The execution
+keeps its original grants and deadline.
 
 Background orchestration programs can use
 `cap/workflow.step` to start named children and recover the same child operations
-on a later launch. A restart preserves child identities and results, but loses the satellite
-process and its actor state; Loom reports that loss instead of replaying effects.
+on a later launch. A restart preserves child identities and results, but loses
+the satellite process and its actor state; Loom reports that loss instead of
+replaying effects.
 The [collaboration guide](docs/async-collaboration.md) includes working examples.
 
 Submitted source cannot introduce foreign-function calls or import arbitrary

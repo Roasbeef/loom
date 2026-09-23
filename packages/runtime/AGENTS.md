@@ -889,7 +889,7 @@ terminal commit. Ordinary operator admission at that boundary is unowned.
 Lineage retains original spawn identity and a default budget for later runs.
 Proposal 042 specifies compatibility and the additional wire metadata.
 
-## Async custody and guarded admission (protocol 045)
+## Async custody and guarded admission (protocol 048)
 
 `async_execution.Execution` is the total-decoded record under
 `client/async/record/{id}`. `child_run.Owner` distinguishes `ParentRun` from

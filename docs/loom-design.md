@@ -297,7 +297,18 @@ Pure Gleam cannot do I/O; every effect enters through an import that ultimately 
 
 The vetting pass is a compiler-adjacent lint, not a heuristic: (a) pin dependencies to the harness capability prelude; (b) reject `@external` in submitted source; (c) reject imports outside the allowlist. **The prelude *is* the capability system**: typed modules whose implementations are RPC stubs to the ToolBroker carrying the execution's token. The type checker becomes the tool-argument validator: malformed tool use fails at compile time, a cheaper loop than runtime tool errors.
 
-**Two preludes, not one** (WP-N). A submission is vetted against exactly one allowlist. The **workspace seam** — `cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/lsp`, `cap/task`, `cap/actor`, `cap/kv`, `cap/report` — is a program that orchestrates *effects*. The **orchestration seam** — `cap/strand`, `cap/workflow` and the shared collaboration modules — is a program that orchestrates *agents*: spawn, join a list of handles against one deadline, send, notes, roster, all serviced by the same closures the `agent_*` tools call and judged against the same caller. Which capabilities travel together is the point: an orchestrator that could also write files, run a process or reach the network is a materially worse thing to hand a model than one that cannot, so workspace effects and child orchestration remain separate. Protocol 045 defines their shared set as `cap/report`, `cap/execution` and `cap/peer`; peer communication requires explicit recipient grants. A capability rather than a trusted interpreter, because an orchestration interpreter in the harness VM *is* model-influenced execution in the harness VM — Rule Zero forbids it. And because a loop pays none of the round-trip cost that implicitly throttles `agent_spawn`, the seam carries an explicit hard ceiling on spawn admissions per execution, refused in band at the ceiling.
+**One full program surface by default** (WP-N). The server offers workspace and
+orchestration code mode, but both accept the same capability imports. A single
+jailed Gleam program can read files, run a process, spawn children, exchange
+granted peer messages, and join durable results. The model selects one offered
+mode, with workspace as the default. An explicitly workspace-only host has no
+Agency custody and retains an effect-only allowlist. Extensions and resident
+hooks retain their own policies. The capability modules remain typed broker
+calls, not an interpreter for model-influenced code in the harness VM; Rule Zero
+still applies. Child spawn admissions retain an explicit ceiling because a
+program loop avoids the provider round trips that previously limited fan-out.
+[Protocol 048](../protocol-change/048-async-collaboration.md) records this
+widening and its cost.
 
 ### 6.3 Defense in depth: satellite nodes
 

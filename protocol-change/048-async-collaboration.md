@@ -1,4 +1,4 @@
-# Protocol 045: own async executions and grant peer messaging
+# Protocol 048: own async executions and grant peer messaging
 
 **Status**: IMPLEMENTED, locally verified 2026-09-21 · **Affects**: code-mode tool and capability surface, child-run custody, daemon control · **Raised by**: #107, #382
 
@@ -85,10 +85,21 @@ and reports the unremoved recipient grant. Git metadata is a timestamped
 activation observation, not a live branch assertion.
 
 
-The prior report-only intersection between the two code-mode seams is widened
-explicitly to `cap/{report, execution, peer}`. Peer delivery can induce work
-only under a recipient-owned directional grant; it does not confer workspace
-access or child ownership. `cap/workflow` remains orchestration-only.
+The default server offers the full program capability set on both workspace
+and orchestration modes. One program may combine filesystem or process calls,
+child operations, execution input and peer delivery. The owner still grants
+peer delivery in an exact direction, and the recipient checks that grant before
+admitting a message. Import access alone does not grant peer, filesystem or
+child authority; each call retains its broker and Agency checks.
+
+An explicitly workspace-only host lacks Agency custody and keeps an effect-only
+allowlist. Extension tools and resident hooks retain their own policies.
+`workflow.step` is serviced only in a background execution, where an immutable
+execution owner and original child operation exist. The cost of the wider
+default is a larger advertised capability surface and the ability for one
+program to compose workspace effects with child operations. The model-facing
+tool description renders the actual host allowlist and serviced capabilities;
+the shipped prompt names this combined default.
 
 Operation abort and child reaping share a durable launch fence. Execution
 creation compares both its own absence and fence absence atomically. Async
