@@ -40,12 +40,12 @@
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   bff67ebe0eead5b3166a0456e5d6d11de6c2de04623dbb3a9c4d86a7b9c2b348  packages/cap/src/cap/strand.gleam
+////   d7348e4366f54b131696376045e162e9e2c0bc0094e7e91c0b721ee13a6932cb  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 00e1aa3491c1496a036d1ca7e0df436f4dd082e28d22a458591ae5de6bab005e
+//// Body digest (every line after the marker): 398e3dc9675e657d43174e49573a832b6d75543d3db9ab532cd4b8ca7cc106e7
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1324,8 +1324,8 @@ pub fn stat(String) -> Result(Entry, SearchError)
   #(
     "cap/strand",
     "### cap/strand
-`cap/strand` — the orchestration seam: starting, joining, and addressing
-other agents from inside a code-mode program.
+`cap/strand` starts, joins, and addresses other agents from inside a code-
+mode program.
 
 /// One assignment, built up before it is spawned.
 ///
