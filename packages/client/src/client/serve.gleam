@@ -1353,6 +1353,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
     catalog.OpenAiResponses -> responses.api_name
+    catalog.CodexSubscription(profile: _) -> responses.subscription_api_name
     catalog.Gemini -> gemini.api_name
   }
 }

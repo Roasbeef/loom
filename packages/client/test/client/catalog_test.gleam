@@ -271,6 +271,17 @@ fn responses_catalogue(fields: String) -> String {
   |> string.replace("api_key_env = \"KEY\"", fields)
 }
 
+// Subscription configuration starts without an API-key field, so a test
+// can add one deliberately and prove the parser refuses it.
+fn subscription_catalogue(fields: String) -> String {
+  minimal
+  |> string.replace(
+    "dialect = \"anthropic\"",
+    "dialect = \"codex-subscription\"",
+  )
+  |> string.replace("api_key_env = \"KEY\"", fields)
+}
+
 pub fn responses_defaults_and_trailing_slashes_test() {
   let text = responses_catalogue("auth = \"api-key\"\napi_key_env = \"KEY\"")
   let assert Ok(parsed) = catalog.parse(text)
@@ -335,20 +346,161 @@ pub fn responses_auth_configuration_is_closed_test() {
   )
 }
 
-pub fn responses_headers_and_subscription_are_explicitly_refused_test() {
+pub fn responses_headers_are_explicitly_refused_test() {
   let assert Error("models.one: per-model headers are not supported" <> _) =
     catalog.parse(responses_catalogue(
       "auth = \"api-key\"\napi_key_env = \"KEY\"\nheaders = { Authorization = \"not-a-credential\" }",
     ))
     as "Responses must not acquire an arbitrary credential header path"
-  assert catalog.parse(
-      minimal
-      |> string.replace(
-        "dialect = \"anthropic\"",
-        "dialect = \"codex-subscription\"",
+}
+
+pub fn subscription_profile_is_distinct_from_api_keys_test() {
+  let assert Ok(parsed) =
+    catalog.parse(subscription_catalogue(
+      "auth = \"codex\"\nprofile = \"default\"",
+    ))
+    as "a complete subscription profile must parse"
+  let assert Ok(entry) = catalog.find(parsed, "one")
+    as "the subscription entry keeps its own catalogue identity"
+  assert entry.dialect == catalog.CodexSubscription(profile: "default")
+  assert catalog.dialect_to_string(entry.dialect) == "codex-subscription"
+  assert entry.base_url == ""
+  assert entry.api_key_env == ""
+  assert catalog.resolved(entry).provider == "one"
+}
+
+pub fn subscription_auth_configuration_is_closed_test() {
+  list.each(
+    [
+      #("auth = \"codex\"", "models.one.profile is required"),
+      #(
+        "auth = \"codex\"\nprofile = \"\"",
+        "models.one.profile must be non-empty",
+      ),
+      #("auth = \"codex\"\nprofile = 1", "models.one.profile must be a string"),
+      #("profile = \"default\"", "models.one.auth is required"),
+      #(
+        "auth = \"\"\nprofile = \"default\"",
+        "models.one.auth must be non-empty",
+      ),
+      #("auth = 1\nprofile = \"default\"", "models.one.auth must be a string"),
+      #(
+        "auth = \"api-key\"\nprofile = \"default\"",
+        "models.one.auth must be \"codex\" for codex-subscription",
+      ),
+      #(
+        "auth = \"unknown\"\nprofile = \"default\"",
+        "models.one.auth must be \"codex\" for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\napi_key_env = \"KEY\"",
+        "models.one.api_key_env is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\napi_key_env = \"\"",
+        "models.one.api_key_env is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\napi_key_env = 1",
+        "models.one.api_key_env is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\nbase_url = \"https://evil.example\"",
+        "models.one.base_url is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\nbase_url = \"\"",
+        "models.one.base_url is not supported for codex-subscription",
+      ),
+      #(
+        "auth = \"codex\"\nprofile = \"default\"\nbase_url = 1",
+        "models.one.base_url is not supported for codex-subscription",
+      ),
+    ],
+    fn(example) {
+      assert catalog.parse(subscription_catalogue(example.0))
+        == Error(example.1)
+    },
+  )
+  let assert Error("models.one: per-model headers are not supported" <> _) =
+    catalog.parse(subscription_catalogue(
+      "auth = \"codex\"\nprofile = \"default\"\nheaders = { Authorization = \"Bearer pasted-token\" }",
+    ))
+    as "a subscription token must not enter the model catalogue"
+}
+
+pub fn subscription_profile_uses_the_helpers_portable_name_grammar_test() {
+  list.each(
+    ["a", "9", "Work_2-prod", string.repeat("a", times: 64)],
+    fn(profile) {
+      let assert Ok(_) =
+        catalog.parse(subscription_catalogue(
+          "auth = \"codex\"\nprofile = \"" <> profile <> "\"",
+        ))
+        as "every helper-valid profile must pass catalogue loading"
+    },
+  )
+  list.each(
+    [
+      ".",
+      "../default",
+      "a/b",
+      "a\\\\b",
+      "a.b",
+      "a b",
+      " a",
+      "é",
+      "aé",
+      "_start",
+      "-start",
+      string.repeat("a", times: 65),
+    ],
+    fn(profile) {
+      assert catalog.parse(subscription_catalogue(
+          "auth = \"codex\"\nprofile = \"" <> profile <> "\"",
+        ))
+        == Error(
+          "models.one.profile must be 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or digit",
+        )
+    },
+  )
+}
+
+pub fn parsed_subscription_catalogue_dispatches_its_profile_test() {
+  let assert Ok(parsed) =
+    catalog.parse(subscription_catalogue("auth = \"codex\"\nprofile = \"work\""))
+    as "a subscription profile must load before dispatch"
+  let profiles = process.new_subject()
+  let gateway =
+    catalog.gateway(
+      parsed,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(0),
+    )
+    |> provider_gateway.with_codex_transport(
+      provider_gateway.CodexTransport(
+        prepare_streaming: fn(profile, _request, _events) {
+          process.send(profiles, profile)
+          Error("intentional test refusal")
+        },
       ),
     )
-    == Error("models.one: Codex subscription authentication is not supported")
+  let handle =
+    provider_gateway.request(
+      gateway,
+      model.ProviderRequest(
+        target: model.ForRole(model.Main, None),
+        system: None,
+        messages: [],
+        tools: [],
+        max_output_tokens: None,
+      ),
+    )
+  let assert Ok(#(_, stream.Failed(_))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the deliberate helper refusal must settle the subscription request"
+  assert process.receive(profiles, within: 1000) == Ok("work")
 }
 
 pub fn existing_dialects_keep_their_auth_contract_test() {

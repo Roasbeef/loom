@@ -21,8 +21,9 @@
 ////
 //// ```toml
 //// [models.<name>]
-//// dialect = "anthropic" | "openai" | "gemini" | "openai-responses"
-//// auth = "api-key"                  # required only for openai-responses
+//// dialect = "anthropic" | "openai" | "gemini" | "openai-responses" | "codex-subscription"
+//// auth = "api-key" | "codex"        # required for Responses or subscription
+//// profile = "default"               # required only for codex-subscription
 //// base_url = "https://..."           # optional; dialect default used
 //// api_key_env = "SOME_API_KEY"       # env var *name*, never a value
 //// model_id = "provider-model-id"
@@ -113,8 +114,8 @@ import provider/pricing
 import provider/secret.{type SecretStore}
 import tom
 
-/// Which wire adapter an entry speaks. Each variant mirrors one of the
-/// provider gateway's API-key `ProviderConfig` shapes.
+/// Which wire adapter an entry speaks. A subscription dialect carries its
+/// validated profile name, keeping it separate from API-key configuration.
 pub type Dialect {
   /// The Anthropic Messages API.
   Anthropic
@@ -125,6 +126,11 @@ pub type Dialect {
 
   /// The public OpenAI Responses API with API-key authentication.
   OpenAiResponses
+
+  /// The experimental Codex subscription Responses backend. `profile` is
+  /// a credential-helper profile name of 1-64 portable ASCII characters,
+  /// beginning with a letter or digit, never a token.
+  CodexSubscription(profile: String)
 
   /// The Gemini `generateContent` API (Google AI Studio keys against the
   /// Gemini Developer API).
@@ -137,8 +143,10 @@ pub type Dialect {
 /// Constructor invariants: `name` is unique within the catalogue and is
 /// the provider name durable identities store; `base_url` has no
 /// trailing slash (Anthropic: the host root; OpenAI-compatible: the API
-/// root ending in `/v1`); `api_key_env` is an environment variable
-/// *name*, never a key value; `context_window` and `max_output_tokens`
+/// root ending in `/v1`); for subscription entries, `base_url` and
+/// `api_key_env` are empty internal placeholders and their config keys are
+/// forbidden. Otherwise `api_key_env` is an environment variable *name*,
+/// never a key value; `context_window` and `max_output_tokens`
 /// are positive token counts.
 pub type CatalogModel {
   CatalogModel(
@@ -146,9 +154,9 @@ pub type CatalogModel {
     name: String,
     /// Which adapter dialect the endpoint speaks.
     dialect: Dialect,
-    /// The endpoint root, no trailing slash.
+    /// The endpoint root, no trailing slash; empty for subscription entries.
     base_url: String,
-    /// The environment variable holding the API key.
+    /// The environment variable holding the API key; empty for subscriptions.
     api_key_env: String,
     /// The provider's own model identifier.
     model_id: String,
@@ -425,13 +433,13 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   // Refuse unknown keys instead of ignoring them: a typoed
   // `api_key_env` silently ignored would dispatch with the wrong key
   // name and fail confusingly at the first request. `headers` gets its
-  // own message because the field is plausible but not yet carriable.
+  // own message because it could smuggle a credential into any adapter.
   use Nil <- result.try(case dict.has_key(fields, "headers") {
     True ->
       Error(
         place
-        <> ": per-model headers are not supported yet; the bearer key from"
-        <> " api_key_env is the only credential the adapters send",
+        <> ": per-model headers are not supported; credentials belong to"
+        <> " the selected provider's authentication boundary",
       )
     False -> Ok(Nil)
   })
@@ -451,22 +459,31 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     "openai-responses" -> Ok(OpenAiResponses)
     "gemini" -> Ok(Gemini)
     "codex-subscription" ->
-      Error(place <> ": Codex subscription authentication is not supported")
+      parse_subscription_profile(fields, place)
+      |> result.map(fn(profile) { CodexSubscription(profile:) })
     other ->
       Error(
         place
-        <> ".dialect must be \"anthropic\", \"openai\", \"gemini\" or \"openai-responses\", got \""
+        <> ".dialect must be \"anthropic\", \"openai\", \"gemini\", \"openai-responses\" or \"codex-subscription\", got \""
         <> other
         <> "\"",
       )
   })
   use Nil <- result.try(validate_auth(fields, place, dialect))
-  use base_url <- result.try(case optional_string(fields, place, "base_url") {
-    Ok(Ok(url)) -> Ok(strip_trailing_slash(url))
-    Ok(Error(Nil)) -> Ok(default_base_url(dialect))
-    Error(message) -> Error(message)
+  use base_url <- result.try(case dialect {
+    CodexSubscription(profile: _) -> Ok("")
+    Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
+      case optional_string(fields, place, "base_url") {
+        Ok(Ok(url)) -> Ok(strip_trailing_slash(url))
+        Ok(Error(Nil)) -> Ok(default_base_url(dialect))
+        Error(message) -> Error(message)
+      }
   })
-  use api_key_env <- result.try(required_string(fields, place, "api_key_env"))
+  use api_key_env <- result.try(case dialect {
+    CodexSubscription(profile: _) -> Ok("")
+    Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
+      required_string(fields, place, "api_key_env")
+  })
   use model_id <- result.try(required_string(fields, place, "model_id"))
   use context_window <- result.try(positive_int(fields, place, "context_window"))
   use max_output_tokens <- result.try(positive_int(
@@ -625,30 +642,92 @@ fn optional_rate(
   }
 }
 
-// Authentication is closed at loading: the runtime carries only a secret
-// name, never an ignored profile or an unsupported subscription mode.
+// Authentication is closed at loading: a subscription entry carries only
+// a helper profile, while API-key entries carry only a secret name.
 fn validate_auth(
   fields: Dict(String, tom.Toml),
   place: String,
   dialect: Dialect,
 ) -> Result(Nil, String) {
-  use Nil <- result.try(case dict.has_key(fields, "profile") {
-    True -> Error(place <> ".profile is not supported for API-key providers")
-    False -> Ok(Nil)
-  })
   case dialect {
+    CodexSubscription(profile: _) -> validate_subscription_auth(fields, place)
     OpenAiResponses -> {
+      use Nil <- result.try(reject_api_key_profile(fields, place))
       use auth <- result.try(required_string(fields, place, "auth"))
       case auth {
         "api-key" -> Ok(Nil)
         _ -> Error(place <> ".auth must be \"api-key\" for openai-responses")
       }
     }
-    Anthropic | OpenAiCompatible | Gemini ->
+    Anthropic | OpenAiCompatible | Gemini -> {
+      use Nil <- result.try(reject_api_key_profile(fields, place))
       case dict.has_key(fields, "auth") {
         True -> Error(place <> ".auth is only supported for openai-responses")
         False -> Ok(Nil)
       }
+    }
+  }
+}
+
+// A subscription profile names credentials held outside the catalogue.
+// Refuse every field that could redirect those credentials or paste a key.
+fn validate_subscription_auth(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Nil, String) {
+  use auth <- result.try(required_string(fields, place, "auth"))
+  use Nil <- result.try(case auth {
+    "codex" -> Ok(Nil)
+    _ -> Error(place <> ".auth must be \"codex\" for codex-subscription")
+  })
+  use Nil <- result.try(case dict.has_key(fields, "api_key_env") {
+    True ->
+      Error(place <> ".api_key_env is not supported for codex-subscription")
+    False -> Ok(Nil)
+  })
+  case dict.has_key(fields, "base_url") {
+    True -> Error(place <> ".base_url is not supported for codex-subscription")
+    False -> Ok(Nil)
+  }
+}
+
+// An API-key entry cannot silently adopt a subscription profile.
+fn reject_api_key_profile(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Nil, String) {
+  case dict.has_key(fields, "profile") {
+    True -> Error(place <> ".profile is not supported for API-key providers")
+    False -> Ok(Nil)
+  }
+}
+
+// The credential helper accepts one portable profile-name grammar. Check
+// it here so a loaded catalogue cannot fail later on a path-like name.
+fn parse_subscription_profile(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(String, String) {
+  use profile <- result.try(required_string(fields, place, "profile"))
+  case valid_subscription_profile(profile) {
+    True -> Ok(profile)
+    False ->
+      Error(
+        place
+        <> ".profile must be 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or digit",
+      )
+  }
+}
+
+fn valid_subscription_profile(profile: String) -> Bool {
+  let alphanumeric =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+  case string.to_graphemes(profile) {
+    [] -> False
+    [first, ..rest] ->
+      list.length(rest) < 64
+      && string.contains(alphanumeric, first)
+      && list.all(rest, fn(part) { string.contains(alphanumeric <> "_-", part) })
   }
 }
 
@@ -667,6 +746,7 @@ pub fn default_base_url(dialect: Dialect) -> String {
     Anthropic -> "https://api.anthropic.com"
     OpenAiCompatible -> "https://api.openai.com/v1"
     OpenAiResponses -> "https://api.openai.com/v1"
+    CodexSubscription(profile: _) -> ""
     Gemini -> "https://generativelanguage.googleapis.com/v1beta"
   }
 }
@@ -1732,6 +1812,7 @@ pub fn dialect_to_string(dialect: Dialect) -> String {
     Anthropic -> "anthropic"
     OpenAiCompatible -> "openai"
     OpenAiResponses -> "openai-responses"
+    CodexSubscription(profile: _) -> "codex-subscription"
     Gemini -> "gemini"
   }
 }
@@ -1838,6 +1919,8 @@ fn provider_config(entry: CatalogModel) -> provider_gateway.ProviderConfig {
         base_url: entry.base_url,
         api_key_secret: entry.api_key_env,
       )
+    CodexSubscription(profile:) ->
+      provider_gateway.CodexSubscriptionProvider(name: entry.name, profile:)
     Gemini ->
       provider_gateway.GeminiProvider(
         name: entry.name,
