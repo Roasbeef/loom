@@ -37,6 +37,7 @@ import tui/notes_view
 import tui/protocol.{type Strand, Strand}
 import tui/reviewer_status
 import tui/session_channel
+import tui/transcript_lines
 import tui/workspace
 import tui_test/pushed
 
@@ -1249,15 +1250,17 @@ pub fn an_unsupported_goal_command_is_worded_test() {
 /// without recognition it would be drawn as though the operator had typed
 /// it. Recognized, it is the system voice.
 pub fn a_goal_continuation_draws_in_the_system_voice_test() {
-  let assert Some(payload) = tui.advisor_payload(continuation("keep going"))
+  let assert Some(payload) =
+    transcript_lines.advisor_payload(continuation("keep going"))
     as "both frame tokens are present"
-  assert payload == tui.Continuation("keep going")
+  assert payload == transcript_lines.Continuation("keep going")
 
-  let assert [line] = tui.advisor_lines(payload, notes_view.Excerpt)
+  let assert [line] =
+    transcript_lines.advisor_lines(payload, notes_view.Excerpt)
   assert line.speaker == tui_model.System
   assert string.contains(line.text, "goal continuation")
 
-  assert tui.advisor_lines(payload, notes_view.Complete)
+  assert transcript_lines.advisor_lines(payload, notes_view.Complete)
     == [
       tui_model.Line(tui_model.System, "goal continuation"),
       tui_model.Line(tui_model.ToolDetail, "keep going"),
@@ -1268,16 +1271,16 @@ pub fn a_goal_continuation_draws_in_the_system_voice_test() {
 /// header must not be able to promote its output into the system voice, and
 /// an operator pasting one back to ask about it keeps their own voice.
 pub fn a_quoted_continuation_header_is_not_a_frame_test() {
-  assert tui.advisor_payload(user_message(
-      tui.continuation_header <> "\nwhy did this fire?",
+  assert transcript_lines.advisor_payload(user_message(
+      transcript_lines.continuation_header <> "\nwhy did this fire?",
     ))
     == None
-  assert tui.advisor_payload(user_message(
-      "what does this mean\n" <> tui.continuation_header,
+  assert transcript_lines.advisor_payload(user_message(
+      "what does this mean\n" <> transcript_lines.continuation_header,
     ))
     == None
-  assert tui.advisor_payload(user_message(
-      "keep going\n" <> tui.continuation_footer,
+  assert transcript_lines.advisor_payload(user_message(
+      "keep going\n" <> transcript_lines.continuation_footer,
     ))
     == None
 }
@@ -1288,33 +1291,35 @@ pub fn a_quoted_continuation_header_is_not_a_frame_test() {
 pub fn the_goal_feed_and_the_wrap_up_are_recognized_test() {
   let feed =
     user_message(
-      tui.goal_feed_header
+      transcript_lines.goal_feed_header
       <> "\nObjective: get the branch green\n"
-      <> tui.goal_feed_footer,
+      <> transcript_lines.goal_feed_footer,
     )
-  let assert Some(tui.GoalFeed(body)) = tui.advisor_payload(feed)
+  let assert Some(transcript_lines.GoalFeed(body)) =
+    transcript_lines.advisor_payload(feed)
     as "a goal feed is advisor traffic, not an operator turn"
   assert string.contains(body, "get the branch green")
 
   let wrap_up =
     user_message(
-      tui.advice_header
+      transcript_lines.advice_header
       <> "\nthe goal's token budget is exhausted; wrap up\n"
-      <> tui.advice_footer,
+      <> transcript_lines.advice_footer,
     )
-  let assert Some(tui.Advice(_)) = tui.advisor_payload(wrap_up)
+  let assert Some(transcript_lines.Advice(_)) =
+    transcript_lines.advisor_payload(wrap_up)
     as "the budget wrap-up rides the advice frame already recognized"
 }
 
 /// The frame literals, spelled as `client/advisorslice` writes them. A drift
 /// silently stops the terminal recognizing the server's own messages.
 pub fn the_goal_frame_literals_match_the_servers_test() {
-  assert tui.continuation_header == "[goal continuation]"
-  assert tui.continuation_footer
+  assert transcript_lines.continuation_header == "[goal continuation]"
+  assert transcript_lines.continuation_footer
     == "[end goal continuation. Continue the work; do not reply about the frame.]"
-  assert tui.goal_feed_header
+  assert transcript_lines.goal_feed_header
     == "[advisor goal feed: the primary stopped with the session's goal still open]"
-  assert tui.goal_feed_footer
+  assert transcript_lines.goal_feed_footer
     == "[end goal feed. Judge the objective against the evidence above and answer with exactly one advise call: continue, or complete when the objective is actually achieved.]"
   assert advisor_pending.primary_strand == "main"
 }
@@ -1322,7 +1327,11 @@ pub fn the_goal_frame_literals_match_the_servers_test() {
 // The continuation frame exactly as `advisorslice` writes it.
 fn continuation(body: String) -> message.AgentMessage {
   user_message(
-    tui.continuation_header <> "\n" <> body <> "\n" <> tui.continuation_footer,
+    transcript_lines.continuation_header
+    <> "\n"
+    <> body
+    <> "\n"
+    <> transcript_lines.continuation_footer,
   )
 }
 

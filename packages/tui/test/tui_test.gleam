@@ -40,6 +40,7 @@ import tui/session_channel
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
+import tui/transcript_lines
 import tui/virtual_backend
 import tui/workspace
 import tui_test/ffi_term
@@ -108,14 +109,14 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
       cost: message.UsageCost(0.01, 0.02, 0.003, 0.004, 0.037),
     )
 
-  assert tui.usage_summary(usage)
+  assert transcript_lines.usage_summary(usage)
     == "Total est $0.04 · in 12k · out 678 · cache 90k/123"
   let measured =
     message.Usage(
       ..usage,
       cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 5.674667835999998),
     )
-  assert string.contains(tui.usage_summary(measured), "est $5.67")
+  assert string.contains(transcript_lines.usage_summary(measured), "est $5.67")
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {
@@ -128,16 +129,20 @@ pub fn elapsed_label_reads_like_a_clock_test() {
 }
 
 pub fn output_rate_is_tokens_over_streamed_seconds_test() {
-  assert tui.output_rate(300, 2000) == Some(150)
-  assert tui.output_rate(7, 1000) == Some(7)
+  assert transcript_lines.output_rate(300, 2000) == Some(150)
+  assert transcript_lines.output_rate(7, 1000) == Some(7)
   // A window under a second is no rate: a whole-part provider can land
   // a short reply as one burst, and 126 tokens over one millisecond
   // once showed as 126000 tok/s.
-  assert tui.output_rate(126, 1) == None
-  assert tui.output_rate(300, tui.output_rate_min_ms - 1) == None
-  assert tui.output_rate(300, 0) == None
-  assert tui.output_rate_label(Some(87)) == " · 87 tok/s"
-  assert tui.output_rate_label(None) == ""
+  assert transcript_lines.output_rate(126, 1) == None
+  assert transcript_lines.output_rate(
+      300,
+      transcript_lines.output_rate_min_ms - 1,
+    )
+    == None
+  assert transcript_lines.output_rate(300, 0) == None
+  assert transcript_lines.output_rate_label(Some(87)) == " · 87 tok/s"
+  assert transcript_lines.output_rate_label(None) == ""
 }
 
 pub fn footer_rows_depend_on_the_width_alone_test() {
@@ -1530,7 +1535,7 @@ pub fn code_mode_program_renders_as_gleam_test() {
       ),
     ])
 
-  assert tui.code_mode_program("code_mode", arguments, False)
+  assert transcript_lines.code_mode_program("code_mode", arguments, False)
     == Some(
       "```gleam\nimport cap/report\n\npub fn main() {\n  report.text(\"live\")\n}\n```",
     )
@@ -1540,10 +1545,10 @@ pub fn code_mode_program_preview_is_bounded_test() {
   let source = string.repeat("// preview row\n", 5) <> "// LINE_6\n// LINE_7"
   let arguments = json.Object([#("program", json.String(source))])
   let assert Some(collapsed) =
-    tui.code_mode_program("code_mode", arguments, False)
+    transcript_lines.code_mode_program("code_mode", arguments, False)
     as "A valid source field has a compact preview"
   let assert Some(expanded) =
-    tui.code_mode_program("code_mode", arguments, True)
+    transcript_lines.code_mode_program("code_mode", arguments, True)
     as "A valid source field can be expanded"
 
   assert string.contains(collapsed, "LINE_6")
@@ -1556,9 +1561,9 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
   let arguments =
     json.Object([#("command", json.String("gleam test --target erlang"))])
 
-  assert tui.tool_call_summary("bash", arguments, False)
+  assert transcript_lines.tool_call_summary("bash", arguments, False)
     == "Bash(gleam test --target erlang)"
-  assert tui.tool_call_summary("bash", arguments, True)
+  assert transcript_lines.tool_call_summary("bash", arguments, True)
     == "Bash($ gleam test --target erlang)"
 }
 
@@ -1567,7 +1572,7 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
 // `offset` has to be visible as an absence.
 pub fn fs_read_tool_call_shows_the_window_it_asked_for_test() {
   let window = fn(fields) {
-    tui.tool_call_summary("fs_read", json.Object(fields), False)
+    transcript_lines.tool_call_summary("fs_read", json.Object(fields), False)
   }
   let path = #("path", json.String("a/b.gleam"))
 
@@ -1582,7 +1587,7 @@ pub fn fs_read_tool_call_shows_the_window_it_asked_for_test() {
 
 // A write and an edit take no window, so their rows are unchanged.
 pub fn fs_edit_tool_call_shows_only_its_path_test() {
-  assert tui.tool_call_summary(
+  assert transcript_lines.tool_call_summary(
       "fs_edit",
       json.Object([
         #("path", json.String("a/b.gleam")),
@@ -1594,7 +1599,8 @@ pub fn fs_edit_tool_call_shows_only_its_path_test() {
 }
 
 pub fn live_tool_call_hides_partial_json_arguments_test() {
-  assert tui.live_tool_call_summary("bash") == "bash · preparing arguments…"
+  assert transcript_lines.live_tool_call_summary("bash")
+    == "bash · preparing arguments…"
 }
 
 pub fn markdown_diff_lines_have_distinct_styles_test() {
@@ -1628,7 +1634,8 @@ pub fn injected_agent_notes_are_recognized_as_machine_context_test() {
       origin: None,
     )
 
-  assert tui.agent_notes_payload(value) == Some("perf/cache = true")
+  assert transcript_lines.agent_notes_payload(value)
+    == Some("perf/cache = true")
 }
 
 pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
@@ -1639,7 +1646,7 @@ pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
       origin: None,
     )
 
-  assert tui.agent_notes_payload(value) == None
+  assert transcript_lines.agent_notes_payload(value) == None
 }
 
 pub fn long_prompt_wraps_without_changing_its_source_test() {

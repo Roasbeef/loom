@@ -46,6 +46,7 @@ import host/bootstrap
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/transcript_lines
 import tui_test/pushed
 import weft/actor
 
@@ -89,7 +90,7 @@ const render_every = 64
 const min_drain_rate = 2000
 
 // The refc bytes the whole holder is allowed to reference once collected. The
-// live region itself is held to `tui.live_stream_limit` doubled — the exact
+// live region itself is held to `transcript_lines.live_stream_limit` doubled — the exact
 // bound the second fixture asserts on the model — and this coarser number has
 // room above it for the wrapped rows a paint leaves cached beside it. What it
 // rules out is the shape the leak had: bytes rising with the token count.
@@ -336,9 +337,10 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
   // The exact invariant, on the model rather than on the process: the region
   // is collapsed back to `live_stream_limit` whenever it would pass twice it,
   // so no answer length can make it grow.
-  assert bytes <= tui.live_stream_limit * 2
+  assert bytes <= transcript_lines.live_stream_limit * 2
     as "a live stream never retains more than twice the preview bound"
-  assert list.length(fragments) <= 2 * tui.live_stream_limit / delta_bytes
+  assert list.length(fragments)
+    <= 2 * transcript_lines.live_stream_limit / delta_bytes
     as "collapsing keeps the fragment list bounded too"
 
   // The next operation is a different answer, so the previous one's fragments

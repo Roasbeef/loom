@@ -32,6 +32,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway
 
@@ -120,17 +121,17 @@ fn settled(model: tui_model.Model) -> tui_model.Model {
 
 pub fn a_running_tools_output_costs_no_rows_until_details_open_test() {
   let live = running()
-  assert tui.tool_tail_lines(live) == []
+  assert transcript_lines.tool_tail_lines(live) == []
     as "a collapsed transcript draws none of the running command's window"
 
   let assert [tui_model.Line(tui_model.ToolResult, window)] =
-    tui.tool_tail_lines(expanded(live))
+    transcript_lines.tool_tail_lines(expanded(live))
     as "an expanded transcript still draws the window it collected"
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(window, "\n")
   assert first == "compiling package 2"
     as "the window keeps its last lines, not its first"
-  assert list.length(rest) == tui.tail_lines_shown - 1
+  assert list.length(rest) == transcript_lines.tail_lines_shown - 1
 }
 
 pub fn settling_a_tool_call_leaves_the_transcript_the_same_height_test() {
@@ -203,10 +204,12 @@ pub fn collapsed_reasoning_is_one_row_and_expanded_reasoning_is_the_block_test()
 }
 
 pub fn a_live_digest_counts_lines_and_a_settled_one_quotes_its_opening_test() {
-  assert tui.live_reasoning_digest("one thought") == "1 line so far"
-  assert tui.live_reasoning_digest("one\ntwo\nthree") == "3 lines so far"
-  assert tui.settled_reasoning_digest("\n\nFirst.\nSecond.")
-    == "First." <> tui.expand_hint
+  assert transcript_lines.live_reasoning_digest("one thought")
+    == "1 line so far"
+  assert transcript_lines.live_reasoning_digest("one\ntwo\nthree")
+    == "3 lines so far"
+  assert transcript_lines.settled_reasoning_digest("\n\nFirst.\nSecond.")
+    == "First." <> transcript_lines.expand_hint
     as "the opening line is the first one with text in it"
 }
 
@@ -272,16 +275,18 @@ pub fn a_failing_tool_settles_by_exactly_its_failure_rows_test() {
 // construct would reach the reader as punctuation standing in for a whole
 // block of reasoning. Both shapes are common openers in model output.
 pub fn a_settled_digest_skips_a_fence_and_sheds_its_markers_test() {
-  assert tui.settled_reasoning_digest("```gleam\nlet value = 1\n```")
-    == "let value = 1" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest(
+      "```gleam\nlet value = 1\n```",
+    )
+    == "let value = 1" <> transcript_lines.expand_hint
     as "a fence delimiter is not an opening line"
-  assert tui.settled_reasoning_digest("## Plan\n\nthen the work")
-    == "Plan" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest("## Plan\n\nthen the work")
+    == "Plan" <> transcript_lines.expand_hint
     as "a heading's marker is shed, not quoted"
-  assert tui.settled_reasoning_digest("> quoted\n")
-    == "quoted" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest("> quoted\n")
+    == "quoted" <> transcript_lines.expand_hint
     as "a quotation marker is shed too"
-  assert tui.settled_reasoning_digest("###\nthe real opening")
-    == "the real opening" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest("###\nthe real opening")
+    == "the real opening" <> transcript_lines.expand_hint
     as "a line of markers alone falls through to the next candidate"
 }

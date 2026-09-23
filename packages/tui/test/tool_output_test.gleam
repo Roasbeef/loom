@@ -21,6 +21,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/transcript_lines
 import tui_test/pushed
 
 // Details open, which is where a running command's output window is
@@ -116,14 +117,14 @@ pub fn the_tail_is_drawn_as_one_result_line_under_the_running_call_test() {
       "compiling core\ncompiling tools\n",
       31,
     ))
-  assert tui.tool_tail_lines(expanded(model))
+  assert transcript_lines.tool_tail_lines(expanded(model))
     == [
       tui_model.Line(
         tui_model.ToolResult,
         "stdout · 31 B so far\ncompiling core\ncompiling tools",
       ),
     ]
-  assert tui.tool_tail_lines(model) == []
+  assert transcript_lines.tool_tail_lines(model) == []
     as "a collapsed transcript holds one height across the call's settle"
 }
 
@@ -141,18 +142,18 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
       2048,
     ))
   let assert [tui_model.Line(tui_model.ToolResult, drawn)] =
-    tui.tool_tail_lines(expanded(model))
+    transcript_lines.tool_tail_lines(expanded(model))
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(drawn, "\n")
   assert first == "line 13"
-  assert list.length(rest) == tui.tail_lines_shown - 1
+  assert list.length(rest) == transcript_lines.tail_lines_shown - 1
 }
 
 pub fn a_binary_tail_draws_its_heading_alone_test() {
   let model =
     pushed.attached()
     |> tui.accept_connection_message(output("op-1", "step-1", "stdout", "", 300))
-  assert tui.tool_tail_lines(expanded(model))
+  assert transcript_lines.tool_tail_lines(expanded(model))
     == [tui_model.Line(tui_model.ToolResult, "stdout · 300 B so far")]
 }
 
@@ -178,7 +179,7 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
       ]),
     )
   assert list.length(model.tool_tails) == 1
-  assert tui.tool_tail_lines(expanded(model)) == []
+  assert transcript_lines.tool_tail_lines(expanded(model)) == []
     as "an expanded transcript still draws only the active strand's window"
 }
 
@@ -215,7 +216,7 @@ pub fn two_calls_in_one_step_keep_separate_tails_test() {
 
 pub fn missed_captures_cannot_grow_tail_retention_without_bound_test() {
   let model =
-    list.repeat(Nil, tui.max_tool_tails + 1)
+    list.repeat(Nil, transcript_lines.max_tool_tails + 1)
     |> list.index_map(fn(_nil, index) { index })
     |> list.fold(pushed.attached(), fn(model, index) {
       tui.accept_connection_message(
@@ -229,10 +230,10 @@ pub fn missed_captures_cannot_grow_tail_retention_without_bound_test() {
         ),
       )
     })
-  assert list.length(model.tool_tails) == tui.max_tool_tails
+  assert list.length(model.tool_tails) == transcript_lines.max_tool_tails
   let assert [oldest, ..rest] = model.tool_tails
   assert oldest.operation == "op-1"
     as "the oldest observation is evicted when the global bound is full"
   assert list.last(rest) |> result.map(fn(tail) { tail.operation })
-    == Ok("op-" <> int.to_string(tui.max_tool_tails))
+    == Ok("op-" <> int.to_string(transcript_lines.max_tool_tails))
 }
