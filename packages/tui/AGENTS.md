@@ -816,7 +816,10 @@ session and enter its exact strand, `d` to revoke the selected direction, and `v
 to propose a separately confirmed reverse link. `busy_only` is the default wake
 permission; Tab or the arrow keys select `may_wake`. Saved sessions remain
 unavailable in the chooser and are never opened. Press `p` in `/agents` to manage
-links for the selected strand. The peer view leaves composer text untouched.
+links for the selected strand. Press `n` to append a bounded inspect page; `r`
+refreshes from the first page. Pages are fresh observations and the daemon checks
+current authority again for each mutation. The peer view leaves composer text
+untouched.
 `/approve <id>`
   and `/deny <id>` answer the captured request; `/approvals <id>` loads an exact
   decision. `/notes` opens the
