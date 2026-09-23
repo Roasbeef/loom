@@ -266,3 +266,16 @@ pub fn a_strand_is_asked_about_once_test() {
     "main",
   )
 }
+
+// A capture routinely holds several todo results for one strand; the
+// panel must show the newest, and the records arrive newest first.
+pub fn remember_keeps_the_newest_of_several_boards_for_a_strand_test() {
+  let older = Board([Phase("A", [Task("x", Active)])])
+  let newer = Board([Phase("A", [Task("x", Done)])])
+  let boards =
+    todo_panel.remember(dict.new(), [
+      record("main", 20, result(carrying(newer), False)),
+      record("main", 10, result(carrying(older), False)),
+    ])
+  assert dict.get(boards, "main") == Ok(newer)
+}

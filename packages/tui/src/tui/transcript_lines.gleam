@@ -836,6 +836,7 @@ pub fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
         details_expanded: False,
       )
     ]
+
     // The pinned panel already shows the whole board, so a settled todo
     // call stays one row, which also keeps the compact height rule: the
     // pending row it replaces was one row too.

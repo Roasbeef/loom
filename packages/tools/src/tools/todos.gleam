@@ -44,6 +44,7 @@ import core/todo_list.{
   type Board, type Phase, type Status, type Task, Active, Blocked, Board, Done,
   Dropped, Pending, Phase, Task,
 }
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -269,7 +270,38 @@ fn current(stored: Option(JsonValue), op: Op) -> Result(Board, String) {
 /// ```
 pub fn apply(board: Board, op: Op) -> Result(Board, String) {
   use changed <- result.try(change(board, op))
-  settle(changed) |> todo_list.validate
+  use board <- result.try(settle(changed) |> todo_list.validate)
+  distinct_loosely(board)
+}
+
+// `resolve` falls back to a match that ignores case and spacing, so two
+// tasks equal under that match would let a replayed `remove`, whose exact
+// target is gone, delete the other one. Refusing such a pair when it is
+// written keeps the loose match to at most one candidate.
+fn distinct_loosely(board: Board) -> Result(Board, String) {
+  let texts =
+    list.flat_map(board.phases, fn(phase) {
+      list.map(phase.tasks, fn(task) { task.text })
+    })
+  let outcome =
+    list.try_fold(texts, dict.new(), fn(seen, text) {
+      let key = normalize(text)
+      case dict.get(seen, key) {
+        Ok(other) -> Error(#(other, text))
+        Error(Nil) -> Ok(dict.insert(seen, key, text))
+      }
+    })
+  case outcome {
+    Ok(_) -> Ok(board)
+    Error(#(first, second)) ->
+      Error(
+        "tasks "
+        <> string.inspect(first)
+        <> " and "
+        <> string.inspect(second)
+        <> " differ only in case or spacing; task text must be distinct",
+      )
+  }
 }
 
 fn change(board: Board, op: Op) -> Result(Board, String) {
@@ -282,7 +314,7 @@ fn change(board: Board, op: Op) -> Result(Board, String) {
     Block(target, reason) ->
       restatus(board, target, fn(task) {
         case todo_list.is_open(task) {
-          True -> Blocked(option.map(reason, one_line))
+          True -> Blocked(blocker(reason))
           False -> task.status
         }
       })
@@ -587,6 +619,15 @@ fn guard_empty(
   case items {
     [] -> Error(reason())
     [_, ..] -> continue()
+  }
+}
+
+// A reason that is blank once flattened is no reason, rather than a board
+// that fails validation for a blank field the model never meant to set.
+fn blocker(reason: Option(String)) -> Option(String) {
+  case option.map(reason, one_line) {
+    Some("") | None -> None
+    Some(text) -> Some(text)
   }
 }
 

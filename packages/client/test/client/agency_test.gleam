@@ -1257,6 +1257,16 @@ pub fn an_unchanged_board_is_not_rewritten_test() {
   close(harness)
 }
 
+pub fn a_view_of_no_board_creates_no_cell_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_) =
+    harness.seam.todos(caller, fn(stored) { todos.step(stored, todos.View) })
+    as "a view of nothing must answer"
+  assert api.fact(harness.runtime, "agent/main/todo") == Ok(None)
+  close(harness)
+}
+
 // --- the roster ------------------------------------------------------------
 
 pub fn the_roster_reads_durable_state_test() {

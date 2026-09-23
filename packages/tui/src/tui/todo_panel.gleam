@@ -132,14 +132,20 @@ pub fn remember(
   boards: Dict(String, Board),
   records: List(protocol.EntryRecord),
 ) -> Dict(String, Board) {
-  records
-  |> list.group(fn(record) { record.strand })
-  |> dict.fold(boards, fn(boards, strand, owned) {
-    case newest(owned) {
-      Some(board) -> dict.insert(boards, strand, board)
-      None -> boards
-    }
-  })
+  // Records are newest first, so the first board met for a strand is its
+  // newest; `seen` stops an older one later in the list replacing it.
+  let #(boards, _) =
+    list.fold(records, #(boards, set.new()), fn(acc, record) {
+      let #(boards, seen) = acc
+      case set.contains(seen, record.strand), newest([record]) {
+        False, Some(board) -> #(
+          dict.insert(boards, record.strand, board),
+          set.insert(seen, record.strand),
+        )
+        True, _ | False, None -> acc
+      }
+    })
+  boards
 }
 
 /// Seeds a strand's board from a notes read, when the read carries the

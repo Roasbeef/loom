@@ -668,7 +668,12 @@ fn render_cut(
   // in its notes, the usual case after reattaching to a long session, so
   // its first capture asks for one notes read to seed the panel.
   let boards = todo_panel.remember(model.todo_boards, branch.records)
-  let seeding = todo_panel.needs_seed(boards, model.todo_asked, active)
+  let #(todo_seed, todo_asked) = case
+    todo_panel.needs_seed(boards, model.todo_asked, active)
+  {
+    True -> #(Some(active), set.insert(model.todo_asked, active))
+    False -> #(model.todo_seed, model.todo_asked)
+  }
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -680,14 +685,8 @@ fn render_cut(
     agent_rows: rows,
     agent_messages: captured_messages,
     todo_boards: boards,
-    todo_seed: case seeding {
-      True -> Some(active)
-      False -> model.todo_seed
-    },
-    todo_asked: case seeding {
-      True -> set.insert(model.todo_asked, active)
-      False -> model.todo_asked
-    },
+    todo_seed:,
+    todo_asked:,
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -3011,6 +3010,14 @@ fn apply_request_refused(
   use <- bool.lazy_guard(string.starts_with(command, "goal_"), fn() {
     surfaces.refuse_goal(model, command, request_id, code, message)
   })
+
+  // A notes read refused while no notes surface is open was the todo
+  // panel's seed. An older daemon refuses it, and an error row would report
+  // a read the operator never asked for.
+  use <- bool.lazy_guard(
+    command == "notes" && !surfaces.notes_surface(model),
+    fn() { model },
+  )
   let reason = code <> ": " <> message
   let updated = case command {
     "queued_input" | "edit_queued_input" ->

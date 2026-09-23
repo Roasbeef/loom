@@ -79,14 +79,28 @@ pub fn notes_surface(model: Model) -> Bool {
 /// seeds the board just the same when it is for the same strand.
 @internal
 pub fn service_todo_seed(model: Model) -> Model {
-  case model.todo_seed, model.notes_requested, model.channel {
-    None, _, _ | Some(_), Some(_), _ -> model
-    Some(strand), None, Some(channel) ->
-      case session_channel.ready_for_read(channel) {
-        False -> model
-        True -> send_todo_seed(model, strand)
+  case model.todo_seed {
+    None -> model
+    Some(strand) ->
+      case dict.has_key(model.todo_boards, strand) {
+        // Another read or a fresh result already brought the board, so the
+        // seed has nothing left to find.
+        True -> Model(..model, todo_seed: None)
+        False -> send_seed_when_free(model, strand)
       }
-    Some(strand), None, None -> send_todo_seed(model, strand)
+  }
+}
+
+// An operator's own notes read goes first, and a seed with no attached
+// channel waits; session replacement clears it either way.
+fn send_seed_when_free(model: Model, strand: String) -> Model {
+  case model.notes_requested, model.channel, model.peer {
+    None, Some(channel), Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        True -> send_todo_seed(model, strand)
+        False -> model
+      }
+    Some(_), _, _ | None, None, _ | None, Some(_), _ -> model
   }
 }
 

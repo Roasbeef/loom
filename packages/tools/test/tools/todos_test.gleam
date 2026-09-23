@@ -405,3 +405,24 @@ fn dead_broker(
 ) -> Result(tool.RunningCall, Refusal) {
   Error(broker.BrokerUnavailable)
 }
+
+// Loose resolution must never have two candidates, or a replayed remove
+// whose exact target is gone would delete the other one.
+pub fn tasks_that_differ_only_in_case_are_refused_test() {
+  let assert Error(reason) =
+    todos.apply(build(), todos.Append("Verify", ["judge EVERY unit"]))
+  assert string.contains(reason, "differ only in case or spacing")
+  let assert Error(_) =
+    todos.apply(
+      todo_list.empty(),
+      todos.Init([#("P", ["Ship it", "ship  it"])]),
+    )
+}
+
+pub fn a_blank_block_reason_is_no_reason_test() {
+  let board =
+    build()
+    |> ok(todos.Block(todos.OneTask("Extract test units"), Some(" \n ")))
+  assert list.key_find(statuses(board), "Extract test units")
+    == Ok(Blocked(None))
+}

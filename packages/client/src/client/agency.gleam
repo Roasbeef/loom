@@ -120,6 +120,7 @@ import core/entry
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import core/todo_list
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -1741,8 +1742,12 @@ fn update_todo_cell(
   )
 
   // An unchanged board is not written, so `view` and a replayed no-op
-  // leave the cell's sequence, and the register history, alone.
-  use <- bool.guard(when: stored == Some(next), return: Ok(next))
+  // leave the cell's sequence, and the register history, alone. An absent
+  // cell means the empty board, so a `view` on a strand that never made a
+  // list does not create a cell for the notes digest to carry.
+  let before =
+    option.lazy_unwrap(stored, fn() { todo_list.encode(todo_list.empty()) })
+  use <- bool.guard(when: before == next, return: Ok(next))
   case api.put_fact_expecting(runtime, key, next, expected:) {
     Ok(_) -> Ok(next)
     Error(api.FactConflict(..)) if attempts > 1 ->

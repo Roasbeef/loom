@@ -155,19 +155,27 @@ pub fn a_settled_call_pins_its_board_above_the_composer_test() {
   assert string.contains(frame, "2/4 done")
 }
 
-// The pending row is one row, and so is the settled one: the full board
-// lives in the panel, not in the transcript.
+// The pending row is one row, and so is the settled one: the call sits on
+// the same row before and after it settles, and nothing but blank space
+// lies between it and the panel, so the full board never enters the
+// transcript.
 pub fn the_transcript_row_stays_one_row_test() {
-  let #(_, frame) =
+  let #(_, pending) = base() |> received(call("t1", 1)) |> text
+  let #(_, settled) =
     base()
     |> received(call("t1", 1))
     |> received(outcome("t1", 2, False, board()))
     |> text
-  let lines = rows(frame)
-  let row = index_of(lines, "✓ todo · done")
-  let assert Ok(next) = list.first(list.drop(lines, row + 1))
-    as "a row follows the call"
-  assert !string.contains(next, "Judge every unit")
+  let pending = rows(pending)
+  let settled = rows(settled)
+  let row = index_of(settled, "✓ todo · done")
+  assert index_of(pending, "todo · done") == row
+  let header = index_of(settled, "TODO  Judge 1/3")
+  assert header > row
+  assert settled
+    |> list.drop(row + 1)
+    |> list.take(header - row - 1)
+    |> list.all(fn(line) { string.trim(line) == "" })
 }
 
 pub fn a_failed_call_leaves_the_pinned_board_test() {
@@ -232,6 +240,17 @@ pub fn a_seed_never_replaces_the_transcript_board_test() {
 
 // The operator's own notes read owns the lane first; its reply seeds the
 // panel just as well, so the terminal's read waits rather than racing it.
+// A board that arrived some other way leaves the seed nothing to find, so
+// it is dropped rather than sent.
+pub fn a_seed_for_a_known_board_is_dropped_test() {
+  let known =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+  let waiting = tui_model.Model(..known, todo_seed: Some("main"))
+  assert surfaces.service_todo_seed(waiting).todo_seed == None
+}
+
 pub fn the_seed_waits_behind_an_operator_notes_read_test() {
   let waiting =
     tui_model.Model(

@@ -115,11 +115,20 @@ fn queue_body_layout_for(
   model: Model,
   rows: List(snapshot_view.PendingInput),
 ) -> #(Rect, Rect) {
+  let #(conversation, _panel, queue) = body_split(body, model, rows)
+  #(conversation, queue)
+}
+
+fn body_split(
+  body: Rect,
+  model: Model,
+  rows: List(snapshot_view.PendingInput),
+) -> #(Rect, Rect, Rect) {
   let queue = queue_height(body, model, rows)
   let panel = todo_height(body, model, queue)
   case geometry.split_v(body, [Fill, Length(panel), Length(queue)]) {
-    [conversation, _panel, queue] -> #(conversation, queue)
-    _ -> #(body, geometry.rect_zero())
+    [conversation, panel, queue] -> #(conversation, panel, queue)
+    _ -> #(body, geometry.rect_zero(), geometry.rect_zero())
   }
 }
 
@@ -164,12 +173,8 @@ const min_conversation = 4
 /// ```
 @internal
 pub fn todo_area(body: Rect, model: Model) -> Rect {
-  let queue = queue_height(body, model, queue_rows(model))
-  let panel = todo_height(body, model, queue)
-  case geometry.split_v(body, [Fill, Length(panel), Length(queue)]) {
-    [_, area, _] -> area
-    _ -> geometry.rect_zero()
-  }
+  let #(_, panel, _) = body_split(body, model, queue_rows(model))
+  panel
 }
 
 fn diff_pane_width(model: Model) -> Int {
