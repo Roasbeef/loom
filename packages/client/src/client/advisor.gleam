@@ -151,6 +151,7 @@ import gleam/set.{type Set}
 import gleam/string
 import machine/codec
 import machine/operation as operation_mod
+import machine/queue as machine_queue
 import machine/strand as machine_strand
 import runtime/api.{type Runtime}
 import runtime/effects
@@ -404,9 +405,9 @@ pub type Message {
   /// operation, so the primary reads its nudges before it stops rather
   /// than after the operator next types.
   ///
-  /// It carries no operation because it decides nothing from one: the
-  /// hook has already established whose run is ending, and the turn's
-  /// delivery is spent here rather than renewed.
+  /// The operation identifies the run whose final hook has begun. A
+  /// nudge judged after this drain but before settlement can still be
+  /// placed on that run's follow-up queue.
   ///
   /// `deadline` is the wall-clock instant past which the asking hook has
   /// stopped listening, set to its own timeout from the same clock this
@@ -414,8 +415,8 @@ pub type Message {
   /// queue and spend the turn into a driver that has already given up and
   /// ended the run, leaving an idle primary with no nudges and no wake
   /// left to carry them; past the deadline the actor answers with nothing
-  /// and touches no state, so the queue waits for the next occasion.
-  TakeAtRunEnd(deadline: Int, reply: Subject(List(String)))
+  /// and leaves the queue waiting for the next occasion.
+  TakeAtRunEnd(operation: OpId, deadline: Int, reply: Subject(List(String)))
 
   /// The primary committed a cost row — a trigger, carrying nothing.
   ///
@@ -533,6 +534,9 @@ type Memory {
     stepped: Int,
     turn: Turn,
     woke: Option(OpId),
+    // The run whose final hook has checked the queue but whose settlement
+    // has not necessarily cleared its open-operation cell.
+    ending: Option(OpId),
     /// The goal cell's cached value, read lazily beside the other two.
     /// `None` is no goal — an absent cell and an unreadable one both, for
     /// the reason the guard's decoder is lenient about absence: a goal the
@@ -920,10 +924,14 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     // earlier layer placed a follow-up on it. This is the moment the
     // nudge channel exists for: the primary is about to stop, and a
     // queue held for its next run start would wait on the operator.
-    TakeAtRunEnd(deadline:, reply:) -> {
+    TakeAtRunEnd(operation:, deadline:, reply:) -> {
       let #(nudges, spent) = drain_at_run_end(state, runtime, memory, deadline)
       process.send(reply, nudges)
-      remembering(state, spent)
+      let ending = case now(state.wiring) > deadline {
+        True -> memory.ending
+        False -> Some(operation)
+      }
+      remembering(state, Memory(..spent, ending:))
     }
 
     // The primary spent tokens. The arithmetic is the evaluation's own
@@ -1110,6 +1118,7 @@ fn recall(state: State, runtime: Runtime) -> Memory {
         stepped: 0,
         turn: Unspent,
         woke: None,
+        ending: None,
         goal: read_goal(state, runtime),
         checking: None,
       )
@@ -2924,16 +2933,9 @@ fn wake_primary(
   runtime: Runtime,
   memory: Memory,
 ) -> #(Nudges, Memory) {
-  // The primary is working. A nudge that reached it here would steer it
-  // at its next checkpoint, which is what a `block` costs and what the
-  // whole distinction between the two verdicts is about. The run end is
-  // the next moment, and drains the queue there if this turn still has
-  // its delivery.
-  use <- bool.lazy_guard(
-    when: running(state.wiring.session, primary) != None,
-    return: fn() { #(Held, memory) },
-  )
-
+  // A working primary holds a nudge for its run end. The one exception is
+  // a run whose final hook already checked the queue: its finishing
+  // checkpoint can still take a follow-up before the terminal commit.
   // This operator turn has already been woken once. See the module's
   // "When a nudge lands" for why the second wake is the one that never
   // stops arriving.
@@ -2941,7 +2943,51 @@ fn wake_primary(
     #(Held, memory)
   })
 
-  deliver_nudges(state, runtime, memory)
+  case running(state.wiring.session, primary) {
+    None -> deliver_nudges(state, runtime, memory)
+
+    // The final hook has already checked the queue, but the operation
+    // has not settled. A follow-up admitted now makes the finishing
+    // checkpoint read the nudge without waiting for another prompt.
+    Some(operation) if memory.ending == Some(operation) ->
+      deliver_ending_nudges(state, runtime, memory)
+
+    Some(_) -> #(Held, memory)
+  }
+}
+
+// The run-end hook and settlement are separate transactions. A nudge
+// arriving between them joins the run's durable follow-up queue. If the
+// run closed before admission, the ordinary send door opens a new run.
+fn deliver_ending_nudges(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+) -> #(Nudges, Memory) {
+  let #(nudges, drained) = advisorguard.take_pending(memory.guard)
+  let memory = store_guard(state, runtime, memory, drained)
+  let spent = Memory(..memory, turn: Spent)
+  let framed = advisorslice.nudges_message(nudges, now(state.wiring))
+
+  case api.follow_up(api.on_strand(runtime, primary), framed) {
+    Ok(_) -> #(
+      Woken(how: carrying("placed on the primary's ending run", nudges)),
+      spent,
+    )
+    Error(api.QueueRejected(reason: machine_queue.NoActiveRun)) ->
+      case send_advice(state, runtime, framed) {
+        Ok(api.Started(operation:)) -> #(
+          Woken(how: carrying("started a run on the idle primary", nudges)),
+          Memory(..spent, woke: Some(operation)),
+        )
+        Ok(api.Steered(..)) -> #(
+          Woken(how: carrying("steered the primary's open run", nudges)),
+          spent,
+        )
+        Error(reason) -> #(Refused(reason:), spent)
+      }
+    Error(error) -> #(Refused(reason: string.inspect(error)), spent)
+  }
 }
 
 // Drains the whole queue onto the primary as one fenced message.
@@ -3385,7 +3431,9 @@ fn drained(wiring: Wiring, operation: OpId) -> Option(AgentMessage) {
   // the actor as it does here.
   let deadline = now(wiring) + pending_timeout_ms
 
-  case ask(wiring.name, pending_timeout_ms, TakeAtRunEnd(deadline, _)) {
+  case
+    ask(wiring.name, pending_timeout_ms, TakeAtRunEnd(operation, deadline, _))
+  {
     Ok([]) | Error(Nil) -> None
 
     Ok(nudges) -> Some(advisorslice.nudges_message(nudges, now(wiring)))

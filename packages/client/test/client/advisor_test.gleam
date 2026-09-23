@@ -17,6 +17,7 @@ import client/agency
 import client/goalcheck
 import client/goalloop
 import client/goalstate
+import client/notes
 import core/clock
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type UsageId}
@@ -774,6 +775,63 @@ pub fn a_queued_nudge_is_handed_back_at_the_primarys_run_end_test() {
   stop(rig)
 }
 
+// The run-end hook runs before the operation's finishing transaction. A
+// nudge judged after its drain still sees an open operation in the store;
+// it must join that operation's follow-up queue rather than wait for a
+// prompt the operator may never send.
+pub fn a_nudge_after_the_run_end_drain_joins_the_finishing_run_test() {
+  let boundary = process.new_subject()
+  let requests = process.new_subject()
+  let assert Ok(rig) = a_finishing_rig(boundary, requests)
+    as "the advisor rig must open"
+  let assert Ok(working) =
+    api.prompt(rig.runtime, [user("write the migration")])
+    as "the primary must accept a run"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  let assert Ok(#(ended, release)) = process.receive(boundary, within: 5000)
+    as "the driver must reach its run-end hook"
+  assert ended == working
+    as "the held boundary must belong to the primary's run"
+  let assert Ok(advise.Woke(how:)) =
+    judge(subject, advise.Nudge(text: "check the failed migration"))
+    as "the late nudge must be placed on the ending run"
+  assert string.contains(how, "ending run")
+
+  let assert Ok(Some(session.Cell(value: operation.RunState(inbox:, ..), ..))) =
+    session.op_state(rig.opened, working)
+    as "the ending run must remain open in this fixture"
+  assert list.length(inbox.follow_up) == 1
+    as "the late nudge must have one durable follow-up admission"
+
+  // The driver's first finish attempt was planned from the state before
+  // the follow-up admission. Releasing it forces the CAS retry, then a
+  // second provider request whose projected context contains the nudge.
+  process.send(release, Nil)
+  let assert Ok(_first) = process.receive(requests, within: 5000)
+    as "the initial provider request must have been observed"
+  let assert Ok(second) = process.receive(requests, within: 5000)
+    as "the follow-up must cause a second provider request"
+  assert list.any(second, fn(item) {
+    string.contains(text_of(item), "check the failed migration")
+  })
+    as "the primary model must receive the framed late nudge"
+  let assert Ok(#(again, release_after_nudge)) =
+    process.receive(boundary, within: 5000)
+    as "the resumed run must reach a second finishable boundary"
+  assert again == working
+  process.send(release_after_nudge, Nil)
+  let assert Ok(_finished) =
+    api.await_result(rig.runtime, working, within_ms: 5000)
+    as "the primary must finish after reading the late nudge"
+  assert list.any(primary_texts(rig.opened), fn(item) {
+    string.contains(item, "check the failed migration")
+  })
+    as "the late nudge must be committed on the primary branch"
+  stop(rig)
+}
+
 // And not when an earlier layer has already placed one. The slot carries
 // a single message, so the two cannot both ride it; the continuation ends
 // in a run end of its own, which asks again with the queue still in it.
@@ -1141,6 +1199,80 @@ fn a_rig_checking(
   Ok(Rig(opened:, runtime:, name:))
 }
 
+// A real driver held after the advisor's run-end hook but before its
+// finishing transaction. The test can admit a late nudge into that
+// interval, then release the driver to prove the CAS retry consumes it.
+fn a_finishing_rig(
+  boundary: process.Subject(#(OpId, process.Subject(Nil))),
+  requests: process.Subject(List(message.AgentMessage)),
+) -> Result(Rig, String) {
+  use opened <- result.try(
+    session.open_memory(clock.fixed(at: 1_756_000_000_000))
+    |> result.replace_error("the memory session did not open"),
+  )
+  use entropy <- result.try(start_entropy())
+  let name = addresses.new()
+  let advisory =
+    advisor.hooks(effects.default_hooks(), a_wiring_named(opened, name))
+  let ended = advisory.run_end
+  let held =
+    effects.Hooks(..advisory, run_end: fn(operation) {
+      let placed = ended(operation)
+      case notes.strand_of(opened, operation) == Ok(advisor.primary) {
+        True -> {
+          let release = process.new_subject()
+          process.send(boundary, #(operation, release))
+          let _released = process.receive(release, within: 5000)
+          placed
+        }
+        False -> placed
+      }
+    })
+  let provider =
+    effects.ProviderSurface(timeout_ms: 5000, request: fn(spec) {
+      let events = process.new_subject()
+      case spec {
+        effects.GenerationRequest(operation:, context:, ..) ->
+          case notes.strand_of(opened, operation) == Ok(advisor.primary) {
+            True -> process.send(requests, context)
+            False -> Nil
+          }
+        effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+      }
+      let assert Ok(settled) = stream.settle(assistant("done"))
+      process.send(
+        events,
+        stream.Settled(message: settled, usage: effects.zero_usage()),
+      )
+      stream.immediate(events:, cancel: fn() { Nil })
+    })
+  use runtime <- result.try(
+    api.open(
+      opened,
+      effects.Effects(
+        clock: clock.fixed(at: 1_756_000_000_000),
+        entropy:,
+        timers: effects.real_timers(),
+        provider:,
+        tools: refusing_tools(),
+        hooks: held,
+      ),
+      api.default_options(a_configuration()),
+    )
+    |> result.map_error(string.inspect),
+  )
+  use Nil <- result.try(
+    advisor.ensure_strand(runtime, some_settings([]), [advise.name]),
+  )
+  let wiring =
+    advisor.Wiring(..a_wiring_named(opened, name), runtime: fn() { Ok(runtime) })
+  use _started <- result.try(
+    advisor.start(wiring)
+    |> result.replace_error("the advisor actor did not start"),
+  )
+  Ok(Rig(opened:, runtime:, name:))
+}
+
 // A strand's open operation as the store shows it, which is what
 // `reviewing` reads of the advisor and what the nudge door reads of the
 // primary.
@@ -1273,7 +1405,7 @@ fn take_at_run_end(
   deadline: Int,
 ) -> List(String) {
   process.call(subject, waiting: 5000, sending: fn(reply) {
-    advisor.TakeAtRunEnd(deadline:, reply:)
+    advisor.TakeAtRunEnd(operation: an_op_id(99), deadline:, reply:)
   })
 }
 
@@ -1516,6 +1648,25 @@ fn user(text: String) -> message.AgentMessage {
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
     origin: None,
+  )
+}
+
+fn assistant(text: String) -> message.AgentMessage {
+  message.AssistantMessage(
+    content: [message.AssistantText(text:, text_signature: None)],
+    api: "test",
+    provider: "acme",
+    model: "loom-1",
+    response_model: None,
+    response_id: None,
+    diagnostics: None,
+    usage: effects.zero_usage(),
+    stop_reason: message.Stop,
+    deferred: None,
+    error_message: None,
+    raw_stop_reason: None,
+    end_turn: Some(True),
+    timestamp: 0,
   )
 }
 
