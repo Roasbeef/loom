@@ -4,9 +4,10 @@ This file records the latest scoped work and retains the prior collaboration
 handoff below it. Use the architecture and protocol documents for enduring
 contracts.
 
-PR #484 merged on 2026-09-23 at `77269e50`. The collaboration sections below
-describe its pre-merge validation and planned follow-ups at that time; they
-are a historical record, not a current PR status report.
+PR #484 merged at `77269e50`. This branch adds the first native collaboration
+inspector to the terminal. The backend contracts remain in protocol 048; the
+terminal projects them without starting work. The collaboration sections below
+record the branch's validation and follow-ups, not a current PR status report.
 
 ## Shell approval recovery
 
@@ -35,9 +36,9 @@ resource from an already-running command; stderr remains diagnostic only.
 | Async execution, #107 | Launch/send/check/join/cancel, fixed authority and deadline, immutable readiness, typed endpoints, intermediate progress, explicit idle expiry and cumulative launch limits are implemented. |
 | Peer messaging, #382 | Exact directional grants, resident routing, atomic receipt/message admission, owner-authenticated control send and structured peer origins are implemented. |
 | Named workflows | Named steps reconcile original child operations and durable results; version, input and assignment remain immutable. |
-| Presentation and examples | TUI linking is #485, CLI conveniences are #488, and a complete collaboration workflow example is #489. |
+| Presentation and examples | F2 now has a Collaboration tab for peer-origin messages, background execution custody and readiness, outgoing links, and named workflow intents. TUI link controls are #485, CLI conveniences are #488, and a complete example is #489. |
 | Code-mode surface | The default server admits the full capability set from either program mode. Omitted `seam` selects workspace. An explicit workspace-only host remains effect-only; extensions and resident hooks keep their own policies. |
-| Integration | PR #484 carried the implementation for #107 and #382 and has merged. |
+| Integration | PR #484 is merged. The terminal inspector adds a read-only TUI projection and its package handoff. |
 
 The [architecture](architecture/async-collaboration.md) explains host and
 satellite ownership. The [API guide](async-collaboration.md) gives callable
@@ -48,24 +49,23 @@ finding and its validation.
 
 #### Corrections to the previous edition
 
-The previous edition listed typed endpoints, intermediate progress, readiness,
-idle limits, the exclusive invocation contract and structured entry provenance
-as missing. They are now implemented and covered by the current tests. CLI and
-TUI conveniences remain open in explicit follow-up issues.
+The previous edition described PR #484 as an open branch. It is merged on
+`main`. The TUI can now inspect the new collaboration records, but owner
+link and revoke controls remain in #485. The Collaboration tab labels a peer
+entry as stored, an execution as ready only when its readiness fact exists,
+and a named step as an intent rather than a completed child.
 
 The first two findings on PR #484's latest review are fixed. A detached HEAD
 retains the observed repository identity with `branch: null`, and the source
 Agency refuses a 65th distinct outgoing link before its index becomes
 unreadable. A repeat link remains valid at the bound.
 
-After the previous rebase, hosted CI passed both Linux and macOS gates at
-`fb1eff2a`. The later `main` merges and the broader code-mode surface require
-a new hosted result on the final PR head. The earlier macOS bootstrap timeout
-did not recur on `fb1eff2a`.
+Hosted CI for #484 passed before merge. The terminal branch needs its own
+hosted result after push.
 
 ### Integration with current main
 
-The branch also includes the code-mode notes and utilities work merged in #483.
+Main also includes the code-mode notes and utilities work merged in #483.
 Both workspace and orchestration are offered by default; an omitted seam still
 selects workspace, and explicit workspace-only configuration remains supported.
 The host-installed `cap/notes` door exposes session-local durable data to both
@@ -85,10 +85,10 @@ integration with collaboration, including the regenerated prelude and seed.
 
 ### What to do next
 
-1. Add operator convenience surfaces in **#488** and **#485**. Scripts and
-   terminal users need to inspect and administer directional links through
-   the existing owner/epoch-checked protocol. These issues do not authorize
-   saved-session activation or cross-machine routing.
+1. Add owner-authorized link and revoke controls in **#485**. The terminal
+   currently inspects source links but cannot change them or show wake scope;
+   that scope is absent from the source fact. Scripts still need **#488**.
+   Neither issue authorizes saved-session activation or cross-machine routing.
 2. Add the complete collaboration workflow example in **#489**. The example
    should launch named children, exchange granted messages, observe progress,
    and recover durable results, with executable validation.
@@ -136,8 +136,8 @@ these residency and revocation boundaries.
 
 None of these is unfinished work somebody forgot.
 
-- Operator CLI convenience (#488), TUI linking (#485), and the full workflow
-  example (#489) are scoped follow-ups to the implemented backend.
+- Operator CLI convenience (#488), TUI link controls (#485), and the full
+  workflow example (#489) remain follow-ups. The inspector is read-only.
 - Saved-session outboxes, cross-machine transport, automatic deadline renewal
   and actor-heap persistence are unbuilt extensions with separate authority
   and recovery questions.
@@ -146,37 +146,18 @@ None of these is unfinished work somebody forgot.
 
 ### Validation evidence
 
-The complete `make check` passed with exit zero on rebased source head
-`5c264b0f`, based on `main` at `db7e0969`. It passed 2,079 client and 722 TUI
-tests, every other package, the sandbox Go tests and house lint. The real
-jailed client tests combine `cap/fs` with named child workflow steps in both
-program modes, and the model-facing description checks both offers and
-installed MCP surfaces. `make doc-check` passed with zero errors after the
-rebase. The public PR head and its hosted CI must still be checked after push.
+The inspector's focused `make check-tui` passed with exit zero and 725 tests.
+New fixtures cover execution readiness, directional link display, workflow
+intent labels, authenticated peer origins and keyboard selection without
+retargeting the composer. The complete repository and documentation gates
+must be run after the final terminal edits. Hosted CI must be checked on the
+new PR head after push.
 
-The unchanged MCP deadline regression took 119 ms against its 500 ms ceiling.
-Earlier staged runs exposed a queued-provenance assertion error and a goal-check
-fixture that left one million messages in EUnit's shared runner. Both were
-corrected before this complete gate. The review record preserves that evidence
-and the separate shared-cutoff correction.
-
-The focused async selection ran all 13 tests without skips, including real
-jailed typed actor state, malformed input rejection, progress, idle reaping,
-and named child workflows. The host suite also covers readiness, launch-count
-recovery and overlapping lifetimes. The idle-cancellation mutation compiled
-and failed the intended regression; restoring cancellation returned the source
-to the passing implementation.
-
-The earlier integration review found no actionable issue in notes/router
-composition, caller identity, fixed authority or workflow/map coexistence.
-An independent review of the broader program surface found no mismatch in
-host routing, the prompt or the model-facing capability description.
-
-The independent feature review found one weak idle test, which was strengthened to
-observe broker abort, durable loss and worker exit before teardown. It found
-no confirmed production correctness or authority defect. Documentation received
-technical-writing and package-graph passes, including legacy origin encoding
-and the distinction between admission, dispatch and application completion.
+The merged backend's validation remains in
+[the #484 review record](review/async-collaboration-followups.md). Its jailed
+tests cover typed actor state, rejected input, progress, idle reaping and named
+child workflows. Those tests do not turn a TUI rendering fixture into a live
+peer-link administration test; #485 owns that separate path.
 
 ### How to verify
 

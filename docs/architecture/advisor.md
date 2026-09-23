@@ -696,8 +696,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui.gleam:8947`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9052`) renders
+`advisor_payload` (`tui.gleam:8958`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9063`) renders
 them. Nudges always show their complete body, including in compact mode.
 The other variants collapse to one attribution row (`advisor`, `advisor
 feed`, `advisor goal feed`, or `goal continuation`) with an opening
