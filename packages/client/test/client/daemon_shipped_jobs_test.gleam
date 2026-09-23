@@ -1276,19 +1276,25 @@ fn prompt(
 
 // Newest first, which is the order the client's own records arrive in.
 // Waiting on the settled assistant texts rather than on a message count
-// keeps the barrier honest across turns that carry a tool call.
+// keeps the barrier honest across turns that carry a tool call. Thirty seconds
+// covers real jailed tool and satellite work plus terminal observation, not
+// just the time needed to paint a frame.
 fn settled(
   driver: actor.Started(process.Subject(tui_driver.Message)),
   answers: List(String),
 ) -> tui_driver.Sample {
-  tui_v2_test.await(driver.data, fn(sample) {
-    writable(sample)
-    && assistant_texts(sample) == answers
-    && sample.model.streams == []
-    && list.any(sample.model.strands, fn(strand) {
-      strand.id == "main" && strand.live_phase == None
-    })
-  })
+  tui_v2_test.await_within(
+    driver.data,
+    fn(sample) {
+      writable(sample)
+      && assistant_texts(sample) == answers
+      && sample.model.streams == []
+      && list.any(sample.model.strands, fn(strand) {
+        strand.id == "main" && strand.live_phase == None
+      })
+    },
+    30_000,
+  )
 }
 
 fn assistant_texts(sample: tui_driver.Sample) -> List(String) {
