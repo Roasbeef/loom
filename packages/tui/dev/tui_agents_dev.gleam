@@ -39,6 +39,7 @@ import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/tick
 import tui/workspace
 import tui/worktree_view
 
@@ -232,7 +233,7 @@ fn run_model(initial: tui_model.Model) -> Nil {
       render.view,
       fixture_update,
       fn(model) { model.quit },
-      tui.terminal_poll_timeout,
+      tick.terminal_poll_timeout,
     )
   Nil
 }

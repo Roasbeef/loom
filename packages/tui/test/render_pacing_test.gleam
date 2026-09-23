@@ -27,6 +27,7 @@ import tui/model as tui_model
 import tui/pacing
 import tui/protocol
 import tui/render
+import tui/tick
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -256,15 +257,15 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-  assert tui.viewport_pacing(settled) == pacing.ViewportSettled
+  assert tick.viewport_pacing(settled) == pacing.ViewportSettled
 
   // The quiet timeout would strand the walk for a whole quiet poll a step,
   // with no socket traffic left to wake the loop.
   let catching_up =
     tui_model.Model(..settled, rendered_row_count: 40, revealed_rows: 10)
-  assert tui.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
-  assert tui.terminal_poll_timeout(catching_up) == 16
-  assert tui.terminal_poll_timeout(settled) > 16
+  assert tick.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
+  assert tick.terminal_poll_timeout(catching_up) == 16
+  assert tick.terminal_poll_timeout(settled) > 16
 }
 
 fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
@@ -450,7 +451,7 @@ pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
       diff_view: tui_model.DiffVisible,
       width: 90,
     )
-  assert tui.viewport_pacing(behind_diff) == pacing.ViewportSettled
+  assert tick.viewport_pacing(behind_diff) == pacing.ViewportSettled
     as "a backlog behind a full-width diff view is not on its way to any screen the loop is painting"
 }
 
