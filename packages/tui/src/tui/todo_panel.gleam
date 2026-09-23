@@ -220,7 +220,7 @@ fn done_line(board: Board, width: Int) -> span.Line {
 }
 
 // The window keeps the active task in view with one task of context above
-// it, and spends the last row on a count of what it had to leave out.
+// it, and spends the last row on a count of what it left out on each side.
 fn task_lines(phase: Phase, width: Int, rows: Int) -> List(span.Line) {
   let tasks = phase.tasks
   let count = list.length(tasks)
@@ -236,12 +236,13 @@ fn task_lines(phase: Phase, width: Int, rows: Int) -> List(span.Line) {
         |> list.drop(start)
         |> list.take(shown)
         |> list.map(task_line(_, width))
-      let hidden = count - shown
+      let above = start
+      let below = count - start - shown
       list.append(visible, [
         fit(
           [
             span.span_styled(
-              "  ⋯ " <> int.to_string(hidden) <> " more in this phase",
+              "  ⋯ " <> hidden_label(above, below),
               theme.quiet_text(),
             ),
           ],
@@ -250,6 +251,17 @@ fn task_lines(phase: Phase, width: Int, rows: Int) -> List(span.Line) {
       ])
       |> list.take(rows)
     }
+  }
+}
+
+// Says which side of the window the hidden tasks are on, since the ones
+// above are usually finished and the ones below are still ahead.
+fn hidden_label(above: Int, below: Int) -> String {
+  case above, below {
+    0, _ -> int.to_string(below) <> " more below"
+    _, 0 -> int.to_string(above) <> " earlier above"
+    _, _ ->
+      int.to_string(above) <> " above · " <> int.to_string(below) <> " below"
   }
 }
 

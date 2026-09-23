@@ -132,7 +132,7 @@ pub fn a_long_phase_is_windowed_around_the_active_task_test() {
   assert list.contains(shown, "  ▸ step 8")
   assert list.contains(shown, "  ✓ step 7")
   let assert Ok(last) = list.last(shown) as "a last row"
-  assert last == "  ⋯ 8 more in this phase"
+  assert last == "  ⋯ 7 above · 1 below"
 }
 
 pub fn every_row_is_cut_to_the_width_test() {
