@@ -462,10 +462,10 @@ report code mode prints, for the same reason: a green build on a kernel
 missing a layer must say so rather than let the absence read as success.
 `verify` exits non-zero on a `Refused`, so scripts can use it.
 
-The terminal client forwards `loom ext …` rather than reimplementing it.
-Typed at `loom`, it locates `loomd` by the same ladder an implicit local
-session uses, runs it, streams output through, and exits with its status
-(`tui.gleam:329`). Two ladders would risk installing an extension into
+The terminal client forwards rather than reimplements: `loom ext …` typed
+at `loom` locates `loomd` by the same ladder an implicit local session
+uses and runs it, streaming output through and exiting with its status
+(`tui.gleam:337`). Two ladders would mean installing an extension into
 one server's world and then starting another.
 
 ## Inside the satellite
@@ -1334,7 +1334,7 @@ the manifest beside `[net]`, with the same per-execution ceiling shape.
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:267`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
-| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:951`. |
+| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:206`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
 | `codemode/test/codemode/host_test.gleam` | The host's contract over a faked satellite: two invocations on one node, `busy`, the revoked token, and the two endings that destroy it. |
 | `client/test/client/extension_e2e_test.gleam` | The dispatch acceptance: a real build, a real satellite, a real TLS origin, and the two absence claims about the credential. |

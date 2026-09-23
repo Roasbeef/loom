@@ -707,18 +707,16 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui.gleam:9142`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9247`) renders
-them. Delivered advice and nudges show their complete bodies even in
-compact mode, with a delivery label. Feeds and goal continuations
-collapse to one attribution row with an opening excerpt and expand hint.
-Expanded bodies keep their heading but drop the frame delimiters, which
-address the model rather than the operator. Captured advisor-only
-commentary is shown separately from delivered frames; a verdict
-annotation names the advisor's request and does not claim delivery.
-
-Each frame is recognized by its first line *and* its body delimiter, the
-same two-token test the notes envelope makes, so an operator pasting a
+`advisor_payload` (`tui/transcript_lines.gleam:1160`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines`
+(`tui/transcript_lines.gleam:1265`) renders
+them. Nudges always show their complete body, including in compact mode.
+The other variants collapse to one attribution row (`advisor`, `advisor feed`,
+`advisor goal feed`, or `goal continuation`) with an opening excerpt and expand
+hint. Expanded bodies retain their heading but drop the frame delimiters,
+which address the model rather than the operator. Each frame is
+recognized by its first line *and* its body delimiter, the same
+two-token test the notes envelope makes, so an operator pasting a
 verdict back to ask about it keeps their own attribution. The server
 writes both tokens on every frame (the footer is appended after the body,
 and the byte caps bound a slice rather than a frame), so requiring the
@@ -750,14 +748,13 @@ not delivered.” The panel is transient presentation state, not a durable
 transcript entry, and cannot be mistaken for advice already delivered to
 the model.
 
-The terminal requests an observation when the primary's run settles,
-when a review settles while the primary is idle, when the primary first
-appears in the roster, or when the session changes.
-`tui.advisor_nudges_action` (`packages/tui/src/tui.gleam`) owns those
-edges. A phase change on an unrelated strand keeps the current
-observation. Session replacement first clears the old board and request
-identity, so two idle primaries in different sessions cannot share advice
-merely because both are named `main`.
+The terminal requests an observation when the primary's run settles, when a
+review settles while the primary is idle, when the primary first appears in
+the roster, or when the session changes. `surfaces.advisor_nudges_action`
+(`packages/tui/src/tui/surfaces.gleam`) owns those edges. An unrelated strand's phase
+change holds the current observation. Session replacement first clears the
+old board and request identity, so two idle primaries in different sessions
+cannot share advice merely because both are named `main`.
 
 The pending body clears when the primary leaves idle, because that run
 start drains the queue into its prompt. Display never drains the queue or

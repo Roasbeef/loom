@@ -1374,7 +1374,11 @@ or `/healthz`.
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
-| `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
+| `packages/tui/src/tui.gleam` | Entry points, launch parsing, and the event dispatch (`update`, `apply_input`, `settle_update`). |
+| `packages/tui/src/tui/model.gleam` | The `Model` record, the types it names, and the helpers every reducer shares. |
+| `packages/tui/src/tui/transcript_lines.gleam`, `render.gleam`, `layout.gleam`, `projection.gleam` | Transcript line construction, frame painting, screen geometry, and the cached transcript projection. |
+| `packages/tui/src/tui/inbound.gleam`, `outbound.gleam`, `surfaces.gleam`, `session_control.gleam` | Channel traffic in and out, side-surface reads, and daemon control requests. |
+| `packages/tui/src/tui/interaction.gleam`, `submit.gleam`, `tick.gleam` | Key, paste and mouse handling, composer submission, and the periodic drain. |
 | `packages/tui/src/tui/agent_view.gleam`, `agents.gleam` | Captured task/status projection and identity-based agent inspection. |
 | `packages/tui/src/tui/agent_message_panel.gleam`, `focused_goal_panel.gleam` | Selectable observed-send presentation and the server-owned goal inspector. |
 | `packages/tui/src/tui/note_panel.gleam` | Shared standalone and agent-inspector note selection, detail modes, and body paging. |

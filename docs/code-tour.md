@@ -133,7 +133,7 @@ binds.
 This and the next two sections follow the historical host/test protocol.
 
 Etui hands each key to `update_key` in
-`packages/tui/src/tui.gleam`. Modal keys stay with the open
+`packages/tui/src/tui/interaction.gleam`. Modal keys stay with the open
 selector or inspector; ordinary keys update the textarea; Enter passes the
 current draft to the submission reducer.
 
@@ -969,7 +969,7 @@ only shortened the wait.
 
 **The strand is busy, so the client sends a different command.** That decision
 was made by `update_main_key_without_palette` in
-`packages/tui/src/tui.gleam` from the strand list the client
+`packages/tui/src/tui/interaction.gleam` from the strand list the client
 already holds. A `steer` ack is not what the reply table alone
 suggests: the queue admission mints a reserved entry id and writes the
 payload to a pending register, so the ack carries that reserved id with

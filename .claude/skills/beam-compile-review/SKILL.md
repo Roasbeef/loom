@@ -81,7 +81,9 @@ If either compile measurement regresses beyond normal variation, investigate
 before accepting the rewrite; a faster no-op build is not evidence. Inspect
 generated Erlang to confirm the pipeline adds no callback or repeated work.
 
-Existing precedents in [tui.gleam](../../../packages/tui/src/tui.gleam):
+Existing precedents in the TUI client. `settle_update` lives in
+[tui.gleam](../../../packages/tui/src/tui.gleam) and `update_tick` and `settle_tick` in
+[tui/tick.gleam](../../../packages/tui/src/tui/tick.gleam):
 
 - `f09bf1cf` separated `update` dispatch from `settle_update`. The recorded
   package compile fell from roughly 75 seconds to 6 seconds.
@@ -89,6 +91,12 @@ Existing precedents in [tui.gleam](../../../packages/tui/src/tui.gleam):
   Recorded `core_inline_module` time fell from 51.445 seconds to 1.632 seconds
   in an equivalent generated-code experiment; the Gleam rebuild took 7.80
   seconds. The earlier `settle_update` boundary had remained intact.
+- Issue #374 split the 15,500-line `tui.gleam` into modules under `tui/`, so
+  most steps on both chains became cross-module calls, which the inliner never
+  attempts. Both parameter boundaries were kept for the local steps that remain.
+  A rebuild after a change to `tui.gleam` fell from about 9.7 seconds to about
+  1.6 seconds, and `erlc +time` on the generated `tui` module from 11.6 seconds
+  to 0.5 seconds.
 
 Those are historical measurements, not current budgets. Exporting a callee,
 flattening calls into pipes, or hiding only the expensive expression behind
