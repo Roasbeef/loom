@@ -1065,8 +1065,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           peer_mail.Activity(_) -> Ok(json.Object([]))
           peer_mail.Deliver(_, _, id, _) ->
             Ok(json.Object([#("message_id", json.String(id))]))
+          peer_mail.Revoke(_) -> Error("recipient unavailable")
           peer_mail.Allow(_)
-          | peer_mail.Revoke(_)
           | peer_mail.Link(_, _, _)
           | peer_mail.Unlink(_, _, _)
           | peer_mail.Describe(_, _)
@@ -1168,6 +1168,19 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
       peer_cli.exchange(address, owner, ready.epoch, peer_send)
       as "an explicit retry retains its message identity"
     assert field(retried, "message_id") == json.String("review-7")
+
+    let assert Ok(unlink_resident) =
+      peer_cli.parse(["unlink", source_id, "main", target_id, "reviewer"])
+    let assert Ok(partial_resident) =
+      peer_cli.exchange(address, owner, ready.epoch, unlink_resident)
+      as "a failed recipient revocation retains the source unlink result"
+    assert field(partial_resident, "partial") == json.Bool(True)
+    assert field(field(partial_resident, "result"), "outgoing_link_removed")
+      == json.Bool(True)
+    assert field(field(partial_resident, "result"), "recipient_grant")
+      == json.String("revoke failed: recipient unavailable")
+    let assert Ok(_) = peer_cli.exchange(address, owner, ready.epoch, link)
+      as "the source link is restored for saved-recipient inspection"
 
     let #(socket, _) = connect(port, owner, "/v2/control")
     let _hello = frame(socket, within_ms: 1000)

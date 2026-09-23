@@ -82,14 +82,28 @@ pub fn unlink(
   use _ <- result.try(
     source.call(peer_mail.Unlink(from, recipient.session, to)),
   )
-  recipient.call(
-    peer_mail.Revoke(peer_mail.Grant(
-      source.session,
-      from,
-      to,
-      peer_mail.BusyOnly,
-    )),
-  )
+  case
+    recipient.call(
+      peer_mail.Revoke(peer_mail.Grant(
+        source.session,
+        from,
+        to,
+        peer_mail.BusyOnly,
+      )),
+    )
+  {
+    Ok(value) -> Ok(value)
+
+    // The source link is already gone. Preserve that outcome so the operator
+    // can retry revocation without mistaking this for a full refusal.
+    Error(reason) ->
+      Ok(
+        json.Object([
+          #("outgoing_link_removed", json.Bool(True)),
+          #("recipient_grant", json.String("revoke failed: " <> reason)),
+        ]),
+      )
+  }
 }
 
 /// Sends using a stable caller-chosen request identity. Reusing the identity
