@@ -90,6 +90,7 @@ import tui/model.{
 } as tui_model
 import tui/model_selector
 import tui/note_panel
+import tui/outbound
 import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
@@ -2021,14 +2022,14 @@ fn service_notes_read(model: Model) -> Model {
       case session_channel.ready_for_read(channel) {
         False -> model
         True ->
-          send_frame(
+          outbound.send_frame(
             Model(..model, notes_requested: None),
             protocol.notes(model.next_id, target),
           )
       }
     }
     Some(target), None ->
-      send_frame(
+      outbound.send_frame(
         Model(..model, notes_requested: None),
         protocol.notes(model.next_id, target),
       )
@@ -3339,7 +3340,7 @@ fn handle_underlay_paste(model: Model, text: String) -> Model {
 
 fn handle_composer_paste(model: Model, text: String) -> Model {
   case model.pending_submission {
-    Some(_) -> waiting_notice(model)
+    Some(_) -> outbound.waiting_notice(model)
     None -> paste_unlocked(model, text)
   }
 }
@@ -3530,7 +3531,9 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // visible session before the frames that justify it.
       session_channel.adopted(channel)
       let adopted =
-        adopted |> send_frame(protocol.models(1)) |> request_visible_worktree
+        adopted
+        |> outbound.send_frame(protocol.models(1))
+        |> request_visible_worktree
       let adopted = Model(..adopted, reconnect: ReconnectIdle)
       case cancelled {
         Some(notice) -> tui_model.append_system(adopted, notice)
@@ -3589,7 +3592,7 @@ pub fn apply_channel_update(
 ) -> Model {
   case update {
     session_channel.Submission(disposition) ->
-      apply_submission(model, disposition)
+      outbound.apply_submission(model, disposition)
     session_channel.Captured(cut, view, trigger) ->
       reconcile_cut(model, cut, view, trigger)
     session_channel.HistoryPage(window, before, after) ->
@@ -3720,7 +3723,7 @@ pub fn apply_channel_update(
     session_channel.Failed(reason) ->
       tui_model.append_error(
         Model(
-          ..discard_own_turn(model),
+          ..outbound.discard_own_turn(model),
           peer: after_close(model.peer),
           scrollback: history_view.cancel(model.scrollback),
           streams: [],
@@ -4215,7 +4218,7 @@ fn decide_captured_approval(
   record: approval.Review,
   choice: approval_panel.Choice,
 ) -> Model {
-  case mutation_refusal(model, command.Approve(record.id)) {
+  case outbound.mutation_refusal(model, command.Approve(record.id)) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let encoded = case choice {
@@ -4226,7 +4229,8 @@ fn decide_captured_approval(
       }
       case encoded {
         Error(reason) -> tui_model.append_error(model, reason)
-        Ok(frame) -> send_frame(Model(..model, overlay: NoOverlay), frame)
+        Ok(frame) ->
+          outbound.send_frame(Model(..model, overlay: NoOverlay), frame)
       }
     }
   }
@@ -4246,7 +4250,7 @@ fn decide(
     Ok(record) ->
       case encode(model.next_id, record) {
         Error(reason) -> tui_model.append_error(model, reason)
-        Ok(frame) -> send_frame(model, frame)
+        Ok(frame) -> outbound.send_frame(model, frame)
       }
   }
 }
@@ -4515,7 +4519,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           case page.next {
             None -> loaded
             Some(offset) ->
-              send_frame(loaded, protocol.skills(loaded.next_id, offset))
+              outbound.send_frame(
+                loaded,
+                protocol.skills(loaded.next_id, offset),
+              )
           }
         }
       }
@@ -4541,7 +4548,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         overlay:,
         notice: int.to_string(list.length(models)) <> " models loaded",
       )
-      |> send_frame(protocol.skills(model.next_id, 0))
+      |> outbound.send_frame(protocol.skills(model.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:, directories:) -> {
@@ -4777,7 +4784,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     // never.
     protocol.ServerError(code:, message:) ->
       tui_model.append_error(
-        Model(..discard_own_turn(model), submitting: None),
+        Model(..outbound.discard_own_turn(model), submitting: None),
         code <> ": " <> message,
       )
 
@@ -5792,7 +5799,7 @@ fn update_model_selector(
           repaint_phase: !model.repaint_phase,
           notice: "model: " <> name,
         )
-        |> send_frame(protocol.set_model(
+        |> outbound.send_frame(protocol.set_model(
           model.next_id,
           model.active_strand,
           name,
@@ -6469,14 +6476,10 @@ fn update_ready_key(key: keys.Key, model: Model) -> Model {
         None, _ -> update_key_over_selection(key, model)
         Some(_), keys.PageUp -> scroll_transcript(model, True, 10)
         Some(_), keys.PageDown -> scroll_transcript(model, False, 10)
-        Some(_), _ -> waiting_notice(model)
+        Some(_), _ -> outbound.waiting_notice(model)
       }
     }
   }
-}
-
-fn waiting_notice(model: Model) -> Model {
-  Model(..model, notice: "Waiting to send · draft locked · Esc cancels")
 }
 
 fn cancel_pending(model: Model, reason: String) -> Model {
@@ -6949,7 +6952,7 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
 
 fn submit(model: Model) -> Model {
   case
-    mutation_refusal(
+    outbound.mutation_refusal(
       model,
       command.parse_with_skills(text_area.value(model.input), model.skills),
     )
@@ -6959,7 +6962,7 @@ fn submit(model: Model) -> Model {
       // This marker scopes the synchronous encoder call and, only if queued,
       // the later send. The draft itself never leaves its existing fields.
       let prepared = case
-        mutating_submission(
+        outbound.mutating_submission(
           model,
           command.parse_with_skills(text_area.value(model.input), model.skills),
         ),
@@ -6979,76 +6982,6 @@ fn submit(model: Model) -> Model {
         None -> Model(..after, pending_submission: None)
       }
     }
-  }
-}
-
-fn mutation_refusal(model: Model, command: command.Command) -> Option(String) {
-  let mutates = mutating_submission(model, command)
-  use <- bool.guard(
-    mutates
-      && model.captured != None
-      && !tui_model.is_known_strand(model.strands, model.active_strand),
-    Some("recipient unavailable; draft retained for " <> model.active_strand),
-  )
-  case mutates, model.peer, model.channel {
-    False, _, _ -> None
-    True, Disconnected, _ -> Some("no conversation is attached; draft retained")
-    True, Attached(_), Some(channel) ->
-      case session_channel.mutation_available(channel) {
-        True -> None
-        False ->
-          Some(
-            "attachment is read-only or its command slot is busy; draft retained",
-          )
-      }
-    True, Attached(_), None ->
-      Some("conversation has not synchronized; draft retained")
-    True, Preview, _ | True, Replaying, _ -> None
-  }
-}
-
-fn mutating_submission(model: Model, command: command.Command) -> Bool {
-  case command {
-    command.Prompt(_)
-    | command.Model(_)
-    | command.Unschedule(..)
-    | command.Fork(_)
-    | command.Effort(_)
-    | command.GoalSet(..)
-    | command.GoalCheck(..)
-    | command.GoalClear
-    | command.GoalPause
-    | command.GoalResume
-    | command.Compact
-    | command.Abort
-    | command.Steer(_)
-    | command.Queue(_) -> True
-    command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
-    command.Empty -> model.attachments != []
-    command.Help
-    | command.Models
-    | command.Strands
-    | command.Schedules
-    | command.Agents
-    | command.Sessions
-    | command.Rename(_)
-    | command.Approvals(_)
-    | command.Notes
-    | command.Diff
-    | command.QueueInspect
-    | command.Summary
-    | command.Context
-    | command.ContextAll
-    | command.Details
-    | command.Strand(_)
-    | command.GoalStatus
-    | command.GoalBudgetInvalid(_)
-    | command.GoalObjectiveTooLong(_)
-    | command.GoalCheckTooLong(_)
-    | command.Clear
-    | command.Quit
-    | command.Unknown(_)
-    | command.MissingArgument(_) -> False
   }
 }
 
@@ -7160,7 +7093,7 @@ fn submit_text(model: Model) -> Model {
   let expanded = composer.expand(input, model.attachments)
   let cleared = case model.pending_submission {
     Some(ComposerSubmission) -> model
-    Some(OverlaySubmission) | None -> clear_composer_text(model)
+    Some(OverlaySubmission) | None -> outbound.clear_composer_text(model)
   }
   let prompt_cleared = case model.pending_submission {
     Some(ComposerSubmission) -> cleared
@@ -7216,12 +7149,12 @@ fn submit_text(model: Model) -> Model {
           repaint_phase: !cleared.repaint_phase,
           notice: "model selector",
         )
-      send_frame(opened, protocol.models(opened.next_id))
+      outbound.send_frame(opened, protocol.models(opened.next_id))
     }
     command.Model(name) -> {
       let switched =
         select_model(cleared, name)
-        |> send_frame(protocol.set_model(
+        |> outbound.send_frame(protocol.set_model(
           cleared.next_id,
           cleared.active_strand,
           name,
@@ -7230,13 +7163,13 @@ fn submit_text(model: Model) -> Model {
     }
     command.Strands | command.Agents -> open_agents(cleared)
     command.Schedules ->
-      send_frame(cleared, protocol.schedules(cleared.next_id))
+      outbound.send_frame(cleared, protocol.schedules(cleared.next_id))
     command.Unschedule(name:, target:) -> {
       // An absent target means the strand the operator is looking at,
       // which is the row the listing above the prompt just printed. A
       // schedule a parent set onto a subagent needs the second word.
       let target = option.unwrap(target, cleared.active_strand)
-      send_frame(
+      outbound.send_frame(
         tui_model.append_system(
           cleared,
           "cancelling schedule " <> name <> " on " <> target,
@@ -7257,7 +7190,10 @@ fn submit_text(model: Model) -> Model {
     command.Approvals(Some(id)) ->
       request_decisions(Model(..cleared, inspecting_approval: Some(id)), [id])
     command.AddDirectory(path, access) ->
-      send_frame(cleared, protocol.add_directory(cleared.next_id, path, access))
+      outbound.send_frame(
+        cleared,
+        protocol.add_directory(cleared.next_id, path, access),
+      )
     command.Approve(id) -> decide(cleared, id, approval.approve)
     command.Deny(id) -> decide(cleared, id, approval.deny)
     command.Notes ->
@@ -7294,12 +7230,12 @@ fn submit_text(model: Model) -> Model {
         False -> tui_model.append_error(cleared, "unknown strand: " <> name)
       }
     command.Fork(name) ->
-      send_frame(
+      outbound.send_frame(
         tui_model.append_system(cleared, "fork queued: " <> name),
         protocol.fork(cleared.next_id, cleared.active_strand, name),
       )
     command.Effort(level) ->
-      send_frame(
+      outbound.send_frame(
         tui_model.append_system(
           cleared,
           "reasoning level for " <> cleared.active_strand <> ": " <> level,
@@ -7314,7 +7250,7 @@ fn submit_text(model: Model) -> Model {
     // it claimed a goal was pinned and was then followed by the sentence
     // saying no advisor is routed.
     command.GoalSet(objective:, token_budget:) ->
-      send_frame(
+      outbound.send_frame(
         confirming(
           cleared,
           "goal pinned · budget "
@@ -7328,17 +7264,17 @@ fn submit_text(model: Model) -> Model {
     // mistyped it should see what the harness will run before the reviewer
     // is shown its result.
     command.GoalCheck(command: Some(check)) ->
-      send_frame(
+      outbound.send_frame(
         confirming(cleared, "the goal check is " <> check),
         protocol.goal_check(cleared.next_id, Some(check)),
       )
     command.GoalCheck(command: None) ->
-      send_frame(
+      outbound.send_frame(
         confirming(cleared, "the goal check is cleared"),
         protocol.goal_check(cleared.next_id, None),
       )
     command.GoalClear ->
-      send_frame(
+      outbound.send_frame(
         confirming(cleared, "the session goal is cleared"),
         protocol.goal_clear(cleared.next_id),
       )
@@ -7378,7 +7314,7 @@ fn submit_text(model: Model) -> Model {
           <> int.to_string(command.objective_limit),
       )
     command.Compact ->
-      send_frame(
+      outbound.send_frame(
         tui_model.append_system(
           cleared,
           "compaction queued for " <> cleared.active_strand,
@@ -7386,7 +7322,7 @@ fn submit_text(model: Model) -> Model {
         protocol.compact(cleared.next_id, cleared.active_strand),
       )
     command.Abort ->
-      send_frame(
+      outbound.send_frame(
         tui_model.append_system(
           cleared,
           "abort queued for " <> cleared.active_strand,
@@ -7472,7 +7408,7 @@ fn send_image_prompt(model: Model, input: String) -> Model {
   let content = image_prompt_content(expanded, images)
   let cleared = case model.pending_submission {
     Some(ComposerSubmission) -> model
-    Some(OverlaySubmission) | None -> clear_composer(model)
+    Some(OverlaySubmission) | None -> outbound.clear_composer(model)
   }
   send_prompt_content(cleared, content, expanded, images)
 }
@@ -7509,7 +7445,7 @@ fn send_prompt_content(
     )
   case model.peer {
     Attached(..) ->
-      send_frame(
+      outbound.send_frame(
         sent,
         protocol.prompt_content(model.next_id, model.active_strand, content),
       )
@@ -7553,17 +7489,6 @@ fn image_prompt_preview(
       <> " B]"
     })
   list.append(text, image_labels) |> string.join("\n")
-}
-
-// Submitted text is newest-first so Up is a constant-time move to the common
-// case. Consecutive duplicates collapse because resend remains available
-// without allowing accidental double-enter presses to crowd out useful history.
-fn remember_submission(model: Model, text: String) -> Model {
-  case string.trim(text), model.history {
-    "", _ -> model
-    value, [latest, ..] if value == latest -> model
-    value, history -> Model(..model, history: [value, ..history])
-  }
 }
 
 // The draft is captured exactly once when navigation leaves the live editor.
@@ -7710,7 +7635,7 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
     )
   case model.peer {
     Attached(..) ->
-      send_frame(sent, protocol.prompt(model.next_id, strand, text))
+      outbound.send_frame(sent, protocol.prompt(model.next_id, strand, text))
 
     // The server echoed this turn back as an entry, and the recording has
     // it. Drawing a local copy here would show the operator's line twice.
@@ -7772,16 +7697,6 @@ fn settle_own_turn(model: Model) -> Model {
         queued: in_commit_order(model.queued, submission),
         awaiting_outcome: None,
       )
-    None -> model
-  }
-}
-
-// The daemon refused it, or it never reached the wire. No entry is coming,
-// so the echo goes away with the submission rather than outliving it.
-fn discard_own_turn(model: Model) -> Model {
-  case model.awaiting_outcome {
-    Some(_) ->
-      Model(..model, awaiting_outcome: None) |> tui_model.invalidate_transcript
     None -> model
   }
 }
@@ -7879,7 +7794,7 @@ fn drained_echoes(
 // operator watches their own line disappear, which is the symptom the echo
 // exists to prevent.
 fn send_steer(model: Model, text: String) -> Model {
-  send_frame(
+  outbound.send_frame(
     Model(
       ..expect_own_turn(model, steering_submission(model, text)),
       notice: "steered " <> model.active_strand,
@@ -7891,7 +7806,7 @@ fn send_steer(model: Model, text: String) -> Model {
 // Both controls transfer input custody to the modern host queue. Older
 // recordings still account for their original in-operation interjections.
 fn send_follow_up(model: Model, text: String) -> Model {
-  send_frame(
+  outbound.send_frame(
     Model(
       ..expect_own_turn(model, steering_submission(model, text)),
       notice: "queued after " <> model.active_strand,
@@ -7929,7 +7844,7 @@ fn interrupt_active(model: Model) -> Model {
     Some(_), Some(_) -> Model(..model, notice: "interrupt already requested")
     Some(_), None -> {
       let strand = model.active_strand
-      send_frame(
+      outbound.send_frame(
         Model(
           ..model,
           interrupt: Some(Interrupt(
@@ -8022,152 +7937,6 @@ fn toggle_details(model: Model) -> Model {
       False -> "details collapsed"
     },
   )
-}
-
-fn send_frame(model: Model, frame: String) -> Model {
-  case model.channel {
-    Some(channel) -> {
-      let #(channel, disposition) = session_channel.submit(channel, frame)
-      apply_submission(Model(..model, channel: Some(channel)), disposition)
-    }
-    None -> send_preview_frame(model, frame)
-  }
-}
-
-fn apply_submission(
-  model: Model,
-  disposition: session_channel.Disposition,
-) -> Model {
-  case disposition {
-    session_channel.Waiting(_) -> {
-      let pending = case model.channel {
-        Some(channel) -> session_channel.has_unsent(channel)
-        None -> False
-      }
-      case pending {
-        True ->
-          waiting_notice(
-            Model(
-              ..model,
-              pending_submission: Some(option.unwrap(
-                model.pending_submission,
-                OverlaySubmission,
-              )),
-              submitting: None,
-            ),
-          )
-        False -> model
-      }
-    }
-    session_channel.Sent(command, request_id) -> {
-      let model = case command {
-        "queued_input" | "edit_queued_input" ->
-          Model(
-            ..model,
-            queue_editor: queue_editor.State(
-              ..model.queue_editor,
-              request_id: Some(request_id),
-            ),
-          )
-        "context" ->
-          Model(..model, context: context_view.sent(model.context, request_id))
-        "live_jobs" -> Model(..model, jobs_request: Some(request_id))
-        "advisor_pending" -> Model(..model, nudges_request: Some(request_id))
-
-        // Every goal command is answered with a board, so a mutation owns
-        // the same slot its read does: the server renders the fresh panel
-        // into the mutation's reply rather than making the terminal ask.
-        "goal_get"
-        | "goal_set"
-        | "goal_check"
-        | "goal_clear"
-        | "goal_pause"
-        | "goal_resume" ->
-          Model(
-            ..model,
-            goal_request: Some(request_id),
-            goal_awaiting: Some(tui_model.queue_owner(model)),
-          )
-        "worktree_diff" ->
-          Model(
-            ..model,
-            worktree: worktree_view.sent(model.worktree, request_id),
-          )
-        _ -> model
-      }
-      let sent = case model.pending_submission {
-        Some(ComposerSubmission) -> clear_composer(model)
-        Some(OverlaySubmission) | None -> model
-      }
-      let submitting = case command, model.pending_submission {
-        "prompt", Some(ComposerSubmission) -> Some(model.active_strand)
-        _, _ -> sent.submitting
-      }
-      Model(
-        ..sent,
-        submitting: submitting,
-        pending_submission: None,
-        next_id: sent.next_id + 1,
-        notice: case command {
-          // Automatic observation must not erase a user's command outcome.
-          "context" -> sent.notice
-          "goal_get" ->
-            case sent.goal_report {
-              HoldGoalReport -> sent.notice
-              ReportGoal | ConfirmGoal(..) -> command <> " sent"
-            }
-          _ -> command <> " sent"
-        },
-      )
-      |> tui_model.invalidate_frame
-    }
-    session_channel.DefinitelyNotSent(reason) -> {
-      let retained = case model.channel {
-        Some(channel) -> session_channel.has_unsent(channel)
-        None -> False
-      }
-      let model = case retained {
-        True -> model
-        False -> Model(..model, pending_submission: None, submitting: None)
-      }
-
-      // The frame never reached the wire, so no entry answers it.
-      tui_model.append_error(
-        Model(
-          ..discard_own_turn(model),
-          queue_editor: queue_editor.refused(model.queue_editor, reason),
-        ),
-        "Not sent: " <> reason <> "; draft retained",
-      )
-    }
-  }
-}
-
-fn clear_composer(model: Model) -> Model {
-  let cleared = clear_composer_text(model)
-  Model(..cleared, attachments: [], submission_mode: PromptNext)
-}
-
-fn clear_composer_text(model: Model) -> Model {
-  let remembered = remember_submission(model, text_area.value(model.input))
-  Model(
-    ..remembered,
-    input: text_area.state_new(),
-    history_index: 0,
-    history_draft: "",
-  )
-}
-
-fn send_preview_frame(model: Model, frame: String) -> Model {
-  case model.peer {
-    Attached(socket:) -> {
-      connection.send(socket, frame)
-      Model(..model, next_id: model.next_id + 1)
-    }
-
-    // Neither peer has anywhere to write, and neither may pretend it does.
-    Preview | Replaying | Disconnected -> model
-  }
 }
 
 // Live transport loss retains the transcript without becoming a design demo.
@@ -8362,7 +8131,8 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
     |> tui_model.invalidate_transcript
   case model.captured {
     Some(#(cut, view)) -> apply_cut(selected, cut, view)
-    None -> send_frame(selected, protocol.config(model.next_id, strand))
+    None ->
+      outbound.send_frame(selected, protocol.config(model.next_id, strand))
   }
 }
 
@@ -8706,7 +8476,7 @@ fn service_queue_read(model: Model) -> Model {
         True ->
           case tui_model.queue_owner(model) == fetch.owner {
             True ->
-              send_frame(
+              outbound.send_frame(
                 Model(
                   ..model,
                   queue_editor: queue_editor.State(
@@ -8751,7 +8521,7 @@ fn save_queue_draft(model: Model) -> Model {
         && tui_model.queue_namespace(model) == draft.namespace
       case available {
         True ->
-          send_frame(
+          outbound.send_frame(
             Model(
               ..model,
               pending_submission: Some(OverlaySubmission),
@@ -8898,7 +8668,8 @@ fn service_worktree_read(model: Model) -> Model {
   case model.channel, model.worktree.refresh, model.worktree.awaiting {
     Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
-        True -> send_frame(model, protocol.worktree_diff(model.next_id))
+        True ->
+          outbound.send_frame(model, protocol.worktree_diff(model.next_id))
         False -> model
       }
     _, _, _ -> model
@@ -9077,7 +8848,7 @@ fn service_jobs_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, Attached(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          send_frame(
+          outbound.send_frame(
             Model(
               ..model,
               jobs_refresh: worktree_view.Settled,
@@ -9211,7 +8982,7 @@ fn service_advisor_nudges_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, Attached(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          send_frame(
+          outbound.send_frame(
             Model(
               ..model,
               nudges_refresh: worktree_view.Settled,
@@ -9322,7 +9093,7 @@ fn confirming(model: Model, line: String) -> Model {
 // command; an inspector action supplies `OverlaySubmission`, so the draft is
 // never cleared as though the operator had submitted it.
 fn submit_goal_action(model: Model, action: command.Command) -> Model {
-  case mutation_refusal(model, action) {
+  case outbound.mutation_refusal(model, action) {
     Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let prepared = case model.pending_submission {
@@ -9331,12 +9102,12 @@ fn submit_goal_action(model: Model, action: command.Command) -> Model {
       }
       case action {
         command.GoalPause ->
-          send_frame(
+          outbound.send_frame(
             confirming(prepared, "the session goal is held"),
             protocol.goal_pause(prepared.next_id),
           )
         command.GoalResume ->
-          send_frame(
+          outbound.send_frame(
             confirming(prepared, "the session goal continues"),
             protocol.goal_resume(prepared.next_id),
           )
@@ -9388,7 +9159,7 @@ fn service_goal_read(model: Model) -> Model {
     Some(channel), worktree_view.Requested, Attached(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          send_frame(
+          outbound.send_frame(
             Model(..model, goal_refresh: worktree_view.Settled),
             protocol.goal_get(model.next_id),
           )
@@ -9756,7 +9527,7 @@ fn service_context_read(model: Model) -> Model {
     Some(channel), context_view.Requested, Attached(_), Some(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          send_frame(
+          outbound.send_frame(
             model,
             protocol.context(model.next_id, model.active_strand),
           )
