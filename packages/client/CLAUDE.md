@@ -117,7 +117,9 @@ catalogue without opening runtimes. Explicit admission invokes
   requires explicit source and target coordinates, wake policy for links, and
   a stable caller-chosen message ID for sends. It emits JSON with the exact
   coordinates and distinguishes refusal, unknown outcome, and partial
-  recipient revocation by exit status. It never starts a daemon.
+  recipient revocation by exit status. Local discovery errors are classified
+  as not sent, and inspect follows bounded pages before returning one result.
+  It never starts a daemon.
 - `client/daemon/manager.Administration` carries digest-only invitation,
   membership, and principal-scoped credential changes. `administer` checks
   phase, current owner credential, and epoch in the same serialized dispatch
@@ -4117,7 +4119,9 @@ The owner/epoch-checked `peers.link` and `peers.unlink` controls are the only
 grant mutation surface. Owner-only `peers.inspect` reads one resident strand's
 outgoing links and recipient-owned incoming grants. The `Grants` Agency command
 returns incoming wake policy, while outgoing rows combine catalogue metadata
-and resident recipient exports. Unavailable recipients remain visible without
+and the exact target strand's wake policy. Inspection sorts both directions
+under one opaque cursor and keeps every serialized reply below 60,000 bytes;
+pages are fresh observations. Unavailable recipients remain visible without
 opening saved stores. Owner-only `peers.send` reuses the normal sender and
 recipient handlers after checking the daemon epoch. It selects a resident source
 strand but cannot bypass links or supply provenance metadata. Communication

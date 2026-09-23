@@ -21,18 +21,28 @@ epoch:
 ```
 
 The response body contains `source_session`, `source_strand`, source catalogue
-`metadata`, `outgoing` and `incoming`. Each outgoing row names the target
-session and strand, its catalogue metadata, and the recipient's currently
-exported strands. A resident recipient's exported row includes the effective
-`wake` permission. An unavailable recipient remains in the outgoing list with
-`exported_strands: null`. Each incoming row names the source session and strand,
-the exact target strand and the recipient-owned `wake` permission.
+`metadata`, `outgoing`, `incoming`, and `next`. Each outgoing row contains the
+exact target `session`, `target_strand`, its catalogue `metadata`, and the
+recipient's effective `wake` permission for that strand. It does not repeat
+the recipient's other exported strands. An unavailable recipient remains in
+the outgoing list with `wake: null`. Each incoming row names the source session
+and strand, exact target strand, source catalogue metadata, and the
+recipient-owned `wake` permission.
+
+The initial request omits `after`. A non-null `next` is an opaque cursor; the
+owner repeats the request with `"after":"<next>"` until `next` is `null`.
+Rows are ordered by direction and exact endpoint coordinates, and the cursor
+advances across both outgoing and incoming rows. Every page repeats source
+metadata. The server budgets the complete serialized v2 reply to 60,000
+bytes, below the protocol's 65,536-byte limit. A single row that cannot fit
+is refused as `metadata_too_large`. Each page is a fresh observation, not a
+snapshot: concurrent grant changes can appear or disappear between pages.
 
 The server authenticates the owner and checks the epoch before resolving the
 source. It reads the resident source's outgoing index and incoming grants
 through harness-owned endpoints. It never opens a saved session. A saved or
-unavailable source is refused. The result is a point-in-time observation;
-subsequent send and link calls still check current authority.
+unavailable source is refused. Subsequent send and link calls still check
+current authority.
 
 ## Cost
 

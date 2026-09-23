@@ -1116,9 +1116,6 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
       as "one outgoing target is visible"
     assert field(outgoing, "target_strand") == json.String("reviewer")
     assert field(outgoing, "wake") == json.String("may_wake")
-    let assert json.Array([exported]) = field(outgoing, "exported_strands")
-      as "resident grant details are visible"
-    assert field(exported, "wake") == json.String("may_wake")
     let assert json.Array([incoming]) = field(body, "incoming")
       as "recipient-owned incoming grants are visible"
     assert field(incoming, "wake") == json.String("busy_only")
@@ -1201,7 +1198,6 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert json.Array([saved_target]) =
       field(field(saved_view, "result"), "outgoing")
       as "the outgoing link remains visible"
-    assert field(saved_target, "exported_strands") == json.Null
     assert field(saved_target, "wake") == json.Null
     assert field(field(field(saved_target, "metadata"), "status"), "state")
       == json.String("saved")
@@ -1216,5 +1212,54 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     assert field(partial, "partial") == json.Bool(True)
     assert field(field(partial, "result"), "outgoing_link_removed")
       == json.Bool(True)
+  })
+}
+
+pub fn peer_cli_collects_bounded_inspection_pages_test() {
+  let #(source_id, _) = ids.mint_session(ids.generator(clock.fixed(0), 703))
+  let source_id = ids.session_id_to_string(source_id)
+  let grants =
+    list.index_map(list.repeat(Nil, 800), fn(_, offset) {
+      json.Object([
+        #("source_session", json.String("source-" <> int.to_string(offset))),
+        #("source_strand", json.String("main")),
+        #("target_strand", json.String("main")),
+        #("wake", json.String("busy_only")),
+      ])
+    })
+  let endpoint = fn(session) {
+    Some(
+      peer_mail.Endpoint(session, fn(command) {
+        case command {
+          peer_mail.Activity(_) -> Ok(json.Object([]))
+          peer_mail.Links(_) -> Ok(json.Array([]))
+          peer_mail.Grants(_) -> Ok(json.Array(grants))
+          _ -> Error("unexpected peer command")
+        }
+      }),
+    )
+  }
+  fixture_with_peers(limits.defaults, endpoint, fn(_, ready, port, owner) {
+    let assert Ok(source) =
+      manager.create(
+        ready.registry,
+        manager.Creation("paged-cli-source", ready.state_root, "Source", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 703),
+      )
+    assert source.registration.id == source_id
+    let assert poll.Answered(_) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.resolve(ready.registry, source_id) {
+          Ok(instance) -> poll.Done(instance)
+          Error(_) -> poll.Retry
+        }
+      })
+    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+    let assert Ok(command) = peer_cli.parse(["inspect", source_id, "main"])
+    let assert Ok(reply) =
+      peer_cli.exchange(address, owner, ready.epoch, command)
+    let assert json.Array(incoming) = field(field(reply, "result"), "incoming")
+    assert list.length(incoming) == 800
   })
 }

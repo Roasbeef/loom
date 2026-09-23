@@ -261,8 +261,11 @@ loomd peer unlink SOURCE main TARGET reviewer
 source strand's outgoing links and incoming grants. Each outgoing row shows
 the target's catalogue state, current wake permission when the target is
 resident, and `wake: null` when it is unavailable. Incoming rows show their
-source metadata and wake permission. These are observations; sends recheck
-the current grant. The CLI never opens a saved session.
+source metadata and wake permission. Large inspections use bounded control
+pages; the CLI follows them and returns one aggregate JSON result. Each page
+is a fresh observation, so concurrent link changes may appear or disappear
+between pages. Sends recheck the current grant. The CLI never opens a saved
+session.
 
 The CLI requires `--message-id` on every send. Reuse it only for an explicit
 retry with the same body and target. A successful send returns a durable

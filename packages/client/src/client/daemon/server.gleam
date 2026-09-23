@@ -422,7 +422,7 @@ fn control(
           manager.authenticate(current.registry, digest)
           |> result.replace_error("unauthorized"),
         )
-        dispatch(config, state, digest, principal, request.command)
+        dispatch(config, state, digest, principal, request.id, request.command)
       }
       case outcome {
         Ok(#(event, body)) -> {
@@ -535,13 +535,14 @@ fn dispatch(
   state: root.Ready(instance),
   digest,
   principal,
+  reply_to: Int,
   command,
 ) {
   // Owner-only filesystem choices are canonicalized on the host. Participant
   // authority is narrower: an operator may open a granted identity, but cannot
   // choose another workspace, configuration, or durable default.
   case command {
-    protocol.InspectPeers(source, strand, supplied) -> {
+    protocol.InspectPeers(source, strand, after, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use endpoint <- result.try(peer_endpoint(config, state.registry, source))
@@ -560,7 +561,17 @@ fn dispatch(
             |> result.map_error(error_code)
           },
         )
-      peers.inspect(peers.Wiring(endpoint, metadata, Some(directory)), strand)
+      use empty_frame <- result.try(
+        protocol.event(Some(reply_to), "peers.inspect", json.Null)
+        |> result.map_error(fn(_) { "invalid inspection frame" }),
+      )
+      let body_budget = 60_000 - string.byte_size(empty_frame) + 4
+      peers.inspect(
+        peers.Wiring(endpoint, metadata, Some(directory)),
+        strand,
+        after,
+        body_budget,
+      )
       |> result.map(fn(value) { #("peers.inspect", value) })
     }
     protocol.LinkPeers(source, from, target, to, wake, supplied) -> {

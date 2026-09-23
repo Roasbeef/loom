@@ -10,6 +10,7 @@ import client/internal/ffi_os
 import core/json.{type JsonValue}
 import gleam/io
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/string
 
@@ -17,6 +18,7 @@ import gleam/string
 @internal
 pub opaque type Command {
   Command(
+    directory: String,
     request: admin.Request,
     name: String,
     source_session: String,
@@ -146,7 +148,7 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
     ..extra
   ]
   use request <- result.try(admin.peer_request(directory, name, fields))
-  Ok(Command(request, name, source, strand, target, wake, message_id))
+  Ok(Command(directory, request, name, source, strand, target, wake, message_id))
 }
 
 /// Executes through the local private endpoint, without starting a daemon.
@@ -158,8 +160,10 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
 /// ```
 @internal
 pub fn run(command: Command) -> Result(JsonValue, String) {
-  admin.execute(command.request)
-  |> result.map(fn(reply) { success(command, reply) })
+  use #(address, token, epoch) <- result.try(admin.peer_discover(
+    command.directory,
+  ))
+  exchange(address, token, epoch, command)
 }
 
 /// Exchanges on a caller-supplied control listener for real wire tests.
@@ -176,8 +180,125 @@ pub fn exchange(
   epoch: String,
   command: Command,
 ) -> Result(JsonValue, String) {
-  admin.exchange(address, token, epoch, command.request)
+  let reply = case command.name {
+    "peers.inspect" -> inspect_pages(address, token, epoch, command)
+    _ -> admin.exchange(address, token, epoch, command.request)
+  }
+  reply
   |> result.map(fn(reply) { success(command, reply) })
+}
+
+fn inspect_pages(
+  address: String,
+  token: String,
+  epoch: String,
+  command: Command,
+) -> Result(JsonValue, String) {
+  use first <- result.try(admin.exchange(address, token, epoch, command.request))
+  use outgoing <- result.try(array_field(first, "outgoing"))
+  use incoming <- result.try(array_field(first, "incoming"))
+  use next <- result.try(cursor_field(first))
+  follow_pages(
+    address,
+    token,
+    epoch,
+    command,
+    first,
+    next,
+    list.reverse(outgoing),
+    list.reverse(incoming),
+  )
+}
+
+fn follow_pages(
+  address: String,
+  token: String,
+  epoch: String,
+  command: Command,
+  first: JsonValue,
+  next: JsonValue,
+  outgoing: List(JsonValue),
+  incoming: List(JsonValue),
+) -> Result(JsonValue, String) {
+  case next {
+    json.Null ->
+      case first {
+        json.Object(fields) ->
+          Ok(
+            json.Object([
+              #("outgoing", json.Array(list.reverse(outgoing))),
+              #("incoming", json.Array(list.reverse(incoming))),
+              #("next", json.Null),
+              ..list.filter(fields, fn(field) {
+                let #(key, _) = field
+                key != "outgoing" && key != "incoming" && key != "next"
+              })
+            ]),
+          )
+        _ -> Error("invalid peer inspection response; outcome unknown")
+      }
+    json.String(cursor) -> {
+      use request <- result.try(
+        admin.peer_request(command.directory, "peers.inspect", [
+          #("source_session", json.String(command.source_session)),
+          #("source_strand", json.String(command.source_strand)),
+          #("after", json.String(cursor)),
+        ]),
+      )
+      use page <- result.try(admin.exchange(address, token, epoch, request))
+      use page_outgoing <- result.try(array_field(page, "outgoing"))
+      use page_incoming <- result.try(array_field(page, "incoming"))
+      use page_next <- result.try(cursor_field(page))
+      use Nil <- result.try(
+        case field(page, "source_session"), field(page, "source_strand") {
+          Ok(json.String(source)), Ok(json.String(strand))
+            if source == command.source_session
+            && strand == command.source_strand
+          -> Ok(Nil)
+          _, _ -> Error("invalid peer inspection coordinates; outcome unknown")
+        },
+      )
+      use Nil <- result.try(case page_next {
+        json.Null -> Ok(Nil)
+        json.String(next_cursor) -> {
+          let has_rows =
+            list.is_empty(page_outgoing) == False
+            || list.is_empty(page_incoming) == False
+          case string.compare(next_cursor, cursor) == order.Gt && has_rows {
+            True -> Ok(Nil)
+            False -> Error("invalid peer inspection cursor; outcome unknown")
+          }
+        }
+        _ -> Error("invalid peer inspection cursor; outcome unknown")
+      })
+      follow_pages(
+        address,
+        token,
+        epoch,
+        command,
+        first,
+        page_next,
+        list.append(list.reverse(page_outgoing), outgoing),
+        list.append(list.reverse(page_incoming), incoming),
+      )
+    }
+    _ -> Error("invalid peer inspection cursor; outcome unknown")
+  }
+}
+
+fn array_field(value, key) {
+  case field(value, key) {
+    Ok(json.Array(rows)) -> Ok(rows)
+    _ -> Error("invalid peer inspection rows; outcome unknown")
+  }
+}
+
+fn cursor_field(value) {
+  case field(value, "next") {
+    Ok(json.Null) -> Ok(json.Null)
+    Ok(json.String(cursor)) if cursor != "" -> Ok(json.String(cursor))
+    _ -> Error("invalid peer inspection cursor; outcome unknown")
+  }
 }
 
 fn endpoint(session, strand) {
@@ -240,7 +361,8 @@ fn error_json(code, reason) {
   ])
 }
 
-fn unknown_outcome(reason) {
+@internal
+pub fn unknown_outcome(reason: String) -> Bool {
   string.contains(reason, "outcome unknown")
   || string.contains(reason, "request not sent")
   || string.contains(reason, "state directory")

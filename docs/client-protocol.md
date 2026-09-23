@@ -441,7 +441,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:981`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:992`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -882,13 +882,20 @@ and non-empty `source_strand`:
 ```
 
 The `peers.inspect` response body contains `source_session`, `source_strand`,
-source catalogue `metadata`, `outgoing` links, and `incoming` grants. Each
-outgoing row names the target session and strand, includes its catalogue
-metadata and `exported_strands`, and gives the current `wake` permission at
-the top level. If the recipient is saved or unavailable, `exported_strands`
-and `wake` are `null`; the row remains visible. Incoming rows name the exact
-source coordinates, include source catalogue metadata, and report the
-recipient-owned `wake` permission.
+source catalogue `metadata`, `outgoing` links, `incoming` grants, and `next`.
+Each outgoing row has `session`, `target_strand`, catalogue `metadata`, and the
+effective `wake` for that exact target strand. It does not repeat unrelated
+exports. A saved or unavailable target remains visible with `wake: null`.
+Incoming rows name exact source coordinates, source catalogue metadata, and
+the recipient-owned `wake` permission.
+
+The first request omits `after`. If `next` is a string, repeat the same request
+with `after` set to that opaque string; `next: null` ends the listing. The
+cursor advances across both directions. Each complete serialized reply is at
+most 60,000 bytes; a row that cannot fit alone is refused as
+`metadata_too_large`. Pages are fresh observations rather than one snapshot,
+so concurrent grant changes may affect later pages. The CLI follows pages
+and aggregates them into one JSON result.
 
 The server checks owner authority and epoch before resolving the source. A
 saved source is refused. The command never opens a saved target, and it
@@ -2989,7 +2996,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:311`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:317`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

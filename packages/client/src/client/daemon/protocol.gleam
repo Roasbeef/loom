@@ -24,7 +24,12 @@ pub const max_bytes = 65_536
 /// Decoded requests carry no client-supplied principal or database path.
 pub type Command {
   /// Reads both directions of one resident strand's operator peer grants.
-  InspectPeers(source_session: String, source_strand: String, epoch: String)
+  InspectPeers(
+    source_session: String,
+    source_strand: String,
+    after: Option(String),
+    epoch: String,
+  )
 
   /// Grants exact directional peer delivery without granting join or custody.
   LinkPeers(
@@ -229,8 +234,9 @@ fn decode_fields(
         |> result.replace_error("invalid source session id"),
       )
       use strand <- result.try(text_field(fields, "source_strand", 512))
+      use after <- result.try(optional_after(fields))
       use epoch <- result.try(text_field(fields, "epoch", 256))
-      Ok(InspectPeers(source, strand, epoch))
+      Ok(InspectPeers(source, strand, after, epoch))
     }
     "peers.link" | "peers.unlink" | "peers.send" -> {
       use source <- result.try(text_field(fields, "source_session", 128))
@@ -423,6 +429,21 @@ fn text_field(
       }
     }
     _other -> Error("expected nonempty text field")
+  }
+}
+
+fn optional_after(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "after") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(after)) if after != "" -> {
+      case bit_array.byte_size(bit_array.from_string(after)) <= 4096 {
+        True -> Ok(Some(after))
+        False -> Error("peer cursor exceeds its byte limit")
+      }
+    }
+    Ok(_) -> Error("expected nonempty peer cursor")
   }
 }
 

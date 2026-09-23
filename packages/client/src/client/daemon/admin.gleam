@@ -200,7 +200,29 @@ fn envelope(request: Request, epoch) {
 
 @internal
 pub fn execute(request: Request) {
-  use directory <- result.try(case request.directory {
+  use #(address, token, epoch) <- result.try(discover(request.directory))
+  exchange(address, token, epoch, request)
+}
+
+/// Discovers the private owner control endpoint before any peer request is sent.
+/// Local discovery failures are explicitly marked, so the CLI does not report
+/// them as daemon refusals.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin.peer_discover("/private/loom")
+/// ```
+@internal
+pub fn peer_discover(
+  directory: String,
+) -> Result(#(String, String, String), String) {
+  discover(directory)
+  |> result.map_error(fn(reason) { "request not sent: " <> reason })
+}
+
+fn discover(directory) {
+  use directory <- result.try(case directory {
     "" ->
       bootstrap.getenv("HOME")
       |> result.map(fn(home) { home <> "/.loom" })
@@ -223,7 +245,7 @@ pub fn execute(request: Request) {
     |> result.replace_error("invalid private credential"),
   )
   use Nil <- result.try(hex_credential(token))
-  exchange(address, token, epoch, request)
+  Ok(#(address, token, epoch))
 }
 
 fn ready_record(record) {
