@@ -15,7 +15,8 @@ actors alive across turns, and coordinate children with durable named steps.
 Programs run concurrently within kernel-enforced execution boundaries.
 
 [Get started](#get-started) · [Code mode](#code-mode) ·
-[Multiplayer](#multiplayer-and-subagents) · [Advisor mode](#advisor-mode) ·
+[Multiplayer](#multiplayer-and-subagents) ·
+[Async collaboration](#async-collaboration) · [Advisor mode](#advisor-mode) ·
 [Architecture](docs/loom-design.md) ·
 [Contributing](#working-on-loom)
 
@@ -132,11 +133,8 @@ return structured results to a parent. Shared session state supports coordinatio
 without copying every intermediate result into the main conversation.
 
 The owner can grant directional peer links between siblings or across resident
-sessions. Agents can discover linked peers and send attributed messages with
-retry-safe receipts. A separate permission allows a message to start work on an
-idle peer. Communication grants do not transfer cancellation, joining, or
-filesystem access. See [async collaboration](docs/async-collaboration.md) for
-the model tools, capability APIs, and daemon controls.
+sessions. See [async collaboration](#async-collaboration) for the messaging and
+background workflow APIs.
 
 One daemon hosts sessions across workspaces. Closing or switching a terminal's
 attachment leaves the session available to other clients. Remote connections
@@ -145,6 +143,31 @@ use a secure tunnel or TLS proxy to the loopback-bound daemon.
 See [multiplayer](docs/architecture/multiplayer.md) and
 [session management](docs/architecture/sessions.md) for access and lifecycle
 details.
+
+## Async collaboration
+
+An agent can launch a `code_mode` program that stays active while later turns
+send it input. The program registers typed endpoints for its actors, publishes
+progress, and returns a final result. Its handle supports readiness checks,
+input, joining, and cancellation. A daemon restart retains the execution record
+and input journal, but cannot restore the running actor heap or replay its
+effects.
+
+For work that must survive a restart, `cap/workflow.step` names each child task
+and recovers its original operation and result on a later launch. This lets an
+agent resume a review workflow without starting completed reviewers again.
+
+The session owner can also link a source strand to a target strand in the same
+session or another resident session. `peer_roster` discovers linked peers;
+`peer_send` commits an attributed message and a retry-safe receipt. Links are
+directional, and permission to wake an idle target is granted separately.
+Messaging does not grant access to the peer's files or permission to join or
+cancel its work. Saved sessions are not opened by a message.
+
+The [API guide](docs/async-collaboration.md) shows launch, typed endpoints,
+workflow steps, and peer-link commands. The
+[architecture guide](docs/architecture/async-collaboration.md) explains durable
+custody and recovery.
 
 ## Code mode
 
