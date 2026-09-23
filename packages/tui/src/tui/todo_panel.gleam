@@ -33,7 +33,10 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/set.{type Set}
 import gleam/string
+import tui/notes_view
 import tui/protocol
 import tui/text_hygiene
 import tui/theme
@@ -137,6 +140,63 @@ pub fn remember(
       None -> boards
     }
   })
+}
+
+/// Seeds a strand's board from a notes read, when the read carries the
+/// complete `todo` cell and the strand has no board yet.
+///
+/// This is the recovery path for a capture whose window no longer reaches
+/// the last `todo` call, which is the common case after reattaching to a
+/// long session. A board already known from the transcript is newer than
+/// or equal to the read, so it is never replaced; an excerpted cell is
+/// never parsed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // todo_panel.seed(boards, notes_board)
+/// ```
+pub fn seed(
+  boards: Dict(String, Board),
+  notes: notes_view.Board,
+) -> Dict(String, Board) {
+  let found =
+    list.find_map(notes.notes, fn(note) {
+      case note.key == note_key, note.extent {
+        True, notes_view.Complete ->
+          json.parse(note.text)
+          |> result.replace_error(Nil)
+          |> result.try(fn(value) {
+            todo_list.decode(value) |> result.replace_error(Nil)
+          })
+        _, _ -> Error(Nil)
+      }
+    })
+  case found, dict.has_key(boards, notes.strand) {
+    Ok(board), False -> dict.insert(boards, notes.strand, board)
+    Ok(_), True | Error(Nil), _ -> boards
+  }
+}
+
+/// The note key, relative to a strand's namespace, that holds its board.
+pub const note_key = "todo"
+
+/// Whether a strand should have its board read from its notes: it has no
+/// board from the transcript, and it has not been asked about before in
+/// this session. One read per strand keeps an agent that never makes a
+/// list from costing a read on every capture.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert todo_panel.needs_seed(dict.new(), set.new(), "main")
+/// ```
+pub fn needs_seed(
+  boards: Dict(String, Board),
+  asked: Set(String),
+  strand: String,
+) -> Bool {
+  !dict.has_key(boards, strand) && !set.contains(asked, strand)
 }
 
 /// How many rows the panel wants, within `budget`. An empty board, or no

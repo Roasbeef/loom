@@ -30,6 +30,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import tui/advisor_pending
 import tui/agent_messages
 import tui/agent_view
@@ -636,6 +637,12 @@ pub type Model {
     /// `todo` call does not blank the pinned panel; released with the
     /// session.
     todo_boards: Dict(String, todo_list.Board),
+    /// A strand whose board should be read from its notes because its
+    /// capture reached no `todo` call; sent when the read lane is free.
+    todo_seed: Option(String),
+    /// Strands already asked about in this session, so each costs at most
+    /// one read.
+    todo_asked: set.Set(String),
     active_strand: String,
     session: String,
     /// One catalogue display name, paired with the identity that owns it.

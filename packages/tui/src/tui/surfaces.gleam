@@ -31,8 +31,10 @@ import tui/goal_view
 import tui/layout
 import tui/live_jobs
 import tui/model.{
-  type Model, AgentInspector, Attached, ConfirmGoal, Disconnected, GoalInspector,
-  HoldGoalReport, Model, OverlaySubmission, Preview, Replaying, ReportGoal,
+  type Model, AgentInspector, ApprovalInspector, Attached, ConfirmGoal,
+  DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Model,
+  ModelSelector, NoOverlay, OverlaySubmission, Preview, Replaying, ReportGoal,
+  SessionSelector,
 } as tui_model
 import tui/outbound
 import tui/protocol
@@ -51,6 +53,48 @@ pub fn notes_target(model: Model) -> String {
       selected
     _ -> model.active_strand
   }
+}
+
+/// Whether a notes surface is on screen: standalone `/notes`, or the
+/// agent inspector's Notes tab.
+@internal
+pub fn notes_surface(model: Model) -> Bool {
+  case model.notes_open, model.overlay {
+    True, _
+    | False, AgentInspector(agents.Inspector(detail: agents.Notes, ..))
+    -> True
+    False, NoOverlay
+    | False, ModelSelector(_)
+    | False, GoalInspector(_)
+    | False, SessionSelector(_)
+    | False, DaemonSelector(_)
+    | False, AgentInspector(_)
+    | False, ApprovalInspector(_)
+    -> False
+  }
+}
+
+/// Sends the pending todo seed as an ordinary `notes` read once the read
+/// lane is free. An operator's own notes read goes first, and its reply
+/// seeds the board just the same when it is for the same strand.
+@internal
+pub fn service_todo_seed(model: Model) -> Model {
+  case model.todo_seed, model.notes_requested, model.channel {
+    None, _, _ | Some(_), Some(_), _ -> model
+    Some(strand), None, Some(channel) ->
+      case session_channel.ready_for_read(channel) {
+        False -> model
+        True -> send_todo_seed(model, strand)
+      }
+    Some(strand), None, None -> send_todo_seed(model, strand)
+  }
+}
+
+fn send_todo_seed(model: Model, strand: String) -> Model {
+  outbound.send_frame(
+    Model(..model, todo_seed: None),
+    protocol.notes(model.next_id, strand),
+  )
 }
 
 /// Asks for a fresh read of the notes board for the strand the notes

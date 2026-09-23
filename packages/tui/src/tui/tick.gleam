@@ -162,6 +162,7 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     |> surfaces.service_queue_read
     |> surfaces.service_worktree_read
     |> surfaces.service_notes_read
+    |> surfaces.service_todo_seed
     |> surfaces.service_jobs_read
     |> surfaces.service_context_read
     |> surfaces.service_advisor_nudges_read

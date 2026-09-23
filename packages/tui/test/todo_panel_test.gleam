@@ -15,7 +15,9 @@ import etui/span
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/set
 import gleam/string
+import tui/notes_view
 import tui/protocol
 import tui/todo_panel
 
@@ -204,4 +206,63 @@ pub fn a_transcript_row_names_what_the_call_changed_test() {
     )
     == "todo · block phase \"Delete\""
   assert todo_panel.result_summary(carrying(board())) == Some("3/6 done")
+}
+
+fn notes(strand: String, rows: List(notes_view.Note)) -> notes_view.Board {
+  notes_view.Board(strand:, as_of: 30, total: list.length(rows), notes: rows)
+}
+
+fn note(key: String, text: String, extent: notes_view.Extent) {
+  notes_view.Note(key:, seq: 30, text:, extent:)
+}
+
+pub fn a_complete_todo_note_seeds_a_strand_without_a_board_test() {
+  let text = json.to_string(todo_list.encode(board()))
+  let seeded =
+    todo_panel.seed(
+      dict.new(),
+      notes("main", [
+        note("plan", "{}", notes_view.Complete),
+        note("todo", text, notes_view.Complete),
+      ]),
+    )
+  assert dict.get(seeded, "main") == Ok(board())
+}
+
+// The transcript's board is at least as new as any read, an excerpt is
+// not a board, and a note under another key is not the todo cell.
+pub fn a_seed_never_replaces_or_guesses_test() {
+  let text = json.to_string(todo_list.encode(board()))
+  let known =
+    dict.from_list([#("main", Board([Phase("K", [Task("k", Active)])]))])
+  assert todo_panel.seed(
+      known,
+      notes("main", [note("todo", text, notes_view.Complete)]),
+    )
+    == known
+  assert todo_panel.seed(
+      dict.new(),
+      notes("main", [note("todo", string.drop_end(text, 5), notes_view.Excerpt)]),
+    )
+    == dict.new()
+  assert todo_panel.seed(
+      dict.new(),
+      notes("main", [note("plan", text, notes_view.Complete)]),
+    )
+    == dict.new()
+  assert todo_panel.seed(
+      dict.new(),
+      notes("main", [note("todo", "{\"phases\": 3}", notes_view.Complete)]),
+    )
+    == dict.new()
+}
+
+pub fn a_strand_is_asked_about_once_test() {
+  assert todo_panel.needs_seed(dict.new(), set.new(), "main")
+  assert !todo_panel.needs_seed(dict.new(), set.from_list(["main"]), "main")
+  assert !todo_panel.needs_seed(
+    dict.from_list([#("main", board())]),
+    set.new(),
+    "main",
+  )
 }

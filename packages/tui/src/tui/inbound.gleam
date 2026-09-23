@@ -30,6 +30,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import host/build_identity
 import machine/strand as machine_strand
@@ -662,6 +663,12 @@ fn render_cut(
   let rows = agent_view.observe(model.agent_rows, cut.window, view, reviewers)
   let captured_messages =
     agent_messages.capture(model.agent_messages, view, cut.window)
+
+  // A strand whose capture reaches no `todo` call may still have a board
+  // in its notes, the usual case after reattaching to a long session, so
+  // its first capture asks for one notes read to seed the panel.
+  let boards = todo_panel.remember(model.todo_boards, branch.records)
+  let seeding = todo_panel.needs_seed(boards, model.todo_asked, active)
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -672,7 +679,15 @@ fn render_cut(
     reviewer_rows: reviewers,
     agent_rows: rows,
     agent_messages: captured_messages,
-    todo_boards: todo_panel.remember(model.todo_boards, branch.records),
+    todo_boards: boards,
+    todo_seed: case seeding {
+      True -> Some(active)
+      False -> model.todo_seed
+    },
+    todo_asked: case seeding {
+      True -> set.insert(model.todo_asked, active)
+      False -> model.todo_asked
+    },
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -1263,7 +1278,12 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           document,
         ),
       )
-    protocol.NotesSnapshot(board) ->
+    protocol.NotesSnapshot(board) -> {
+      // Every notes read may carry a strand's todo board, whichever surface
+      // asked for it, so the panel is seeded before the notes view decides
+      // whether this read is its own.
+      let model =
+        Model(..model, todo_boards: todo_panel.seed(model.todo_boards, board))
       case board.strand == surfaces.notes_target(model) {
         True -> {
           let previous = case model.note_board {
@@ -1293,12 +1313,18 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
               note_board: Some(board),
               note_selected: selected,
               note_scroll: scroll,
-              notice: "notes refreshed for " <> board.strand,
+              // A read the terminal sent to seed the todo panel is not
+              // news to an operator who has no notes surface open.
+              notice: case surfaces.notes_surface(model) {
+                True -> "notes refreshed for " <> board.strand
+                False -> model.notice
+              },
             ),
           )
         }
         False -> model
       }
+    }
     protocol.EntryAdded(record:) -> {
       let protocol.EntryRecord(strand:, ..) = record
       let updated =
@@ -2803,6 +2829,14 @@ pub fn select_workspace(
     todo_boards: case model.session == session {
       True -> model.todo_boards
       False -> dict.new()
+    },
+    todo_seed: case model.session == session {
+      True -> model.todo_seed
+      False -> None
+    },
+    todo_asked: case model.session == session {
+      True -> model.todo_asked
+      False -> set.new()
     },
     reviewer_rows: case model.session == session {
       True -> model.reviewer_rows

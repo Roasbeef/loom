@@ -43,6 +43,7 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
@@ -493,6 +494,8 @@ pub fn new_model_with_clock(
     agent_rows: [],
     agent_messages: [],
     todo_boards: dict.new(),
+    todo_seed: None,
+    todo_asked: set.new(),
     active_strand: "main",
     session: "demo",
     session_label: None,

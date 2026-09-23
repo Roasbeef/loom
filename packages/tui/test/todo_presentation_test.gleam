@@ -17,8 +17,12 @@ import tui
 import tui/connection
 import tui/frame
 import tui/inbound
+import tui/model as tui_model
+import tui/notes_view
 import tui/protocol
 import tui/render
+import tui/session_channel
+import tui/surfaces
 import tui/workspace
 import tui_test/gateway
 
@@ -183,4 +187,57 @@ pub fn a_failed_call_leaves_the_pinned_board_test() {
 pub fn no_board_draws_no_panel_test() {
   let #(_, frame) = base() |> text
   assert !string.contains(frame, "TODO ")
+}
+
+fn seed_reply(model, strand: String, carried: todo_list.Board) {
+  inbound.apply_channel_update(
+    model,
+    session_channel.Auxiliary(
+      protocol.NotesSnapshot(
+        notes_view.Board(strand:, as_of: 40, total: 1, notes: [
+          notes_view.Note(
+            key: "todo",
+            seq: 40,
+            text: json.to_string(todo_list.encode(carried)),
+            extent: notes_view.Complete,
+          ),
+        ]),
+      ),
+    ),
+  )
+}
+
+// After reattaching to a long session the capture may not reach the last
+// todo call; the notes read the terminal sends then fills the panel, and
+// says nothing in the footer since no notes surface is open.
+pub fn a_notes_read_seeds_the_panel_quietly_test() {
+  let before = base()
+  let seeded = seed_reply(before, "main", board())
+  let #(_, frame) = seeded |> text
+  assert string.contains(frame, "TODO  Judge 1/3")
+  assert seeded.notice == before.notice
+}
+
+pub fn a_seed_never_replaces_the_transcript_board_test() {
+  let stale = Board([Phase("Stale", [Task("An older stored board", Active)])])
+  let #(_, frame) =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+    |> seed_reply("main", stale)
+    |> text
+  assert string.contains(frame, "TODO  Judge 1/3")
+  assert !string.contains(frame, "An older stored board")
+}
+
+// The operator's own notes read owns the lane first; its reply seeds the
+// panel just as well, so the terminal's read waits rather than racing it.
+pub fn the_seed_waits_behind_an_operator_notes_read_test() {
+  let waiting =
+    tui_model.Model(
+      ..base(),
+      todo_seed: Some("main"),
+      notes_requested: Some("main"),
+    )
+  assert surfaces.service_todo_seed(waiting) == waiting
 }

@@ -19,16 +19,15 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import tui/agents
 import tui/layout
 import tui/markdown
 import tui/model.{
-  type Line, type Model, AgentInspector, ApprovalInspector, Assistant,
-  DaemonSelector, Failure, GoalInspector, Line, Model, ModelSelector, NoOverlay,
-  Reasoning, ReasoningDigest, SessionSelector, Spacer, System, ToolCall,
-  ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type Line, type Model, Assistant, Failure, Line, Model, Reasoning,
+  ReasoningDigest, Spacer, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
+  ToolResult, User,
 } as tui_model
 import tui/render
+import tui/surfaces
 import tui/tool_activity
 import tui/transcript_anchor
 import tui/transcript_lines.{
@@ -167,7 +166,7 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
         revealed_rows:,
         rendered_anchors:,
         rendered_gutters:,
-        scroll_offset: case notes_surface(after) {
+        scroll_offset: case surfaces.notes_surface(after) {
           True -> after.scroll_offset
           False ->
             bounded_scroll_offset(
@@ -179,22 +178,6 @@ pub fn refresh_render_cache(before: Model, after: Model) -> Model {
       )
     }
     False -> after
-  }
-}
-
-fn notes_surface(model: Model) -> Bool {
-  case model.notes_open, model.overlay {
-    True, _
-    | False, AgentInspector(agents.Inspector(detail: agents.Notes, ..))
-    -> True
-    False, NoOverlay
-    | False, ModelSelector(_)
-    | False, GoalInspector(_)
-    | False, SessionSelector(_)
-    | False, DaemonSelector(_)
-    | False, AgentInspector(_)
-    | False, ApprovalInspector(_)
-    -> False
   }
 }
 
