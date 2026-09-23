@@ -51,6 +51,23 @@ three here watch, feed and stop it. Everything durable and everything
 enforced — the per-strand ceiling, the wall clamp, the clearance, the
 `job/<id>` fact writes — is on the far side of `Jobs`.
 
+`bash`'s default mode is `auto`: the command starts through
+`Jobs.attend`, the call looks at it every half second through `Jobs.poll`
+for up to `timeout_ms`, and a job that ends in that window is rendered
+through the same `exited` the foreground path uses, from the looks when
+they saw every byte and from the spill ref when one missed some. A job
+still running at the end of the window goes through `Jobs.release`, which
+answers `Released` (the owner will be notified) or `AlreadyEnded` (the
+call renders it); the host serializes that answer against the job's own
+settlement, so the result is reported exactly once. Auto falls back to
+the foreground path on `CeilingReached`, `NoJobsPlane` (what
+`job.unavailable()`'s `attend` answers) and `ClearanceRefused`, and never on
+`Unavailable`, which can come from a plane that timed out while a job was
+already clearing; `ClearanceRefused` keeps the foreground clearance's structured
+refusal, which is what an escalation reads. `mode: "foreground"` is the
+old kill-at-timeout behaviour and `mode: "background"` still answers with
+a handle at once.
+
 And `history_search`, through which a model asks the repository's
 full-text index what it once knew. Same shape, same reason: `events`
 owns the index and depends on nothing here, so the tool is a shell over

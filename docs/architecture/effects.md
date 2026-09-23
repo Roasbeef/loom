@@ -825,7 +825,8 @@ ripgrep, it settles as a structured error suggesting `bash` instead.
 
 Every tool call described so far runs in the foreground: `run` holds its
 effect process for the whole execution, and a command that outruns its
-budget comes back as `[command timed out]` with the process reaped. A
+budget comes back as `[command timed out]` with the process reaped.
+`bash` is the exception, and only by default: see "Auto mode" below. A
 **job** is the one thing in this plane allowed to outlive the call that
 started it. It is a jailed process with output, an exit status and a
 kill handle. It is bounded by a wall-clock limit fixed at start, owned by
@@ -930,6 +931,51 @@ terminal state are `fact.custom` registers under a `job/` prefix, and a
 poll's answer is an ordinary tool result.
 `docs/design-notes/background-jobs.md` carries the design and what
 changed once it met the code.
+
+**A job nobody is waiting on tells its owner when it ends.** Polling was
+the only way a model learned a job's outcome, and a model that ended its
+run while a job was still going had no way to learn it at all. Now the
+jobs actor sends the owning strand a completion notice once the terminal
+state is committed: harness text naming the job, how it ended, and the
+last two kilobytes of each stream. `client/notice.deliver` admits it
+through `runtime/api.send_to_strand_marking`, so it steers an open run or
+starts a fresh one on an idle strand, and it spends a reserved mark under
+`client/notice/` in the same transaction, so a restarted actor cannot
+deliver it twice. Ends the owner or an operator chose are silent: an
+owner's `job_kill`, an operation abort, and a session stop. A job a
+code-mode program started is the program's to watch and never notifies.
+A subagent owner is only ever steered: an idle subagent is never given a
+fresh run by a notice or a heartbeat, because a subagent has one run.
+The terminal commit and the notice are two transactions, and a crash
+between them loses the notice; the record still reads terminal to a
+poll.
+
+**Auto mode.** `bash` with no `mode` starts its command as a job it
+waits on for `timeout_ms`, streaming the job's output to the client from
+cursor polls. A command that ends in the window is rendered through the
+same `exited` a foreground call uses, from the whole streams (the spill,
+when a look missed bytes), so a quick command reads the same either way.
+One that outlives the window is released: the call returns the handle and
+the owner's notice carries the end. While the call waits, the job's
+listener is `Caller`, which suppresses the notice; the actor monitors the
+waiting caller from admission, and a release or the caller's death hands
+the job to its owner. A release and the settlement are serialized in the
+actor's mailbox, so exactly one of the two reports the end. Auto falls
+back to the foreground path at the strand's job ceiling, on a host with
+no jobs plane, and on a clearance refusal, the last because the
+foreground clearance words the structured refusal an escalation reads.
+An auto job asks for no wall of its own, so it runs under the default hour
+met with the session policy's `limits.wall_s`, and `timeout_ms` bounds
+only the wait.
+
+**An idle owner of live work is woken on a heartbeat.** The jobs actor
+and the async execution service each sample their owners once a minute.
+An owner whose strand has had no open run for `[jobs].heartbeat_s` (ten
+minutes by default, `0` for off) while work it owns is still live is
+woken with a listing of that work. The idle clock is volatile and
+restarts at every busy sample, so a heartbeat never lands on a strand
+that just finished a turn. `docs/design-notes/async-completion-wake.md`
+has the whole design and the table of which ends notify.
 
 ## Providers
 
