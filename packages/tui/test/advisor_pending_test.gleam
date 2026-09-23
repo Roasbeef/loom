@@ -16,6 +16,7 @@ import tui
 import tui/advisor_pending
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol.{type Strand, Strand}
 import tui/session_channel
 import tui/workspace
@@ -55,8 +56,8 @@ fn roster(main: Option(String), advisor: Option(String)) -> List(Strand) {
   ]
 }
 
-fn with_roster(strands: List(Strand)) -> tui.Model {
-  tui.Model(..model(), strands:)
+fn with_roster(strands: List(Strand)) -> tui_model.Model {
+  tui_model.Model(..model(), strands:)
 }
 
 // --- the decoder is total ---------------------------------------------------
@@ -138,7 +139,7 @@ pub fn nudge_text_is_sanitized_before_it_is_drawn_test() {
 /// becoming a transcript row that would claim the model had read it.
 pub fn an_observed_queue_is_drawn_beside_the_composer_test() {
   let observed =
-    tui.Model(
+    tui_model.Model(
       ..with_roster(roster(None, None)),
       nudges: Some(board(["the migration has no down step"], 1)),
     )
@@ -151,7 +152,7 @@ pub fn an_observed_queue_is_drawn_beside_the_composer_test() {
 /// visible until a new run starts or another authoritative read replaces it.
 pub fn a_running_primary_keeps_newly_observed_advice_visible_test() {
   let running =
-    tui.Model(
+    tui_model.Model(
       ..with_roster(roster(Some("assistant"), None)),
       nudges: Some(board(["no down step"], 1)),
     )
@@ -220,7 +221,7 @@ pub fn unrelated_movement_asks_for_nothing_test() {
 /// the operator sees that submission before the server reports a phase for it.
 pub fn a_local_submission_counts_as_the_primary_running_test() {
   let idle = with_roster(roster(None, None))
-  let submitting = tui.Model(..idle, submitting: Some("main"))
+  let submitting = tui_model.Model(..idle, submitting: Some("main"))
   assert tui.advisor_nudges_action(idle, submitting) == tui.DropNudges
 }
 

@@ -19,6 +19,7 @@ import machine/operation
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/reviewer_status
 import tui/snapshot
@@ -126,7 +127,7 @@ pub fn reviewer_task_survives_eviction_without_inventing_delivery_test() {
 pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   let #(window, view) = fixture()
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       reviewer_rows: reviewer_status.observe([], window, view),
       input: textarea.state_from_string("follow-up draft"),
@@ -137,7 +138,7 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   assert string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "Task: Review queue delivery")
   assert string.contains(text, "1 received, awaiting delivery")
-  assert painted.diff_view == tui.DiffAutomatic
+  assert painted.diff_view == tui_model.DiffAutomatic
   assert string.contains(text, "follow-up draft")
 }
 
@@ -150,7 +151,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     reviewer_status.observe([], window, view)
     |> list.map(fn(row) { reviewer_status.Row(..row, strand: "advisor") })
   let live =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: [protocol.Strand("advisor", Some("advisor"), Some("assistant"))],
       reviewer_rows: live_rows,
@@ -158,7 +159,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     )
     |> tui.update(backend.Resize(80, 24), _)
   let idle =
-    tui.Model(
+    tui_model.Model(
       ..live,
       strands: [protocol.Strand("advisor", Some("advisor"), None)],
       reviewer_rows: [],

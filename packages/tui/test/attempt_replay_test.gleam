@@ -30,6 +30,7 @@ import tui/connection
 import tui/frame
 import tui/goal_view
 import tui/history_view
+import tui/model as tui_model
 import tui/protocol
 import tui/recording
 import tui/session_channel
@@ -376,9 +377,9 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
     ])
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(inbox, workspace.Context("replay", None)),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
   let script =
     virtual_backend.script(
@@ -392,7 +393,7 @@ pub fn attempt_replay_last_unconfirmed_submission_survives_adopting_another_sess
   assert run.final.session == "B"
   assert run.final.channel == None
   assert run.final.unconfirmed
-    == Some(tui.UnconfirmedSubmission("A", "prompt", 4))
+    == Some(tui_model.UnconfirmedSubmission("A", "prompt", 4))
   assert list.any(run.final.transcript, fn(line) {
     string.contains(line.text, "Last unconfirmed submission: session A")
   })
@@ -445,11 +446,11 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
     ])
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
         -1000
       }),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
   let script =
     virtual_backend.script(
@@ -552,11 +553,11 @@ fn settled_row(answer: String) -> entry.Entry {
 fn replay_run(source: List(attempt.Event)) {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
         -1000
       }),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
   let script =
     virtual_backend.script(
@@ -953,14 +954,14 @@ fn waiting_model(source) {
   let #(channel, _) =
     session_channel.submit(channel, protocol.prompt(1, "main", "visible draft"))
   let model =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       channel: Some(channel),
       pending_submission: Some(source),
       input: textarea.state_from_string("visible draft"),
       attachments: [composer.Attachment("unchanged attachment", 5)],
-      submission_mode: tui.SteerNow,
+      submission_mode: tui_model.SteerNow,
     )
   #(model, remaining)
 }
@@ -977,7 +978,7 @@ fn finish_model(model, remaining) {
 }
 
 pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
-  let #(model, remaining) = waiting_model(tui.ComposerSubmission)
+  let #(model, remaining) = waiting_model(tui_model.ComposerSubmission)
   let unchanged =
     list.fold(
       [
@@ -991,13 +992,13 @@ pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
       fn(model, event) { tui.update(event, model) },
     )
   assert textarea.value(unchanged.input) == "visible draft"
-  assert unchanged.submission_mode == tui.SteerNow
+  assert unchanged.submission_mode == tui_model.SteerNow
   assert unchanged.attachments == model.attachments
   assert unchanged.next_id == model.next_id
   let cancelled = tui.update(backend.KeyPress("esc"), unchanged)
   assert cancelled.pending_submission == None
   assert textarea.value(cancelled.input) == "visible draft"
-  assert cancelled.submission_mode == tui.SteerNow
+  assert cancelled.submission_mode == tui_model.SteerNow
   assert cancelled.attachments == model.attachments
   assert cancelled.next_id == model.next_id
     as "Escape cancels unsent intent without emitting abort"
@@ -1011,19 +1012,19 @@ pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
 }
 
 pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_test() {
-  let #(model, remaining) = waiting_model(tui.ComposerSubmission)
+  let #(model, remaining) = waiting_model(tui_model.ComposerSubmission)
   let sent = finish_model(model, remaining)
   assert sent.pending_submission == None
   assert textarea.value(sent.input) == ""
   assert sent.attachments == []
   assert sent.next_id == model.next_id + 1
-  let #(overlay, remaining) = waiting_model(tui.OverlaySubmission)
+  let #(overlay, remaining) = waiting_model(tui_model.OverlaySubmission)
   let sent = finish_model(overlay, remaining)
   assert textarea.value(sent.input) == "visible draft"
-  assert sent.submission_mode == tui.SteerNow
+  assert sent.submission_mode == tui_model.SteerNow
   assert sent.attachments == overlay.attachments
   assert sent.pending_submission == None
-  let #(model, _) = waiting_model(tui.ComposerSubmission)
+  let #(model, _) = waiting_model(tui_model.ComposerSubmission)
   let failed =
     tui.accept_connection_message(model, connection.NetworkFault("revoked"))
   assert failed.pending_submission == None
@@ -1033,9 +1034,9 @@ pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_
 }
 
 pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() {
-  let #(model, _) = waiting_model(tui.ComposerSubmission)
+  let #(model, _) = waiting_model(tui_model.ComposerSubmission)
   let model =
-    tui.Model(
+    tui_model.Model(
       ..model,
       session: "A",
       nudges: Some(advisor_pending.Board("main", 1, ["Advice for A"], 1)),
@@ -1108,7 +1109,8 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   // a duplicate; it is not, and dropping the later line loses the notice.
   let notices =
     list.filter(adopted.transcript, fn(line) {
-      string.contains(line.text, "target change") && line.speaker == tui.System
+      string.contains(line.text, "target change")
+      && line.speaker == tui_model.System
     })
   let assert [notice] = notices as "the unsent draft is reported once"
   assert notice.text == "Not sent: target changed from A; draft retained"
@@ -1153,10 +1155,10 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
   assert updates == [session_channel.UnknownOutcome("prompt", 4)]
   assert session_channel.retire(closed, "again") == #(closed, [])
   let model =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("A", None)),
       session: "A",
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       channel: Some(sent),
     )
   let #(replacement, updates) =
@@ -1182,7 +1184,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
     )
   assert adopted.session == "B"
   assert adopted.unconfirmed
-    == Some(tui.UnconfirmedSubmission("A", "prompt", 4))
+    == Some(tui_model.UnconfirmedSubmission("A", "prompt", 4))
 
   // Existing Closed records carry the same outcome. Candidate-only closure
   // remains invisible, and a preceding Received close must not report twice.
@@ -1644,13 +1646,13 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
   let waiting =
     tui.update(
       backend.Tick,
-      tui.Model(..base, channel: Some(busy), scrollback: history),
+      tui_model.Model(..base, channel: Some(busy), scrollback: history),
     )
   assert waiting.scrollback.request == history_view.Wanted
   let #(ready, _) = read_channel(busy, remaining)
   assert session_channel.ready_for_read(ready)
   let sent =
-    tui.update(backend.Tick, tui.Model(..waiting, channel: Some(ready)))
+    tui.update(backend.Tick, tui_model.Model(..waiting, channel: Some(ready)))
   assert sent.scrollback.request == history_view.Pending(10)
     as "the idle tick admits the remembered range without another scroll gesture"
   let assert Some(channel) = sent.channel as "the read keeps the same channel"
@@ -1661,26 +1663,26 @@ pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
 // Adoption binds it once; later session changes still restore separate drafts.
 pub fn first_session_binds_the_unassigned_draft_once_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
       session: "",
       input: textarea.state_from_string("retained draft"),
       attachments: [composer.Attachment("initial context", 7)],
-      submission_mode: tui.SteerNow,
+      submission_mode: tui_model.SteerNow,
     )
   let first = receive_session(initial, "first")
   assert textarea.value(first.input) == "retained draft"
   assert first.attachments == initial.attachments
-  assert first.submission_mode == tui.SteerNow
+  assert first.submission_mode == tui_model.SteerNow
   assert !dict.has_key(first.strand_workspaces, #("", "main"))
   let second = receive_session(first, "second")
   assert textarea.value(second.input) == ""
   assert second.attachments == []
-  assert second.submission_mode == tui.PromptNext
+  assert second.submission_mode == tui_model.PromptNext
   let restored = receive_session(second, "first")
   assert textarea.value(restored.input) == "retained draft"
   assert restored.attachments == initial.attachments
-  assert restored.submission_mode == tui.SteerNow
+  assert restored.submission_mode == tui_model.SteerNow
 }
 
 fn receive_session(model, session) {

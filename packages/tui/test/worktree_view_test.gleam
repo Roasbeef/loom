@@ -12,6 +12,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
 import tui/workspace
@@ -181,9 +182,9 @@ fn model_with_patch() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-  tui.Model(
+  tui_model.Model(
     ..base,
-    diff_view: tui.DiffVisible,
+    diff_view: tui_model.DiffVisible,
     strands: [],
     worktree: state,
     input: textarea.state_from_string("draft"),
@@ -195,7 +196,7 @@ fn key(model, key) {
   tui.update(backend.KeyPress(key), model)
 }
 
-fn painted(model: tui.Model) {
+fn painted(model: tui_model.Model) {
   let model = tui.update(backend.Tick, model)
   let #(buf, _) =
     tui.view(model, geometry.rect_new(0, 0, model.width, model.height))
@@ -245,7 +246,7 @@ pub fn diff_navigation_labels_status_and_selected_extent_test() {
     |> worktree_view.request("owner")
   let base = model_with_patch()
   let model =
-    tui.Model(..base, worktree: observed)
+    tui_model.Model(..base, worktree: observed)
     |> key("ctrl+d")
     |> fn(model) { tui.update(backend.Tick, model) }
   let labels =
@@ -305,7 +306,7 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
     )
   let base = model_with_patch()
   let focused =
-    tui.Model(
+    tui_model.Model(
       ..base,
       worktree: worktree_view.State(
         ..state,
@@ -327,7 +328,7 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
   assert clicked.worktree.selected == 1
     as "the top visible row maps through the shared navigation offset"
 
-  let covered = tui.Model(..focused, notes_open: True)
+  let covered = tui_model.Model(..focused, notes_open: True)
   let ignored =
     tui.update(
       backend.MousePress(
@@ -347,7 +348,7 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
     |> key("down")
     |> fn(model) { tui.update(backend.Resize(40, 12), model) }
   let height = tui.diff_patch_area(resized).size.height
-  let trapped = tui.Model(..resized, diff_scroll_offset: 10_000)
+  let trapped = tui_model.Model(..resized, diff_scroll_offset: 10_000)
   let paged = key(trapped, "pageup")
   let maximum = int.max(0, paged.diff_row_count - height)
   assert paged.diff_scroll_offset == maximum
@@ -356,7 +357,7 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
 
   let composing = key(resized, "enter")
   let refocused =
-    key(tui.Model(..composing, diff_scroll_offset: 10_000), "ctrl+d")
+    key(tui_model.Model(..composing, diff_scroll_offset: 10_000), "ctrl+d")
   let focused_maximum =
     int.max(
       0,
@@ -394,7 +395,7 @@ pub fn mouse_selection_replaces_cached_patch_without_resize_test() {
 pub fn ready_observation_replaces_cached_patch_without_resize_test() {
   let previous = model_with_patch()
   let waiting =
-    tui.Model(
+    tui_model.Model(
       ..previous,
       worktree: worktree_view.State(
         ..previous.worktree,
@@ -456,16 +457,16 @@ fn range(stop: Int) -> List(Int) {
 
 pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
   let base =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
       input: textarea.state_from_string("draft"),
     )
   let wide = tui.update(backend.Resize(160, 35), base)
-  assert wide.diff_view == tui.DiffAutomatic
+  assert wide.diff_view == tui_model.DiffAutomatic
   assert string.contains(painted(wide), "captured changes")
   assert string.contains(painted(wide), "transcript / main")
   assert textarea.value(key(wide, "x").input) == "draftx"
-  assert key(wide, "esc").diff_view == tui.DiffAutomatic
+  assert key(wide, "esc").diff_view == tui_model.DiffAutomatic
     as "the default pane must not intercept the operation stop key"
 
   let narrow = tui.update(backend.Resize(100, 35), wide)
@@ -473,13 +474,13 @@ pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
   let wide_again = tui.update(backend.Resize(160, 35), narrow)
   assert string.contains(painted(wide_again), "captured changes")
   let dismissed = tui.open_diff(wide_again)
-  assert dismissed.diff_view == tui.DiffHidden
+  assert dismissed.diff_view == tui_model.DiffHidden
   let resized = tui.update(backend.Resize(170, 35), dismissed)
   assert !string.contains(painted(resized), "captured changes")
   assert textarea.value(resized.input) == "draft"
 
   let manual = tui.open_diff(narrow)
-  assert manual.diff_view == tui.DiffVisible
+  assert manual.diff_view == tui_model.DiffVisible
   assert string.contains(painted(manual), "captured changes")
 }
 
@@ -533,24 +534,27 @@ pub fn live_jobs_is_a_read_and_its_correlated_roster_keeps_channel_ready_test() 
     as "the next read can use the same channel"
 }
 
-fn apply_incoming(model: tui.Model, message: connection.Message) -> tui.Model {
+fn apply_incoming(
+  model: tui_model.Model,
+  message: connection.Message,
+) -> tui_model.Model {
   let assert Some(channel) = model.channel as "fixture has a channel"
   let #(channel, updates) = session_channel.receive(channel, message)
   list.fold(
     updates,
-    tui.Model(..model, channel: Some(channel)),
+    tui_model.Model(..model, channel: Some(channel)),
     tui.apply_channel_update,
   )
 }
 
-fn issue(model: tui.Model, command: String) -> #(tui.Model, Int) {
+fn issue(model: tui_model.Model, command: String) -> #(tui_model.Model, Int) {
   let assert Some(channel) = model.channel as "fixture has a channel"
   let #(channel, disposition) = session_channel.submit(channel, command)
   let assert session_channel.Sent(_, request_id) = disposition
     as "fixture command is sent immediately"
   #(
     tui.apply_channel_update(
-      tui.Model(..model, channel: Some(channel)),
+      tui_model.Model(..model, channel: Some(channel)),
       session_channel.Submission(disposition),
     ),
     request_id,
@@ -560,7 +564,10 @@ fn issue(model: tui.Model, command: String) -> #(tui.Model, Int) {
 pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observation_test() {
   let base = pushed.attached()
   let model =
-    tui.Model(..base, worktree: worktree_view.request(worktree_view.new(), ""))
+    tui_model.Model(
+      ..base,
+      worktree: worktree_view.request(worktree_view.new(), ""),
+    )
   let #(model, observation_id) = issue(model, protocol.worktree_diff(999))
   let model =
     apply_incoming(

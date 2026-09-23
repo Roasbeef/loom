@@ -19,6 +19,7 @@ import tui/command
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
 import tui/session_channel
@@ -86,12 +87,15 @@ fn metadata(rows) {
   )
 }
 
-fn receive(model: tui.Model, incoming: connection.Message) -> tui.Model {
+fn receive(
+  model: tui_model.Model,
+  incoming: connection.Message,
+) -> tui_model.Model {
   let assert Some(channel) = model.channel as "the fixture has an attached lane"
   let #(channel, updates) = session_channel.receive(channel, incoming)
   list.fold(
     updates,
-    tui.Model(..model, channel: Some(channel)),
+    tui_model.Model(..model, channel: Some(channel)),
     tui.apply_channel_update,
   )
 }
@@ -106,9 +110,9 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
     attempt.Trace(attempt.Id(1), fn(event) { process.send(events, event) })
   let channel = session_channel.replay_traced(expected, fn() { 0 }, trace)
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       channel: Some(channel),
       input: textarea.state_from_string("ordinary composer draft"),
       attachments: [composer.Attachment("retained pasted context", 10)],
@@ -211,7 +215,7 @@ fn full_reply(model, request, id, revision, text) {
   )
 }
 
-fn draft(model: tui.Model) -> queue_editor.Draft {
+fn draft(model: tui_model.Model) -> queue_editor.Draft {
   let assert Some(draft) = model.queue_editor.draft
     as "a credited complete fetch has opened the queue draft"
   draft
@@ -259,7 +263,7 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
   assert command.parse("/queue") == command.QueueInspect
   let slash =
     key(
-      tui.Model(..model, input: textarea.state_from_string("/queue")),
+      tui_model.Model(..model, input: textarea.state_from_string("/queue")),
       "enter",
     )
   assert slash.queue_editor.surface == queue_editor.Inspector
@@ -367,7 +371,7 @@ pub fn two_row_queue_title_pages_beside_a_multiline_composer_test() {
   let #(model, _) =
     ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
   let compact =
-    tui.Model(
+    tui_model.Model(
       ..model,
       input: textarea.state_from_string("ordinary draft\nsecond draft line"),
     )
@@ -395,7 +399,7 @@ pub fn two_row_queue_title_pages_beside_an_active_status_test() {
   let #(model, _) =
     ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
   let compact =
-    tui.Model(..model, submitting: Some("main"))
+    tui_model.Model(..model, submitting: Some("main"))
     |> tui.update(backend.Resize(40, 12), _)
     |> tui.open_queue
   let first = painted_at(compact, 40, 12)
@@ -613,11 +617,11 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
       "new-connection",
     )
   let retry =
-    tui.Model(
+    tui_model.Model(
       ..locked,
       channel: reconnected.channel,
       captured: reconnected.captured,
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
   let fetching = key(retry, "ctrl+r")
   let read = issued(reads, "queued_input")
@@ -637,7 +641,7 @@ pub fn attachment_change_cannot_save_an_old_editor_test() {
   let attachment =
     snapshot.Attachment(..cut.attachment, connection_id: "replacement")
   let changed =
-    tui.Model(
+    tui_model.Model(
       ..model,
       captured: Some(#(snapshot.Captured(..cut, attachment:), view)),
     )
@@ -656,11 +660,11 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let uncertain = receive(saving, connection.NetworkFault("reply lost"))
   let #(reconnected, reads) = ready([pending("A"), pending("B")])
   let switched =
-    tui.Model(
+    tui_model.Model(
       ..uncertain,
       channel: reconnected.channel,
       captured: reconnected.captured,
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
     |> key("esc")
     |> key("down")
@@ -746,11 +750,11 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let retained = draft(edited)
     let #(other, events) = ready_as([pending("A")], expected, "new-connection")
     let switched =
-      tui.Model(
+      tui_model.Model(
         ..edited,
         channel: other.channel,
         captured: other.captured,
-        peer: tui.Replaying,
+        peer: tui_model.Replaying,
       )
     let refreshed = key(switched, "ctrl+r")
     assert requests(events, []) == []

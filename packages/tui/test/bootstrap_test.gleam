@@ -20,6 +20,7 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol as control
 import tui/daemon/selection
+import tui/model as tui_model
 import tui/session_channel
 import tui/session_selector
 import tui/sessions
@@ -486,21 +487,21 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let model =
     tui.new_model(connection.new_inbox(), workspace.discover_from(workspace))
   let model =
-    tui.Model(
+    tui_model.Model(
       ..model,
       // Local startup clears the demonstration identity before selection.
       // This draft is unassigned until the first session is adopted.
       session: "",
       local_options: Some(options),
       daemon_host: Some(host),
-      overlay: tui.DaemonSelector(session_selector.new(empty, "")),
+      overlay: tui_model.DaemonSelector(session_selector.new(empty, "")),
       input: text_area.state_from_string("retained draft"),
     )
 
   // A local path failure sends no creation request and retains no durable key.
   // Correcting the option must permit the same selector action immediately.
   let invalid =
-    tui.Model(
+    tui_model.Model(
       ..model,
       local_options: Some(
         bootstrap.Options(
@@ -516,7 +517,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let creating =
     tui.update(
       backend.KeyPress("n"),
-      tui.Model(..refused, local_options: Some(options)),
+      tui_model.Model(..refused, local_options: Some(options)),
     )
   let switched = wait_for_attachment(creating.candidate, 20_000)
   let assert attachment.Adopted(channel, cut, _, _, _, selected_name, _) =
@@ -625,7 +626,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   // host. The actual successful event then starts the normal adoption path.
   let reconnecting =
     tui.apply_channel_update(adopted, session_channel.Failed("daemon exited"))
-  let assert tui.ReconnectAttempting(replies:, ..) = reconnecting.reconnect
+  let assert tui_model.ReconnectAttempting(replies:, ..) =
+    reconnecting.reconnect
     as "the attached local terminal owns one reconnect attempt"
   let assert Ok(reconnected) = process.receive(replies, 40_000)
     as "the bounded relaunch produces an outcome"
@@ -818,7 +820,7 @@ fn digest_prefix(value: String, length: Int) -> String {
 
 // The update notice is a projection of retained authenticated identity. Each
 // adoption and refresh must leave exactly one copy in the visible transcript.
-fn assert_build_notice(model: tui.Model) {
+fn assert_build_notice(model: tui_model.Model) {
   assert list.count(model.transcript, fn(line) {
       string.contains(line.text, "differs from this client's")
     })

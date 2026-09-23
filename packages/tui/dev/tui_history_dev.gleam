@@ -16,6 +16,7 @@ import gleam/string
 import simplifile
 import tui
 import tui/connection
+import tui/model as tui_model
 import tui/protocol
 import tui/workspace
 
@@ -55,7 +56,7 @@ pub fn run(path: String) {
       workspace.Context("history benchmark", None),
     )
   let base =
-    tui.Model(
+    tui_model.Model(
       ..base,
       records: records,
       transcript: [],

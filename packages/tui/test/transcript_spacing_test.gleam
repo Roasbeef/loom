@@ -31,6 +31,7 @@ import tui
 import tui/agents
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -403,8 +404,8 @@ fn expanded_calls() -> Pane {
 // grouping, one durable line.
 fn said(text: String) -> Pane {
   let model =
-    tui.Model(..quiet_model(connection.new_inbox(), Compact), transcript: [
-      tui.Line(tui.Assistant, text),
+    tui_model.Model(..quiet_model(connection.new_inbox(), Compact), transcript: [
+      tui_model.Line(tui_model.Assistant, text),
     ])
   run(model, [])
 }
@@ -483,7 +484,7 @@ type Pane {
 // hold a tool summary. A point two cells in from the top left of the body
 // lands in the transcript interior at this size, and `hit_area` answers with
 // the same rectangle the transcript was drawn into.
-fn run(model: tui.Model, steps: List(virtual_backend.Step)) -> Pane {
+fn run(model: tui_model.Model, steps: List(virtual_backend.Step)) -> Pane {
   let script =
     virtual_backend.script(
       backend.TerminalSize(width: 60, height: 30),
@@ -527,8 +528,8 @@ fn deliver(payload: String) -> virtual_backend.Step {
 fn quiet_model(
   inbox: Subject(connection.Message),
   view: TranscriptView,
-) -> tui.Model {
-  tui.Model(
+) -> tui_model.Model {
+  tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
     strands: [],

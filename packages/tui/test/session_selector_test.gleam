@@ -10,6 +10,7 @@ import tui
 import tui/connection
 import tui/daemon/protocol
 import tui/frame
+import tui/model as tui_model
 import tui/session_selector
 import tui/theme
 import tui/workspace
@@ -123,7 +124,8 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
       workspace.Context("/test/workspace", None),
       fn() { -1000 },
     )
-  let initial = tui.Model(..initial, overlay: tui.DaemonSelector(selector(0)))
+  let initial =
+    tui_model.Model(..initial, overlay: tui_model.DaemonSelector(selector(0)))
   let initial = tui.update(backend.Resize(96, 24), initial)
   let screen = geometry.rect_new(0, 0, 96, 24)
   let #(first, _) = tui.view(initial, screen)

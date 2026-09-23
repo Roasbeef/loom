@@ -21,6 +21,7 @@ import machine/strand
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/snapshot_view
 import tui/tool_activity
@@ -203,7 +204,7 @@ fn painted(model) {
 fn model() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui.Model(..base, transcript: [], records: [], notice: "fixture")
+  tui_model.Model(..base, transcript: [], records: [], notice: "fixture")
 }
 
 pub fn a_result_replaces_the_cached_pending_group_row_test() {
@@ -234,16 +235,16 @@ pub fn the_diff_panel_shows_only_successful_captured_edits_test() {
   let opened =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(..model, input: textarea.state_from_string("/diff")),
+      tui_model.Model(..model, input: textarea.state_from_string("/diff")),
     )
   let #(opened, text) = painted(opened)
-  assert opened.diff_view == tui.DiffVisible
+  assert opened.diff_view == tui_model.DiffVisible
   assert string.contains(text, "captured changes")
   assert string.contains(text, "-old")
   assert string.contains(text, "+new")
   assert !string.contains(text, "awaiting result")
   let closed = tui.update(backend.KeyPress("esc"), opened)
-  assert closed.diff_view == tui.DiffHidden
+  assert closed.diff_view == tui_model.DiffHidden
   assert closed.interrupt == None
 }
 
@@ -264,7 +265,7 @@ fn changes_model(diff) {
 fn toggle_diff(model) {
   tui.update(
     backend.KeyPress("enter"),
-    tui.Model(..model, input: textarea.state_from_string("/diff")),
+    tui_model.Model(..model, input: textarea.state_from_string("/diff")),
   )
 }
 
@@ -312,7 +313,7 @@ pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
   let #(restored, split) = painted_buffer(narrow, 160)
   assert string.contains(columns(split, 0, 88), "CONVERSATION_MARKER")
   assert string.contains(columns(split, 88, 72), "+new")
-  assert restored.diff_view == tui.DiffVisible
+  assert restored.diff_view == tui_model.DiffVisible
 }
 
 pub fn diff_and_conversation_scroll_independently_test() {
@@ -351,7 +352,7 @@ pub fn diff_and_conversation_scroll_independently_test() {
   assert patch_paged.diff_scroll_offset > focused.diff_scroll_offset
   assert patch_paged.scroll_offset == paged.scroll_offset
   let closed = tui.update(backend.KeyPress("esc"), patch_paged)
-  assert closed.diff_view == tui.DiffHidden
+  assert closed.diff_view == tui_model.DiffHidden
   assert closed.scroll_offset == paged.scroll_offset
   assert closed.diff_rows == []
   assert dict.is_empty(closed.diff_line_cache)
@@ -388,18 +389,19 @@ pub fn an_open_diff_keeps_up_with_new_captured_edits_test() {
     |> received(call(4, "second", "fs_edit", args()))
     |> received(outcome(5, "second", False, Some(details)))
     |> painted_buffer(160)
-  assert updated.diff_view == tui.DiffVisible
+  assert updated.diff_view == tui_model.DiffVisible
   assert string.contains(columns(drawn, 88, 72), "SECOND_EDIT_MARKER")
   assert string.contains(columns(drawn, 0, 88), "CONVERSATION_MARKER")
 }
 
 pub fn diff_toggle_restores_the_agent_rail_preference_test() {
-  let base = tui.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
+  let base =
+    tui_model.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
   assert opened.agent_rail_visible
   assert tui.hit_area(opened, geometry.Position(100, 10)).position.x == 89
   let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
-  assert closed.diff_view == tui.DiffHidden
+  assert closed.diff_view == tui_model.DiffHidden
   assert closed.agent_rail_visible
   assert tui.hit_area(closed, geometry.Position(140, 10)).position.x == 127
 }
@@ -462,7 +464,7 @@ pub fn calls_in_one_response_keep_distinct_anchors_in_both_detail_modes_test() {
   let compact = tui.update(backend.KeyPress("pageup"), live)
   assert compact.scroll_offset > 0
     as "The first history gesture captures the source anchors."
-  let keys = fn(model: tui.Model) {
+  let keys = fn(model: tui_model.Model) {
     model.rendered_anchors
     |> list.filter_map(fn(row) {
       case row {
@@ -515,7 +517,7 @@ pub fn successful_edits_show_inline_patches_in_compact_history_test() {
     |> received(outcome(2, "edit", False, details))
     |> painted
   assert !completed.details_expanded
-  assert completed.diff_view == tui.DiffAutomatic
+  assert completed.diff_view == tui_model.DiffAutomatic
   assert string.contains(visible, "✓ fs_edit · src/file.gleam")
   assert string.contains(visible, "-    old")
   assert string.contains(visible, "+    new")
@@ -649,7 +651,7 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     })
     as "expanded output shares the compact invocation's durable identity"
   let reading =
-    tui.Model(..expanded, scroll_offset: prefix + index - height + 1)
+    tui_model.Model(..expanded, scroll_offset: prefix + index - height + 1)
   let compact = tui.update(backend.KeyPress("ctrl+g"), reading)
   let offset =
     compact.rendered_row_count - list.length(compact.rendered_anchors)

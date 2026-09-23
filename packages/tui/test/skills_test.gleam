@@ -8,6 +8,7 @@ import gleam/option.{None}
 import tui
 import tui/command
 import tui/connection
+import tui/model as tui_model
 import tui/skills
 import tui/workspace
 
@@ -31,7 +32,7 @@ pub fn disconnected_skill_submission_retains_its_draft_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("test", None))
   let model =
-    tui.Model(..base, peer: tui.Disconnected, skills: [
+    tui_model.Model(..base, peer: tui_model.Disconnected, skills: [
       command.Suggestion("/review-code", "Inspect code", True),
     ])
   let updated =

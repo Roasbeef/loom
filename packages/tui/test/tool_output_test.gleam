@@ -20,12 +20,13 @@ import gleam/result
 import gleam/string
 import tui
 import tui/connection
+import tui/model as tui_model
 import tui_test/pushed
 
 // Details open, which is where a running command's output window is
 // drawn. `tool_tail_lines` is the whole of what this toggle changes here.
-fn expanded(model: tui.Model) -> tui.Model {
-  tui.Model(..model, details_expanded: True)
+fn expanded(model: tui_model.Model) -> tui_model.Model {
+  tui_model.Model(..model, details_expanded: True)
 }
 
 fn output(
@@ -73,7 +74,7 @@ pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
     ))
   assert model.tool_tails
     == [
-      tui.ToolTail(
+      tui_model.ToolTail(
         strand: "main",
         operation: "op-1",
         step: "step-1",
@@ -117,8 +118,8 @@ pub fn the_tail_is_drawn_as_one_result_line_under_the_running_call_test() {
     ))
   assert tui.tool_tail_lines(expanded(model))
     == [
-      tui.Line(
-        tui.ToolResult,
+      tui_model.Line(
+        tui_model.ToolResult,
         "stdout · 31 B so far\ncompiling core\ncompiling tools",
       ),
     ]
@@ -139,7 +140,7 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
       list.fold(lines, "", fn(acc, line) { acc <> line <> "\n" }),
       2048,
     ))
-  let assert [tui.Line(tui.ToolResult, drawn)] =
+  let assert [tui_model.Line(tui_model.ToolResult, drawn)] =
     tui.tool_tail_lines(expanded(model))
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(drawn, "\n")
@@ -152,7 +153,7 @@ pub fn a_binary_tail_draws_its_heading_alone_test() {
     pushed.attached()
     |> tui.accept_connection_message(output("op-1", "step-1", "stdout", "", 300))
   assert tui.tool_tail_lines(expanded(model))
-    == [tui.Line(tui.ToolResult, "stdout · 300 B so far")]
+    == [tui_model.Line(tui_model.ToolResult, "stdout · 300 B so far")]
 }
 
 pub fn another_strands_tail_is_not_drawn_here_test() {

@@ -47,12 +47,12 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import support/provider_http
 import support/tui_driver
-import tui
 import tui/attachment
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/model as tui_model
 import tui/protocol as conversation
 import tui/session_channel
 import tui/snapshot
@@ -1117,7 +1117,7 @@ fn highlight_target(
   let listed =
     tui_v2_test.await(alice.data, fn(sample) {
       case sample.model.overlay {
-        tui.DaemonSelector(selector) ->
+        tui_model.DaemonSelector(selector) ->
           sample.model.control_request == None
           && list.any(selector.page.sessions, fn(row) {
             row.session_id == target
@@ -1125,7 +1125,7 @@ fn highlight_target(
         _ -> False
       }
     })
-  let assert tui.DaemonSelector(selector) = listed.model.overlay
+  let assert tui_model.DaemonSelector(selector) = listed.model.overlay
     as "the actual authorized selector supplies the target row and selection"
 
   // Navigation uses the model's row index, never a position guessed from a frame.
@@ -1146,7 +1146,7 @@ fn highlight_target(
       alice.data,
       list.repeat(backend.KeyPress(direction), distance),
     )
-  let assert tui.DaemonSelector(selected) = highlighted.model.overlay
+  let assert tui_model.DaemonSelector(selected) = highlighted.model.overlay
     as "real navigation keeps the catalogue open until explicit Enter"
   let assert Ok(row) =
     list.first(list.drop(selected.page.sessions, selected.selected))
@@ -1213,7 +1213,7 @@ fn revoke_live_member(
   // at admission, closing the terminal's independently owned socket too.
   let closed =
     tui_v2_test.await(bob.data, fn(sample) {
-      sample.model.peer == tui.Disconnected
+      sample.model.peer == tui_model.Disconnected
     })
   assert closed.model.records == before.model.records
   list.each([alice, reader], fn(driver) {
@@ -1246,7 +1246,7 @@ fn revoke_live_member(
     as "both surviving terminals have completed their own authoritative capture"
   assert alice_configuration == reader_configuration
   let retained = tui_driver.play(bob.data, [])
-  assert retained.model.peer == tui.Disconnected
+  assert retained.model.peer == tui_model.Disconnected
   assert retained.model.records == before.model.records
   assert configuration_of(retained) == configuration_of(before)
 

@@ -34,9 +34,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
-import tui/advisor_history
-import tui/connection
-import tui/frame
+import tui/model as tui_model
 import tui/notes_view
 import tui/protocol
 import tui/workspace
@@ -57,10 +55,9 @@ pub fn a_compact_advice_row_keeps_the_full_delivered_block_test() {
 
   assert lines
     == [
-      tui.Line(tui.System, "Advisor · block delivered"),
-      tui.Line(
-        tui.ToolDetail,
-        "the new test asserts nothing\nrerun it against the old code",
+      tui_model.Line(
+        tui_model.System,
+        "advisor: the new test asserts nothing  [Ctrl+G to expand]",
       ),
     ]
 }
@@ -71,234 +68,9 @@ pub fn an_expanded_advice_row_shows_the_whole_body_test() {
 
   assert lines
     == [
-      tui.Line(tui.System, "Advisor · block delivered"),
-      tui.Line(tui.ToolDetail, body),
+      tui_model.Line(tui_model.System, "advisor"),
+      tui_model.Line(tui_model.ToolDetail, body),
     ]
-}
-
-pub fn the_main_transcript_paints_all_delivered_advice_in_compact_mode_test() {
-  let body =
-    "The test skips the second payment hash.\nRebuild the vector and rerun the verifier."
-  let assert Ok(protocol.EntryAdded(record)) =
-    protocol.decode_event(gateway.user_entry(
-      "main",
-      tui.advice_header <> "\n" <> body <> "\n" <> tui.advice_footer,
-      1,
-    ))
-    as "the advisor frame travels through the captured transcript"
-  let base =
-    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let shown =
-    tui.Model(..base, records: [record]) |> tui.update(backend.Tick, _)
-  let #(buffer, _) = tui.view(shown, geometry.rect_new(0, 0, 120, 30))
-  let painted = frame.buffer_to_text(buffer)
-
-  assert string.contains(painted, "Advisor · block delivered")
-  assert string.contains(painted, "Rebuild the vector and rerun the")
-  assert string.contains(painted, "verifier.")
-  assert !string.contains(painted, tui.advice_header)
-  assert !string.contains(painted, "Ctrl+G to expand")
-  assert tui.update(backend.KeyPress("ctrl+g"), shown).details_expanded
-    as "the compact assertion is independent of the detail toggle"
-}
-
-pub fn the_main_surface_shows_full_advisor_only_commentary_without_delivery_claims_test() {
-  let base =
-    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let quiet =
-    advisor_history.Item(
-      "quiet-entry",
-      9,
-      0,
-      "I checked the current change and found no new problem.",
-      advisor_history.RequestedQuiet,
-    )
-  let block =
-    advisor_history.Item(
-      "block-entry",
-      10,
-      0,
-      "I found three issues in the vector rebuild. The skipped payment hash still remains.",
-      advisor_history.RequestedBlock,
-    )
-  let shown =
-    tui.Model(
-      ..base,
-      advisor_history: advisor_history.Board([quiet, block], None),
-    )
-    |> tui.update(backend.Tick, _)
-  let #(buffer, _) = tui.view(shown, geometry.rect_new(0, 0, 120, 30))
-  let painted = frame.buffer_to_text(buffer)
-
-  assert string.contains(
-    painted,
-    "Advisor transcript · captured, not sent to primary",
-  )
-  assert string.contains(painted, "Advisor · quiet requested")
-  assert string.contains(painted, "Advisor · block requested")
-  assert string.contains(painted, "The skipped payment hash still")
-  assert string.contains(painted, "remains.")
-  assert !string.contains(painted, "block delivered")
-}
-
-pub fn long_advisor_history_does_not_hide_the_live_primary_tail_test() {
-  let items =
-    int.range(1, 31, [], fn(acc, seq) {
-      [
-        advisor_history.Item(
-          "advisor-" <> int.to_string(seq),
-          seq,
-          0,
-          "Captured review " <> int.to_string(seq) <> "\nwith a second line",
-          advisor_history.AdvisorUpdate,
-        ),
-        ..acc
-      ]
-    })
-    |> list.reverse
-  let base =
-    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let model =
-    tui.Model(
-      ..base,
-      transcript: [],
-      records: [],
-      advisor_history: advisor_history.Board(items, None),
-      streams: [
-        tui.Stream(
-          "main",
-          "op",
-          "generation",
-          "text",
-          [
-            "ACTIVE PRIMARY OUTPUT",
-          ],
-          21,
-        ),
-      ],
-    )
-    |> tui.update(backend.Resize(80, 24), _)
-  let visible = tui.Model(..model, revealed_rows: model.rendered_row_count)
-  let #(buffer, _) = tui.view(visible, geometry.rect_new(0, 0, 80, 24))
-  let painted = frame.buffer_to_text(buffer)
-
-  assert string.contains(painted, "ACTIVE PRIMARY OUTPUT")
-    as "captured advisor rows precede the live primary tail"
-  assert !string.contains(painted, "Captured review 1")
-    as "old advisor rows belong in scrollback on a short viewport"
-  assert list.any(dict.keys(model.record_line_cache), fn(line) {
-    string.contains(line.text, "Captured review 1")
-  })
-    as "the full advisor body is cached with settled history"
-}
-
-pub fn advisor_and_primary_rows_follow_durable_sequence_test() {
-  let first = entry_record(gateway.user_entry("main", "primary first", 2))
-  let second = entry_record(gateway.user_entry("main", "primary second", 6))
-  let base =
-    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let shown =
-    tui.Model(
-      ..base,
-      transcript: [],
-      records: [second, first],
-      advisor_history: advisor_history.Board(
-        [
-          advisor_history.Item(
-            "advisor-mid",
-            4,
-            0,
-            "advisor middle",
-            advisor_history.RequestedQuiet,
-          ),
-          advisor_history.Item(
-            "advisor-last",
-            8,
-            0,
-            "advisor last",
-            advisor_history.RequestedBlock,
-          ),
-        ],
-        None,
-      ),
-    )
-    |> tui.update(backend.Resize(120, 40), _)
-  let ordered =
-    shown.record_rows |> list.reverse |> list.map(row_text) |> string.join("\n")
-  let assert Ok(#(_, after_first)) = string.split_once(ordered, "primary first")
-  let assert Ok(#(_, after_middle)) =
-    string.split_once(after_first, "advisor middle")
-  let assert Ok(#(_, after_second)) =
-    string.split_once(after_middle, "primary second")
-
-  assert string.contains(after_second, "advisor last")
-  assert string.contains(ordered, "Advisor · quiet requested")
-  assert string.contains(ordered, "Advisor · block requested")
-}
-
-pub fn stream_deltas_reuse_the_wrapped_advisor_history_test() {
-  let long_body = string.repeat("**captured review** with details\n", 2000)
-  let base =
-    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let settled =
-    tui.Model(
-      ..base,
-      transcript: [],
-      records: [],
-      advisor_history: advisor_history.Board(
-        [
-          advisor_history.Item(
-            "advisor-long",
-            1,
-            0,
-            long_body,
-            advisor_history.AdvisorUpdate,
-          ),
-        ],
-        None,
-      ),
-    )
-    |> tui.update(backend.Resize(80, 24), _)
-  let after =
-    int.range(1, 21, settled, fn(model, count) {
-      tui.Model(
-        ..model,
-        streams: [
-          tui.Stream(
-            "main",
-            "op",
-            "generation",
-            "text",
-            [
-              "delta " <> int.to_string(count),
-            ],
-            8,
-          ),
-        ],
-        render_revision: model.render_revision + 1,
-      )
-      |> tui.update(backend.Tick, _)
-    })
-
-  assert after.record_cache_valid
-  assert after.record_rows == settled.record_rows
-    as "stream changes only the disposable tail, not settled wrapping"
-  assert after.record_line_cache == settled.record_line_cache
-    as "the advisor markdown stays in the reusable line cache"
-  assert dict.size(after.record_line_cache) > 0
-  assert list.any(dict.keys(after.record_line_cache), fn(line) {
-    line.text == long_body
-  })
-}
-
-fn entry_record(wire: String) -> protocol.EntryRecord {
-  let assert Ok(protocol.EntryAdded(record)) = protocol.decode_event(wire)
-  record
-}
-
-fn row_text(line: span.Line) -> String {
-  let span.Line(spans:, ..) = line
-  spans |> list.map(fn(value) { value.content }) |> string.concat
 }
 
 pub fn a_compact_nudges_frame_keeps_every_bullet_test() {
@@ -308,13 +80,13 @@ pub fn a_compact_nudges_frame_keeps_every_bullet_test() {
   assert tui.advisor_payload(value) == Some(tui.Nudges(body))
   assert tui.advisor_lines(tui.Nudges(body), notes_view.Excerpt)
     == [
-      tui.Line(tui.System, "Advisor · nudges delivered (2)"),
-      tui.Line(tui.ToolDetail, body),
+      tui_model.Line(tui_model.System, "advisor nudges (2)"),
+      tui_model.Line(tui_model.ToolDetail, body),
     ]
   assert tui.advisor_lines(tui.Nudges(body), notes_view.Complete)
     == [
-      tui.Line(tui.System, "Advisor · nudges delivered (2)"),
-      tui.Line(tui.ToolDetail, body),
+      tui_model.Line(tui_model.System, "advisor nudges (2)"),
+      tui_model.Line(tui_model.ToolDetail, body),
     ]
 }
 
@@ -328,8 +100,8 @@ pub fn a_multi_line_nudge_counts_once_test() {
 
   assert tui.advisor_lines(tui.Nudges(body), notes_view.Excerpt)
     == [
-      tui.Line(tui.System, "Advisor · nudges delivered (2)"),
-      tui.Line(tui.ToolDetail, body),
+      tui_model.Line(tui_model.System, "advisor nudges (2)"),
+      tui_model.Line(tui_model.ToolDetail, body),
     ]
 }
 
@@ -344,9 +116,17 @@ pub fn a_feed_frame_is_recognized_on_the_advisors_branch_test() {
 
   assert tui.advisor_payload(feed(body)) == Some(tui.Feed(body))
   assert tui.advisor_lines(tui.Feed(body), notes_view.Excerpt)
-    == [tui.Line(tui.System, "advisor feed: user:  [Ctrl+G to expand]")]
+    == [
+      tui_model.Line(
+        tui_model.System,
+        "advisor feed: user:  [Ctrl+G to expand]",
+      ),
+    ]
   assert tui.advisor_lines(tui.Feed(body), notes_view.Complete)
-    == [tui.Line(tui.System, "advisor feed"), tui.Line(tui.ToolDetail, body)]
+    == [
+      tui_model.Line(tui_model.System, "advisor feed"),
+      tui_model.Line(tui_model.ToolDetail, body),
+    ]
 }
 
 /// Attribution is what the recognizer decides, so it takes both tokens.

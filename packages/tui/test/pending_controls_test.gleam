@@ -11,6 +11,7 @@ import machine/codec
 import machine/operation
 import machine/strand
 import tui
+import tui/model as tui_model
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -100,9 +101,9 @@ pub fn a_successor_cut_retires_the_old_interrupt_without_an_idle_event_test() {
   let #(second, _) = ids.mint_op(generator)
   let before = captured(pushed.attached(), metadata(Some(first), []))
   let stopped =
-    tui.Model(
+    tui_model.Model(
       ..before,
-      interrupt: Some(tui.Interrupt(
+      interrupt: Some(tui_model.Interrupt(
         "main",
         Some(ids.op_id_to_string(first)),
         None,
@@ -118,9 +119,9 @@ pub fn a_successor_cut_retires_the_old_interrupt_without_an_idle_event_test() {
 
 pub fn a_credited_idle_cut_retires_the_interrupt_test() {
   let before =
-    tui.Model(
+    tui_model.Model(
       ..pushed.attached(),
-      interrupt: Some(tui.Interrupt("main", Some("previous"), None)),
+      interrupt: Some(tui_model.Interrupt("main", Some("previous"), None)),
     )
   let after = captured(before, metadata(None, []))
   assert after.interrupt == None
@@ -129,8 +130,8 @@ pub fn a_credited_idle_cut_retires_the_interrupt_test() {
 
 pub fn host_queue_identity_survives_equal_text_and_clears_after_drain_test() {
   let before =
-    tui.Model(..pushed.attached(), queued: [
-      tui.HeldPrompt("obsolete local guess"),
+    tui_model.Model(..pushed.attached(), queued: [
+      tui_model.HeldPrompt("obsolete local guess"),
     ])
   let after =
     captured(

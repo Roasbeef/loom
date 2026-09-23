@@ -14,6 +14,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/note_panel
 import tui/notes_view
 import tui/protocol
@@ -101,7 +102,7 @@ pub fn refreshed_notes_replace_values_and_show_revision_and_excerpt_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let first =
     delivered(
-      tui.Model(..base, notes_open: True),
+      tui_model.Model(..base, notes_open: True),
       board(10, "old plan", "complete"),
     )
   assert string.contains(text(first), "old plan")
@@ -146,7 +147,10 @@ pub fn structured_notes_render_paragraphs_and_keep_raw_inspection_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
-    delivered(tui.Model(..base, notes_open: True), board(20, raw, "complete"))
+    delivered(
+      tui_model.Model(..base, notes_open: True),
+      board(20, raw, "complete"),
+    )
   let readable = text(shown)
   assert string.contains(readable, "Review complete")
   assert string.contains(readable, "Supporting evidence")
@@ -166,16 +170,16 @@ pub fn stable_key_refresh_reorder_and_foreign_owner_preserve_state_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let initial =
     delivered(
-      tui.Model(..base, notes_open: True),
+      tui_model.Model(..base, notes_open: True),
       board_rows("main", 20, 2, [
         #("plan", 20, "first", "complete"),
         #("next", 19, "second", "complete"),
       ]),
     )
-    |> fn(model) { tui.Model(..model, scroll_offset: 7) }
+    |> fn(model) { tui_model.Model(..model, scroll_offset: 7) }
   let selected =
     tui.update(backend.KeyPress("]"), initial)
-    |> fn(model) { tui.Model(..model, note_scroll: 3) }
+    |> fn(model) { tui_model.Model(..model, note_scroll: 3) }
   assert selected.note_selected == Some("next")
   assert selected.scroll_offset == 7
 
@@ -234,7 +238,7 @@ pub fn note_body_remains_visible_at_supported_native_geometry_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
     delivered(
-      tui.Model(..base, notes_open: True),
+      tui_model.Model(..base, notes_open: True),
       board(20, "visible-note-body", "complete"),
     )
   list.each([#(132, 42), #(80, 24), #(40, 12)], fn(size) {
@@ -279,7 +283,7 @@ pub fn notes_distinguish_read_freshness_from_turn_age_test() {
     )
   let older =
     delivered(
-      tui.Model(..base, notes_open: True, captured: Some(#(cut, view))),
+      tui_model.Model(..base, notes_open: True, captured: Some(#(cut, view))),
       board(20, "Pending: inspect queue", "complete"),
     )
   assert string.contains(text(older), "Session advanced since this read")
@@ -335,7 +339,7 @@ pub fn historical_notes_are_readable_compact_and_raw_after_detail_expansion_test
     as "the historical digest travels through the normal entry decoder"
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  let compact = tui.Model(..base, notes_open: True, records: [record])
+  let compact = tui_model.Model(..base, notes_open: True, records: [record])
   assert string.contains(text(compact), "Built modules")
   assert !string.contains(text(compact), "{\"done\"")
   let expanded = tui.update(backend.KeyPress("ctrl+g"), compact)

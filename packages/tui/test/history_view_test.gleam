@@ -16,6 +16,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/history_view
+import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
 import tui/snapshot
@@ -345,7 +346,7 @@ pub fn history_sparse_strand_keeps_endpoint_across_unrelated_pages_test() {
   assert branch.unloaded == None
 }
 
-fn top_identity(model: tui.Model) {
+fn top_identity(model: tui_model.Model) {
   let prefix = model.rendered_row_count - list.length(model.rendered_anchors)
   let height = tui.hit_area(model, geometry.Position(5, 5)).size.height
   model.rendered_anchors
@@ -398,7 +399,10 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
   let anchor = top_identity(reading)
   let assert Ok(_) = anchor as "the fixture scrolls into a durable message"
   let pending =
-    tui.Model(..reading, scrollback: history_view.sent(reading.scrollback, 131))
+    tui_model.Model(
+      ..reading,
+      scrollback: history_view.sent(reading.scrollback, 131),
+    )
   let page =
     window(
       list.filter(all, fn(item) {
@@ -629,7 +633,7 @@ pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
         // identities as well as rows catches an old anchor retained after a
         // reflow, a detail toggle, or a surface with no durable provenance.
         let fresh =
-          tui.Model(
+          tui_model.Model(
             ..changed,
             record_cache_valid: False,
             rendered_revision: -1,
@@ -706,7 +710,7 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
       let assert Some(#(after, before)) = history_view.range(model.scrollback)
         as "one wheel gesture keeps demand alive across unrelated sequence pages"
       let pending =
-        tui.Model(
+        tui_model.Model(
           ..model,
           scrollback: history_view.sent(model.scrollback, before),
         )
@@ -795,7 +799,7 @@ fn two_strand_view(main_leaf: Int, sub_leaf: Int) {
 }
 
 /// Drives one bounded older page for whatever the model currently demands.
-fn deliver_page(model: tui.Model, all) {
+fn deliver_page(model: tui_model.Model, all) {
   let assert Some(#(after, before)) = history_view.range(model.scrollback)
     as "a strand missing its parent keeps one bounded demand alive"
   let page =
@@ -804,7 +808,10 @@ fn deliver_page(model: tui.Model, all) {
         snapshot.sequence(item) > after && snapshot.sequence(item) < before
       }),
     )
-  tui.Model(..model, scrollback: history_view.sent(model.scrollback, before))
+  tui_model.Model(
+    ..model,
+    scrollback: history_view.sent(model.scrollback, before),
+  )
   |> tui.apply_channel_update(session_channel.HistoryPage(page, before, after))
   |> tui.update(backend.Tick, _)
 }
@@ -814,14 +821,14 @@ fn deliver_page(model: tui.Model, all) {
 /// An accepted page adds older rows above the reading position, which leaves
 /// the reader well short of the top; the next demand is only raised once the
 /// reader has scrolled back to it.
-fn scroll_to_top(model: tui.Model) {
+fn scroll_to_top(model: tui_model.Model) {
   list.fold(list.repeat(Nil, 200), model, fn(model, _) {
     tui.update(backend.MouseScroll(5, 5, True), model)
   })
 }
 
 /// Types a slash command into the composer and submits it.
-fn run_command(model: tui.Model, text: String) {
+fn run_command(model: tui_model.Model, text: String) {
   string.to_graphemes(text)
   |> list.fold(model, fn(model, key) {
     tui.update(backend.KeyPress(key), model)
@@ -870,7 +877,7 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
   assert list.length(returned.records) == full
   assert history_view.branch(returned.scrollback, current).unloaded == None
   assert list.first(returned.transcript)
-    == Ok(tui.Line(tui.System, "Beginning of this conversation."))
+    == Ok(tui_model.Line(tui_model.System, "Beginning of this conversation."))
   assert returned.scrollback.request == history_view.Quiet
 }
 

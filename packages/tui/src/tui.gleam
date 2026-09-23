@@ -79,6 +79,22 @@ import tui/image_drop
 import tui/internal/ffi_terminal
 import tui/live_jobs
 import tui/markdown
+import tui/model.{
+  type CacheNotice, type Clipboard, type ControlEvent, type Interrupt, type Line,
+  type Model, type Peer, type Reconnect, type ScrollDirection, type Speaker,
+  type StrandWorkspace, type Stream, type Submission, type ToolTail,
+  type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Assistant,
+  Attached, CacheNotice, CacheObservation, ComposerSubmission, ConfirmGoal,
+  ControlEvent, ControlRequest, DaemonSelector, DiffAutomatic, DiffHidden,
+  DiffVisible, Disconnected, Failure, FrameCache, GoalInspector, HeldPrompt,
+  HoldGoalReport, Interjection, Interrupt, Line, Model, ModelSelector, Newer,
+  NoClipboard, NoOverlay, Older, OverlaySubmission, PageLoaded, Preview,
+  PromptNext, Reasoning, ReasoningDigest, ReconnectAttempting, ReconnectIdle,
+  ReconnectSpent, Replaying, ReportGoal, SessionArchived, SessionDeleted,
+  SessionRenamed, SessionRestored, SessionSelector, Spacer, SteerNow,
+  StrandWorkspace, Stream, System, TerminalClipboard, ToolCall, ToolDetail,
+  ToolFailure, ToolPatch, ToolResult, ToolTail, UnconfirmedSubmission, User,
+} as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/notes_view
@@ -108,69 +124,6 @@ import tui/workspace
 import tui/worktree_view
 import weft
 
-/// Who a transcript line belongs to, which is the whole of its styling.
-@internal
-pub type Speaker {
-  System
-  User
-  Assistant
-  Reasoning
-
-  /// One reasoning block stood in for by a single literal row.
-  ///
-  /// The digest bypasses the Markdown renderer, so a fence or a list
-  /// marker inside the model's own prose cannot turn the indicator into
-  /// several rows. That is what lets a reasoning block hold one height
-  /// from its first live fragment through to its settle.
-  ReasoningDigest
-
-  ToolCall
-  ToolResult
-  ToolDetail
-
-  /// Literal patch content, rendered without interpreting Markdown fences.
-  ToolPatch
-
-  ToolFailure
-  Failure
-
-  /// One blank row, placed by the projection that knows it is needed.
-  ///
-  /// Every other block closes itself with a blank, but the tool family is
-  /// excluded from that so a call's summary can never be split from the
-  /// patch, result or note rows beneath it. The gap between one call and the
-  /// next is therefore nobody's trailing blank, and only a fold that can see
-  /// where one group ends and another begins is in a position to emit it.
-  /// This is the row it emits.
-  Spacer
-}
-
-/// Whether the transcript area is showing captured edits.
-@internal
-pub type DiffVisibility {
-  /// Show a side pane when wide enough, preserving conversation on narrow screens.
-  DiffAutomatic
-
-  /// Show conversation history.
-  DiffHidden
-
-  /// Show successful edits from the retained history window.
-  DiffVisible
-}
-
-// Scroll direction names the operation without carrying a Boolean polarity
-// through the two independently scrollable reading surfaces.
-type ScrollDirection {
-  Older
-  Newer
-}
-
-/// One rendered transcript line before markdown and wrapping.
-@internal
-pub type Line {
-  Line(speaker: Speaker, text: String)
-}
-
 // A stream stays separate from durable entries because the server may replay
 // the settled entry after its fragments. Keeping both in one list would render
 // the same assistant answer twice at the exact moment it becomes durable.
@@ -191,91 +144,6 @@ const patch_preview_lines = 60
 
 // Submitted code stays readable in compact mode; expansion retains every line.
 const code_preview_lines = 6
-
-/// The undurable fragments of one strand-and-kind generation.
-///
-/// A request owns its text, thinking and tool-call fragments. Operation IDs
-/// alone cannot separate requests around tool batches or retries. An `end`
-/// observation keeps an identity marker so an older captured preview cannot
-/// resurrect a completed answer. When the request names its reserved response
-/// entry, its bounded fragments remain visible until that entry arrives.
-///
-/// `bytes` is what the fragments weigh, carried rather than recomputed: the
-/// budget is checked once per delta and a delta arrives per provider token,
-/// so counting the list each time would make a bounded question cost the
-/// length of the answer.
-@internal
-pub type Stream {
-  Stream(
-    strand: String,
-    operation: String,
-    generation: String,
-    kind: String,
-    fragments: List(String),
-    bytes: Int,
-  )
-}
-
-/// The rolling tail of one output stream of a tool call that is still
-/// running, as the daemon last pushed it (`protocol-change/031`).
-///
-/// It is kept apart from `Stream` because the two grow differently: a
-/// stream is appended to fragment by fragment, while a tail is *replaced*
-/// whole on every frame, keyed by `{strand, operation, step, source_index,
-/// call_id, stream}`. The daemon bounds `text` at a few kilobytes and this terminal keeps one
-/// tail per key, so however long a command runs the region stays the size
-/// of the last frame. It is cleared with the strand's streams — on an
-/// entry landing and on the operation reaching `done` — and a capture
-/// drops it once that call's durable result is visible. A fixed global cap
-/// also bounds tails whose matching capture was missed or evicted.
-@internal
-pub type ToolTail {
-  ToolTail(
-    strand: String,
-    operation: String,
-    step: String,
-    source_index: Int,
-    call_id: String,
-    stream: String,
-    text: String,
-    total_bytes: Int,
-  )
-}
-
-/// The modal surface that owns focus, if any.
-@internal
-pub type Overlay {
-  NoOverlay
-  ModelSelector(model_selector.State)
-  AgentInspector(selected: agents.Inspector)
-  GoalInspector(state: focused_goal_panel.State)
-  SessionSelector(sessions.State)
-  DaemonSelector(session_selector.State)
-  ApprovalInspector(approval_panel.State)
-}
-
-/// The latest unconfirmed submission, not proof that earlier uncertainty cleared.
-@internal
-pub type UnconfirmedSubmission {
-  UnconfirmedSubmission(
-    /// Session whose command was sent, retained across later attachment changes.
-    session: String,
-    /// Command kind only; no prompt body, grants or credentials are retained.
-    command: String,
-    /// Original connection-local request identity for this unknown outcome.
-    request_id: Int,
-  )
-}
-
-/// Only composer-originated sends consume the visible draft.
-@internal
-pub type SubmissionSource {
-  /// Text, attachments and mode remain in the existing composer until send.
-  ComposerSubmission
-
-  /// A selector action must preserve unrelated composer text.
-  OverlaySubmission
-}
 
 type Launch {
   // Build reporting reads launcher metadata without opening a terminal or daemon.
@@ -345,565 +213,6 @@ type FrameSelection {
 // combination is one Invalid rather than a half-applied set.
 type ReplayOptions {
   ReplayOptions(frames: FrameSelection, width: Int, height: Int)
-}
-
-/// What Enter does to a draft while an operation is live.
-///
-/// The two are different requests, not two shades of one. A steer is folded
-/// into the run that is already going, which is what an operator wants when
-/// they are correcting it; a prompt is a turn of its own, held by the daemon
-/// until the run settles, which is what they want the rest of the time. The
-/// common case is the default and `tab` reaches the other one for a single
-/// draft.
-@internal
-pub type SubmissionMode {
-  /// Send `prompt`. On a busy strand the daemon holds it and runs it next.
-  PromptNext
-
-  /// Send `steer`, folding the draft into the run that is already going.
-  SteerNow
-}
-
-/// One submission this terminal made that the daemon answers with a user
-/// entry of its own.
-///
-/// The list of these is what tells a drained prompt's entry apart from the
-/// entry a steer commits. Both arrive as an ordinary `UserMessage` on the
-/// active strand and neither reply carries an entry id — the gateway rewrites
-/// a steer's entry reply to a bare `mutation_outcome` before it reaches the
-/// wire — so the only discriminator left is the order this terminal issued
-/// them in, which is the order the daemon commits them in: a steer joins the
-/// run that is already open, and a held prompt is drained only once that run
-/// has settled.
-@internal
-pub type Submission {
-  /// A prompt aimed at a busy strand. The daemon holds it and runs it on
-  /// that strand's next turn, so it is drawn under the live tail until the
-  /// entry it stands for commits.
-  HeldPrompt(text: String)
-
-  /// A steer or a follow-up. It is folded into the answer already on screen
-  /// and so draws nothing of its own, but its entry still commits, and that
-  /// entry is not the one a held prompt is waiting for.
-  Interjection
-}
-
-// Interrupt state belongs to the client because the server's abort contract
-// deliberately drains queued steer entries. Holding one instruction here until
-// the durable operation settles preserves the operator's intent without racing
-// a steer admission against cancellation.
-/// Where this client's commands go, and what stands in for a server when
-/// they go nowhere.
-///
-/// This is one type rather than an optional socket because the absence of a
-/// socket means two opposite things. A design preview has no server and
-/// answers a submitted prompt itself, so the layout can be seen; a replay
-/// has no server *and must not invent one*, because every line the server
-/// would have sent is already in the recording and a locally fabricated
-/// echo would appear beside the real one. An `Option` collapses those two
-/// into the same `None`, which is exactly the bug this replaced.
-@internal
-pub type Peer {
-  /// A live ClientGateway websocket. Commands are written to it and the
-  /// server's own events come back as transcript.
-  Attached(socket: connection.Connection)
-
-  /// A live launch without an adopted socket; never fabricates preview replies.
-  Disconnected
-
-  /// The `--demo` preview. A submitted prompt is echoed locally, because
-  /// there is nothing else to draw.
-  Preview
-
-  /// A replay of a recording. Inbound traffic and rendering are
-  /// reproduced; nothing is sent and nothing is invented. A submit does
-  /// only what the live path does *locally* — clear the draft, mark the
-  /// strand submitting, set the notice — and waits for the recorded
-  /// server events like the live client did.
-  Replaying
-}
-
-/// Where a finished mouse selection is copied to.
-///
-/// A copy is an escape sequence written to the terminal, and only a real
-/// terminal should receive one: a scripted run under the virtual backend
-/// shares stdout with the test runner, and an OSC 52 printed there would
-/// overwrite the developer's clipboard with a fixture. The interactive
-/// launch is the one place that turns this on.
-@internal
-pub type Clipboard {
-  /// Write OSC 52 to the terminal etui is drawing on.
-  TerminalClipboard
-
-  /// Discard the copy. The selection and its notice still happen, so a
-  /// replay draws the same frames the live client drew.
-  NoClipboard
-}
-
-/// One held instruction, waiting for the operation it interrupted to settle.
-@internal
-pub type Interrupt {
-  Interrupt(
-    /// The strand whose current work was stopped.
-    strand: String,
-    /// The observed operation; a successor completes this interrupt too.
-    operation: Option(String),
-    /// Legacy recordings retain replacement text until their terminal event.
-    pending: Option(String),
-  )
-}
-
-/// What a finished picker control job produced.
-///
-/// The picker can page or delete, never both at once, so the two share one
-/// job slot and are told apart here rather than by a second set of fields
-/// that could both be occupied.
-@internal
-pub type ControlOutcome {
-  /// One authorized page and the identity to highlight in it.
-  PageLoaded(
-    page: control_protocol.Page,
-    selected: String,
-    collection: session_selector.Collection,
-  )
-
-  /// The daemon removed this registration and its database.
-  SessionDeleted(session_id: String)
-
-  /// Acknowledged archive preserves files while removing the active row.
-  SessionArchived(session_id: String)
-
-  /// Acknowledged restoration removes the row from the archive page.
-  SessionRestored(session_id: String)
-
-  /// The daemon acknowledged a rename with its canonical catalogue row.
-  SessionRenamed(row: control_protocol.Session)
-}
-
-/// One relayed control job, selected by the terminal and its actor-backed driver.
-@internal
-pub type ControlRequest {
-  ControlRequest(
-    cancel: weft.Cancel,
-    replies: Subject(weft.Pulled(ControlOutcome, String)),
-    result: Option(Result(ControlOutcome, String)),
-  )
-}
-
-/// An already selected control job message retains its original source tag.
-@internal
-pub type ControlEvent {
-  ControlEvent(
-    source: Subject(weft.Pulled(ControlOutcome, String)),
-    reply: weft.Pulled(ControlOutcome, String),
-  )
-}
-
-/// The last completed frame, keyed by the screen and revision it was for.
-@internal
-pub type FrameCache {
-  FrameCache(
-    screen: Rect,
-    revision: Int,
-    rendered: #(buffer.Buffer, Result(geometry.Position, Nil)),
-    /// Viewport copy metadata for these exact rendered cells.
-    selection_gutters: List(#(Int, Int)),
-  )
-}
-
-/// A prompt-cache miss already rendered as its transcript row.
-///
-/// The row belongs inside the transcript rather than at the end of it, so
-/// the notice names the entry it follows. A usage event arrives after the
-/// entry whose request it bills, which is what puts the row under the turn
-/// that missed; naming the entry rather than a position is what survives the
-/// compact projection, which joins a call to a result several entries later
-/// and must not be cut between them.
-@internal
-pub type CacheNotice {
-  CacheNotice(
-    /// The strand whose transcript shows the row.
-    strand: String,
-    /// The last entry that strand held when the row was raised.
-    after_entry: ids.EntryId,
-    /// The operator-facing line, already formatted.
-    text: String,
-  )
-}
-
-/// One pushed usage row waiting for a capture that covers its sequence.
-///
-/// The capture supplies the model configuration against which a cache
-/// comparison is safe. Only the latest row per strand is retained; losing an
-/// intermediate comparison can omit a warning but cannot invent one.
-@internal
-pub type CacheObservation {
-  CacheObservation(
-    /// Durable sequence of the observed usage row.
-    seq: Int,
-    /// Provider operation, when the gateway could attribute the row.
-    operation: Option(String),
-    /// Fixed-shape provider counters for this request.
-    usage: message.Usage,
-    /// Terminal-clock instant when the push arrived.
-    at: Int,
-  )
-}
-
-/// Local editing and reading state belongs to an exact session and strand.
-///
-/// A parked workspace holds the editor itself, including its cursor, rather
-/// than only its text. Neither inspecting another agent nor reconnecting can
-/// turn that draft into input for another recipient.
-@internal
-pub type StrandWorkspace {
-  StrandWorkspace(
-    /// The complete editor, including cursor and selection state.
-    input: text_area.TextAreaState,
-    /// Exact unsent text and image attachments.
-    attachments: List(composer.Attachment),
-    /// Submitted command history for this recipient.
-    history: List(String),
-    /// Current position in the recipient's command history.
-    history_index: Int,
-    /// Draft displaced while browsing command history.
-    history_draft: String,
-    /// Whether this recipient's next message queues or steers.
-    submission_mode: SubmissionMode,
-    /// The bounded ancestry window and its live/reading mode.
-    scrollback: history_view.State,
-    /// Frozen transient content held while reading above the live tail.
-    reading_lines: Option(List(Line)),
-    /// Bottom-relative viewport offset at departure.
-    offset: Int,
-    /// Durable row identities used to restore the same reading position.
-    anchors: List(Option(transcript_anchor.Row)),
-    /// Unanchored row count below those durable identities.
-    prefix: Int,
-    /// Original viewport height for anchor relocation after a resize.
-    height: Int,
-  )
-}
-
-/// The immutable presentation state.
-///
-/// Published `@internal` so the virtual-backend harness can build a state
-/// by hand and drive the real loop over it. Nothing outside this package
-/// sees it.
-@internal
-pub type Model {
-  Model(
-    quit: Bool,
-    width: Int,
-    height: Int,
-    /// Launch-time color capability, never read while rendering.
-    palette: appearance.Palette,
-    input: text_area.TextAreaState,
-    /// Unsent drafts and reading endpoints never cross session identities.
-    strand_workspaces: Dict(#(String, String), StrandWorkspace),
-    /// The saved endpoint being restored on the next row-cache rebuild.
-    restored_workspace: Option(StrandWorkspace),
-    attachments: List(composer.Attachment),
-    history: List(String),
-    history_index: Int,
-    history_draft: String,
-    command_selected: Int,
-    submission_mode: SubmissionMode,
-    /// Ownership marker only; the unsent encoded intent belongs to Channel.
-    pending_submission: Option(SubmissionSource),
-    interrupt: Option(Interrupt),
-    submitting: Option(String),
-    /// Submissions to the active strand whose entries have not committed
-    /// yet, oldest first, which is the order the daemon commits them in.
-    /// The held prompts among them are drawn under the live tail; the
-    /// interjections draw nothing and are here to consume the entries they
-    /// produce, so that a steer cannot retire a prompt's echo.
-    queued: List(Submission),
-    /// The submission whose reply has not arrived, if any. A prompt the
-    /// daemon refuses — a fifth held prompt meets `code_conflict` — commits
-    /// no entry and so has nothing to retire it later; keeping it here until
-    /// the daemon says it took it is what stops a refusal leaving an echo on
-    /// screen for the rest of the session. There is at most one because the
-    /// conversation channel carries one mutation at a time.
-    awaiting_outcome: Option(Submission),
-    transcript: List(Line),
-    records: List(protocol.EntryRecord),
-    /// The last provider usage row each strand billed, with the instant it
-    /// arrived, which is all the prompt-cache detector remembers. Keyed by
-    /// strand because a sub-agent's request says nothing about whether the
-    /// primary's cached prefix survived the operator's pause.
-    cache_watch: Dict(String, cache_miss.Watch),
-    /// Highest live usage observation already folded on each strand. A
-    /// capture owns cumulative totals; this cursor prevents a delayed push
-    /// from reporting the same settlement twice.
-    cache_seen_seq: Dict(String, Int),
-    /// Latest row per strand awaiting a capture that covers its sequence.
-    cache_pending: Dict(String, CacheObservation),
-    /// A model switch fences the first observed operation on that strand.
-    /// Every row from it may bill the old provider, so only a later operation
-    /// can establish the new provider's baseline.
-    cache_fence: Dict(String, Option(String)),
-    /// Cache-miss notices raised on this connection, oldest first. They are
-    /// transient by design: a reattach rebuilds the durable transcript and
-    /// these do not come back, which is acceptable for a notice about the
-    /// moment it happened, and is what keeps them out of the store.
-    cache_notices: List(CacheNotice),
-    /// The footer's cache label for the active strand, as of the last tick:
-    /// what `cache_miss.outlook` says rendered as text, or `""` when it
-    /// says nothing. Held as a string rather than an `Outlook` so the tick
-    /// can compare the new label against the old and repaint only when the
-    /// reading actually changed — the reading moves once a minute at most
-    /// until a countdown reaches its final stretch.
-    cache_outlook: String,
-    /// Bounded scrollback is independent of the authoritative live cut.
-    scrollback: history_view.State,
-    notice: String,
-    /// A complete queue draft never borrows the ordinary composer.
-    queue_editor: queue_editor.State,
-    /// Current Git observation and independent file-navigation state.
-    worktree: worktree_view.State,
-    /// Server-observed current context and independent inspector state.
-    context: context_view.State,
-    /// Attachment-local terminal result provenance.
-    completion: completion_summary.State,
-    /// Exact attachment which owns the remembered operation boundaries.
-    completion_owner: String,
-    /// Details visibility does not borrow the composer.
-    summary_surface: queue_editor.Surface,
-    /// Independent detailed-summary scroll offset.
-    summary_scroll: Int,
-    /// Focused evidence section in the completion summary.
-    summary_tab: summary_panel.Tab,
-    /// Stable-index projection of the selected current job.
-    summary_job_selected: Int,
-    /// Current job observation is separate from the result timestamp.
-    jobs: Option(live_jobs.Board),
-    /// Local receipt time; server and terminal clocks are never subtracted.
-    jobs_observed_ms: Option(Int),
-    /// One explicit job read deferred behind the mutation lane.
-    jobs_refresh: worktree_view.Refresh,
-    /// Attachment and strand for the one issued roster read.
-    jobs_awaiting: Option(#(String, String)),
-    /// Actual lane request ID; unrelated refusals cannot settle this read.
-    jobs_request: Option(Int),
-    /// Missing observations are unavailable, never a zero-job assertion.
-    jobs_notice: String,
-    /// The advisor's undelivered nudge queue, observed while the primary is
-    /// idle. `None` is "nothing observed", never "the queue is empty".
-    nudges: Option(advisor_pending.Board),
-    /// One pending-nudge read waiting for a free command lane.
-    nudges_refresh: worktree_view.Refresh,
-    /// Attachment which owns the one issued nudge read; a board answering an
-    /// attachment that has gone describes a session nobody is watching.
-    nudges_awaiting: Option(String),
-    /// Actual lane request ID, so an unrelated refusal cannot settle it.
-    nudges_request: Option(Int),
-    /// The session goal as the server last rendered it. `None` is "nothing
-    /// observed", never "no goal is pinned" — that claim is a `NoGoal`
-    /// board, and only the server can make it.
-    goal: Option(goal_view.Board),
-    /// One goal read waiting for a free command lane.
-    goal_refresh: worktree_view.Refresh,
-    /// Attachment which owns the one issued goal command, read or mutation
-    /// alike, since both are answered with a board.
-    goal_awaiting: Option(String),
-    /// Actual lane request ID, so an unrelated refusal cannot settle it.
-    goal_request: Option(Int),
-    /// Whether the next board is the operator's own `/goal` question.
-    goal_report: GoalReport,
-    help_open: Bool,
-    notes_open: Bool,
-    /// A dedicated view of captured edit diffs, without tool retries.
-    diff_view: DiffVisibility,
-    /// Diff scrolling is independent of conversation scrolling, including
-    /// while a narrow terminal temporarily shows only the changes.
-    diff_scroll_offset: Int,
-    /// Cached newest-first diff rows. Stream fragments cannot make the
-    /// changes pane reparse settled edit results.
-    diff_rows: List(span.Line),
-    /// Current diff lines retain layout across captures at the same width.
-    /// Rebuilding keeps only the newly captured projection's keys.
-    diff_line_cache: Dict(Line, List(span.Line)),
-    /// The row count belongs to the cached diff projection and its width.
-    diff_row_count: Int,
-    /// The observation and selection that produced the cached patch rows.
-    /// Compare against the cache source even when a driver applied a reply
-    /// before the next terminal update.
-    diff_worktree_source: #(Option(worktree_view.Board), Int),
-    /// Latest explicit read of the notes board, with its own revision.
-    note_board: Option(notes_view.Board),
-    /// Stable cell key within the inspected notes board.
-    note_selected: Option(String),
-    /// Selected note representation, independent of transcript detail mode.
-    note_mode: note_panel.Mode,
-    /// Selected note body offset, independent of transcript reading position.
-    note_scroll: Int,
-    /// Latest explicit notes target waiting for the existing command lane.
-    notes_requested: Option(String),
-    overlay: Overlay,
-    models: List(protocol.ModelInfo),
-    /// Slash commands loaded by the currently attached daemon.
-    skills: List(command.Suggestion),
-    current_model: String,
-    workspace: workspace.Context,
-    strands: List(protocol.Strand),
-    agent_summary: String,
-    /// Current reviewer progress, with operation-owned task excerpts.
-    reviewer_rows: List(reviewer_status.Row),
-    /// Stable, operation-owned summaries of the captured agent roster.
-    agent_rows: List(agent_view.Row),
-    /// At most twenty provenance-verified sends observed in this attachment.
-    agent_messages: List(agent_messages.Item),
-    /// Full advisor-only commentary from the bounded captured ancestry.
-    advisor_history: advisor_history.Board,
-    active_strand: String,
-    session: String,
-    /// One catalogue display name, paired with the identity that owns it.
-    session_label: Option(#(String, String)),
-    local_options: Option(bootstrap.Options),
-    inbox: Subject(connection.Message),
-    peer: Peer,
-    session_switch: sessions.SwitchStatus,
-    /// One provisional replacement, whose original deadline includes capture.
-    candidate: attachment.Status,
-    /// Serial credited state for the adopted socket only.
-    channel: Option(session_channel.Channel),
-    /// Last complete raw cut and its coherent metadata projection.
-    captured: Option(#(snapshot.Captured, snapshot_view.View)),
-    /// What made the lane ask for the last cut that changed something
-    /// visible: a pushed frame, the idle refresh, or the terminal's own
-    /// command. Live delivery is the difference between the first two, and
-    /// this is where a fixture reads it. A capture that painted nothing
-    /// leaves it alone.
-    last_capture: session_channel.Capture,
-    /// How many commit notices this terminal's lane has received, including
-    /// the ones that asked for no capture. A notice can name a sequence the
-    /// terminal already holds, or arrive while the idle refresh's catch-up is
-    /// already in flight, and in neither case does it paint anything — which
-    /// is why `last_capture` cannot say whether the daemon pushed. This can:
-    /// it counts arrivals, so it is the fixture's witness that live delivery
-    /// reaches this terminal.
-    notices: Int,
-    /// Terminal-owned daemon control, independent of the selected session.
-    daemon_host: Option(daemon_selection.Host),
-    /// One bounded metadata page request; no catalogue accumulation.
-    control_request: Option(ControlRequest),
-    /// The one reconnect an unexpected daemon death is allowed, and whether it
-    /// has already been spent. Kept in the model rather than beside the loop so
-    /// the decision not to reconnect twice is made from the state the operator
-    /// can see.
-    reconnect: Reconnect,
-    /// Retained after an uncertain create so another key cannot duplicate it.
-    creation_key: Option(String),
-    /// Current pending requests and at most sixteen bounded resolved summaries.
-    approvals: List(approval.Review),
-    /// Questions already presented locally, keyed by their exact durable sequence.
-    prompted_approvals: List(#(String, Int)),
-    /// Exact decision currently requested for local inspection, if any.
-    inspecting_approval: Option(String),
-    /// Last sent mutation whose outcome was not observed; survives adoption.
-    unconfirmed: Option(UnconfirmedSubmission),
-    /// Next terminal-local attachment identity, independent of server IDs.
-    next_attempt: Int,
-    /// Two-slot effect-free replay state and its terminal-owned delivery lane.
-    replay_state: attempt_replay.State,
-    replay_inbox: Subject(attempt.Event),
-    /// A malformed local recording stops replay rather than skipping a frame.
-    replay_error: Option(String),
-    next_id: Int,
-    usage: message.Usage,
-    /// When the active strand's streaming generation produced its first
-    /// fragment, on the monotonic clock; `None` between generations.
-    /// Paired with the output count the settlement's usage reports, it
-    /// yields the rate. Usage reports carry no strand, so the figure is
-    /// exact only while one strand streams at a time; a child settling
-    /// under a streaming parent skews one reading, which a footer can
-    /// bear.
-    generation_started_ms: Option(Int),
-    /// Output tokens per second of the last settled generation, for the
-    /// footer. `None` until one generation has both streamed and settled.
-    output_rate_tps: Option(Int),
-    agent_rail_visible: Bool,
-    details_expanded: Bool,
-    repaint_phase: Bool,
-    activity_frame: Int,
-    /// When the active strand's current activity began, on the monotonic
-    /// clock; `None` while it is idle. Set and cleared on the indicator's
-    /// tick so the render stays pure.
-    activity_started_ms: Option(Int),
-    /// Whole seconds the active strand has been busy, recomputed on the
-    /// tick and shown beside the phase so a long think reads as time
-    /// passing rather than as a stall.
-    activity_elapsed_s: Int,
-    streams: List(Stream),
-    /// Transient rows captured when leaving the live tail. Durable history has
-    /// its own frozen ancestry; this keeps in-flight reasoning stationary too.
-    reading_lines: Option(List(Line)),
-    tool_tails: List(ToolTail),
-    scroll_offset: Int,
-    render_revision: Int,
-    rendered_revision: Int,
-    rendered_row_count: Int,
-    rendered_rows: List(span.Line),
-    /// How many of `rendered_rows` the bottom-anchored viewport has shown.
-    /// Never above `rendered_row_count`; the difference is the backlog the
-    /// pacing walk is working off, and a gesture closes it at once.
-    revealed_rows: Int,
-    /// Durable provenance for wrapped rows; transient rows have no anchor.
-    rendered_anchors: List(Option(transcript_anchor.Row)),
-    /// Copy gutters aligned with `rendered_rows`, built in the same pass.
-    rendered_gutters: List(Int),
-    record_rows: List(span.Line),
-    /// Durable copy gutters, aligned with `record_rows`.
-    record_gutters: List(Int),
-    /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
-    /// only the current projection, so old branches and outcomes are released.
-    record_line_cache: Dict(Line, List(span.Line)),
-    /// Compact invocation rows keyed by their complete immutable outcome.
-    /// Rebuilds retain only calls in the current projection.
-    compact_call_cache: Dict(tool_activity.Call, List(Line)),
-    /// Narrative presentation retains only the current entries and owner.
-    compact_entry_cache: Dict(
-      #(entry.Entry, Option(message.Origin)),
-      List(Line),
-    ),
-    pending_records: List(protocol.EntryRecord),
-    record_cache_valid: Bool,
-    record_cache_width: Int,
-    record_cache_strand: String,
-    record_cache_details: Bool,
-    frame_revision: Int,
-    frame_cache: Option(FrameCache),
-    frame_debt: pacing.FrameDebt,
-    /// The presentation clock, shared by pacing, activity, and throughput.
-    /// Scripts inject this clock without changing transport deadlines.
-    monotonic_time_ms: fn() -> Int,
-    last_frame_ms: Int,
-    activity_revision: Int,
-    quiet_for_ms: Int,
-    /// The open `--record` file, when the launch asked for one. Present
-    /// in the model rather than beside the loop because the inbox is
-    /// drained inside `update_tick`, so there is no other point at which
-    /// both a websocket message and the recording are in scope.
-    recorder: Option(recording.Recorder),
-    /// The mouse selection being dragged or left highlighted after a copy.
-    /// Held in screen cells over the frame on display, so it is cleared by
-    /// the next key, wheel notch, paste or resize rather than tracked
-    /// through a reflow.
-    selection: Option(selection.Selection),
-    /// The selected pane stays on its original cells until the selection ends.
-    selection_frame: Option(buffer.Buffer),
-    /// Screen row and transcript gutter captured with `selection_frame`.
-    selection_gutters: List(#(Int, Int)),
-    /// Whether a finished selection reaches the terminal's clipboard.
-    clipboard: Clipboard,
-    /// The Herdr pane reporter, when this terminal runs inside one. Held
-    /// in the model for the same reason the recorder is: the publish runs
-    /// where the lifecycle events just landed, which is inside `update`.
-    herdr_reporter: Option(herdr.Reporter),
-    /// The pane state and session last reported, so only a change sends.
-    herdr_published: Option(herdr.Publication),
-  )
 }
 
 /// Runs the interactive terminal client.
@@ -1339,7 +648,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
-          append_error(
+          tui_model.append_error(
             Model(..local, peer: Disconnected, notice: "daemon startup failed"),
             reason,
           )
@@ -1354,7 +663,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
       }
     }
     Invalid(reason) ->
-      append_error(Model(..base, notice: "invalid launch"), reason)
+      tui_model.append_error(Model(..base, notice: "invalid launch"), reason)
     Remote(address, session, token) ->
       connect_remote(base, inbox, address, session, token)
   }
@@ -1446,7 +755,7 @@ fn open_recording(model: Model, record: String) -> Model {
               ),
             ),
           )
-        Error(reason) -> append_error(model, reason)
+        Error(reason) -> tui_model.append_error(model, reason)
       }
   }
 }
@@ -1968,7 +1277,7 @@ pub fn connect_remote(
     daemon_selection.host(control, address, token)
   }
   case connected {
-    Error(reason) -> append_error(base, reason)
+    Error(reason) -> tui_model.append_error(base, reason)
     Ok(host) -> {
       let model = Model(..base, daemon_host: Some(host))
       case session {
@@ -2019,7 +1328,7 @@ fn attach_daemon(
   case host {
     Error(reason) -> {
       daemon.close(control)
-      append_error(base, reason)
+      tui_model.append_error(base, reason)
     }
     Ok(host) -> {
       let model =
@@ -2069,33 +1378,6 @@ fn build_mismatch_lines(build: Option(control_protocol.Build)) -> List(Line) {
       }
     }
   }
-}
-
-/// Whether this terminal may reconnect itself to a restarted daemon.
-///
-/// The attempt is offered once per daemon death and only to a local launch.
-/// A local launch names the launcher state root and the session it opened, so
-/// there is a launch to re-run and an identity to reattach; a remote
-/// attachment has neither, and a session with no identity has nothing to
-/// reattach. An operator quit is not a daemon death, and a terminal that has
-/// already spent its attempt waits for the operator instead of looping.
-@internal
-pub type Reconnect {
-  /// No attempt is running and one may still be started.
-  ReconnectIdle
-
-  /// One bounded relaunch is in flight; its outcome is drained by the tick.
-  ReconnectAttempting(
-    /// The signal that stops a relaunch whose outcome outlives the operator's
-    /// patience, cancelled when the terminal quits.
-    cancel: weft.Cancel,
-    /// Terminal-owned mailbox for the relayed outcome.
-    replies: Subject(weft.Pulled(daemon_selection.Host, String)),
-  )
-
-  /// This daemon death has had its one attempt. Nothing runs again until an
-  /// attachment is adopted, which is what proves the reconnect worked.
-  ReconnectSpent
 }
 
 // The bounded relaunch budget. It is the same ninety seconds the initial
@@ -2189,7 +1471,7 @@ fn begin_reconnect(model: Model) -> Model {
         reconnect: ReconnectAttempting(cancel, replies),
         notice: "reconnecting to session " <> session,
       )
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
     }
   }
 }
@@ -2270,7 +1552,7 @@ fn reattach_after_reconnect(model: Model) -> Model {
   case model.session {
     "" -> Model(..model, notice: "daemon reconnected; no session was attached")
     session ->
-      append_system(
+      tui_model.append_system(
         begin_open(
           Model(..model, notice: "reattaching to " <> session),
           session,
@@ -2284,7 +1566,7 @@ fn reattach_after_reconnect(model: Model) -> Model {
 // the operator gets the reason and the standing Disconnected advice rather
 // than a loop; `/sessions` remains the explicit way back.
 fn reconnect_failed(model: Model, reason: String) -> Model {
-  append_error(
+  tui_model.append_error(
     Model(..model, reconnect: ReconnectSpent),
     "reconnect failed: " <> reason <> "; press /sessions to reconnect",
   )
@@ -2293,8 +1575,10 @@ fn reconnect_failed(model: Model, reason: String) -> Model {
 fn begin_open(model: Model, session: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
   case attachment.busy(model.candidate), model.daemon_host {
-    True, _ -> append_error(model, "a session switch is already in progress")
-    False, None -> append_error(model, "daemon control is disconnected")
+    True, _ ->
+      tui_model.append_error(model, "a session switch is already in progress")
+    False, None ->
+      tui_model.append_error(model, "daemon control is disconnected")
     False, Some(host) ->
       Model(
         ..model,
@@ -2332,8 +1616,10 @@ fn load_catalogue_collection(
       control_protocol.ListArchivedSessions(after, revision)
   }
   case model.control_request, model.daemon_host {
-    Some(_), _ -> append_error(model, "a catalogue page is already loading")
-    None, None -> append_error(model, "daemon control is disconnected")
+    Some(_), _ ->
+      tui_model.append_error(model, "a catalogue page is already loading")
+    None, None ->
+      tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
       let cancel = weft.cancel_signal()
       let replies = process.new_subject()
@@ -2391,8 +1677,10 @@ fn load_catalogue_collection(
 // and never causes the metadata mutation to be sent a second time.
 fn begin_rename(model: Model, session: String, name: String) -> Model {
   case model.control_request, model.daemon_host {
-    Some(_), _ -> append_error(model, "a catalogue action is already running")
-    None, None -> append_error(model, "daemon control is disconnected")
+    Some(_), _ ->
+      tui_model.append_error(model, "a catalogue action is already running")
+    None, None ->
+      tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
       let cancel = weft.cancel_signal()
       let replies = process.new_subject()
@@ -2441,8 +1729,10 @@ type Removal {
 
 fn begin_removal(model: Model, session: String, removal: Removal) -> Model {
   case model.control_request, model.daemon_host {
-    Some(_), _ -> append_error(model, "a catalogue request is already running")
-    None, None -> append_error(model, "daemon control is disconnected")
+    Some(_), _ ->
+      tui_model.append_error(model, "a catalogue request is already running")
+    None, None ->
+      tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
       let cancel = weft.cancel_signal()
       let replies = process.new_subject()
@@ -2561,7 +1851,7 @@ pub fn accept_control_event(model: Model, event: ControlEvent) -> Model {
             ),
           )
         weft.RunLost(reason) ->
-          append_error(
+          tui_model.append_error(
             Model(..model, control_request: None),
             string.inspect(reason),
           )
@@ -2589,7 +1879,7 @@ fn finish_control(model: Model, result) {
             "Enter restores · d permanently deletes · a shows active sessions"
         },
       )
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
     }
 
     Some(Ok(SessionRenamed(row))) ->
@@ -2611,7 +1901,7 @@ fn finish_control(model: Model, result) {
         },
         notice: "renamed session to " <> row.name,
       )
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
 
     // The row is dropped from the page already on screen rather than by
     // re-listing: the reply proves this identity is gone, and a fresh page
@@ -2622,8 +1912,9 @@ fn finish_control(model: Model, result) {
       catalogue_removed(model, id, "archived session ")
     Some(Ok(SessionRestored(id))) ->
       catalogue_removed(model, id, "restored session ")
-    Some(Error(reason)) -> append_error(model, reason)
-    None -> append_error(model, "control job ended without an outcome")
+    Some(Error(reason)) -> tui_model.append_error(model, reason)
+    None ->
+      tui_model.append_error(model, "control job ended without an outcome")
   }
 }
 
@@ -2644,7 +1935,7 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
     },
     notice: description <> id,
   )
-  |> invalidate_frame
+  |> tui_model.invalidate_frame
 }
 
 fn create_session(model: Model) -> Model {
@@ -2662,7 +1953,7 @@ fn create_session(model: Model) -> Model {
     None -> Ok("")
   }
   case configuration {
-    Error(reason) -> append_error(model, reason)
+    Error(reason) -> tui_model.append_error(model, reason)
     Ok(config) -> create_session_configured(model, config)
   }
 }
@@ -2671,13 +1962,14 @@ fn create_session_configured(model: Model, config: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
   case model.creation_key, model.daemon_host, attachment.busy(model.candidate) {
     Some(key), _, _ ->
-      append_error(
+      tui_model.append_error(
         model,
         "reconcile prior creation key before creating again: " <> key,
       )
-    None, None, _ -> append_error(model, "daemon control is disconnected")
+    None, None, _ ->
+      tui_model.append_error(model, "daemon control is disconnected")
     None, Some(_), True ->
-      append_error(model, "a session switch is already in progress")
+      tui_model.append_error(model, "a session switch is already in progress")
     None, Some(host), False -> {
       let key =
         "tui-"
@@ -3234,7 +2526,7 @@ fn render_conversation_heading(
     buf,
     area.position,
     text.truncate(
-      case reading_history(model) {
+      case tui_model.reading_history(model) {
         True -> " ↓ Scrollback · click for latest · End with empty prompt "
         False -> transcript_title(model)
       },
@@ -3285,7 +2577,7 @@ fn render_transcript(
         buf,
         area,
         model.rendered_rows,
-        model.scroll_offset + viewport_backlog(model),
+        model.scroll_offset + tui_model.viewport_backlog(model),
       )
   }
 }
@@ -3913,7 +3205,7 @@ fn select_note(model: Model, direction: Int) -> Model {
       // Note navigation moves only the surface that owns this key. The
       // transcript beneath an inspector retains its independent anchor.
       Model(..model, note_selected: selected, note_scroll: 0)
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
     }
     _ -> model
   }
@@ -4571,7 +3863,7 @@ fn recipient_label(model: Model) -> String {
 fn input_behavior(model: Model) -> String {
   use <- bool.guard(
     model.captured != None
-      && !is_known_strand(model.strands, model.active_strand),
+      && !tui_model.is_known_strand(model.strands, model.active_strand),
     " recipient unavailable · draft retained · F2 agents ",
   )
   use <- bool.guard(model.peer == Disconnected, case model.reconnect {
@@ -4580,7 +3872,7 @@ fn input_behavior(model: Model) -> String {
       " Disconnected · /sessions to reconnect · draft retained "
   })
   case
-    active_interrupt(model),
+    tui_model.active_interrupt(model),
     active_status_label(model),
     model.submission_mode
   {
@@ -4635,7 +3927,7 @@ pub fn activity_glyph(frame: Int) -> String {
 // particular, `assistant` begins before the first reasoning delta, so treating
 // it as a completed response would make a steerable turn look stuck.
 fn active_status_label(model: Model) -> Option(String) {
-  case active_strand_phase(model) {
+  case tui_model.active_strand_phase(model) {
     None -> None
     Some("assistant") ->
       Some(case active_stream_kind(model) {
@@ -4835,8 +4127,8 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
         selection_frame: None,
         selection_gutters: [],
       )
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
     backend.Tick -> update_tick(model)
 
     // A keyboard burst can arrive before an idle tick even when the final
@@ -4844,12 +4136,12 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     // interpreting the action, without starting another periodic capture.
     backend.KeyPress(key) ->
       update_ready_key(keys.match(key), model)
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
     backend.Paste(text) ->
       handle_paste(clear_selection(model), text)
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
 
     // A wheel flick delivers notches faster than any poll timeout, so no
     // tick arrives until the hand pauses. Draining here, as a key does,
@@ -4862,15 +4154,15 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
         True -> Older
         False -> Newer
       })
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
 
     // The left button is the selection button, as in every terminal. The
     // other two are listed so a new etui button is a compile error here.
     backend.MousePress(x, y, backend.MouseLeft) ->
       begin_selection(model, geometry.Position(x, y))
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
 
     // A held drag is the other gesture that outruns the poll timeout, for as
     // long as the button is down. The selection reads the frame it began
@@ -4878,12 +4170,12 @@ fn apply_input(event: backend.InputEvent, model: Model) -> Model {
     backend.MouseDrag(x, y, backend.MouseLeft) ->
       drain_connection(model, 64)
       |> extend_selection(geometry.Position(x, y))
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
     backend.MouseRelease(x, y, backend.MouseLeft) ->
       finish_selection(model, geometry.Position(x, y))
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
     backend.MousePress(_, _, backend.MouseMiddle)
     | backend.MousePress(_, _, backend.MouseRight)
     | backend.MouseDrag(_, _, backend.MouseMiddle)
@@ -5050,7 +4342,7 @@ fn drain_replay(model: Model) -> Model {
     Replaying, Ok(event) ->
       case attempt_replay.apply(model.replay_state, event) {
         Error(reason) ->
-          append_error(
+          tui_model.append_error(
             Model(..model, replay_error: Some(reason), quit: True),
             reason,
           )
@@ -5076,7 +4368,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         ),
       )
     attempt_replay.Rejected(reason) ->
-      append_error(model, "open session: " <> reason)
+      tui_model.append_error(model, "open session: " <> reason)
     attempt_replay.Adopt(cut, view) -> {
       let model =
         select_workspace(
@@ -5137,7 +4429,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
 // model. Going idle clears the clock, so the next activity starts from
 // zero rather than from wherever the last one stopped.
 fn advance_activity_indicator(model: Model) -> Model {
-  case active_strand_live(model) {
+  case tui_model.active_strand_live(model) {
     False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
     True -> {
       let now = model.monotonic_time_ms()
@@ -5156,7 +4448,7 @@ fn advance_activity_indicator(model: Model) -> Model {
         && activity_elapsed_s == model.activity_elapsed_s
       {
         True -> advanced
-        False -> invalidate_frame(advanced)
+        False -> tui_model.invalidate_frame(advanced)
       }
     }
   }
@@ -5172,7 +4464,7 @@ fn advance_activity_indicator(model: Model) -> Model {
 // about to reset — and the miss row, not the label, is the thing that
 // reports what the pause before the request cost.
 fn advance_cache_outlook(model: Model) -> Model {
-  let label = case active_strand_live(model) {
+  let label = case tui_model.active_strand_live(model) {
     False ->
       model.cache_watch
       |> dict.get(model.active_strand)
@@ -5184,7 +4476,7 @@ fn advance_cache_outlook(model: Model) -> Model {
   }
   case label == model.cache_outlook {
     True -> model
-    False -> invalidate_frame(Model(..model, cache_outlook: label))
+    False -> tui_model.invalidate_frame(Model(..model, cache_outlook: label))
   }
 }
 
@@ -5247,13 +4539,6 @@ fn pace_policy(model: Model) -> pacing.PacePolicy {
   pacing.policy(snap_above: transcript_viewport_height(model))
 }
 
-// Rows held back from the bottom-anchored viewport. Added to the scroll
-// offset, which counts from the same end, this is what walks the view down
-// to the tail a frame at a time.
-fn viewport_backlog(model: Model) -> Int {
-  int.max(0, model.rendered_row_count - model.revealed_rows)
-}
-
 /// Reports whether the viewport still has rows to reveal.
 ///
 /// A full-width changes view is the one surface painted without the paced
@@ -5272,7 +4557,7 @@ fn viewport_backlog(model: Model) -> Int {
 @internal
 pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
   use <- bool.guard(main_shows_diff(model), pacing.ViewportSettled)
-  pacing.viewport_pacing(backlog: viewport_backlog(model))
+  pacing.viewport_pacing(backlog: tui_model.viewport_backlog(model))
 }
 
 // One step of the walk, taken as the frame it belongs to is rendered. Tying
@@ -5285,7 +4570,7 @@ pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
 // replayed or scripted run settles on the complete frame rather than on
 // however far a fixed number of ticks happened to walk.
 fn advance_viewport(model: Model) -> Model {
-  case active_strand_live(model) {
+  case tui_model.active_strand_live(model) {
     False -> Model(..model, revealed_rows: model.rendered_row_count)
     True ->
       Model(
@@ -5337,27 +4622,6 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
   }
 }
 
-fn mark_activity(model: Model) -> Model {
-  Model(
-    ..model,
-    activity_revision: model.activity_revision + 1,
-    quiet_for_ms: 0,
-  )
-}
-
-fn invalidate_frame(model: Model) -> Model {
-  Model(..model, frame_revision: model.frame_revision + 1)
-}
-
-// Reading mode owns the endpoint even at offset zero, so a frozen viewport at
-// the tail is not the live tail: returning to live output is an explicit
-// gesture rather than a consequence of scrolling back down to the newest row.
-// The offset covers the converse, a viewport lifted off the tail before any
-// endpoint was frozen.
-fn reading_history(model: Model) -> Bool {
-  model.scrollback.mode == history_view.Reading || model.scroll_offset > 0
-}
-
 // Terminal polling still produces idle ticks so the websocket inbox can be
 // drained, but those ticks must not compare or wrap the durable transcript.
 // Event handlers increment a scalar revision at the mutation boundary, which
@@ -5365,7 +4629,7 @@ fn reading_history(model: Model) -> Bool {
 fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
-    || reading_history(before) != reading_history(after)
+    || tui_model.reading_history(before) != tui_model.reading_history(after)
     || before.width != after.width
     || before.agent_rail_visible != after.agent_rail_visible
     || before.details_expanded != after.details_expanded
@@ -5387,7 +4651,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
         before.active_strand == after.active_strand
         && before.session == after.session
       let reading_lines = case
-        reading_history(after),
+        tui_model.reading_history(after),
         same_workspace,
         before.reading_lines,
         after.reading_lines
@@ -5411,7 +4675,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       // An empty anchor list also covers entering history or returning from
       // help, whose rows have no durable identities to reuse.
       let rendered_anchors = case
-        after.help_open || after.notes_open || !reading_history(after),
+        after.help_open || after.notes_open || !tui_model.reading_history(after),
         record_cache_matches(after, width)
         && list.is_empty(after.pending_records)
         && before.active_strand == after.active_strand
@@ -5437,7 +4701,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
             False -> #([], transcript_viewport_height(after), 0)
           }
       }
-      let anchored = case reading_history(after) {
+      let anchored = case tui_model.reading_history(after) {
         False -> 0
         True ->
           transcript_anchor.relocate(
@@ -5472,7 +4736,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       // needs clamping, since a shrunk projection must not leave the
       // viewport claiming rows that no longer exist.
       let revealed_rows = case
-        reading_history(after)
+        tui_model.reading_history(after)
         || after.notes_open
         || before.active_strand != after.active_strand
         || before.session != after.session
@@ -6103,7 +5367,7 @@ fn handle_composer_paste(model: Model, text: String) -> Model {
 
 fn paste_unlocked(model: Model, text: String) -> Model {
   case image_drop.load_paste(text) {
-    Error(reason) -> append_error(model, reason)
+    Error(reason) -> tui_model.append_error(model, reason)
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
     Ok(None) ->
       case composer.classify(text) {
@@ -6132,7 +5396,7 @@ fn paste_unlocked(model: Model, text: String) -> Model {
 
 fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
   case composer.admit_attachment(model.attachments, attachment) {
-    Error(reason) -> append_error(model, reason)
+    Error(reason) -> tui_model.append_error(model, reason)
     Ok(attachments) -> {
       let notice =
         composer.summary(attachments) |> option.unwrap("pasted content")
@@ -6172,7 +5436,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
   case outcome {
     None -> model
     Some(attachment.Failed(reason)) ->
-      append_error(
+      tui_model.append_error(
         cancel_pending(model, "target change from " <> model.session),
         "open session: " <> reason,
       )
@@ -6290,7 +5554,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         adopted |> send_frame(protocol.models(1)) |> request_visible_worktree
       let adopted = Model(..adopted, reconnect: ReconnectIdle)
       case cancelled {
-        Some(notice) -> append_system(adopted, notice)
+        Some(notice) -> tui_model.append_system(adopted, notice)
         None -> adopted
       }
     }
@@ -6365,7 +5629,7 @@ pub fn apply_channel_update(
       case missing {
         [] -> updated
         _ ->
-          append_system(
+          tui_model.append_system(
             updated,
             "Decisions not available: " <> string.join(missing, ", "),
           )
@@ -6373,7 +5637,7 @@ pub fn apply_channel_update(
     }
     session_channel.Auxiliary(event) -> apply_event(model, event)
     session_channel.RequestRefused("history", _, code, message) ->
-      append_error(
+      tui_model.append_error(
         Model(..model, scrollback: history_view.cancel(model.scrollback)),
         "Older history: " <> code <> ": " <> message,
       )
@@ -6432,14 +5696,14 @@ pub fn apply_channel_update(
         queue_editor: queue_editor.new(),
         notice: "queued input updated",
       )
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
     session_channel.Acknowledged("prompt", "queued") ->
       Model(
         ..settle_own_turn(model),
         submitting: None,
         notice: "prompt queued for the next turn",
       )
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
 
     // An abort ends the run, and with it every steer and follow-up the run
     // had not started yet: the queue drains those without committing them,
@@ -6449,7 +5713,7 @@ pub fn apply_channel_update(
     // leaves the prompt echoes standing.
     session_channel.Acknowledged("abort", status) ->
       Model(..abandon_interjections(model), notice: "abort " <> status)
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
 
     // Every other acknowledgement settles its submission the same way: a
     // steer answered `admitted` will commit the entry its interjection is
@@ -6457,9 +5721,9 @@ pub fn apply_channel_update(
     // empty and pass through untouched.
     session_channel.Acknowledged(command, status) ->
       Model(..settle_own_turn(model), notice: command <> " " <> status)
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->
-      append_error(
+      tui_model.append_error(
         Model(
           ..model,
           queue_editor: case command {
@@ -6475,7 +5739,7 @@ pub fn apply_channel_update(
         "Last unconfirmed submission: " <> command <> "; not retried",
       )
     session_channel.Failed(reason) ->
-      append_error(
+      tui_model.append_error(
         Model(
           ..discard_own_turn(model),
           peer: after_close(model.peer),
@@ -6506,7 +5770,7 @@ pub fn apply_channel_update(
             Some(id) ->
               worktree_view.receive(
                 model.worktree,
-                queue_owner(model),
+                tui_model.queue_owner(model),
                 worktree_view.Failed(id, "conversation disconnected"),
               )
             None -> model.worktree
@@ -6553,7 +5817,7 @@ fn reconcile_cut(
       case list.drop(disappeared, 8) {
         [] -> updated
         _ ->
-          append_system(
+          tui_model.append_system(
             updated,
             "Additional resolutions are not loaded; use /approvals <id>.",
           )
@@ -6572,12 +5836,15 @@ fn request_decisions(model: Model, ids: List(String)) -> Model {
 
     Attached(_) | Disconnected | Preview ->
       case model.channel {
-        None -> append_error(model, "conversation is not attached")
+        None -> tui_model.append_error(model, "conversation is not attached")
         Some(channel) ->
           case session_channel.lookup(channel, ids) {
             Ok(channel) -> Model(..model, channel: Some(channel))
             Error(reason) ->
-              append_error(model, "decision lookup not sent: " <> reason)
+              tui_model.append_error(
+                model,
+                "decision lookup not sent: " <> reason,
+              )
           }
       }
   }
@@ -6801,12 +6068,12 @@ fn render_cut(
   )
   |> settle_pending_cache(cut.next_seq)
   |> reconcile_agent_message_selection
-  |> invalidate_transcript
+  |> tui_model.invalidate_transcript
   // A completed cut can make the operation idle before the next animation
   // tick. Invalidate the painted frame too; rebuilding transcript rows alone
   // leaves the old buffer current until an unrelated key or resize arrives.
-  |> invalidate_frame
-  |> mark_activity
+  |> tui_model.invalidate_frame
+  |> tui_model.mark_activity
 }
 
 fn configuration_lines(view: snapshot_view.View, active: String) {
@@ -6967,7 +6234,7 @@ fn decide_captured_approval(
   choice: approval_panel.Choice,
 ) -> Model {
   case mutation_refusal(model, command.Approve(record.id)) {
-    Some(reason) -> append_error(model, reason)
+    Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let encoded = case choice {
         approval_panel.AllowOnce -> approval.approve(model.next_id, record)
@@ -6976,7 +6243,7 @@ fn decide_captured_approval(
         approval_panel.Deny -> approval.deny(model.next_id, record)
       }
       case encoded {
-        Error(reason) -> append_error(model, reason)
+        Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) -> send_frame(Model(..model, overlay: NoOverlay), frame)
       }
     }
@@ -6990,13 +6257,13 @@ fn decide(
 ) -> Model {
   case list.find(model.approvals, fn(record) { record.id == id }) {
     Error(Nil) ->
-      append_error(
+      tui_model.append_error(
         model,
         "decision is not displayed; load /approvals " <> id <> " first",
       )
     Ok(record) ->
       case encode(model.next_id, record) {
-        Error(reason) -> append_error(model, reason)
+        Error(reason) -> tui_model.append_error(model, reason)
         Ok(frame) -> send_frame(model, frame)
       }
   }
@@ -7015,27 +6282,27 @@ fn handle_session_switch_message(
 ) -> Model {
   case message {
     sessions.Failed(session, reason) ->
-      append_error(
+      tui_model.append_error(
         Model(..model, session_switch: sessions.Idle),
         "open session " <> session <> ": " <> reason,
       )
-      |> mark_activity
+      |> tui_model.mark_activity
     sessions.WorkerCrashed(session, reason) ->
-      append_error(
+      tui_model.append_error(
         Model(..model, session_switch: sessions.Idle),
         "open session " <> session <> " crashed: " <> reason,
       )
-      |> mark_activity
+      |> tui_model.mark_activity
     sessions.Ready(choice, options, target, inbox, socket) ->
       case connection.adopt(socket) {
         Error(reason) -> {
           connection.close(socket)
           sessions.discard(inbox)
-          append_error(
+          tui_model.append_error(
             Model(..model, session_switch: sessions.Idle),
             "open session " <> target.session <> ": " <> reason,
           )
-          |> mark_activity
+          |> tui_model.mark_activity
         }
         Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
       }
@@ -7112,9 +6379,9 @@ fn adopt_session(
     notice: "connecting to session " <> target.session,
     repaint_phase: !model.repaint_phase,
   )
-  |> invalidate_transcript
-  |> mark_activity
-  |> invalidate_frame
+  |> tui_model.invalidate_transcript
+  |> tui_model.mark_activity
+  |> tui_model.invalidate_frame
 }
 
 fn drain_connection(model: Model, remaining: Int) -> Model {
@@ -7179,10 +6446,10 @@ fn handle_presentation_message(
   case incoming {
     connection.Connected ->
       Model(..model, notice: "connected")
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
     connection.Closed(reason) ->
-      append_error(
+      tui_model.append_error(
         Model(
           ..model,
           peer: after_close(model.peer),
@@ -7192,16 +6459,16 @@ fn handle_presentation_message(
         "connection closed: " <> reason,
       )
       |> begin_reconnect
-      |> mark_activity
+      |> tui_model.mark_activity
     connection.NetworkFault(reason) ->
-      append_error(model, "network: " <> reason)
-      |> mark_activity
+      tui_model.append_error(model, "network: " <> reason)
+      |> tui_model.mark_activity
     connection.Incoming(text) ->
       case protocol.decode_event(text) {
         Ok(event) -> apply_event(model, event)
         Error(reason) ->
-          append_error(model, "protocol: " <> reason)
-          |> mark_activity
+          tui_model.append_error(model, "protocol: " <> reason)
+          |> tui_model.mark_activity
       }
   }
 }
@@ -7243,7 +6510,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         notice: "session synchronized",
         transcript: [Line(System, "attached to session " <> session)],
       )
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
     }
     protocol.StrandsSnapshot(strands:) -> {
       let summary = agents.summary(strands)
@@ -7256,7 +6523,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       }
       case page.offset == list.length(previous) {
         False ->
-          append_error(model, "skill catalogue page arrived out of order")
+          tui_model.append_error(
+            model,
+            "skill catalogue page arrived out of order",
+          )
         True -> {
           let loaded =
             Model(..model, skills: list.append(previous, page.commands))
@@ -7318,7 +6588,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ..model,
         context: context_view.receive(
           model.context,
-          queue_owner(model),
+          tui_model.queue_owner(model),
           observation,
         ),
       )
@@ -7327,18 +6597,18 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ..model,
         worktree: worktree_view.receive(
           model.worktree,
-          queue_owner(model),
+          tui_model.queue_owner(model),
           observation,
         ),
       )
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
     protocol.QueuedInputSnapshot(document) ->
       Model(
         ..model,
         queue_editor: queue_editor.receive(
           model.queue_editor,
-          queue_owner(model),
-          queue_namespace(model),
+          tui_model.queue_owner(model),
+          tui_model.queue_namespace(model),
           document,
         ),
       )
@@ -7365,7 +6635,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
               )
             None, True | Some(_), True | None, False | Some(_), False -> 0
           }
-          invalidate_transcript(
+          tui_model.invalidate_transcript(
             Model(
               ..model,
               note_board: Some(board),
@@ -7397,7 +6667,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           },
         )
       case strand == model.active_strand {
-        True -> invalidate_transcript(updated)
+        True -> tui_model.invalidate_transcript(updated)
         False -> updated
       }
     }
@@ -7425,7 +6695,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           },
         )
       case strand == model.active_strand {
-        True -> invalidate_transcript(updated)
+        True -> tui_model.invalidate_transcript(updated)
         False -> updated
       }
     }
@@ -7465,7 +6735,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         )
       let settled = settle_interrupt(updated, strand, phase)
       case phase == "done" && strand == model.active_strand {
-        True -> invalidate_transcript(settled)
+        True -> tui_model.invalidate_transcript(settled)
         False -> settled
       }
     }
@@ -7501,7 +6771,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ),
         )
       case strand == model.active_strand {
-        True -> invalidate_transcript(updated)
+        True -> tui_model.invalidate_transcript(updated)
         False -> updated
       }
     }
@@ -7513,14 +6783,17 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       }
 
     protocol.EscalationPending(id:, tool:, preview: _) ->
-      append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
+      tui_model.append_error(
+        model,
+        "approval required for " <> tool <> " [" <> id <> "]",
+      )
 
     // The refusal answers whatever this terminal last submitted, because the
     // conversation channel carries one mutation at a time. A prompt refused
     // for a full hold queue commits no entry, so its echo is retired here or
     // never.
     protocol.ServerError(code:, message:) ->
-      append_error(
+      tui_model.append_error(
         Model(..discard_own_turn(model), submitting: None),
         code <> ": " <> message,
       )
@@ -7573,8 +6846,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.EscalationPending(..)
     | protocol.ServerError(..) ->
       updated
-      |> mark_activity
-      |> invalidate_frame
+      |> tui_model.mark_activity
+      |> tui_model.invalidate_frame
   }
 }
 
@@ -7619,7 +6892,7 @@ fn restore_returned_draft(
       <> int.to_string(n)
       <> " attachment(s) stayed on the dead daemon — re-attach them"
   }
-  append_notice(
+  tui_model.append_notice(
     model,
     "daemon returned the "
       <> kind
@@ -7649,11 +6922,11 @@ fn append_returned_text(
 // something similar are told apart by the server and never here.
 fn append_schedules(model: Model, rows: List(protocol.ScheduleRow)) -> Model {
   case rows {
-    [] -> append_system(model, "no schedules")
+    [] -> tui_model.append_system(model, "no schedules")
     rows -> {
       let listed =
         list.fold(rows, model, fn(model, row) {
-          append_system(model, schedule_line(row))
+          tui_model.append_system(model, schedule_line(row))
         })
       Model(..listed, notice: int.to_string(list.length(rows)) <> " schedules")
     }
@@ -10311,8 +9584,8 @@ fn note_cache_miss(
         ]),
         record_cache_valid: False,
       )
-      |> invalidate_transcript
-      |> invalidate_frame
+      |> tui_model.invalidate_transcript
+      |> tui_model.invalidate_frame
   }
 }
 
@@ -10659,7 +9932,7 @@ fn update_model_selector(
           model.active_strand,
           name,
         ))
-      append_system(selected, "active model changed to " <> name)
+      tui_model.append_system(selected, "active model changed to " <> name)
     }
   }
 }
@@ -10832,7 +10105,7 @@ fn update_agent_inspector(
     keys.Char("o") if inspector.detail == agents.Messages ->
       open_agent_message_sender(model, inspector)
     keys.Enter ->
-      case is_known_strand(model.strands, inspector.selected) {
+      case tui_model.is_known_strand(model.strands, inspector.selected) {
         True -> switch_active_strand(model, inspector.selected)
         False ->
           Model(
@@ -10942,7 +10215,7 @@ fn toggle_note_mode(model: Model) -> Model {
     note_panel.Raw -> note_panel.Readable
   }
   Model(..model, note_mode: mode, note_scroll: 0)
-  |> invalidate_transcript
+  |> tui_model.invalidate_transcript
 }
 
 /// Returns the message preview's actual rectangle for viewport regressions.
@@ -11026,7 +10299,7 @@ fn open_agent_message_sender(
   case agent_message_panel.selected(messages, inspector.message) {
     None -> Model(..model, notice: "No observed message is selected")
     Some(item) ->
-      case is_known_strand(model.strands, item.source) {
+      case tui_model.is_known_strand(model.strands, item.source) {
         True -> switch_active_strand(model, item.source)
         False ->
           Model(
@@ -11326,7 +10599,9 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.Home, False, False ->
       Model(..model, input: text_area.move_to_line_start(model.input))
     keys.End, False, False ->
-      case text_area.value(model.input) == "" && reading_history(model) {
+      case
+        text_area.value(model.input) == "" && tui_model.reading_history(model)
+      {
         True -> scroll_transcript(model, False, model.rendered_row_count)
         False -> Model(..model, input: text_area.move_to_line_end(model.input))
       }
@@ -11408,7 +10683,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let #(conversation, queue) = queue_body_layout(body, model)
   let #(transcript, _, _) = body_layout(conversation, model)
   use <- bool.lazy_guard(
-    reading_history(model)
+    tui_model.reading_history(model)
       && at.y == transcript.position.y
       && at.x < geometry.right(transcript),
     fn() {
@@ -11442,7 +10717,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
               focus: worktree_view.Navigator,
             ),
           )
-          |> invalidate_transcript
+          |> tui_model.invalidate_transcript
         None -> {
           let #(shown, selection_gutters) = selection_display(model)
           Model(
@@ -11572,7 +10847,7 @@ fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
   let #(transcript_panel, _, _) = body_layout(conversation, model)
   let area = panel_inner(transcript_panel)
   model.rendered_gutters
-  |> list.drop(model.scroll_offset + viewport_backlog(model))
+  |> list.drop(model.scroll_offset + tui_model.viewport_backlog(model))
   |> list.take(area.size.height)
   |> list.reverse
   |> list.index_map(fn(gutter, index) { #(area.position.y + index, gutter) })
@@ -11644,7 +10919,11 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
 // row count and the bound clamps there.
 fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
   let offset =
-    scroll_offset(model.scroll_offset + viewport_backlog(model), older, rows)
+    scroll_offset(
+      model.scroll_offset + tui_model.viewport_backlog(model),
+      older,
+      rows,
+    )
     |> bounded_scroll_offset(
       model.rendered_row_count,
       transcript_viewport_height(model),
@@ -11904,7 +11183,7 @@ fn submit(model: Model) -> Model {
       command.parse_with_skills(text_area.value(model.input), model.skills),
     )
   {
-    Some(reason) -> append_error(model, reason)
+    Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       // This marker scopes the synchronous encoder call and, only if queued,
       // the later send. The draft itself never leaves its existing fields.
@@ -11937,7 +11216,7 @@ fn mutation_refusal(model: Model, command: command.Command) -> Option(String) {
   use <- bool.guard(
     mutates
       && model.captured != None
-      && !is_known_strand(model.strands, model.active_strand),
+      && !tui_model.is_known_strand(model.strands, model.active_strand),
     Some("recipient unavailable; draft retained for " <> model.active_strand),
   )
   case mutates, model.peer, model.channel {
@@ -12013,7 +11292,10 @@ fn open_session_selector(model: Model) -> Model {
   case model.daemon_host {
     Some(_) -> load_catalogue(model, "", None)
     None ->
-      append_error(model, "daemon control is unavailable; reconnect explicitly")
+      tui_model.append_error(
+        model,
+        "daemon control is unavailable; reconnect explicitly",
+      )
   }
 }
 
@@ -12036,7 +11318,7 @@ pub fn open_legacy_session_selector(model: Model) -> Model {
     Attached(..) | Preview | Disconnected ->
       case model.local_options {
         None ->
-          append_error(
+          tui_model.append_error(
             model,
             "/sessions is available only for local attachments",
           )
@@ -12050,11 +11332,13 @@ fn open_local_session_selector(
   options: bootstrap.Options,
 ) -> Model {
   case sessions.busy(model.session_switch) {
-    True -> append_error(model, "a session switch is already in progress")
+    True ->
+      tui_model.append_error(model, "a session switch is already in progress")
     False ->
       case bootstrap.discover_sessions(options) {
-        Error(reason) -> append_error(model, reason)
-        Ok([]) -> append_error(model, "no locally managed sessions found")
+        Error(reason) -> tui_model.append_error(model, reason)
+        Ok([]) ->
+          tui_model.append_error(model, "no locally managed sessions found")
         Ok(choices) -> {
           let current =
             bootstrap.session_file(options)
@@ -12082,7 +11366,7 @@ fn begin_session_switch(
     Replaying, _ -> Model(..model, overlay: NoOverlay)
 
     Attached(..), None | Preview, None | Disconnected, None ->
-      append_error(
+      tui_model.append_error(
         Model(..model, overlay: NoOverlay),
         "/sessions is available only for local attachments",
       )
@@ -12149,7 +11433,7 @@ fn submit_text(model: Model) -> Model {
         awaiting_outcome: None,
         notice: "local view cleared",
       )
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
     command.Models -> {
       let opened =
         Model(
@@ -12171,7 +11455,7 @@ fn submit_text(model: Model) -> Model {
           cleared.active_strand,
           name,
         ))
-      append_system(switched, "active model changed to " <> name)
+      tui_model.append_system(switched, "active model changed to " <> name)
     }
     command.Strands | command.Agents -> open_agents(cleared)
     command.Schedules ->
@@ -12182,7 +11466,7 @@ fn submit_text(model: Model) -> Model {
       // schedule a parent set onto a subagent needs the second word.
       let target = option.unwrap(target, cleared.active_strand)
       send_frame(
-        append_system(
+        tui_model.append_system(
           cleared,
           "cancelling schedule " <> name <> " on " <> target,
         ),
@@ -12192,12 +11476,12 @@ fn submit_text(model: Model) -> Model {
     command.Sessions -> open_session_selector(cleared)
     command.Rename(name) ->
       case cleared.session {
-        "" -> append_error(cleared, "no session is attached")
+        "" -> tui_model.append_error(cleared, "no session is attached")
         id -> begin_rename(cleared, id, name)
       }
     command.Approvals(None) ->
       list.fold(approval_lines(cleared.approvals), cleared, fn(model, line) {
-        append_system(model, line.text)
+        tui_model.append_system(model, line.text)
       })
     command.Approvals(Some(id)) ->
       request_decisions(Model(..cleared, inspecting_approval: Some(id)), [id])
@@ -12230,22 +11514,22 @@ fn submit_text(model: Model) -> Model {
     command.Diff -> open_diff(cleared)
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
-      case is_known_strand(cleared.strands, name) {
+      case tui_model.is_known_strand(cleared.strands, name) {
         True ->
-          append_system(
+          tui_model.append_system(
             switch_active_strand(cleared, name),
             "active strand: " <> name,
           )
-        False -> append_error(cleared, "unknown strand: " <> name)
+        False -> tui_model.append_error(cleared, "unknown strand: " <> name)
       }
     command.Fork(name) ->
       send_frame(
-        append_system(cleared, "fork queued: " <> name),
+        tui_model.append_system(cleared, "fork queued: " <> name),
         protocol.fork(cleared.next_id, cleared.active_strand, name),
       )
     command.Effort(level) ->
       send_frame(
-        append_system(
+        tui_model.append_system(
           cleared,
           "reasoning level for " <> cleared.active_strand <> ": " <> level,
         ),
@@ -12294,7 +11578,7 @@ fn submit_text(model: Model) -> Model {
     // their words was read as the budget, and a goal must never be pinned
     // to a spend nobody chose.
     command.GoalBudgetInvalid(word) ->
-      append_error(
+      tui_model.append_error(
         cleared,
         "/goal --budget needs a positive token count, not \""
           <> word
@@ -12307,7 +11591,7 @@ fn submit_text(model: Model) -> Model {
     // The count is shown for the reason the objective's is: the operator has
     // to know how much to cut, and the two bounds are different numbers.
     command.GoalCheckTooLong(count) ->
-      append_error(
+      tui_model.append_error(
         cleared,
         "/goal check command is "
           <> int.to_string(count)
@@ -12315,7 +11599,7 @@ fn submit_text(model: Model) -> Model {
           <> int.to_string(command.check_limit),
       )
     command.GoalObjectiveTooLong(count) ->
-      append_error(
+      tui_model.append_error(
         cleared,
         "/goal objective is "
           <> int.to_string(count)
@@ -12324,7 +11608,7 @@ fn submit_text(model: Model) -> Model {
       )
     command.Compact ->
       send_frame(
-        append_system(
+        tui_model.append_system(
           cleared,
           "compaction queued for " <> cleared.active_strand,
         ),
@@ -12332,7 +11616,10 @@ fn submit_text(model: Model) -> Model {
       )
     command.Abort ->
       send_frame(
-        append_system(cleared, "abort queued for " <> cleared.active_strand),
+        tui_model.append_system(
+          cleared,
+          "abort queued for " <> cleared.active_strand,
+        ),
         protocol.abort(cleared.next_id, cleared.active_strand),
       )
     command.Steer(text) ->
@@ -12343,9 +11630,10 @@ fn submit_text(model: Model) -> Model {
       )
     command.Queue(text) ->
       send_follow_up(prompt_cleared, composer.expand(text, model.attachments))
-    command.Unknown(name) -> append_error(cleared, "unknown command /" <> name)
+    command.Unknown(name) ->
+      tui_model.append_error(cleared, "unknown command /" <> name)
     command.MissingArgument(name) ->
-      append_error(cleared, "/" <> name <> " needs an argument")
+      tui_model.append_error(cleared, "/" <> name <> " needs an argument")
     command.Prompt(_) -> send_user_text(prompt_cleared, expanded, model)
   }
 }
@@ -12400,7 +11688,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.Quit
     | command.Unknown(_)
     | command.MissingArgument(_) ->
-      append_error(
+      tui_model.append_error(
         model,
         "image attachments can only accompany an ordinary prompt",
       )
@@ -12458,7 +11746,7 @@ fn send_prompt_content(
     // A replay stops exactly where the live client's local work stopped.
     // The turn it produced is in the recording and arrives as an entry.
     Replaying -> sent
-    Disconnected -> append_error(model, "no conversation is attached")
+    Disconnected -> tui_model.append_error(model, "no conversation is attached")
     Preview ->
       Model(
         ..model,
@@ -12469,7 +11757,7 @@ fn send_prompt_content(
         record_cache_valid: False,
         notice: "image prompt accepted",
       )
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
   }
 }
 
@@ -12572,10 +11860,10 @@ fn history_item(history: List(String), index: Int) -> Option(String) {
 }
 
 fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
-  case active_interrupt(before) {
+  case tui_model.active_interrupt(before) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None ->
-      case active_strand_live(before), before.submission_mode {
+      case tui_model.active_strand_live(before), before.submission_mode {
         False, _ -> send_prompt(cleared, text)
 
         // A prompt aimed at a running strand is held by the daemon and run
@@ -12596,7 +11884,7 @@ fn send_explicit_steer(cleared: Model, text: String, before: Model) -> Model {
   use <- bool.lazy_guard(before.channel != None, fn() {
     send_steer(cleared, text)
   })
-  case active_interrupt(before) {
+  case tui_model.active_interrupt(before) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None -> send_steer(cleared, text)
   }
@@ -12617,7 +11905,7 @@ fn hold_or_send_interrupt(
   use <- bool.lazy_guard(before.channel != None, fn() {
     send_prompt_to(cleared, strand, text)
   })
-  case active_strand_live(before) {
+  case tui_model.active_strand_live(before) {
     False -> send_prompt_to(Model(..cleared, interrupt: None), strand, text)
     True -> {
       let pending = case before.interrupt {
@@ -12656,7 +11944,7 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
     // The server echoed this turn back as an entry, and the recording has
     // it. Drawing a local copy here would show the operator's line twice.
     Replaying -> sent
-    Disconnected -> append_error(model, "no conversation is attached")
+    Disconnected -> tui_model.append_error(model, "no conversation is attached")
     Preview ->
       Model(
         ..model,
@@ -12667,7 +11955,7 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
         record_cache_valid: False,
         notice: "prompt accepted",
       )
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
   }
 }
 
@@ -12691,13 +11979,13 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
 // it. A replay has no daemon to answer, so its submission joins the list at
 // once and the recording's own entry retires it.
 fn expect_own_turn(model: Model, submission: Submission) -> Model {
-  case model.peer, active_strand_live(model) {
+  case model.peer, tui_model.active_strand_live(model) {
     Attached(..), True ->
       Model(..model, awaiting_outcome: Some(submission))
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
     Replaying, True ->
       Model(..model, queued: in_commit_order(model.queued, submission))
-      |> invalidate_transcript
+      |> tui_model.invalidate_transcript
     Attached(..), False | Replaying, False | Preview, _ | Disconnected, _ ->
       model
   }
@@ -12721,7 +12009,8 @@ fn settle_own_turn(model: Model) -> Model {
 // so the echo goes away with the submission rather than outliving it.
 fn discard_own_turn(model: Model) -> Model {
   case model.awaiting_outcome {
-    Some(_) -> Model(..model, awaiting_outcome: None) |> invalidate_transcript
+    Some(_) ->
+      Model(..model, awaiting_outcome: None) |> tui_model.invalidate_transcript
     None -> model
   }
 }
@@ -12753,7 +12042,7 @@ fn abandon_interjections(model: Model) -> Model {
   }
 
   Model(..model, queued: held, awaiting_outcome: awaiting)
-  |> invalidate_transcript
+  |> tui_model.invalidate_transcript
 }
 
 // Places one submission where the daemon will commit it.
@@ -12849,8 +12138,8 @@ fn steering_submission(model: Model, text: String) -> Submission {
 
 fn toggle_submission_mode(model: Model) -> Model {
   case
-    active_interrupt(model),
-    active_strand_live(model),
+    tui_model.active_interrupt(model),
+    tui_model.active_strand_live(model),
     model.submission_mode
   {
     Some(_), _, _ -> Model(..model, notice: "interrupt steer is already armed")
@@ -12864,7 +12153,7 @@ fn toggle_submission_mode(model: Model) -> Model {
 }
 
 fn interrupt_active(model: Model) -> Model {
-  case active_strand_phase(model), active_interrupt(model) {
+  case tui_model.active_strand_phase(model), tui_model.active_interrupt(model) {
     None, _ -> Model(..model, notice: "nothing is running")
     Some(_), Some(_) -> Model(..model, notice: "interrupt already requested")
     Some(_), None -> {
@@ -12898,17 +12187,6 @@ fn interrupt_and_insert(model: Model, character: String) -> Model {
     ..interrupted,
     input: text_area.insert_char(editor, interrupted.input, character),
   )
-}
-
-fn active_interrupt(model: Model) -> Option(String) {
-  case model.interrupt {
-    Some(Interrupt(strand:, ..)) ->
-      case strand == model.active_strand {
-        True -> Some(strand)
-        False -> None
-      }
-    None -> None
-  }
 }
 
 fn settle_interrupt(model: Model, strand: String, phase: String) -> Model {
@@ -12960,30 +12238,6 @@ fn toggle_agent_rail(model: Model) -> Model {
       False -> "agent rail hidden"
     },
   )
-}
-
-fn active_strand_live(model: Model) -> Bool {
-  case active_strand_phase(model) {
-    Some(_) -> True
-    None -> False
-  }
-}
-
-fn active_strand_phase(model: Model) -> Option(String) {
-  case model.submitting {
-    Some(strand) if strand == model.active_strand -> Some("submitting")
-    _ ->
-      model.strands
-      |> list.find_map(fn(strand) {
-        let Strand(id:, live_phase:, ..) = strand
-        case id == model.active_strand, live_phase {
-          True, Some(phase) -> Ok(phase)
-          _, _ -> Error(Nil)
-        }
-      })
-      |> result.map(Some)
-      |> result.unwrap(None)
-  }
 }
 
 fn toggle_details(model: Model) -> Model {
@@ -13061,7 +12315,7 @@ fn apply_submission(
           Model(
             ..model,
             goal_request: Some(request_id),
-            goal_awaiting: Some(queue_owner(model)),
+            goal_awaiting: Some(tui_model.queue_owner(model)),
           )
         "worktree_diff" ->
           Model(
@@ -13094,7 +12348,7 @@ fn apply_submission(
           _ -> command <> " sent"
         },
       )
-      |> invalidate_frame
+      |> tui_model.invalidate_frame
     }
     session_channel.DefinitelyNotSent(reason) -> {
       let retained = case model.channel {
@@ -13107,7 +12361,7 @@ fn apply_submission(
       }
 
       // The frame never reached the wire, so no entry answers it.
-      append_error(
+      tui_model.append_error(
         Model(
           ..discard_own_turn(model),
           queue_editor: queue_editor.refused(model.queue_editor, reason),
@@ -13185,13 +12439,6 @@ fn quit(model: Model) -> Model {
   Model(..model, quit: True)
 }
 
-fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
-  list.any(strands, fn(strand) {
-    let Strand(id:, ..) = strand
-    id == name
-  })
-}
-
 // Keep draft ownership across sessions while retaining history only for
 // strands still present in the current session. Draft text is never evicted.
 fn prune_workspace_history(
@@ -13200,7 +12447,7 @@ fn prune_workspace_history(
   strands: List(protocol.Strand),
 ) -> Dict(#(String, String), StrandWorkspace) {
   dict.map_values(workspaces, fn(owner, saved) {
-    case owner.0 == session && is_known_strand(strands, owner.1) {
+    case owner.0 == session && tui_model.is_known_strand(strands, owner.1) {
       True -> saved
       False ->
         StrandWorkspace(
@@ -13341,7 +12588,7 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
       repaint_phase: !model.repaint_phase,
       notice: "active strand: " <> strand,
     )
-    |> invalidate_transcript
+    |> tui_model.invalidate_transcript
   case model.captured {
     Some(#(cut, view)) -> apply_cut(selected, cut, view)
     None -> send_frame(selected, protocol.config(model.next_id, strand))
@@ -13397,66 +12644,6 @@ fn demo_strands() -> List(protocol.Strand) {
   ]
 }
 
-fn append_system(model: Model, text: String) -> Model {
-  Model(
-    ..model,
-    transcript: list.append(model.transcript, [Line(System, text)]),
-    record_cache_valid: False,
-    notice: text,
-  )
-  |> invalidate_transcript
-  |> invalidate_frame
-}
-
-fn append_error(model: Model, text: String) -> Model {
-  Model(
-    ..model,
-    transcript: list.append(model.transcript, [Line(Failure, text)]),
-    record_cache_valid: False,
-    notice: text,
-  )
-  |> invalidate_transcript
-  |> invalidate_frame
-}
-
-// A transcript line that informs without alarm, in the System speaker, so
-// a build mismatch reads as a notice rather than a failure. The attach has
-// already succeeded when this is called; the line explains the pair, it
-// does not report a refusal.
-fn append_notice(model: Model, text: String) -> Model {
-  Model(
-    ..model,
-    transcript: list.append(model.transcript, [Line(System, text)]),
-    record_cache_valid: False,
-    notice: text,
-  )
-  |> invalidate_transcript
-  |> invalidate_frame
-}
-
-// Transcript revisions advance only beside mutations of the projection's
-// source data. Keeping the invalidation token separate from terminal ticks
-// prevents session history from becoming an idle-time CPU cost.
-fn invalidate_transcript(model: Model) -> Model {
-  Model(..model, render_revision: model.render_revision + 1)
-}
-
-fn queue_owner(model: Model) -> String {
-  case model.captured {
-    Some(#(cut, _)) -> {
-      let expected = cut.attachment.expected
-      expected.session
-      <> ":"
-      <> expected.epoch
-      <> ":"
-      <> expected.incarnation
-      <> ":"
-      <> cut.attachment.connection_id
-    }
-    None -> ""
-  }
-}
-
 /// Opens held-input inspection without touching composer text or attachments.
 ///
 /// ## Examples
@@ -13467,7 +12654,7 @@ fn queue_owner(model: Model) -> String {
 @internal
 pub fn open_queue(model: Model) -> Model {
   Model(..model, queue_editor: queue_editor.open(model.queue_editor))
-  |> invalidate_frame
+  |> tui_model.invalidate_frame
 }
 
 fn queue_rows(model: Model) -> List(snapshot_view.PendingInput) {
@@ -13648,7 +12835,7 @@ fn select_queue_input(model: Model) -> Model {
   case list.first(list.drop(queue_rows(model), state.selected)) {
     Ok(row) ->
       case
-        retained_other_draft(state.draft, row, queue_namespace(model)),
+        retained_other_draft(state.draft, row, tui_model.queue_namespace(model)),
         row.editing
       {
         True, _ ->
@@ -13662,8 +12849,8 @@ fn select_queue_input(model: Model) -> Model {
         False, snapshot_view.Editable -> {
           let fetch =
             queue_editor.Fetch(
-              queue_owner(model),
-              queue_namespace(model),
+              tui_model.queue_owner(model),
+              tui_model.queue_namespace(model),
               row.strand,
               row.id,
             )
@@ -13719,7 +12906,7 @@ fn reconcile_queue_draft(model: Model) -> Model {
   case state.draft {
     Some(draft) if draft.delivery != queue_editor.Saving -> {
       use <- bool.guard(
-        draft.namespace != queue_namespace(model),
+        draft.namespace != tui_model.queue_namespace(model),
         Model(
           ..model,
           queue_editor: queue_editor.State(
@@ -13730,8 +12917,8 @@ fn reconcile_queue_draft(model: Model) -> Model {
       )
       let fetch =
         queue_editor.Fetch(
-          queue_owner(model),
-          queue_namespace(model),
+          tui_model.queue_owner(model),
+          tui_model.queue_namespace(model),
           draft.document.strand,
           draft.document.id,
         )
@@ -13755,7 +12942,7 @@ fn service_queue_read(model: Model) -> Model {
     Some(channel), Some(fetch) ->
       case session_channel.ready_for_read(channel) {
         True ->
-          case queue_owner(model) == fetch.owner {
+          case tui_model.queue_owner(model) == fetch.owner {
             True ->
               send_frame(
                 Model(
@@ -13798,8 +12985,8 @@ fn save_queue_draft(model: Model) -> Model {
     Some(draft), Some(channel) if draft.delivery == queue_editor.Editable -> {
       let available =
         session_channel.mutation_available(channel)
-        && queue_owner(model) == draft.owner
-        && queue_namespace(model) == draft.namespace
+        && tui_model.queue_owner(model) == draft.owner
+        && tui_model.queue_namespace(model) == draft.namespace
       case available {
         True ->
           send_frame(
@@ -14212,8 +13399,8 @@ pub fn open_diff(model: Model) -> Model {
         ),
       )
   }
-  |> invalidate_transcript
-  |> invalidate_frame
+  |> tui_model.invalidate_transcript
+  |> tui_model.invalidate_frame
 }
 
 // Cuts and width transitions request at most one pending refresh. No timer or
@@ -14231,7 +13418,10 @@ fn refresh_worktree(model: Model) -> Model {
       service_worktree_read(
         Model(
           ..model,
-          worktree: worktree_view.request(model.worktree, queue_owner(model)),
+          worktree: worktree_view.request(
+            model.worktree,
+            tui_model.queue_owner(model),
+          ),
         ),
       )
     _, _ ->
@@ -14298,7 +13488,7 @@ fn select_diff_file(model: Model, delta: Int) -> Model {
     worktree: worktree_view.State(..model.worktree, selected:),
     diff_scroll_offset: 0,
   )
-  |> invalidate_transcript
+  |> tui_model.invalidate_transcript
 }
 
 fn diff_title(model: Model) -> String {
@@ -14499,7 +13689,8 @@ fn observe_completion(
   view: snapshot_view.View,
   active: String,
 ) -> Model {
-  let owner = queue_owner(Model(..model, captured: Some(#(cut, view))))
+  let owner =
+    tui_model.queue_owner(Model(..model, captured: Some(#(cut, view))))
   let previous = case model.completion_owner == owner {
     True -> model.completion
     False -> completion_summary.new()
@@ -14610,7 +13801,7 @@ pub fn open_summary(model: Model) -> Model {
       jobs_refresh: worktree_view.Requested,
     ),
   )
-  |> invalidate_frame
+  |> tui_model.invalidate_frame
 }
 
 fn service_jobs_read(model: Model) -> Model {
@@ -14622,7 +13813,10 @@ fn service_jobs_read(model: Model) -> Model {
             Model(
               ..model,
               jobs_refresh: worktree_view.Settled,
-              jobs_awaiting: Some(#(queue_owner(model), model.active_strand)),
+              jobs_awaiting: Some(#(
+                tui_model.queue_owner(model),
+                model.active_strand,
+              )),
               jobs_notice: "Refreshing live jobs; previous observation may be stale",
             ),
             protocol.live_jobs(model.next_id, model.active_strand),
@@ -14780,7 +13974,7 @@ fn service_advisor_nudges_read(model: Model) -> Model {
             Model(
               ..model,
               nudges_refresh: worktree_view.Settled,
-              nudges_awaiting: Some(queue_owner(model)),
+              nudges_awaiting: Some(tui_model.queue_owner(model)),
             ),
             protocol.advisor_pending(model.next_id),
           )
@@ -14799,7 +13993,7 @@ fn service_advisor_nudges_read(model: Model) -> Model {
 // Only the attachment that asked may be answered. Request ids restart with an
 // attachment, so the owner is what tells a fresh board from a stale one.
 fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
-  let current = queue_owner(model)
+  let current = tui_model.queue_owner(model)
   case model.nudges_awaiting {
     Some(owner) ->
       case owner == current {
@@ -14810,38 +14004,14 @@ fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
             nudges_awaiting: None,
             nudges_request: None,
           )
-          |> invalidate_transcript
-          |> invalidate_frame
+          |> tui_model.invalidate_transcript
+          |> tui_model.invalidate_frame
 
         False -> model
       }
 
     None -> model
   }
-}
-
-// --- the session goal -------------------------------------------------------
-
-/// Whether the board that arrives next is the operator's own question.
-///
-/// A named set rather than a boolean field, because the cases are
-/// different events: the operator asked `/goal` and is owed a block in the
-/// transcript, the operator asked for a change and is owed one line once it
-/// is committed, or the terminal refreshed the row beside the composer on
-/// its own and owes them nothing.
-pub type GoalReport {
-  /// The operator typed `/goal`; the next board is printed for them.
-  ReportGoal
-
-  /// The operator asked for a mutation and this line confirms it. The line
-  /// is held until the board arrives rather than printed at send time,
-  /// because a server that refuses the command answers with a refusal: a
-  /// confirmation printed on the way out would sit above the sentence
-  /// saying it did not happen.
-  ConfirmGoal(line: String)
-
-  /// An automatic refresh. The row is updated and nothing is printed.
-  HoldGoalReport
 }
 
 /// What one model transition asks of the goal panel.
@@ -14912,7 +14082,7 @@ fn confirming(model: Model, line: String) -> Model {
 // never cleared as though the operator had submitted it.
 fn submit_goal_action(model: Model, action: command.Command) -> Model {
   case mutation_refusal(model, action) {
-    Some(reason) -> append_error(model, reason)
+    Some(reason) -> tui_model.append_error(model, reason)
     None -> {
       let prepared = case model.pending_submission {
         Some(_) -> model
@@ -15011,7 +14181,7 @@ fn unreachable_goal(model: Model) -> Model {
     HoldGoalReport -> settled
 
     ReportGoal | ConfirmGoal(..) ->
-      append_error(
+      tui_model.append_error(
         Model(..settled, goal_report: HoldGoalReport),
         "the session goal cannot be read: no conversation is attached",
       )
@@ -15021,7 +14191,7 @@ fn unreachable_goal(model: Model) -> Model {
 // Only the attachment that asked may be answered. Request ids restart with
 // an attachment, so the owner is what tells a fresh board from a stale one.
 fn receive_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.goal_awaiting == Some(queue_owner(model)) {
+  case model.goal_awaiting == Some(tui_model.queue_owner(model)) {
     False -> model
 
     True ->
@@ -15048,20 +14218,23 @@ fn receive_goal(model: Model, board: goal_view.Board) -> Model {
 // nothing.
 fn report_goal(model: Model, board: goal_view.Board) -> Model {
   case model.goal_report {
-    HoldGoalReport -> invalidate_frame(model)
+    HoldGoalReport -> tui_model.invalidate_frame(model)
 
     // A committed mutation prints its one line here and nothing else. The
     // fresh board is already in the model, so the row beside the composer
     // carries the new state and a second block would repeat it.
     ConfirmGoal(line:) ->
       Model(..model, goal_report: HoldGoalReport)
-      |> append_system(line)
-      |> invalidate_frame
+      |> tui_model.append_system(line)
+      |> tui_model.invalidate_frame
 
     ReportGoal ->
       goal_view.lines(board)
-      |> list.fold(Model(..model, goal_report: HoldGoalReport), append_system)
-      |> invalidate_frame
+      |> list.fold(
+        Model(..model, goal_report: HoldGoalReport),
+        tui_model.append_system,
+      )
+      |> tui_model.invalidate_frame
   }
 }
 
@@ -15101,13 +14274,13 @@ fn refuse_goal(
     cleared,
   )
 
-  append_error(cleared, goal_view.refusal(code, message))
+  tui_model.append_error(cleared, goal_view.refusal(code, message))
 }
 
 fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
   case model.jobs_awaiting {
     Some(#(owner, strand)) if strand == board.strand ->
-      case owner == queue_owner(model) {
+      case owner == tui_model.queue_owner(model) {
         True -> {
           let old = case model.jobs {
             Some(previous) if previous.strand == board.strand ->
@@ -15133,7 +14306,7 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
             jobs_request: None,
             jobs_notice: "Live jobs observed separately from operation completion",
           )
-          |> invalidate_transcript
+          |> tui_model.invalidate_transcript
         }
         False -> model
       }
@@ -15449,20 +14622,6 @@ fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
   }
 }
 
-fn queue_namespace(model: Model) -> String {
-  case model.captured {
-    Some(#(cut, _)) ->
-      json.to_string(
-        json.Array([
-          json.String(cut.attachment.expected.session),
-          json.String(cut.attachment.expected.epoch),
-          json.String(cut.attachment.expected.incarnation),
-        ]),
-      )
-    None -> ""
-  }
-}
-
 fn apply_request_refused(
   model: Model,
   command: String,
@@ -15475,7 +14634,7 @@ fn apply_request_refused(
       ..model,
       context: context_view.refused(model.context, request_id, code, message),
     )
-    |> invalidate_frame
+    |> tui_model.invalidate_frame
   })
 
   // Every goal command is refused worded and nowhere else: an older daemon
@@ -15527,7 +14686,7 @@ fn apply_request_refused(
         ..model,
         worktree: worktree_view.receive(
           model.worktree,
-          queue_owner(model),
+          tui_model.queue_owner(model),
           worktree_view.Failed(request_id, reason),
         ),
       )
@@ -15544,7 +14703,11 @@ fn apply_request_refused(
 // Streaming tokens and unrelated captures start no read.
 fn sync_context(before: Model, after: Model) -> Model {
   let selected =
-    context_view.select(after.context, queue_owner(after), after.active_strand)
+    context_view.select(
+      after.context,
+      tui_model.queue_owner(after),
+      after.active_strand,
+    )
   let changed = context_refresh_due(before, after)
   let context = case after.peer {
     Attached(_) ->
@@ -15594,7 +14757,7 @@ pub fn context_refresh_due(before: Model, after: Model) -> Bool {
 // operation, when the server reports `done`. Reading on that edge gives one
 // observation per turn instead of one per committed entry.
 fn operation_settled(before: Model, after: Model) -> Bool {
-  active_strand_live(before) && !active_strand_live(after)
+  tui_model.active_strand_live(before) && !tui_model.active_strand_live(after)
 }
 
 fn service_context_read(model: Model) -> Model {

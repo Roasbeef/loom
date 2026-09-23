@@ -34,8 +34,8 @@ import storage/sqlite
 import support/provider as provider_test
 import support/tui_driver
 import telemetry/log
-import tui
 import tui/attachment
+import tui/model as tui_model
 import tui/session_channel
 import weft/poll
 
@@ -217,7 +217,8 @@ fn await(driver, predicate) {
 
 fn attached(sample: tui_driver.Sample, id) {
   case sample.model.peer, sample.model.captured {
-    tui.Attached(_), Some(#(cut, _)) -> cut.attachment.expected.session == id
+    tui_model.Attached(_), Some(#(cut, _)) ->
+      cut.attachment.expected.session == id
     _, _ -> False
   }
 }
@@ -330,14 +331,14 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   let listing =
     await(terminal, fn(sample) {
       case sample.model.overlay {
-        tui.DaemonSelector(_) -> True
+        tui_model.DaemonSelector(_) -> True
         _ -> False
       }
     })
   assert !attachment.busy(listing.model.candidate)
   assert listing.model.captured == None
   assert process.receive(arrivals, 0) == Error(Nil)
-  let assert tui.DaemonSelector(selector) = listing.model.overlay
+  let assert tui_model.DaemonSelector(selector) = listing.model.overlay
     as "listing is a server-backed metadata page"
   let assert Ok(selected) =
     list.first(list.drop(selector.page.sessions, selector.selected))
@@ -359,7 +360,7 @@ pub fn tui_v2_persisted_restart_lists_without_open_then_switches_two_workspaces_
   let _ =
     await(terminal, fn(sample) {
       case sample.model.overlay {
-        tui.DaemonSelector(_) -> True
+        tui_model.DaemonSelector(_) -> True
         _ -> False
       }
     })

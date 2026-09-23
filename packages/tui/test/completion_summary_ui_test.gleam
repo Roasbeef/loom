@@ -15,6 +15,7 @@ import tui/composer
 import tui/connection
 import tui/frame
 import tui/live_jobs
+import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
 import tui/session_channel
@@ -22,7 +23,7 @@ import tui/summary_panel
 import tui/workspace
 
 fn model() {
-  tui.Model(
+  tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
     input: textarea.state_from_string("continue my unfinished draft"),
     attachments: [composer.Attachment("retained context", 4)],
@@ -81,7 +82,7 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
       1,
       0,
     )
-  let initial = tui.Model(..model(), jobs: Some(board))
+  let initial = tui_model.Model(..model(), jobs: Some(board))
   let opened = tui.open_summary(initial) |> key("3")
   let text = painted(opened)
   assert string.contains(text, "3 Jobs")
@@ -97,11 +98,11 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
 
   // A strand switch cannot present the last strand's job roster as current
   // work for the newly selected strand.
-  let other = tui.Model(..opened, active_strand: "other")
+  let other = tui_model.Model(..opened, active_strand: "other")
   assert !string.contains(painted(other), "job-7")
   assert string.contains(
     painted(
-      tui.Model(
+      tui_model.Model(
         ..other,
         jobs_notice: "Live jobs observed separately from completion",
       ),
@@ -150,7 +151,7 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
       False,
     )
   let updated =
-    tui.Model(
+    tui_model.Model(
       ..initial,
       records: [protocol.EntryRecord("main", measured)],
       usage: cumulative,
@@ -168,10 +169,10 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let second = live_jobs.Job("b", "draining", "op-b", "second", 2, 90)
   let board = live_jobs.Board("main", 50, [first, second], 3, 1)
   let opened =
-    tui.Model(..model(), jobs: Some(board))
+    tui_model.Model(..model(), jobs: Some(board))
     |> tui.open_summary
     |> fn(model) {
-      tui.Model(
+      tui_model.Model(
         ..model,
         jobs_notice: "Refreshing live jobs; previous observation may be stale",
       )
@@ -187,7 +188,7 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let reordered = live_jobs.Board("main", 60, [second, first], 2, 0)
   let refreshed =
     tui.apply_channel_update(
-      tui.Model(..opened, jobs_awaiting: Some(#("", "main"))),
+      tui_model.Model(..opened, jobs_awaiting: Some(#("", "main"))),
       session_channel.Auxiliary(protocol.LiveJobsSnapshot(reordered)),
     )
   assert refreshed.summary_job_selected == 0

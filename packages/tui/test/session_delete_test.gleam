@@ -14,6 +14,7 @@ import gleam/option.{None, Some}
 import tui
 import tui/connection
 import tui/daemon/protocol
+import tui/model as tui_model
 import tui/session_selector
 import tui/workspace
 import weft
@@ -98,11 +99,11 @@ pub fn a_refused_delete_leaves_the_page_the_terminal_already_has_test() {
 // answer through `tui.update`, which is where the key actually decides
 // whether a control job starts.
 
-fn picker(model: tui.Model) -> tui.Model {
-  tui.Model(..model, overlay: tui.DaemonSelector(page()))
+fn picker(model: tui_model.Model) -> tui_model.Model {
+  tui_model.Model(..model, overlay: tui_model.DaemonSelector(page()))
 }
 
-fn blank() -> tui.Model {
+fn blank() -> tui_model.Model {
   tui.new_model(connection.new_inbox(), workspace.Context("test", None))
 }
 
@@ -111,7 +112,7 @@ pub fn a_confirmed_delete_reaches_the_control_job_test() {
   // may move on that key alone.
   let asking = tui.update(backend.KeyPress("d"), picker(blank()))
   assert asking.control_request == None
-  let assert tui.DaemonSelector(open) = asking.overlay
+  let assert tui_model.DaemonSelector(open) = asking.overlay
     as "the picker stays on screen while the question is open"
   assert open.prompt == session_selector.ConfirmingDelete("first")
 
@@ -129,9 +130,9 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   // `begin_delete` is that the slot is taken, not what took it.
   let replies = process.new_subject()
   let loading =
-    tui.Model(
+    tui_model.Model(
       ..picker(blank()),
-      control_request: Some(tui.ControlRequest(
+      control_request: Some(tui_model.ControlRequest(
         weft.cancel_signal(),
         replies,
         None,
@@ -142,7 +143,7 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
 
   // The in-flight job keeps the slot it already had, so its reply subject is
   // still the one the frame loop selects on.
-  let assert Some(tui.ControlRequest(replies: kept, ..)) =
+  let assert Some(tui_model.ControlRequest(replies: kept, ..)) =
     refused.control_request
     as "the page load still owns the control slot"
   assert kept == replies
@@ -152,7 +153,7 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   // none was ever asked for. The question stays open rather than being
   // withdrawn, so answering again once the page load lands costs one key
   // instead of reopening it against a row that may have moved.
-  let assert tui.DaemonSelector(shown) = refused.overlay
+  let assert tui_model.DaemonSelector(shown) = refused.overlay
     as "the picker survives the refusal"
   assert shown.page == page().page
   assert shown.selected == page().selected

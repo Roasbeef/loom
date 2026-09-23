@@ -24,8 +24,8 @@ import runtime/api
 import runtime/escalation
 import runtime/writer
 import support/tui_driver
-import tui
 import tui/approval
+import tui/model as tui_model
 import tui/session_channel
 import tui/snapshot
 import weft
@@ -168,7 +168,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
       // Operators receive the pending question automatically. The read-only
       // observer opens the same exact record through an explicit lookup.
       case resized.model.overlay {
-        tui.ApprovalInspector(_) -> Nil
+        tui_model.ApprovalInspector(_) -> Nil
         _ -> {
           let _ = send(driver, "/approvals ui-approval")
           Nil
@@ -177,7 +177,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
       let inspected =
         tui_v2_test.await(driver, fn(sample) {
           case sample.model.overlay {
-            tui.ApprovalInspector(_) ->
+            tui_model.ApprovalInspector(_) ->
               string.contains(sample.frame, "Permission required")
             _ -> False
           }
@@ -190,7 +190,7 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
         "\"seq\":" <> int.to_string(a_question.seq),
       )
       let closed = tui_driver.play(driver, [backend.KeyPress("esc")])
-      assert closed.model.overlay == tui.NoOverlay
+      assert closed.model.overlay == tui_model.NoOverlay
       Nil
     })
     let _ = tui_v2_test.await(alice.data, writable)
@@ -300,7 +300,7 @@ pub fn tui_session_dialog_commits_the_displayed_permissions_test() {
     let opened =
       tui_v2_test.await(terminal.data, fn(sample) {
         case sample.model.overlay {
-          tui.ApprovalInspector(_) ->
+          tui_model.ApprovalInspector(_) ->
             string.contains(sample.frame, "Allow for session")
           _ -> False
         }
@@ -329,7 +329,7 @@ pub fn tui_session_dialog_commits_the_displayed_permissions_test() {
       as "the same gateway decision stores standing session authority"
     assert permissions.decode(saved.value)
       == Ok([policy.GrantNetwork(policy.NetworkFull)])
-    assert answered.model.overlay == tui.NoOverlay
+    assert answered.model.overlay == tui_model.NoOverlay
     tui_driver.stop(terminal.data)
     Nil
   })

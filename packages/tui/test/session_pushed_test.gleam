@@ -29,6 +29,7 @@ import tui/snapshot_view
 import tui/workspace
 
 import gleam/bit_array
+import tui/model as tui_model
 
 fn metadata() {
   json.to_string(
@@ -433,20 +434,20 @@ pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
 // frame can be followed all the way to what a reader would see.
 fn attached() {
   let #(ready, _) = synchronized()
-  tui.Model(
+  tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-    peer: tui.Replaying,
+    peer: tui_model.Replaying,
     channel: Some(ready),
   )
 }
 
 // A coherent configuration cut covering all durable rows below next_seq.
-fn cache_cut(model: tui.Model, next_seq: Int, provider: String) {
+fn cache_cut(model: tui_model.Model, next_seq: Int, provider: String) {
   cache_cut_with_operation(model, next_seq, provider, None)
 }
 
 fn cache_cut_with_operation(
-  model: tui.Model,
+  model: tui_model.Model,
   next_seq: Int,
   provider: String,
   operation: Option(String),
@@ -507,13 +508,14 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
       tui.accept_connection_message,
     )
   assert model.streams
-    == [tui.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
+    == [tui_model.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
     as "fragments of one operation accumulate rather than replacing each other"
 
   // The next operation is a different answer, so it starts the region over
   // instead of appending to the one that has finished.
   let next = tui.accept_connection_message(model, delta("main", "op-2", "New"))
-  assert next.streams == [tui.Stream("main", "op-2", "", "text", ["New"], 3)]
+  assert next.streams
+    == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
 }
 
 pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {
@@ -641,7 +643,7 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
 // both move on the push rather than waiting for a capture that never
 // carries them.
 pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
-  let model = tui.Model(..attached(), peer: tui.Preview)
+  let model = tui_model.Model(..attached(), peer: tui_model.Preview)
   let reported =
     message.Usage(
       0,
@@ -670,14 +672,14 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
 
   let duplicate =
     tui.accept_connection_message(
-      tui.Model(..covered, monotonic_time_ms: fn() { 120_000 }),
+      tui_model.Model(..covered, monotonic_time_ms: fn() { 120_000 }),
       usage_push("main", reported),
     )
   assert duplicate.cache_watch == covered.cache_watch
     as "a delayed duplicate cannot reset the observed cache clock"
   assert duplicate.usage == settled.usage
 
-  let captured = tui.Model(..model, usage: reported)
+  let captured = tui_model.Model(..model, usage: reported)
   let after_cut =
     tui.accept_connection_message(captured, usage_push("main", reported))
   assert after_cut.usage == reported
@@ -704,9 +706,9 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
   let selected =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(
+      tui_model.Model(
         ..attached(),
-        peer: tui.Preview,
+        peer: tui_model.Preview,
         cache_watch: dict.from_list([#("main", watch)]),
         input: textarea.state_from_string("/model new-provider"),
       ),
@@ -754,7 +756,11 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
     )
   let old =
-    cache_cut(tui.Model(..attached(), peer: tui.Preview), 11, "old-provider")
+    cache_cut(
+      tui_model.Model(..attached(), peer: tui_model.Preview),
+      11,
+      "old-provider",
+    )
   let pending =
     tui.accept_connection_message(
       old,
@@ -804,9 +810,9 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
     )
   let assert #(_, Some(watch)) = cache_miss.observe(None, prior, 0)
   let old =
-    tui.Model(
+    tui_model.Model(
       ..cache_cut(
-        tui.Model(..attached(), peer: tui.Preview),
+        tui_model.Model(..attached(), peer: tui_model.Preview),
         11,
         "old-provider",
       ),
@@ -841,7 +847,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
     )
-  let model = tui.Model(..attached(), peer: tui.Preview)
+  let model = tui_model.Model(..attached(), peer: tui_model.Preview)
   let first =
     cache_cut_with_operation(model, 11, "new-provider", Some("old-op"))
   assert dict.get(first.cache_fence, "main") == Ok(None)
@@ -881,7 +887,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
       250_400,
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
     )
-  let model = tui.Model(..attached(), peer: tui.Preview)
+  let model = tui_model.Model(..attached(), peer: tui_model.Preview)
   let first = cache_cut(model, 11, "new-provider")
   assert dict.get(first.cache_fence, "main") == Error(Nil)
     as "the cut shows no operation to fence"
@@ -914,7 +920,7 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
 
   let queued =
     tui.accept_connection_message(
-      tui.Model(..model, channel: Some(sent), submitting: Some("main")),
+      tui_model.Model(..model, channel: Some(sent), submitting: Some("main")),
       reply(
         id,
         "mutation_outcome",

@@ -31,6 +31,7 @@ import tui
 import tui/agents
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -80,7 +81,7 @@ pub fn collapsing_details_repaints_the_rows_the_taller_view_used_test() {
 
 // The transcript pane of one finished run, beside the model that drew it.
 type Pane {
-  Pane(model: tui.Model, rows: List(String))
+  Pane(model: tui_model.Model, rows: List(String))
 }
 
 // Five failing tool results, each a summary line followed by twenty lines
@@ -205,8 +206,8 @@ fn deliver(payload: String) -> virtual_backend.Step {
 
 // The demo scaffolding removed, so the pane holds only what this module
 // delivered and a leftover row can only have come from the expanded view.
-fn quiet_model(inbox: Subject(connection.Message)) -> tui.Model {
-  tui.Model(
+fn quiet_model(inbox: Subject(connection.Message)) -> tui_model.Model {
+  tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
     strands: [],

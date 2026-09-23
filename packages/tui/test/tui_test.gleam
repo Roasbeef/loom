@@ -30,6 +30,7 @@ import tui/image_drop
 import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/markdown
+import tui/model as tui_model
 import tui/model_selector
 import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
@@ -905,17 +906,17 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
   let queued = tui.update(backend.KeyPress("enter"), live)
   assert string.contains(queued.notice, "prompt sent")
     as "enter sends a prompt, which the daemon holds until the run settles"
-  assert queued.queued == [tui.HeldPrompt("look at this too")]
+  assert queued.queued == [tui_model.HeldPrompt("look at this too")]
     as "the operator's line is echoed the moment it is submitted"
 
   let steered =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(..live, submission_mode: tui.SteerNow),
+      tui_model.Model(..live, submission_mode: tui_model.SteerNow),
     )
   assert string.contains(steered.notice, "steered")
     as "tab mode folds the draft into the run that is already going"
-  assert steered.queued == [tui.Interjection]
+  assert steered.queued == [tui_model.Interjection]
     as "a steer draws nothing but is still owed an entry of its own"
 }
 
@@ -933,7 +934,7 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
       submitted,
       connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
     )
-  assert after_assistant.queued == [tui.HeldPrompt("look at this too")]
+  assert after_assistant.queued == [tui_model.HeldPrompt("look at this too")]
     as "the run's own output does not retire a prompt the daemon still holds"
 
   let after_user =
@@ -960,14 +961,14 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
   let steered =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(
+      tui_model.Model(
         ..submitted,
-        submission_mode: tui.SteerNow,
+        submission_mode: tui_model.SteerNow,
         input: text_area.state_from_string("actually try the other file"),
       ),
     )
   assert steered.queued
-    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    == [tui_model.Interjection, tui_model.HeldPrompt("look at this too")]
     as "premise: the steer commits before the prompt the daemon still holds"
 
   let after_steer_entry =
@@ -979,7 +980,7 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
         5,
       )),
     )
-  assert after_steer_entry.queued == [tui.HeldPrompt("look at this too")]
+  assert after_steer_entry.queued == [tui_model.HeldPrompt("look at this too")]
     as "the steer's own entry retires the steer, not the prompt behind it"
 
   let after_prompt_entry =
@@ -1006,14 +1007,14 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
   let steered =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(
+      tui_model.Model(
         ..submitted,
-        submission_mode: tui.SteerNow,
+        submission_mode: tui_model.SteerNow,
         input: text_area.state_from_string("actually try the other file"),
       ),
     )
   assert steered.queued
-    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    == [tui_model.Interjection, tui_model.HeldPrompt("look at this too")]
     as "premise: the steer is recorded ahead of the prompt still being held"
 
   let aborted =
@@ -1021,7 +1022,7 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
       steered,
       session_channel.Acknowledged("abort", "accepted"),
     )
-  assert aborted.queued == [tui.HeldPrompt("look at this too")]
+  assert aborted.queued == [tui_model.HeldPrompt("look at this too")]
     as "the aborted steer commits no entry, so its record goes with the run"
 
   let drained =
@@ -1042,10 +1043,10 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
 /// retirement rule exists to avoid.
 pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
   let stale =
-    tui.Model(
+    tui_model.Model(
       ..live_model(""),
-      queued: [tui.HeldPrompt("look at this too")],
-      awaiting_outcome: Some(tui.HeldPrompt("and one more thing")),
+      queued: [tui_model.HeldPrompt("look at this too")],
+      awaiting_outcome: Some(tui_model.HeldPrompt("and one more thing")),
     )
   let synchronized =
     tui.accept_connection_message(
@@ -1068,9 +1069,9 @@ pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
 /// conversation channel carries one mutation at a time.
 pub fn a_refused_prompt_retires_its_own_echo_test() {
   let submitted =
-    tui.Model(
+    tui_model.Model(
       ..live_model(""),
-      awaiting_outcome: Some(tui.HeldPrompt("a fifth one")),
+      awaiting_outcome: Some(tui_model.HeldPrompt("a fifth one")),
     )
   let refused =
     tui.accept_connection_message(
@@ -1129,12 +1130,15 @@ pub fn a_queued_echo_renders_below_the_live_transcript_test() {
       inbox,
     )
   let assert Ok(run) =
-    tui.run_script(tui.Model(..quiet_model(inbox), peer: tui.Replaying), script)
+    tui.run_script(
+      tui_model.Model(..quiet_model(inbox), peer: tui_model.Replaying),
+      script,
+    )
     as "the scripted backend cannot refuse to start"
   let assert Ok(last) = list.last(run.frames)
     as "every run draws at least its initial frame"
 
-  assert run.final.queued == [tui.HeldPrompt("and one more thing")]
+  assert run.final.queued == [tui_model.HeldPrompt("and one more thing")]
     as "premise: the submission produced an echo to look for"
   let rows = string.split(frame.buffer_to_text(last), "\n")
   let assert Ok(answer_row) = row_containing(rows, "earlier answer")
@@ -1167,10 +1171,10 @@ fn row_containing(rows: List(String), needle: String) -> Result(Int, Nil) {
 // One attached-looking client whose active strand is mid-answer, with a
 // draft in the editor. `Replaying` performs the whole local half of a
 // submission and writes to no socket, which is the half these checks read.
-fn live_model(draft: String) -> tui.Model {
-  tui.Model(
+fn live_model(draft: String) -> tui_model.Model {
+  tui_model.Model(
     ..quiet_model(connection.new_inbox()),
-    peer: tui.Replaying,
+    peer: tui_model.Replaying,
     active_strand: "main",
     strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
     input: text_area.state_from_string(draft),
@@ -1494,9 +1498,9 @@ fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
 /// writes nothing to a socket, which is exactly the half under test.
 pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
   let live =
-    tui.Model(
+    tui_model.Model(
       ..quiet_model(connection.new_inbox()),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       active_strand: "main",
       strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
       attachments: [composer.ImageAttachment(test_image("shot.png", 12))],
@@ -1510,7 +1514,7 @@ pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
   assert submitted.attachments == []
     as "a submitted image prompt clears the composer"
   assert !list.any(submitted.transcript, fn(line) {
-    line.speaker == tui.Failure
+    line.speaker == tui_model.Failure
   })
     as "no local refusal was written"
 }
@@ -1742,8 +1746,8 @@ pub fn a_delivered_message_reaches_the_model_test() {
 // A model with the demo scaffolding removed, so a frame shows only what the
 // script put there. The workspace is fixed rather than discovered: the footer
 // prints it, and the checkout path is not a property of the client.
-fn quiet_model(inbox: process.Subject(connection.Message)) -> tui.Model {
-  tui.Model(
+fn quiet_model(inbox: process.Subject(connection.Message)) -> tui_model.Model {
+  tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
     strands: [],
@@ -1844,9 +1848,9 @@ const transcript_origin = Position(1, 2)
 pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
-      tui.Line(tui.System, "gamma delta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
+      tui_model.Line(tui_model.System, "gamma delta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -1969,7 +1973,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
   let area = tui.hit_area(previewed.final, Position(2, 2))
-  let assert Some(tui.FrameCache(selection_gutters:, ..)) =
+  let assert Some(tui_model.FrameCache(selection_gutters:, ..)) =
     previewed.final.frame_cache
     as "the painted frame owns its copy layout"
   let partial =
@@ -2011,10 +2015,10 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
 
 fn assistant_copy_model(
   inbox: process.Subject(connection.Message),
-) -> tui.Model {
-  tui.Model(..quiet_model(inbox), transcript: [
-    tui.Line(
-      tui.Assistant,
+) -> tui_model.Model {
+  tui_model.Model(..quiet_model(inbox), transcript: [
+    tui_model.Line(
+      tui_model.Assistant,
       "opening paragraph\n\nsecond paragraph\n\n```gleam\n  let answer = 1\n```",
     ),
   ])
@@ -2023,8 +2027,8 @@ fn assistant_copy_model(
 pub fn a_resize_drops_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2044,8 +2048,8 @@ pub fn a_resize_drops_a_settled_selection_test() {
 pub fn escape_clears_a_selection_without_interrupting_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2071,8 +2075,8 @@ pub fn escape_clears_a_selection_without_interrupting_test() {
 pub fn a_click_dismisses_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2092,7 +2096,7 @@ pub fn a_click_dismisses_a_settled_selection_test() {
 
 pub fn a_press_outside_every_panel_selects_across_the_screen_test() {
   let inbox = connection.new_inbox()
-  let model = tui.Model(..quiet_model(inbox), width: 60, height: 12)
+  let model = tui_model.Model(..quiet_model(inbox), width: 60, height: 12)
   let screen = geometry.rect_new(0, 0, 60, 12)
 
   // The header row belongs to no panel; a transcript cell belongs to the
@@ -2174,7 +2178,7 @@ pub fn usage_footer_snapshot_with_a_rate_test() {
   // The rate is the one footer field a clock produces, so it is set on the
   // model rather than raced for over the wire.
   let inbox = connection.new_inbox()
-  let timed = tui.Model(..quiet_model(inbox), output_rate_tps: Some(87))
+  let timed = tui_model.Model(..quiet_model(inbox), output_rate_tps: Some(87))
   snapshot_test.assert_snapshot(
     "usage-footer-with-rate",
     last_frame(timed, 96, 12, [
@@ -2369,7 +2373,7 @@ fn key(name: String) -> virtual_backend.Step {
 // Every snapshot ends the same way: run the script on a fixed screen and
 // take the frame the settling ticks flushed.
 fn last_frame(
-  model: tui.Model,
+  model: tui_model.Model,
   width: Int,
   height: Int,
   steps: List(virtual_backend.Step),
@@ -2388,9 +2392,9 @@ fn last_frame(
 pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
-      tui.Line(tui.System, "gamma delta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
+      tui_model.Line(tui_model.System, "gamma delta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2466,7 +2470,7 @@ pub fn image_preview_lists_all_four_images_test() {
 /// The complete frame, not only the summary helper, must show the fourth drop.
 pub fn image_preview_renders_fourth_image_and_keeps_prompt_visible_test() {
   let model =
-    tui.Model(
+    tui_model.Model(
       ..quiet_model(connection.new_inbox()),
       attachments: list.map(
         ["one.png", "two.png", "three.png", "four.png"],

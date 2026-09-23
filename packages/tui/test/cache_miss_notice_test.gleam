@@ -23,6 +23,7 @@ import tui/attachment
 import tui/cache_miss
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
 import tui/snapshot
@@ -77,7 +78,7 @@ fn re_read_prefix() -> message.Usage {
 
 const expected_row = "Cache miss after 10m idle: 250k tokens re-billed (~$1.00)"
 
-fn initial(now: Int) -> tui.Model {
+fn initial(now: Int) -> tui_model.Model {
   tui.new_model_with_clock(
     connection.new_inbox(),
     workspace.Context(path: "/work", branch: None),
@@ -85,27 +86,27 @@ fn initial(now: Int) -> tui.Model {
   )
 }
 
-fn at(model: tui.Model, now: Int) -> tui.Model {
-  tui.Model(..model, monotonic_time_ms: fn() { now })
+fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
+  tui_model.Model(..model, monotonic_time_ms: fn() { now })
 }
 
-fn deliver(model: tui.Model, wire: String) -> tui.Model {
+fn deliver(model: tui_model.Model, wire: String) -> tui_model.Model {
   process.send(model.inbox, connection.Incoming(wire))
   tui.update(backend.Tick, model)
 }
 
-fn text(model: tui.Model) -> String {
+fn text(model: tui_model.Model) -> String {
   render_text(model, 120, 40)
 }
 
-fn render_text(model: tui.Model, width: Int, height: Int) -> String {
+fn render_text(model: tui_model.Model, width: Int, height: Int) -> String {
   let model = tui.update(backend.Resize(width, height), model)
   let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, width, height))
   frame.buffer_to_text(buffer)
 }
 
 // A first turn whose request read the cached prefix, ten minutes ago.
-fn after_the_first_turn() -> tui.Model {
+fn after_the_first_turn() -> tui_model.Model {
   initial(0)
   |> deliver(gateway.user_entry("main", "carry on", 1))
   |> deliver(gateway.assistant_entry("main", "first answer", 2))
@@ -113,7 +114,7 @@ fn after_the_first_turn() -> tui.Model {
 }
 
 // The turn after the pause, whose request paid for the prefix again.
-fn after_the_second_turn(model: tui.Model) -> tui.Model {
+fn after_the_second_turn(model: tui_model.Model) -> tui_model.Model {
   model
   |> at(600_000)
   |> deliver(gateway.user_entry("main", "still there", 3))
@@ -178,7 +179,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
     as "the compact footer actually displays the warning"
   assert string.contains(render_text(idle, 40, 12), "cache idle 10m")
     as "a narrow terminal retains the warning before lower-priority figures"
-  let expanded = tui.Model(..idle, details_expanded: True)
+  let expanded = tui_model.Model(..idle, details_expanded: True)
   assert string.contains(text(expanded), "cache idle 10m")
     as "the detailed footer also displays the warning"
 
@@ -195,7 +196,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   let live =
     tui.update(
       backend.Tick,
-      tui.Model(..at(quiet, 600_000), strands: [
+      tui_model.Model(..at(quiet, 600_000), strands: [
         protocol.Strand(
           id: "main",
           name: Some("main"),
@@ -212,7 +213,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   let split =
     quiet
     |> fn(base) {
-      tui.Model(
+      tui_model.Model(
         ..base,
         cache_watch: dict.from_list([
           #("main", watch_with(cache_miss.Split)),
@@ -229,7 +230,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
 pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   let base = after_the_first_turn() |> clear_strands
   let watched =
-    tui.Model(
+    tui_model.Model(
       ..base,
       cache_watch: dict.from_list([#("main", watch_with(cache_miss.Split))]),
     )
@@ -237,7 +238,7 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   assert shown.cache_outlook == "cache tail ≤2m"
 
   let requested =
-    tui.Model(
+    tui_model.Model(
       ..shown,
       input: textarea.state_from_string("/model another-provider"),
     )
@@ -290,7 +291,7 @@ fn captured_view(provider: String, reasoning: strand.ThinkingLevel) {
 pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
   let base = after_the_first_turn() |> clear_strands
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..base,
       cache_watch: dict.from_list([#("main", watch_with(cache_miss.Split))]),
     )
@@ -350,8 +351,8 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
 
 // The preview model's strand roster, emptied: an idle session has no live
 // operation, and the outlook's suppression is keyed on one.
-fn clear_strands(model: tui.Model) -> tui.Model {
-  tui.Model(..model, strands: [])
+fn clear_strands(model: tui_model.Model) -> tui_model.Model {
+  tui_model.Model(..model, strands: [])
 }
 
 // A watch holding the priced prefix at time zero under the stated horizon.
@@ -523,7 +524,7 @@ fn transfer_for(
 // channel is credited with the new session's first cut, and that cut is
 // handed over as an `attachment.Adopted` outcome exactly as `attachment`
 // itself would report it.
-fn adopt_session(model: tui.Model, session: String) -> tui.Model {
+fn adopt_session(model: tui_model.Model, session: String) -> tui_model.Model {
   let channel =
     session_channel.replay(snapshot.Expected(session, "epoch", "incarnation"))
   let #(replacement, updates) =

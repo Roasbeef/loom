@@ -13,6 +13,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/snapshot
 import tui/snapshot_view
@@ -60,9 +61,14 @@ fn model(role, peers) {
       None,
       None,
     )
-  tui.Model(..base, captured: Some(#(cut, view)), transcript: [], records: [
-    record(owner(), "my prompt"),
-  ])
+  tui_model.Model(
+    ..base,
+    captured: Some(#(cut, view)),
+    transcript: [],
+    records: [
+      record(owner(), "my prompt"),
+    ],
+  )
 }
 
 fn record(origin, text) {
@@ -99,7 +105,7 @@ pub fn owner_attribution_solo_owner_hides_only_current_local_identity_test() {
     ],
     fn(author) {
       let historical =
-        tui.Model(..solo, records: [record(author, "historical prompt")])
+        tui_model.Model(..solo, records: [record(author, "historical prompt")])
       assert string.contains(
         paint(historical),
         origin.display_label(author) <> ":",
@@ -132,7 +138,10 @@ pub fn owner_attribution_multiplayer_and_uncertain_presence_keep_labels_test() {
     },
   )
   let solo = model(snapshot.Owner, [local_peer()])
-  assert string.contains(paint(tui.Model(..solo, captured: None)), "Owner:")
+  assert string.contains(
+    paint(tui_model.Model(..solo, captured: None)),
+    "Owner:",
+  )
 }
 
 pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
@@ -149,7 +158,7 @@ pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
   // A completed metadata cut invalidates the record cache even when no
   // immutable message changed. Exercise the corresponding rendering path.
   let joined =
-    tui.Model(
+    tui_model.Model(
       ..cached,
       captured: multiplayer.captured,
       record_cache_valid: False,
@@ -157,7 +166,7 @@ pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
     )
   assert string.contains(paint(joined), "Owner:")
   let left =
-    tui.Model(
+    tui_model.Model(
       ..joined,
       captured: solo.captured,
       record_cache_valid: False,

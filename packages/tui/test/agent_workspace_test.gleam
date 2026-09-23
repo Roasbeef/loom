@@ -27,6 +27,7 @@ import tui/agents
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
 import tui/reviewer_status
 import tui/session_channel
@@ -305,12 +306,12 @@ fn press(model, key) {
 
 pub fn inspection_keeps_the_recipient_and_opening_restores_each_draft_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("main draft"),
       attachments: [composer.Attachment("attached main context", 5)],
-      submission_mode: tui.SteerNow,
+      submission_mode: tui_model.SteerNow,
     )
   let inspected = initial |> press("f2") |> press("down")
   assert inspected.active_strand == "main"
@@ -320,40 +321,40 @@ pub fn inspection_keeps_the_recipient_and_opening_restores_each_draft_test() {
   assert worker.active_strand == "worker"
   assert textarea.value(worker.input) == ""
   assert worker.attachments == []
-  assert worker.submission_mode == tui.PromptNext
+  assert worker.submission_mode == tui_model.PromptNext
   let worker = worker |> press("w")
   let returned = worker |> press("f2") |> press("up") |> press("enter")
   assert returned.active_strand == "main"
   assert returned.input == initial.input
   assert returned.attachments == initial.attachments
-  assert returned.submission_mode == tui.SteerNow
+  assert returned.submission_mode == tui_model.SteerNow
   let reopened = returned |> press("f2") |> press("down") |> press("enter")
   assert textarea.value(reopened.input) == "w"
 }
 
 pub fn selection_survives_insertion_and_removal_cannot_retarget_a_draft_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("keep me"),
     )
   let inspected = initial |> press("f2") |> press("down")
   let inserted =
-    tui.Model(..inspected, strands: [
+    tui_model.Model(..inspected, strands: [
       protocol.Strand("earlier", None, None),
       ..roster()
     ])
-  let assert tui.AgentInspector(selection) = inserted.overlay
+  let assert tui_model.AgentInspector(selection) = inserted.overlay
     as "the workspace remains open"
   assert selection.selected == "worker"
   let removed =
-    tui.Model(..inserted, strands: [protocol.Strand("main", None, None)])
+    tui_model.Model(..inserted, strands: [protocol.Strand("main", None, None)])
     |> press("enter")
   assert removed.active_strand == "main"
   assert removed.input == initial.input
   let navigated = removed |> press("down")
-  let assert tui.AgentInspector(selection) = navigated.overlay
+  let assert tui_model.AgentInspector(selection) = navigated.overlay
     as "missing selection remains navigable"
   assert selection.selected == "main"
 }
@@ -361,7 +362,7 @@ pub fn selection_survives_insertion_and_removal_cannot_retarget_a_draft_test() {
 pub fn compact_pending_nudges_keep_all_lines_in_the_scrollable_tail_test() {
   let body = "first line\nsecond line\nlast visible instruction"
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: [],
       nudges: Some(advisor_pending.Board("main", 1, [body], 1)),
@@ -444,7 +445,7 @@ pub fn only_captured_retry_or_deferred_state_claims_a_wait_test() {
 
 pub fn a_disappeared_recipient_is_retained_and_cannot_accept_a_prompt_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       input: textarea.state_from_string("private draft for main"),
     )
@@ -549,14 +550,14 @@ pub fn terminal_operations_do_not_inherit_stale_approval_attention_test() {
 
 pub fn returned_input_keeps_its_owner_while_another_draft_is_open_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("main draft"),
     )
   let worker = initial |> press("f2") |> press("down") |> press("enter")
   let worker =
-    tui.Model(..worker, input: textarea.state_from_string("worker draft"))
+    tui_model.Model(..worker, input: textarea.state_from_string("worker draft"))
   let returned =
     tui.apply_channel_update(
       worker,
@@ -576,7 +577,7 @@ pub fn returned_input_keeps_its_owner_while_another_draft_is_open_test() {
 
 pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("main draft"),
@@ -585,14 +586,14 @@ pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
     initial |> press("f2") |> press("down") |> press("tab") |> press("!")
   assert inspected.active_strand == "main"
   assert textarea.value(inspected.input) == "main draft!"
-  let assert tui.AgentInspector(inspector) = inspected.overlay
+  let assert tui_model.AgentInspector(inspector) = inspected.overlay
     as "the composer remains inside the agent workspace"
   assert inspector.selected == "worker"
   assert inspector.focus == agents.Composing
   let navigated = inspected |> press("esc") |> press("up")
   assert navigated.active_strand == "main"
   assert textarea.value(navigated.input) == "main draft!"
-  let assert tui.AgentInspector(inspector) = navigated.overlay
+  let assert tui_model.AgentInspector(inspector) = navigated.overlay
     as "Escape returned keyboard ownership to inspection"
   assert inspector.selected == "main"
 }
@@ -603,7 +604,7 @@ pub fn editing_inside_the_workspace_keeps_the_original_recipient_test() {
 /// not silently change the draft that a later Enter could submit.
 pub fn paste_edits_only_while_the_workspace_composer_has_focus_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("main draft"),
@@ -627,13 +628,13 @@ pub fn paste_edits_only_while_the_workspace_composer_has_focus_test() {
 /// A focused diff navigator also owns paste while the composer is hidden.
 pub fn diff_navigation_does_not_paste_into_the_hidden_composer_test() {
   let base =
-    tui.Model(
+    tui_model.Model(
       ..model(),
-      diff_view: tui.DiffVisible,
+      diff_view: tui_model.DiffVisible,
       input: textarea.state_from_string("main draft"),
     )
   let browsing =
-    tui.Model(
+    tui_model.Model(
       ..base,
       worktree: worktree_view.State(
         ..base.worktree,
@@ -644,7 +645,7 @@ pub fn diff_navigation_does_not_paste_into_the_hidden_composer_test() {
   assert textarea.value(ignored.input) == "main draft"
 
   let composing =
-    tui.Model(
+    tui_model.Model(
       ..browsing,
       worktree: worktree_view.State(
         ..browsing.worktree,
@@ -668,7 +669,7 @@ pub fn opening_selected_message_sender_preserves_drafts_until_the_action_test() 
       state: agent_messages.Accepted,
     )
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       agent_messages: [send],
@@ -698,7 +699,7 @@ pub fn unknown_message_sender_is_refused_without_retargeting_test() {
       state: agent_messages.SendPending,
     )
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       agent_messages: [send],
@@ -724,12 +725,12 @@ pub fn short_detail_with_multiline_draft_keeps_selected_body_visible_test() {
     )
   let inspector = agents.inspect("main")
   let inspected =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       agent_messages: [send],
       input: textarea.state_from_string("one\ntwo\nthree\nfour"),
-      overlay: tui.AgentInspector(
+      overlay: tui_model.AgentInspector(
         agents.Inspector(
           ..inspector,
           detail: agents.Messages,
@@ -769,10 +770,10 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
     )
   let inspector = agents.inspect("main")
   let model =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       agent_messages: [fresh, retained],
-      overlay: tui.AgentInspector(
+      overlay: tui_model.AgentInspector(
         agents.Inspector(
           ..inspector,
           detail: agents.Messages,
@@ -782,14 +783,14 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
       ),
     )
     |> tui.reconcile_agent_message_selection
-  let assert tui.AgentInspector(preserved) = model.overlay
+  let assert tui_model.AgentInspector(preserved) = model.overlay
   assert preserved.message == Some(agent_message_panel.identity(retained))
   assert preserved.scroll == 3
 
   let evicted =
-    tui.Model(..model, agent_messages: [fresh])
+    tui_model.Model(..model, agent_messages: [fresh])
     |> tui.reconcile_agent_message_selection
-  let assert tui.AgentInspector(fallback) = evicted.overlay
+  let assert tui_model.AgentInspector(fallback) = evicted.overlay
   assert fallback.message == Some(agent_message_panel.identity(fresh))
   assert fallback.scroll == 0
 }
@@ -799,7 +800,7 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
     [#(40, 12), #(80, 24), #(100, 30), #(116, 38), #(160, 50)],
     fn(size) {
       let initial =
-        tui.Model(
+        tui_model.Model(
           ..model(),
           strands: roster(),
           input: textarea.state_from_string("retained draft"),
@@ -864,14 +865,18 @@ pub fn approval_detail_keeps_its_captured_preview_and_no_default_decision_test()
 // Tab transfers keyboard ownership out of any previously visible surface.
 pub fn workspace_typing_leaves_the_hidden_diff_navigator_test() {
   let initial =
-    tui.Model(..model(), strands: roster(), diff_view: tui.DiffVisible)
+    tui_model.Model(
+      ..model(),
+      strands: roster(),
+      diff_view: tui_model.DiffVisible,
+    )
     |> press("ctrl+d")
   assert initial.worktree.focus == worktree_view.Navigator
   let editing = initial |> press("f2") |> press("tab") |> press("x")
   assert editing.worktree.focus == worktree_view.Composer
   assert textarea.value(editing.input) == "x"
   let navigating = editing |> press("ctrl+d")
-  assert navigating.overlay == tui.NoOverlay
+  assert navigating.overlay == tui_model.NoOverlay
   assert navigating.worktree.focus == worktree_view.Navigator
 }
 
@@ -881,12 +886,12 @@ pub fn workspace_commands_expose_the_surface_that_owns_the_next_key_test() {
     fn(command) {
       let editing = model() |> press("f2") |> press("tab")
       let opened =
-        tui.Model(..editing, input: textarea.state_from_string(command))
+        tui_model.Model(..editing, input: textarea.state_from_string(command))
         |> press("enter")
-      assert opened.overlay == tui.NoOverlay as command
+      assert opened.overlay == tui_model.NoOverlay as command
     },
   )
-  let previous = tui.Model(..model(), help_open: True)
+  let previous = tui_model.Model(..model(), help_open: True)
   let editing = previous |> press("f2") |> press("tab") |> press("x")
   assert !editing.help_open
   assert textarea.value(editing.input) == "x"
@@ -895,7 +900,7 @@ pub fn workspace_commands_expose_the_surface_that_owns_the_next_key_test() {
 // The identity row must remain useful in a deeply nested worktree.
 pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       workspace: workspace.Context(
         "/work/" <> string.repeat("nested/", 30),
@@ -917,7 +922,7 @@ pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
 
 pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("retained draft"),
@@ -927,7 +932,7 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     |> press("down")
   let rendered =
     tui.view(
-      tui.Model(..initial, frame_cache: None),
+      tui_model.Model(..initial, frame_cache: None),
       geometry.rect_new(0, 0, 40, 12),
     ).0
     |> frame.buffer_to_text
