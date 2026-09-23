@@ -19,6 +19,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
+import tui/session_control
 import tui/snapshot
 import tui/workspace
 import weft
@@ -103,9 +104,9 @@ pub fn a_failed_reconnect_is_reported_once_and_stays_disconnected_test() {
   let assert tui_model.ReconnectAttempting(replies:, ..) = attempted.reconnect
 
   let failed =
-    tui.accept_reconnect_event(
+    session_control.accept_reconnect_event(
       attempted,
-      tui.ReconnectEvent(
+      session_control.ReconnectEvent(
         replies,
         weft.PulledOutcome(weft.Failed(index: 0, error: "loomd was not found")),
       ),
@@ -133,9 +134,9 @@ pub fn a_reconnect_event_from_another_attempt_is_ignored_test() {
   // run, so it must not move this model.
   let elsewhere = process.new_subject()
   let ignored =
-    tui.accept_reconnect_event(
+    session_control.accept_reconnect_event(
       attempted,
-      tui.ReconnectEvent(
+      session_control.ReconnectEvent(
         elsewhere,
         weft.PulledOutcome(weft.Failed(index: 0, error: "some other run")),
       ),

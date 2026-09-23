@@ -13,6 +13,7 @@ import tui/connection
 import tui/daemon/protocol
 import tui/frame
 import tui/model as tui_model
+import tui/session_control
 import tui/session_selector
 import tui/virtual_backend
 import tui/workspace
@@ -83,7 +84,7 @@ fn acknowledge(
         Some(Ok(tui_model.SessionRenamed(renamed))),
       )),
     )
-  tui.accept_control_event(
+  session_control.accept_control_event(
     waiting,
     tui_model.ControlEvent(replies, weft.AllDelivered),
   )

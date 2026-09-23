@@ -21,6 +21,7 @@ import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
+import tui/session_control
 import tui/virtual_backend
 import tui/workspace
 import weft/actor
@@ -150,7 +151,7 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
       continue(Driver(..driver, model: run.final))
     }
     Catalogue(message) -> {
-      let run = run(tui.accept_control_event(model, message), [])
+      let run = run(session_control.accept_control_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
 

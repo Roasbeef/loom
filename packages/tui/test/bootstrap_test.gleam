@@ -23,6 +23,7 @@ import tui/daemon/selection
 import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
+import tui/session_control
 import tui/session_selector
 import tui/sessions
 import tui/workspace
@@ -658,9 +659,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert saved.session_id == target.expected.session
   assert saved.status == control.Saved
   let reattaching =
-    tui.accept_reconnect_event(
+    session_control.accept_reconnect_event(
       reconnecting,
-      tui.ReconnectEvent(replies, reconnected),
+      session_control.ReconnectEvent(replies, reconnected),
     )
   let reopened = wait_for_attachment(reattaching.candidate, 20_000)
   let assert attachment.Adopted(

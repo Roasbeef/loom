@@ -6,6 +6,7 @@ import tui
 import tui/connection
 import tui/daemon/protocol
 import tui/model as tui_model
+import tui/session_control
 import tui/session_selector
 import tui/workspace
 import weft
@@ -42,7 +43,7 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
       )),
     )
   let received =
-    tui.accept_control_event(
+    session_control.accept_control_event(
       pending,
       tui_model.ControlEvent(
         replies,
@@ -53,7 +54,7 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
       ),
     )
   let after =
-    tui.accept_control_event(
+    session_control.accept_control_event(
       received,
       tui_model.ControlEvent(replies, weft.AllDelivered),
     )
