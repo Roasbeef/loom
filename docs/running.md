@@ -101,10 +101,11 @@ shared domain services before closing the listener. Its flags:
 ```
 
 **Models.** `--config` points at a catalogue: named entries (`dialect`,
-`base_url`, `api_key_env`, `model_id`, context and output limits, thinking
-level) plus role → fallback-chain routing. [model catalogue example](examples/loom.toml) is the
-commented example — it carries all three dialects, `anthropic`, `openai`
-and `gemini` — [Baseten example](examples/loom-baseten.toml) wires four
+`model_id`, context and output limits, thinking level, and the authentication
+fields for that dialect) plus role → fallback-chain routing.
+[The model catalogue example](examples/loom.toml) shows API-key providers,
+including public OpenAI Responses. The [Codex subscription guide](codex-subscription.md)
+covers the separate experimental sign-in route. [The Baseten example](examples/loom-baseten.toml) wires four
 OpenAI-dialect models with per-role chains, and
 [advisor example](examples/loom-advisor.toml) is the smallest catalogue that pairs a
 fast primary model with a stronger one reviewing it through the optional
@@ -115,7 +116,7 @@ flag is absent and that file exists (`~/.loom/loom.toml` by default).
 Without either, `LOOM_MODEL` (default `claude-opus-5`),
 `LOOM_BASE_URL`, `LOOM_CONTEXT_WINDOW`, `LOOM_MAX_OUTPUT_TOKENS` and
 `LOOM_SYSTEM_PROMPT` shape a one-entry catalogue. API keys never live in
-the file — each entry's `api_key_env` names the variable read at dispatch,
+the file — an API-key entry's `api_key_env` names the variable read at dispatch,
 `ANTHROPIC_API_KEY` in the env fallback — and a keyless server still boots
 and serves; generation requests then fail in band. The TUI lists the
 catalogue with `/model` and switches the active strand's model by name.
