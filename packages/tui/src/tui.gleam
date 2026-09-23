@@ -13,6 +13,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/origin
 import core/register
 import etui/app
 import etui/backend
@@ -6596,7 +6597,7 @@ fn render_cut(
     Some(_) -> #("1 present", "Attached · 1 present")
     None -> {
       let identity =
-        cut.attachment.origin.name
+        origin.display_label(cut.attachment.origin)
         <> " · "
         <> role
         <> " · "
@@ -6788,7 +6789,7 @@ fn code_mode_status(view: snapshot_view.View, active: String) -> String {
 
 fn changed_by(author: Option(message.Origin)) {
   case author {
-    Some(author) -> " · changed by " <> author.name
+    Some(author) -> " · changed by " <> origin.display_label(author)
     None -> ""
   }
 }
@@ -6859,7 +6860,7 @@ fn approval_lines(reviews: List(approval.Review)) {
         approval.Consumed -> "consumed"
       }
       let author = case record.origin {
-        Some(origin) -> " · " <> origin.name
+        Some(author) -> " · " <> origin.display_label(author)
         None -> ""
       }
       Line(
@@ -9199,7 +9200,8 @@ fn user_author_prefix(
   case origin {
     None -> ""
     Some(author) if Some(author) == local_owner -> ""
-    Some(author) -> text_hygiene.single_line(author.name) <> ":\n"
+    Some(author) ->
+      text_hygiene.single_line(origin.display_label(author)) <> ":\n"
   }
 }
 

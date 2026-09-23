@@ -220,7 +220,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:432`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:458`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:408`), and its shape is the shape of every admission
 in the system.
@@ -1166,7 +1166,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:496`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:558`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:500`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1192,7 +1192,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:1239`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1442`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1203,7 +1203,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1612`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1839`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3724`). Keying
@@ -1229,7 +1229,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1301`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1471`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans
@@ -1357,7 +1357,7 @@ provider's cached region and are paid on every request of the session.
 Registration is gated on discovery rather than on refusing at call time.
 `contributions.built_in` (`client/contributions.gleam`) contributes the
 tool only when
-`codemode.discover` (`client/codemode.gleam:919`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
@@ -1473,7 +1473,7 @@ rather than re-running the prune and hoping it lands the same way twice.
 
 What survives is vetted the way a code-mode program is, against a third
 allowlist: `extension_cap_modules` is the workspace seam widened by
-exactly one name, `ext` (`vet/policy.gleam:455`). Then it is compiled
+exactly one name, `ext` (`vet/policy.gleam:449`). Then it is compiled
 by the same jailed, network-off `gleam build` code mode uses, against the
 same offline seed, and the install record is written last and the tree
 renamed into place after it — so a directory under `~/.loom/extensions`

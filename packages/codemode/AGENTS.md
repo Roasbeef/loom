@@ -428,20 +428,12 @@ session and sends it many invocations.
   against the modules `packages/cap` actually ships: every module must be
   on a seam or on that list, and every listed name must be a module that
   exists (issue #95). Both directions self-test.
-- **The two seams are confined by one rule read in two directions.** An
-  import outside the allowlist the submission is judged against is
-  rejected, so an orchestration program reaching for `cap/fs` and a
-  workspace program reaching for `cap/strand` are refused by the same
-  code — and both as the structured `ImportNotAllowed` rejection the model
-  repairs in band. What the two directions rest on is that
-  `orchestration_cap_modules` and `default_cap_modules` share no entry but
-  `cap/report`; widen either and both rejections stop meaning anything, so
-  the disjointness is pinned as an **intersection over those two lists**
-  rather than as a literal snapshot of one side. A snapshot catches a
-  capability *moved* between the seams and misses one *added to both* —
-  and the door for that is `default_stdlib_modules`, which both seams
-  append, so a second test asserts that list holds no `cap/*` entry at all
-  (issue #90).
+- **Default program modes admit the same full set.** Workspace and
+  orchestration programs can import effect and child-operation modules in one
+  source, as specified in Protocol 048. An explicit effect-only host rejects
+  `cap/strand` and `cap/workflow`; extensions and resident hooks keep separate
+  policies. The shared standard-library list contains no `cap/*` entries, so a
+  capability cannot bypass the named policy subsets.
 - **The admission ceilings are the host's, not the router's, and they
   cover every call that mints.** A call is throttled by turn cost — the
   model pays a round trip per call — and a program's loop pays nothing, so
@@ -813,6 +805,17 @@ remains unchanged. The richer internal `Started` receipt and
 `BudgetExpired`/`ParentFinished` outcomes map to the existing operation and
 aborted capability results; direct agent tools expose the additional deadline
 and cause metadata specified by proposal 042.
+
+## Collaboration router composition (protocol 048)
+
+The default server admits the full capability set in both program modes. The
+client composes effect, child-operation, search, notes and configured MCP
+routers for each selection. The daemon wraps both with host-bound peer routes;
+background launches add execution input and named workflow custody.
+`orchestration.decode_spawn` is the shared total assignment decoder for
+ordinary and named workflow steps. Capability ordinals bound named child
+steps and peer calls. Extensions do not receive background custody merely
+because their allowlist includes a shared module; unsupported calls refuse.
 
 ## Durable code-mode notes
 

@@ -49,13 +49,23 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-7"
+  assert decoded.version == "loom-default-8"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
   // Every canonical section, every selectable fragment, and no
   // placeholder the renderer cannot bind.
   assert pack.problems(shipped()) == []
+}
+
+/// The shipped guidance teaches the combined default code-mode surface.
+pub fn code_mode_guidance_matches_the_full_default_surface_test() {
+  let text = phrases(pack.FullyEnforced)
+  assert string.contains(text, "combine workspace effects and child work")
+  assert string.contains(text, "seam selects workspace")
+  assert string.contains(text, "cap/peer needs a directional grant")
+  assert string.contains(text, "workflow.step needs background launch")
+  assert !string.contains(text, "workspace for files/processes")
 }
 
 pub fn shipped_pack_carries_the_canonical_sections_in_design_order_test() {

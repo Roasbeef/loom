@@ -297,7 +297,18 @@ Pure Gleam cannot do I/O; every effect enters through an import that ultimately 
 
 The vetting pass is a compiler-adjacent lint, not a heuristic: (a) pin dependencies to the harness capability prelude; (b) reject `@external` in submitted source; (c) reject imports outside the allowlist. **The prelude *is* the capability system**: typed modules whose implementations are RPC stubs to the ToolBroker carrying the execution's token. The type checker becomes the tool-argument validator: malformed tool use fails at compile time, a cheaper loop than runtime tool errors.
 
-**Two preludes, not one** (WP-N). A submission is vetted against exactly one allowlist. The **workspace seam** — `cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/lsp`, `cap/task`, `cap/actor`, `cap/kv`, `cap/report` — is a program that orchestrates *effects*. The **orchestration seam** — `cap/strand` and `cap/report`, nothing else — is a program that orchestrates *agents*: spawn, join a list of handles against one deadline, send, notes, roster, all serviced by the same closures the `agent_*` tools call and judged against the same caller. Which capabilities travel together is the point: an orchestrator that could also write files, run a process or reach the network is a materially worse thing to hand a model than one that cannot, so the sets stay disjoint but for `cap/report`, which carries no authority of its own. A capability rather than a trusted interpreter, because an orchestration interpreter in the harness VM *is* model-influenced execution in the harness VM — Rule Zero forbids it. And because a loop pays none of the round-trip cost that implicitly throttles `agent_spawn`, the seam carries an explicit hard ceiling on spawn admissions per execution, refused in band at the ceiling.
+**One full program surface by default** (WP-N). The server offers workspace and
+orchestration code mode, but both accept the same capability imports. A single
+jailed Gleam program can read files, run a process, spawn children, exchange
+granted peer messages, and join durable results. The model selects one offered
+mode, with workspace as the default. An explicitly workspace-only host has no
+Agency custody and retains an effect-only allowlist. Extensions and resident
+hooks retain their own policies. The capability modules remain typed broker
+calls, not an interpreter for model-influenced code in the harness VM; Rule Zero
+still applies. Child spawn admissions retain an explicit ceiling because a
+program loop avoids the provider round trips that previously limited fan-out.
+[Protocol 048](../protocol-change/048-async-collaboration.md) records this
+widening and its cost.
 
 ### 6.3 Defense in depth: satellite nodes
 
@@ -315,7 +326,7 @@ Source and artifacts are stored as entries — every executed program is auditab
 
 ### 6.4 Cells and escape hatches
 
-A satellite kept alive across invocations = omp-style persistent cells; killing it is state reset. Bash remains a plain executor tool when a one-liner beats a program.
+A background execution keeps one satellite alive across model turns. Later calls send data to its registered endpoints under the original grants and deadline; they do not replace its source. Killing it loses its actor state. Installed extensions have a separate repeated-invocation lifecycle. Bash remains a plain executor tool when a one-liner beats a program.
 
 ### 6.5 Concurrency and actors in code mode
 
@@ -336,7 +347,7 @@ Semantics pinned: `parallel_map` preserves input order regardless of completion 
 
 **`cap/actor` — typed, program-scoped actors** (a constrained gen_server): spawn with initial state + typed handler; get an unforgeable typed address; send/call. Guardrails mirror `cap/task`: actors live under the program root and die with it; no global registration; bounded mailboxes (backpressure, not OOM). Earn their keep for ongoing state + async input: watching a build's output stream and reacting to the first error, a DAP stepping coordinator, work-stealing queues where items generate items.
 
-**Persistent actors** (Tier 2): in a kept-alive satellite, actors persist across code-mode calls — the model builds itself a stateful service mid-session (spawn an indexer in call 1, query it in calls 2–10). Nothing MCP-shaped can express this. Satellite state is *ephemeral by design*: anything worth keeping exits via `report` artifacts or a `cap/kv` scratch store; programs must tolerate a vanished actor.
+**Persistent actors** (Tier 2): in a background satellite, actors persist across model turns — the model builds itself a stateful service mid-session (spawn an indexer in call 1, query it in calls 2–10). Nothing MCP-shaped can express this. Satellite state is *ephemeral by design*: anything worth keeping exits via `report` artifacts or a `cap/kv` scratch store; programs must tolerate a vanished actor.
 
 **Tier 3 is the punchline**: an L3 extension (§7) is literally an OTP actor — a supervised process implementing a typed behaviour. The agent prototypes a stateful helper as a jailed actor, proves it, and promotion turns the same actor-shaped code into a durable, supervised citizen of the harness. Same programming model at every trust level.
 

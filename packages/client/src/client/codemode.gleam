@@ -11,36 +11,23 @@
 ////
 //// ## Two seams, one pipeline
 ////
-//// There are two code-mode seams, and `Config.surface` says which of them
-//// this host serves. The **workspace** seam is what `default_config`
-//// builds: `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed
-//// by `satellite.default_router`, a program that orchestrates *effects*.
-//// The **orchestration** seam is `cap/strand` plus `cap/report`, with
-//// a host-installed notes door, routed onto the Agency closures the `agent_*` tools call,
-//// a program that orchestrates *agents*. A host may serve either alone or
-//// both (`Surface`, `serving`); when it serves both, a submission names
-//// the one it wants and the tool defaults it to the workspace seam.
+//// There are two code-mode selections, and `Config.surface` says which
+//// this host offers. An Agency-backed host gives both selections the
+//// workspace, strand, notes and configured MCP capabilities. The router
+//// dispatches each call to the same closure regardless of selection, so
+//// an effect and a child operation can share one bounded execution.
+//// `default_config` alone has no Agency and offers workspace effects only.
+//// The background host adds workflow steps, execution input and granted
+//// peer communication. A host may offer either selection alone or both;
+//// with both, the tool defaults to workspace.
 ////
-//// One field rather than two, because the vetting allowlist and the
-//// capability router have to agree and a host that could set them apart
-//// would eventually set them apart. Which capabilities travel together is
-//// the point of the separation, so it is not a thing to be assembled from
-//// two places.
+//// Admission and routing both follow the host's configured surface.
+//// `execute` refuses a selection the host did not offer before dispatch.
+//// The explicit workspace-only posture retains an effect-only allowlist
+//// because it has no Agency to answer strand calls. Extension and
+//// resident policies remain separate.
 ////
-//// The two halves are read from different places on purpose, and the
-//// asymmetry is the security property. The **allowlist follows the
-//// submission**: a program is vetted against exactly the seam it named,
-//// so a refusal it reads is about the surface it asked for. The **router
-//// follows the host**: a surface serving one seam hands out that seam's
-//// router whatever a request names, so no submission can widen what the
-//// host wired. Where the two could disagree — a request naming a seam
-//// this host does not serve — `execute` refuses before anything is
-//// dispatched, and the fallback under that refusal is narrowing in both
-//// directions anyway: a program vetted against one seam's imports and
-//// routed by the other's can call nothing at all, because it cannot
-//// import the modules whose calls that router services.
-////
-//// `client/serve` defaults to the workspace seam and takes the choice as
+//// `client/serve` defaults to both selections and takes the choice as
 //// a setting; a host assembling its own registry passes
 //// `codemode.seam(codemode.orchestrating(config, over: agency))`, or
 //// `codemode.serving(config, codemode.BothSeams, over: agency)` to leave
@@ -274,6 +261,11 @@ pub type Config {
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
     surface: Surface,
+    /// An optional fixed execution deadline captured at async admission.
+    fixed_deadline: Option(Int),
+    /// Adds a harness-bound capability router for this execution only.
+    wrap_router: fn(codemode_tool.Request, satellite.CapRouter) ->
+      satellite.CapRouter,
     /// The shared blackboard data door, installed independently of agent
     /// orchestration. None removes its imports, signatures, and routing.
     notes: Option(notes.Door),
@@ -437,27 +429,21 @@ pub fn into_blobs(config: Config, blob_root: String) -> Config {
 /// orchestration program needs the messaging plane it orchestrates
 /// through and the ceiling on how much of it one execution may spend.
 ///
-/// A host with no messaging plane simply does not build the second one.
-/// There is deliberately no `Orchestration` without an `Agency`: a seam
-/// that vetted `cap/strand` and then answered every call
-/// `strands_unavailable` would be a tool surface the model is charged for
-/// on every request and can never use.
+/// A host with no messaging plane offers the effect-only workspace
+/// posture. There is deliberately no `Orchestration` without an `Agency`:
+/// a host that offered `cap/strand` and answered every call
+/// `strands_unavailable` would advertise an unusable tool surface.
 ///
-/// `Both` is a third variant rather than a flag on the second, for the
-/// same reason: an orchestration-only host is a real posture — code mode
-/// that can start agents and touch neither disk, process nor socket — and
-/// folding it into "orchestration implies workspace" would quietly take
-/// it away.
+/// `Both` lets the model name either selection. Both route the same
+/// capabilities when the host has an Agency, with workspace as the default.
 pub type Surface {
-  /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
-  /// `satellite.default_router`.
+  /// Workspace effects on a host with no Agency.
   Workspace
 
-  /// `cap/strand` + `cap/report`, routed onto the Agency closures.
+  /// The full code-mode surface under the orchestration selection.
   Orchestration(agency: Agency, spawn_ceiling: Int)
 
-  /// Both, with each submission naming the seam it wants; the workspace
-  /// seam is what one that names none is judged against.
+  /// Both full-surface selections, defaulting to workspace.
   Both(agency: Agency, spawn_ceiling: Int)
 }
 
@@ -479,9 +465,8 @@ pub type Seams {
 /// The same host configuration, serving the seams a setting names over a
 /// messaging plane.
 ///
-/// The allowlist a submission is judged against, the router that services
-/// it and the spawn ceiling all move together, because they are one
-/// field.
+/// The offered selections, router, and spawn ceiling share one host
+/// configuration so the model-visible surface matches the calls served.
 ///
 /// ## Examples
 ///
@@ -575,30 +560,27 @@ pub fn seam_allowlist(
   config: Config,
   seam: vet_policy.Seam,
 ) -> vet_policy.VetPolicy {
+  let base = case config.surface, seam {
+    Workspace, vet_policy.WorkspaceSeam -> vet_policy.workspace_effects()
+    _, _ -> seam_policy(seam)
+  }
   let allowed =
     mcp_wiring.allowed_imports(seam_mcp(config, seam))
-    |> list.fold(seam_policy(seam), vet_policy.allow)
+    |> list.fold(base, vet_policy.allow)
   case notes_on(config, seam) {
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
   }
 }
 
-// The MCP layer one seam sees, and the one place that decision is made.
-//
-// **The orchestration seam sees none of it, ever.** Which capabilities
-// travel together is the whole of what the two-seam split buys: an
-// orchestrator that could also call out to a third-party MCP server is
-// a materially worse thing to hand a model than one that cannot, and
-// the disjointness a test pins is over the two allowlists — so a
-// per-host widening that reached both would walk straight past it.
-// Every derived thing an MCP server contributes — the allowlist entry,
-// the rendered surface, the generated source, the serviced capability
-// name — reads its layer through here, so there is one arm to get wrong
-// rather than four.
+// Both code-mode selections see the host's configured MCP layer. Every
+// derived contribution reads through here, keeping imports, generated
+// source, advertised surfaces and serviced calls aligned. Installed
+// extensions retain their separate authority; resident hooks have no
+// capability loader.
 fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
   case seam {
-    vet_policy.WorkspaceSeam -> config.mcp
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.mcp
 
     // The extension seam sees none of it either, and for a different
     // reason than the orchestration seam's: an extension's allowlist is
@@ -607,9 +589,7 @@ fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
     // configuration the record never saw.
     // The resident seam has no loader and therefore no host to widen
     // from; it reaches nothing at all, MCP included.
-    vet_policy.ExtensionSeam
-    | vet_policy.OrchestrationSeam
-    | vet_policy.ResidentSeam -> mcp_wiring.none()
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> mcp_wiring.none()
   }
 }
 
@@ -653,12 +633,10 @@ pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
 ///
 /// ## Examples
 ///
-/// The workspace seam's list is three routers' worth: `satellite.default_
-/// router`'s jailed `proc.run`, `codemode/workspace`'s harness-side arm,
-/// and `codemode/search`'s read-only navigation arm. All three are read
-/// off the modules that answer them rather than written out here, so a
-/// capability that stops being serviced stops being advertised in the
-/// same commit.
+/// Each full-surface selection includes the jailed process router, the
+/// workspace bridge, read-only search, and the Agency's strand calls.
+/// The modules that answer them own these lists. `report.emit` appears in
+/// both underlying routers and is advertised once.
 ///
 /// ## Examples
 ///
@@ -669,13 +647,13 @@ pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
 ///
 pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
   case seam {
-    vet_policy.WorkspaceSeam ->
-      list.flatten([
-        serviced_caps,
-        workspace.serviced_caps,
-        search_router.serviced_caps,
-      ])
-    vet_policy.OrchestrationSeam -> orchestration.serviced_caps
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam ->
+      list.append(
+        workspace_caps(),
+        list.filter(orchestration.serviced_caps, fn(cap) {
+          cap != artifact.emit_cap
+        }),
+      )
 
     // Phase 1 installs and compiles an extension; nothing dispatches one
     // yet, so no router services this seam and advertising a capability
@@ -689,6 +667,14 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
     // makes a harness-resident body safe to consider (#33).
     vet_policy.ResidentSeam -> []
   }
+}
+
+fn workspace_caps() -> List(String) {
+  list.flatten([
+    serviced_caps,
+    workspace.serviced_caps,
+    search_router.serviced_caps,
+  ])
 }
 
 /// The capability names one seam's router services *on this host*: the
@@ -707,11 +693,11 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
 /// ```
 ///
 pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
-  let caps =
-    list.append(
-      seam_caps(seam),
-      mcp_wiring.serviced_caps(seam_mcp(config, seam)),
-    )
+  let base = case config.surface, seam {
+    Workspace, vet_policy.WorkspaceSeam -> workspace_caps()
+    _, _ -> seam_caps(seam)
+  }
+  let caps = list.append(base, mcp_wiring.serviced_caps(seam_mcp(config, seam)))
   case notes_on(config, seam) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
@@ -801,6 +787,8 @@ pub fn default_config(
     toolchain_path: toolchain_path(toolchain),
     host_mounts: toolchain_mounts(toolchain),
     surface: Workspace,
+    fixed_deadline: None,
+    wrap_router: fn(_request, router) { router },
     notes: None,
     blob_root: workspace <> "/" <> blob_directory,
     scratch: scratch.none(),
@@ -1267,6 +1255,7 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 ///
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
+    background: None,
     execute: fn(request) { execute(config, request) },
     seams: offered_seams(config),
     default_within_ms: config.default_within_ms,
@@ -1432,7 +1421,8 @@ fn execute_after_vetting(
       )
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.clock)
-      let deadline_ms = now + request.within_ms
+      let deadline_ms =
+        option.unwrap(config.fixed_deadline, now + request.within_ms)
       let shortfalls = process.new_subject()
       let execution =
         pipeline.execute(
@@ -1992,7 +1982,7 @@ pub fn exec_config(
       clock: config.clock,
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
-      router: surface_router(config, request),
+      router: config.wrap_router(request, surface_router(config, request)),
       ceilings: surface_ceilings(config, request),
       call_timeout_ms: config.call_timeout_ms,
     ),
@@ -2015,40 +2005,35 @@ pub fn exec_config(
 // — so a program cannot claim to be another strand, and the addressing
 // rule the Agency enforces stays enforceable.
 //
-// The *surface* picks the router, and the request only chooses among the
-// seams the surface already serves. A host that wired one seam therefore
-// hands out that seam's router whatever a submission names, so nothing a
-// model says can widen what the operator wired; and the mismatch that
-// arrangement allows — vetted against one seam's imports, routed by the
-// other's — can only narrow, because a program that may not import
-// `cap/proc` cannot call `proc.run` however willing the router is.
+// An Agency-backed host composes the same full router for either model
+// selection. A host without an Agency keeps the effect-only router and
+// allowlist. The request supplies caller coordinates, never authority.
 fn surface_router(
   config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
-  let router = case config.surface, vetting_seam(request.seam) {
-    Workspace, _seam -> workspace_router(config, request)
-    Both(..), vet_policy.WorkspaceSeam -> workspace_router(config, request)
-    Orchestration(agency:, ..), _seam | Both(agency:, ..), _seam ->
-      orchestration.router(orchestration.Orchestration(
-        agency:,
-        strand: request.strand,
-        source_index: request.source_index,
-        // `cap/report` is on both allowlists, so `report.emit` is
-        // serviced on both seams — by the same closure, writing into the
-        // same store under the same content address. An orchestration
-        // program that could not emit had `cap/report`'s one effectful
-        // function refused on every call (issue #91, item 1).
-        //
-        // The closure directly, not `workspace_seam(..).emit`: this seam
-        // routes none of the other seven arms, so building all eight to
-        // read one field would state — in the one place a reader checks
-        // what an orchestration program can reach — that a workspace
-        // bridge was constructed for it. `emitting` is what both seams
-        // share, so it is what both seams call.
-        emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
-        emit_ceiling: artifact.default_emit_ceiling,
-      ))
+  let effect_router = workspace_router(config, request)
+  let router = case config.surface {
+    Workspace -> effect_router
+    Orchestration(agency:, ..) | Both(agency:, ..) -> {
+      let strand_router =
+        orchestration.router(orchestration.Orchestration(
+          agency:,
+          strand: request.strand,
+          source_index: request.source_index,
+          emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
+          emit_ceiling: artifact.default_emit_ceiling,
+        ))
+      fn(call: satellite.CapRequest) {
+        case
+          list.contains(orchestration.serviced_caps, call.cap)
+          && call.cap != artifact.emit_cap
+        {
+          True -> strand_router(call)
+          False -> effect_router(call)
+        }
+      }
+    }
   }
   case notes_on(config, vetting_seam(request.seam)) {
     None -> router
@@ -2057,7 +2042,7 @@ fn surface_router(
   }
 }
 
-// The workspace seam's router: three arms over the shipped table.
+// The effect router: three arms over the shipped table.
 //
 // Outermost is the harness-side bridge — `fs.read`, `fs.list`, `kv.*`,
 // `report.emit` — then the MCP arm answering `mcp.<server>`, then
@@ -2073,12 +2058,8 @@ fn surface_router(
 // reason `codemode/workspace`'s module doc argues at length — a policy
 // whose enforcer is not present is not a check.
 //
-// The layer, the store and the blob root are all read off the *host*,
-// like every other router choice here, so a submission that named the
-// orchestration seam on a workspace-only host is still routed by this
-// one — and reaches nothing through it, because a program vetted against
-// the orchestration allowlist cannot import the modules whose calls
-// these arms service.
+// The layer, store and blob root are read off the host. Both selections
+// on an Agency-backed host share these effects under the same policy.
 fn workspace_router(
   config: Config,
   request: codemode_tool.Request,
@@ -2903,7 +2884,7 @@ fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
 
 // The lifetime admission ceilings the execution runs under.
 //
-// **Both seams declare one, and they overlap in exactly one capability.**
+// The effect and Agency routers overlap in exactly one capability.
 // The test a capability has to meet is `satellite.CapCeiling`'s: does a
 // call *mint something that outlives the execution*. On the orchestration
 // seam four of the six `strand.*` calls do — a child strand, a durable
@@ -2930,29 +2911,29 @@ fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
 // which nothing replaces. `codemode/workspace.ceilings` carries the
 // whole of it.
 //
-// `report.emit` is the one that meets the test on both seams, because it
-// is the one capability both allowlists carry: every admitted call writes
+// `report.emit` is the one shared limit: every admitted call writes
 // a content-addressed file into a store that outlives the session. So the
 // workspace seam's ceiling list is not empty — it was, and this comment
 // said so, until `report.emit` routed.
 //
-// Read off the surface beside the router, and for the same reason: the
-// ceilings belong to the router whose calls mint things, so the two can
-// never be chosen apart. Only the spawn number is a surface setting; the
-// rest are the seams' own constants.
+// Read off the surface beside the router. An Agency-backed host gets both
+// ceiling lists with one `report.emit` entry. Only the spawn number is a
+// surface setting; the rest are the routers' constants.
 fn surface_ceilings(
   config: Config,
   request: codemode_tool.Request,
 ) -> List(satellite.CapCeiling) {
-  let ceilings = case config.surface, vetting_seam(request.seam) {
-    Workspace, _seam | Both(..), vet_policy.WorkspaceSeam ->
-      workspace.ceilings(workspace_seam(config, request))
-    Orchestration(spawn_ceiling:, ..), _seam
-    | Both(spawn_ceiling:, ..), _seam
-    ->
-      orchestration.ceilings(
-        spawn_ceiling,
-        emit_admissions: artifact.default_emit_ceiling,
+  let workspace_ceilings = workspace.ceilings(workspace_seam(config, request))
+  let ceilings = case config.surface {
+    Workspace -> workspace_ceilings
+    Orchestration(spawn_ceiling:, ..) | Both(spawn_ceiling:, ..) ->
+      list.append(
+        workspace_ceilings,
+        orchestration.ceilings(
+          spawn_ceiling,
+          emit_admissions: artifact.default_emit_ceiling,
+        )
+          |> list.filter(fn(ceiling) { ceiling.cap != artifact.emit_cap }),
       )
   }
   case notes_on(config, vetting_seam(request.seam)) {

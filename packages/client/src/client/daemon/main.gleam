@@ -15,6 +15,8 @@ import client/daemon/server
 import client/daemon/session_socket
 import client/host
 import client/internal/ffi_os
+import client/peer_mail
+import client/peers
 import client/serve
 import core/clock
 import core/ids
@@ -24,7 +26,7 @@ import gleam/http/response.{type Response}
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -355,7 +357,7 @@ pub fn prepare(
         serve.build_domain(selected, sources, logger, owner)
         |> diagnose_domain_start(logger, selected.configuration)
       },
-      build: fn(registration, selected, services, owner) {
+      build: fn(registration, selected, services, owner, directory) {
         use identity <- result.try(
           ids.parse_session_id(registration.id)
           |> result.replace_error("invalid reserved session identity"),
@@ -373,6 +375,15 @@ pub fn prepare(
           )
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+        let settings =
+          serve.Settings(
+            ..settings,
+            peer_directory: Some(
+              peer_directory(directory, fn(resident: serve.Resident) {
+                resident.peer
+              }),
+            ),
+          )
         serve.assemble_in_domain(settings, identity, logger, owner, services)
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)
@@ -526,6 +537,24 @@ pub fn listen(
   upgrade: fn(Request(mist.Connection), server.Attachment(instance)) ->
     Response(mist.ResponseData),
 ) -> Result(Serving(instance), String) {
+  listen_with_peers(config, daemon, upgrade, fn(_) { None })
+}
+
+/// Starts the daemon listener with the resident peer endpoint projection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.listen_with_peers(config, daemon, upgrade, fn(resident) { Some(resident.peer) })
+/// ```
+@internal
+pub fn listen_with_peers(
+  config: Config,
+  daemon: root.Root(instance),
+  upgrade: fn(Request(mist.Connection), server.Attachment(instance)) ->
+    Response(mist.ResponseData),
+  peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
     config.session_defaults,
@@ -534,6 +563,7 @@ pub fn listen(
   let routing =
     server.Config(
       daemon:,
+      peer_endpoint:,
       domain_configuration:,
       generator: fn() {
         ids.generator(
@@ -587,14 +617,19 @@ fn run(
   let signals = process.new_subject()
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
-    listen(config, daemon, fn(request, attachment) {
-      session_socket.upgrade(
-        daemon,
-        request,
-        attachment,
-        attachment.instance.gateway,
-      )
-    })
+    listen_with_peers(
+      config,
+      daemon,
+      fn(request, attachment) {
+        session_socket.upgrade(
+          daemon,
+          request,
+          attachment,
+          attachment.instance.gateway,
+        )
+      },
+      fn(resident: serve.Resident) { Some(resident.peer) },
+    )
     |> result.try(fn(serving) {
       publish_endpoint(config, serving, paths, fence)
       |> result.replace(serving)
@@ -661,4 +696,31 @@ fn report_shutdown(logger: Logger, outcome: Result(Nil, String)) {
         field.text("reason", reason),
       ])
   }
+}
+
+/// Supplies resident-only peer resolution and catalogue-only discovery.
+/// This closure carries manager handles, never a session Runtime graph.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.peer_directory(registry, fn(resident) { resident.peer })
+/// ```
+@internal
+pub fn peer_directory(
+  registry: manager.Manager(instance),
+  endpoint: fn(instance) -> peer_mail.Endpoint,
+) -> peers.Directory {
+  peers.Directory(
+    resolve: fn(id) {
+      manager.resolve(registry, id)
+      |> result.map(endpoint)
+      |> result.map_error(string.inspect)
+    },
+    describe: fn(id) {
+      manager.get(registry, id)
+      |> result.map(server.view_json)
+      |> result.map_error(string.inspect)
+    },
+  )
 }

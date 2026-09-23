@@ -27,14 +27,24 @@ import core/json.{type JsonValue}
 import gleam/option.{type Option}
 import gleam/string
 
-/// Historical human attribution captured by the authenticated admission host.
-/// This carries no credential or authority; `core/origin` validates its bounds.
+/// Historical source attribution captured by the authenticated admission host.
+/// This carries no credential or authority; `core/origin` validates its bounds
+/// and projects the two source kinds to distinct provider-facing labels.
 pub type Origin {
+  /// A human principal and its display name at admission.
   Origin(
     /// Stable principal identity, independent of connections and display names.
     principal: String,
     /// Display name at admission, preserved after later renames.
     name: String,
+  )
+
+  /// A peer agent whose identity is bound to its hosting session and strand.
+  PeerOrigin(
+    /// Canonical source session supplied by the sending harness.
+    session: String,
+    /// Exact source strand supplied by the sending harness.
+    strand: String,
   )
 }
 

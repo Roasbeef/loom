@@ -85,7 +85,7 @@ fn fixture_with(
       root.Config(directory, "Owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _) {
+        build: fn(record, _domain, _services, _, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "reserved IDs are canonical"
           Ok(build(id))
@@ -119,6 +119,7 @@ fn fixture_with(
   let config =
     server.Config(
       daemon,
+      fn(_) { None },
       "",
       fn() {
         ids.generator(

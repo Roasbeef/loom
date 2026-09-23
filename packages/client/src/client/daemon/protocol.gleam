@@ -5,6 +5,7 @@
 //// to the server and its serialized manager. Conversation frames use a separate
 //// codec; a control connection cannot retarget itself into a session stream.
 
+import client/peer_mail
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -22,6 +23,43 @@ pub const max_bytes = 65_536
 
 /// Decoded requests carry no client-supplied principal or database path.
 pub type Command {
+  /// Grants exact directional peer delivery without granting join or custody.
+  LinkPeers(
+    source_session: String,
+    source_strand: String,
+    target_session: String,
+    target_strand: String,
+    wake: peer_mail.Wake,
+    epoch: String,
+  )
+
+  /// Sends on behalf of an exact source strand after owner authorization.
+  SendPeer(
+    /// Resident session on whose behalf the owner sends.
+    source_session: String,
+    /// Source strand whose outgoing link authorizes delivery.
+    source_strand: String,
+    /// Resident recipient session.
+    target_session: String,
+    /// Exact recipient strand named by the grant.
+    target_strand: String,
+    /// Stable identity reused only for the same target and body.
+    message_id: String,
+    /// Message data, never source code or caller-supplied authority.
+    text: String,
+    /// Current daemon epoch, checked before resolving either session.
+    epoch: String,
+  )
+
+  /// Revokes one directional peer delivery permission.
+  UnlinkPeers(
+    source_session: String,
+    source_strand: String,
+    target_session: String,
+    target_strand: String,
+    epoch: String,
+  )
+
   /// Changes only display metadata under owner authority in this daemon epoch.
   RenameSession(session_id: String, name: String, epoch: String)
 
@@ -181,6 +219,38 @@ fn decode_fields(
   use body <- result.try(required(fields, "body"))
   use fields <- result.try(object(body))
   case name {
+    "peers.link" | "peers.unlink" | "peers.send" -> {
+      use source <- result.try(text_field(fields, "source_session", 128))
+      use _ <- result.try(
+        ids.parse_session_id(source)
+        |> result.replace_error("invalid source session id"),
+      )
+      use from <- result.try(text_field(fields, "source_strand", 512))
+      use target <- result.try(text_field(fields, "target_session", 128))
+      use _ <- result.try(
+        ids.parse_session_id(target)
+        |> result.replace_error("invalid target session id"),
+      )
+      use to <- result.try(text_field(fields, "target_strand", 512))
+      use epoch <- result.try(text_field(fields, "epoch", 256))
+      case name {
+        "peers.unlink" -> Ok(UnlinkPeers(source, from, target, to, epoch))
+        "peers.send" -> {
+          use id <- result.try(text_field(fields, "message_id", 128))
+          use text <- result.try(text_field(fields, "text", 32_768))
+          Ok(SendPeer(source, from, target, to, id, text, epoch))
+        }
+        _ -> {
+          use wake <- result.try(text_field(fields, "wake", 32))
+          use wake <- result.try(case wake {
+            "busy_only" -> Ok(peer_mail.BusyOnly)
+            "may_wake" -> Ok(peer_mail.MayWake)
+            _ -> Error("wake must be busy_only or may_wake")
+          })
+          Ok(LinkPeers(source, from, target, to, wake, epoch))
+        }
+      }
+    }
     "sessions.rename" -> {
       use id <- result.try(session_id(fields))
       use name <- result.try(text_field(fields, "name", 256))

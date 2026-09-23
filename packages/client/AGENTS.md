@@ -1683,11 +1683,11 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
-  widens the workspace seam's *allowlist*, its rendered *description*,
+  widens each installed program mode's *allowlist*, its rendered *description*,
   the *generated table* the hermetic build takes, and the capability
   *router*, and a host that could set those apart would eventually set
-  them apart. The orchestration seam is widened by none of it, ever —
-  which capabilities travel together is the whole of what the split buys.
+  them apart. The default workspace and orchestration modes both route the
+  configured MCP façade; an explicit workspace-only host stays effect-only.
 - `client/codemode.{Surface, Seams, serving, orchestrating,
   surface_seams, surface_seam, seam_policy, seam_caps, tool_seam,
   vetting_seam}` — which code-mode seams this host serves.
@@ -4041,14 +4041,68 @@ reports those captured values. Count and byte refusals name the exhausted
 setting before parser activation. Existing transfer, cancellation and DOWN
 accounting remain the owners of capacity release.
 
+## Async collaboration (protocol 048)
+
+`async_runs` is a session-owned weft actor. `Launch`, `Inspect`, `Reported`,
+`Sweep`, `Recover` and `AbortOperation` manage durable execution records and
+volatile scopes. `async_codemode` captures source, policy, grants, a fixed
+deadline and a distinct broker step. `execution.receive` reads the bounded
+durable input journal. `Finished` requires scope and owned-child drain proof;
+restart records `Lost` and retries child cleanup without replaying a program.
+
+Agency serializes `SpawnChild`, `WorkflowChild` and `PeerRequest`; `Borrow`
+keeps blocking waits outside that mailbox. `workflow_ledger` fixes a named
+run's version/input and a named step's assignment/call site before admission.
+`workflows` binds the current async custody. The immutable initial child
+operation is committed with admission, so interrupted lineage publication
+cannot select a later unrelated run.
+
+`peer_mail` owns exact directional grants and atomic receipts in reserved
+`client/peers/` facts. `peers` exposes `peer_roster`, `peer_send`, `peer_describe`
+and the cap router. `daemon/main.peer_directory` resolves only residents and
+reads saved metadata without opening stores. `Assembly.build` receives the
+small manager handle; resident values carry an address-only peer endpoint.
+The owner/epoch-checked `peers.link` and `peers.unlink` controls are the only
+grant mutation surface. Owner-only `peers.send` reuses the normal sender and
+recipient handlers after checking the daemon epoch. It selects a resident source
+strand but cannot bypass links or supply provenance metadata. Communication
+grants confer no lineage or custody.
+`peer_mail.Link` enforces 64 outgoing links per source strand before writing the
+source index. Replacing an exact link at the limit remains idempotent.
+
+See [async collaboration](../../docs/async-collaboration.md) for bounds,
+recovery semantics and the deferred terminal presentation.
+
+Input readiness is separate from the execution phase. `Ready` publishes an
+immutable endpoint set and idle interval; `SendTo` journals a named value only
+after that endpoint is ready. `ReceiveEnveloped` returns its sequence, endpoint
+and value for satellite-side typed dispatch. Legacy `Receive` registers raw
+`default` readiness. `Progress` and `Delivery` update bounded volatile
+observations, exposed with lifecycle through `Check` and lost on service restart.
+The eight-live session ceiling is complemented by 32 cumulative launches per
+initiating operation, reconstructed from durable records during recovery.
+Typed idle expiry closes admission and reaps the execution; successful callback
+delivery alone resets its idle anchor. The fixed wall deadline remains separate.
+
+`peer_mail` stores plain message text with `PeerOrigin(session, strand)` bound
+by the sending harness. The receipt separately retains observed metadata.
+The entry codec and provider projection preserve peer attribution after replay.
+See [async architecture](../../docs/architecture/async-collaboration.md) for
+custody, readiness, delivery and exclusive invocation boundaries.
+
+MCP layer retirement fixes one monotonic proof deadline before issuing stops.
+Each parallel collector passes only the remaining budget to client shutdown;
+late scheduling cannot grant a fresh per-client wait. The outer Weft scope
+retains its collection margin so a verdict at the proof cutoff can be observed.
+
 ## Durable code-mode notes
 
 `codemode.serving` installs a narrow `codemode/notes.Door` from Agency's
 note and notes callbacks for every selected code-mode surface, including the
 explicit WorkspaceOnly deployments. `notes_on` excludes extensions and resident
 hooks. The same optional door controls host imports, advertised capabilities,
-router wrapping, and quotas. It gives workspace code mode durable data access
-without cap/strand lifecycle authority. The real jailed notes fixture writes
+router wrapping, and quotas. It gives an explicit workspace-only host durable
+data access without cap/strand lifecycle authority. The real jailed notes fixture writes
 structured analysis, closes SQLite, and consumes it from a fresh program after
 reopening through both the typed notes API and the note:// JSON view.
 

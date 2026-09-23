@@ -44,6 +44,48 @@ pub fn historical_missing_and_null_origins_remain_anonymous_test() {
     == [message.UserImage("image", "image/png")]
 }
 
+pub fn peer_origins_roundtrip_and_project_as_agents_test() {
+  let assert Ok(author) = origin.validate_peer("session-1", "reviewer")
+    as "the host-bound source is valid"
+  let original =
+    message.UserMessage([message.UserText("finding", None)], 100, Some(author))
+  assert codec.decode_message(codec.encode_message(original)) == Ok(original)
+  let assert [message.UserText(label, None), message.UserText("finding", None)] =
+    origin.project([message.UserText("finding", None)], Some(author))
+    as "provider projection prepends one structured peer label"
+  assert string.contains(label, "Peer agent source")
+  assert string.contains(label, "\"kind\":\"peer\"")
+  assert string.contains(label, "\"session\":\"session-1\"")
+  assert string.contains(label, "\"strand\":\"reviewer\"")
+  assert !string.contains(label, "Human author")
+}
+
+pub fn malformed_peer_origins_never_fall_back_to_human_test() {
+  let malformed = [
+    json.Object([#("kind", json.String("peer"))]),
+    json.Object([
+      #("kind", json.String("peer")),
+      #("session", json.String("session-1")),
+      #("strand", json.String("")),
+    ]),
+    json.Object([
+      #("kind", json.String("human")),
+      #("principal", json.String("alice")),
+      #("name", json.String("Alice")),
+    ]),
+  ]
+  list.each(malformed, fn(value) {
+    let encoded =
+      json.Object([
+        #("role", json.String("user")),
+        #("content", json.String("hello")),
+        #("timestamp", json.Int(1)),
+        #("origin", value),
+      ])
+    assert result.is_error(codec.decode_message(encoded))
+  })
+}
+
 pub fn malformed_present_origins_never_fall_back_to_anonymous_test() {
   let malformed = [
     json.Bool(False),

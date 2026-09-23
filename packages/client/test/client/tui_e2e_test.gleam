@@ -904,7 +904,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
       daemon_root.Config(config.state_root, "Owner", 4, limits.defaults),
       manager.Assembly(
         fn(_, _, _) { Ok(domain_service.inert()) },
-        fn(record, selected_domain, _services, owner) {
+        fn(record, selected_domain, _services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the manager reserves a canonical session identity"
           assert bootstrap.ensure_private_directory(filepath.directory_name(
@@ -1020,6 +1020,7 @@ fn absolute(path: String) -> String {
 
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
+    peer_directory: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: test_root <> "/session.db",

@@ -88,7 +88,7 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
         fn(selected_domain, sources, owner) {
           serve.build_domain(selected_domain, sources, log.discard(), owner)
         },
-        fn(record, selected_domain, services, owner) {
+        fn(record, selected_domain, services, owner, _directory) {
           let release = process.new_subject()
           process.send(arrivals, #(record.id, release))
           let assert Ok(Nil) = process.receive(release, 10_000)

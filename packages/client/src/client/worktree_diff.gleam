@@ -1010,3 +1010,62 @@ pub fn error_message(error: Error) -> String {
       "Git exited " <> int.to_string(code) <> ": " <> diagnostic
   }
 }
+
+/// Captures bounded repository identity for peer discovery at activation.
+/// The timestamp makes this an observation, never an authority decision or a
+/// promise that the branch cannot change after the session starts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_diff.peer_observation(wiring)
+/// ```
+pub fn peer_observation(wiring: Wiring) -> json.JsonValue {
+  let #(now, capture) = new_capture(wiring)
+  let observed = {
+    use #(capture, root) <- result.try(run_git(
+      capture,
+      ["rev-parse", "--show-toplevel"],
+      4096,
+    ))
+    use Nil <- result.try(successful(root))
+    use root <- result.try(line_value(root.stdout))
+    use #(capture, common) <- result.try(run_git(
+      capture,
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      4096,
+    ))
+    use Nil <- result.try(successful(common))
+    use common <- result.try(line_value(common.stdout))
+    use #(_, branch) <- result.try(run_git(
+      capture,
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      4096,
+    ))
+    use Nil <- result.try(complete(branch))
+    use branch <- result.try(case branch.code, branch.stdout, branch.stderr {
+      0, stdout, _ -> line_value(stdout)
+      1, <<>>, <<>> -> Ok("")
+      code, _, stderr -> Error(GitFailed(code, diagnostic(stderr)))
+    })
+    Ok(
+      json.Object([
+        #("repository_root", json.String(root)),
+        #("common_directory", json.String(common)),
+        #("branch", case branch {
+          "" -> json.Null
+          other -> json.String(other)
+        }),
+      ]),
+    )
+  }
+  json.Object([
+    #("observed_at_ms", json.Int(now)),
+    #("observed_on", json.String("session_activation")),
+    #("repository", case observed {
+      Ok(value) -> value
+      Error(error) ->
+        json.Object([#("unavailable", json.String(error_message(error)))])
+    }),
+  ])
+}

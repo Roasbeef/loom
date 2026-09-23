@@ -26,6 +26,7 @@ import client/tui_v2_test
 import core/entry
 import core/json
 import core/message
+import core/origin
 import etui/backend
 import filepath
 import gleam/bit_array
@@ -382,7 +383,7 @@ fn exercise(
       let #(sample, principal, role) = identity
       let assert Some(#(cut, _)) = sample.model.captured
         as "each native client has authenticated attachment metadata"
-      assert cut.attachment.origin.principal == principal
+      assert origin.stable_identity(cut.attachment.origin) == principal
       assert cut.attachment.role == role
     },
   )
@@ -443,7 +444,8 @@ fn exercise(
       tui_v2_test.await(driver.data, fn(sample) {
         has_principals(sample, ["alice", "bob", "reader"])
         && list.any(peers_of(sample), fn(peer) {
-          peer.origin.principal == "bob" && peer.connection_id == new_bob
+          origin.stable_identity(peer.origin) == "bob"
+          && peer.connection_id == new_bob
         })
       })
     let peers = peers_of(returned)
@@ -453,7 +455,7 @@ fn exercise(
       )
       == 3
     list.each(peers, fn(peer) {
-      let expected = case peer.origin.principal {
+      let expected = case origin.stable_identity(peer.origin) {
         "reader" -> snapshot.Observer
         _ -> snapshot.Operator
       }
@@ -733,7 +735,7 @@ fn live_tool_switches(
   ] = recorded_messages(owner_done)
     as "A1 durably orders user, invocation, exact result, and final answer"
   assert prompt == [message.UserText("hold A tool", None)]
-  assert author.principal == "alice"
+  assert origin.stable_identity(author) == "alice"
   assert invocation
     == [
       message.AssistantToolCall(message.ToolCall(
@@ -1031,7 +1033,7 @@ fn successful_switches(
     })
   let b_attachment = attachment_of(b_ready)
   assert b_attachment.expected.session == target
-  assert b_attachment.origin.principal == "alice"
+  assert origin.stable_identity(b_attachment.origin) == "alice"
   assert configuration_of(b_ready).origin == None
     as "B has no earlier human configuration that could satisfy its later barrier"
 
@@ -1040,7 +1042,8 @@ fn successful_switches(
   let assert Ok(peer) = tui_driver.start(address, owner, original)
     as "the independent owner terminal attaches to the original session"
   let peer_ready = tui_v2_test.await(peer.data, writable)
-  assert attachment_of(peer_ready).origin.principal == owner_principal
+  assert origin.stable_identity(attachment_of(peer_ready).origin)
+    == owner_principal
   let _ =
     tui_driver.play(alice.data, [
       backend.Paste("isolated B turn"),
@@ -1093,7 +1096,7 @@ fn successful_switches(
       writable(sample) && sample.model.session == original
     })
   assert attachment_of(returned).expected == reader_attachment.expected
-  assert attachment_of(returned).origin.principal == "alice"
+  assert origin.stable_identity(attachment_of(returned).origin) == "alice"
   assert attachment_of(returned).connection_id != b_attachment.connection_id
   assert_shared_turns([peer, alice, reader], a_turns, a_answers)
   assert attachment_of(tui_driver.play(reader.data, [])) == reader_attachment
@@ -1449,12 +1452,16 @@ fn captured_turns(
             list.filter_map(sample.model.records, fn(record) {
               case record.entry {
                 entry.MessageEntry(
-                  message: message.UserMessage(content:, origin:, ..),
+                  message: message.UserMessage(
+                    content:,
+                    origin: author_source,
+                    ..,
+                  ),
                   ..,
                 ) ->
                   Ok(#(
                     content,
-                    option.map(origin, fn(author) { author.principal }),
+                    option.map(author_source, origin.stable_identity),
                   ))
                 _ -> Error(Nil)
               }
@@ -1513,7 +1520,9 @@ fn has_principals(sample: tui_driver.Sample, principals: List(String)) -> Bool {
     Some(#(_, view)) ->
       list.length(view.peers) == list.length(principals)
       && list.all(principals, fn(principal) {
-        list.count(view.peers, fn(peer) { peer.origin.principal == principal })
+        list.count(view.peers, fn(peer) {
+          origin.stable_identity(peer.origin) == principal
+        })
         == 1
       })
     None -> False
@@ -1553,9 +1562,9 @@ fn changed(sample: tui_driver.Sample) {
       case dict.get(view.configurations, "main") {
         Ok(configuration) ->
           case configuration.origin {
-            Some(origin) ->
-              origin.principal == "alice"
-              && origin.name == "Alice"
+            Some(author) ->
+              origin.stable_identity(author) == "alice"
+              && origin.display_label(author) == "Alice"
               && configuration.configuration.thinking_level
               == strand.ThinkingHigh
             None -> False

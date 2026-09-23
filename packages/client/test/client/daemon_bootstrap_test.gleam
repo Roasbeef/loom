@@ -47,7 +47,7 @@ fn claimed_listener() {
       root.Config(paths.root, "Owner", 2, limits.defaults),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),

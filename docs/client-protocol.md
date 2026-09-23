@@ -441,7 +441,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:878-890`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:957`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -713,7 +713,7 @@ Owner-only. Gives a session its own domain so that it can be shared.
 | `transcript` | string | required | MUST be exactly `share_existing`. Any other value is `bad_request`. |
 | `epoch` | string | required | Current daemon epoch. |
 
-Source: (`client/daemon/protocol.gleam:228-181`).
+Source: (`client/daemon/protocol.gleam:228`).
 
 ```json
 {"v":2,"id":12,"cmd":"sessions.isolate","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","transcript":"share_existing","epoch":"ep-7f3a"}}
@@ -823,6 +823,53 @@ the read commands `status`, `sessions.list`, `sessions.get`,
 is refused. Source: (`client/daemon/server.gleam:443-463`).
 
 That includes `sessions.delete`, which is a mutation like any other.
+
+### 3.18 `peers.link` and `peers.unlink`
+
+These owner-only mutations grant or revoke messaging from one session and
+strand to another. Each request MUST include the current `epoch`, canonical
+`source_session` and `target_session` IDs, and non-empty `source_strand` and
+`target_strand` names. A member credential is refused with `forbidden`; an old
+epoch is refused with `stale_epoch` before either session is resolved.
+
+`peers.link` also requires `wake`: `busy_only` permits steering an existing run,
+while `may_wake` permits starting work on an idle target. Both sessions MUST be
+resident. The recipient grant is written before the outgoing link is published.
+A reverse link requires a separate request. The link grants messaging only;
+it grants no permission to join, cancel, or access the recipient's workspace.
+
+`peers.unlink` removes the outgoing link before revoking the recipient grant.
+The source MUST be resident. If the recipient is unavailable, the response
+reports `outgoing_link_removed: true` and a `recipient_grant` string explaining
+that the recipient grant remains. No outgoing authority remains at the source.
+Neither command opens a saved session.
+
+The response event uses the command name. See the
+[API guide](async-collaboration.md#peer-messaging) for a request example and
+[Protocol 048](../protocol-change/048-async-collaboration.md) for delivery and
+retry semantics. The model-facing tools are `peer_roster`, `peer_send`, and
+`peer_describe`; they cannot create grants.
+
+### 3.19 `peers.send`
+
+An owner-authenticated script sends on behalf of a source strand through this
+mutation. The request MUST carry `epoch`, canonical `source_session` and
+`target_session` IDs, and non-empty `source_strand` and `target_strand` names.
+It also requires `message_id` (1 to 128 bytes) and `text` (1 to 32,768 bytes).
+The normal 64 KiB envelope bound still applies after JSON encoding.
+
+The server checks owner authority and epoch before resolving the source. It
+then uses the same outgoing-link, recipient-grant, wake-policy, and receipt
+checks as `peer_send`. Both sessions MUST be resident. The owner can select the
+source strand, but cannot bypass its communication grants or supply source
+metadata. The harness constructs provenance from the selected resident endpoint
+and its catalogue record.
+
+The success event is `peers.send`, and its body is the recipient's admission
+receipt. Retrying requires the same message ID, target, and text. A changed body
+is refused; revoking a grant can also refuse a retry. During daemon drain the
+command is refused like other control mutations. See the
+[API guide](async-collaboration.md#peer-messaging) for an example.
 
 ---
 
@@ -1969,12 +2016,23 @@ Source: (`core/codec.gleam:227-238`).
 |---|---|---|---|
 | `content` | array | required | User content blocks: `text` or `image`. |
 | `timestamp` | integer | required | Milliseconds. |
-| `origin` | object or null | required | `{principal, name}` of the human who submitted the turn, or `null`. |
+| `origin` | object or null | required | Human `{principal, name}`, peer `{kind: "peer", session, strand}`, or `null`. |
 
 Source: (`core/codec.gleam:130-136`).
 
 ```json
 {"role":"user","content":[{"type":"text","text":"add a retry to the fetcher"}],"timestamp":1756000010000,"origin":{"principal":"reviewer-1","name":"Reviewer"}}
+```
+
+A peer message keeps `role: "user"` while its distinct origin identifies the
+sending agent. Human origins retain the original untagged representation.
+Unknown origin kinds and malformed peer identities fail decoding; they do not
+become anonymous. Peer session IDs are bounded to 256 bytes and strand names
+to 512 bytes, with no control characters or surrounding whitespace.
+Source: (`core/origin.gleam:98-153`).
+
+```json
+{"role":"user","content":[{"type":"text","text":"Review found a missing cancellation check."}],"timestamp":1756000010000,"origin":{"kind":"peer","session":"sess-review","strand":"security"}}
 ```
 
 `origin` is durable attribution, and a client MUST NOT derive any
@@ -2906,7 +2964,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:228-212`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:298`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

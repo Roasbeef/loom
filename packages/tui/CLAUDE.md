@@ -1570,3 +1570,11 @@ refusal into daemon admission guidance, naming the two `[daemon]` connection
 settings. It retains other transport errors and performs no automatic retry.
 The transport does not expose the refusal response body, so the terminal does
 not claim which configured ceiling was exhausted.
+
+## Peer attribution
+
+Existing conversation rendering uses `core/origin.display_label` for both
+human and peer sources. A `PeerOrigin` appears as `peer session/strand` and
+survives the entry codec; it is not rendered as the local operator. This is
+attribution within the existing conversation view. Peer linking controls and
+a dedicated collaboration view remain follow-up work (#485).

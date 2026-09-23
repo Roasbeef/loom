@@ -449,90 +449,45 @@ pub fn cap_actor_kv_program_passes_test() {
   assert is_passed(vet.vet(source, policy()))
 }
 
-// --- Category 7: the two seams, confined in both directions -----------------
-//
-// One rule, read in two directions: an import outside the allowlist the
-// submission is judged against is rejected. The two directions get their
-// own tests anyway, because the property that matters is not "the rule
-// works" — it is that these two *particular* sets stay disjoint, and a
-// test that only ever pointed one way would pass while the other set was
-// widened. Both are the structured `ImportNotAllowed` rejection the model
-// reads and repairs in band, never a crash.
+// --- Category 7: full program capabilities and bounded host variants --------
 
-/// An orchestration-seam program reaching for the workspace is rejected.
-pub fn orchestration_may_not_reach_the_workspace_test() {
-  let reaching = [
-    "import cap/strand\nimport cap/fs\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/proc\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/net\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/git\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/lsp\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/kv\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/task\npub fn main() { 1 }\n",
-    "import cap/strand\nimport cap/actor\npub fn main() { 1 }\n",
-  ]
-  let seam = policy.orchestration()
-  assert list.all(reaching, fn(source) {
-    has_rule(vet.vet(source, seam), ImportNotAllowed)
-  })
-  // The rejection names the module it refused, so the model can delete
-  // the import rather than guess which one was the problem.
-  assert any_detail_contains(
-    vet.vet("import cap/strand\nimport cap/fs\npub fn main() { 1 }\n", seam),
-    "cap/fs",
-  )
-}
-
-/// A workspace-seam program reaching for strands is rejected.
-pub fn the_workspace_may_not_reach_strands_test() {
-  let reaching = [
-    "import cap/strand\npub fn main() { 1 }\n",
-    "import cap/proc\nimport cap/strand\npub fn main() { 1 }\n",
-    "import cap/fs\nimport cap/strand as s\npub fn main() { 1 }\n",
-  ]
-  assert list.all(reaching, fn(source) {
-    has_rule(vet.vet(source, policy()), ImportNotAllowed)
-  })
-  assert any_detail_contains(
-    vet.vet("import cap/strand\npub fn main() { 1 }\n", policy()),
-    "cap/strand",
-  )
-}
-
-/// The two capability sets are disjoint but for `cap/report`, which
-/// carries no authority of its own. This is the property both directions
-/// above rest on: widen either set and the confinement stops meaning
-/// anything, whichever way the rejection tests point.
+/// Both installed program modes admit effect and child capabilities together.
 ///
-/// Asserted as an intersection over the two lists themselves, not as a
-/// snapshot of the names that happen to be on them today. A literal list
-/// fails when a capability *moves* between the seams and passes when one
-/// is added to *both*, which is the likelier mistake — see the stdlib
-/// test below for the door that makes it likely.
-pub fn the_seams_share_only_the_report_capability_test() {
-  let workspace = policy.default_cap_modules()
-  let orchestration = policy.orchestration_cap_modules()
-  let shared =
-    list.filter(workspace, fn(name) { list.contains(orchestration, name) })
-  assert shared == ["cap/report"]
-  // Both sets are non-empty, so the intersection above is a real
-  // disjointness claim rather than one made vacuous by an empty side.
-  assert list.length(workspace) > 1
-  assert list.length(orchestration) > 1
-  // And each list is the one the seam actually judges against.
-  assert list.all(workspace, policy.contains(policy.default(), _))
-  assert list.all(orchestration, policy.contains(policy.orchestration(), _))
+/// The default server serves both modes. A program may inspect the workspace,
+/// start a child, and report the result without changing modes or splitting its
+/// source across tool calls.
+pub fn both_program_modes_admit_the_full_capability_union_test() {
+  let combined =
+    "import cap/fs\nimport cap/proc\nimport cap/strand\nimport cap/workflow\npub fn main() { 1 }\n"
+  assert is_passed(vet.vet(combined, policy.default()))
+  assert is_passed(vet.vet(combined, policy.orchestration()))
+
+  let expected = policy.program_cap_modules()
+  assert list.all(expected, policy.contains(policy.default(), _))
+  assert list.all(expected, policy.contains(policy.orchestration(), _))
+  assert policy.allowed_imports(policy.default())
+    == policy.allowed_imports(policy.orchestration())
+}
+
+/// An explicitly effect-only host never advertises child custody.
+pub fn effect_only_host_policy_refuses_child_capabilities_test() {
+  let restricted = policy.workspace_effects()
+  assert policy.contains(restricted, "cap/fs")
+  assert has_rule(
+    vet.vet("import cap/strand\npub fn main() { 1 }\n", restricted),
+    ImportNotAllowed,
+  )
+  assert has_rule(
+    vet.vet("import cap/workflow\npub fn main() { 1 }\n", restricted),
+    ImportNotAllowed,
+  )
 }
 
 /// The shared standard-library list holds no capability module.
 ///
-/// `default()` and `orchestration()` both append `default_stdlib_modules`,
-/// so a `cap/*` name added there reaches both seams at once — widening the
-/// orchestration surface past `cap/strand` + `cap/report` without ever
-/// appearing in either capability list, where the intersection test above
-/// would have caught it. A new pure helper module looks like it belongs in
-/// the shared list, which is what makes this the plausible mistake rather
-/// than an exotic one.
+/// `default()` and `orchestration()` append `default_stdlib_modules`.
+/// Keeping capabilities out of that list ensures the explicit effect-only
+/// host and extension policies cannot acquire an import by accident.
 pub fn the_shared_stdlib_list_admits_no_capability_test() {
   assert list.all(policy.default_stdlib_modules(), fn(name) {
     !string.starts_with(name, "cap/")
@@ -559,16 +514,11 @@ pub fn a_harness_only_capability_is_on_no_seam_test() {
   })
 }
 
-/// The extension seam is the workspace seam widened, and says so as a
-/// superset rather than as a snapshot.
+/// The extension seam widens the workspace effect subset, not child custody.
 ///
-/// This is the one relation between two seams here that is deliberately
-/// *not* disjointness: an extension tool is a workspace program with a
-/// different entry point, so narrowing it would buy nothing and would
-/// have to be kept in step by hand. Stating the intended relation as a
-/// property is what stops the coupling from being an accident — a
-/// capability removed from the extension seam alone now fails a test
-/// rather than passing quietly.
+/// An extension tool can use the workspace effect modules, but it has no
+/// Agency owner for `cap/strand` or `cap/workflow`. Keep the effect subset in
+/// sync while preserving that custody boundary.
 pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
   let workspace = policy.default_cap_modules()
   let extension = policy.extension_cap_modules()
@@ -583,18 +533,10 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
   assert list.length(extension) > list.length(workspace)
 }
 
-/// The extension seam reaches no capability the workspace seam does not.
+/// The extension adds only its own vocabulary and durable memory.
 ///
-/// The superset test above would pass just as well if the extension seam
-/// had picked up `cap/strand` on the way, which would put agent
-/// orchestration and effects in one program — the exact pairing the
-/// workspace/orchestration split exists to prevent. So the widening is
-/// pinned to the three names it adds: `ext` and `ext/hook`, the
-/// vocabulary an extension's tools and hooks are typed against, neither
-/// of which carries any authority at all; and `ext/memory`, which
-/// carries the only authority on the list — durable cells under the
-/// reserved `ext/<name>/` prefix, on no other seam because no other
-/// seam's programs have an installed name to key a subtree by.
+/// It must not acquire child custody from the program-mode union. The only
+/// additions to workspace effects are `ext`, `ext/hook`, and `ext/memory`.
 pub fn the_extension_seam_widens_by_exactly_three_names_test() {
   let extra =
     list.filter(policy.extension_cap_modules(), fn(name) {
@@ -709,10 +651,7 @@ pub fn for_seam_selects_the_allowlist_test() {
     == policy.allowed_imports(policy.resident())
 }
 
-/// An orchestration program that stays inside its seam passes, and the
-/// same source is rejected on the workspace seam. Without this the two
-/// rejections above would hold just as well for a policy that rejected
-/// everything.
+/// A child program passes under both full-capability program modes.
 pub fn an_orchestration_program_passes_its_own_seam_test() {
   let source =
     "import cap/report
@@ -725,7 +664,7 @@ pub fn main() -> report.Outcome {
 }
 "
   assert is_passed(vet.vet(source, policy.orchestration()))
-  assert has_rule(vet.vet(source, policy.default()), ImportNotAllowed)
+  assert is_passed(vet.vet(source, policy.default()))
 }
 
 // --- Vetted token & bypass-prevention properties ---------------------------

@@ -55,9 +55,9 @@ workspace file before it can consume the value.
 The optional `codemode/notes.Door` holds only Agency's write and scan callbacks.
 Its presence controls import admission, model descriptions, routing, and
 execution quotas. Unconfigured hosts, extensions, and resident hooks do not
-receive `cap/notes`. Workspace programs still cannot import `cap/strand`.
-The static seam intersection remains unchanged; this host-installed shared
-door adds data access, not agent lifecycle authority.
+receive `cap/notes`.
+The installed notes door adds data access to each offered program mode. An
+explicitly workspace-only host still has no agent lifecycle authority.
 
 Each execution allows 256 puts and 64 each of get, list, and virtual reads.
 All three reads use the existing prefix query, with exact reads filtering its
@@ -69,9 +69,9 @@ contract and the deliberate absence of filesystem mounts and subscriptions.
 
 ## Reusable programs on both surfaces
 
-The server now offers both seams by default. Each submission still selects a
-single surface, and omitting `seam` selects workspace. Explicit
-`--codemode-seams workspace` retains the earlier restriction.
+The server offers both program modes by default. Both admit the full
+capability set, and omitting `seam` selects workspace. Explicit
+`--codemode-seams workspace` keeps the effect-only restriction.
 
 `report.decode_json` and `report.encode_json` bridge JSON text with the
 structured Value used by notes and child results. They use the existing core
@@ -90,7 +90,8 @@ The model-facing description includes a [workspace analysis recipe](../examples/
 and a [bounded child review recipe](../examples/strand_map.gleam), conditioned
 on the imports the host offers. Tests execute the advertised strings verbatim
 and compare them with these files. Workspace data can be saved into notes and
-consumed by orchestration, or the reverse, without combining their authority.
+consumed by either mode, or the modes can combine reads and child work in one
+program.
 
 ## Why Gleam is safe to run
 
@@ -341,15 +342,13 @@ module, which the Gleam compiler forbids another package from importing
 own, which would be the generic dispatcher by the back door and would
 collapse per-server trust to "any server the router knows".
 
-**The allowlist follows the host, and only the workspace seam.** A
-façade exists only where its server is configured, so no static list can
-name one: `cap/mcp` and each generated module are added to the workspace
-seam's allowlist *at boot*, by the host that generated them
-(`client/codemode.seam_allowlist`), and `cap/mcp` stays off every static
-seam for exactly that reason. The orchestration seam is widened by none
-of it — an orchestrator that could also call out to a third-party server
-is a materially worse thing to hand a model than one that cannot, which
-is the whole of what the two-seam split buys.
+**The allowlist follows the host.** A façade exists only where its server is
+configured, so no static list can name it. The host adds generated
+`cap/mcp/<server>` modules to each offered program mode at boot, alongside the
+`cap/mcp` vocabulary those modules import. Both modes route calls through the
+same configured MCP layer. An unconfigured host admits neither the import nor
+the call. Extension and resident policies do not receive this host-specific
+widening.
 
 The generated source enters the hermetic build vendored *inside* the
 prelude, because that is the only place an internal-module call
@@ -370,31 +369,27 @@ timeout. The refusals a program reads are `mcp_unavailable`,
 `mcp_timeout`, `mcp_malformed`, `jsonrpc_<code>` for a server error, and
 `unsupported_cap` for a server this host never configured.
 
-## Three seams, and why two of the sets are disjoint
+## Program modes and capability admission
 
-There is not one prelude but three, and a submission is vetted against
-exactly one of them (`codemode/vet/policy.Seam`).
+The default server offers workspace and orchestration mode. Both admit the same
+capability modules, so one program can inspect files, run processes, spawn child
+strands, exchange granted peer messages, and report a result. Omitting `seam`
+selects workspace. The host's tool description lists the imports and signatures
+it actually admits; installed MCP façades and `cap/notes` appear there when
+configured.
 
-The **workspace seam** is the ten modules above: a program that
-orchestrates *effects*. The **orchestration seam** is `cap/strand` and
-`cap/report`, and nothing else: a program that orchestrates *agents*.
-`cap/strand` gives `spawn`, `wait` — a list of handles against one shared
-deadline — `send`, `note`/`notes` and `roster`, and every one of them is
-serviced by the same `client/agency` closures the model's own `agent_*`
-tools call, judged against the same `Caller`. The authorization model is
-reused rather than invented: descendant-only addressing, the depth and
-fan-out caps, the lineage ledger, and the refusal names are the tools'.
+`cap/strand` still uses the `client/agency` closures behind the model's
+`agent_*` tools. The current strand may address only its parent or descendants,
+and depth, fan-out and workflow admission retain their existing bounds. A peer
+message still requires an exact directional grant. The broader import set does
+not bypass broker grants or the satellite's kernel sandbox.
 
-Why a second allowlist rather than an eleventh capability: **which
-capabilities travel together is the point.** An orchestrator that could
-also write files, run a process, or reach the network is a materially
-worse thing to hand a model than one that cannot. A compromised
-orchestration program can spawn and message within the lineage its own
-strand roots, and can touch neither the disk, the network, nor a process.
-That holds only while the two capability sets stay disjoint, which is why
-they share no module but `cap/report` — which carries no authority of its
-own — and why a test pins the disjointness rather than trusting the two
-lists to stay apart.
+An operator can install a workspace-only surface without Agency custody. That
+host keeps an effect-only allowlist and does not advertise `cap/strand` or
+`cap/workflow`. Extension tools and resident hooks also keep their separate
+policies. Their lifecycle does not carry the current program's child custody.
+[Protocol 048](../../protocol-change/048-async-collaboration.md) records the
+program-mode change and its cost.
 
 Why a capability rather than an interpreter: Rule Zero. A trusted
 orchestration interpreter living in the harness VM *is* model-influenced
@@ -441,40 +436,19 @@ capability checks.
 
 ### The third seam: extensions, and why it is a superset
 
-The **extension seam** is the workspace seam widened, and its relation to
-the other two is deliberately not disjointness. It is
-`extension_cap_modules` — the ten workspace capabilities plus `ext` —
-over `extension_stdlib_modules`, the shared pure subset plus
-`gleam/bit_array` and `gleam/uri`. JSON and dynamic decoders are part of the
-shared subset, so workspace and orchestration programs can parse JSON data
-without gaining an effectful import.
+The **extension seam** widens the workspace effect subset, not the full
+program-mode union. `extension_cap_modules` starts with
+`default_cap_modules()` and adds `ext`, `ext/hook`, and `ext/memory`.
+`extension_stdlib_modules` adds `gleam/bit_array` and `gleam/uri` to the
+shared pure subset. Extensions read files, run processes and make brokered HTTP
+requests, but their install-time lifecycle has no current Agency owner for
+`cap/strand` or `cap/workflow`. The tests pin this relationship directly.
 
-The argument for disjointness above does not apply here, and saying why
-matters more than restating it. Disjointness exists because an
-orchestrator and an effect program are *different kinds of thing*: which
-capabilities travel together is the question, and putting agent
-orchestration in the same program as the disk is a real widening of what
-a compromise buys. An installed extension's tool is not a different kind
-of thing from a workspace program — it reads files, runs processes and,
-under ADR-007, makes brokered HTTP requests. It differs in its *entry
-point*: the harness knows a code-mode program's arguments when it
-launches the node, and an extension is compiled once at install and
-invoked many times, so the call is what varies. Phase 1 answered that
-with a capability the node pulled on, `cap/ext.call`; phase 3 deleted it
-(`protocol-change/012`), because a satellite that lives for the session
-is *told* what to answer over a `hook_call` and has nothing left to pull
-against. What remains of the widening is `ext` (`packages/ext`), the
-vocabulary an extension's tools are typed against, which carries no
-authority at all.
-
-So the seam is written as `default_cap_modules()` widened rather than as
-a list of its own, and the property test is a superset claim where the
-other two have an intersection. The widening is pinned to exactly that
-one name, which is what stops a `cap/strand` arriving on the way and
-quietly putting the disk and the lineage in one program after all. The
-two extra standard-library modules remain on the extension list. JSON
-support uses the shared list because parsing data does not grant authority.
-The shared list still contains no capability module, which a test asserts.
+The extension's entry point also differs. A code-mode program gets its
+arguments when the host launches it; the extension compiles at install and
+serves later calls. `ext` and `ext/hook` type those calls. `ext/memory` gives
+an installed extension durable cells under its own `ext/<name>/` prefix.
+That name does not exist for an ordinary code-mode program.
 
 Two consequences worth stating. **The extension seam sees no generated
 MCP façades**: an extension's allowlist is fixed at install and recorded,
@@ -603,9 +577,9 @@ anything is dispatched, in the tool shell and again in the wiring.
 
 The argument and the schema grow only where there is a choice: a host
 serving one seam renders neither the `seam` property nor a second import
-list, and where both are served the shared standard-library subset is
-stated once rather than duplicated into two lists the model would have to
-diff. Both are the same arithmetic as tool registration itself — the tool
+list, and where both are served their common imports and signatures are rendered
+once. The default server's full capability set is common to both modes. This
+follows the same arithmetic as tool registration: the tool
 array renders ahead of the system prompt and is the byte prefix of the
 cached region, so anything in it is paid on every request of the session.
 
@@ -654,10 +628,10 @@ costs nothing to run constantly; regeneration is the step that needs
 `gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
 
 **It is filtered through the allowlist, not through the package.**
-`package-interface` reports fourteen modules, and the three seams admit
-twelve between them: `cap/runtime`, the satellite's trusted boot runtime,
-and `cap/mcp`, the types-only vocabulary a generated façade imports, are
-on none of them. `tools/codemode` selects from the artifact using each
+`package-interface` reports the public modules. All three allowlists exclude
+`cap/runtime`, the satellite's trusted boot runtime, and `cap/mcp`, the types-only
+vocabulary a generated façade imports. `tools/codemode` selects from the artifact
+using each
 `SeamOffer`'s own `allowed_imports` — the same list vetting judges
 against — so a module vetting will reject can never be advertised.
 Advertising one would be the same class of lie as classifying a
@@ -667,12 +641,12 @@ understand.
 
 **Each seam pays only for what it adds.** The signatures follow the split
 the import lists already take: modules on every offered seam are rendered
-once under a shared heading, and each seam renders only its own. An
-orchestration-only host pays for `cap/strand` and `cap/report` and for
-none of the others.
+once under a shared heading, and each seam renders only its own. The default
+host renders the full shared program surface once, including configured MCP
+façades.
 
-The price is real and is written down where it can be checked: against
-the shipped allowlists a workspace-only host's whole description is
+Before the Protocol 048 additions, the measured description sizes were: a
+workspace-only host's whole description was
 17,678 bytes, an orchestration-only host's 15,205, and a host serving
 both 28,818 — roughly 4,400, 3,800 and 7,200 tokens. About half of that
 is the `pub type` declarations, which the estimate this work was scoped
@@ -1207,12 +1181,22 @@ across the next several, which nothing MCP-shaped can express. **That
 mode is built**, for installed extensions:
 `codemode/satellite.start`/`invoke`/`stop` hold a node open, and
 `client/extension/hosts` keeps one per installed extension for the life
-of a session. A submitted `code_mode` program still gets a fresh node per
-execution and always will, because a program submitted in one turn has
-nothing to be persistent *about*.
+of a session.
 
-Holding a node open does not widen it, and three rules are what make that
-true.
+Submitted `code_mode` programs use a fresh node per execution. In background
+`launch` mode, that execution can span several model turns. The program receives
+later data through named typed `cap/execution` endpoints or raw `receive`,
+under its original capability token and deadline. Readiness is explicit and
+intermediate progress is observable without ending the program. A lost satellite is reported explicitly; its actor state is not
+restored. The [async collaboration guide](../async-collaboration.md) covers
+launch handles, named child steps, and recovery. The
+[async architecture](async-collaboration.md) explains readiness, delivery
+acknowledgements, lifetime limits and the scope of exclusive tool admission.
+
+Installed extensions have a different lifetime: their satellite serves repeated
+invocations, each with a separately issued token.
+
+The extension host enforces three rules across those invocations.
 
 **The token is the invocation's, never the node's.** A token is minted
 for one `{op_id, step_id}` and checked on every `cap_call`, so a node that
@@ -1330,8 +1314,8 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `codemode/enforcement.gleam` | What each jailed stage's helper reported, or why no report exists; both stages of an execution as one record. |
 | `cap/fs.gleam`, `cap/proc.gleam`, `cap/net.gleam`, `cap/git.gleam`, `cap/lsp.gleam`, `cap/kv.gleam`, `cap/report.gleam` | The prelude's capability modules — typed stubs over `cap_call`. |
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
-| `cap/strand.gleam` | The orchestration seam: spawn, join, address, blackboard, roster. |
-| `codemode/orchestration.gleam` | The harness end of that seam — `strand.*` onto the Agency closures. |
+| `cap/strand.gleam` | Child operations from either default program mode: spawn, join, address, blackboard, roster. |
+| `codemode/orchestration.gleam` | The harness end of `strand.*` calls through the Agency closures. |
 | `client/mcp.gleam` | The MCP layer: a client per configured server, the generated modules, and the `mcp.<server>` router arm. |
 | `mcp/{client,transport,codegen,interchange}.gleam` | The protocol, the stdio client, the façade generator, and the msgpack ↔ JSON translation. |
 | `tools/prelude.gleam` | Generated: the capability prelude's public surface, per module, as the `code_mode` description renders it. |

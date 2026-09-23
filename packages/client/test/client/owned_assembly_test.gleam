@@ -64,6 +64,7 @@ pub fn settings() -> serve.Settings {
       mcp_servers: [],
     )
   serve.Settings(
+    peer_directory: None,
     secrets: secret.env(),
     secret_failures: [],
     session_path: root <> "/session.db",

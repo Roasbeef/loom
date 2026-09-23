@@ -85,6 +85,7 @@ import mcp/transport
 import provider/secret.{type SecretStore}
 import tools/blob
 import weft
+import weft/poll
 
 /// The capability-name prefix every MCP call arrives under. The suffix
 /// is the configured server's name, which is also its module's last
@@ -518,13 +519,23 @@ fn close_clients(
   clients: List(mcp_client.Client),
   within: Int,
 ) -> Result(Nil, String) {
+  // Late-scheduled collectors inherit the original cutoff rather than a fresh
+  // per-client window, so scheduler pressure cannot serialize the budget.
+  let clock = poll.monotonic()
+  let deadline = clock.now() + int.max(within, 0)
+
   // Request every stop before starting bounded proof collectors. A collector
   // that never runs cannot leave its client accepting more tool calls.
   list.each(clients, mcp_client.stop)
   let outcomes =
     weft.new(
       list.map(clients, fn(client) {
-        fn() { mcp_client.shutdown(client, within: within) }
+        fn() {
+          mcp_client.shutdown(
+            client,
+            within: int.max(deadline - clock.now(), 0),
+          )
+        }
       }),
     )
     |> weft.limit(int.max(list.length(clients), 1))

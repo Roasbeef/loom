@@ -25,6 +25,7 @@
 //// names the file that moved:
 ////
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
+////   567357378f5204bff4465a57c21e1af492013f63a49fe18d46ab8f61bc572ce7  packages/cap/src/cap/execution.gleam
 ////   17119de5a23f5b9a19fa25ed70d56921ae4588ff097408e124d31bc81b70c365  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
@@ -33,16 +34,18 @@
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
+////   e94a1c6bc2d6610a068893ff9fc9b3673fe165cab0a8f6a6ab7acf0b3eb8cd92  packages/cap/src/cap/peer.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   17c973c36d2ca3e184f54a7540a90eedf7b6090ffbdc762524a78cf184b98a8f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   c4be2e8c194d95ab02bbd6b4d27946152162e335cf5aee7e8bf812e6d52fc8e0  packages/cap/src/cap/search.gleam
-////   456f230634d9858f7c187ea9192278e5af7a854e35308d313ef85c74d7022e4d  packages/cap/src/cap/strand.gleam
+////   d7348e4366f54b131696376045e162e9e2c0bc0094e7e91c0b721ee13a6932cb  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
+////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 4239264da91e32abe9509c7927137e5714b27ae10f223fde9527351c26d0f64b
+//// Body digest (every line after the marker): 398e3dc9675e657d43174e49573a832b6d75543d3db9ab532cd4b8ca7cc106e7
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -116,6 +119,91 @@ pub fn spawn(a, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 pub fn spawn_bounded(a, Int, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 /// Stop the actor after this message.
 pub fn stop() -> Next(a)
+",
+  ),
+  #(
+    "cap/execution",
+    "### cap/execution
+Typed input endpoints and progress for the current background execution.
+
+/// A typed delivery endpoint with its message type erased behind a
+/// closure.
+pub type Endpoint
+/// Why an endpoint could not be constructed.
+pub type EndpointError {
+  /// Names are 1..64 ASCII bytes from `[a-z0-9._-]`.
+  InvalidEndpointName(name: String)
+}
+/// The host's acknowledgement of a published progress snapshot.
+pub type Progress {
+  Progress(observed_sequence: Int, observed_updated_ms: Int)
+}
+/// A bounded receive distinguishes silence from a closed execution.
+pub type Received {
+  /// One committed input and the cursor for the next receive.
+  Message(sequence: Int, value: report.Value)
+  /// No input arrived within this call's wait budget.
+  TimedOut
+  /// The harness has closed the execution's input channel.
+  Closed
+}
+/// Why a typed serving loop could not continue.
+pub type ServeError {
+  /// At least one endpoint is required.
+  NoEndpoints
+  /// No more than `max_endpoints` may be registered.
+  TooManyEndpoints
+  /// Every endpoint name must be unique within one execution.
+  DuplicateEndpoint(name: String)
+  /// The idle lifetime was outside 1..300000 milliseconds.
+  InvalidIdleWithin(milliseconds: Int)
+  /// The host refused or could not persist readiness.
+  ReadyFailed(reason: String)
+  /// The ordered input journal could not be read.
+  ReceiveFailed(reason: String)
+  /// The host could not record the latest delivery status.
+  DeliveryFailed(reason: String)
+}
+/// Why a typed serving loop ended normally.
+pub type ServeExit {
+  /// No successfully delivered input arrived before the idle lifetime
+  /// elapsed.
+  Idle
+  /// The host closed this execution's input channel.
+  InputClosed
+}
+/// The largest endpoint set one execution may register.
+pub const max_endpoints: Int
+/// The longest explicit idle lifetime accepted by `serve`.
+pub const max_idle_within_ms: Int
+/// Couples one endpoint name to a decoder and typed delivery function.
+///
+/// The returned value is non-generic because its closure decodes and
+/// delivers the same private `message` type. This permits a heterogeneous
+/// endpoint list without exposing a raw BEAM subject.
+pub fn endpoint(name: String, decode: fn(report.Value) -> Result(a, String), deliver: fn(a) -> Result(Nil, String)) -> Result(Endpoint, EndpointError)
+/// Publishes the execution's latest bounded progress snapshot.
+///
+/// Progress is volatile and coalesced by the host. The acknowledgement
+/// names the snapshot currently published by the host. The submitted
+/// value may still be pending, and a later update may supersede it before
+/// publication.
+pub fn progress(report.Value) -> Result(Progress, String)
+/// Reads input committed after the supplied cursor, initially zero. This
+/// never changes the execution's original lifetime or permissions.
+/// Calling it before typed `serve` publishes legacy readiness for
+/// `default`.
+pub fn receive(after: Int, within_ms: Int) -> Result(Received, String)
+/// Registers typed endpoints and drains the execution-owned input
+/// journal.
+///
+/// The host measures `idle_within_ms` from readiness or the last
+/// successful delivery. A rejected value does not renew it. On idle
+/// expiry the host first records terminal loss and starts execution-owned
+/// cancellation, then answers this loop with `Idle`; channel closure may
+/// win that response race and yield `InputClosed` instead. The host reaps
+/// the satellite in either case.
+pub fn serve(List(Endpoint), idle_within_ms: Int) -> Result(ServeExit, ServeError)
 ",
   ),
   #(
@@ -603,6 +691,20 @@ pub fn list(option.Option(String)) -> Result(List(#(String, report.Value)), Note
 /// replaces its current value; a child's result key retains schema
 /// checks. Capability: notes.put. The execution allows at most 256 calls.
 pub fn put(String, report.Value) -> Result(Nil, NotesError)
+",
+  ),
+  #(
+    "cap/peer",
+    "### cap/peer
+Explicitly authorized communication with resident peer strands.
+
+/// Returns linked session metadata and authorized exports as JSON text.
+pub fn roster() -> Result(String, String)
+/// Sends one message with a stable retry identity and returns its JSON
+/// receipt. Reuse an identity only with the same recipient and body. The
+/// receipt means admitted durably, not read or completed by the
+/// recipient.
+pub fn send(session: String, strand: String, message_id: String, text: String) -> Result(String, String)
 ",
   ),
   #(
@@ -1222,8 +1324,8 @@ pub fn stat(String) -> Result(Entry, SearchError)
   #(
     "cap/strand",
     "### cap/strand
-`cap/strand` — the orchestration seam: starting, joining, and addressing
-other agents from inside a code-mode program.
+`cap/strand` starts, joins, and addresses other agents from inside a code-
+mode program.
 
 /// One assignment, built up before it is spawned.
 ///
@@ -1546,6 +1648,18 @@ pub fn parallel_map_fail_fast(List(a), max_concurrency: Int, with: fn(a) -> Resu
 /// killing the rest. A killed loser's in-flight cap call is cancelled at
 /// the broker. If the winner returned an error, that error is returned.
 pub fn race(List(fn() -> Result(a, b))) -> Result(a, Failure(b))
+",
+  ),
+  #(
+    "cap/workflow",
+    "### cap/workflow
+Named, durable child steps for background orchestration programs.
+
+/// Starts or recovers a named child step in the current background
+/// execution. Join the returned handle with strand.wait, whose result is
+/// durable. Other completed steps retain their handles when a failed step
+/// is retried by name.
+pub fn step(String, String, String, String, strand.Assignment) -> Result(strand.Handle, String)
 ",
   ),
 ]

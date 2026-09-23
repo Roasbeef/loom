@@ -18,6 +18,8 @@ import broker/budget
 import broker/exec
 import broker/framing
 import broker/policy
+import client/agency
+import client/async_codemode
 import client/catalog
 import client/codemode
 import client/mcp
@@ -37,7 +39,9 @@ import mcp/client as mcp_client
 import mcp/codegen
 import mcp/protocol
 import mcp/transport
+import support/addresses
 import support/fake_mcp
+import tools/codemode as codemode_tool
 import weft/poll
 
 const t = 1_700_000_000_000
@@ -734,7 +738,50 @@ pub fn a_configured_server_widens_the_workspace_allowlist_test() {
   mcp.stop(layer)
 }
 
-pub fn the_orchestration_seam_is_widened_by_nothing_test() {
+pub fn background_description_offers_the_full_surface_in_both_modes_test() {
+  let layer =
+    layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
+  let broker_actor = idle_broker()
+  let agents = agency.default_config(addresses.new(), clock.fixed(at: t))
+  let config =
+    codemode.serving(
+      host(broker_actor, layer),
+      codemode.BothSeams,
+      over: agency.seam(agents),
+    )
+  let mode = async_codemode.seam(config, addresses.new(), agents)
+  let sync = codemode.seam(config)
+  assert mode.seams == sync.seams
+  let offers = [mode.seams.default, ..mode.seams.alternates]
+  list.each(offers, fn(offer) {
+    list.each(
+      ["cap/fs", "cap/strand", "cap/workflow", "cap/mcp/alpha"],
+      fn(module) {
+        assert list.contains(offer.allowed_imports, module)
+      },
+    )
+    list.each(["fs.read", "strand.spawn", "mcp.alpha"], fn(cap) {
+      assert list.contains(offer.serviced_caps, cap)
+    })
+    assert !list.contains(offer.serviced_caps, "workflow.step")
+    assert list.any(offer.extra_surfaces, fn(surface) {
+      string.contains(surface, "cap/mcp/alpha")
+    })
+  })
+  let description = codemode_tool.description(mode)
+  list.each(
+    ["cap/fs", "cap/strand", "cap/workflow", "cap/mcp/alpha"],
+    fn(module) {
+      assert string.contains(description, module)
+    },
+  )
+  assert string.contains(description, "workflow.step")
+  assert string.contains(description, "background")
+  broker.stop(broker_actor)
+  mcp.stop(layer)
+}
+
+pub fn the_orchestration_seam_uses_the_configured_mcp_server_test() {
   let layer =
     layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
   let broker_actor = idle_broker()
@@ -744,13 +791,12 @@ pub fn the_orchestration_seam_is_widened_by_nothing_test() {
       config,
       vet_policy.OrchestrationSeam,
     ))
-  // Which capabilities travel together is the whole of what the split
-  // buys: an orchestrator that could also reach a third-party server is
-  // a materially worse thing to hand a model.
-  assert !list.contains(allowed, "cap/mcp/alpha")
-  assert !list.contains(allowed, "cap/mcp")
+  assert list.contains(allowed, "cap/mcp/alpha")
+  assert list.contains(allowed, "cap/mcp")
   assert codemode.seam_caps_on(config, vet_policy.OrchestrationSeam)
-    == codemode.seam_caps(vet_policy.OrchestrationSeam)
+    == list.append(codemode.seam_caps(vet_policy.OrchestrationSeam), [
+      "mcp.alpha",
+    ])
   broker.stop(broker_actor)
   mcp.stop(layer)
 }
@@ -762,8 +808,9 @@ pub fn a_configured_server_is_named_in_what_the_seam_services_test() {
   let config = host(broker_actor, layer)
   // The server's name lands *after* the seam's own capabilities, so a
   // configured server widens the list rather than reordering it.
+  let base = host(broker_actor, mcp.none())
   assert codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
-    == list.append(codemode.seam_caps(vet_policy.WorkspaceSeam), [
+    == list.append(codemode.seam_caps_on(base, vet_policy.WorkspaceSeam), [
       "mcp.alpha",
     ])
   broker.stop(broker_actor)
@@ -777,8 +824,8 @@ pub fn a_host_with_no_servers_offers_exactly_what_it_did_before_test() {
       config,
       vet_policy.WorkspaceSeam,
     ))
-    == vet_policy.allowed_imports(codemode.seam_policy(vet_policy.WorkspaceSeam))
+    == vet_policy.allowed_imports(vet_policy.workspace_effects())
   assert codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
-    == codemode.seam_caps(vet_policy.WorkspaceSeam)
+    == codemode.seam(config).seams.default.serviced_caps
   broker.stop(broker_actor)
 }

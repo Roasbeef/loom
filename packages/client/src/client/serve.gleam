@@ -31,6 +31,8 @@ import broker/policy
 import broker/token
 import client/advisor
 import client/agency
+import client/async_codemode
+import client/async_runs
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
@@ -68,6 +70,8 @@ import client/jobtools
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
+import client/peer_mail
+import client/peers
 import client/retryconf
 import client/rules
 import client/rulescan
@@ -85,6 +89,7 @@ import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import core/json
 import events/bus
 import filepath
 import gleam/bit_array
@@ -127,6 +132,7 @@ import telemetry/log.{type Logger}
 import tom
 import tools/advise
 import tools/agent.{type Agency}
+import tools/codemode as codemode_tool
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -308,6 +314,8 @@ pub type Settings {
     /// Exact catalogue-selected memory and index paths. None is the internal
     /// embedded-host layout beside the session, not a managed-domain fallback.
     domain_paths: Option(DomainPaths),
+    /// Resident-only peer lookups supplied by the owning daemon.
+    peer_directory: Option(peers.Directory),
     /// The session's base policy — the ceiling every tool call is
     /// composed against, and the thing an escalation widens. `main`
     /// fills it with `base_policy(workspace)`; it is a field rather than
@@ -467,6 +475,8 @@ pub type Booted {
 /// Only the process that called `open_instance` or `boot` can receive `stops`.
 pub type Instance {
   Instance(
+    /// Small communication endpoint projected into the daemon registry.
+    peer: peer_mail.Endpoint,
     /// The sole conversation writer and its supervised strands.
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
@@ -1139,6 +1149,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     token_path: option.unwrap(flags.token_file, session_path <> ".token"),
     workspace:,
     domain_paths: None,
+    peer_directory: None,
     base_policy: admitting_config_mounts(
       base_policy_for(
         workspace,
@@ -1834,6 +1845,8 @@ pub fn drain_instance(instance: Instance, within_ms: Int) -> Nil {
 /// session — so the projection cannot go stale.
 pub type Resident {
   Resident(
+    /// Address-only peer service; no runtime graph crosses the registry.
+    peer: peer_mail.Endpoint,
     /// The hub's stable address, which is all an attaching socket reads.
     gateway: hub.Gateway,
     /// The fatal roots, named for the log line. Read once, immediately after
@@ -1854,6 +1867,7 @@ pub type Resident {
 @internal
 pub fn resident(instance: Instance) -> Resident {
   Resident(
+    peer: instance.peer,
     gateway: instance.gateway,
     children: instance_children(instance),
     drain: api.draining(instance.runtime),
@@ -1946,8 +1960,7 @@ fn code_mode_seam(
         field.text(key: "erl", value: toolchain.erl_path),
         field.text(key: "seed", value: toolchain.seed_root),
       ])
-      use layer <- result.try(start_mcp(
-        settings.codemode_seams,
+      use layer <- result.try(started_mcp(
         settings.catalog.mcp_servers,
         settings.secrets,
         logger,
@@ -1982,7 +1995,7 @@ fn code_mode_seam(
           // the model is offered jobs unconditionally, so a program that
           // could not even ask would be the surprise.
           |> codemode_wiring.over_jobs(Some(jobs_door))
-          // The MCP layer widens the workspace seam's allowlist, its
+          // The MCP layer widens both installed modes' allowlists, their
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
           |> codemode_wiring.over_mcp(layer),
@@ -2295,34 +2308,6 @@ fn subscription_of(
   option.to_result(registration.subscription, Nil)
 }
 
-/// Whether the seams this server offers can reach an MCP server at all.
-///
-/// A server's tools are a module a **workspace** program may import, and
-/// the orchestration seam is widened by none of it, ever
-/// (`client/codemode.over_mcp`) — so a host serving orchestration alone
-/// holds nothing that could ever call one, and starting third-party
-/// server processes for it, each with a configured secret in its
-/// environment, would be cost and attack surface bought for no
-/// capability. The same argument the absent-`code_mode` arm above makes,
-/// one decision further in.
-///
-/// A function rather than an inline `case` because it is the whole of
-/// the decision and the only part of this boot a hermetic test can hold
-/// still.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.mcp_reachable(codemode.WorkspaceOnly)
-/// ```
-///
-pub fn mcp_reachable(seams: codemode_wiring.Seams) -> Bool {
-  case seams {
-    codemode_wiring.WorkspaceOnly | codemode_wiring.BothSeams -> True
-    codemode_wiring.OrchestrationOnly -> False
-  }
-}
-
 // One `mcp.unavailable` line naming every server that was configured and
 // not started, and why. Worded as the layer's own refusals are: a
 // skipped server has no module, so a program importing it is refused by
@@ -2349,12 +2334,8 @@ fn skipped_mcp(
   }
 }
 
-// Every configured server this host can reach started, and one line
-// each way.
-//
-// The seam gate lives here rather than at the call site so there is one
-// place a server can be started from, and it is the place that asks
-// whether anything could call one.
+// Every configured server is started when code mode is installed, and one
+// line reports each success or failure.
 //
 // `mcp.ready` names the servers that answered and how many tools each
 // listed, because "how many" is the number that decides what the
@@ -2364,27 +2345,6 @@ fn skipped_mcp(
 // anybody will ever see about it: a refused server has no module, so a
 // program importing it is refused by vetting with no word about why the
 // module is absent.
-fn start_mcp(
-  seams: codemode_wiring.Seams,
-  servers: List(catalog.McpServer),
-  store: secret.SecretStore,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(mcp_wiring.Layer, String) {
-  case mcp_reachable(seams) {
-    True -> started_mcp(servers, store, logger, owner)
-    False -> {
-      skipped_mcp(
-        servers,
-        logger,
-        "MCP servers are reached from the workspace seam only, and this "
-          <> "host serves the orchestration seam alone, so none was started",
-      )
-      Ok(mcp_wiring.none())
-    }
-  }
-}
-
 fn started_mcp(
   servers: List(catalog.McpServer),
   store: secret.SecretStore,
@@ -2803,6 +2763,16 @@ fn assemble_in(
       },
     )
   let agency_seam = agency.seam(agency_config)
+  let peer_endpoint = agency.peer_endpoint(agency_config, settings.session_id)
+  let peer_wiring =
+    peers.Wiring(
+      own: peer_endpoint,
+      metadata: json.Object([
+        #("id", json.String(settings.session_id)),
+        #("workspace", json.String(settings.workspace)),
+      ]),
+      directory: settings.peer_directory,
+    )
 
   // The escalation plane has the same knot and the same answer: a name
   // now, a holder under it after the open. `interactive` is a question
@@ -2853,6 +2823,7 @@ fn assemble_in(
   // is minted now so the door can close over it, and the actor that
   // answers it starts under the service supervisor below.
   let jobs_name = address.new_address(namespace)
+  let async_name = address.new_address(namespace)
 
   // Both model-facing job surfaces are values over this one door: the
   // `bash` `mode` argument and the three `job_*` tools on one side, the
@@ -2886,7 +2857,36 @@ fn assemble_in(
     jobs_door,
     owner,
   ))
-  let code_mode = option.map(code_mode_host, codemode_wiring.seam)
+  let code_mode_host =
+    option.map(code_mode_host, fn(config) {
+      codemode_wiring.Config(
+        ..config,
+        wrap_router: fn(request: codemode_tool.Request, router) {
+          peers.router(
+            peer_wiring,
+            request.strand,
+            config.wrap_router(request, router),
+          )
+        },
+      )
+    })
+  let code_mode =
+    option.map(code_mode_host, fn(config) {
+      let mode = async_codemode.seam(config, async_name, agency_config)
+      let with_peers = fn(offer: codemode_tool.SeamOffer) {
+        codemode_tool.SeamOffer(
+          ..offer,
+          serviced_caps: list.append(offer.serviced_caps, peers.serviced_caps),
+        )
+      }
+      codemode_tool.CodeMode(
+        ..mode,
+        seams: codemode_tool.Seams(
+          default: with_peers(mode.seams.default),
+          alternates: list.map(mode.seams.alternates, with_peers),
+        ),
+      )
+    })
 
   // The environment every jailed child of this session inherits, tool
   // and hook alike. It is built once the code-mode decision is in so the
@@ -3044,7 +3044,7 @@ fn assemble_in(
       [
         contributions.Contribution(
           contributions.BuiltIn,
-          skill_tool.tools(skills),
+          list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
         ),
         // `advise` is registered for the whole session because a registry
         // is per session rather than per strand; `configuration` below
@@ -3338,6 +3338,17 @@ fn assemble_in(
     }),
   )
 
+  // Peer discovery reports a timestamped activation observation. Repository
+  // similarity never confers a messaging grant or filesystem authority.
+  use _ <- result.try(
+    api.put_reserved_fact(
+      runtime,
+      "client/peers/git-observation",
+      worktree_diff.peer_observation(worktree_wiring),
+    )
+    |> result.map_error(string.inspect),
+  )
+
   // The writer exists now, so the other half of the pin can land: the
   // bytes every strand of this session will send and the enforcement
   // demand they describe, recorded durably so an unchanged next boot reads
@@ -3375,6 +3386,18 @@ fn assemble_in(
     )
     |> sup.add(
       supervision.worker(fn() { escalate.start(escalate_config, runtime) }),
+    )
+    |> sup.add(
+      supervision.worker(fn() {
+        async_runs.start(
+          async_name,
+          async_runs.Wiring(
+            runtime:,
+            clock:,
+            abort: async_codemode.abort(broker_actor),
+          ),
+        )
+      }),
     )
     // The scratch store is here rather than among the fatal children
     // because it is addressed by *name* and holds nothing a restart
@@ -3496,7 +3519,10 @@ fn assemble_in(
             // effect, and `runtime` may not depend on `broker` to go
             // looking for it. The host owns both halves, so the host
             // joins them.
-            |> hub.with_effect_abort(fn(op) { broker.abort(broker_actor, op) })
+            |> hub.with_effect_abort(fn(op) {
+              let _fenced = async_runs.abort_operation(async_name, op)
+              broker.abort(broker_actor, op)
+            })
             // The operator's abort reaches the advisor's goal loop the
             // same way it reaches the effect plane: the gateway is the
             // one place an abort enters, and an aborted run never fires
@@ -3548,6 +3574,7 @@ fn assemble_in(
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(started_services.pid)
   Ok(Instance(
+    peer: peer_endpoint,
     runtime:,
     storage_owner:,
     broker: broker_actor,

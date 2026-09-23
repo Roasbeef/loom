@@ -71,7 +71,7 @@ owns.
 The consequence we accept is that the machine cannot wait on a job. A
 model that wants to block on one calls `job_poll` with a wait, and a
 pending job is a successful result, not a failure (the "pending is an
-answer" rule `agent_wait` already follows, `client/agency.gleam:222`).
+answer" rule `agent_wait` already follows, `client/agency.gleam:229`).
 
 ### 2. The durable record is a reserved prefix, and restart reaps
 
@@ -79,7 +79,7 @@ Each job has a `job/<id>` register in the session store. It is a key
 prefix inside the existing `fact.custom` namespace, so it costs no
 protocol change (`core/register.gleam:27-28` freezes the namespace set;
 prefixes are free). It becomes the tenth reserved corner: one line in
-`reserved_fact_key` (`runtime/api.gleam:2228`), one row in the table
+`reserved_fact_key` (`runtime/api.gleam:2470`), one row in the table
 at `api.gleam:1650-1663`, written only through
 `put_reserved_fact_expecting`. Creation uses the expect-absent CAS the
 schedule seam uses for a named create (`client/scheduleseam.gleam:372-383`),
@@ -114,7 +114,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:3390`), bound to a
+beside `extension_hosts` (`client/serve.gleam:3413`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule

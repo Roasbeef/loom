@@ -67,6 +67,7 @@ import core/codec
 import core/entry
 import core/json
 import core/message
+import core/origin
 import etui/backend
 import filepath
 import gleam/bit_array
@@ -864,9 +865,9 @@ fn user_turns(
   list.filter_map(sample.model.records, fn(record) {
     case record.entry {
       entry.MessageEntry(
-        message: message.UserMessage(content:, origin:, ..),
+        message: message.UserMessage(content:, origin: author_source, ..),
         ..,
-      ) -> Ok(#(content, option.map(origin, fn(author) { author.principal })))
+      ) -> Ok(#(content, option.map(author_source, origin.stable_identity)))
       _ -> Error(Nil)
     }
   })

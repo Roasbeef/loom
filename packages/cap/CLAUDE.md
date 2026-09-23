@@ -11,18 +11,15 @@ blocks for the `cap_result`. This package runs *inside* the jailed
 satellite node, never in the harness VM, and is a separate build target so
 it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 
-The prelude serves **three seams**, and a submission is vetted against one
-of them (`codemode/vet/policy.Seam`). The *workspace* seam is
-`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search}` — a program that orchestrates effects. The *orchestration* seam
-is `cap/strand` + `cap/report` and nothing else — a program that orchestrates agents. Those
-two sets are disjoint but for `cap/report`, and that disjointness is the
-point: an orchestrator that could also write files is a materially worse
-thing to hand a model than one that cannot. The *extension* seam is the
-workspace seam widened by the `ext` prelude alone, and its relation to
-the other two is a superset rather than a disjointness on purpose — an
-installed extension's tool is a workspace program with a different entry
-point. It widens by no *capability* at all: `cap/ext.call` was phase 1's
+The prelude serves three execution contexts (`codemode/vet/policy.Seam`).
+On the default server, workspace and orchestration programs admit the same
+effect and child-operation capabilities. An omitted mode selects workspace,
+so a program can read files and spawn children in one run. An explicit
+workspace-only host has no Agency custody and retains the effect-only subset.
+The extension seam widens that effect subset with the `ext` vocabulary; it
+does not gain `cap/strand` or `cap/workflow`. An installed extension's tool is
+a workspace program with a different entry point. It widens by no new base
+capability: `cap/ext.call` was phase 1's
 "which call am I serving?" pull, and `protocol-change/012` deleted it,
 because a satellite that lives for a session is *told* what to answer
 over a `hook_call`.
@@ -70,11 +67,11 @@ cannot hide the capability error. This does not grant the program a new effect.
   generated façade the vetting allowlist names. On no *static* seam
   (`harness_only_cap_modules`), and that is now permanent rather than a
   wait: a façade exists only where a server is configured, so a host with
-  MCP servers widens the workspace seam's allowlist at boot with
+  MCP servers widen each installed program mode's allowlist at boot with
   `cap/mcp` and each generated module (`client/codemode.seam_allowlist`),
   and a host with none allows neither.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
-  the orchestration seam. `assignment`/`within`/`detached`/
+  child operations in either default program mode. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_model`/`with_tools`/`expecting` build a spawn; `spawn`,
   `wait` (a list of handles against **one** deadline), `send`, `note`,
   `notes` and `roster` are the six calls, serviced by the same
@@ -176,20 +173,10 @@ cannot hide the capability error. This does not grant the program a new effect.
   subagent has finished. `Schedule.target` and `Created.target` are how
   a program tells the two apart, since one name may be in use on this
   strand and on a child's at once.
-  Workspace seam only and not orchestration, asked and decided in issue
-  #156. The bar for the one entry the two seams share is the bar
-  `cap/report` meets: `report.emit` mints nothing durable and causes no
-  later effect, it is only how a program says what it found. A `create`
-  here mints a durable reserved cell that admits a turn onto a strand at
-  a later time, with nobody present and possibly waking an idle strand,
-  which is the ability to cause future execution and so is authority.
-  The intersection of the two seams' allowlists *is* the confinement
-  property, so widening it from one module to two would spend one rule
-  read in two directions on a convenience nobody has asked for; nothing
-  is unreachable, only indirect, since an orchestration program has the
-  strand it runs on schedule a heartbeat through the `schedule_*` tools.
-  The intersection test pinning `["cap/report"]` is the ruling's
-  checkable form.
+  The default server admits scheduling from either program mode. A schedule
+  creates durable work that can outlive a program and may wake an idle strand;
+  its target and creator checks still run in the host. An explicit effect-only
+  host also admits it because scheduling does not require child custody.
 - `cap/job.{Started, State, StopCause, LostReason, Exit, Stream, Spill,
   Job, Row, Cursors, JobError}` with `start`, `start_within`, `poll`,
   `list`, `kill`, `send`, `send_last`, `from_start`, `after`,
@@ -430,6 +417,26 @@ cannot hide the capability error. This does not grant the program a new effect.
 - [docs/review/m4-triage.md](../../docs/review/m4-triage.md) — the review
   wave this package's current shape answers.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Background collaboration (protocol 048)
+
+`cap/execution.receive` reads the current background execution's durable input
+by cursor. `cap/peer` discovers and messages operator-linked peers; its JSON
+receipts prove admission. The default server admits these modules from both
+program modes, with host routers supplying identity. `cap/workflow.step`
+requires a background execution and returns a `cap/strand.Handle` for a durable
+named child operation. Programs can combine these calls with filesystem and
+process effects; each effect still passes its broker check and the satellite
+jail. Extensions retain a separate lifecycle and allowlist.
+
+`execution.endpoint` couples a decoder and typed callback in an opaque endpoint.
+`execution.serve` registers the immutable names and idle interval, reads one
+ordered journal and continues after a rejected value. It reports callback
+outcomes through `execution.delivery`; callback success is not proof of actor
+completion. `execution.progress` submits bounded, coalesced volatile snapshots.
+Raw `receive` publishes `default` readiness and cannot consume a typed service.
+Idle expiry is host-owned cancellation, so the program cannot rely on reporting
+a final result after an idle response. The original wall deadline always holds.
 
 ## Durable code-mode notes
 

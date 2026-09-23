@@ -10,10 +10,10 @@
 ////
 //// ## Which seam a submission is judged against
 ////
-//// There is not one allowlist but two, and a submission is judged
-//// against exactly one of them: the **workspace** seam, a program that
-//// orchestrates effects, and the **orchestration** seam, a program that
-//// orchestrates agents (`docs/architecture/code-mode.md`, "Two seams").
+//// A submission is judged against one installed mode. On the default
+//// server, both **workspace** and **orchestration** admit the full effect
+//// and child-operation capability set. An operator may install a narrower
+//// workspace-only host (`docs/architecture/code-mode.md`, "Two seams").
 //// Which of them a host serves is the host's decision; which of the ones
 //// it serves a *submission* wants is the model's, named in the call's
 //// `seam` argument and defaulting to whichever the host put first.
@@ -73,7 +73,7 @@ import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tools/blob
@@ -93,12 +93,11 @@ pub const tool_name = "code_mode"
 /// variants and no third, because "which capabilities travel together"
 /// is a decision the vetting policy makes and this side only names.
 pub type Seam {
-  /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`: a program
-  /// that orchestrates *effects*.
+  /// The default program mode, with effects and child operations.
   WorkspaceSeam
 
-  /// `cap/strand` and `cap/report` and nothing else: a program that
-  /// orchestrates *agents*.
+  /// An alternate program mode with the same full capability set on the
+  /// default server.
   OrchestrationSeam
 }
 
@@ -426,6 +425,8 @@ pub type CodeMode {
   CodeMode(
     /// Runs one submitted program end to end.
     execute: fn(Request) -> Execution,
+    /// Optional session-owned execution service.
+    background: Option(Background),
     /// The seams this host serves, the default first.
     seams: Seams,
     /// The wall budget used when the call names none.
@@ -433,6 +434,57 @@ pub type CodeMode {
     /// The ceiling a call's `within_ms` is clamped to.
     max_within_ms: Int,
   )
+}
+
+/// Interactions with a strand-owned background execution handle.
+pub type Interaction {
+  /// Observe without extending the execution's deadline.
+  Check
+
+  /// Observe until terminal or until this bounded wait expires.
+  Join
+
+  /// Request cancellation of the execution and its owned children.
+  Cancel
+
+  /// Append a JSON value to the execution's durable inbox.
+  Send(value: JsonValue)
+
+  /// Append a JSON value to one registered typed endpoint.
+  SendTo(endpoint: String, value: JsonValue)
+}
+
+/// Host closures behind the asynchronous modes of code_mode.
+pub type Background {
+  Background(
+    /// Launches with policy and identity captured from the original request.
+    launch: fn(Request) -> Result(JsonValue, String),
+    /// Authenticates every handle access with the calling strand.
+    interact: fn(String, String, Interaction, Int) -> Result(JsonValue, String),
+  )
+}
+
+fn async_properties(
+  background: Option(Background),
+) -> List(#(String, JsonValue)) {
+  case background {
+    None -> []
+    Some(_) -> [
+      #(
+        "mode",
+        tool.enum_property(
+          ["run", "launch", "send", "check", "join", "cancel"],
+          "run synchronously (default), or launch a fixed-lifetime background execution; check readiness before send",
+        ),
+      ),
+      #("handle", tool.string_property("execution handle returned by launch")),
+      #(
+        "endpoint",
+        tool.string_property("registered endpoint targeted by send"),
+      ),
+      #("value", json.Object([])),
+    ]
+  }
 }
 
 /// A host that serves one seam, which is every host until one wires a
@@ -480,10 +532,13 @@ pub fn tools(mode: CodeMode) -> List(Tool) {
 /// one, and no digest-bound pre-image, the way `fs_edit` has one. A crash
 /// mid-execution must therefore synthesize an interrupted result rather
 /// than run the program a second time. `execution_mode: tool.Exclusive`
-/// for two reasons: a program may mutate the workspace, and the broker
-/// pools budget per `{op_id, step_id}` — a concurrent call in the same
-/// step would open that ledger with *its* budget, and a satellite needs
-/// two outstanding effects to exist at all.
+/// serializes one tool invocation's admission for two reasons: a program may
+/// mutate the workspace, and the broker pools budget per `{op_id, step_id}` —
+/// a concurrent call in the same step would open that ledger with *its*
+/// budget, and a satellite needs two outstanding effects to exist at all.
+/// A background launch returns after admission, so exclusivity ends with that
+/// invocation; the session-owned execution lifetime is bounded separately by
+/// live capacity, cumulative launch count, idle service and wall deadline.
 ///
 /// ## Examples
 ///
@@ -517,6 +572,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
           ),
         ],
         seam_properties(mode.seams),
+        async_properties(mode.background),
         [
           #(
             "within_ms",
@@ -530,7 +586,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
           ),
         ],
       ]),
-      ["program"],
+      case mode.background {
+        None -> ["program"]
+        Some(_) -> []
+      },
     ),
     replay: tool.Never,
     execution_mode: tool.Exclusive,
@@ -588,15 +647,10 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 /// dearest, so paying the prefix once beats paying a rewrite per
 /// unfamiliar program.
 ///
-/// Two full lists were rejected too, and for a plainer reason: the seams
-/// differ only in their `cap/*` modules and share the whole pure
-/// standard-library subset, so printing both in full duplicates a dozen
-/// module names and hands the model two long lists to diff for the
-/// difference that matters. The shared part is therefore stated once and
-/// each seam names only what it adds — derived from the offers rather
-/// than asserted, so it cannot go stale. A host serving one seam renders
-/// exactly the sentence it rendered before seams were selectable: the
-/// extra bytes are paid by the hosts that actually offer the choice.
+/// The default server's two modes admit the same imports and serviced
+/// capabilities, so their common list is stated once. If an installed host
+/// offers different modes, shared imports are still stated once and each
+/// mode names only what it adds. Both forms derive from the live offers.
 ///
 /// The prelude's own signatures are appended after all of that, on the
 /// same per-seam split and for a related reason; `signatures_text` has
@@ -620,12 +674,63 @@ pub fn description(mode: CodeMode) -> String {
   <> "switch to a program: fetch once, filter internally, return the "
   <> "answer. Write `pub fn main() -> report.Outcome`, returning "
   <> "`report.text(...)` or `report.value(...)`. "
+  <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
   <> seams_text(mode.seams)
+  <> async_text(mode.background, mode.seams)
   <> recipes_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
   <> signatures_text(mode.seams)
+}
+
+// State the combined surface only when one installed offer actually admits
+// both halves. Explicit effect-only hosts must never promise child custody.
+fn composition_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/fs")
+      && list.contains(offer.allowed_imports, "cap/strand")
+    })
+  {
+    True ->
+      "You can combine workspace effects and child operations in one program; "
+      <> "omitting `seam` uses the default offer. "
+    False -> ""
+  }
+}
+
+fn async_text(background: Option(Background), seams: Seams) -> String {
+  case background {
+    None -> ""
+    Some(_) ->
+      " A background launch is admitted while readiness is `preparing`; "
+      <> "check for `ready` and its endpoints before send. A send sequence "
+      <> "confirms admission, not callback completion. Check exposes only "
+      <> "the latest volatile progress. Background lifetimes may overlap "
+      <> "and retain their original idle and wall limits."
+      <> case
+        list.any(offered(seams), fn(offer) {
+          list.contains(offer.allowed_imports, "cap/execution")
+        })
+      {
+        True ->
+          " Background launches service execution.ready, execution.receive, "
+          <> "execution.receive_enveloped, execution.progress, and "
+          <> "execution.delivery."
+        False -> ""
+      }
+      <> case
+        list.any(offered(seams), fn(offer) {
+          list.contains(offer.allowed_imports, "cap/workflow")
+        })
+      {
+        True ->
+          " workflow.step is serviced only inside a background execution; "
+          <> "a synchronous call has no workflow custody."
+        False -> ""
+      }
+  }
 }
 
 // The legend the signature blocks need and cannot carry themselves.
@@ -653,18 +758,16 @@ const signature_legend = "Each module's public surface, as the compiler reports 
 //
 // The blocks are generated (`tools/prelude`, `make gen-prelude`) and
 // rendered here, so these are the whole description as it goes on the
-// wire, measured rather than estimated. Against the real allowlists a
-// workspace-only host renders 37,167 bytes — about 9,300 tokens at the
-// usual four-bytes-per-token estimate — an orchestration-only host
-// 16,628 (~4,200), and a host serving both 49,402 (~12,400), in which
-// the `cap/report` block the two seams share is stated once.
+// wire. A host offering both default modes renders shared module surfaces
+// once; generated host-specific modules are included under the modes that
+// actually admit them.
 //
 // `cap/job` is the largest single block in the prelude and 7,823 bytes
-// (~1,950 tokens) of the two figures that carry it: a job's `Exit`
+// (~1,950 tokens) of the descriptions that carry it: a job's `Exit`
 // record and the six `State` variants are most of it, and they are
 // there for the reason the `pub type` argument below gives — a program
 // that cannot name `Exited` cannot tell a finished job from a killed
-// one. The orchestration seam does not admit it and is unchanged by it.
+// one. Both modes on the default server admit it.
 //
 // That is above the ~2,100/~1,900 the work was scoped against, and the
 // whole of the difference is the `pub type` declarations: issue #36
@@ -705,9 +808,8 @@ fn render_section(section: #(String, String)) -> String {
 
 // The same split the import lists take, applied to the same lists: the
 // modules every offered seam allows are rendered once, and each seam
-// renders only what it adds. An orchestration-only host therefore pays
-// for `cap/strand` and `cap/report` and for none of the other nine, and
-// a host serving both pays for `cap/report` once rather than twice.
+// renders only what it adds. The default server shares the whole shipped
+// capability surface between its two modes.
 //
 // A single-seam host renders one unheaded block, so its description is
 // the description it rendered before, with the surfaces appended and no
@@ -718,29 +820,53 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
     _alternates -> {
       let offers = offered(seams)
       let shared = shared_imports(offers)
+      let shared_extra = shared_extra_surfaces(offers)
       let added =
         list.map(offers, fn(offer) {
           let own =
             list.filter(offer.allowed_imports, fn(module) {
               !list.contains(shared, module)
             })
+          let own_extra =
+            list.filter(offer.extra_surfaces, fn(surface) {
+              !list.contains(shared_extra, surface)
+            })
           #(
             "## Only on the `" <> seam_name(offer.seam) <> "` seam",
-            seam_surface(offer, own),
+            seam_surface(SeamOffer(..offer, extra_surfaces: own_extra), own),
           )
         })
-      [#("## On every seam", surface_text(shared)), ..added]
+      [
+        #(
+          "## On every seam",
+          string.join([surface_text(shared), ..shared_extra], "\n"),
+        ),
+        ..added
+      ]
     }
+  }
+}
+
+// Host-generated modules may be offered on both modes. Render the common
+// surface once; a surface present on only one mode stays under that mode.
+fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
+  case offers {
+    [] -> []
+    [first, ..rest] ->
+      list.filter(first.extra_surfaces, fn(surface) {
+        list.all(rest, fn(offer) {
+          list.contains(offer.extra_surfaces, surface)
+        })
+      })
   }
 }
 
 // One seam's rendered surface: the committed blocks for the prelude
 // modules it admits, then whatever this host generated for it.
 //
-// The host's blocks come last and are never folded into the shared
-// section, however many seams are offered. A generated module belongs to
-// exactly the seam whose allowlist names it — nothing generates onto two
-// — so "shared" would be a claim about the other seam that no host makes.
+// Host-generated blocks follow the committed prelude. A block shared by
+// all installed modes is rendered once, and a mode-specific block stays
+// under that mode.
 fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
   [surface_text(modules), ..offer.extra_surfaces]
   |> list.filter(fn(block) { block != "" })
@@ -752,9 +878,8 @@ fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
 //
 // The filter runs the allowlist over the artifact rather than the
 // artifact over the allowlist, and that direction is the security-
-// relevant one. `gleam export package-interface` reports eleven modules;
-// the seams admit ten between them, and `cap/runtime` — the satellite's
-// trusted boot runtime — is on neither. Rendering the artifact and
+// relevant one. `cap/runtime` — the satellite's trusted boot runtime — is
+// never admitted by a program mode. Rendering the artifact and
 // trusting it to be filtered elsewhere would put a module vetting
 // rejects into the description, which is a lie of the same class as
 // classifying a submission by reading its imports. The stdlib modules on
@@ -783,6 +908,33 @@ fn seams_text(seams: Seams) -> String {
 // shared import subset once instead of twice.
 fn many_seams_text(seams: Seams) -> String {
   let offers = offered(seams)
+  case same_offers(offers) {
+    True ->
+      "Workspace and orchestration admit the same imports and capabilities; "
+      <> "`seam` defaults to `"
+      <> seam_name(seams.default.seam)
+      <> "`. Imports are restricted to: "
+      <> joined(seams.default.allowed_imports)
+      <> ". Capabilities serviced today: "
+      <> joined(seams.default.serviced_caps)
+      <> ". `@external` is refused."
+    False -> distinct_seams_text(seams, offers)
+  }
+}
+
+fn same_offers(offers: List(SeamOffer)) -> Bool {
+  case offers {
+    [] -> False
+    [first, ..rest] ->
+      list.all(rest, fn(offer) {
+        offer.allowed_imports == first.allowed_imports
+        && offer.serviced_caps == first.serviced_caps
+        && offer.extra_surfaces == first.extra_surfaces
+      })
+  }
+}
+
+fn distinct_seams_text(seams: Seams, offers: List(SeamOffer)) -> String {
   let shared = shared_imports(offers)
   let clauses =
     offers
@@ -863,6 +1015,63 @@ pub fn requirements(workspace: String) -> SandboxPolicy {
 }
 
 fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+  use named <- tool.with_arg(tool.optional_string(args, "mode"))
+  case option.unwrap(named, "run"), mode.background {
+    "run", _ -> run_program(mode, ctx, args, None)
+    "launch", Some(background) -> run_program(mode, ctx, args, Some(background))
+    command, Some(background) -> interact(background, ctx, args, command)
+    _, None -> tool.failure("this host does not serve asynchronous code mode")
+  }
+}
+
+fn interact(
+  background: Background,
+  ctx: Ctx,
+  args: JsonValue,
+  command: String,
+) -> ToolOutcome {
+  use handle <- tool.with_arg(tool.required_string(args, "handle"))
+  use within <- tool.with_arg(tool.optional_int(args, "within_ms"))
+  use action <- tool.with_arg(case command {
+    "check" -> Ok(Check)
+    "join" -> Ok(Join)
+    "cancel" -> Ok(Cancel)
+    "send" -> {
+      use value <- result.try(tool.optional_value(args, "value"))
+      case value {
+        None -> Error("send requires value")
+        Some(value) -> {
+          use endpoint <- result.try(tool.optional_string(args, "endpoint"))
+          case endpoint {
+            None -> Ok(Send(value))
+            Some(endpoint) -> Ok(SendTo(endpoint, value))
+          }
+        }
+      }
+    }
+    _ -> Error("unknown code_mode mode")
+  })
+  async_outcome(background.interact(
+    ctx.strand,
+    handle,
+    action,
+    option.unwrap(within, 30_000),
+  ))
+}
+
+fn async_outcome(answer: Result(JsonValue, String)) -> ToolOutcome {
+  case answer {
+    Error(reason) -> tool.failure(reason)
+    Ok(value) -> tool.success(json.to_string(value)) |> tool.with_details(value)
+  }
+}
+
+fn run_program(
+  mode: CodeMode,
+  ctx: Ctx,
+  args: JsonValue,
+  background: Option(Background),
+) -> ToolOutcome {
   use program <- tool.with_arg(tool.required_string(args, "program"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   use named <- tool.with_arg(tool.optional_string(args, "seam"))
@@ -875,7 +1084,11 @@ fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
         fn(outcome) { outcome },
       )
       let asked = request(mode, ctx, program, within_ms, on: offer.seam)
-      render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
+      case background {
+        None ->
+          render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
+        Some(background) -> async_outcome(background.launch(asked))
+      }
     }
   }
 }
@@ -990,6 +1203,45 @@ pub fn request(
       max: mode.max_within_ms,
     ),
   )
+}
+
+/// Renders a durable asynchronous result without retaining a tool context.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.execution_value(execution)
+/// ```
+pub fn execution_value(execution: Execution) -> JsonValue {
+  let fields = case execution.result {
+    Ran(Completed(value), manifest_hash) -> [
+      #("status", json.String("completed")),
+      #("value", value_json(value)),
+      #("manifest_hash", json.String(manifest_hash)),
+    ]
+    Ran(Errored(message, details), manifest_hash) -> [
+      #("status", json.String("errored")),
+      #("message", json.String(message)),
+      #("details", value_json(details)),
+      #("manifest_hash", json.String(manifest_hash)),
+    ]
+    VetRejected(rejections) -> [
+      #("status", json.String("vetting_rejected")),
+      #("rejections", json.Array(list.map(rejections, rejection_json))),
+    ]
+    CompileFailed(failure) -> [
+      #("status", json.String("compile_failed")),
+      #("failure", json.String(string.inspect(failure))),
+    ]
+    RunFailed(failure) -> [
+      #("status", json.String("run_failed")),
+      #("failure", json.String(string.inspect(failure))),
+    ]
+  }
+  json.Object([
+    #("enforcement", enforcement_json(execution.enforcement)),
+    ..fields
+  ])
 }
 
 // --- rendering the execution ----------------------------------------------

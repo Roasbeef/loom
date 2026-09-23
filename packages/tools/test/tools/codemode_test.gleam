@@ -23,7 +23,7 @@ import core/message
 import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import tools/codemode
 import tools/directory_access
@@ -108,6 +108,27 @@ fn both_seams() -> codemode.Seams {
   codemode.Seams(default: workspace_offer(), alternates: [orchestration_offer()])
 }
 
+fn both_full_seams() -> codemode.Seams {
+  let imports = [
+    "cap/fs", "cap/proc", "cap/strand", "cap/workflow", "cap/report",
+    "gleam/int",
+  ]
+  let serviced = ["fs.read", "proc.run", "strand.spawn", "workflow.step"]
+  let workspace =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: imports,
+      serviced_caps: serviced,
+    )
+  let orchestration =
+    codemode.SeamOffer(
+      ..orchestration_offer(),
+      allowed_imports: imports,
+      serviced_caps: serviced,
+    )
+  codemode.Seams(default: workspace, alternates: [orchestration])
+}
+
 // A seam that always answers with the same execution.
 fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
   scripted_over(codemode.one_seam(workspace_offer()), execution)
@@ -118,6 +139,7 @@ fn scripted_over(
   execution: codemode.Execution,
 ) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(_request) { execution },
     seams:,
     default_within_ms: 300_000,
@@ -133,6 +155,7 @@ fn echoing() -> codemode.CodeMode {
 
 fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(request: codemode.Request) {
       codemode.Execution(
         result: codemode.Ran(
@@ -985,6 +1008,40 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
   assert !string.contains(prose, "seam")
 }
 
+pub fn full_mode_description_advertises_composition_once_test() {
+  let described = codemode.description(echoing_over(both_full_seams()))
+  assert string.contains(
+    described,
+    "combine workspace effects and child operations",
+  )
+  assert string.contains(
+    described,
+    "Workspace and orchestration admit the same",
+  )
+  assert string.contains(described, "cap/fs")
+  assert string.contains(described, "cap/strand")
+  assert string.contains(described, "workflow.step")
+  assert occurrences(described, "### cap/strand") == 1
+  assert occurrences(described, "### cap/fs") == 1
+  assert !string.contains(described, "adds imports:")
+}
+
+pub fn generated_surface_shared_by_full_modes_is_rendered_once_test() {
+  let shared = "### cap/mcp/github\n\npub fn issues()"
+  let full = both_full_seams()
+  let workspace = codemode.SeamOffer(..full.default, extra_surfaces: [shared])
+  let assert [other] = full.alternates
+  let orchestration = codemode.SeamOffer(..other, extra_surfaces: [shared])
+  let described =
+    codemode.description(
+      echoing_over(
+        codemode.Seams(default: workspace, alternates: [orchestration]),
+      ),
+    )
+  assert occurrences(described, shared) == 1
+  assert string.contains(described, "## On every seam")
+}
+
 pub fn a_generated_surface_is_rendered_after_the_committed_ones_test() {
   // A `cap/mcp/<server>` façade is generated from one host's configured
   // server (issue #106), so it can never be in the committed artifact
@@ -1103,6 +1160,7 @@ const raised_grant = policy.GrantEnv(name: "LOOM_CAP_SOCK")
 // rather than infer them.
 fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(request: codemode.Request) {
       process.send(crossings, request.grants)
       case list.contains(request.grants, raised_grant) {
@@ -1130,6 +1188,7 @@ fn always_refusing(
   crossings: Subject(List(policy.Grant)),
 ) -> codemode.CodeMode {
   codemode.CodeMode(
+    background: None,
     execute: fn(request: codemode.Request) {
       process.send(crossings, request.grants)
       run_refused()

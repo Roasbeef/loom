@@ -25,6 +25,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/origin
 import etui/backend
 import filepath
 import gleam/bit_array
@@ -178,7 +179,7 @@ fn start() {
         fn(selected, sources, owner) {
           serve.build_domain(selected, sources, log.discard(), owner)
         },
-        fn(record, selected, services, owner) {
+        fn(record, selected, services, owner, _directory) {
           let assert Ok(id) = ids.parse_session_id(record.id)
             as "the catalogue reserves a canonical session identity"
           assert bootstrap.ensure_private_directory(filepath.directory_name(
@@ -446,7 +447,7 @@ fn exercise(
   assert consumed.seq > pending.seq
   let assert Some(author) = consumed.record.origin
     as "the winning human remains attributed after consumption"
-  assert author.principal == winner
+  assert origin.stable_identity(author) == winner
   assert consumed.record.scope == Some(scope)
   let _ =
     tui_driver.play(terminal.data, [
@@ -490,7 +491,7 @@ fn exercise(
   // returned by the wait itself contains the winning author's rendered name.
   let observed =
     tui_v2_test.await(terminal.data, fn(sample) {
-      case string.contains(sample.frame, author.name) {
+      case string.contains(sample.frame, origin.display_label(author)) {
         True -> True
         False -> {
           let _ = tui_driver.play(terminal.data, [backend.KeyPress("pageup")])
@@ -498,7 +499,7 @@ fn exercise(
         }
       }
     })
-  assert string.contains(observed.frame, author.name)
+  assert string.contains(observed.frame, origin.display_label(author))
     as "the observer renders the winning author, not just the decoded record"
   tui_driver.stop(terminal.data)
   list.each([a, b, reader], fn(socket) {

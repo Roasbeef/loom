@@ -58,7 +58,7 @@ fn start(store, build) {
       store,
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _, _, owner) { build(record, owner) },
+        build: fn(record, _, _, owner, _directory) { build(record, owner) },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),

@@ -29,11 +29,10 @@
 //// has died — settles as the ordinary in-band `AgencyUnavailable`
 //// refusal, which is what the model should see anyway.
 ////
-//// The holder answers exactly one message and answers it with a plain
-//// data value: **the tools do the work on their own effect process, not
-//// on the holder's.** A holder that did the work would serialize every
-//// agent call in the session behind whichever one was inside a sixty-second
-//// wait. It is a value cell with a mailbox, deliberately.
+//// The holder serializes child admission, workflow intents and peer grant
+//// mutations. These operations must keep their read-check-write ordering.
+//// Blocking joins borrow the runtime and run outside the holder, so one
+//// waiting agent cannot prevent another from spawning or receiving mail.
 ////
 //// ## What the ledger is for
 ////
@@ -114,6 +113,8 @@
 //// rather than claimed shut.
 
 import client/internal/timebase
+import client/peer_mail
+import client/workflow_ledger
 import core/clock.{type Clock}
 import core/entry
 import core/ids.{type EntryId, type OpId}
@@ -130,6 +131,7 @@ import gleam/string
 import machine/operation.{type LastResult}
 import machine/strand as machine_strand
 import runtime/api
+import runtime/async_execution
 import runtime/child_run
 import runtime/effects
 import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
@@ -272,6 +274,29 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
 pub type Message {
   /// Hand back the live runtime. The caller does the work itself.
   Borrow(reply: Subject(api.Runtime))
+
+  /// Services peer admission without copying the runtime to another session.
+  PeerRequest(
+    command: peer_mail.Command,
+    reply: Subject(Result(JsonValue, String)),
+  )
+
+  /// Reserves a durable named identity before ordinary child reconciliation.
+  WorkflowChild(
+    caller: Caller,
+    step: workflow_ledger.Step,
+    request: agent.SpawnRequest,
+    custody: api.AsyncCustody,
+    reply: Subject(Result(Spawned, Refusal)),
+  )
+
+  /// Serializes the capacity check and publication of each child.
+  SpawnChild(
+    caller: Caller,
+    request: agent.SpawnRequest,
+    custody: Option(api.AsyncCustody),
+    reply: Subject(Result(Spawned, Refusal)),
+  )
 }
 
 /// Starts the holder under `config.name`, after `api.open` has returned
@@ -295,6 +320,25 @@ pub fn start(
   actor.new(runtime)
   |> actor.on_message(fn(state, message) {
     case message {
+      WorkflowChild(caller, step, request, custody, reply) -> {
+        let answer = {
+          use caller <- result.try(
+            workflow_ledger.reserve(state, caller, step)
+            |> result.map_error(agent.PlaneFailed),
+          )
+          spawn_on(config, state, caller, request, Some(custody))
+        }
+        process.send(reply, answer)
+        actor.continue(state)
+      }
+      PeerRequest(command:, reply:) -> {
+        process.send(reply, peer_mail.handle(state, config.clock, command))
+        actor.continue(state)
+      }
+      SpawnChild(caller:, request:, custody:, reply:) -> {
+        process.send(reply, spawn_on(config, state, caller, request, custody))
+        actor.continue(state)
+      }
       Borrow(reply:) -> {
         process.send(reply, state)
         actor.continue(state)
@@ -335,10 +379,28 @@ pub fn is_subagent(strand: String) -> Bool {
 /// ```
 ///
 pub fn seam(config: Config) -> Agency {
+  seam_with_custody(config, None)
+}
+
+/// Binds orchestration calls to one live asynchronous execution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.async_seam(config, custody)
+/// ```
+pub fn async_seam(config: Config, custody: api.AsyncCustody) -> Agency {
+  seam_with_custody(config, Some(custody))
+}
+
+fn seam_with_custody(
+  config: Config,
+  custody: Option(api.AsyncCustody),
+) -> Agency {
   agent.Agency(
-    spawn: fn(caller, request) { spawn(config, caller, request) },
+    spawn: fn(caller, request) { spawn(config, caller, request, custody) },
     send: fn(caller, to, text, within_ms) {
-      send(config, caller, to, text, within_ms)
+      send(config, caller, to, text, within_ms, custody)
     },
     wait: fn(caller, handles, within_ms) {
       wait(config, caller, handles, within_ms)
@@ -499,8 +561,26 @@ fn spawn(
   config: Config,
   caller: Caller,
   request: agent.SpawnRequest,
+  custody: Option(api.AsyncCustody),
 ) -> Result(Spawned, Refusal) {
-  use runtime <- result.try(borrow(config))
+  use subject <- result.try(
+    address.lookup(config.name) |> result.replace_error(agent.AgencyUnavailable),
+  )
+  Ok(
+    process.call(subject, config.holder_timeout_ms, fn(reply) {
+      SpawnChild(caller:, request:, custody:, reply:)
+    }),
+  )
+  |> result.flatten
+}
+
+fn spawn_on(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  request: agent.SpawnRequest,
+  custody: Option(api.AsyncCustody),
+) -> Result(Spawned, Refusal) {
   use ledger <- result.try(read_ledger(runtime))
   let depth = case cell_of(ledger, caller.strand) {
     None -> 1
@@ -513,7 +593,8 @@ fn spawn(
   use name <- result.try(child_name(caller, request.purpose))
   case cell_of(ledger, name) {
     Some(existing) -> adopt(runtime, caller, existing)
-    None -> reconcile(config, runtime, ledger, caller, request, name, depth)
+    None ->
+      reconcile(config, runtime, ledger, caller, request, name, depth, custody)
   }
 }
 
@@ -653,6 +734,7 @@ fn reconcile(
   request: agent.SpawnRequest,
   name: String,
   depth: Int,
+  custody: Option(api.AsyncCustody),
 ) -> Result(Spawned, Refusal) {
   use parent_configuration <- result.try(read_configuration(
     runtime,
@@ -679,13 +761,15 @@ fn reconcile(
         name,
         parent_configuration,
         tools,
+        custody,
       )
     }
 
     // The registers are seeded but the brief run was never accepted, or
     // was accepted and has already finished. The last arm recovers by
     // adopting a brief.
-    Some(state) -> recover_brief(config, runtime, caller, request, name, state)
+    Some(state) ->
+      recover_brief(config, runtime, caller, request, name, state, custody)
   })
   let #(now, _clock) = clock.read(config.clock)
   let cell =
@@ -797,6 +881,38 @@ fn recover_brief(
   request: agent.SpawnRequest,
   name: String,
   state: machine_strand.StrandState,
+  custody: Option(api.AsyncCustody),
+) -> Result(OpId, Refusal) {
+  case custody {
+    Some(owner) -> {
+      use original <- result.try(
+        api.fact(runtime, child_run.initial_key(name))
+        |> result.map_error(fn(error) { agent.PlaneFailed(describe_api(error)) }),
+      )
+      case original {
+        Some(json.String(operation)) ->
+          ids.parse_op_id(operation)
+          |> result.map_error(fn(_) {
+            agent.PlaneFailed("invalid original async child operation")
+          })
+        Some(_) ->
+          Error(agent.PlaneFailed("invalid original async child record"))
+        None ->
+          accept_async_brief(config, runtime, caller, request, name, owner)
+      }
+    }
+    None ->
+      recover_ordinary_brief(config, runtime, caller, request, name, state)
+  }
+}
+
+fn recover_ordinary_brief(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  request: agent.SpawnRequest,
+  name: String,
+  state: machine_strand.StrandState,
 ) -> Result(OpId, Refusal) {
   case state.current_operation {
     Some(operation) -> Ok(operation)
@@ -822,6 +938,7 @@ fn create(
   name: String,
   parent_configuration: machine_strand.StrandConfiguration,
   tools: List(String),
+  custody: Option(api.AsyncCustody),
 ) -> Result(OpId, Refusal) {
   use configuration <- result.try(child_configuration(
     config,
@@ -837,16 +954,65 @@ fn create(
         agent.PlaneFailed(reason: describe_api(error))
       })
   })
-  api.create_strand(
-    runtime,
-    named: name,
-    configuration:,
-    at: fork_point,
-    brief: [brief_message(config, caller, request)],
+  case custody {
+    Some(owner) -> {
+      use Nil <- result.try(
+        api.create_idle_strand(
+          runtime,
+          named: name,
+          configuration:,
+          at: fork_point,
+        )
+        |> result.replace(Nil)
+        |> result.map_error(fn(error) {
+          agent.PlaneFailed(describe_create(error))
+        }),
+      )
+      accept_async_brief(config, runtime, caller, request, name, owner)
+    }
+    None ->
+      api.create_strand(
+        runtime,
+        named: name,
+        configuration:,
+        at: fork_point,
+        brief: [brief_message(config, caller, request)],
+      )
+      |> result.map_error(fn(error) {
+        agent.PlaneFailed(describe_create(error))
+      })
+  }
+}
+
+fn accept_async_brief(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  request: agent.SpawnRequest,
+  name: String,
+  owner: api.AsyncCustody,
+) -> Result(OpId, Refusal) {
+  let attachment = case request.detach {
+    True -> api.Detached
+    False -> api.Owned
+  }
+  use delivery <- result.try(
+    api.send_to_async_child(
+      runtime,
+      name,
+      brief_message(config, caller, request),
+      api.AsyncCustody(..owner, attachment:),
+      option.or(request.within_ms, config.default_within_ms),
+    )
+    |> result.map_error(fn(error) { agent.PlaneFailed(describe_api(error)) }),
   )
-  |> result.map_error(fn(error) {
-    agent.PlaneFailed(reason: describe_create(error))
-  })
+  case delivery {
+    api.Started(operation) -> Ok(operation)
+    api.Steered(_) ->
+      Error(agent.PlaneFailed(
+        "the initial async brief must start an idle child",
+      ))
+  }
 }
 
 // The configuration a child is seeded with: the parent's, narrowed to the
@@ -1359,6 +1525,7 @@ fn send(
   to: String,
   text: String,
   within_ms: Option(Int),
+  custody: Option(api.AsyncCustody),
 ) -> Result(Delivery, Refusal) {
   use runtime <- result.try(borrow(config))
   use ledger <- result.try(read_ledger(runtime))
@@ -1408,9 +1575,25 @@ fn send(
       timestamp: now,
       origin: None,
     )
-  let delivery = case upward {
-    True -> api.send_to_strand(runtime, to:, message: payload)
-    False ->
+  let delivery = case upward, custody {
+    True, Some(owner) ->
+      api.steer_async(api.on_strand(runtime, to), payload, owner)
+    False, Some(owner) ->
+      api.send_to_async_child(
+        runtime,
+        to:,
+        message: payload,
+        custody: api.AsyncCustody(
+          ..owner,
+          attachment: case cell_of(ledger, to) {
+            Some(lineage) if lineage.detached -> api.Detached
+            _ -> api.Owned
+          },
+        ),
+        within_ms:,
+      )
+    True, None -> api.send_to_strand(runtime, to:, message: payload)
+    False, None ->
       api.send_to_child(
         api.on_strand(runtime, caller.strand),
         to:,
@@ -1652,18 +1835,21 @@ fn reap_overdue(
 fn reap_run(config: Config, operation: OpId) -> Nil {
   case borrow(config) {
     Error(_refusal) -> Nil
-    Ok(runtime) ->
+    Ok(runtime) -> {
+      let _owned = drain_owned(runtime, child_run.ParentRun(operation))
       case read_ledger(runtime) {
         Error(_refusal) -> Nil
         Ok(ledger) ->
           list.each(dict.values(ledger), fn(cell) {
             case current_run(runtime, cell) {
-              Ok(Some(run)) if run.record.owner == Some(operation) ->
-                reap(runtime, run, child_run.ParentFinished)
+              Ok(Some(run))
+                if run.record.owner == Some(child_run.ParentRun(operation))
+              -> reap(runtime, run, child_run.ParentFinished)
               Ok(_) | Error(_) -> Nil
             }
           })
       }
+    }
   }
 }
 
@@ -1683,11 +1869,25 @@ fn reap(runtime: api.Runtime, run: ObservedRun, stop: child_run.Stop) -> Nil {
   }
   case recorded {
     Error(_) -> Nil
-    Ok(Nil) ->
-      api.abort_operation(
-        api.on_strand(runtime, run.record.strand),
-        run.operation,
-      )
+    Ok(Nil) -> {
+      // Child-owned background work must lose admission before the child's
+      // own terminal can satisfy its parent's drain. The async service polls
+      // this durable fence, so a lost notification cannot orphan that work.
+      case
+        api.put_reserved_fact(
+          runtime,
+          async_execution.abort_key(run.operation),
+          json.Null,
+        )
+      {
+        Error(_) -> Nil
+        Ok(_) ->
+          api.abort_operation(
+            api.on_strand(runtime, run.record.strand),
+            run.operation,
+          )
+      }
+    }
   }
 }
 
@@ -1710,7 +1910,7 @@ fn original_run(cell: Lineage) -> child_run.Run {
     strand: cell.strand,
     owner: case cell.detached {
       True -> None
-      False -> Some(cell.minted_by.operation)
+      False -> Some(child_run.ParentRun(cell.minted_by.operation))
     },
     deadline: cell.deadline,
     stop: case cell.reaped {
@@ -1928,4 +2128,141 @@ fn describe_create(error: api.CreateStrandError) -> String {
     api.StartFailed(reason:) -> reason
     api.BriefRejected(error:) -> describe_api(error)
   }
+}
+
+/// Stops every run owned by a fenced asynchronous execution, including a
+/// first admission whose lineage has not yet been published. Returns true
+/// only when each exact operation has a durable terminal result.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.drain_execution(runtime, operation, execution)
+/// ```
+pub fn drain_execution(
+  runtime: api.Runtime,
+  operation: OpId,
+  execution: String,
+) -> Result(Bool, String) {
+  drain_owned(runtime, child_run.AsyncExecution(operation, execution))
+}
+
+fn drain_owned(
+  runtime: api.Runtime,
+  owner: child_run.Owner,
+) -> Result(Bool, String) {
+  use cells <- result.try(
+    api.reserved_facts(runtime, child_run.key_prefix)
+    |> result.map_error(describe_api),
+  )
+  use drained <- result.try(
+    list.try_map(cells, fn(pair) {
+      use record <- result.try(
+        child_run.decode(pair.1)
+        |> result.replace_error("invalid child custody during execution drain"),
+      )
+      case record.owner == Some(owner) {
+        False -> Ok(True)
+        True -> {
+          use child <- result.try(
+            ids.parse_op_id(string.drop_start(
+              pair.0,
+              string.length(child_run.key_prefix),
+            ))
+            |> result.replace_error("invalid child operation key"),
+          )
+          use observed <- result.try(
+            run_record(runtime, Handle(record.strand, child))
+            |> result.map_error(string.inspect),
+          )
+          case observed {
+            None -> Error("child custody disappeared during drain")
+            Some(run) -> {
+              reap(runtime, run, child_run.ParentFinished)
+              let child_settled =
+                api.await_result(
+                  api.on_strand(runtime, record.strand),
+                  child,
+                  0,
+                )
+                |> result.is_ok
+              use backgrounds_settled <- result.try(backgrounds_settled(
+                runtime,
+                child,
+              ))
+              Ok(child_settled && backgrounds_settled)
+            }
+          }
+        }
+      }
+    }),
+  )
+  Ok(list.all(drained, fn(value) { value }))
+}
+
+/// Projects a small peer endpoint that closes over the registered address.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.peer_endpoint(config, session_id)
+/// ```
+pub fn peer_endpoint(config: Config, session_id: String) -> peer_mail.Endpoint {
+  let name = config.name
+  let timeout = config.holder_timeout_ms
+  peer_mail.Endpoint(session_id, fn(command) {
+    use subject <- result.try(
+      address.lookup(name) |> result.replace_error("peer session unavailable"),
+    )
+    let reply = process.new_subject()
+    process.send(subject, PeerRequest(command:, reply:))
+    process.receive(reply, timeout)
+    |> result.unwrap(Error("peer session did not answer"))
+  })
+}
+
+/// Admits one named child using the current execution's custody and the
+/// durable step's original identity. Resumption cannot duplicate the child.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.workflow_child(config, caller, step, assignment, custody)
+/// ```
+pub fn workflow_child(
+  config: Config,
+  caller: Caller,
+  step: workflow_ledger.Step,
+  request: agent.SpawnRequest,
+  custody: api.AsyncCustody,
+) -> Result(Spawned, Refusal) {
+  use subject <- result.try(
+    address.lookup(config.name) |> result.replace_error(agent.AgencyUnavailable),
+  )
+  process.call(subject, config.holder_timeout_ms, fn(reply) {
+    WorkflowChild(caller, step, request, custody, reply)
+  })
+}
+
+// Parent settlement includes background executions launched by every owned
+// child. Those executions apply the same rule recursively to their children.
+fn backgrounds_settled(
+  runtime: api.Runtime,
+  operation: OpId,
+) -> Result(Bool, String) {
+  use cells <- result.try(
+    api.reserved_facts(runtime, async_execution.prefix <> "record/")
+    |> result.map_error(string.inspect),
+  )
+  use records <- result.try(
+    list.try_map(cells, fn(pair) {
+      async_execution.decode(pair.1)
+      |> result.replace_error("invalid nested execution record")
+    }),
+  )
+  Ok(
+    list.all(records, fn(record) {
+      record.operation != operation || async_execution.terminal(record.phase)
+    }),
+  )
 }

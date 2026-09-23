@@ -6,12 +6,16 @@
 import client/catalog
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
+import client/daemon/main
 import client/daemon/manager
 import client/history
 import client/owned_assembly_test
+import client/peer_mail
+import client/peers
 import client/serve
 import core/clock
 import core/ids
+import core/json
 import core/message
 import filepath
 import gleam/bit_array
@@ -69,7 +73,7 @@ fn start(
           process.send(domains, domain_service.children(services))
           Ok(services)
         },
-        build: fn(record, selected, services, owner) {
+        build: fn(record, selected, services, owner, directory) {
           let permit = process.new_subject()
           process.send(arrivals, #(record.id, permit))
           let assert Ok(Nil) = process.receive(permit, 5000)
@@ -79,6 +83,11 @@ fn start(
           serve.assemble_in_domain(
             serve.Settings(
               ..settings,
+              peer_directory: Some(
+                main.peer_directory(directory, fn(instance: serve.Instance) {
+                  instance.peer
+                }),
+              ),
               session_path: record.path,
               session_id: record.id,
               workspace: record.workspace,
@@ -252,8 +261,58 @@ pub fn real_registry_restores_catalogue_then_lazily_opens_one_session_test() {
     != address.owner(second_instance.namespace)
   complete_turn(first_instance)
   complete_turn(second_instance)
+
+  // The production manager directory resolves only published endpoints. The
+  // two recipients below have independent real SQLite writers and runtimes.
+  let directory =
+    main.peer_directory(registry, fn(instance: serve.Instance) { instance.peer })
+  let mail = peers.Wiring(first_instance.peer, json.Null, Some(directory))
+  let assert Ok(_) =
+    peers.link(
+      first_instance.peer,
+      second_instance.peer,
+      "main",
+      "main",
+      peer_mail.MayWake,
+    )
+    as "owner explicitly links independent resident sessions"
+  let assert Ok(receipt) =
+    peers.send(
+      mail,
+      "main",
+      second.id,
+      "main",
+      "integration-message",
+      "complete this peer request",
+    )
+    as "production peer routing admits across stores"
+  assert peers.send(
+      mail,
+      "main",
+      second.id,
+      "main",
+      "integration-message",
+      "complete this peer request",
+    )
+    == Ok(receipt)
+  let assert Ok(facts) =
+    api.reserved_facts(second_instance.runtime, "client/peers/receipt/")
+    as "the recipient owns its durable receipt"
+  assert list.length(facts) == 1
+  let assert Ok(_) =
+    peers.link(
+      second_instance.peer,
+      first_instance.peer,
+      "main",
+      "main",
+      peer_mail.BusyOnly,
+    )
+    as "reverse discovery is an independent owner grant"
+  let reverse = peers.Wiring(second_instance.peer, json.Null, Some(directory))
   assert process.receive(requests, 1000) == Ok(Nil)
   assert process.receive(requests, 1000) == Ok(Nil)
+  assert process.receive(requests, 1000) == Ok(Nil)
+    as "the peer message creates exactly one additional provider turn"
   let assert Ok(_) = manager.set_default(registry, first.workspace, first.id)
     as "the workspace default is persisted separately from liveness"
   let assert Ok(_) = manager.stop_session(registry, first.id)
@@ -266,6 +325,20 @@ pub fn real_registry_restores_catalogue_then_lazily_opens_one_session_test() {
       }
     })
     == poll.Answered(Nil)
+  let assert Ok(saved_roster) = peers.roster(reverse, "main")
+    as "a stopped linked session remains discoverable without opening"
+  assert string.contains(json.to_string(saved_roster), "saved")
+  let assert Error(_) =
+    peers.send(
+      reverse,
+      "main",
+      first.id,
+      "main",
+      "do-not-wake",
+      "saved stays saved",
+    )
+    as "delivery never implicitly opens a saved session"
+  assert process.receive(arrivals, 0) == Error(Nil)
   assert process.is_alive(shared_history)
   stop(daemon)
   assert !process.is_alive(shared_history)

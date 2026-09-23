@@ -41,7 +41,7 @@ fn config() {
 fn inert() {
   manager.Assembly(
     domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-    build: fn(record, _domain, _services, _) { Ok(record.id) },
+    build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
     drain: fn(_, _) { Nil },
     fatal: fn(_) { [] },
   )
@@ -135,7 +135,7 @@ pub fn daemon_listener_restores_metadata_only_and_reuses_owner_token_test() {
   let assembly =
     manager.Assembly(
       domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-      build: fn(record, _domain, _services, _) {
+      build: fn(record, _domain, _services, _, _directory) {
         process.send(builds, record.id)
         Ok(record.id)
       },
@@ -205,7 +205,7 @@ pub fn daemon_listener_control_remains_available_during_session_drain_test() {
       config(),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, owner) {
+        build: fn(record, _domain, _services, owner, _directory) {
           let assert Ok(Nil) =
             custody.publish(owner, custody.Storage, fn() {
               let permit = process.new_subject()

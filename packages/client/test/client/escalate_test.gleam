@@ -1419,6 +1419,7 @@ const code_mode_deadline_ms = 1_756_000_600_000
 // real.
 fn narrowed_code_mode() -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
+    background: None,
     execute: fn(request: codemode_tool.Request) {
       case list.contains(request.grants, policy.GrantEnv(name: wanted_env)) {
         True ->

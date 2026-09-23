@@ -150,6 +150,25 @@ pub fn jailed_git_reports_real_net_changes_and_repository_states_test() {
   assert board.omitted == 0
 }
 
+pub fn detached_head_keeps_peer_repository_identity_test() {
+  use wiring <- with_fixture("detached-peer")
+  setup(wiring, ["init", "--quiet", "--initial-branch=main"])
+  write(wiring, "tracked.txt", "body\n")
+  commit_fixture(wiring, "baseline")
+  setup(wiring, ["checkout", "--detach", "--quiet", "HEAD"])
+
+  let assert json.Object(observation) = worktree_diff.peer_observation(wiring)
+    as "the peer observation has a bounded record"
+  let assert Ok(json.Object(repository)) =
+    list.key_find(observation, "repository")
+    as "a detached HEAD still yields repository identity"
+  assert list.key_find(repository, "repository_root")
+    == Ok(json.String(wiring.workspace))
+  assert list.key_find(repository, "common_directory")
+    == Ok(json.String(wiring.workspace <> "/.git"))
+  assert list.key_find(repository, "branch") == Ok(json.Null)
+}
+
 // The baseline is durable before a model can turn a dirty tree into commits.
 pub fn committed_history_survives_clean_worktree_and_baseline_reuse_test() {
   use wiring <- with_fixture("committed")
