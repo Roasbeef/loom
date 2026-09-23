@@ -743,7 +743,7 @@ block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
 The `advisor` route is a sixth routable role, parsed to
-`advisor_role` (`client/catalog.gleam:289`) — `model.Custom("advisor")`
+`advisor_role` (`client/catalog.gleam:299`) — `model.Custom("advisor")`
 rather than a sixth named variant, because `provider/model.Role`'s five
 names are the design vocabulary and `Custom` is what that type provides
 for a role an application defines. It is last in the canonical order
@@ -766,7 +766,7 @@ advisor` line, which is the ordinary posture and says nothing, and one
 that routes the role to a chain this host cannot serve, whose only other
 symptom is a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1552`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1640`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is: an unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

@@ -2,23 +2,49 @@
 
 ## Public Responses adapter and subscription follow-up, September 22
 
-PR #278 adds `openai-responses` as a separate public API dialect. It requires
+PR #278 merged at `af211a9e` (head `1d7a215a`) and adds `openai-responses`
+as a separate public API dialect. It requires
 `auth = "api-key"` and an `api_key_env` name, sends `store: false`, and replays
 Loom's durable history and tool results. The existing `openai` dialect still
 uses Chat Completions. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
 records the boundary and [the review record](review/responses-api.md) records
-the original implementation and verification. The branch is rebased onto
+the original implementation and verification. The branch was rebased onto
 `origin/main` at `d8963862`, after #482 and #490 merged. The integrated
 `make check` passed at the earlier `9378c019` base; the previous rebased
-head `b27197c2` passed hosted Linux and macOS gates. Current-head validation
-must be recorded separately before the merge.
+head `b27197c2` passed hosted Linux and macOS gates. The functional commits
+were unchanged by the last rebase. Hosted CI on the exact final head completed
+with no failed or pending checks. The local `make check` on that head stopped
+on three `client@worktree_diff_test` cases: the macOS sandbox jail returned
+`RefusedByHelper("no_exec", "jail: close stdin: close |1: file already closed")`.
+The focused module passed 11/11 outside the sandbox. The local sandbox result
+does not replace the green hosted gate.
 
 This adapter does not use ChatGPT subscription credits. The supported route
-for this public endpoint remains a Platform API key. The next worktree targets
-Codex/ChatGPT subscription access as a distinct provider dialect, with
-oh-my-pi's OAuth and Codex Responses transport as implementation references.
+for this public endpoint remains a Platform API key. The isolated
+`codex/subscription` worktree targets Codex/ChatGPT subscription access as a
+distinct provider dialect, with oh-my-pi's OAuth and Codex Responses transport
+as implementation references.
 It must preserve Loom's ownership of history, tools, policy, and the agent
-loop. ADR-012 states the support-boundary concern that this work must address.
+loop. [The subscription architecture note](architecture/codex-subscription.md)
+defines the helper boundary and verification target; ADR-012 retains the
+support gate. The private Codex backend is not documented as a public
+third-party inference API, so a successful live login alone cannot close
+that gate. This branch now has the catalogue dialect, provider seam, separate
+Go credential/request helper, VM-shared client port bridge wired into `serve`,
+and `loomd codex` login, status, models, and logout commands. The full
+`make check` passed with exit zero: 262 provider, 2,065 client, 722 TUI, and
+85 conformance tests, plus the other package suites, both Go packages, and
+house lint with zero errors. A subscription conformance fixture completed a
+real Loom tool call and replayed its durable reasoning and tool result over
+the private `response.done` dialect. The lean `DIST_CODEMODE=0` server release
+built and passed `make release-smoke`, including the bundled helper and a
+credential-free `loomd codex status` probe. The normal code-mode release seed
+could not be prepared because Hex reported an API rate limit, so its release
+smoke is still open. No live authenticated Sol or Astra inference or official
+third-party support claim has been verified here. The helper accepts one
+active profile per VM, binds saved credentials to a ChatGPT account ID, and
+reports unsafe stored credentials as `credential_unavailable` rather than
+replacing them.
 The earlier public live smoke reached `credit_balance_exhausted` and confirmed
 transport drain; funded inference remains unverified.
 

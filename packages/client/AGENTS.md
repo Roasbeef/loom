@@ -460,8 +460,20 @@ catalogue without opening runtimes. Explicit admission invokes
   `auth = "api-key"` and a nonempty `api_key_env`, and defaults to
   `https://api.openai.com/v1`. The existing `openai` spelling remains
   Chat Completions. Older dialects still refuse `auth`; all API-key entries
-  refuse `profile` and arbitrary `headers`. `codex-subscription` is
-  explicitly unsupported under issue #117's deferred support-boundary gate.
+  refuse `profile` and arbitrary `headers`.
+- `catalog.CodexSubscription(profile)` — the experimental
+  `codex-subscription` dialect requires `auth = "codex"` and a profile name
+  matching the helper's bounded ASCII grammar. It rejects `api_key_env`,
+  `base_url`, and arbitrary `headers` at catalogue load. `catalog.gateway`
+  registers a `provider/gateway.CodexSubscriptionProvider` with that name,
+  while `serve.adapter_api` uses the distinct `"codex-subscription"` identity
+  for durable model facts. The private backend retains ADR-012's support gate.
+- `client/codex_bridge.{Command, ControlEvent, transport, command}` — a
+  VM-shared, profile-bound helper transport and redacted control surface.
+  `transport` supplies the provider's parked request seam;
+  `command` uses the same helper for status, browser or device login, logout,
+  and account model discovery. Control observations contain no access token,
+  refresh token, or account ID.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -2629,7 +2641,7 @@ these forks because they define the same modules.
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
   token file, the pack file, and the session's instruction files),
   `weft` (the bounded concurrent run `client/mcp.start` fans server
-  bring-up out over).
+  bring-up out over, and the Codex bridge's port manager and request actors).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
   edges are real and load-bearing — catch-up scans storage directly,
   compaction and navigation build `machine/acceptance` plans, the delta
@@ -2666,8 +2678,28 @@ these forks because they define the same modules.
   `sys:terminate/3` for stopping the service supervisor the way OTP
   stops one, and the documented exit-code halt. Test-side, `client_test_ffi.erl` is a
   minimal websocket probe for the boot smoke.
+- **Subscription FFI**: `client/internal/ffi_codex_bridge` over
+  `client_codex_bridge_ffi.erl` opens the fixed helper executable, writes
+  binary frames to its OTP port, normalizes native port messages, and claims
+  or looks up the VM's one active profile manager. Framing, request
+  correlation, ownership, and cancellation remain in `client/codex_bridge`
+  and its Weft actors.
 
 ## Traffic
+
+- `serve` injects `codex_bridge.transport()` into both assembled catalogue
+  gateways. `gateway.CodexTransport.prepare_streaming` asks the bridge for a
+  parked `http.PreparedRequest`; the gateway publishes its request owner
+  before `begin` sends the helper's `request` frame. The bridge manager owns
+  one profile-bound port and maps frame IDs to separate request actors. A
+  request actor sends `http.ResponseStatus` and `ResponseChunk` to the
+  provider stream pump, followed by `ResponseEnd` for a successful stream.
+  `error` is diagnostic and is followed by
+  `end`; permanent credential or model errors become terminal HTTP status
+  events. Cancellation waits for `cancel_ack`. Only these terminal frames
+  allow the request owner to exit normally; malformed frames, port exit,
+  and manager loss make its drain witness abnormal. The VM admits only one
+  active profile at a time and refuses a different profile explicitly.
 
 - `protocol.ListSkills(offset)` is a subscribed read available to observers.
   `SkillsSnapshot(board)` returns bounded consecutive metadata rows with a next
@@ -3778,6 +3810,13 @@ these forks because they define the same modules.
   `catalogue_facts`. The client listing carries the distinct dialect through
   its existing open string; neither the wire version nor the durable
   `{catalogue-name, model_id}` identity changes.
+- **Subscription profiles select credentials, never endpoints.** Catalogue
+  validation requires `auth = "codex"`, bounds the profile name, and refuses
+  API-key and URL fields. `codex_bridge.validate_request` admits only the
+  relative `POST /responses` shape with its fixed non-secret headers. The
+  helper owns the token and account ID binding; this package must not read the
+  installed Codex CLI credential, send those values through frames, or
+  substitute the public API-key transport for a missing helper.
 - **A checkpoint never publishes a blank.** A strand with no notes is
   told, in the checkpoint, that it wrote none and where notes go; a
   checkpoint whose inputs would not read is declined rather than
@@ -3971,6 +4010,9 @@ carries the tables and the rerun command.
 
 ## Deep Docs
 
+- [docs/architecture/codex-subscription.md](../../docs/architecture/codex-subscription.md)
+  — the opt-in helper, credential, request, and drain boundaries and the
+  remaining live interoperability and support gates.
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)
   — the runtime surface the hub dispatches onto.
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)

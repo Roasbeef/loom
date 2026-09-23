@@ -4,9 +4,8 @@
 
 The provider SDK: a typed registry of provider configurations and role
 routes, a pure incremental server-sent-events parser, four wire adapters
-(Anthropic Messages, OpenAI chat-completions, Gemini generateContent, public
-OpenAI Responses), retry
-and overflow
+(Anthropic Messages, OpenAI chat-completions, Gemini generateContent, and
+OpenAI Responses for public API and subscription transports), retry and overflow
 classification, and the secret-injection seam. SSE parsing and adapter folds
 are pure Gleam; the gateway custodian and native transport owner are the small
 processful shell around that sans-io core. WP-F.
@@ -37,12 +36,18 @@ not split the batch. These are transient wire projections.
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
   (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`,
-  `with_image_limit`); exposes the
+  `with_image_limit`, `with_codex_transport`); exposes the
   frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
   That owner is the request guard, a `weft/state_machine` over `Phase` and
   `Guard`; see **Traffic** for its states and its three state timeouts.
+- `gateway.CodexSubscriptionProvider(name, profile)` carries only a profile
+  name. `gateway.CodexTransport.prepare_streaming` is an optional, separately
+  injected bridge from that profile and an uncredentialed relative
+  `/responses` request to a parked, monitorable `http.PreparedRequest`. With no
+  bridge, subscription dispatch fails locally before network work. The public
+  Responses provider still uses the API-key `http.Transport` and secret store.
 - `provider/image_budget.{count, project, default_max_images}` bounds the total
   `UserImage` and `ToolResultImage` blocks in one request. Each actual gateway
   attempt uses its own endpoint/model limit (default eight), always starting
@@ -206,7 +211,11 @@ not split the batch. These are transient wire projections.
     records must agree with the deltas and final output. Requests post to
     `/responses` with flat function definitions, `store: false`, and
     caller-owned input history. API-key authentication uses the existing
-    HTTP transport owner, not a Codex helper or subscription credential.
+    HTTP transport owner. The subscription variant uses the same semantic
+    fold and replay projection, but sends a relative, uncredentialed request
+    through `CodexTransport`. Its body omits the public output ceiling and
+    public-only tool controls; `response.done` is admitted as its terminal
+    event only when accumulated content passes the same witness checks.
   - Anthropic requests carry four `cache_control` breakpoints — one-hour
     on the last tool definition and on the system block, five-minute on
     the last block of each of the final two user turns. The system prompt
@@ -220,9 +229,9 @@ not split the batch. These are transient wire projections.
     `thinkingConfig` whose knob follows the model generation
     (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5). The key
     travels in `x-goog-api-key`.
-  - `api_name` constants pin the four dialects: `"anthropic-messages"`,
+  - `api_name` constants pin the five dialect identities: `"anthropic-messages"`,
     `"openai-completions"`, `"gemini-generate-content"`,
-    `"openai-responses"`.
+    `"openai-responses"`, `"codex-subscription"`.
 
 ## Invariants
 
@@ -355,9 +364,10 @@ not split the batch. These are transient wire projections.
 - **Responses has one local conversation owner.** The request carries
   reconstructed history, never `conversation` or `previous_response_id`.
   Encrypted reasoning is opaque replay data, not an authentication token.
-  Subscription inference is deliberately deferred under ADR-012; adding a
-  dialect name or reading a Codex credential file would not satisfy its
-  support gate.
+  The subscription variant keeps the same Loom-owned history and semantic
+  fold. Its credential owner and fixed host sit behind the injected transport,
+  so neither a token nor an account-routing header enters this package. The
+  private backend remains experimental under ADR-012's support gate.
 - **Responses replay is bounded metadata plus durable content.** The
   namespaced hint retains item IDs, statuses, message phases, part boundaries, annotations,
   and the permutation between provider order and delta block order. It does
@@ -420,6 +430,9 @@ not split the batch. These are transient wire projections.
 
 ## Deep Docs
 
+- [docs/architecture/codex-subscription.md](../../docs/architecture/codex-subscription.md)
+  — the experimental helper transport, account-bound credentials, and
+  remaining interoperability and support gates.
 - [docs/adr/012-responses-and-subscription-boundaries.md](../../docs/adr/012-responses-and-subscription-boundaries.md)
   — public API inference, the deferred subscription support gate, and the
   distinction between model argument mistakes and provider corruption.

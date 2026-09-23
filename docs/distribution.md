@@ -80,11 +80,29 @@ normal dependency remain unchanged. Return to Hex when a release carries the
 fix. Both release scripts retain relx output so assembly errors appear in CI.
 
 The public `openai-responses` adapter is Gleam code inside the existing
-provider application. It adds no release component or native helper and
-uses the same HTTP transport as the other API-key adapters. The release
-does not read Codex credential files, refresh subscription credentials, or
-bundle Codex App Server. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
-records why subscription inference remains deferred.
+provider application. It uses a Platform API key and adds no native release
+component. The distinct, opt-in `codex-subscription` dialect packages
+`bin/codex-bridge` beside `bin/loomd`. That Go process owns its dedicated
+credential profile, refreshes tokens, and streams Codex Responses back to
+Loom; the BEAM VM does not read Codex credential files. The helper does not
+reuse an installed Codex CLI login and does not bundle Codex App Server.
+The build pins the Codex compatibility client version to `0.155.1` in
+`tools/codex-bridge/request.go`. Its implementation references the official
+Codex revision `5fc7840cf6d085a7a7b3438d69a2beb934a2a5f4` and
+oh-my-pi revision `da58b16f424273605795435a6753778f422baff3`.
+The private `chatgpt.com/backend-api/codex` route is experimental for Loom:
+OpenAI does not document it as a public third-party inference API, and
+interoperability with those pinned revisions does not establish support.
+[ADR-012](adr/012-responses-and-subscription-boundaries.md) retains that
+support gate.
+
+The server release manifest covers the executable bridge, and `make
+release-smoke` verifies that the downloaded tree contains it and that its
+framed status reports logged out with a fresh private home. The three
+`make dist` archives keep the bridge only in the server tarball; neither
+client artifact contains
+it. The smoke cannot establish entitlement, live login, or inference for a
+particular subscription account. Those require a separate live test.
 
 The build places one compiled test probe in `build/release/smoke-support`,
 outside the distributed `loom` tree. The smoke runs that probe on the bundled
