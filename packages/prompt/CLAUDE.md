@@ -101,11 +101,10 @@ requirements and verify recalled facts. Mutable notes remain user-context
 data. Existing pinned prompts are not migrated; this rollout starts fresh
 sessions.
 
-The `conduct` section asks for a phased list through the `todo` tool when it
-is available and the work has three or more steps, marked done in the same
-batch as the next piece of work. The tool's schema carries the mechanics; the
-prompt carries only the reason, which is that the operator follows progress by
-that list.
+The `conduct` section carries one short sentence pointing multi-step work at
+the `todo` tool when it is offered. The tool's own description carries the
+mechanics and the three-step threshold, and the sentence is kept short because
+the rendered prompt has a byte budget (`system_prompt_test`).
 
 The default system pack carries the canonical sections — `identity`,
 `tool_discipline`, `available_tools`, `delegation`, `conduct`,
