@@ -53,10 +53,10 @@ loom_profile_consume() {
   LOOM_PROFILE_COOKIE_HOME=""
   LOOM_PROFILE_ORIGINAL_HOME="${HOME:-}"
 
-  # These client subcommands own their complete argument tail. In particular,
-  # `loom ext` forwards every word to the server, so a server-side --profile
-  # must not be mistaken for a launcher option.
-  if [[ "$role" == client && ( "${1:-}" == ext || "${1:-}" == replay || "${1:-}" == sessions || "${1:-}" == version || "${1:-}" == --version ) ]]; then
+  # These subcommands own their complete argument tail. In particular,
+  # `loomd codex` uses --profile for its credential profile, while `loom ext`
+  # forwards that option to the server.
+  if [[ ( "$role" == daemon && "${1:-}" == codex ) || ( "$role" == client && ( "${1:-}" == ext || "${1:-}" == replay || "${1:-}" == sessions || "${1:-}" == version || "${1:-}" == --version ) ) ]]; then
     LOOM_PROFILE_ARGS=("$@")
     return 0
   fi

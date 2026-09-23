@@ -108,6 +108,10 @@ loom_profile_consume client ext profile --profile
 [[ "$LOOM_PROFILE_ENABLED" == 0 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "ext profile --profile" ]]
 
+loom_profile_consume daemon codex status --profile work
+[[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+[[ "${LOOM_PROFILE_ARGS[*]}" == "codex status --profile work" ]]
+
 # Version arguments reach application validation without creating credentials.
 for command in version --version; do
   HOME="$state/version-home" loom_profile_consume client "$command" --profile
