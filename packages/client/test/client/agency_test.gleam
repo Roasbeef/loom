@@ -2799,7 +2799,7 @@ fn run_collaboration_exchange(
     )
     as "the denied finding must still enter the typed input journal"
   assert specialist_delivery(first_mode, first_record, 1, "rejected")
-    as "the recipient must refuse an ungranted peer message"
+    as "the source must refuse a message with no outgoing link"
   let assert Ok(refused_receipts) =
     api.reserved_facts(second.runtime, "client/peers/receipt/")
   assert refused_receipts == []
@@ -2807,6 +2807,34 @@ fn run_collaboration_exchange(
   let assert Ok(_) =
     peers.link(first_peer, second_peer, "main", "main", peer_mail.BusyOnly)
     as "the owner grants one exact direction"
+  let assert Ok(_) =
+    second_peer.call(
+      peer_mail.Revoke(peer_mail.Grant(
+        "specialist-a",
+        "main",
+        "main",
+        peer_mail.BusyOnly,
+      )),
+    )
+    as "the recipient revokes its grant while source discovery remains"
+  let assert Ok(json.Int(2)) =
+    first_mode.interact(
+      "main",
+      first_record.id,
+      codemode_tool.SendTo(
+        "finding",
+        finding("specialist-b", "revoked", "security found a gap"),
+      ),
+      0,
+    )
+  assert specialist_delivery(first_mode, first_record, 2, "rejected")
+    as "the recipient grant must be checked after source discovery"
+  let assert Ok(revoked_receipts) =
+    api.reserved_facts(second.runtime, "client/peers/receipt/")
+  assert revoked_receipts == [] as "recipient refusal must not commit a receipt"
+  let assert Ok(_) =
+    peers.link(first_peer, second_peer, "main", "main", peer_mail.BusyOnly)
+    as "the owner restores the recipient grant"
   let assert Ok(json.Int(1)) =
     second_mode.interact(
       "main",
@@ -2822,7 +2850,7 @@ fn run_collaboration_exchange(
   let assert Ok(_) =
     peers.link(second_peer, first_peer, "main", "main", peer_mail.BusyOnly)
     as "the owner grants the reverse direction separately"
-  let assert Ok(json.Int(2)) =
+  let assert Ok(json.Int(3)) =
     first_mode.interact(
       "main",
       first_record.id,
@@ -2842,7 +2870,7 @@ fn run_collaboration_exchange(
       ),
       0,
     )
-  assert specialist_delivery(first_mode, first_record, 2, "delivered")
+  assert specialist_delivery(first_mode, first_record, 3, "delivered")
     as "the first satellite must receive its peer admission receipt"
   assert specialist_delivery(second_mode, second_record, 2, "delivered")
     as "the second satellite must receive its peer admission receipt"
@@ -3347,6 +3375,101 @@ pub fn collaboration_example_recovers_named_results_test_() -> AsyncEunitTest {
   })
 }
 
+pub fn collaboration_example_retries_pending_children_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+    let repo = here <> "/../.."
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) -> run_collaboration_pending(repo, toolchain)
+      _, _ ->
+        io.println_error(
+          "SKIP collaboration_example_pending: run make sandbox codemode-seed",
+        )
+    }
+  })
+}
+
+fn run_collaboration_pending(
+  repo: String,
+  toolchain: codemode.Toolchain,
+) -> Nil {
+  let suffix =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let workspace = "/var/tmp/lac-pending-" <> suffix
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let harness =
+    start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
+  let assert Ok(plane) =
+    serve.start_build_plane(
+      helper: Some(repo <> "/packages/sandbox/loom-exec"),
+      seed: Some(repo <> "/build/codemode-seed"),
+      workspace: repo,
+      writable: workspace,
+      state_root: workspace <> "-state",
+      tmp_dir: workspace <> "/tmp",
+      clock: wall,
+    )
+    as "the pending review must use the real jailed build plane"
+  let own = agency.peer_endpoint(harness.config, "coordinator")
+  let wiring = peers.Wiring(own, json.Null, None)
+  let #(service, background) =
+    specialist_mode(harness, wiring, plane, workspace, toolchain, wall)
+  let assert Ok(source) =
+    simplifile.read(repo <> "/docs/examples/collaboration_review.gleam")
+  let parent = open_parent(harness, "coordinator pending")
+  let execution =
+    launch_specialist(
+      background,
+      parent,
+      codemode_tool.OrchestrationSeam,
+      "review-pending",
+      source,
+      workspace,
+      plane,
+    )
+  assert review_ready(background, execution)
+  let assert Ok(json.Int(1)) =
+    background.interact(
+      "main",
+      execution.id,
+      codemode_tool.SendTo("review", review_input()),
+      0,
+    )
+  assert review_waiting(background, execution)
+    as "a bounded join must publish both unfinished handles"
+  let assert Ok(children_before) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  assert list.length(children_before) == 2
+  let assert Ok(json.Int(2)) =
+    background.interact(
+      "main",
+      execution.id,
+      codemode_tool.SendTo("review", review_input()),
+      0,
+    )
+  assert specialist_delivery(background, execution, 2, "delivered")
+    as "the same typed input must collect the named steps again"
+  assert review_waiting(background, execution)
+  let assert Ok(children_after) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  assert list.map(children_after, fn(cell) { cell.0 })
+    == list.map(children_before, fn(cell) { cell.0 })
+    as "retrying a pending join must not spawn duplicate children"
+  let assert Ok(_) =
+    background.interact("main", execution.id, codemode_tool.Cancel, 0)
+  assert review_lost(background, execution)
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  serve.stop_build_plane(plane)
+  close(harness)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 fn run_collaboration_recovery(
   repo: String,
   toolchain: codemode.Toolchain,
@@ -3510,6 +3633,37 @@ fn review_joined(
                       json.String("review complete"),
                     ]),
                   )
+                _ -> False
+              }
+            _ -> False
+          }
+        _ -> False
+      }
+    },
+    3000,
+  )
+}
+
+fn review_waiting(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Bool {
+  until(
+    fn() {
+      case background.interact("main", record.id, codemode_tool.Check, 0) {
+        Ok(json.Object(fields)) ->
+          case list.key_find(fields, "progress") {
+            Ok(json.Object(progress)) ->
+              case list.key_find(progress, "value") {
+                Ok(json.Object(value)) ->
+                  list.key_find(value, "phase") == Ok(json.String("waiting"))
+                  && list.key_find(value, "results") == Ok(json.Int(0))
+                  && case list.key_find(value, "statuses") {
+                    Ok(json.Array([json.String(first), json.String(second)])) ->
+                      string.contains(first, "pending after")
+                      && string.contains(second, "pending after")
+                    _ -> False
+                  }
                 _ -> False
               }
             _ -> False

@@ -90,9 +90,14 @@ Launch `collaboration_review.gleam` in the coordinator session and wait for its
 {"mode":"send","handle":"<coordinator execution id>","endpoint":"review","value":{"run":"review-42","commit":"<commit SHA>"}}
 ```
 
-The source calls `workflow.step` for `security` and `performance`, then joins
-the two handles under one 30-second wait. `check.progress` first reports
-`reviewing`, then `joined` with the count and text of completed child reports.
+The source calls `workflow.step` for `security` and `performance`, then waits
+up to one second for both handles. `check.progress` first reports `reviewing`,
+then `joined` with the count and text of completed child reports. If a child
+is still running, progress reports `waiting` with each handle's status. Send
+the same `review` input again to collect the existing named steps; no new
+child is started. A terminal child failure reports `failed` and includes its
+reason in `statuses`. A rejected delivery after a wait error can also be
+retried with the same input.
 The named steps retain their original child operations and durable results even if the
 coordinator satellite is lost. The progress snapshot and typed endpoint do not
 survive that loss.

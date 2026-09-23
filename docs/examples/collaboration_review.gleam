@@ -11,6 +11,7 @@ import cap/execution
 import cap/report
 import cap/strand
 import cap/workflow
+import gleam/list
 import gleam/result
 
 type Review {
@@ -55,18 +56,48 @@ fn review(input: Review) -> Result(Nil, String) {
     |> result.map(fn(_) { Nil }),
   )
   use joined <- result.try(
-    strand.wait([security, performance], within_ms: 30_000)
+    strand.wait([security, performance], within_ms: 1000)
     |> result.map_error(strand.error_text),
   )
+  let phase = case has_pending(joined) {
+    True -> "waiting"
+    False ->
+      case all_completed(joined) {
+        True -> "joined"
+        False -> "failed"
+      }
+  }
   execution.progress(
     report.object([
-      #("phase", report.string("joined")),
+      #("phase", report.string(phase)),
       #("run", report.string(input.run)),
       #("results", report.int(count_ready(joined))),
       #("reports", report.list(completed_reports(joined))),
+      #(
+        "statuses",
+        report.list(
+          list.map(joined, fn(one) { report.string(strand.waited_text(one)) }),
+        ),
+      ),
     ]),
   )
   |> result.map(fn(_) { Nil })
+}
+
+fn has_pending(joined: List(strand.Waited)) -> Bool {
+  case joined {
+    [] -> False
+    [strand.Pending(..), ..] -> True
+    [_, ..rest] -> has_pending(rest)
+  }
+}
+
+fn all_completed(joined: List(strand.Waited)) -> Bool {
+  case joined {
+    [] -> True
+    [strand.Ready(outcome: strand.Completed, ..), ..rest] -> all_completed(rest)
+    [_, ..] -> False
+  }
 }
 
 fn child(input: Review, name: String) -> Result(strand.Handle, String) {
