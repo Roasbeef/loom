@@ -785,7 +785,7 @@ was asked.
 - [packages/codemode/CLAUDE.md](../codemode/CLAUDE.md) — the far side of
   the code-mode seam.
 - [docs/architecture/effects.md](../../docs/architecture/effects.md) —
-  "Tools with correctness teeth", and the plane this package sits in.
+  "Tools", and the plane this package sits in.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-I (`tools`)": the
   anchor hash choice, `execution_mode`, workspace-relative requirements,
   the `fs_read` overflow exemption, harness-side filesystem tools, blob-ref
