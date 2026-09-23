@@ -53,6 +53,12 @@ before beginning work and requires a normal drain exit. The remaining
 operational gap is profile control after the daemon's first use: its helper
 retains the exclusive profile lock, so separate `loomd codex` commands require
 stopping that daemon until owner-authenticated control forwarding is added.
+After those repairs, the client suite passed 2,066 tests, the Go helper passed
+`go test -race ./...` and `go vet ./...`, and client lint and `make doc-check`
+reported zero errors. The final lean `make -j1 dist` passed with both release
+smokes. Its packaged `loomd codex status --profile work` returned the expected
+logged-out status from a fresh home. These post-review gates do not include a
+new full `make check` or hosted CI run for the subscription branch.
 The subscription branch remains experimental and is not ready to merge.
 The earlier public live smoke reached `credit_balance_exhausted` and confirmed
 transport drain; funded inference remains unverified.
