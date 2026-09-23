@@ -104,6 +104,16 @@ pub fn wired_host_advertises_only_its_available_virtual_reads_test() {
   let assert Ok(reader) = tool.lookup(registry, "fs_read")
   assert string.contains(reader.description, "cap://<module>")
   assert string.contains(reader.description, "job://<id>")
+  let discovered =
+    tool.dispatch(
+      registry,
+      a_ctx(),
+      "fs_read",
+      json.Object([#("path", json.String("cap://fs"))]),
+    )
+  assert !discovered.is_error
+  let assert Some(json.Object(details)) = discovered.details
+  assert list.contains(details, #("scheme", json.String("cap")))
   let assert Ok(core_only) =
     contributions.registry(contributions.built_in(
       None,
