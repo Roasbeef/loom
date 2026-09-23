@@ -10,7 +10,7 @@ import gleam/option.{None, Some}
 import machine/codec
 import machine/operation
 import machine/strand
-import tui
+import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
 import tui/snapshot
@@ -90,7 +90,7 @@ fn captured(model, data) {
       #(channel, model),
       fn(acc, incoming) {
         let #(channel, changes) = session_channel.receive(acc.0, incoming)
-        #(channel, list.fold(changes, acc.1, tui.apply_channel_update))
+        #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
   model

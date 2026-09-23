@@ -27,6 +27,7 @@ import tui/agents
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/render
@@ -468,7 +469,7 @@ pub fn a_disappeared_recipient_is_retained_and_cannot_accept_a_prompt_test() {
       protocol.Strand("worker", None, None),
     ])
   let captured =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       initial,
       session_channel.Captured(cut, removed, session_channel.Notified),
     )
@@ -560,7 +561,7 @@ pub fn returned_input_keeps_its_owner_while_another_draft_is_open_test() {
   let worker =
     tui_model.Model(..worker, input: textarea.state_from_string("worker draft"))
   let returned =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       worker,
       session_channel.Auxiliary(protocol.HeldInputReturned(
         strand: "main",
@@ -783,14 +784,14 @@ pub fn capture_reconciliation_preserves_scrolled_durable_selection_test() {
         ),
       ),
     )
-    |> tui.reconcile_agent_message_selection
+    |> inbound.reconcile_agent_message_selection
   let assert tui_model.AgentInspector(preserved) = model.overlay
   assert preserved.message == Some(agent_message_panel.identity(retained))
   assert preserved.scroll == 3
 
   let evicted =
     tui_model.Model(..model, agent_messages: [fresh])
-    |> tui.reconcile_agent_message_selection
+    |> inbound.reconcile_agent_message_selection
   let assert tui_model.AgentInspector(fallback) = evicted.overlay
   assert fallback.message == Some(agent_message_panel.identity(fresh))
   assert fallback.scroll == 0

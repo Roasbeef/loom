@@ -30,6 +30,7 @@ import tui/connection
 import tui/frame
 import tui/goal_view
 import tui/history_view
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/recording
@@ -971,7 +972,7 @@ fn finish_model(model, remaining) {
   list.fold(remaining, model, fn(model, event) {
     case event {
       attempt.Received(_, incoming) ->
-        tui.accept_connection_message(model, incoming)
+        inbound.accept_connection_message(model, incoming)
       attempt.Issued(..) -> model
       _ -> panic as "fixture contains only credited traffic"
     }
@@ -1027,7 +1028,7 @@ pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_
   assert sent.pending_submission == None
   let #(model, _) = waiting_model(tui_model.ComposerSubmission)
   let failed =
-    tui.accept_connection_message(model, connection.NetworkFault("revoked"))
+    inbound.accept_connection_message(model, connection.NetworkFault("revoked"))
   assert failed.pending_submission == None
   assert textarea.value(failed.input) == "visible draft"
   assert failed.attachments == model.attachments

@@ -13,9 +13,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
-import tui
 import tui/approval
 import tui/approval_panel
+import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
 import tui/snapshot
@@ -336,7 +336,7 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
       tail("main", "call-running", 1),
       tail("sub:1", "call-peer", 0),
     ])
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       cut(metadata(cells), window),
       view,
       session_channel.Refreshed,
@@ -386,7 +386,7 @@ fn capture_permission(
 ) -> tui_model.Model {
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the approval metadata must decode"
-  tui.apply_channel_update(
+  inbound.apply_channel_update(
     model,
     session_channel.Captured(captured, view, session_channel.Refreshed),
   )
@@ -456,7 +456,7 @@ pub fn late_lookup_preserves_the_open_question_and_selection_test() {
     )
   let newer = capture_permission(pushed.attached(), pending_permission_cut(32))
   let updated =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       looking_up,
       session_channel.LookedUp(newer.approvals, []),
     )
@@ -476,13 +476,13 @@ pub fn metadata_refresh_preserves_the_footer_notice_test() {
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the empty observation must decode"
   let initial =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       pushed.attached(),
       session_channel.Captured(captured, view, session_channel.Refreshed),
     )
   let prior = tui_model.Model(..initial, notice: "streaming thinking")
   let refreshed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       prior,
       session_channel.Captured(captured, view, session_channel.Refreshed),
     )

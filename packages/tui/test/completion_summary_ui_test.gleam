@@ -14,6 +14,7 @@ import tui
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/live_jobs
 import tui/model as tui_model
 import tui/protocol
@@ -189,7 +190,7 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
 
   let reordered = live_jobs.Board("main", 60, [second, first], 2, 0)
   let refreshed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       tui_model.Model(..opened, jobs_awaiting: Some(#("", "main"))),
       session_channel.Auxiliary(protocol.LiveJobsSnapshot(reordered)),
     )

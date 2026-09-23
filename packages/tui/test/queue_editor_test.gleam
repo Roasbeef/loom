@@ -19,6 +19,7 @@ import tui/command
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
@@ -97,7 +98,7 @@ fn receive(
   list.fold(
     updates,
     tui_model.Model(..model, channel: Some(channel)),
-    tui.apply_channel_update,
+    inbound.apply_channel_update,
   )
 }
 
@@ -438,7 +439,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
   let cut = snapshot.Captured(..previous, metadata: data, next_seq: 11)
   let assert Ok(view) = snapshot_view.decode(cut)
   let refreshed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       paged,
       session_channel.Captured(cut, view, session_channel.Notified),
     )
@@ -724,7 +725,7 @@ pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test
   let assert Ok(view) = snapshot_view.decode(cut)
     as "the next capture retains both distinct queue identities"
   let reordered =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       selected,
       session_channel.Captured(cut, view, session_channel.Notified),
     )

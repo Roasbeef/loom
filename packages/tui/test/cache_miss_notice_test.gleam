@@ -23,6 +23,7 @@ import tui/attachment
 import tui/cache_miss
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/render
@@ -310,7 +311,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
       None,
     )
   let first =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       initial,
       session_channel.Captured(
         cut,
@@ -319,7 +320,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
       ),
     )
   let same_provider =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       first,
       session_channel.Captured(
         snapshot.Captured(
@@ -334,7 +335,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
     as "changing reasoning effort does not erase the provider's watch"
 
   let switched =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       same_provider,
       session_channel.Captured(
         snapshot.Captured(

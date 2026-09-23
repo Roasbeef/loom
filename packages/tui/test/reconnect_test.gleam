@@ -15,6 +15,7 @@ import gleam/string
 import tui
 import tui/bootstrap
 import tui/connection
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
@@ -57,7 +58,10 @@ fn disconnected() -> tui_model.Model {
 // Drives the same public transition a closed conversation channel drives, so
 // the decision under test is the one production reaches.
 fn lose_the_channel(model: tui_model.Model) -> tui_model.Model {
-  tui.apply_channel_update(model, session_channel.Failed("the daemon exited"))
+  inbound.apply_channel_update(
+    model,
+    session_channel.Failed("the daemon exited"),
+  )
 }
 
 pub fn an_unexpected_daemon_death_earns_one_attempt_test() {
@@ -214,7 +218,7 @@ pub fn a_custody_return_restores_the_draft_in_the_composer_test() {
   // empty composer takes the text outright.
   let model = disconnected()
   let returned =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       model,
       session_channel.Auxiliary(protocol.HeldInputReturned(
         strand: "main",
@@ -236,7 +240,7 @@ pub fn a_custody_return_never_overwrites_a_draft_in_progress_test() {
   let typing =
     tui_model.Model(..model, input: text_area.state_from_string("half typed"))
   let returned =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       typing,
       session_channel.Auxiliary(protocol.HeldInputReturned(
         strand: "main",

@@ -28,6 +28,7 @@ import tui/appearance
 import tui/connection
 import tui/context_view
 import tui/goal_view
+import tui/inbound
 import tui/internal/ffi_terminal
 import tui/live_jobs
 import tui/model as tui_model
@@ -191,7 +192,7 @@ fn fixture_model(palette: String) -> tui_model.Model {
       current_model: "fixture-model",
       palette: selected_palette(palette),
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       captured,
       view,
       session_channel.Requested,
@@ -445,7 +446,7 @@ fn fixture_update(
         True -> changed
         False ->
           changed
-          |> tui.apply_channel_update(
+          |> inbound.apply_channel_update(
             session_channel.Auxiliary(protocol.NotesSnapshot(board)),
           )
           |> tui.update(backend.Tick, _)

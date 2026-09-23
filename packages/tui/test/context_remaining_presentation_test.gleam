@@ -14,6 +14,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/protocol
 import tui/render
 import tui/workspace
@@ -82,7 +83,7 @@ fn outcome() {
 }
 
 fn received(model, value) {
-  tui.accept_connection_message(
+  inbound.accept_connection_message(
     model,
     connection.Incoming(
       json.to_string(

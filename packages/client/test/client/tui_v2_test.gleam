@@ -18,6 +18,7 @@ import tui/attempt
 import tui/connection
 import tui/daemon
 import tui/daemon/selection
+import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
 import weft/poll
@@ -54,7 +55,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
         session: session,
       )
     let #(initial, ending) = hold_snapshot_end(model, 32)
-    let initial = tui.accept_connection_message(initial, ending)
+    let initial = inbound.accept_connection_message(initial, ending)
     let assert Some(channel) = initial.channel
       as "initial cut keeps its channel"
     assert session_channel.mutation_available(channel)
@@ -120,7 +121,7 @@ fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
     True -> #(model, incoming)
     False ->
       hold_snapshot_end(
-        tui.accept_connection_message(model, incoming),
+        inbound.accept_connection_message(model, incoming),
         remaining - 1,
       )
   }

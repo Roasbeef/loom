@@ -14,6 +14,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/note_panel
 import tui/notes_view
@@ -62,7 +63,7 @@ fn delivered(model, raw) {
     )
   let assert Ok(event) = protocol.decode_v2_presentation(wire)
     as "notes travel through the version-two auxiliary decoder"
-  tui.apply_channel_update(model, session_channel.Auxiliary(event))
+  inbound.apply_channel_update(model, session_channel.Auxiliary(event))
   |> fn(updated) { tui.update(backend.Resize(120, 30), updated) }
 }
 

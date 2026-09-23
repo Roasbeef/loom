@@ -32,6 +32,7 @@ import tui/connection
 import tui/focused_goal_panel
 import tui/frame
 import tui/goal_view
+import tui/inbound
 import tui/model as tui_model
 import tui/notes_view
 import tui/protocol.{type Strand, Strand}
@@ -991,14 +992,14 @@ pub fn an_automatic_goal_read_preserves_the_footer_notice_test() {
   let base = pushed.attached()
   let prior = tui_model.Model(..base, notice: "copied 2 lines")
   let automatic =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       prior,
       session_channel.Submission(session_channel.Sent("goal_get", 500)),
     )
   assert automatic.notice == prior.notice
 
   let explicit =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       tui_model.Model(..prior, goal_report: tui_model.ReportGoal),
       session_channel.Submission(session_channel.Sent("goal_get", 501)),
     )

@@ -14,6 +14,7 @@ import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
@@ -31,7 +32,7 @@ fn model() {
 }
 
 fn received(model, wire) {
-  tui.accept_connection_message(model, connection.Incoming(wire))
+  inbound.accept_connection_message(model, connection.Incoming(wire))
 }
 
 fn checked_layout(model, width) {
@@ -196,7 +197,7 @@ fn captured(model: tui_model.Model, data: String, seq: Int) -> tui_model.Model {
       #(channel, model),
       fn(acc, incoming) {
         let #(channel, changes) = session_channel.receive(acc.0, incoming)
-        #(channel, list.fold(changes, acc.1, tui.apply_channel_update))
+        #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
   applied

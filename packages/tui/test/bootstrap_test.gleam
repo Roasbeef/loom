@@ -20,6 +20,7 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol as control
 import tui/daemon/selection
+import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
 import tui/session_selector
@@ -539,7 +540,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let assert Some(#(adopted_cut, adopted_view)) = adopted.captured
     as "adoption retained its coherent projection"
   let refreshed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       adopted,
       session_channel.Captured(
         adopted_cut,
@@ -625,7 +626,10 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   // The bounded observation must bridge that interval and publish one new
   // host. The actual successful event then starts the normal adoption path.
   let reconnecting =
-    tui.apply_channel_update(adopted, session_channel.Failed("daemon exited"))
+    inbound.apply_channel_update(
+      adopted,
+      session_channel.Failed("daemon exited"),
+    )
   let assert tui_model.ReconnectAttempting(replies:, ..) =
     reconnecting.reconnect
     as "the attached local terminal owns one reconnect attempt"

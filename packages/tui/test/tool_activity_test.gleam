@@ -21,6 +21,7 @@ import machine/strand
 import tui
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/protocol
@@ -177,7 +178,7 @@ pub fn current_action_comes_from_the_captured_batch_not_an_old_unmatched_call_te
 }
 
 fn received(model, value) {
-  tui.accept_connection_message(
+  inbound.accept_connection_message(
     model,
     connection.Incoming(
       json.to_string(
@@ -257,7 +258,7 @@ fn changes_model(diff) {
       #("diff", json.String(diff)),
     ])
   model()
-  |> tui.accept_connection_message(
+  |> inbound.accept_connection_message(
     connection.Incoming(gateway.user_entry("main", "CONVERSATION_MARKER", 1)),
   )
   |> received(call(2, "edit", "fs_edit", args()))
@@ -327,7 +328,7 @@ pub fn diff_and_conversation_scroll_independently_test() {
     |> string.join("\n")
   let #(opened, _) =
     int.range(4, 64, changes_model(long_diff), fn(current, seq) {
-      tui.accept_connection_message(
+      inbound.accept_connection_message(
         current,
         connection.Incoming(gateway.user_entry(
           "main",
@@ -367,7 +368,7 @@ pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
     |> painted_buffer(160)
   let #(replaced, drawn) =
     opened
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       connection.Incoming(gateway.full_snapshot("new")),
     )
     |> painted_buffer(160)
@@ -499,7 +500,7 @@ pub fn replacement_history_releases_compact_presentation_caches_test() {
   // keep their tool output reachable after the authoritative replacement.
   let #(replaced, _) =
     loaded
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       connection.Incoming(gateway.full_snapshot("replacement")),
     )
     |> painted
@@ -559,7 +560,7 @@ pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
     "Please review:\n\n\tif peer == nil {\n\t\treturn\n\t}\n\n\tcontinueWork()"
   let original =
     model()
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       connection.Incoming(gateway.user_entry("main", source, 1)),
     )
   let #(_, visible) = painted(original)

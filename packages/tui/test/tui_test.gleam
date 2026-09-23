@@ -27,6 +27,7 @@ import tui/composer
 import tui/connection
 import tui/frame
 import tui/image_drop
+import tui/inbound
 import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/layout
@@ -940,7 +941,7 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
     tui.update(backend.KeyPress("enter"), live_model("look at this too"))
 
   let after_assistant =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       submitted,
       connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
     )
@@ -948,7 +949,7 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
     as "the run's own output does not retire a prompt the daemon still holds"
 
   let after_user =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       after_assistant,
       connection.Incoming(gateway.user_entry("main", "look at this too", 5)),
     )
@@ -982,7 +983,7 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
     as "premise: the steer commits before the prompt the daemon still holds"
 
   let after_steer_entry =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       steered,
       connection.Incoming(gateway.user_entry(
         "main",
@@ -994,7 +995,7 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
     as "the steer's own entry retires the steer, not the prompt behind it"
 
   let after_prompt_entry =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       after_steer_entry,
       connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
     )
@@ -1028,7 +1029,7 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
     as "premise: the steer is recorded ahead of the prompt still being held"
 
   let aborted =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       steered,
       session_channel.Acknowledged("abort", "accepted"),
     )
@@ -1036,7 +1037,7 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
     as "the aborted steer commits no entry, so its record goes with the run"
 
   let drained =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       aborted,
       connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
     )
@@ -1059,7 +1060,7 @@ pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
       awaiting_outcome: Some(tui_model.HeldPrompt("and one more thing")),
     )
   let synchronized =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       stale,
       connection.Incoming(gateway.full_snapshot("demo")),
     )
@@ -1084,7 +1085,7 @@ pub fn a_refused_prompt_retires_its_own_echo_test() {
       awaiting_outcome: Some(tui_model.HeldPrompt("a fifth one")),
     )
   let refused =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       submitted,
       connection.Incoming(gateway.server_error(
         "conflict",

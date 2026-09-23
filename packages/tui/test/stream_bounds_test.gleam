@@ -45,6 +45,7 @@ import gleam/string
 import host/bootstrap
 import tui
 import tui/connection
+import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines
 import tui_test/pushed
@@ -118,7 +119,7 @@ fn holder() -> actor.StartResult(Subject(Command)) {
         actor.continue(holder)
       }
       Frame(message) -> {
-        let model = tui.accept_connection_message(holder.model, message)
+        let model = inbound.accept_connection_message(holder.model, message)
         let seen = holder.seen + 1
 
         // The paint the shipped loop would have done after this batch. A
@@ -329,7 +330,7 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
         pushed.delta("main", "op-1", token(i))
       }),
       pushed.attached(),
-      tui.accept_connection_message,
+      inbound.accept_connection_message,
     )
   let assert [tui_model.Stream(bytes:, fragments:, ..)] = model.streams
     as "the live answer is on screen as one stream"
@@ -349,7 +350,10 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
   // lane drops a pushed `op_transition` and a pushed `entry_added` rather
   // than forwarding them, so neither path is reachable from a frame here.
   let next =
-    tui.accept_connection_message(model, pushed.delta("main", "op-2", "New"))
+    inbound.accept_connection_message(
+      model,
+      pushed.delta("main", "op-2", "New"),
+    )
   assert next.streams
     == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
     as "the previous operation's fragments are dropped, not carried forward"

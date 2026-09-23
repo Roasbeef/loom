@@ -18,6 +18,7 @@ import tui
 import tui/attachment
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/session_channel
 import tui/virtual_backend
@@ -141,7 +142,7 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
     // Re-deliver the selected message through the virtual loop so decoding
     // and recording still happen at the shipped client's normal boundary.
     Inbound(message) -> {
-      let run = run(tui.accept_connection_message(model, message), [])
+      let run = run(inbound.accept_connection_message(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Candidate(message) -> {

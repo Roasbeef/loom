@@ -12,6 +12,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/protocol
@@ -406,7 +407,7 @@ pub fn ready_observation_replaces_cached_patch_without_resize_test() {
       ),
     )
   let observed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       waiting,
       session_channel.Auxiliary(
         protocol.WorktreeSnapshot(
@@ -545,7 +546,7 @@ fn apply_incoming(
   list.fold(
     updates,
     tui_model.Model(..model, channel: Some(channel)),
-    tui.apply_channel_update,
+    inbound.apply_channel_update,
   )
 }
 
@@ -555,7 +556,7 @@ fn issue(model: tui_model.Model, command: String) -> #(tui_model.Model, Int) {
   let assert session_channel.Sent(_, request_id) = disposition
     as "fixture command is sent immediately"
   #(
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       tui_model.Model(..model, channel: Some(channel)),
       session_channel.Submission(disposition),
     ),

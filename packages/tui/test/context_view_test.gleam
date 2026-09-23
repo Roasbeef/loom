@@ -21,6 +21,7 @@ import tui/command
 import tui/connection
 import tui/context_view as context
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/render
@@ -262,7 +263,7 @@ pub fn refused_refresh_invalidates_the_cached_percentage_test() {
     context.receive(waiting(8), "owner", context.Ready(board(8, "main")))
   let refreshing = tui_model.Model(..base, context: context.sent(observed, 9))
   let refused =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       refreshing,
       session_channel.RequestRefused(
         "context",
@@ -280,7 +281,7 @@ pub fn automatic_context_read_preserves_the_session_refusal_notice_test() {
   let refused =
     tui_model.Model(..base, notice: "open session: not_found: request refused")
   let reading =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       refused,
       session_channel.Submission(session_channel.Sent("context", 500)),
     )

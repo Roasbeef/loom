@@ -18,8 +18,8 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import tui
 import tui/connection
+import tui/inbound
 import tui/model as tui_model
 import tui/transcript_lines
 import tui_test/pushed
@@ -59,14 +59,14 @@ fn output(
 pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(output(
+    |> inbound.accept_connection_message(output(
       "op-1",
       "step-1",
       "stdout",
       "compiling core\n",
       15,
     ))
-    |> tui.accept_connection_message(output(
+    |> inbound.accept_connection_message(output(
       "op-1",
       "step-1",
       "stdout",
@@ -92,10 +92,34 @@ pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
 pub fn streams_and_steps_are_kept_apart_test() {
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(output("op-1", "step-1", "stdout", "a", 1))
-    |> tui.accept_connection_message(output("op-1", "step-1", "stderr", "b", 1))
-    |> tui.accept_connection_message(output("op-1", "step-2", "stdout", "c", 1))
-    |> tui.accept_connection_message(output("op-1", "step-1", "stdout", "ab", 2))
+    |> inbound.accept_connection_message(output(
+      "op-1",
+      "step-1",
+      "stdout",
+      "a",
+      1,
+    ))
+    |> inbound.accept_connection_message(output(
+      "op-1",
+      "step-1",
+      "stderr",
+      "b",
+      1,
+    ))
+    |> inbound.accept_connection_message(output(
+      "op-1",
+      "step-2",
+      "stdout",
+      "c",
+      1,
+    ))
+    |> inbound.accept_connection_message(output(
+      "op-1",
+      "step-1",
+      "stdout",
+      "ab",
+      2,
+    ))
   assert list.map(model.tool_tails, fn(tail) {
       #(tail.step, tail.stream, tail.text)
     })
@@ -110,7 +134,7 @@ pub fn streams_and_steps_are_kept_apart_test() {
 pub fn the_tail_is_drawn_as_one_result_line_under_the_running_call_test() {
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(output(
+    |> inbound.accept_connection_message(output(
       "op-1",
       "step-1",
       "stdout",
@@ -134,7 +158,7 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
     |> list.index_map(fn(_nil, index) { "line " <> int.to_string(index + 1) })
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(output(
+    |> inbound.accept_connection_message(output(
       "op-1",
       "step-1",
       "stdout",
@@ -152,7 +176,13 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
 pub fn a_binary_tail_draws_its_heading_alone_test() {
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(output("op-1", "step-1", "stdout", "", 300))
+    |> inbound.accept_connection_message(output(
+      "op-1",
+      "step-1",
+      "stdout",
+      "",
+      300,
+    ))
   assert transcript_lines.tool_tail_lines(expanded(model))
     == [tui_model.Line(tui_model.ToolResult, "stdout · 300 B so far")]
 }
@@ -160,7 +190,7 @@ pub fn a_binary_tail_draws_its_heading_alone_test() {
 pub fn another_strands_tail_is_not_drawn_here_test() {
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       pushed.push([
         #("event", json.String("tool_output")),
         #(
@@ -207,9 +237,9 @@ pub fn two_calls_in_one_step_keep_separate_tails_test() {
   }
   let model =
     pushed.attached()
-    |> tui.accept_connection_message(call(0, "a"))
-    |> tui.accept_connection_message(call(1, "b"))
-    |> tui.accept_connection_message(call(0, "aa"))
+    |> inbound.accept_connection_message(call(0, "a"))
+    |> inbound.accept_connection_message(call(1, "b"))
+    |> inbound.accept_connection_message(call(0, "aa"))
   assert list.map(model.tool_tails, fn(tail) { #(tail.source_index, tail.text) })
     == [#(0, "aa"), #(1, "b")]
 }
@@ -219,7 +249,7 @@ pub fn missed_captures_cannot_grow_tail_retention_without_bound_test() {
     list.repeat(Nil, transcript_lines.max_tool_tails + 1)
     |> list.index_map(fn(_nil, index) { index })
     |> list.fold(pushed.attached(), fn(model, index) {
-      tui.accept_connection_message(
+      inbound.accept_connection_message(
         model,
         output(
           "op-" <> int.to_string(index),

@@ -29,6 +29,7 @@ import tui/snapshot_view
 import tui/workspace
 
 import gleam/bit_array
+import tui/inbound
 import tui/model as tui_model
 
 fn metadata() {
@@ -494,7 +495,7 @@ fn cache_cut_with_operation(
       Some([]),
       None,
     )
-  tui.apply_channel_update(
+  inbound.apply_channel_update(
     model,
     session_channel.Captured(cut, view, session_channel.Notified),
   )
@@ -505,7 +506,7 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
     list.fold(
       [delta("main", "op-1", "Hel"), delta("main", "op-1", "lo")],
       attached(),
-      tui.accept_connection_message,
+      inbound.accept_connection_message,
     )
   assert model.streams
     == [tui_model.Stream("main", "op-1", "", "text", ["lo", "Hel"], 5)]
@@ -513,13 +514,14 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
 
   // The next operation is a different answer, so it starts the region over
   // instead of appending to the one that has finished.
-  let next = tui.accept_connection_message(model, delta("main", "op-2", "New"))
+  let next =
+    inbound.accept_connection_message(model, delta("main", "op-2", "New"))
   assert next.streams
     == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
 }
 
 pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {
-  let model = tui.accept_connection_message(attached(), notice("main", 9))
+  let model = inbound.accept_connection_message(attached(), notice("main", 9))
   assert model.notices == 1
     as "the terminal counts the notice the lane had nothing to do with"
   let assert Some(channel) = model.channel as "the lane survives a stale notice"
@@ -588,7 +590,7 @@ pub fn a_legacy_usage_push_cannot_double_count_the_captured_total_test() {
         ]),
       ),
     ])
-  let received = tui.accept_connection_message(model, legacy)
+  let received = inbound.accept_connection_message(model, legacy)
   assert received.usage == model.usage
     as "a pushed ledger name is ignored instead of adding to a captured total"
   assert received.cache_watch == model.cache_watch
@@ -656,7 +658,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
       message.UsageCost(0.0, 0.004, 0.25, 0.0, 0.254),
     )
   let settled =
-    tui.accept_connection_message(model, usage_push("main", reported))
+    inbound.accept_connection_message(model, usage_push("main", reported))
 
   assert settled.usage.total_tokens == model.usage.total_tokens
     as "a pushed observation cannot double-count an authoritative cut"
@@ -671,7 +673,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
     as "the row becomes the detector's baseline on the push"
 
   let duplicate =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       tui_model.Model(..covered, monotonic_time_ms: fn() { 120_000 }),
       usage_push("main", reported),
     )
@@ -681,7 +683,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
 
   let captured = tui_model.Model(..model, usage: reported)
   let after_cut =
-    tui.accept_connection_message(captured, usage_push("main", reported))
+    inbound.accept_connection_message(captured, usage_push("main", reported))
   assert after_cut.usage == reported
     as "a capture that already included the row is never added again"
 }
@@ -716,12 +718,12 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
   assert dict.get(selected.cache_watch, "main") == Error(Nil)
 
   let old_first =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       selected,
       usage_push_with("main", 11, Some("old-op"), row),
     )
   let old_second =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       old_first,
       usage_push_with("main", 12, Some("old-op"), row),
     )
@@ -730,7 +732,7 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
     as "both old-provider rows stay outside the new cache baseline"
 
   let new_first =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       old_second,
       usage_push_with("main", 13, Some("new-op"), row),
     )
@@ -762,7 +764,7 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
       "old-provider",
     )
   let pending =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       old,
       usage_push_with("main", 11, Some("old-op"), row),
     )
@@ -772,7 +774,7 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
   assert dict.get(switched.cache_fence, "main") == Ok(Some("old-op"))
 
   let pushed =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       switched,
       usage_push_with("main", 12, Some("new-op"), row),
     )
@@ -820,7 +822,7 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
       monotonic_time_ms: fn() { 600_000 },
     )
   let pending =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       old,
       usage_push_with("main", 11, Some("old-op"), cold),
     )
@@ -854,7 +856,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
     as "a live operation on initial attach has unknown accepted model"
 
   let pending =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       first,
       usage_push_with("main", 11, Some("old-op"), row),
     )
@@ -863,7 +865,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
   assert dict.get(old.cache_fence, "main") == Ok(Some("old-op"))
 
   let pending =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       old,
       usage_push_with("main", 12, Some("new-op"), row),
     )
@@ -892,7 +894,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
   assert dict.get(first.cache_fence, "main") == Error(Nil)
     as "the cut shows no operation to fence"
   let late =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       first,
       usage_push_with("main", 10, Some("old-op"), row),
     )
@@ -900,7 +902,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
     as "a row from before the first cut cannot seed its current model"
 
   let pending =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       late,
       usage_push_with("main", 11, Some("new-op"), row),
     )
@@ -919,7 +921,7 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
     as "an operator lane admits a prompt once its cut exists"
 
   let queued =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       tui_model.Model(..model, channel: Some(sent), submitting: Some("main")),
       reply(
         id,
