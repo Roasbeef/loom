@@ -99,6 +99,33 @@
 //// different senders reach this actor and nothing orders them against
 //// each other.
 ////
+//// ## Who is told when a job ends
+////
+//// Each job carries a `Listener`, set from the `Audience` its start
+//// named. An `Owner` job's end is sent to the strand that owns it as a
+//// completion notice (`client/notice.deliver`): a steer when the strand
+//// has an open run, a fresh run when it is idle. A `Caller` job is one a
+//// tool call is waiting on and will render itself, so it is silent until
+//// the caller releases it, or until the monitor this actor holds on the
+//// caller reports that it died, which hands the job to its owner the same
+//// way. A `Program` job belongs to the code-mode program that started it
+//// and never notifies.
+////
+//// The notice is sent from the actor's own settlement handlers, after the
+//// terminal commit, and from the restart sweep for the jobs it declares
+//// lost; never from the session-stop drain, whose ends are nobody's news.
+//// Serializing a release against the settlement in this one mailbox is
+//// what makes the pair exhaustive: either the job was still live and its
+//// owner will be told, or it had ended and the caller renders it.
+////
+//// The same actor samples its owners once a minute for the idle
+//// heartbeat: an owner whose strand has been idle for
+//// `JobsPolicy.heartbeat_ms` while jobs it owns are still live is woken
+//// with a listing of them. A minute is slower than
+//// `runtime/residency.hibernate_after_ms`, so the tick does not keep an
+//// idle session's actor awake. `client/notice` has the idle clock, and
+//// `docs/design-notes/async-completion-wake.md` the whole design.
+////
 //// ## The ledger identity
 ////
 //// A job clears under `{op_id, "job/" <> id}` rather than under the batch
@@ -120,9 +147,11 @@ import client/internal/timebase
 import client/jobstate.{
   type JobId, type JobRecord, type JobSpill, type JobState, type KillCause,
 }
+import client/notice
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Selector, type Subject}
@@ -211,11 +240,19 @@ pub type JobsPolicy {
     /// own sandbox policy already expresses, and expressing it twice
     /// would let the two disagree.
     max_wall_ms: Int,
+    /// How long an owner may sit idle while jobs it owns are still live
+    /// before it is woken with a listing of them, in milliseconds. Zero
+    /// turns the heartbeat off. `client/notice` has the idle clock and the
+    /// reasoning; this is the one number an operator can move.
+    heartbeat_ms: Int,
   )
 }
 
 /// The policy a host with no `[jobs]` table serves.
-pub const default_policy = JobsPolicy(max_wall_ms: default_wall_ms)
+pub const default_policy = JobsPolicy(
+  max_wall_ms: default_wall_ms,
+  heartbeat_ms: notice.default_heartbeat_ms,
+)
 
 // --- what a caller asks for, and what it hears back -----------------------
 
@@ -232,7 +269,48 @@ pub type Request {
     wall_ms: Option(Int),
     /// Invocation policy captured before admission; running jobs retain it.
     captured_policy: Option(SandboxPolicy),
+    /// Who hears about the job's end. See `Audience`.
+    audience: Audience,
+    /// Whether the job's stdin is closed the moment it is cleared.
+    /// `CloseStdin` is what a foreground `bash` does, so a pipeline that
+    /// reads stdin ends instead of waiting an hour for bytes nobody will
+    /// send; `KeepStdinOpen` is what makes `job_send` possible.
+    stdin: StdinEnd,
   )
+}
+
+/// Who is told when a job ends.
+///
+/// A job's end is news to exactly one party, and which one depends on how
+/// it was started. `docs/design-notes/async-completion-wake.md` has the
+/// table this type encodes.
+pub type Audience {
+  /// Nobody is watching the job, so its owner is sent a completion notice
+  /// when it ends: a steer into an open run, or a fresh run on an idle
+  /// strand. `bash` with `mode: "background"` starts one of these.
+  NotifyOwner
+
+  /// A tool call is waiting on the job and will render its end itself, so
+  /// a notice would deliver the result twice. The job is silent until the
+  /// caller releases it with `release_job`, or dies, which the actor
+  /// watches for and treats as a release. An auto-mode `bash` call starts
+  /// one of these.
+  CallerWaiting
+
+  /// A code-mode program started the job and is its reader. Never
+  /// notifies: a program that starts a job and awaits it would otherwise
+  /// leave a notice behind every such call.
+  ProgramWatches
+}
+
+/// What releasing a job found.
+pub type Released {
+  /// The job is still live, and its owner will now be told when it ends.
+  Released
+
+  /// The job had already ended before the release arrived, so nobody will
+  /// be told: the caller that released it should render the end itself.
+  AlreadyEnded
 }
 
 /// A job that is running, and the terms it is running under.
@@ -467,7 +545,7 @@ fn is_staging_name(name: String) -> Bool {
 ///
 /// ```gleam
 /// assert jobs.parse_policy("[jobs]\nmax_wall = 86400\n")
-///   == Ok(jobs.JobsPolicy(max_wall_ms: 86_400_000))
+///   == Ok(jobs.JobsPolicy(max_wall_ms: 86_400_000, heartbeat_ms: 600_000))
 /// ```
 ///
 pub fn parse_policy(text: String) -> Result(JobsPolicy, String) {
@@ -485,9 +563,35 @@ pub fn parse_policy(text: String) -> Result(JobsPolicy, String) {
 }
 
 fn policy_table(fields: Dict(String, tom.Toml)) -> Result(JobsPolicy, String) {
-  use Nil <- result.try(known_keys(dict.keys(fields), ["max_wall"]))
+  use Nil <- result.try(
+    known_keys(dict.keys(fields), ["max_wall", "heartbeat_s"]),
+  )
+  use max_wall_ms <- result.try(max_wall(fields))
+  use heartbeat_ms <- result.try(heartbeat(fields))
+  Ok(JobsPolicy(max_wall_ms:, heartbeat_ms:))
+}
+
+// The idle heartbeat's interval. Seconds for the same reason the wall is
+// seconds, and zero rather than a separate switch for "off": an operator
+// who wants no heartbeat has one number to write, and a negative one is a
+// typo worth refusing rather than a second spelling of zero.
+fn heartbeat(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
+  case dict.get(fields, "heartbeat_s") {
+    Error(Nil) -> Ok(notice.default_heartbeat_ms)
+    Ok(tom.Int(seconds)) if seconds >= 0 -> Ok(seconds * 1000)
+
+    Ok(_other) ->
+      Error(
+        "jobs.heartbeat_s must be a whole number of seconds, zero or more: "
+        <> "how long a strand may sit idle while its background work is "
+        <> "still running before it is woken, where zero turns it off",
+      )
+  }
+}
+
+fn max_wall(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   case dict.get(fields, "max_wall") {
-    Error(Nil) -> Ok(default_policy)
+    Error(Nil) -> Ok(default_policy.max_wall_ms)
 
     // Seconds, because a workspace raising this is thinking in hours and
     // a day is `86400` rather than a number with seven zeroes on it. The
@@ -496,7 +600,7 @@ fn policy_table(fields: Dict(String, tom.Toml)) -> Result(JobsPolicy, String) {
     // job composes against anyway, and two ceilings that could disagree
     // is a worse arrangement than one.
     Ok(tom.Int(seconds)) if seconds > 0 ->
-      Ok(JobsPolicy(max_wall_ms: int.max(seconds * 1000, default_wall_ms)))
+      Ok(int.max(seconds * 1000, default_wall_ms))
 
     Ok(_other) ->
       Error(
@@ -569,8 +673,23 @@ pub opaque type Message {
     strand: String,
     operation: OpId,
     request: Request,
+    caller: Pid,
     reply_with: Subject(Result(Started, Refusal)),
   )
+
+  /// A waiting caller gives up on a job: from here its owner is told when
+  /// it ends, unless it already has.
+  Release(
+    strand: String,
+    id: JobId,
+    reply_with: Subject(Result(Released, Refusal)),
+  )
+
+  /// A waiting caller died without releasing its job.
+  CallerLeft(id: JobId)
+
+  /// The heartbeat's sample tick. See `client/notice`.
+  Beat
 
   PollOne(
     strand: String,
@@ -705,7 +824,18 @@ type Custody {
 }
 
 type Held {
-  Held(record: JobRecord, custody: Custody)
+  Held(record: JobRecord, custody: Custody, listener: Listener)
+}
+
+// Who is told about this job's end, as the actor holds it: `Audience`'s
+// three answers, with the waiting caller's monitor kept beside it. The
+// monitor is how a caller that dies without releasing still hands the job
+// back to its owner, rather than leaving a job nobody will ever hear
+// about.
+type Listener {
+  Owner
+  Caller(monitor: process.Monitor)
+  Program
 }
 
 type State {
@@ -725,6 +855,10 @@ type State {
     /// outlives the custody, and it outlives the *record* too, which is
     /// what covers a refused start whose cell is deleted outright.
     last_words: Dict(JobId, Subject(weft.Pulled(Settlement, RunnerFault))),
+    /// How long each owner of live work has been idle, for the heartbeat.
+    /// Volatile: the restart that forgets it also kills every job it was
+    /// counting.
+    idle: notice.IdleClock,
   )
 }
 
@@ -755,6 +889,7 @@ pub fn start(
         generator: ids.generator(wiring.clock, seed: wiring.seed),
         jobs: dict.new(),
         last_words: dict.new(),
+        idle: notice.idle_clock(),
       )
     actor.initialised(state)
     |> actor.selecting(process.new_selector() |> process.select(subject))
@@ -764,6 +899,7 @@ pub fn start(
   })
   |> actor.on_message(handle)
   |> actor.addressed(name)
+  |> actor.periodic(every: notice.heartbeat_tick_ms, sending: Beat)
   |> actor.trapping_exits(True)
   |> actor.on_shutdown(fn(state, _reason) {
     let _stopped = stop_every_job(state)
@@ -810,9 +946,50 @@ pub fn start_job(
   request request: Request,
   waiting waiting: Int,
 ) -> Result(Started, Refusal) {
+  let caller = process.self()
   ask(name, waiting, fn(reply) {
-    Start(strand:, operation:, request:, reply_with: reply)
+    Start(strand:, operation:, request:, caller:, reply_with: reply)
   })
+}
+
+/// Runs one heartbeat sample now rather than on the minute tick. For a
+/// test that cannot wait a minute for the tick; production never calls it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobs.sample_heartbeat(name)
+/// ```
+///
+@internal
+pub fn sample_heartbeat(name: address.Address(Message)) -> Nil {
+  case address.lookup(name) {
+    Ok(subject) -> process.send(subject, Beat)
+    Error(Nil) -> Nil
+  }
+}
+
+/// Gives up waiting on a job this caller started as `CallerWaiting`: from
+/// here its owner is told when it ends. A job that has already ended
+/// answers `AlreadyEnded`, and the caller renders the end itself.
+///
+/// The actor serializes this against the job's settlement, which is what
+/// makes the pair exhaustive: either the owner will be told or the caller
+/// was, and never both or neither.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobs.release_job(name, "main", id, waiting: 1000) -> Ok(jobs.Released)
+/// ```
+///
+pub fn release_job(
+  name: address.Address(Message),
+  strand strand: String,
+  id id: JobId,
+  waiting waiting: Int,
+) -> Result(Released, Refusal) {
+  ask(name, waiting, fn(reply) { Release(strand:, id:, reply_with: reply) })
 }
 
 /// One job's state and whatever it has printed since the cursors.
@@ -997,8 +1174,18 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Reap -> actor.continue(reap(state))
 
-    Start(strand:, operation:, request:, reply_with:) ->
-      admit(state, strand, operation, request, reply_with)
+    Start(strand:, operation:, request:, caller:, reply_with:) ->
+      admit(state, strand, operation, request, caller, reply_with)
+
+    Release(strand:, id:, reply_with:) -> {
+      let #(state, answer) = released(state, strand, id)
+      process.send(reply_with, answer)
+      resume(state)
+    }
+
+    CallerLeft(id:) -> resume(caller_left(state, id))
+
+    Beat -> actor.continue(beat(state))
 
     PollOne(strand:, id:, cursors:, reply_with:) -> {
       process.send(reply_with, polled(state, strand, id, cursors))
@@ -1065,7 +1252,26 @@ fn selector(state: State) -> Selector(Message) {
         }
       },
     )
+  let live = dict.fold(state.jobs, live, watching)
   dict.fold(state.last_words, live, reporting)
+}
+
+// One entry per waiting caller's monitor, mapped back to its job. A
+// specific monitor rather than every `Down`, because the actor's own
+// `ask_runner` monitors runners on its way through a poll, and a stray
+// `Down` from one of those must never read as a caller leaving.
+fn watching(
+  built: Selector(Message),
+  id: JobId,
+  held: Held,
+) -> Selector(Message) {
+  case held.listener {
+    Caller(monitor:) ->
+      process.select_specific_monitor(built, monitor, fn(_down) {
+        CallerLeft(id:)
+      })
+    Owner | Program -> built
+  }
 }
 
 fn reporting(
@@ -1096,9 +1302,10 @@ fn admit(
   strand: String,
   operation: OpId,
   request: Request,
+  caller: Pid,
   reply_with: Subject(Result(Started, Refusal)),
 ) -> actor.Next(State, Message) {
-  case admitted(state, strand, operation, request, reply_with) {
+  case admitted(state, strand, operation, request, caller, reply_with) {
     Error(refusal) -> {
       process.send(reply_with, Error(refusal))
       actor.continue(state)
@@ -1112,6 +1319,7 @@ fn admitted(
   strand: String,
   operation: OpId,
   request: Request,
+  caller: Pid,
   reply_with: Subject(Result(Started, Refusal)),
 ) -> Result(State, Refusal) {
   use runtime <- result.try(borrow(state))
@@ -1142,9 +1350,33 @@ fn admitted(
   // never waits on.
   let reports = process.new_subject()
   let _relay =
-    spawn_runner(state, record, wall_ms, reports, request.captured_policy)
-  let held = Held(record:, custody: Dispatching(reports:, reply_with:))
+    spawn_runner(
+      state,
+      record,
+      wall_ms,
+      reports,
+      request.captured_policy,
+      request.stdin,
+    )
+  let held =
+    Held(
+      record:,
+      custody: Dispatching(reports:, reply_with:),
+      listener: listening(request.audience, caller),
+    )
   Ok(State(..state, generator:, jobs: dict.insert(state.jobs, id, held)))
+}
+
+// The listener an audience starts with. A waiting caller is monitored
+// here, at admission, so a caller that dies at any point after this line
+// is seen: there is no window in which the job is attended by a process
+// nobody is watching.
+fn listening(audience: Audience, caller: Pid) -> Listener {
+  case audience {
+    NotifyOwner -> Owner
+    CallerWaiting -> Caller(monitor: process.monitor(caller))
+    ProgramWatches -> Program
+  }
 }
 
 fn borrow(state: State) -> Result(Runtime, Refusal) {
@@ -1306,6 +1538,7 @@ fn spawn_runner(
   wall_ms: Int,
   reports: Subject(weft.Pulled(Settlement, RunnerFault)),
   captured_policy: Option(SandboxPolicy),
+  stdin: StdinEnd,
 ) -> Pid {
   let wiring =
     Wiring(
@@ -1314,7 +1547,7 @@ fn spawn_runner(
     )
   let home = state.self
   let backstop = wiring.clearance_ms + wall_ms + settle_grace_ms
-  weft.new([fn() { run(wiring, record, home) }])
+  weft.new([fn() { run(wiring, record, home, stdin) }])
   |> weft.deadline(backstop)
   |> weft.start_relayed(to: reports)
 }
@@ -1325,6 +1558,7 @@ fn run(
   wiring: Wiring,
   record: JobRecord,
   home: Subject(Message),
+  stdin: StdinEnd,
 ) -> Result(Settlement, RunnerFault) {
   let events = process.new_subject()
   let asks = process.new_subject()
@@ -1342,6 +1576,14 @@ fn run(
     // reach the ladder instead of a job the actor cannot address.
     Ok(call) -> {
       let control = Control(cancel: call.cancel, stdin: call.stdin, asks:)
+
+      // Closed before anything else can reach the process, exactly as a
+      // foreground call closes it, so a command that reads stdin sees end
+      // of file rather than a pipe held open for the whole wall.
+      case stdin {
+        CloseStdin -> call.stdin(<<>>, True)
+        KeepStdinOpen -> Nil
+      }
       process.send(home, Clearance(id: record.id, outcome: Ok(control)))
       fold(
         Runner(
@@ -1835,7 +2077,20 @@ fn settled(
   id: JobId,
   settlement: Settlement,
 ) -> actor.Next(State, Message) {
-  resume(record_settlement(state, id, settlement))
+  let was = state_of(state, id)
+  let state = record_settlement(state, id, settlement)
+  announce(state, id, was)
+  resume(state)
+}
+
+// The state a job was in before the handler at hand moved it. A stop
+// somebody asked for is decided by this, not by the terminal state it
+// ends in: a job an owner killed whose helper then went away ends `Lost`,
+// which drops the cause, and would otherwise be announced as news.
+fn state_of(state: State, id: JobId) -> Option(JobState) {
+  dict.get(state.jobs, id)
+  |> result.map(fn(held) { held.record.state })
+  |> option.from_result
 }
 
 // The settlement, attributed and committed. One function, because the
@@ -1926,7 +2181,10 @@ fn lost(
   id: JobId,
   reason: jobstate.LossReason,
 ) -> actor.Next(State, Message) {
-  resume(record_loss(state, id, reason))
+  let was = state_of(state, id)
+  let state = record_loss(state, id, reason)
+  announce(state, id, was)
+  resume(state)
 }
 
 fn record_loss(state: State, id: JobId, reason: jobstate.LossReason) -> State {
@@ -2330,9 +2588,43 @@ fn reap(state: State) -> State {
       // This incarnation owns no job, so every staging file the store
       // holds belongs to one that is gone.
       let _unlinked = unlink_orphans(state)
-      State(..state, jobs: list.fold(swept, state.jobs, remember))
+      let state =
+        State(
+          ..state,
+          jobs: list.fold(swept, state.jobs, fn(jobs, swept) {
+            remember(jobs, swept.record)
+          }),
+        )
+
+      // A job this sweep declared lost ended without anybody hearing
+      // about it, so its owner is told now. One the store already held as
+      // terminal was told, or chose not to be, by the incarnation that
+      // wrote it; telling it again on every restart would wake the strand
+      // once per job it ever ran.
+      list.each(swept, fn(swept) {
+        case swept.fate {
+          Unheard -> tell(state, swept.record, no_streams())
+          Heard -> Nil
+        }
+      })
+      state
     }
   }
+}
+
+// One record as the restart sweep left it, and whether its end is still
+// news to its owner.
+type Swept {
+  Swept(record: JobRecord, fate: Fate)
+}
+
+type Fate {
+  // Already terminal when the sweep found it, or draining under a stop
+  // somebody asked for: either way nobody is owed a notice.
+  Heard
+
+  // Live until this sweep declared it lost, with nobody told.
+  Unheard
 }
 
 // One swept record, held as a job with nothing left to ask.
@@ -2344,7 +2636,7 @@ fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
   dict.insert(
     jobs,
     record.id,
-    Held(record:, custody: Detached(streams: no_streams())),
+    Held(record:, custody: Detached(streams: no_streams()), listener: Owner),
   )
 }
 
@@ -2355,7 +2647,7 @@ fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
 // A record whose `Lost` could not be written is dropped rather than kept,
 // because holding it would answer a poll with a state the store does not
 // carry — and the next boot's sweep will meet the same cell and try again.
-fn sweep(runtime: Runtime) -> Result(List(JobRecord), Refusal) {
+fn sweep(runtime: Runtime) -> Result(List(Swept), Refusal) {
   use cells <- result.try(
     api.reserved_facts(runtime, prefix: jobstate.key_prefix)
     |> result.map_error(commit_refused),
@@ -2367,8 +2659,19 @@ fn sweep(runtime: Runtime) -> Result(List(JobRecord), Refusal) {
         Error(_corrupt) -> Error(Nil)
         Ok(record) ->
           case jobstate.is_terminal(record.state) {
-            True -> Ok(record)
-            False -> reap_one(runtime, record)
+            True -> Ok(Swept(record:, fate: Heard))
+
+            // A session stop that outlived its grace leaves the record
+            // `Draining(BySessionStop)`, and this sweep is what turns it
+            // lost; the stop was chosen, so the reopen wakes nobody.
+            False -> {
+              let fate = case stopped_on_purpose(Some(record.state)) {
+                True -> Heard
+                False -> Unheard
+              }
+              reap_one(runtime, record)
+              |> result.map(fn(lost) { Swept(record: lost, fate:) })
+            }
           }
       }
     }),
@@ -2396,6 +2699,321 @@ fn unlink_orphans(state: State) -> Result(Nil, String) {
     Nil
   })
   Ok(Nil)
+}
+
+// --- telling the owner ----------------------------------------------------
+
+// A waiting caller gives up on its job. The actor serializes this against
+// the job's settlement, so exactly one of two things is true here: the job
+// is still live, and from now on its owner is told when it ends; or it
+// has already ended, silently because a caller was waiting, and that
+// caller is told so and renders the end itself.
+fn released(
+  state: State,
+  strand: String,
+  id: JobId,
+) -> #(State, Result(Released, Refusal)) {
+  case owned(state, strand, id) {
+    Error(refusal) -> #(state, Error(refusal))
+    Ok(held) ->
+      case jobstate.is_terminal(held.record.state) {
+        True -> #(forget_caller(state, held), Ok(AlreadyEnded))
+        False -> #(hand_to_owner(state, held), Ok(Released))
+      }
+  }
+}
+
+// A waiting caller died without releasing: a driver restart, or an abort
+// that reached the tool call but not the job. The job goes back to its
+// owner exactly as a release would send it. A job that had already ended
+// is left as it is, because its end was either rendered by the caller or
+// lost with it, and a notice now would be about something long settled.
+fn caller_left(state: State, id: JobId) -> State {
+  case dict.get(state.jobs, id) {
+    Error(Nil) -> state
+    Ok(held) ->
+      case jobstate.is_terminal(held.record.state) {
+        True -> forget_caller(state, held)
+        False -> hand_to_owner(state, held)
+      }
+  }
+}
+
+// A waiting caller's job, handed to its owner. A program's job stays the
+// program's: only a caller's claim is released.
+fn hand_to_owner(state: State, held: Held) -> State {
+  case held.listener {
+    Caller(monitor:) -> {
+      process.demonitor_process(monitor)
+      State(
+        ..state,
+        jobs: dict.insert(
+          state.jobs,
+          held.record.id,
+          Held(..held, listener: Owner),
+        ),
+      )
+    }
+    Owner | Program -> state
+  }
+}
+
+// A terminal job's caller monitor, dropped so the selector stops
+// carrying it. The listener becomes `Program` rather than `Owner`: the
+// job is over, and the one thing the listener still decides is whether
+// the job's end is announced, which has already been decided.
+fn forget_caller(state: State, held: Held) -> State {
+  case held.listener {
+    Caller(monitor:) -> {
+      process.demonitor_process(monitor)
+      State(
+        ..state,
+        jobs: dict.insert(
+          state.jobs,
+          held.record.id,
+          Held(..held, listener: Program),
+        ),
+      )
+    }
+    Owner | Program -> state
+  }
+}
+
+// A settled job's notice to its owner, if anybody should get one. `was` is
+// the state before this settlement, so a stop somebody asked for stays
+// silent whatever terminal state it ended in.
+//
+// Called after the terminal commit from the actor's own settlement paths,
+// and never from the session-stop drain: a job the stop ended is news to
+// nobody, and the strand it would wake is closing.
+fn announce(state: State, id: JobId, was: Option(JobState)) -> Nil {
+  case dict.get(state.jobs, id), stopped_on_purpose(was) {
+    Error(Nil), _chosen | Ok(_held), True -> Nil
+    Ok(held), False ->
+      case held.listener {
+        Owner -> tell(state, held.record, streams_of(held.custody))
+        Caller(..) | Program -> Nil
+      }
+  }
+}
+
+// Whether a job was being stopped at somebody's request: its owner's
+// kill, an operator's abort, or the session's own stop. The deadline is
+// the one cause nobody asked for, so its end is news.
+fn stopped_on_purpose(state: Option(JobState)) -> Bool {
+  case state {
+    Some(jobstate.Draining(by: jobstate.ByOwner))
+    | Some(jobstate.Draining(by: jobstate.BySessionStop))
+    | Some(jobstate.Draining(by: jobstate.ByOperationAbort)) -> True
+
+    Some(jobstate.Draining(by: jobstate.ByDeadline))
+    | Some(jobstate.Starting)
+    | Some(jobstate.Running)
+    | Some(jobstate.Exited(..))
+    | Some(jobstate.Killed(..))
+    | Some(jobstate.Lost(..))
+    | None -> False
+  }
+}
+
+// The notice itself, for a record whose end is worth telling. A delivery
+// that fails is dropped: the record is terminal and a poll reads it, and
+// the heartbeat is not what finds it, since a terminal job is not live
+// work. `docs/design-notes/async-completion-wake.md` weighs the window.
+fn tell(state: State, record: JobRecord, streams: Streams) -> Nil {
+  case worth_telling(record.state), state.wiring.runtime() {
+    True, Ok(runtime) -> {
+      let work = notice.Job(id: jobstate.job_id_to_string(record.id))
+      let _delivered =
+        notice.deliver(
+          runtime,
+          record.owner,
+          work,
+          completion_text(record, streams),
+        )
+      Nil
+    }
+    True, Error(Nil) | False, _runtime -> Nil
+  }
+}
+
+// Whether a job's end is something its owner does not already know. A
+// kill the owner asked for, an operator's abort and a session stop are all
+// ends somebody chose, and waking the owner about an abort would undo it.
+fn worth_telling(state: JobState) -> Bool {
+  case state {
+    jobstate.Exited(..) -> True
+    jobstate.Killed(by: jobstate.ByDeadline, ..) -> True
+    jobstate.Lost(..) -> True
+
+    jobstate.Killed(by: jobstate.ByOwner, ..)
+    | jobstate.Killed(by: jobstate.BySessionStop, ..)
+    | jobstate.Killed(by: jobstate.ByOperationAbort, ..)
+    | jobstate.Starting
+    | jobstate.Running
+    | jobstate.Draining(..) -> False
+  }
+}
+
+// How many bytes of each stream's last output a notice quotes. Enough for
+// a test summary or the tail of a stack trace, which is the common case a
+// notice exists to spare the model a poll for; the rest is a `job_poll`
+// or a spill ref away.
+const notice_tail_bytes = 2048
+
+// The completion notice's text. Its first line names it completely, on
+// the agreement a client's collapsed view of a `[loom]` message rests on.
+fn completion_text(record: JobRecord, streams: Streams) -> String {
+  let id = jobstate.job_id_to_string(record.id)
+  let command = list.last(record.spec.argv) |> result.unwrap("")
+  "[loom] background job "
+  <> id
+  <> " "
+  <> ended_phrase(record.state)
+  <> "\n\nCommand: "
+  <> command_excerpt([command])
+  <> ran_line(record.state)
+  <> quoted("stdout", streams.stdout)
+  <> quoted("stderr", streams.stderr)
+  <> "\n\nRead the rest with `job_poll` (id "
+  <> id
+  <> "), which also names where the whole output was stored."
+}
+
+// How long the job ran, from the helper's own report. A lost job has no
+// report, and a duration guessed from the notice's own clock would read as
+// one, so it gets no line at all.
+fn ran_line(state: JobState) -> String {
+  case state {
+    jobstate.Exited(result:) | jobstate.Killed(result:, ..) ->
+      "\nRan for " <> int.to_string(result.wall_ms / 1000) <> "s."
+    jobstate.Lost(..)
+    | jobstate.Starting
+    | jobstate.Running
+    | jobstate.Draining(..) -> ""
+  }
+}
+
+fn ended_phrase(state: JobState) -> String {
+  case state {
+    jobstate.Exited(result:) ->
+      case result.code, result.signal {
+        0, 0 -> "exited cleanly"
+        code, 0 -> "exited with code " <> int.to_string(code)
+        _code, signal -> "was killed by signal " <> int.to_string(signal)
+      }
+    jobstate.Killed(by: jobstate.ByDeadline, ..) ->
+      "was stopped at its wall deadline"
+    jobstate.Killed(..) -> "was stopped"
+    jobstate.Lost(reason: jobstate.VmRestart) ->
+      "was lost when the server restarted; what became of it is unknown"
+    jobstate.Lost(reason: jobstate.OwnerRestart) ->
+      "was lost when the jobs service restarted; what became of it is unknown"
+    jobstate.Lost(reason: jobstate.HelperLoss) ->
+      "was lost when its sandbox helper went away without reporting an exit"
+    jobstate.Starting | jobstate.Running | jobstate.Draining(..) ->
+      "is still running"
+  }
+}
+
+// One stream's last output, fenced, or nothing for a stream that printed
+// nothing.
+fn quoted(name: String, stream: Tail) -> String {
+  let retained = tail.since(stream, 0).bytes
+  case bit_array.byte_size(retained) {
+    0 -> ""
+    _size ->
+      "\n\n--- last "
+      <> name
+      <> " ---\n"
+      <> last_text(retained, notice_tail_bytes)
+      <> "\n--- end "
+      <> name
+      <> " ---"
+  }
+}
+
+// The last `limit` bytes as text. A cut can land inside a character, so up
+// to three leading bytes are dropped to reach a boundary; output that is
+// not text at all is summarized rather than pasted into a transcript.
+fn last_text(bytes: BitArray, limit: Int) -> String {
+  let size = bit_array.byte_size(bytes)
+  let start = int.max(size - limit, 0)
+  bit_array.slice(bytes, start, size - start)
+  |> result.map(utf8_from(_, 0))
+  |> result.unwrap("")
+}
+
+fn utf8_from(bytes: BitArray, skipped: Int) -> String {
+  case bit_array.to_string(bytes), skipped < 3 {
+    Ok(text), _room -> text
+
+    Error(Nil), True ->
+      bit_array.slice(bytes, 1, bit_array.byte_size(bytes) - 1)
+      |> result.map(utf8_from(_, skipped + 1))
+      |> result.unwrap("")
+
+    Error(Nil), False ->
+      "["
+      <> int.to_string(bit_array.byte_size(bytes))
+      <> " bytes of non-UTF-8 output]"
+  }
+}
+
+// --- the idle heartbeat ---------------------------------------------------
+
+// One heartbeat sample. Every owner of a live job is asked whether its
+// strand has an open run, and one that has been idle for the whole
+// interval is woken with a listing of what it is still running.
+//
+// A job a caller is waiting on counts as live work too. Its owner is busy
+// by definition while the caller waits, so it never produces a beat on
+// its own, and listing it alongside the owner's other jobs is the truth.
+fn beat(state: State) -> State {
+  let interval = state.wiring.policy.heartbeat_ms
+  use <- bool.guard(when: interval <= 0, return: state)
+  case state.wiring.runtime() {
+    Error(Nil) -> state
+    Ok(runtime) -> {
+      let #(now, _clock) = clock.read(state.wiring.clock)
+      let owners = live_by_owner(state.jobs)
+      let idle = notice.retain(state.idle, dict.keys(owners))
+      let idle =
+        dict.fold(owners, idle, fn(idle, owner, records) {
+          notice.sample(
+            runtime,
+            idle,
+            owner,
+            now:,
+            interval_ms: interval,
+            lines: fn() { list.map(records, heartbeat_line(_, now)) },
+          )
+        })
+      State(..state, idle:)
+    }
+  }
+}
+
+// Every live job, grouped by the strand that owns it.
+fn live_by_owner(jobs: Dict(JobId, Held)) -> Dict(String, List(JobRecord)) {
+  dict.fold(jobs, dict.new(), fn(owners, _id, held) {
+    case jobstate.is_terminal(held.record.state) {
+      True -> owners
+      False ->
+        dict.upsert(owners, held.record.owner, fn(existing) {
+          [held.record, ..option.unwrap(existing, [])]
+        })
+    }
+  })
+}
+
+fn heartbeat_line(record: JobRecord, now: Int) -> String {
+  "job "
+  <> jobstate.job_id_to_string(record.id)
+  <> ", running for "
+  <> notice.minutes(now - record.started_at_ms)
+  <> ": "
+  <> command_excerpt([list.last(record.spec.argv) |> result.unwrap("")])
 }
 
 // --- session stop ---------------------------------------------------------
@@ -2462,13 +3080,25 @@ fn drain(state: State, until: Int) -> State {
       drain(state, until)
     }
 
+    // A caller releasing during the stop is told the job is going with the
+    // session: nobody will be notified of an end the stop itself caused.
+    Ok(Release(reply_with:, ..)) -> {
+      process.send(
+        reply_with,
+        Error(Unavailable(reason: "this session is stopping")),
+      )
+      drain(state, until)
+    }
+
     Ok(Reap)
     | Ok(PollOne(..))
     | Ok(ListAll(..))
     | Ok(LiveJobs(..))
     | Ok(Kill(..))
     | Ok(Write(..))
-    | Ok(DeadlinePassed(..)) -> drain(state, until)
+    | Ok(DeadlinePassed(..))
+    | Ok(CallerLeft(..))
+    | Ok(Beat) -> drain(state, until)
   }
 }
 

@@ -1,4 +1,4 @@
-//// The host side of the model-facing background-jobs door: the four
+//// The host side of the model-facing background-jobs door: the six
 //// closures `tools/job` and `cap/job` call, and every bound they state
 //// but do not check.
 ////
@@ -56,8 +56,17 @@
 //// other. Its two entry points are the whole of what reads this door:
 //// `jobtools.seam` fills the `job_*` tools, and
 //// `jobtools.capability_door` fills the code-mode router's. The door's
-//// *shape* is what is frozen here: five closures, keyed on the caller's
+//// *shape* is what is frozen here: six closures, keyed on the caller's
 //// strand.
+////
+//// ## Who hears about a job's end
+////
+//// A start names its `jobs.Audience`, because the door is the one place
+//// that knows which surface is asking. `bash` in background mode starts a
+//// job its owner is told about when it ends; auto-mode `bash` starts one
+//// a tool call is waiting on, silent until that call `release`s it; and a
+//// code-mode program's job is the program's to watch and never notifies.
+//// `docs/design-notes/async-completion-wake.md` has the table.
 
 import broker/policy
 import client/jobs.{type Cursors, type Listed, type Polled, type Started}
@@ -131,7 +140,7 @@ pub type Wiring {
   )
 }
 
-/// The four operations, keyed on the caller's strand.
+/// The six operations, keyed on the caller's strand.
 ///
 /// Keyed on the strand rather than on a `tools/tool.Ctx` because two
 /// doors reach this store — the `job_*` tools and the `job.*` code-mode
@@ -150,11 +159,26 @@ pub type Door {
   Door(
     /// The caller's strand, the operation the job clears under, the
     /// command, the wall it asked for in milliseconds — `None` for the
-    /// default hour — and the invocation's captured policy when available.
-    /// Returns once the clearance has answered, so a
-    /// policy refusal reaches the caller rather than the next poll.
-    start: fn(String, OpId, String, Option(Int), Option(policy.SandboxPolicy)) ->
-      Result(Started, jobs.Refusal),
+    /// default hour — the invocation's captured policy when available, and
+    /// who is told when it ends. Returns once the clearance has answered,
+    /// so a policy refusal reaches the caller rather than the next poll.
+    ///
+    /// The audience also decides stdin. A `CallerWaiting` job stands in
+    /// for a foreground call, so its stdin is closed at start as a
+    /// foreground call's is; every other job keeps stdin open, because
+    /// `job_send` is how a model drives one.
+    start: fn(
+      String,
+      OpId,
+      String,
+      Option(Int),
+      Option(policy.SandboxPolicy),
+      jobs.Audience,
+    ) -> Result(Started, jobs.Refusal),
+    /// The caller's strand and the job's id: gives up waiting on a
+    /// `CallerWaiting` job, so its owner is told when it ends. See
+    /// `jobs.release_job` for why the answer is exhaustive.
+    release: fn(String, String) -> Result(jobs.Released, jobs.Refusal),
     /// The caller's strand, the job's id, how long to wait for it to
     /// finish in milliseconds, and where the last poll left off in each
     /// stream. A job still running when the wait expires is a successful
@@ -185,37 +209,46 @@ pub type Door {
 /// ```
 ///
 pub fn door(wiring: Wiring) -> Door {
+  // The two fields most closures read, projected so each closure holds a
+  // name and a number rather than the whole wiring record.
+  let name = wiring.name
+  let clearance_ms = wiring.clearance_ms
   Door(
-    start: fn(strand, operation, command, wall_ms, captured_policy) {
+    start: fn(strand, operation, command, wall_ms, captured_policy, audience) {
+      let stdin = case audience {
+        jobs.CallerWaiting -> jobs.CloseStdin
+        jobs.NotifyOwner | jobs.ProgramWatches -> jobs.KeepStdinOpen
+      }
       jobs.start_job(
-        wiring.name,
+        name,
         strand:,
         operation:,
-        request: jobs.Request(command:, wall_ms:, captured_policy:),
-        waiting: wiring.clearance_ms + start_margin_ms,
+        request: jobs.Request(
+          command:,
+          wall_ms:,
+          captured_policy:,
+          audience:,
+          stdin:,
+        ),
+        waiting: clearance_ms + start_margin_ms,
       )
+    },
+    release: fn(strand, id) {
+      use id <- result.try(parse(id))
+      jobs.release_job(name, strand:, id:, waiting: ask_timeout_ms)
     },
     poll: fn(strand, id, wait_ms, cursors) {
       use id <- result.try(parse(id))
       poll_for(wiring, strand, id, wait_ms, cursors)
     },
-    list: fn(strand) {
-      jobs.list_jobs(wiring.name, strand:, waiting: ask_timeout_ms)
-    },
+    list: fn(strand) { jobs.list_jobs(name, strand:, waiting: ask_timeout_ms) },
     kill: fn(strand, id) {
       use id <- result.try(parse(id))
-      jobs.kill_job(wiring.name, strand:, id:, waiting: ask_timeout_ms)
+      jobs.kill_job(name, strand:, id:, waiting: ask_timeout_ms)
     },
     send: fn(strand, id, data, end) {
       use id <- result.try(parse(id))
-      jobs.write_stdin(
-        wiring.name,
-        strand:,
-        id:,
-        data:,
-        end:,
-        waiting: ask_timeout_ms,
-      )
+      jobs.write_stdin(name, strand:, id:, data:, end:, waiting: ask_timeout_ms)
     },
   )
 }
@@ -237,7 +270,10 @@ pub fn door(wiring: Wiring) -> Door {
 pub fn none() -> Door {
   let absent = jobs.Unavailable(reason: "this session runs no background jobs")
   Door(
-    start: fn(_strand, _operation, _command, _wall, _policy) { Error(absent) },
+    start: fn(_strand, _operation, _command, _wall, _policy, _audience) {
+      Error(absent)
+    },
+    release: fn(_strand, _id) { Error(absent) },
     poll: fn(_strand, _id, _wait, _cursors) { Error(absent) },
     list: fn(_strand) { Error(absent) },
     kill: fn(_strand, _id) { Error(absent) },

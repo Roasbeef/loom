@@ -42,6 +42,10 @@ fn padded_jobs(padding_words: Int) -> job.Jobs {
       }
     },
     kill: fn(_ctx, _id) { Ok(Nil) },
+    attend: fn(_ctx, _command) {
+      Ok(job.Started(id: "job", deadline_ms: 0, wall_ms: 0))
+    },
+    release: fn(_ctx, _id) { Ok(job.Released) },
     send: fn(_ctx, _id, _data, _end) { Ok(Nil) },
     max_wait_ms: 5000,
   )
