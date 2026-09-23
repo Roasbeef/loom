@@ -1699,5 +1699,18 @@ after an execution has closed; the phase still governs whether input is open.
 The peer message section says `stored`, never `read` or `completed`; inherited
 branch entries may appear. Workflow counts are durable step intents, not child
 outcomes. The source link fact lacks wake scope, so the tab labels that value
-unavailable rather than inferring it. Peer linking and revocation controls
-remain follow-up work (#485).
+unavailable rather than inferring it.
+
+`/peers` and `p` from `/agents` open `PeerLinkManager` for the selected exact
+session and strand. `tui/peer_links.State` owns the grant inspection, target
+strand draft, selected row, catalogue revision and continuation cursors. The
+overlay never changes the composer recipient or opens a saved session. A link
+starts with `BusyOnly`; the operator explicitly reviews its direction and wake
+permission before `LinkPeers`. A successful mutation returns to browsing, and
+`operation_result` keeps its acknowledgement visible through the inspection
+refresh, including a partial unlink. The grant and session lists scroll with
+selection while reserving rows for the result and controls. Target-session
+pages retain the first catalogue revision, so a later page cannot silently
+mix another catalogue snapshot. Control requests still carry the owner's epoch
+and are checked by the daemon; TUI selection itself confers no peer authority.
+
