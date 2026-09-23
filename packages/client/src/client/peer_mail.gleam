@@ -73,6 +73,9 @@ pub type Command {
   /// Returns this strand's explicit outgoing links.
   Links(source_strand: String)
 
+  /// Returns incoming grants to one exact recipient strand for owner inspection.
+  Grants(target_strand: String)
+
   /// Commits the message and request identity together.
   Deliver(source: Source, target: String, message_id: String, text: String)
 
@@ -208,6 +211,21 @@ pub fn handle(
     Links(source) -> {
       use links <- result.try(outgoing_links(runtime, source))
       Ok(json.Array(list.map(links, fn(pair) { pair.1 })))
+    }
+    Grants(target) -> {
+      use grants <- result.try(
+        api.reserved_facts(runtime, grant_prefix)
+        |> result.map_error(string.inspect),
+      )
+      use grants <- result.try(
+        list.try_map(grants, fn(pair) { decode_grant(pair.1) }),
+      )
+      Ok(
+        grants
+        |> list.filter(fn(grant) { grant.target_strand == target })
+        |> list.map(grant_value)
+        |> json.Array,
+      )
     }
     Deliver(source, target, id, body) ->
       deliver(runtime, clock, source, target, id, body)

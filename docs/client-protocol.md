@@ -441,7 +441,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:957`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:981`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -819,7 +819,7 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default` and `operations.get`. Every mutating control command
+`sessions.default`, `operations.get`, and `peers.inspect`. Every mutating control command
 is refused. Source: (`client/daemon/server.gleam:443-463`).
 
 That includes `sessions.delete`, which is a mutation like any other.
@@ -870,6 +870,31 @@ receipt. Retrying requires the same message ID, target, and text. A changed body
 is refused; revoking a grant can also refuse a retry. During daemon drain the
 command is refused like other control mutations. See the
 [API guide](async-collaboration.md#peer-messaging) for an example.
+
+### 3.20 `peers.inspect`
+
+An owner reads the peer authority attached to one resident source session and
+strand. The request carries the current `epoch`, canonical `source_session`,
+and non-empty `source_strand`:
+
+```json
+{"v":2,"id":10,"cmd":"peers.inspect","body":{"source_session":"0198c0de-0000-7000-8000-000000000001","source_strand":"main","epoch":"ep-7f3a"}}
+```
+
+The `peers.inspect` response body contains `source_session`, `source_strand`,
+source catalogue `metadata`, `outgoing` links, and `incoming` grants. Each
+outgoing row names the target session and strand, includes its catalogue
+metadata and `exported_strands`, and gives the current `wake` permission at
+the top level. If the recipient is saved or unavailable, `exported_strands`
+and `wake` are `null`; the row remains visible. Incoming rows name the exact
+source coordinates, include source catalogue metadata, and report the
+recipient-owned `wake` permission.
+
+The server checks owner authority and epoch before resolving the source. A
+saved source is refused. The command never opens a saved target, and it
+remains readable on an existing control socket during daemon drain. The result
+is an observation; subsequent sends still check the current grant. See
+[Protocol 049](../protocol-change/049-peer-inspection.md) for the decision.
 
 ---
 
@@ -2964,7 +2989,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:298`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:311`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

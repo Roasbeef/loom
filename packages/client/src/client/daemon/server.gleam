@@ -432,7 +432,8 @@ fn control(
           // rather than inheriting "keep serving" from a catch-all.
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
-            protocol.LinkPeers(..)
+            protocol.InspectPeers(..)
+            | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
             | protocol.SendPeer(..)
             | protocol.Status
@@ -472,6 +473,7 @@ fn control(
 fn control_use(command: protocol.Command) {
   case command {
     protocol.Status
+    | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
@@ -539,6 +541,28 @@ fn dispatch(
   // authority is narrower: an operator may open a granted identity, but cannot
   // choose another workspace, configuration, or durable default.
   case command {
+    protocol.InspectPeers(source, strand, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use endpoint <- result.try(peer_endpoint(config, state.registry, source))
+      use metadata <- result.try(
+        manager.get(state.registry, source)
+        |> result.map(view_json)
+        |> result.map_error(error_code),
+      )
+      let registry = state.registry
+      let directory =
+        peers.Directory(
+          resolve: fn(id) { peer_endpoint(config, registry, id) },
+          describe: fn(id) {
+            manager.get(registry, id)
+            |> result.map(view_json)
+            |> result.map_error(error_code)
+          },
+        )
+      peers.inspect(peers.Wiring(endpoint, metadata, Some(directory)), strand)
+      |> result.map(fn(value) { #("peers.inspect", value) })
+    }
     protocol.LinkPeers(source, from, target, to, wake, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

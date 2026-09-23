@@ -175,6 +175,72 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
   Ok(json.Array(rows))
 }
 
+/// Reads one resident strand's outgoing links and incoming operator grants.
+/// Saved recipients remain visible as unavailable rows; inspection never
+/// resolves them into a running session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.inspect(wiring, "main")
+/// ```
+pub fn inspect(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
+  use _ <- result.try(wiring.own.call(peer_mail.Activity(strand)))
+  use outgoing <- result.try(roster(wiring, strand))
+  use incoming <- result.try(wiring.own.call(peer_mail.Grants(strand)))
+  use outgoing <- result.try(case outgoing {
+    json.Array(rows) -> list.try_map(rows, inspect_outgoing)
+    _ -> Error("invalid outgoing peer roster")
+  })
+  use incoming <- result.try(case incoming {
+    json.Array(rows) ->
+      list.try_map(rows, fn(row) {
+        use source <- result.try(text(row, "source_session"))
+        let metadata = case describe(wiring, source) {
+          Ok(value) -> value
+          Error(reason) -> json.Object([#("unavailable", json.String(reason))])
+        }
+        case row {
+          json.Object(fields) ->
+            Ok(json.Object([#("metadata", metadata), ..fields]))
+          _ -> Error("invalid incoming peer grant")
+        }
+      })
+    _ -> Error("invalid incoming peer grants")
+  })
+  Ok(
+    json.Object([
+      #("source_session", json.String(wiring.own.session)),
+      #("source_strand", json.String(strand)),
+      #("metadata", wiring.metadata),
+      #("outgoing", json.Array(outgoing)),
+      #("incoming", json.Array(incoming)),
+    ]),
+  )
+}
+
+fn inspect_outgoing(row: JsonValue) -> Result(JsonValue, String) {
+  use target <- result.try(text(row, "target_strand"))
+  use exported <- result.try(field(row, "exported_strands"))
+  let wake = case exported {
+    json.Array(rows) -> {
+      case
+        list.find(rows, fn(value) {
+          field(value, "strand") == Ok(json.String(target))
+        })
+      {
+        Ok(value) -> field(value, "wake") |> result.unwrap(json.Null)
+        Error(Nil) -> json.Null
+      }
+    }
+    _ -> json.Null
+  }
+  case row {
+    json.Object(fields) -> Ok(json.Object([#("wake", wake), ..fields]))
+    _ -> Error("invalid outgoing peer row")
+  }
+}
+
 fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {
   use value <- result.try(wiring.own.call(peer_mail.Links(strand)))
   case value {
