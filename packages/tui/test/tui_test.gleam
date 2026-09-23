@@ -35,6 +35,7 @@ import tui/markdown
 import tui/model as tui_model
 import tui/model_selector
 import tui/pacing
+import tui/projection
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/render
@@ -161,7 +162,7 @@ pub fn footer_rows_depend_on_the_width_alone_test() {
   assert layout.transcript_height(40, 3, 2) == 32
   assert layout.transcript_height(40, 3, 3) == 31
   assert layout.transcript_height(40, 3, 1) == 33
-  assert tui.viewport_height_changed(
+  assert projection.viewport_height_changed(
     layout.transcript_height(40, 3, 2),
     layout.transcript_height(40, 3, 1),
   )
@@ -878,16 +879,16 @@ pub fn transcript_scroll_clamps_at_the_live_tail_test() {
 }
 
 pub fn transcript_scroll_clamps_at_the_oldest_viewport_test() {
-  assert tui.bounded_scroll_offset(80, 50, 20) == 30
-  assert tui.bounded_scroll_offset(3, 10, 20) == 0
-  assert tui.viewport_height_changed(18, 21)
-  assert !tui.viewport_height_changed(21, 21)
+  assert projection.bounded_scroll_offset(80, 50, 20) == 30
+  assert projection.bounded_scroll_offset(3, 10, 20) == 0
+  assert projection.viewport_height_changed(18, 21)
+  assert !projection.viewport_height_changed(21, 21)
 }
 
 pub fn streaming_output_preserves_the_scrollback_anchor_test() {
-  assert tui.anchored_scroll_offset(0, 20, 23) == 0
+  assert projection.anchored_scroll_offset(0, 20, 23) == 0
     as "a reader at the tail keeps following it"
-  assert tui.anchored_scroll_offset(8, 20, 23) == 11
+  assert projection.anchored_scroll_offset(8, 20, 23) == 11
     as "rows arriving below the reader move the tail-relative offset"
 }
 
@@ -899,9 +900,9 @@ pub fn streaming_output_preserves_the_scrollback_anchor_test() {
 /// it; the second case is the one that made scrollback unusable during a
 /// running turn.
 pub fn shrinking_the_live_tail_holds_the_scrollback_anchor_test() {
-  assert tui.anchored_scroll_offset(8, 20, 17) == 8
+  assert projection.anchored_scroll_offset(8, 20, 17) == 8
     as "a deep offset is unmoved by rows retiring below it"
-  assert tui.anchored_scroll_offset(2, 20, 17) == 2
+  assert projection.anchored_scroll_offset(2, 20, 17) == 2
     as "a shallow offset is held rather than snapped to the live tail"
 }
 
