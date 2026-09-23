@@ -30,7 +30,7 @@ Programs run concurrently within kernel-enforced execution boundaries.
 | **Agent collaboration** | Granted peer messaging across strands and resident sessions, plus named workflow steps that reuse durable child results. |
 | **BEAM concurrency** | Lightweight processes and OTP supervision for agents, streams, and tool execution, with independent lifecycles and explicit cancellation. |
 | **Controlled execution** | Sandboxed commands and agent-written programs, capability-checked effects, and approvals bound to the action being approved. |
-| **Model routing and advisors** | Choose models by role, configure fallbacks, and pair a fast primary with a separate model that reviews its work. |
+| **Model routing and advisors** | Choose models by role, configure fallbacks, pair a fast primary with a separate model that reviews its work, and pin a goal the pair works toward across runs. |
 | **Memory and automation** | Search prior sessions, retain workspace knowledge, schedule follow-ups, and manage background jobs. |
 | **Extensibility** | Anthropic, OpenAI-compatible Chat Completions, public OpenAI Responses, and Gemini adapters; MCP servers, Markdown skills, and typed Gleam extensions. |
 
@@ -327,6 +327,26 @@ flowchart TB
 
 Start with the [advisor catalogue](docs/examples/loom-advisor.toml), then read
 the [advisor guide](docs/architecture/advisor.md) for delivery semantics.
+
+### Session goals
+
+With an advisor configured, you can pin an objective and let Loom work toward
+it across runs. After each primary run, the advisor reviews the new work and
+answers `continue` or `complete`. A continuation starts another run with the
+advisor's note; completion records the note and stops. An optional check
+command runs in the sandbox before each review, so the advisor judges against
+real output such as a test run.
+
+```text
+/goal --budget 400000 get the branch green
+/goal check make check
+```
+
+The loop is bounded by a token budget, a continuation cap, and progress checks.
+Only the operator can set, pause, resume, or clear a goal; the primary model
+receives the objective but cannot change or complete it. `/goal` shows the
+current state, and aborting a goal-driven run pauses the goal rather than
+erasing it. See the [goals guide](docs/architecture/goals.md).
 
 ## Context, memory, and automation
 
