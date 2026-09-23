@@ -215,6 +215,11 @@ and never opens one. The target strand name is explicit because the daemon does
 not enumerate resident strands. Link management uses the daemon's authenticated
 owner control connection and leaves the conversation draft unchanged.
 
+The TUI loads a bounded inspection page at a time. Press `n` to append the next
+page; the view merges duplicate coordinates so a grant that moves across a page
+boundary does not appear twice. Each page is a fresh observation, and the daemon
+checks current authority again when it handles a link or revoke request.
+
 `busy_only` permits messages during an existing run. `may_wake` also permits a
 new run on that exported strand. Neither opens a saved session. A link permits
 neither joining the peer nor cancelling it, changing its configuration, or

@@ -61,6 +61,16 @@ pub type Inspection {
   )
 }
 
+/// One bounded response page and its opaque continuation, when present.
+pub type InspectionPage {
+  InspectionPage(
+    /// Grants decoded from this daemon response.
+    inspection: Inspection,
+    /// Cursor to fetch the next page.
+    next: Option(String),
+  )
+}
+
 /// The overlay's current interaction stage.
 pub type Prompt {
   /// Inspect and revoke grants or begin a new directional grant.
@@ -103,6 +113,8 @@ pub type State {
     sessions: List(Session),
     /// Current authorized inspection, absent until its first reply.
     inspection: Option(Inspection),
+    /// Next daemon page to append to the current inspection.
+    next_cursor: Option(String),
     /// Visible grant index across outgoing rows followed by incoming rows.
     selected_grant: Int,
     /// Highlighted target session while choosing a new link.
@@ -128,6 +140,9 @@ pub type Action {
   /// Inspect grants for the selected source coordinates.
   Inspect(session: String, strand: String)
 
+  /// Fetches the next bounded grant page.
+  NextPage(cursor: String)
+
   /// Create exactly one directional grant.
   Link(proposal: Proposal)
 
@@ -151,6 +166,7 @@ pub fn new(source_session: String, source_strand: String) -> State {
     source_strand:,
     sessions: [],
     inspection: None,
+    next_cursor: None,
     selected_grant: 0,
     selected_session: 0,
     target_strand: "",
@@ -186,18 +202,50 @@ pub fn loaded(
   state: State,
   sessions: List(Session),
   inspection: Inspection,
+  next_cursor: Option(String),
 ) -> State {
-  let notice = case state.notice {
-    "loading peer grants" ->
-      "owner-authorized grants · saved targets stay closed"
-    previous -> previous
+  let notice = case next_cursor {
+    Some(_) -> "more grants available · press n to continue"
+    None -> "peer inspection current · saved targets stay closed"
   }
   State(
     ..state,
     sessions:,
     inspection: Some(inspection),
+    next_cursor:,
     selected_grant: int.min(state.selected_grant, last_grant(inspection)),
     notice:,
+  )
+}
+
+/// Appends one fresh page, replacing duplicate exact coordinates.
+///
+/// A grant can move across a cursor boundary while the operator pages. Merge
+/// by its four coordinates so a repeated row replaces the older observation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = peer_links.append_page(state, page)
+/// ```
+pub fn append_page(state: State, page: InspectionPage) -> State {
+  let merged = case state.inspection {
+    None -> page.inspection
+    Some(previous) ->
+      Inspection(
+        outgoing: merge_grants(previous.outgoing, page.inspection.outgoing),
+        incoming: merge_grants(previous.incoming, page.inspection.incoming),
+      )
+  }
+  State(
+    ..state,
+    inspection: Some(merged),
+    next_cursor: page.next,
+    selected_grant: int.min(state.selected_grant, last_grant(merged)),
+    notice: case page.next {
+      Some(_) -> "more grants available · press n to continue"
+      None -> "peer inspection complete"
+    },
   )
 }
 
@@ -249,6 +297,11 @@ fn update_browsing(key: keys.Key, state: State) -> Action {
     keys.Escape -> Close
     keys.Char("l") -> Continue(State(..state, prompt: ChoosingSession))
     keys.Char("r") -> Inspect(state.source_session, state.source_strand)
+    keys.Char("n") ->
+      case state.next_cursor {
+        Some(cursor) -> NextPage(cursor)
+        None -> Continue(State(..state, notice: "no more peer pages"))
+      }
     keys.Up ->
       Continue(
         State(..state, selected_grant: wrap_up(state.selected_grant, grants)),
@@ -452,10 +505,17 @@ fn render_lines(state: State, width: Int, height: Int) {
     Confirming(proposal) -> confirmation_lines(state, proposal, width)
   }
   let footer = case state.prompt {
-    Browsing ->
+    Browsing -> {
+      let continuation = case state.next_cursor {
+        Some(_) -> " · n load more"
+        None -> ""
+      }
       quiet(
-        "↑↓ select grant · d revoke direction · l link · v add reverse · r refresh · /agents then p selects source strand · Esc close",
+        "↑↓ select · d revoke · l link · v reverse · r refresh · p from agents"
+        <> continuation
+        <> " · Esc close",
       )
+    }
     ChoosingSession ->
       quiet(
         "↑↓ select resident session · Enter · saved sessions stay disabled · Esc back",
@@ -523,8 +583,16 @@ fn listing_lines(state: State, width: Int) {
       ]
     })
   case rendered {
-    [] -> [header, quiet("No incoming or outgoing grants for this strand.")]
-    rows -> [header, ..rows]
+    [] -> [
+      header,
+      quiet("No incoming or outgoing grants for this strand."),
+      quiet("Each page is fresh; the daemon rechecks every mutation."),
+    ]
+    rows -> [
+      header,
+      quiet("Each page is fresh; the daemon rechecks every mutation."),
+      ..rows
+    ]
   }
 }
 
@@ -578,21 +646,22 @@ fn confirmation_lines(state: State, pending: Proposal, width: Int) {
   ]
 }
 
-/// Decodes the owner-only inspect response into exact directions.
+/// Decodes one owner-only inspect page into exact directions.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let inspection = peer_links.decode_inspection(document)
+/// let page = peer_links.decode_inspection_page(document, "session", "main")
 /// ```
-pub fn decode_inspection(
+pub fn decode_inspection_page(
   document: json.JsonValue,
   source_session: String,
   source_strand: String,
-) -> Result(Inspection, String) {
+) -> Result(InspectionPage, String) {
   use fields <- result.try(object(document))
   use outgoing_value <- result.try(field(fields, "outgoing"))
   use incoming_value <- result.try(field(fields, "incoming"))
+  use next_value <- result.try(field(fields, "next"))
   use outgoing_rows <- result.try(array(outgoing_value))
   use incoming_rows <- result.try(array(incoming_value))
   use outgoing <- result.try(
@@ -605,7 +674,28 @@ pub fn decode_inspection(
       decode_incoming(row, source_session, source_strand)
     }),
   )
-  Ok(Inspection(outgoing:, incoming:))
+  use next <- result.try(cursor_at(next_value))
+  Ok(InspectionPage(Inspection(outgoing:, incoming:), next))
+}
+
+/// Decodes the grant portion of a page without exposing its cursor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let inspection = peer_links.decode_inspection(document, "session", "main")
+/// ```
+pub fn decode_inspection(
+  document: json.JsonValue,
+  source_session: String,
+  source_strand: String,
+) -> Result(Inspection, String) {
+  use page <- result.try(decode_inspection_page(
+    document,
+    source_session,
+    source_strand,
+  ))
+  Ok(page.inspection)
 }
 
 fn decode_outgoing(value, source_session, source_strand) {
@@ -645,6 +735,29 @@ fn grants(optional: Option(Inspection)) -> List(Grant) {
     Some(inspection) -> list.append(inspection.outgoing, inspection.incoming)
     None -> []
   }
+}
+
+fn merge_grants(previous: List(Grant), additions: List(Grant)) -> List(Grant) {
+  list.fold(additions, previous, fn(rows, addition) {
+    let exists = list.any(rows, fn(row) { same_grant(row, addition) })
+    case exists {
+      True ->
+        list.map(rows, fn(row) {
+          case same_grant(row, addition) {
+            True -> addition
+            False -> row
+          }
+        })
+      False -> list.append(rows, [addition])
+    }
+  })
+}
+
+fn same_grant(left: Grant, right: Grant) -> Bool {
+  left.source_session == right.source_session
+  && left.source_strand == right.source_strand
+  && left.target_session == right.target_session
+  && left.target_strand == right.target_strand
 }
 
 fn proposal(state: State) -> Proposal {
@@ -752,6 +865,14 @@ fn array(value) {
 fn field(fields, name) {
   list.key_find(fields, name)
   |> result.map_error(fn(_) { "missing peer field " <> name })
+}
+
+fn cursor_at(value: json.JsonValue) -> Result(Option(String), String) {
+  case value {
+    json.Null -> Ok(None)
+    json.String(cursor) -> Ok(Some(cursor))
+    _ -> Error("invalid peer inspection cursor")
+  }
 }
 
 fn text_at(fields, name) {

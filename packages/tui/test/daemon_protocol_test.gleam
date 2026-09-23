@@ -132,7 +132,7 @@ pub fn peer_control_commands_bind_epoch_exact_coordinates_and_wake_test() {
   let epoch = protocol.Epoch("current")
   let source = "00000000-0000-7000-8000-000000000001"
   let target = "00000000-0000-7000-8000-000000000002"
-  assert protocol.mutates(protocol.InspectPeers(source, "main")) == False
+  assert protocol.mutates(protocol.InspectPeers(source, "main", None)) == False
   assert protocol.mutates(protocol.LinkPeers(
     source,
     "main",
@@ -140,9 +140,17 @@ pub fn peer_control_commands_bind_epoch_exact_coordinates_and_wake_test() {
     "reviewer",
     protocol.BusyOnly,
   ))
-  assert protocol.encode(1, protocol.InspectPeers(source, "main"), epoch)
+  assert protocol.encode(1, protocol.InspectPeers(source, "main", None), epoch)
     == Ok(
       "{\"v\":2,\"id\":1,\"cmd\":\"peers.inspect\",\"body\":{\"epoch\":\"current\",\"source_session\":\"00000000-0000-7000-8000-000000000001\",\"source_strand\":\"main\"}}",
+    )
+  assert protocol.encode(
+      4,
+      protocol.InspectPeers(source, "main", Some("cursor-2")),
+      epoch,
+    )
+    == Ok(
+      "{\"v\":2,\"id\":4,\"cmd\":\"peers.inspect\",\"body\":{\"epoch\":\"current\",\"source_session\":\"00000000-0000-7000-8000-000000000001\",\"source_strand\":\"main\",\"after\":\"cursor-2\"}}",
     )
   assert protocol.encode(
       2,

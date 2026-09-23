@@ -171,6 +171,8 @@ pub type Command {
     source_session: String,
     /// Exact source strand whose incoming and outgoing grants are inspected.
     source_strand: String,
+    /// Opaque continuation returned by the previous bounded inspection page.
+    after: Option(String),
   )
 
   /// Creates one exact directional peer grant.
@@ -529,10 +531,14 @@ fn command_fields(command: Command, epoch: Epoch) {
       [#("epoch", json.String(epoch_value)), ..list.append(fields, other)]
     }
     Shutdown -> Ok([#("epoch", json.String(epoch_value))])
-    InspectPeers(source, strand) -> {
+    InspectPeers(source, strand, after) -> {
       use fields <- result.try(peer_session_field(source, "source_session"))
       use other <- result.try(peer_strand_field(strand, "source_strand"))
-      Ok([#("epoch", json.String(epoch_value)), ..list.append(fields, other)])
+      use cursor <- result.try(optional_text_field(after, "after", 4096))
+      Ok([
+        #("epoch", json.String(epoch_value)),
+        ..list.append(fields, list.append(other, cursor))
+      ])
     }
     LinkPeers(source, from, target, to, wake) -> {
       use source_fields <- result.try(peer_session_field(
@@ -598,6 +604,20 @@ fn peer_strand_field(strand: String, key: String) {
     },
   )
   Ok([#(key, json.String(strand))])
+}
+
+fn optional_text_field(value: Option(String), key: String, limit: Int) {
+  case value {
+    None -> Ok([])
+    Some(text) ->
+      case string.byte_size(text) > 0 {
+        True -> {
+          use text <- result.try(bounded_text(json.String(text), limit))
+          Ok([#(key, json.String(text))])
+        }
+        False -> Error("invalid empty cursor")
+      }
+  }
 }
 
 fn identity_fields(id: String) {

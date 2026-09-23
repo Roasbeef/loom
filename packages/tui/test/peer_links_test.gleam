@@ -1,10 +1,11 @@
 import core/json
 import etui/keys
-import gleam/option.{Some}
+import gleam/list
+import gleam/option.{None, Some}
 import tui/daemon/protocol
 import tui/peer_links
 
-const inspection = "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[{\"source_session\":\"sender-id\",\"source_strand\":\"builder\",\"target_strand\":\"main\",\"wake\":\"may_wake\",\"metadata\":{\"status\":\"saved\"}}]}"
+const inspection = "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[{\"source_session\":\"sender-id\",\"source_strand\":\"builder\",\"target_strand\":\"main\",\"wake\":\"may_wake\",\"metadata\":{\"status\":\"saved\"}}],\"next\":null}"
 
 pub fn inspection_keeps_exact_directions_and_wake_permissions_test() {
   let assert Ok(document) = json.parse(inspection)
@@ -34,6 +35,46 @@ pub fn inspection_keeps_exact_directions_and_wake_permissions_test() {
     ]
 }
 
+pub fn inspection_pages_continue_and_replace_duplicate_coordinates_test() {
+  let first_text =
+    "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[],\"next\":\"cursor-2\"}"
+  let second_text =
+    "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"may_wake\",\"metadata\":{\"status\":\"resident\"}},{\"session\":\"other-id\",\"target_strand\":\"main\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[],\"next\":null}"
+  let assert Ok(first_document) = json.parse(first_text)
+  let assert Ok(first) =
+    peer_links.decode_inspection_page(first_document, "local-id", "main")
+  let state =
+    peer_links.loaded(
+      peer_links.new("local-id", "main"),
+      [],
+      first.inspection,
+      first.next,
+    )
+  assert state.notice == "more grants available · press n to continue"
+  assert peer_links.update(keys.Char("n"), state)
+    == peer_links.NextPage("cursor-2")
+
+  let assert Ok(second_document) = json.parse(second_text)
+  let assert Ok(second) =
+    peer_links.decode_inspection_page(second_document, "local-id", "main")
+  let completed = peer_links.append_page(state, second)
+  let assert Some(peer_links.Inspection(outgoing:, incoming: [])) =
+    completed.inspection
+    as "all fetched pages stay available to the grant selector"
+  assert list.length(outgoing) == 2
+  assert list.first(outgoing)
+    == Ok(peer_links.Grant(
+      "local-id",
+      "main",
+      "target-id",
+      "reviewer",
+      Some(protocol.MayWake),
+      peer_links.Available,
+    ))
+  assert completed.next_cursor == None
+  assert completed.notice == "peer inspection complete"
+}
+
 pub fn create_link_reviews_exact_pair_and_defaults_to_busy_only_test() {
   let session =
     protocol.Session(
@@ -44,7 +85,8 @@ pub fn create_link_reviews_exact_pair_and_defaults_to_busy_only_test() {
       protocol.Resident("incarnation"),
     )
   let state = peer_links.new("local-id", "main")
-  let state = peer_links.loaded(state, [session], peer_links.Inspection([], []))
+  let state =
+    peer_links.loaded(state, [session], peer_links.Inspection([], []), None)
   let assert peer_links.Continue(state) =
     peer_links.update(keys.Char("l"), state)
     as "expected a local peer-link state transition"
@@ -94,6 +136,7 @@ pub fn wake_permission_requires_an_explicit_confirmation_choice_test() {
       peer_links.new("local-id", "main"),
       [session],
       peer_links.Inspection([], []),
+      None,
     )
   let assert peer_links.Continue(state) =
     peer_links.update(keys.Char("l"), state)
@@ -128,6 +171,7 @@ pub fn saved_target_is_not_admitted_or_opened_test() {
       peer_links.new("local-id", "main"),
       [saved],
       peer_links.Inspection([], []),
+      None,
     )
   let assert peer_links.Continue(state) =
     peer_links.update(keys.Char("l"), state)
@@ -143,7 +187,8 @@ pub fn reverse_requires_a_separate_confirmed_link_action_test() {
   let assert Ok(document) = json.parse(inspection)
   let assert Ok(current) =
     peer_links.decode_inspection(document, "local-id", "main")
-  let state = peer_links.loaded(peer_links.new("local-id", "main"), [], current)
+  let state =
+    peer_links.loaded(peer_links.new("local-id", "main"), [], current, None)
   let assert peer_links.Continue(confirming) =
     peer_links.update(keys.Char("v"), state)
     as "expected a local peer-link state transition"
@@ -168,7 +213,8 @@ pub fn reverse_requires_a_separate_confirmed_link_action_test() {
 pub fn malformed_or_oversized_inspection_is_refused_test() {
   assert peer_links.decode_inspection(json.Null, "local-id", "main")
     == Error("expected peer inspection object")
-  let assert Ok(document) = json.parse("{\"outgoing\":[],\"incoming\":[]}")
+  let assert Ok(document) =
+    json.parse("{\"outgoing\":[],\"incoming\":[],\"next\":null}")
   assert peer_links.decode_inspection(document, "local-id", "main")
     == Ok(peer_links.Inspection([], []))
 }
