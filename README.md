@@ -28,7 +28,7 @@ programs, with real concurrency and kernel-enforced execution boundaries.
 | **Controlled execution** | Sandboxed commands and agent-written programs, capability-checked effects, and approvals bound to the action being approved. |
 | **Model routing and advisors** | Choose models by role, configure fallbacks, and pair a fast primary with a separate model that reviews its work. |
 | **Memory and automation** | Search prior sessions, retain workspace knowledge, schedule follow-ups, and manage background jobs. |
-| **Extensibility** | Anthropic, OpenAI-compatible, and Gemini adapters; MCP servers, Markdown skills, and typed Gleam extensions. |
+| **Extensibility** | Anthropic, OpenAI-compatible Chat Completions, public OpenAI Responses, and Gemini adapters; MCP servers, Markdown skills, and typed Gleam extensions. |
 
 The terminal includes streaming responses, syntax-highlighted code and diffs,
 image attachments, tool activity, and a session picker. A shared daemon keeps

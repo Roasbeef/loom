@@ -1,22 +1,36 @@
 # Next
 
-## Cache usage PR follow-up, September 22
+## Public Responses adapter and subscription follow-up, September 22
 
-PR #480 merged into `main` at `4759a331`. PR #482 has been rebased onto that
-merge. Its network gateway now sends a bounded `usage_observation` only when
-the usage row links to an entry claimed by one scanned strand. Rows with no
-entry, fallback ownership, or shared branch ownership still send a committed
-notice and remain in authoritative captured totals. This closes the
-nested-summary case where an unowned row could otherwise alter the main
-strand's cache baseline. Protocol change 047 and the client package docs state
-the attribution rule.
+PR #278 adds `openai-responses` as a separate public API dialect. It requires
+`auth = "api-key"` and an `api_key_env` name, sends `store: false`, and replays
+Loom's durable history and tool results. The existing `openai` dialect still
+uses Chat Completions. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
+records the boundary and [the review record](review/responses-api.md) records
+the original implementation and verification. The branch is rebased onto
+`origin/main` at `d8963862`, after #482 and #490 merged. The integrated
+`make check` passed at the earlier `9378c019` base; the previous rebased
+head `b27197c2` passed hosted Linux and macOS gates. Current-head validation
+must be recorded separately before the merge.
 
-The pre-rebase client gate passed 2,044 tests. The post-rebase TUI gate passed
-722 tests, including the rendered cache footer at wide and 40-column widths
-and the transcript-spacing tests merged from #480. `make doc-check` passed
-with zero errors after the citation conflict was resolved. The post-rebase
-full gate, hosted CI, and Linux signoff are the remaining validation steps;
-their results must be read from the final pushed head before merging #482.
+This adapter does not use ChatGPT subscription credits. The supported route
+for this public endpoint remains a Platform API key. The next worktree targets
+Codex/ChatGPT subscription access as a distinct provider dialect, with
+oh-my-pi's OAuth and Codex Responses transport as implementation references.
+It must preserve Loom's ownership of history, tools, policy, and the agent
+loop. ADR-012 states the support-boundary concern that this work must address.
+The earlier public live smoke reached `credit_balance_exhausted` and confirmed
+transport drain; funded inference remains unverified.
+
+## Recent main baseline, September 22
+
+PR #480 merged at `4759a331`, PR #482 at `aa2386ad`, and PR #490 at
+`d8963862`. The #482 cache usage path admits a bounded observation only for a
+row claimed by one scanned strand; unowned and shared rows remain in captured
+totals without changing the main strand's cache baseline. Protocol change 047
+and the client package docs state that attribution rule. The earlier
+pre-rebase client gate passed 2,044 tests, and the post-rebase TUI gate passed
+722 tests. These totals describe #482's earlier heads, not PR #278.
 
 ## Inline queue follow-up, September 22
 
