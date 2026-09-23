@@ -21,6 +21,7 @@ import machine/strand
 import tui
 import tui/connection
 import tui/frame
+import tui/layout
 import tui/model as tui_model
 import tui/protocol
 import tui/snapshot_view
@@ -298,7 +299,7 @@ pub fn wide_diff_keeps_the_conversation_visible_on_the_left_test() {
 
   // Copy selection is clipped to the pane, rather than spanning the live
   // conversation and unrelated diff cells on the same terminal row.
-  let right_area = tui.hit_area(opened, geometry.Position(100, 10))
+  let right_area = layout.hit_area(opened, geometry.Position(100, 10))
   assert right_area.position.x == 89
   assert right_area.size.width == 70
 }
@@ -399,11 +400,11 @@ pub fn diff_toggle_restores_the_agent_rail_preference_test() {
     tui_model.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
   assert opened.agent_rail_visible
-  assert tui.hit_area(opened, geometry.Position(100, 10)).position.x == 89
+  assert layout.hit_area(opened, geometry.Position(100, 10)).position.x == 89
   let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
   assert closed.diff_view == tui_model.DiffHidden
   assert closed.agent_rail_visible
-  assert tui.hit_area(closed, geometry.Position(140, 10)).position.x == 127
+  assert layout.hit_area(closed, geometry.Position(140, 10)).position.x == 127
 }
 
 pub fn compact_history_keeps_reasoning_between_tool_batches_test() {
@@ -636,7 +637,7 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     |> tui.update(backend.Resize(170, 104), _)
     |> tui.update(backend.KeyPress("ctrl+g"), _)
     |> tui.update(backend.MouseScroll(5, 5, True), _)
-  let height = tui.hit_area(expanded, geometry.Position(5, 5)).size.height
+  let height = layout.hit_area(expanded, geometry.Position(5, 5)).size.height
   let prefix =
     expanded.rendered_row_count - list.length(expanded.rendered_anchors)
   let assert Ok(#(_, index)) =

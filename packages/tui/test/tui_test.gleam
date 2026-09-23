@@ -29,6 +29,7 @@ import tui/frame
 import tui/image_drop
 import tui/internal/ffi_file
 import tui/internal/workspace_file
+import tui/layout
 import tui/markdown
 import tui/model as tui_model
 import tui/model_selector
@@ -120,12 +121,12 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {
-  assert tui.elapsed_label(0) == ""
-  assert tui.elapsed_label(1) == " (1s)"
-  assert tui.elapsed_label(59) == " (59s)"
-  assert tui.elapsed_label(60) == " (1m 00s)"
-  assert tui.elapsed_label(65) == " (1m 05s)"
-  assert tui.elapsed_label(754) == " (12m 34s)"
+  assert layout.elapsed_label(0) == ""
+  assert layout.elapsed_label(1) == " (1s)"
+  assert layout.elapsed_label(59) == " (59s)"
+  assert layout.elapsed_label(60) == " (1m 00s)"
+  assert layout.elapsed_label(65) == " (1m 05s)"
+  assert layout.elapsed_label(754) == " (12m 34s)"
 }
 
 pub fn output_rate_is_tokens_over_streamed_seconds_test() {
@@ -149,18 +150,18 @@ pub fn footer_rows_depend_on_the_width_alone_test() {
   // The thresholds are the sections' fixed caps summed, so the row count
   // is a property of the window and cannot move while a turn runs. A
   // 133-column pane is always two rows; a 213-column one is always one.
-  assert tui.footer_rows(213) == 1
-  assert tui.footer_rows(212) == 2
-  assert tui.footer_rows(133) == 2
-  assert tui.footer_rows(112) == 2
-  assert tui.footer_rows(111) == 3
-  assert tui.footer_rows(40) == 3
-  assert tui.transcript_height(40, 3, 2) == 32
-  assert tui.transcript_height(40, 3, 3) == 31
-  assert tui.transcript_height(40, 3, 1) == 33
+  assert layout.footer_rows(213) == 1
+  assert layout.footer_rows(212) == 2
+  assert layout.footer_rows(133) == 2
+  assert layout.footer_rows(112) == 2
+  assert layout.footer_rows(111) == 3
+  assert layout.footer_rows(40) == 3
+  assert layout.transcript_height(40, 3, 2) == 32
+  assert layout.transcript_height(40, 3, 3) == 31
+  assert layout.transcript_height(40, 3, 1) == 33
   assert tui.viewport_height_changed(
-    tui.transcript_height(40, 3, 2),
-    tui.transcript_height(40, 3, 1),
+    layout.transcript_height(40, 3, 2),
+    layout.transcript_height(40, 3, 1),
   )
 }
 
@@ -246,11 +247,11 @@ pub fn footer_status_omits_the_dedicated_model_label_test() {
 }
 
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
-  assert tui.activity_glyph(0) == "◐"
-  assert tui.activity_glyph(3) == "◓"
-  assert tui.activity_glyph(6) == "◑"
-  assert tui.activity_glyph(9) == "◒"
-  assert tui.activity_glyph(12) == "◐"
+  assert layout.activity_glyph(0) == "◐"
+  assert layout.activity_glyph(3) == "◓"
+  assert layout.activity_glyph(6) == "◑"
+  assert layout.activity_glyph(9) == "◒"
+  assert layout.activity_glyph(12) == "◐"
 }
 
 pub fn cached_frame_reuses_the_exact_buffer_term_test() {
@@ -319,9 +320,9 @@ pub fn paced_poll_timeout_shortens_the_wait_for_a_deferred_frame_test() {
 }
 
 pub fn panel_inner_trims_the_border_test() {
-  assert tui.panel_inner(geometry.rect_new(0, 1, 10, 5))
+  assert layout.panel_inner(geometry.rect_new(0, 1, 10, 5))
     == geometry.rect_new(1, 2, 8, 3)
-  assert tui.panel_inner(geometry.rect_new(0, 0, 1, 1))
+  assert layout.panel_inner(geometry.rect_new(0, 0, 1, 1))
     == geometry.rect_new(1, 1, 0, 0)
 }
 
@@ -1403,7 +1404,7 @@ pub fn image_attachment_summary_sanitizes_the_filename_test() {
 pub fn attachment_chips_stack_above_a_full_width_editor_test() {
   let area = geometry.rect_new(1, 10, 80, 4)
 
-  let #(no_chips, whole_area) = tui.input_layout(area, [])
+  let #(no_chips, whole_area) = layout.input_layout(area, [])
   assert no_chips == geometry.rect_zero()
     as "an unattached prompt draws no chip row"
   assert whole_area == area
@@ -1411,7 +1412,7 @@ pub fn attachment_chips_stack_above_a_full_width_editor_test() {
 
   let image = test_image("screenshot.png", 1000)
   let #(chips, editor) =
-    tui.input_layout(area, [composer.ImageAttachment(image)])
+    layout.input_layout(area, [composer.ImageAttachment(image)])
 
   assert chips == geometry.rect_new(1, 10, 80, 2)
     as "the image has a count row and a filename row"
@@ -1652,7 +1653,7 @@ pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
 pub fn long_prompt_wraps_without_changing_its_source_test() {
   let source = "check out the current diff and explain the remaining work"
   let state = text_area.state_from_string(source)
-  let view = tui.input_view_state(state, 12)
+  let view = layout.input_view_state(state, 12)
 
   assert text_area.value(state) == source
   assert view.lines
@@ -1669,7 +1670,7 @@ pub fn long_prompt_wraps_without_changing_its_source_test() {
 
 pub fn prompt_cursor_moves_to_the_next_visual_row_at_a_wrap_boundary_test() {
   let state = text_area.state_from_string("abcdefghijkl")
-  let view = tui.input_view_state(state, 12)
+  let view = layout.input_view_state(state, 12)
 
   assert view.lines == ["abcdefghijkl", ""]
   assert view.cursor_y == 1
@@ -1678,7 +1679,7 @@ pub fn prompt_cursor_moves_to_the_next_visual_row_at_a_wrap_boundary_test() {
 
 pub fn prompt_wrap_uses_terminal_cells_for_wide_graphemes_test() {
   let state = text_area.state_from_string("ab界cd")
-  let view = tui.input_view_state(state, 4)
+  let view = layout.input_view_state(state, 4)
 
   assert view.lines == ["ab界", "cd"]
   assert view.cursor_y == 1
@@ -1910,7 +1911,7 @@ pub fn assistant_rows_use_the_subtle_background_test() {
   let assert Ok(last) = list.last(run.frames)
   let rows = frame.buffer_to_lines(last)
   let assert Ok(answer_y) = row_containing(rows, "◆ opening paragraph")
-  let area = tui.hit_area(run.final, Position(2, 2))
+  let area = layout.hit_area(run.final, Position(2, 2))
 
   assert buffer.get_cell(last, Position(area.position.x, answer_y)).style.bg
     == theme.assistant_background
@@ -1932,7 +1933,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
   let rows = frame.buffer_to_lines(drawn)
   let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
-  let area = tui.hit_area(previewed.final, Position(2, 2))
+  let area = layout.hit_area(previewed.final, Position(2, 2))
   let last_x = area.position.x + 22
   let script =
     virtual_backend.script(
@@ -1979,7 +1980,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let rows = frame.buffer_to_lines(drawn)
   let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
-  let area = tui.hit_area(previewed.final, Position(2, 2))
+  let area = layout.hit_area(previewed.final, Position(2, 2))
   let assert Some(tui_model.FrameCache(selection_gutters:, ..)) =
     previewed.final.frame_cache
     as "the painted frame owns its copy layout"
@@ -2108,8 +2109,8 @@ pub fn a_press_outside_every_panel_selects_across_the_screen_test() {
 
   // The header row belongs to no panel; a transcript cell belongs to the
   // transcript's inner area, which excludes its border.
-  assert tui.hit_area(model, Position(5, 0)) == screen
-  let inner = tui.hit_area(model, transcript_origin)
+  assert layout.hit_area(model, Position(5, 0)) == screen
+  let inner = layout.hit_area(model, transcript_origin)
   assert inner != screen
   assert geometry.contains(inner, transcript_origin)
   assert !geometry.contains(inner, Position(0, 1))
@@ -2462,14 +2463,14 @@ pub fn image_preview_lists_all_four_images_test() {
       "4. four-long-name.png image/png 10 B",
     ]
   let #(images, editor) =
-    tui.input_layout(geometry.rect_new(0, 0, 30, 8), attachments)
+    layout.input_layout(geometry.rect_new(0, 0, 30, 8), attachments)
   assert images.size.height == 5
   assert editor.size.height == 3
   assert editor.size.width == 30
 
   // A short terminal must still leave a row for editing the prompt.
   let #(short_images, short_editor) =
-    tui.input_layout(geometry.rect_new(0, 0, 30, 2), attachments)
+    layout.input_layout(geometry.rect_new(0, 0, 30, 2), attachments)
   assert short_images.size.height == 1
   assert short_editor.size.height == 1
 }

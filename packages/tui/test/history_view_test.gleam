@@ -16,6 +16,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/history_view
+import tui/layout
 import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
@@ -348,7 +349,7 @@ pub fn history_sparse_strand_keeps_endpoint_across_unrelated_pages_test() {
 
 fn top_identity(model: tui_model.Model) {
   let prefix = model.rendered_row_count - list.length(model.rendered_anchors)
-  let height = tui.hit_area(model, geometry.Position(5, 5)).size.height
+  let height = layout.hit_area(model, geometry.Position(5, 5)).size.height
   model.rendered_anchors
   |> list.index_map(fn(row, index) { #(row, prefix + index) })
   |> list.filter(fn(pair) {

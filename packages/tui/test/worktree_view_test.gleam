@@ -12,6 +12,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/layout
 import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
@@ -275,7 +276,7 @@ pub fn compact_focused_diff_borrows_status_space_but_keeps_editor_test() {
     |> fn(model) { tui.update(backend.Resize(40, 12), model) }
     |> key("ctrl+d")
     |> key("down")
-  let patch = tui.diff_patch_area(compact)
+  let patch = layout.diff_patch_area(compact)
   assert patch.size.height >= 2
   let visible = painted(compact)
   assert string.contains(visible, "NAV ↑↓ r Enter PgUp/Dn")
@@ -315,7 +316,7 @@ pub fn mouse_uses_visible_navigation_offset_and_other_surface_blocks_hit_test() 
       ),
     )
     |> fn(model) { tui.update(backend.Resize(80, 24), model) }
-  let navigation = tui.diff_navigation_area(focused)
+  let navigation = layout.diff_navigation_area(focused)
   let clicked =
     tui.update(
       backend.MousePress(
@@ -347,7 +348,7 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
     |> key("ctrl+d")
     |> key("down")
     |> fn(model) { tui.update(backend.Resize(40, 12), model) }
-  let height = tui.diff_patch_area(resized).size.height
+  let height = layout.diff_patch_area(resized).size.height
   let trapped = tui_model.Model(..resized, diff_scroll_offset: 10_000)
   let paged = key(trapped, "pageup")
   let maximum = int.max(0, paged.diff_row_count - height)
@@ -361,7 +362,7 @@ pub fn patch_page_uses_actual_height_and_preclamps_after_resize_test() {
   let focused_maximum =
     int.max(
       0,
-      refocused.diff_row_count - tui.diff_patch_area(refocused).size.height,
+      refocused.diff_row_count - layout.diff_patch_area(refocused).size.height,
     )
   assert refocused.diff_scroll_offset == focused_maximum
 }
@@ -372,7 +373,7 @@ pub fn borrowed_side_patch_routes_wheel_without_moving_transcript_test() {
     |> fn(model) { tui.update(backend.Resize(160, 12), model) }
     |> key("ctrl+d")
     |> key("down")
-  let patch = tui.diff_patch_area(focused)
+  let patch = layout.diff_patch_area(focused)
   let moved =
     tui.update(
       backend.MouseScroll(patch.position.x, patch.position.y, True),

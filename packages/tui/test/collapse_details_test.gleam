@@ -31,6 +31,7 @@ import tui
 import tui/agents
 import tui/connection
 import tui/frame
+import tui/layout
 import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
@@ -165,7 +166,7 @@ fn pane(steps: List(virtual_backend.Step)) -> Pane {
   // A point two cells in from the top left of the body lands in the
   // transcript interior at every size this test uses, and `hit_area`
   // answers with the same rectangle `render_transcript` drew into.
-  let area = tui.hit_area(run.final, Position(2, 2))
+  let area = layout.hit_area(run.final, Position(2, 2))
   Pane(model: run.final, rows: area_rows(last, area))
 }
 

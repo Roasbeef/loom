@@ -31,6 +31,7 @@ import tui
 import tui/agents
 import tui/connection
 import tui/frame
+import tui/layout
 import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
@@ -496,7 +497,7 @@ fn run(model: tui_model.Model, steps: List(virtual_backend.Step)) -> Pane {
   let assert Ok(last) = list.last(finished.frames)
     as "every run draws at least its initial frame"
 
-  Pane(rows: area_rows(last, tui.hit_area(finished.final, Position(2, 2))))
+  Pane(rows: area_rows(last, layout.hit_area(finished.final, Position(2, 2))))
 }
 
 fn area_rows(drawn: Buffer, area: Rect) -> List(String) {
