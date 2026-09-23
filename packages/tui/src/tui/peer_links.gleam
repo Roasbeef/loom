@@ -111,6 +111,10 @@ pub type State {
     source_strand: String,
     /// The last catalogue page received from the daemon.
     sessions: List(Session),
+    /// Catalogue revision that fences subsequent session pages.
+    session_revision: Option(Int),
+    /// Continuation for the authorized target-session catalogue.
+    session_cursor: Option(String),
     /// Current authorized inspection, absent until its first reply.
     inspection: Option(Inspection),
     /// Next daemon page to append to the current inspection.
@@ -127,6 +131,8 @@ pub type State {
     prompt: Prompt,
     /// Last action result or actionable refusal shown in the overlay.
     notice: String,
+    /// Mutation acknowledgement retained across the following inspection.
+    operation_result: Option(String),
     /// Agent workspace to resume after this modal, with its cursor intact.
     return_to: Option(agents.Inspector),
   )
@@ -142,6 +148,9 @@ pub type Action {
 
   /// Fetches the next bounded grant page.
   NextPage(cursor: String)
+
+  /// Fetches another authorized target-session catalogue page.
+  NextSessions(cursor: String, revision: Int)
 
   /// Create exactly one directional grant.
   Link(proposal: Proposal)
@@ -165,6 +174,8 @@ pub fn new(source_session: String, source_strand: String) -> State {
     source_session:,
     source_strand:,
     sessions: [],
+    session_revision: None,
+    session_cursor: None,
     inspection: None,
     next_cursor: None,
     selected_grant: 0,
@@ -173,6 +184,7 @@ pub fn new(source_session: String, source_strand: String) -> State {
     wake: BusyOnly,
     prompt: Browsing,
     notice: "loading peer grants",
+    operation_result: None,
     return_to: None,
   )
 }
@@ -215,6 +227,42 @@ pub fn loaded(
     next_cursor:,
     selected_grant: int.min(state.selected_grant, last_grant(inspection)),
     notice:,
+  )
+}
+
+/// Records the first authorized catalogue page without opening saved sessions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = peer_links.catalogue(state, page)
+/// ```
+pub fn catalogue(state: State, page: protocol.Page) -> State {
+  State(
+    ..state,
+    sessions: page.sessions,
+    session_revision: Some(page.revision),
+    session_cursor: page.after,
+  )
+}
+
+/// Appends another page under the revision selected by the first page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = peer_links.append_sessions(state, page)
+/// ```
+pub fn append_sessions(state: State, page: protocol.Page) -> State {
+  State(
+    ..state,
+    sessions: list.append(state.sessions, page.sessions),
+    session_cursor: page.after,
+    selected_session: list.length(state.sessions),
+    notice: case page.after {
+      Some(_) -> "more target sessions available · press n to continue"
+      None -> "target session catalogue complete"
+    },
   )
 }
 
@@ -270,8 +318,11 @@ pub fn failed(state: State, reason: String) -> State {
 pub fn completed(state: State, document: json.JsonValue) -> State {
   State(
     ..state,
-    notice: "server result: "
-      <> text_hygiene.single_line(json.to_string(document)),
+    prompt: Browsing,
+    operation_result: Some(
+      "server result: " <> text_hygiene.single_line(json.to_string(document)),
+    ),
+    notice: "refreshing peer grants",
   )
 }
 
@@ -338,6 +389,11 @@ fn update_browsing(key: keys.Key, state: State) -> Action {
 fn update_session_choice(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape -> Continue(State(..state, prompt: Browsing))
+    keys.Char("n") ->
+      case state.session_cursor, state.session_revision {
+        Some(cursor), Some(revision) -> NextSessions(cursor, revision)
+        _, _ -> Continue(State(..state, notice: "no more target sessions"))
+      }
     keys.Up ->
       Continue(
         State(
@@ -517,21 +573,54 @@ fn render_lines(state: State, width: Int, height: Int) {
       )
     }
     ChoosingSession ->
-      quiet(
-        "↑↓ select resident session · Enter · saved sessions stay disabled · Esc back",
-      )
+      quiet("↑↓ select resident · Enter · n load more · Esc back")
     EditingTargetStrand -> quiet("Exact strand name · Enter review · Esc back")
     Confirming(_) ->
       quiet(
         "←→ or Tab wake permission · Enter create this direction · Esc back",
       )
   }
-  let lines =
-    list.append(content, [quiet(text_hygiene.single_line(state.notice)), footer])
-  case list.length(lines) > height {
-    True -> list.take(lines, height)
-    False -> lines
+  let result = case state.operation_result {
+    Some(message) -> [quiet(text.truncate(message, width, "…"))]
+    None -> []
   }
+  let footers =
+    list.append(result, [
+      quiet(text.truncate(text_hygiene.single_line(state.notice), width, "…")),
+      footer,
+    ])
+  let room = int.max(0, height - list.length(footers))
+  let visible = case state.prompt {
+    Browsing -> grant_viewport(content, state.selected_grant, room)
+    ChoosingSession -> row_viewport(content, state.selected_session, 3, room)
+    EditingTargetStrand | Confirming(_) -> list.take(content, room)
+  }
+  list.append(visible, footers)
+}
+
+// Reserve the source heading, then move whole grant rows under the cursor.
+fn grant_viewport(content, selected: Int, room: Int) {
+  case list.length(content) <= 3 {
+    True -> list.take(content, room)
+    False -> {
+      let heading = case room >= 3 {
+        True -> list.take(content, 1)
+        False -> []
+      }
+      let rows = list.drop(content, 2)
+      let row_room = int.max(0, room - list.length(heading))
+      list.append(heading, row_viewport(rows, selected, 2, row_room))
+    }
+  }
+}
+
+// The selected row always remains visible, even when the modal is narrow.
+fn row_viewport(content, selected: Int, row_height: Int, room: Int) {
+  let rows_per_page = int.max(1, room / row_height)
+  let first = selected / rows_per_page * rows_per_page
+  content
+  |> list.drop(first * row_height)
+  |> list.take(room)
 }
 
 fn listing_lines(state: State, width: Int) {
