@@ -1342,17 +1342,16 @@ harness's own per-execution paths, minted by the launcher and never
 model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
-The description carries more than the tool's arguments. A model writing a
-program authors blind, so a description listing only module *names* leaves
-the compiler as the only oracle for a signature — reachable only by being
-wrong first, at the cost of a whole hermetic build. `tools/prelude` is the
-rendered public surface of every module the offered seams admit, generated
-from `packages/cap` by `make gen-prelude` through the compiler's own
-`package-interface` output, filtered through each seam's `allowed_imports`
-so a module vetting will reject can never be advertised, and held to a
-digest by `scripts/gen-prelude.sh --check` inside `make check`. Each seam
-renders only what it adds, because tool bytes are the byte prefix of the
-provider's cached region and are paid on every request of the session.
+The description carries more than the tool's arguments. It gives a model
+the admitted module index and public record shapes before the model writes
+a program. `fs_read` at `cap://<module>` supplies full signatures and docs
+on demand, without a failed compile. `tools/prelude` contains both views,
+generated from `packages/cap` through the compiler's `package-interface`
+output and filtered through each offered seam's `allowed_imports`. A
+module vetting rejects cannot appear in discovery. The artifact is held
+to a digest by `scripts/gen-prelude.sh --check` inside `make check`.
+Keeping full declarations out of the tool description reduces the cached
+prefix paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
 `contributions.built_in` (`client/contributions.gleam`) contributes the

@@ -323,9 +323,9 @@ spawn child strands (a strand is a named line of work: the main
 conversation, a subagent, a parallel attempt), exchange granted peer
 messages, and report a result. Omitting `seam` selects workspace, and
 explicit `--codemode-seams workspace` keeps the effect-only restriction.
-The host's tool description lists the imports and signatures it actually
-admits; installed MCP façades and `cap/notes` appear there when
-configured.
+The host's tool description lists the imports and public types it admits;
+`fs_read` at `cap://<module>` returns full declarations on demand. Installed
+MCP façades and `cap/notes` appear in that index when configured.
 
 `cap/strand` uses the same `client/agency` closures that sit behind the
 model's `agent_*` tools, so Agency (the owner of child-strand lifecycle)
@@ -611,7 +611,7 @@ before anything is dispatched, in the tool shell and again in the wiring.
 
 The argument and the schema grow only where there is a choice. A host
 serving one seam renders neither the `seam` property nor a second import
-list. Where both are served, their common imports and signatures are
+list. Where both are served, their common imports and public types are
 rendered once; on the default server the full capability set is common
 to both modes. The reason is the same arithmetic as tool registration:
 the tool array renders ahead of the system prompt and is the byte prefix
@@ -1380,7 +1380,7 @@ provides.
 | `codemode/orchestration.gleam` | The harness end of `strand.*` calls through the Agency closures. |
 | `client/mcp.gleam` | The MCP layer: a client per configured server, the generated modules, and the `mcp.<server>` router arm. |
 | `mcp/{client,transport,codegen,interchange}.gleam` | The protocol, the stdio client, the façade generator, and the msgpack ↔ JSON translation. |
-| `tools/prelude.gleam` | Generated: the capability prelude's public surface, per module, as the `code_mode` description renders it. |
+| `tools/prelude.gleam` | Generated full declarations for `cap://` reads and public-type prefixes for the `code_mode` description. |
 | `scripts/gen-prelude.sh`, `scripts/gen-prelude.py` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |

@@ -238,17 +238,16 @@ After a successful build, `client/serve` logs the registered names as
 An MCP server's tools never enter the registry. Each configured server
 becomes one generated Gleam module, `cap/mcp/<server>`, which a
 `code_mode` program imports and calls through the broker (`mcp.md`).
-The only trace in the tool surface is text: the server's module
-signatures render into the `code_mode` description as extra surfaces
-of the seam that offers them.
+The tool description indexes the server's generated module under the seam
+that offers it. `fs_read` at `cap://mcp/<server>` returns its declarations.
 
 `code_mode` itself is one registered tool whose argument is a program.
-Its description carries the public signatures of every capability
-module the program may import. Those signatures come from the
-committed, generated `tools/prelude`, filtered through the imports each
-seam allows, and the description is fixed for the session so that it
-does not move the cached prefix. `code-mode.md` covers the pipeline
-behind the tool.
+Its description carries the module index and public types admitted by
+each seam. The committed, generated `tools/prelude` also supplies full
+signatures and documentation through `fs_read` at `cap://<module>`.
+Both views use the host's offered-seam allowlists, and the description
+is fixed for the session so that it does not move the cached prefix.
+`code-mode.md` covers the pipeline behind the tool.
 
 ## What the model is shown
 
@@ -459,7 +458,7 @@ of them is registered:
 | `tools/blob.gleam`, `tools/tail.gleam` | Output overflow and the rolling output window. |
 | `tools/permissions.gleam`, `tools/directory_access.gleam` | The optional `permissions` argument and explicit directory additions. |
 | `tools/agent.gleam`, `tools/job.gleam`, `tools/history.gleam`, `tools/remember.gleam`, `tools/schedule.gleam`, `tools/context.gleam`, `tools/advise.gleam`, `tools/codemode.gleam` | The shells over host seams, one module per family. |
-| `tools/prelude.gleam` | Generated capability-prelude signatures for the `code_mode` description (`make gen-prelude`). |
+| `tools/prelude.gleam` | Generated public-type prefixes for the description and full capability declarations for `cap://` reads (`make gen-prelude`). |
 | `client/contributions.gleam` | `Origin`, `Contribution`, `built_in`, `deactivate`, and the collision-checked `registry`. |
 | `client/serve.gleam` | Session assembly: opens the planes, builds the contribution list and registry, seeds `active_tool_names`, renders the prompt index. |
 | `client/wiring.gleam` | The effect seam's tool surface: `clear`, `run_tool`, `tool_context`, `tool_specs`, `replay_still_safe`, `execution_mode`, and the escalating broker runner. |
