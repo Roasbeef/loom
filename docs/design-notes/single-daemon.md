@@ -658,7 +658,7 @@ The execution ruling supersedes phase 5's legacy migration and rollback scope.
 Phases 0 through 5 have implementations and targeted acceptance evidence;
 phase 6 still requires final resource, dependency and platform verification.
 See [sessions](../architecture/sessions.md#verification-required-before-release)
-and [multiplayer](../architecture/multiplayer.md#end-to-end-proof) for the tested
+and [multiplayer](../architecture/multiplayer.md#what-the-fixtures-prove) for the tested
 scenarios and their limits.
 
 | Phase | Main work | Exit criterion |

@@ -1,25 +1,31 @@
 # Several operators on one session
 
+Several people can attach terminals to one session and work in it
+together. Each person authenticates as a server-owned **principal** and
+holds a role in that session. Every command goes to the session's single
+**gateway**, which checks authority, admits the command through the
+session's one writer, and delivers every committed entry, token stream
+and presence change to every attached terminal. This page follows one
+collaborator's command from authentication to its durable record and on
+to every attached terminal's screen. It assumes you know what a session,
+a strand and the daemon are, and nothing about this subsystem.
+
+The [client protocol reference](../client-protocol.md) defines every
+message on the wire; this page explains the design behind them.
+[Sessions](sessions.md) explains how many shared sessions coexist in one
+daemon. [Client](client.md) describes the transport and the terminal. The
+[brief](../design-notes/multiplayer.md) records the initial survey.
+
 **Status: on `main`.** The managed v2 daemon, per-principal credentials,
 attributed commands, presence, pushed delivery and the native terminal
 replace the baseline surveyed at `f019322`. Live delivery has its own
-shipped fixture. What is still open is the release acceptance, not this
+shipped fixture. What remains open is release acceptance, not this
 design. Two rows of the scenario matrix below are proven at host level
 rather than from the shipped binary. The handoff also still lists four
 pieces of release evidence: the resource soak behind #247, hosted latency
 in #241, the joined load and crash observations in #246, and filesystem
 confinement in #242. The last section says which fixture proves which
 row.
-
-This page is for an implementer who is tracing one collaborator's command
-from authentication to its durable record and to every attached
-terminal's screen. It assumes you know what a session, a strand and the
-daemon are, and nothing about this subsystem. The
-[client protocol reference](../client-protocol.md) defines every message
-on the wire; this page explains the design behind them.
-[Sessions](sessions.md) explains how many shared sessions coexist in one
-daemon. [Client](client.md) describes the transport and the terminal. The
-[brief](../design-notes/multiplayer.md) records the initial survey.
 
 ## Identity and authority
 
@@ -43,11 +49,11 @@ request or an outbound delivery. Revocation does not cancel a command that
 was already admitted, and it cannot undo a completed effect; protocol 015
 defines that boundary.
 
-Membership is not filesystem isolation. An invitation exposes the
+Membership does not isolate the filesystem. An invitation exposes the
 existing transcript and whatever the session's tools and memory can bring
 into it, so overlapping workspace grants and deliberately shared memory
-can reveal another project's data. The owner has to review those grants
-before inviting anyone. Remote access also requires TLS, because a bearer
+can reveal another project's data. The owner must review those grants
+before inviting anyone ([sharing scope](#sharing-scope) has the steps). Remote access also requires TLS, because a bearer
 token over cleartext TCP is not enough.
 
 ## One writer, one gateway
@@ -55,20 +61,21 @@ token over cleartext TCP is not enough.
 Every session has one writer and one gateway, and every attached terminal
 connects to that same gateway. (The code calls the gateway "the hub" in
 `client/serve`; this page uses one name.) Each admitted durable event
-carries one session sequence, and every client reconciles against that
-order. The reply to a command reports admission or refusal; the committed
-entry then reaches its author and everyone else through the same read
-path. A client must not render the admission reply as a durable entry,
-because the entry arrives separately.
+carries one session sequence number, and every client reconciles against
+that order. The reply to a command reports only admission or refusal. The
+committed entry then reaches its author and everyone else through the
+same read path, so a client must not render the admission reply as a
+durable entry.
 
 Concurrent steers are admitted in the session's existing order and carry
 their authors into the eventual user turns. There is no controlling
 terminal, no global command queue, no transcript CRDT and no per-strand
 access list.
 
-Origin travels with user turns, queued steers and approval resolutions. It
-records the principal ID and the display name at admission, so a later
-rename does not rewrite history. System-generated turns may have no human
+An **origin** (the author attribution on a command) travels with user
+turns, queued steers and approval resolutions. It records the principal
+ID and the display name at admission, so a later rename does not rewrite
+history. System-generated turns may have no human
 origin. The model's prompt projection includes authorship once, which lets
 a shared session distinguish one operator's instructions from another's.
 
@@ -238,16 +245,22 @@ The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
 `drain_idle_strands` (`client/gateway.gleam:5218`) is called from
 `pull_and_broadcast` (`client/gateway.gleam:2654`) after `state.live` has
-been refreshed from the registers and before any frame leaves. Ordinarily only
-the head is submitted. An explicit abort marks the existing `HeldQueue` as
-`Halted`, and `drain_strand` admits nothing from it while the mark holds. The
-next client submission on the strand (`hold_prompt`, via `release_halt`) flips
-the mark to `AllHeld`, and `drain_strand` then passes the complete message
-list, the release included, to one runtime admission ([protocol 033](../../protocol-change/033-abort-halts-held-input.md)).
-A `StrandBusy` refusal retains the items and mode. Another refusal is reported
-to every affected submitter before the rejected batch retires. An empty queue
-retains no drain intent. Natural completion and steer-triggered cancellation
-continue to drain one head.
+been refreshed from the registers and before any frame leaves.
+
+Ordinarily the drain submits only the head of the queue. Natural
+completion and steer-triggered cancellation both drain one head. An
+explicit abort is different ([protocol 033](../../protocol-change/033-abort-halts-held-input.md)):
+
+1. The abort marks the existing `HeldQueue` as `Halted`, and
+   `drain_strand` admits nothing from it while the mark holds.
+2. The next client submission on the strand (`hold_prompt`, via
+   `release_halt`) flips the mark to `AllHeld`.
+3. `drain_strand` then passes the complete message list, the release
+   included, to one runtime admission.
+
+A `StrandBusy` refusal keeps the items and the mode. Any other refusal is
+reported to every affected submitter before the rejected batch retires.
+An empty queue keeps no drain intent.
 
 ```mermaid
 stateDiagram-v2
@@ -267,10 +280,11 @@ stateDiagram-v2
 ```
 
 The restart edge is why the reply says `queued` rather than `admitted`. A
-held prompt is not durable: a gateway restart drops the queue, and a
-prompt that survived a restart would need a new durable operation kind in
-`machine`. The wire reports the weaker status, and the terminal clears its
-own queued state when the socket closes. `steer` and `follow_up` are
+held prompt lives only in gateway memory, so a gateway restart drops the
+queue. Making a held prompt survive a restart would need a new durable
+operation kind in `machine`. The wire therefore reports the weaker
+status, and the terminal clears its own queued state when the socket
+closes. `steer` and `follow_up` are
 unchanged. A principal who wants a message folded into the running turn
 uses those; `prompt` on a busy strand means "the next turn".
 
@@ -326,28 +340,34 @@ Because a notice may correctly do nothing, the lane reports every one it
 reads as `Noticed` (`tui/session_channel.gleam:117`) before deciding what
 to do with it, and the model counts those arrivals (`tui.gleam:365`).
 That count is how the shipped fixture proves that pushes reach a terminal
-without depending on which capture painted the answer. The other pushed
-events are simpler. A `stream_delta` becomes a `Streamed` update in any
-phase. `presence` and `attachment` trigger a capture, like a notice. A
+without depending on which capture painted the answer.
+
+The other pushed events are simpler. A `stream_delta` becomes a
+`Streamed` update in any phase. `presence` and `attachment` trigger a capture, like a notice. A
 pushed `error` reports a failure the daemon had on this terminal's behalf,
 so it is rendered as an ordinary refusal and the socket stays open.
 
-A `stream_delta` arrives per provider token, and what the terminal keeps of
-one is bounded in two ways it did not used to be. The delta's `text` is a
-slice of the whole received frame, so the model rebuilds it before storing
-it; keeping the slice kept the frame, and a long answer kept one frame per
-token. And the accumulated live region collapses to its newest 24 KiB —
-`tui.live_stream_limit`, the same clip `stream_preview` takes — whenever it
-would pass twice that. Without the second bound every paint reflowed the
-whole answer, so a terminal on a long turn drained its socket more slowly
-the longer the turn ran, until the socket was not being drained at all and
-the growth moved into the mailbox, a whole frame per queued message. That is
-what put two terminals at 32 GB and 26 GB against daemons at 3.5 GB and
-1.6 GB. `packages/tui/test/stream_bounds_test.gleam` holds the bound: across
-40,000 deltas the model stays flat at a few hundred kilobytes and sustains
-above 3,500 deltas a second. What a reader loses is the head of an answer
-that has not committed, and the durable record replaces the whole region the
-moment it does.
+A `stream_delta` arrives per provider token, and the terminal bounds
+what it keeps of the stream in two ways. Both bounds are recent fixes.
+
+First, the delta's `text` is a slice of the whole received frame, so the
+model copies it before storing it. Keeping the slice kept the whole frame
+alive, and a long answer kept one frame per token.
+
+Second, the accumulated live region collapses to its newest 24 KiB
+(`tui.live_stream_limit`, the same clip `stream_preview` takes) whenever
+it would exceed twice that. Without this bound every paint reflowed the
+whole answer. A terminal on a long turn then drained its socket more
+slowly the longer the turn ran, until it stopped draining the socket at
+all and the growth moved into the mailbox, one whole frame per queued
+message. That is what put two terminals at 32 GB and 26 GB against
+daemons at 3.5 GB and 1.6 GB.
+
+`packages/tui/test/stream_bounds_test.gleam` holds the bound: across
+40,000 deltas the model stays flat at a few hundred kilobytes and
+sustains above 3,500 deltas a second. The cost is that a reader loses the
+head of an answer that has not yet committed, and the durable record
+replaces the whole region the moment it commits.
 
 ### One turn on the wire
 
@@ -491,11 +511,13 @@ switches to a second session and back while the Reader stays attached to
 the first; a revocation before she confirms the switch must leave her
 original attachment intact. A fixed bash tool runs in one session while
 Alice switches away and back, and its result must merge with no later
-input. The tool stage runs only where the shipped helper reports full
+input.
+
+The tool stage runs only where the shipped helper reports full
 enforcement. The ordinary Linux CI job declares that prerequisite
-missing, the delegated jail job runs the stage and rejects the skip, and
-macOS runs the full drive. What the fixture does not prove: filesystem
-confinement, an approval decision, and revocation of a command already
+missing. The delegated jail job runs the stage and rejects the skip, and
+macOS runs the full drive. The fixture does not prove filesystem
+confinement, an approval decision, or revocation of a command already
 queued. The [handoff](../next.md#verified-results-and-their-limits)
 records which revision passed each gate.
 
@@ -504,18 +526,20 @@ records which revision passed each gate.
 `tui_shipped_live_delivery_test` proves the last three matrix rows. It
 builds the same session shape, except that Bob is a raw v2 wire client on
 the same authenticated route the terminals use. Bob is a wire client
-because only a wire client reaches the queue on every run. A terminal
+because only a wire client reaches the queue on every run: a terminal
 sends `prompt` only while its own view shows the strand idle, and against
 a pushing daemon that view is stale for a few milliseconds at most. The
 fixture waits until Alice's terminal reports the strand running, which
-means the run exists at the gateway, and then writes Bob's prompt. The
-`queued` reply is therefore deterministic.
+means the run exists at the gateway, and then writes Bob's prompt, so
+the `queued` reply is deterministic.
 
 The scripted provider is paced with `provider_http.Paced`, which splits an
 answer across content deltas with a wait between them, so an answer
 occupies an interval. Inside that interval both terminals must show live
 text that is a prefix of the answer while their records hold no assistant
-entry yet. Both delivery properties are counts rather than timings. A
+entry yet.
+
+Both delivery properties are counts rather than timings. A
 stream holding two or more fragments before the entry exists can only
 have come from `stream_delta` frames, because the snapshot preview always
 projects as one fragment. Each terminal's `Model.notices` must rise by at
