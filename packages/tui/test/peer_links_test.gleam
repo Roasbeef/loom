@@ -127,6 +127,38 @@ pub fn create_link_reviews_exact_pair_and_defaults_to_busy_only_test() {
     ))
 }
 
+pub fn same_session_link_keeps_source_and_target_strands_distinct_test() {
+  let own =
+    protocol.Session(
+      "local-id",
+      "/workspace/review",
+      "Current session",
+      0,
+      protocol.Resident("incarnation"),
+    )
+  let state =
+    peer_links.loaded(
+      peer_links.new("local-id", "main"),
+      [own],
+      peer_links.Inspection([], []),
+      None,
+    )
+  let assert peer_links.Continue(state) =
+    peer_links.update(keys.Char("l"), state)
+  let assert peer_links.Continue(state) = peer_links.update(keys.Enter, state)
+  let assert peer_links.Continue(state) =
+    peer_links.update(keys.Char("review"), state)
+  let assert peer_links.Continue(state) = peer_links.update(keys.Enter, state)
+  assert peer_links.update(keys.Enter, state)
+    == peer_links.Link(peer_links.Proposal(
+      "local-id",
+      "main",
+      "local-id",
+      "review",
+      protocol.BusyOnly,
+    ))
+}
+
 pub fn wake_permission_requires_an_explicit_confirmation_choice_test() {
   let session =
     protocol.Session(

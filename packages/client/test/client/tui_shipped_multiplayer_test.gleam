@@ -19,6 +19,7 @@
 //// failed assertion still retires the native lifetime before reporting failure.
 
 import client/daemon/admin
+import client/daemon/peer_cli
 import client/daemon_server_test as wire
 import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
@@ -226,6 +227,143 @@ pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> Eun
   })
 }
 
+pub fn tui_shipped_peer_links_deliver_and_revoke_test_() -> EunitTest {
+  Timeout(12, fn() {
+    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+      Error(Nil) ->
+        io.println_error(
+          "SKIP shipped peer links: LOOM_BOOTSTRAP_E2E_SERVER is unset",
+        )
+      Ok(server) -> {
+        assert native.getenv("LOOM_TEST_PROVIDER_KEY")
+          == Ok(provider_http.dummy_key)
+        let #(Nil, report) =
+          provider_http.with_server(
+            [
+              provider_http.Exchange("forward peer turn", "forwardpeeranswer"),
+              provider_http.Exchange("reverse peer turn", "reversepeeranswer"),
+            ],
+            fn(base_url) { peer_fixture(server, base_url) },
+          )
+        let assert Ok(observed) = report
+          as "both admitted peer messages reached the exact provider script"
+        assert list.map(observed, fn(request) { request.latest })
+          == [
+            provider_http.UserPrompt("forward peer turn"),
+            provider_http.UserPrompt("reverse peer turn"),
+          ]
+      }
+    }
+  })
+}
+
+fn peer_fixture(server: String, provider_url: String) -> Nil {
+  let directory =
+    "build/shipped-peer-links-"
+    <> int.to_string(native.current_process_id())
+    <> "-"
+    <> int.to_string(native.system_time_ms())
+  let assert Ok(Nil) = native.ensure_private_directory(directory)
+    as "peer fixture credentials remain private"
+  let assert Ok(directory) = native.canonical_directory(directory)
+    as "native bootstrap receives an absolute fixture directory"
+  let assert Ok(paths) = endpoint.paths(directory <> "/state")
+    as "cleanup retains the endpoint before native startup"
+  let outcomes =
+    weft.new([
+      fn() {
+        exercise_peer_fixture(server, directory, paths, provider_url)
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(70_000)
+    |> weft.start
+  retire_native(paths)
+  let assert [weft.Completed(0, Nil)] = outcomes
+    as "the shipped peer exchange completes before native teardown"
+  Nil
+}
+
+fn exercise_peer_fixture(
+  server: String,
+  directory: String,
+  paths: endpoint.Paths,
+  provider_url: String,
+) -> Nil {
+  let source_workspace = filepath.join(directory, "source")
+  let target_workspace = filepath.join(directory, "target")
+  let assert Ok(Nil) = simplifile.create_directory_all(source_workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(target_workspace)
+  let configuration = filepath.join(directory, "fixture.toml")
+  let assert Ok(Nil) =
+    simplifile.write(
+      configuration,
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \""
+        <> provider_url
+        <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+    )
+  let options =
+    bootstrap.Options(source_workspace, "", server, paths.root, configuration)
+  let assert Ok(connected) =
+    bootstrap.resolve_daemon(options, process.self(), 40_000)
+    as "the shipped daemon authenticates through native bootstrap"
+  let assert Ok(address) = endpoint.address(connected.record)
+  let assert Ok(token) = simplifile.read(connected.paths.token)
+  let owner = string.trim(token)
+  let protocol.Epoch(epoch) = daemon.hello(connected.control).epoch
+  let assert Ok(host) = selection.host(connected.control, address, owner)
+  let assert Ok(source) =
+    selection.create_named(
+      host,
+      "peer-source",
+      source_workspace,
+      workspace.session_name(workspace.Context(source_workspace, None)),
+      configuration,
+    )
+  let assert Ok(target) =
+    selection.create_named(
+      host,
+      "peer-target",
+      target_workspace,
+      workspace.session_name(workspace.Context(target_workspace, None)),
+      configuration,
+    )
+  let source_id = source.expected.session
+  let target_id = target.expected.session
+  let assert Ok(_) =
+    daemon.request(connected.control, protocol.StopSession(source_id), 5000)
+    as "the source retires before its explicit sharing decision"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case
+        daemon.request(connected.control, protocol.GetSession(source_id), 2000)
+      {
+        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
+          poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+  let assert Ok(isolate) =
+    admin.parse(["isolate", source_id, "--share-existing-transcript"])
+  let assert Ok(_) = admin.exchange(address, owner, epoch, isolate)
+  let member =
+    invite(address, owner, epoch, source_id, "member", "operator", "Member")
+  let assert Ok(_) = selection.open(host, source_id)
+
+  let peer_driver =
+    exercise_peer_link_overlay(
+      address,
+      owner,
+      source_id,
+      target_id,
+      member,
+      epoch,
+    )
+  stop_driver(peer_driver)
+  daemon.close(connected.control)
+}
+
 fn fixture(server: String, provider_url: String, live_tool: LiveTool) -> Nil {
   let directory =
     "build/shipped-multiplayer-"
@@ -344,9 +482,6 @@ fn exercise(
       configuration,
     )
     as "the owner creates an independently resident uninvited session"
-  let peer_driver =
-    exercise_peer_link_overlay(address, owner, id, foreign.expected.session)
-  stop_driver(peer_driver)
   let assert endpoint.Ready(port:, ..) = connected.record
     as "authenticated bootstrap retains the published listener port"
   invitation_boundaries(
@@ -1428,6 +1563,8 @@ fn exercise_peer_link_overlay(
   owner: String,
   source: String,
   target: String,
+  member: String,
+  epoch: String,
 ) -> actor.Started(process.Subject(tui_driver.Message)) {
   let assert Ok(driver) = tui_driver.start(address, owner, source)
     as "the owner terminal attaches to the resident source session"
@@ -1505,20 +1642,150 @@ fn exercise_peer_link_overlay(
   assert textarea.value(linked.model.input) == "draft survives peer management"
     as "link creation preserves the composer draft"
 
+  let forward = [
+    "send", source, "main", target, "main", "--message-id", "forward-1",
+    "--text", "forward peer turn",
+  ]
+  let assert Error(idle_refusal) = peer_exchange(address, owner, epoch, forward)
+  assert string.contains(idle_refusal, "NoActiveRun")
+    as "busy_only cannot wake the idle recipient"
+  let assert Ok(_) =
+    peer_exchange(address, owner, epoch, [
+      "link", source, "main", target, "main", "--wake", "may_wake",
+    ])
+    as "the owner explicitly widens only this recipient's wake policy"
+  let assert Ok(recipient) = tui_driver.start(address, owner, target)
+    as "the target terminal observes its own resident session"
+  let _ = await_open(recipient.data, writable)
+  let assert Ok(receipt) = peer_exchange(address, owner, epoch, forward)
+    as "may_wake admits the durable cross-session message"
+  assert peer_exchange(address, owner, epoch, forward) == Ok(receipt)
+    as "retrying the same stable message ID returns its receipt"
+  let _ =
+    tui_v2_test.await(recipient.data, fn(sample) {
+      peer_turn_complete(sample, "forward peer turn", "forwardpeeranswer")
+    })
+
+  let reverse = [
+    "send", target, "main", source, "main", "--message-id", "reverse-1",
+    "--text", "reverse peer turn",
+  ]
+  assert peer_exchange(address, owner, epoch, reverse)
+    == Error("no operator-authorized outgoing link")
+    as "a forward grant creates no reverse authority"
+  let proposed = tui_driver.play(driver.data, [backend.KeyPress("v")])
+  let assert tui.PeerLinkManager(peer_links.State(
+    prompt: peer_links.Confirming(peer_links.Proposal(
+      source_session: reverse_source,
+      target_session: reverse_target,
+      wake: protocol.BusyOnly,
+      ..,
+    )),
+    ..,
+  )) = proposed.model.overlay
+    as "the TUI asks for explicit reverse direction confirmation"
+  assert reverse_source == target
+  assert reverse_target == source
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("tab")])
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
+  let reversed =
+    tui_v2_test.await(driver.data, fn(sample) {
+      case sample.model.overlay {
+        tui.PeerLinkManager(peer_links.State(
+          inspection: Some(peer_links.Inspection(incoming:, ..)),
+          ..,
+        )) ->
+          list.any(incoming, fn(grant) {
+            grant.source_session == target
+            && grant.target_session == source
+            && grant.wake == Some(protocol.MayWake)
+          })
+        _ -> False
+      }
+    })
+  assert textarea.value(reversed.model.input)
+    == "draft survives peer management"
+    as "reverse grant confirmation does not submit the composer"
+  let assert Ok(_) = peer_exchange(address, owner, epoch, reverse)
+    as "the TUI-created reverse grant admits delivery"
+  let _ =
+    tui_v2_test.await(driver.data, fn(sample) {
+      peer_turn_complete(sample, "reverse peer turn", "reversepeeranswer")
+    })
+
   let _ = tui_driver.play(driver.data, [backend.KeyPress("d")])
   let revoked =
     tui_v2_test.await(driver.data, fn(sample) {
       case sample.model.overlay {
         tui.PeerLinkManager(peer_links.State(
-          inspection: Some(peer_links.Inspection(outgoing: [], ..)),
+          inspection: Some(peer_links.Inspection(outgoing: [], incoming:)),
           ..,
-        )) -> True
+        )) ->
+          list.any(incoming, fn(grant) {
+            grant.source_session == target && grant.target_session == source
+          })
         _ -> False
       }
     })
   assert textarea.value(revoked.model.input) == "draft survives peer management"
     as "revoke and refresh preserve the composer draft"
+  assert peer_exchange(address, owner, epoch, [
+      "send", source, "main", target, "main", "--message-id", "forward-2",
+      "--text", "revoked message",
+    ])
+    == Error("no operator-authorized outgoing link")
+    as "revocation blocks later delivery but retains reverse authority"
+  assert peer_exchange(address, member, epoch, ["inspect", source, "main"])
+    == Error("forbidden")
+    as "a session operator cannot inspect owner-only peer grants"
+  assert peer_exchange(address, member, epoch, [
+      "link", source, "main", target, "main", "--wake", "may_wake",
+    ])
+    == Error("forbidden")
+    as "a session operator cannot restore a revoked grant"
+  assert peer_exchange(address, member, epoch, reverse) == Error("forbidden")
+    as "a session operator cannot send through the owner's grant"
+  stop_driver(recipient)
   driver
+}
+
+fn peer_exchange(address, credential, epoch, arguments) {
+  let assert Ok(command) = peer_cli.parse(arguments)
+    as "peer control coordinates pass the public command parser"
+  peer_cli.exchange(address, credential, epoch, command)
+}
+
+fn peer_turn_complete(sample: tui_driver.Sample, body: String, answer: String) {
+  let reply =
+    list.any(sample.model.records, fn(record) {
+      case record.entry {
+        entry.MessageEntry(
+          message: message.AssistantMessage(
+            content: [message.AssistantText(text, None)],
+            ..,
+          ),
+          ..,
+        ) -> text == answer
+        _ -> False
+      }
+    })
+  peer_message_visible(sample, body) && reply && sample.model.streams == []
+}
+
+fn peer_message_visible(sample: tui_driver.Sample, body: String) {
+  list.any(sample.model.records, fn(record) {
+    case record.entry {
+      entry.MessageEntry(
+        message: message.UserMessage(
+          content: [message.UserText(text, None)],
+          origin: Some(_),
+          ..,
+        ),
+        ..,
+      ) -> text == body
+      _ -> False
+    }
+  })
 }
 
 fn assert_shared_turns(
