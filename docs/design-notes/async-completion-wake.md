@@ -165,6 +165,14 @@ bounds how long any jailed command may run, and an auto job runs under that
 bound and no other. `timeout_ms` keeps its clamp of 600 s and now means how
 long the call waits in the foreground.
 
+That has one consequence the foreground did not have. Under a session wall
+shorter than `timeout_ms`, a foreground call is refused as a narrowing and
+the operator is offered the longer wall; an auto job would instead run
+under the short wall with nobody asked. So a call whose window exceeds the
+session wall, grants included, keeps the foreground path, and the approval
+flow is exactly what it was. `tui_approval_effect_test` is the fixture
+that found it.
+
 ### 3. An idle heartbeat
 
 If a strand is idle while work it owns is still running, it is woken every
