@@ -1,9 +1,12 @@
 # Session goals
 
-A session goal is one operator-pinned objective that Loom carries across primary
-runs. The advisor reviews the primary's durable work, either completes the goal
-or continues it, and the harness bounds the autonomous loop. The primary cannot
-create, pause, resume, clear, or complete a goal. It receives the objective as
+A session goal is one objective, pinned by the operator, that Loom carries
+across runs of the *primary* (the model strand doing the session's work). A
+second model strand, the *advisor*, reviews the primary's durable work after
+each run and either declares the goal complete or asks the primary to
+continue. The harness bounds this autonomous loop with a token budget, a
+continuation cap and progress checks. The primary cannot create, pause,
+resume, clear, or complete a goal; it receives the objective as
 operator-authored data inside a harness frame and continues the work.
 
 This document describes the implementation at `ebd99fe1`. [Protocol Change
@@ -22,11 +25,14 @@ Suppose the operator pins:
 
 The first command stores an active goal with a required 400,000-token budget.
 The second attaches `make check` without resetting the goal's accounting or
-loop counters. An idle primary can cause `goal_set` to start the first review
-before the second command arrives, so the check applies to subsequent feeds.
-When a feed is due with the check attached, Loom runs it through the jailed
-effect path. The advisor receives the objective, the check result, and the new
-primary transcript, then must answer `continue` or `complete`.
+loop counters. If the primary is idle, `goal_set` may start the first review
+before the second command arrives; the check then applies from the next review
+on.
+
+Each review is a *feed*: a message to the advisor carrying the objective, the
+check result, and the primary's new transcript. When a feed is due and a check
+is attached, Loom first runs the check through the jailed effect path. The
+advisor must answer the feed with `continue` or `complete`.
 
 A continuation opens another primary run with the reviewer's note. Completion
 records the reviewer's note and leaves the terminal goal visible until the
@@ -135,28 +141,35 @@ stateDiagram-v2
 [`client/goalloop`](../../packages/client/src/client/goalloop.gleam) is the pure
 transition function. The actor observes the durable phase, open operations on
 both strands, progress on the primary branch, check settlement, and fresh usage
-accounting. `next_action` returns `Rest`, `RunCheck`, `FeedReviewer`,
-`WakePrimary`, or `WrapUp`. The actor stores the pure transition before it
-performs the action. Two operation IDs exist only after delivery succeeds, so
-their phases are necessarily post-send writes: the actor records
-`awaiting_verdict` after delivering a feed and records `continuing` after a wake
-starts a primary run.
+accounting. From those, `next_action` returns `Rest`, `RunCheck`,
+`FeedReviewer`, `WakePrimary`, or `WrapUp`. The actor stores the pure
+transition before it performs the action.
 
-That ordering has an explicit crash boundary. A crash after feed delivery but
-before `awaiting_verdict` is stored can cause the next evaluation to send a
-duplicate feed. A crash after a continuation starts but before `continuing` is
-stored leaves that run unclassified as goal-opened, so its abort and progress do
-not move the goal. The level-triggered loop recovers without inventing an
-operation ID; it prefers a duplicate feed or one unmeasured run to waiting on a
-verdict or run that may not exist.
+Two phases are the exception, because each names an operation ID that exists
+only after delivery succeeds. The actor records `awaiting_verdict` after
+delivering a feed, and `continuing` after a wake starts a primary run.
 
-The loop is level-triggered. Run-start, run-end, verdict, abort, check-result,
-and usage notifications cause prompt evaluation, but correctness does not depend
-on any one notification arriving. A two-minute `weft/actor` periodic evaluation
-repairs a lost notification or an actor restart. For example, an
-`awaiting_verdict` phase whose advisor operation is no longer open means that the
-reviewer ended without answering. The loop returns the phase to `idle`, increments
-the unanswered-feed counter, and offers the feed again until the bound pauses it.
+The loop is level-triggered: each evaluation acts on the current durable state,
+not on the event that prompted it. Run-start, run-end, verdict, abort,
+check-result, and usage notifications trigger prompt evaluation, but
+correctness does not depend on any one notification arriving. A two-minute
+`weft/actor` periodic evaluation repairs a lost notification or an actor
+restart. For example, an `awaiting_verdict` phase whose advisor operation is no
+longer open means the reviewer ended without answering. The loop returns the
+phase to `idle`, increments the unanswered-feed counter, and offers the feed
+again until the bound pauses it.
+
+The post-send writes leave an explicit crash boundary:
+
+* A crash after feed delivery but before `awaiting_verdict` is stored can make
+  the next evaluation send a duplicate feed.
+* A crash after a continuation starts but before `continuing` is stored leaves
+  that run unclassified as goal-opened, so its abort and progress do not move
+  the goal.
+
+The loop recovers from both without inventing an operation ID. We accept a
+duplicate feed or one unmeasured run over waiting on a verdict or run that may
+not exist.
 
 ```mermaid
 sequenceDiagram
@@ -189,9 +202,9 @@ sequenceDiagram
     end
 ```
 
-The goal feed contains the primary entries since the advisor cursor. Loom still
-sends a feed when no entries are new, because a resumed idle goal otherwise has
-no event that could restart it. A continuation is a user message on the primary
+The goal feed contains the primary entries since the advisor cursor. Loom
+sends a feed even when no entries are new, because a resumed idle goal would
+otherwise have no event to restart it. A continuation is a user message on the primary
 branch, but two-token frame recognition renders it as harness speech and excludes
 it from the zero-progress predicate.
 
@@ -202,13 +215,13 @@ An optional check runs before every goal feed. The
 same broker clearance and kernel-enforced jail as the `bash` tool, with the
 session workspace, a wall deadline, and bounded output. It runs in a witnessed
 weft task so the advisor actor does not block. Leaving the matching `checking`
-phase cancels the task, and replacing a recently cancelled check waits for the
-single execution slot to drain before retrying it.
+phase cancels the task. Replacing a recently cancelled check waits for the
+single execution slot to drain before retrying.
 
-The result is evidence rather than authority. Exit zero is a passed check; a
-nonzero status is a failed check; a timeout, refusal, or dead task records that
-the command did not finish without inventing an exit status. The advisor still
-makes the completion decision. Both the operator panel and reviewer feed render
+The check result is evidence for the advisor; the advisor still makes the
+completion decision. Exit zero is a passed check and a nonzero status is a
+failed one. A timeout, refusal, or dead task is recorded as a command that did
+not finish, with no invented exit status. Both the operator panel and reviewer feed render
 the same recorded result from the cell.
 
 ## Accounting and bounds
@@ -224,7 +237,7 @@ max(input - cache_read - cache_write, 0) + output
 
 Reasoning tokens are already part of output and are not added twice. Dollar cost
 is summed for display and never gates the loop. Usage notifications only trigger
-the scan; their payload is not trusted for arithmetic.
+the scan; the arithmetic never trusts their payload.
 
 Paused, limited, and complete goals do not accrue usage. Resume advances the
 accounting cursor to the current ledger tip and preserves the accumulated token
@@ -233,10 +246,10 @@ evaluation after resume. Refreshing the same objective also preserves the used
 total and the check, while resetting the phase and loop counters. Replacing a
 complete goal starts fresh even when the objective text is unchanged.
 
-The budget is a floor rather than a hard scheduler cutoff. At most one
-harness-opened run can straddle a pause or limit and remain uncharged. Rows with
-no entry ID and rows whose entry sequence is at or below the cursor are also
-excluded because the implementation cannot attribute them without guessing.
+The budget is a floor, not a hard scheduler cutoff: at most one harness-opened
+run can straddle a pause or limit and remain uncharged. Rows with no entry ID,
+and rows whose entry sequence is at or below the cursor, are also excluded,
+because the implementation cannot attribute them without guessing.
 
 Three durable bounds close the autonomous loop:
 
@@ -280,7 +293,7 @@ The TUI performs that read even when no goal exists and even when no advisor is
 routed. An older server may refuse the automatic read; the TUI drops that refusal
 silently, while an explicit `/goal` or mutation prints the error.
 
-The source has focused coverage for the codec and transition state space in
+Tests cover the codec and transition state space in
 [`goalstate_test`](../../packages/client/test/client/goalstate_test.gleam) and
 [`goalloop_test`](../../packages/client/test/client/goalloop_test.gleam), actor
 and accounting behavior in
@@ -289,19 +302,18 @@ commands in [`gateway_test`](../../packages/client/test/client/gateway_test.glea
 and the protocol in
 [`protocol_test`](../../packages/client/test/client/protocol_test.gleam).
 
-The real command surface has coverage in
-[`goal_e2e_test`](../../packages/client/test/client/goal_e2e_test.gleam). The
-terminal projection has coverage in
-[`goal_view_test`](../../packages/tui/test/goal_view_test.gleam). These paths are
-current implementation evidence, not a claim that the suites were run for this
-documentation edit.
+[`goal_e2e_test`](../../packages/client/test/client/goal_e2e_test.gleam)
+covers the real command surface, and
+[`goal_view_test`](../../packages/tui/test/goal_view_test.gleam) covers the
+terminal projection. These paths locate the evidence; listing them does not
+claim the suites were run for this documentation edit.
 
 ## Current limits
 
 Version 1 has one goal per session, a token budget rather than a wall-clock
-budget, and no primary-facing goal tool. The check is a shell command, so its
-meaning comes from the operator and its ability to run comes from the session's
-effect policy and available jail. A provider that repeatedly omits a goal verdict
+budget, and no primary-facing goal tool. The check is a shell command: the
+operator defines what it means, and the session's effect policy and available
+jail determine whether it can run. A provider that repeatedly omits a goal verdict
 causes a bounded pause rather than automatic recovery to another reviewer.
 
 `goal_set` treats a leading `check` as the check subcommand in the TUI. To pin an
