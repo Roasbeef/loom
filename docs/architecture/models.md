@@ -374,12 +374,15 @@ a strand an Agency spawned: `client/agency` *seeds* a child with
 `resolve(subagent)`'s identity at creation, and the derivation then
 recognises that identity as subagent's head.
 
-Structural summaries dispatch on `summarize`. They go out
-`ForRole(Summarize, None)`: as a role, chain walk included, with no
-thinking overlay, so the summarization entry's own declared level applies.
-A summary is published as text rather than as a response attributed to a
-model. There is no durable identity contract to honour, so a cheaper
-fallback costs nothing.
+`summarize` is dispatched on by three harness-side callers, none of them a
+strand's own turn. Structural summaries go out `ForRole(Summarize, None)`:
+as a role, chain walk included, with no thinking overlay, so the
+summarization entry's own declared level applies. Memory distillation
+(`client/distill.target`) asks for the same route and falls back to the
+resolved `main` identity when none is routed. The glance loop, below, falls
+back further and turns thinking off. Each publishes text rather than a
+response attributed to a model. There is no durable identity contract to
+honour, so a cheaper fallback costs nothing.
 
 `plan` remains reserved vocabulary. `vision` serves image-bearing requests
 when the strand's primary model is text-only. It receives the existing
@@ -388,6 +391,61 @@ above. It is a routed generation for that turn, not a separate
 image-description subtask. Later text-only turns can return to the primary
 model with historical images replaced by placeholders. The catalogue
 refuses a vision chain containing an explicitly text-only model.
+
+## The glance loop
+
+The terminal shows one row per running sub-agent under the composer: a
+short title for its task and one line saying what it is doing now, such
+as "Audit funding and peer routing panics" over "Reading
+fundeeProcessOpenChannel in manager.go". Nothing in the transcript is
+that line, so a cheap model writes it, and `client/glance` is the
+per-session loop that asks.
+
+It watches the cost ledger's notification (`effects.Hooks.usage`), which
+fires once per committed provider response on every strand. The hook
+casts the operation id and the row's context size to the loop and
+returns; the loop resolves the strand from `op.meta` and ignores `main`
+and `advisor`, which the terminal describes from data it already has.
+`client/glancepace` decides when to ask, as a pure function of the book,
+the event and the time. A strand's first step in an operation is due at
+once, so its title arrives within one model round trip of the first tool
+call. Later refreshes wait twenty seconds from the previous request's
+start and happen only if the strand stepped since then. Each strand has
+at most one request out, the session at most three, and failures back
+off from twenty seconds to five minutes. The loop is a
+`weft/state_machine` that arms one named timeout for the soonest due
+instant and cancels it when nothing is owed.
+
+Each request is a one-task `weft` run with a deadline.
+`client/glanceslice` reduces the operation's accepted prompt (1.5 KB),
+its last eight tool calls since the source leaf (200 B each) and its
+latest assistant text (500 B) to a request of about four kilobytes. The
+first request for an operation asks for a `TITLE:` and a `NOW:` line;
+later ones carry the stored title and ask for `NOW:` alone. An answer
+that does not carry the lines asked for is refused whole, and the old
+cell stands.
+
+The route is `summarize` when the catalogue has one, then `subagent`,
+then `main`, always `ForRole(role, Some(ThinkingOff))` with the answer
+capped at 160 tokens (`distill.capped_gateway_distiller`). Every
+catalogue routes `main`, so a new user with no role table gets a working
+glance. Only a catalogue that routes nothing leaves the loop unstarted,
+and that boot logs `glance.unavailable` once. There is no switch to turn
+the loop off: no existing `loom.toml` table fits one, and routing
+`summarize` to a cheap entry is how an operator controls what it costs.
+Its requests are not written to the session's cost ledger.
+
+The result is a `core/glance` cell under `client/glance/{strand}`,
+written with `api.put_reserved_fact`. The `client/` prefix is reserved,
+so no model can write it, and `gateway.snapshot_plan` puts every
+`client/` fact in every transcript capture, so no protocol change was
+needed to carry it. A register-only write produces no pushed `committed`
+notice, because the hub's pull emits only entries, usage rows, operation
+transitions and escalations. The terminal's 250 ms idle catch-up is what
+picks the cell up. The cell's `tokens` is the operation's current
+context size from its newest usage row, a replacement value and not a
+sum. The cell is never deleted, and a reader shows it only while its
+`operation` is still the strand's current one.
 
 ## Dialects and the adapter seam
 
@@ -649,6 +707,7 @@ the hub's fork/create_strand, and an Agency's child.
 | `client/serve.gleam` | The `--config` ladder, the environment-shaped one-entry catalogue, the `Settings` the wiring config is built from, `catalogue_facts` (the per-identity fact seam), `seed_thinking`, and the Agency's `subagent_model` resolver. |
 | `client/wiring.gleam` | `request_target` (role derivation from the captured identity), `resolved_target` (off route and every deferred poll), the per-query admission and per-strand threshold window, and `strand_thinking_level` — the lift that seeds a strand from an entry. |
 | `client/agency.gleam` | `Config.subagent_model` and `child_configuration`: a spawned child's identity and seed thinking level, chosen once at creation. |
+| `client/glance.gleam`, `client/glancepace.gleam`, `client/glanceslice.gleam` | The glance loop: its `summarize` → `subagent` → `main` target, the pure pacing, and the bounded request and total answer parse. |
 | `client/gateway.gleam` | The `models` listing, `set_config`'s `model_name` with its strand and session scopes, the catalogue name echoed in the effective config, and `seeded_thinking` — a forked or created strand takes the entry in force's level. |
 | `client/protocol.gleam` | `ListModels`, `ModelsSnapshot`, `ModelInfo`, `SetConfig` — the wire shapes, pinned by the Go golden fixtures. |
 | `provider/gateway.gleam` | `ProviderConfig`, the builder, `resolve`, and the chain walk. |
