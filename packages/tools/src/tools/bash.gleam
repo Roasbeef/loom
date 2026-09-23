@@ -308,6 +308,9 @@ fn attended(
 ) -> ToolOutcome {
   let window =
     int.min(option.unwrap(requested, default_timeout_ms), max_timeout_ms)
+  use <- bool.lazy_guard(when: outgrows_the_wall(ctx, window), return: fn() {
+    foreground(ctx, command, requested)
+  })
   case jobs.attend(ctx, command) {
     Ok(started) -> {
       let #(now, _clock) = clock.read(ctx.clock)
@@ -322,6 +325,27 @@ fn attended(
     | Error(job.NotFound(..) as refusal)
     | Error(job.Invalid(..) as refusal) -> job.refusal_outcome(refusal)
   }
+}
+
+// Whether the call asks to wait longer than the session lets any jailed
+// command run.
+//
+// An auto job asks for no wall of its own, so it runs under the session
+// wall, grants included, and `timeout_ms` bounds only the wait. A window
+// that wall cannot cover is the case where a foreground call would have
+// been refused as a narrowing and the operator offered a longer wall;
+// attending a job there would instead kill it at the session wall with
+// nobody asked. So that one case keeps the foreground path, whose refusal
+// the escalation flow turns into the question.
+fn outgrows_the_wall(ctx: Ctx, window: Int) -> Bool {
+  let #(session, _narrowings) =
+    policy.compose(
+      base: ctx.base_policy,
+      requirements: ctx.base_policy,
+      grants: ctx.grants,
+    )
+  let wall_s = session.limits.wall_s
+  wall_s > 0 && window > wall_s * 1000
 }
 
 // What an auto call carries between looks at its job: the cursors, the

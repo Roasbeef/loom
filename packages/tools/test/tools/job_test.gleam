@@ -8,6 +8,7 @@
 //// The door's own behaviour is `client`'s and is tested there.
 
 import broker/exec
+import broker/policy
 import core/json
 import core/message
 import gleam/erlang/process.{type Subject}
@@ -768,4 +769,37 @@ pub fn a_host_with_no_jobs_plane_runs_auto_calls_in_the_foreground_test() {
     )
   assert !outcome.is_error
   assert detail(outcome, "exit_code") == json.Int(0)
+}
+
+pub fn an_auto_call_longer_than_the_session_wall_keeps_the_foreground_test() {
+  // Under a one-second session wall a thirty-second wait is a question for
+  // the operator, which only the foreground clearance asks. The jobs door
+  // is never reached, so no job runs under a wall nobody approved.
+  let asked = recorder()
+  let base = narrow_wall()
+  let ctx =
+    tool.Ctx(
+      ..fake_broker.ctx(
+        workspace:,
+        filesystem: memory_fs.filesystem(memory_fs.start()),
+        now:,
+        script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+        recorded: process.new_subject(),
+      ),
+      base_policy: base,
+    )
+  let _outcome =
+    bash.tool(answering(asked, job.Running)).run(
+      ctx,
+      json.Object([
+        #("command", json.String("make")),
+        #("timeout_ms", json.Int(30_000)),
+      ]),
+    )
+  assert drain(asked) == []
+}
+
+fn narrow_wall() -> policy.SandboxPolicy {
+  let base = policy.workspace_default(workspace)
+  policy.SandboxPolicy(..base, limits: policy.Limits(..base.limits, wall_s: 1))
 }
