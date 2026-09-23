@@ -6,6 +6,7 @@
 PACKAGES := host core storage session machine prompt telemetry runtime provider \
 	broker mcp tools cap ext codemode events client conformance tui lint
 GO_PKG   := packages/sandbox
+CODEX_BRIDGE_PKG := tools/codex-bridge
 HELPER   := $(GO_PKG)/loom-exec
 PREFIX   ?= $(HOME)/.local
 
@@ -61,6 +62,7 @@ fmt: ## Format all Gleam and Go sources in place
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format $(LOOSE_GLEAM)
 	@cd $(GO_PKG) && gofmt -w .
+	@cd $(CODEX_BRIDGE_PKG) && gofmt -w .
 	@echo "formatted"
 
 .PHONY: fmt-check
@@ -73,6 +75,8 @@ fmt-check: ## Verify formatting without writing (what CI enforces)
 	@test -z "$(LOOSE_GLEAM)" || gleam format --check $(LOOSE_GLEAM)
 	@test -z "$$(cd $(GO_PKG) && gofmt -l .)" || { \
 		echo "unformatted Go files:"; (cd $(GO_PKG) && gofmt -l .); exit 1; }
+	@test -z "$$(cd $(CODEX_BRIDGE_PKG) && gofmt -l .)" || { \
+		echo "unformatted Codex bridge Go files:"; (cd $(CODEX_BRIDGE_PKG) && gofmt -l .); exit 1; }
 	@echo "formatting clean"
 
 # ----------------------------------------------------------------- binaries
@@ -88,9 +92,9 @@ fmt-check: ## Verify formatting without writing (what CI enforces)
 # the self-test's verdict says anything about the artifact.
 
 .PHONY: binaries
-binaries: sandbox tui-shipment ## Build bin/loom-exec and the native bin/loom launcher
+binaries: sandbox codex-bridge tui-shipment ## Build native helpers and the bin/loom launcher
 	@install -m 0755 $(HELPER) bin/loom-exec
-	@echo "built bin/loom-exec and bin/loom"
+	@echo "built bin/loom-exec, bin/codex-bridge, and bin/loom"
 
 .PHONY: profile-launcher-test
 profile-launcher-test: tui-shipment ## Check --profile argument and credential handling
@@ -321,6 +325,14 @@ sandbox: ## Build the loom-exec sandbox helper binary
 sandbox-test: ## Vet, build, and test the Go sandbox package
 	@cd $(GO_PKG) && go vet ./... && go build ./... && \
 		python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...
+
+.PHONY: codex-bridge
+codex-bridge: ## Build the isolated Codex subscription transport helper
+	@scripts/go-build.sh $(CODEX_BRIDGE_PKG) . bin/codex-bridge
+
+.PHONY: codex-bridge-test
+codex-bridge-test: ## Vet, build, and test the Codex bridge
+	@bash scripts/check.sh codex-bridge
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)

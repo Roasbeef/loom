@@ -27,7 +27,10 @@ class InstallTest(unittest.TestCase):
         for tree in (self.server, self.client, self.slim):
             (tree / "bin").mkdir(parents=True)
             (tree / "marker").write_text("first\n")
-            for name in ("loomd", "loom-exec", "loom", "loom-profile"):
+            names = ("loomd", "loom-exec", "loom", "loom-profile")
+            if tree == self.server:
+                names += ("codex-bridge",)
+            for name in names:
                 executable = tree / "bin" / name
                 executable.write_text(
                     '#!/bin/sh\nset -eu\n'

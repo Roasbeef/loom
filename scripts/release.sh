@@ -62,7 +62,7 @@ if [ "$SMOKE" = 0 ]; then
   need gleam  "exports the client package as an erlang shipment (>= 1.18)"
   need rebar3 "assembles the OTP release and copies ERTS into it"
   need erl    "the runtime system that gets copied in (OTP >= 29)"
-  need go     "builds the loom-exec sandbox helper (>= 1.24)"
+  need go     "builds the loom-exec and codex-bridge helpers (>= 1.24)"
   need erlc "compiles the bundled diagnostic probe"
   if [ "$STRIP_ERTS" = 1 ]; then
     need strip "strips the copied ERTS binaries (DIST_STRIP_ERTS=0 to skip)"
@@ -119,6 +119,11 @@ if [ "$SMOKE" = 1 ]; then
 
   [ -f "$SMOKE_SUPPORT/client@release_probe_test.beam" ] || {
     echo "release.sh: missing release smoke probe; rebuild with make release" >&2; exit 1; }
+  [ -x "$REL/bin/codex-bridge" ] || {
+    echo "release.sh: missing bundled codex-bridge helper" >&2; exit 1; }
+  # The framing and logged-out state must work from the shipped binary with
+  # a fresh private home, without spending usage or borrowing an operator login.
+  python3 scripts/codex_bridge_smoke.py "$REL/bin/codex-bridge"
   STATE="$REL_ROOT/smoke/state"
   WORKSPACE="$REL_ROOT/smoke/work"
   rm -rf "$REL_ROOT/smoke"; mkdir -p "$STATE" "$WORKSPACE"
@@ -339,6 +344,7 @@ if [ "$SMOKE" = 1 ]; then
   echo "            shared-domain distillation after admission, clean close on SIGTERM,"
   echo "            the helper found beside the binary with no --helper injected,"
   echo "            and an explicit --helper still winning"
+  echo "            plus bundled codex-bridge reporting logged out without credentials"
   if [ -d "$REL/share/codemode-seed" ]; then
     echo "            plus code_mode registered from the bundled toolchain"
   else
@@ -563,6 +569,11 @@ rm -f "$REL/bin/loom"
 echo "==> building the sandbox helper"
 scripts/go-build.sh "$ROOT/packages/sandbox" ./cmd/loom-exec "$REL/bin/loom-exec"
 
+# Subscription tokens stay in this separate OS process. Keep its build flags
+# aligned with the development helper and place it beside the server launcher.
+echo "==> building the Codex subscription helper"
+scripts/go-build.sh "$ROOT/tools/codex-bridge" . "$REL/bin/codex-bridge"
+
 # Code mode: the compiler and the pre-resolved package cache a hermetic
 # build is cloned from. The release already carried the third thing
 # `discover` asks for — `erts-*/bin/erl` — and the server now finds all
@@ -615,10 +626,11 @@ echo "release: $REL"
 # One `du` per path: GNU du skips a directory it has already descended
 # into, so a single call with the tree and its own subdirectories reports
 # the tree and nothing else.
-sizes="$REL $REL/erts-$ERTS_VSN $REL/lib $REL/bin/loom-exec"
+sizes="$REL $REL/erts-$ERTS_VSN $REL/lib $REL/bin/loom-exec $REL/bin/codex-bridge"
 [ "$CODEMODE" = 1 ] && sizes="$sizes $REL/bin/gleam $REL/share/codemode-seed"
 for p in $sizes; do
   du -sh "$p" | sed 's/^/  /'
 done
 echo "  helper sha256: $($SHA256 "$REL/bin/loom-exec" | cut -c1-16)…"
+echo "  codex bridge sha256: $($SHA256 "$REL/bin/codex-bridge" | cut -c1-16)…"
 echo "run it with: $REL/bin/loomd --state-dir <private-state-directory>"

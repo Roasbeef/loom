@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(host core storage session machine prompt telemetry runtime provider broker mcp tools cap ext codemode events client tui conformance lint sandbox)
+packages=(host core storage session machine prompt telemetry runtime provider broker mcp tools cap ext codemode events client tui conformance lint sandbox codex-bridge)
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
@@ -33,6 +33,21 @@ for pkg in "${targets[@]}"; do
 done
 
 for pkg in "${targets[@]}"; do
+  if [ "$pkg" = "codex-bridge" ]; then
+    echo "==> $pkg (Go)"
+    (
+      cd "tools/$pkg"
+      unformatted="$(gofmt -l .)"
+      if [ -n "$unformatted" ]; then
+        printf '%s\n' "$unformatted" >&2
+        exit 1
+      fi
+      go vet ./...
+      go build -o ../../bin/codex-bridge ./...
+      python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...
+    )
+    continue
+  fi
   if [ "$pkg" = "sandbox" ]; then
     echo "==> $pkg (Go)"
     # Capture the listing directly because macOS wc pads a zero count with

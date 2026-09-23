@@ -15,6 +15,7 @@ case "$CLIENT" in
 esac
 SERVER_SRC="$ROOT/build/release/loom"
 for launcher in "$SERVER_SRC/bin/loomd" "$SERVER_SRC/bin/loom-exec" \
+  "$SERVER_SRC/bin/codex-bridge" \
   "$CLIENT_SRC/bin/loom" "$CLIENT_SRC/bin/loom-profile"; do
   [ -x "$launcher" ] || {
     echo "install.sh: missing $launcher; run the release/client build first" >&2

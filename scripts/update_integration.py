@@ -35,7 +35,7 @@ class UpdateTest(unittest.TestCase):
             source = self.root / component
             binaries = source / 'bin'
             binaries.mkdir(parents=True)
-            for name in (['loomd', 'loom-exec'] if component == 'server' else ['loom', 'loom-profile']):
+            for name in (['loomd', 'loom-exec', 'codex-bridge'] if component == 'server' else ['loom', 'loom-profile']):
                 (binaries / name).write_text('#!/bin/sh\nprintf "fixture\\n"\n')
                 (binaries / name).chmod(0o755)
             if component == 'server':

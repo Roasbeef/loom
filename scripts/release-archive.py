@@ -76,8 +76,10 @@ def manifest(root, output, platform, version, epoch, artifacts):
     # preserve its toolchain inventory beside these inputs for reproduction.
     inputs = sorted({*root.glob('packages/*/manifest.toml'), *root.glob('packages/*/go.sum'),
                      *root.glob('packages/*/gleam.toml'), *root.glob('packages/*/go.mod'),
+                     *root.glob('tools/codex-bridge/go.mod'), *root.glob('tools/codex-bridge/go.sum'),
                      *root.glob('scripts/release*.sh'), *root.glob('scripts/release*.py'),
                      root / 'scripts/go-build.sh', root / 'scripts/platform.sh',
+                     root / 'scripts/codex_bridge_smoke.py',
                      root / 'scripts/codemode_seed.sh', root / 'scripts/codemode-seed-manifest.toml',
                      root / 'scripts/dist.sh',
                      root / 'Makefile', root / 'packages/tui/priv/install.sh'})

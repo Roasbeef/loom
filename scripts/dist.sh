@@ -59,6 +59,8 @@ rm -rf "$SLIM_STAGE"
 # one internally, so release assembly removes it before this archive is made.
 tar -tzf "$DIST/$SERVER_STEM.tar.gz" \
   | grep -Fx "$SERVER_STEM/bin/loomd" >/dev/null
+tar -tzf "$DIST/$SERVER_STEM.tar.gz" \
+  | grep -Fx "$SERVER_STEM/bin/codex-bridge" >/dev/null
 if tar -tzf "$DIST/$SERVER_STEM.tar.gz" \
   | grep -Fx "$SERVER_STEM/bin/loom" >/dev/null; then
   echo "dist.sh: daemon archive shadows the client with bin/loom" >&2
@@ -70,12 +72,22 @@ fi
 # launcher whose runtime was omitted.
 tar -tzf "$DIST/$TUI_STEM.tar.gz" \
   | grep -Fx "$TUI_STEM/bin/loom" >/dev/null
+if tar -tzf "$DIST/$TUI_STEM.tar.gz" \
+  | grep -Fx "$TUI_STEM/bin/codex-bridge" >/dev/null; then
+  echo "dist.sh: client archive contains the server's Codex bridge" >&2
+  exit 1
+fi
 tar -tzf "$DIST/$TUI_STEM.tar.gz" \
   | grep -E "^$TUI_STEM/erts-[^/]+/bin/erl$" >/dev/null
 
 
 tar -tzf "$DIST/$SLIM_STEM.tar.gz" \
   | grep -Fx "$SLIM_STEM/bin/loom" >/dev/null
+if tar -tzf "$DIST/$SLIM_STEM.tar.gz" \
+  | grep -Fx "$SLIM_STEM/bin/codex-bridge" >/dev/null; then
+  echo "dist.sh: slim client archive contains the server's Codex bridge" >&2
+  exit 1
+fi
 tar -tzf "$DIST/$SLIM_STEM.tar.gz" \
   | grep -Fx "$SLIM_STEM/build/tui-erlang-shipment/entrypoint.sh" >/dev/null
 
