@@ -6,13 +6,16 @@
 
 import client/agency
 import client/async_runs
+import client/notice
 import core/clock.{type Clock}
 import core/ids
 import core/json
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
@@ -347,6 +350,7 @@ pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
         runtime: harness.runtime,
         clock: harness.clock,
         abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 23))
@@ -369,6 +373,7 @@ pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
         runtime: harness.runtime,
         clock: harness.clock,
         abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
       ),
     )
   let assert Ok(first) = list.first(records)
@@ -450,7 +455,12 @@ fn start_execution_observed(
   let assert Ok(service) =
     async_runs.start(
       name,
-      async_runs.Wiring(runtime: harness.runtime, clock: harness.clock, abort:),
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.clock,
+        abort:,
+        heartbeat_ms: 0,
+      ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 19))
   let record = execution_record(harness, operation, id)
@@ -553,4 +563,164 @@ fn close_harness(harness: Harness) -> Nil {
   let assert Ok(timer) = process.subject_owner(harness.time)
   process.unlink(timer)
   process.kill(timer)
+}
+
+// --- telling the launcher -------------------------------------------------
+//
+// A settled execution's end is sent to the strand that launched it, unless
+// somebody chose that end. These tests read the reserved mark the notice
+// spends in the same transaction as its admission, and the launcher's
+// projected context, which is what the model reads.
+
+fn launch(
+  harness: Harness,
+  id: String,
+  heartbeat_ms: Int,
+  work: fn() -> json.JsonValue,
+) -> #(address.Address(async_runs.Message), process.Pid) {
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: harness.clock,
+        abort: fn(_, _) { Nil },
+        heartbeat_ms:,
+      ),
+    )
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 23))
+  let record =
+    async_execution.Execution(
+      ..execution_record(harness, operation, id),
+      deadline_ms: now(harness.time) + 3_600_000,
+    )
+  let assert Ok(_) = async_runs.launch(name, record, work)
+  #(name, service.pid)
+}
+
+// Whether the completion notice for `id` was delivered: the mark lands in
+// the admission's own commit, so its presence is the delivery.
+fn notified(harness: Harness, id: String) -> Bool {
+  case api.fact(harness.runtime, notice.key(notice.Execution(id:))) {
+    Ok(Some(_mark)) -> True
+    Ok(None) | Error(_) -> False
+  }
+}
+
+// The service settles an execution on its own 100 ms sweep, so a test
+// waits on what that sweep writes rather than on a guessed interval.
+fn await_phase(
+  harness: Harness,
+  id: String,
+  attempts: Int,
+) -> async_execution.Phase {
+  let phase = case api.fact(harness.runtime, async_execution.key(id)) {
+    Ok(Some(cell)) ->
+      case async_execution.decode(cell) {
+        Ok(record) -> record.phase
+        Error(_) -> async_execution.Starting
+      }
+    Ok(None) | Error(_) -> async_execution.Starting
+  }
+  case phase, attempts <= 0 {
+    async_execution.Finished(_), _ | async_execution.Lost(_), _ | _, True ->
+      phase
+    _, False -> {
+      process.sleep(20)
+      await_phase(harness, id, attempts - 1)
+    }
+  }
+}
+
+fn context_text(harness: Harness, strand: String) -> String {
+  let leaf = case session.strand_leaf(harness.runtime.session, strand) {
+    Ok(Some(session.Cell(value: leaf, ..))) -> leaf
+    Ok(None) | Error(_reason) -> None
+  }
+  case session.project_context(harness.runtime.session, leaf) {
+    Ok(messages) -> messages |> list.map(user_text) |> string.join("\n")
+    Error(_reason) -> ""
+  }
+}
+
+fn user_text(item: message.AgentMessage) -> String {
+  case item {
+    message.UserMessage(content:, ..) ->
+      content
+      |> list.filter_map(fn(block) {
+        case block {
+          message.UserText(text:, ..) -> Ok(text)
+          message.UserImage(..) -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    _other -> ""
+  }
+}
+
+pub fn a_finished_execution_is_sent_to_its_launcher_test() {
+  let harness = start_harness()
+  let #(_name, service) =
+    launch(harness, "f1", 0, fn() { json.String("review complete") })
+  let assert async_execution.Finished(_) = await_phase(harness, "f1", 150)
+    as "the execution must finish"
+
+  // The sweep delivers the notice right after saving the terminal phase,
+  // in the same handler, so the mark is there once the phase is.
+  assert notified(harness, "f1")
+  let text = context_text(harness, "main")
+  assert string.contains(text, "[loom] async code-mode execution f1 finished")
+  assert string.contains(text, "review complete")
+  stop(service)
+  close_harness(harness)
+}
+
+pub fn a_cancelled_execution_is_not_announced_test() {
+  // The owner asked for the end, so it is nothing the owner does not know.
+  let harness = start_harness()
+  let #(name, service) =
+    launch(harness, "c1", 0, fn() {
+      process.sleep_forever()
+      json.Null
+    })
+  let assert Ok(_) =
+    async_runs.interact(name, "main", "c1", async_runs.Cancel, 0)
+    as "the owner may cancel its execution"
+  let assert async_execution.Lost(_) = await_phase(harness, "c1", 150)
+    as "a cancelled execution is recorded lost"
+  assert !notified(harness, "c1")
+  stop(service)
+  close_harness(harness)
+}
+
+pub fn an_idle_launcher_of_a_live_execution_is_woken_test() {
+  // The first sample starts the owner's idle stretch and schedules the
+  // next a minute on; advancing the clock past it makes the second sample
+  // find a whole interval gone.
+  let harness = start_harness()
+  let #(_name, service) =
+    launch(harness, "b1", 1, fn() {
+      process.sleep_forever()
+      json.Null
+    })
+  process.sleep(250)
+  assert !string.contains(context_text(harness, "main"), "idle heartbeat")
+  advance(harness.time, notice.heartbeat_tick_ms + 1)
+  let text = await_context(harness, "idle heartbeat", 100)
+  assert string.contains(text, "[loom] idle heartbeat")
+  assert string.contains(text, "async execution b1")
+  stop(service)
+  close_harness(harness)
+}
+
+fn await_context(harness: Harness, needle: String, attempts: Int) -> String {
+  let text = context_text(harness, "main")
+  case string.contains(text, needle) || attempts <= 0 {
+    True -> text
+    False -> {
+      process.sleep(20)
+      await_context(harness, needle, attempts - 1)
+    }
+  }
 }

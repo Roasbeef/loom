@@ -7,6 +7,7 @@
 //// A replacement service records Lost and never replays a volatile satellite.
 
 import client/agency
+import client/notice
 import core/clock
 import core/ids
 import core/json.{type JsonValue}
@@ -33,8 +34,25 @@ pub type Wiring {
     clock: clock.Clock,
     /// Cancels only this execution's distinct broker step.
     abort: fn(ids.OpId, String) -> Nil,
+    /// How long an owner may sit idle while executions it launched are
+    /// still live before it is woken with a listing of them, in
+    /// milliseconds; zero turns it off. The same `[jobs].heartbeat_s` the
+    /// jobs actor reads, so one number governs every kind of background
+    /// work.
+    heartbeat_ms: Int,
   )
 }
+
+// The three ends somebody chose. An owner's `cancel`, an operator's abort
+// of the launching operation and a session stop are each news to nobody,
+// and a completion notice about an abort would wake the strand the abort
+// was meant to stop. Named once here because both the paths that record
+// them and `worth_telling` read them.
+const cancelled_reason = "cancelled"
+
+const aborted_reason = "initiating operation aborted"
+
+const stopped_reason = "session stopped"
 
 /// The service's requests and managed-task reports.
 pub type Message {
@@ -144,6 +162,14 @@ type State {
     live: Dict(String, Held),
     recovering: List(execution.Execution),
     launches: Dict(String, Int),
+    /// How long each owner of a live execution has been idle, for the
+    /// heartbeat. Volatile, like the executions it counts.
+    idle: notice.IdleClock,
+    /// The next instant the heartbeat samples at. The service's own sweep
+    /// ticks every 100 ms; sampling on every one of those would read each
+    /// owner's strand state ten times a second for an answer measured in
+    /// minutes.
+    next_sample_ms: Int,
   )
 }
 
@@ -165,6 +191,8 @@ pub fn start(
       live: dict.new(),
       recovering: [],
       launches: dict.new(),
+      idle: notice.idle_clock(),
+      next_sample_ms: 0,
     ))
     |> actor.returning(subject)
     |> actor.continuing(Recover)
@@ -181,7 +209,7 @@ pub fn start(
           state.wiring.runtime,
           execution.Execution(
             ..held.record,
-            phase: execution.Lost("session stopped"),
+            phase: execution.Lost(stopped_reason),
           ),
         )
       state.wiring.abort(held.record.operation, held.record.step)
@@ -305,12 +333,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           let state =
             dict.fold(state.live, state, fn(state, id, held) {
               case held.record.operation == operation {
-                True ->
-                  close(
-                    state,
-                    id,
-                    Some(execution.Lost("initiating operation aborted")),
-                  )
+                True -> close(state, id, Some(execution.Lost(aborted_reason)))
                 False -> state
               }
             })
@@ -509,7 +532,7 @@ fn inspect(
       case action {
         Check -> #(state, inspect_value(state, record))
         Cancel -> {
-          let state = close(state, id, Some(execution.Lost("cancelled")))
+          let state = close(state, id, Some(execution.Lost(cancelled_reason)))
           #(
             state,
             load(state.wiring.runtime, id)
@@ -950,6 +973,126 @@ fn mark_drain(state: State, id: String, drain: Drain) -> State {
   }
 }
 
+// --- telling the owner ----------------------------------------------------
+
+// A settled execution's notice to the strand that launched it, if its end
+// is news. Called once the terminal phase is saved: after the drain proof
+// for an ordinary end, and from recovery for one a restart ended. A
+// delivery that fails is dropped, because the record is terminal and a
+// `check` or `join` reads it.
+fn tell(runtime: api.Runtime, record: execution.Execution) -> Nil {
+  case worth_telling(record.phase) {
+    True -> {
+      let _delivered =
+        notice.deliver(
+          runtime,
+          record.strand,
+          notice.Execution(id: record.id),
+          completion_text(record),
+        )
+      Nil
+    }
+    False -> Nil
+  }
+}
+
+fn worth_telling(phase: execution.Phase) -> Bool {
+  case phase {
+    execution.Finished(_) -> True
+    execution.Lost(reason:) ->
+      !list.contains([cancelled_reason, aborted_reason, stopped_reason], reason)
+    execution.Starting | execution.Running | execution.Draining -> False
+  }
+}
+
+// How many bytes of a finished program's result a notice quotes: enough
+// for the common small report, with the rest a `join` away.
+const notice_result_bytes = 2048
+
+// The completion notice's text. Its first line names it completely, as a
+// client's collapsed view of a `[loom]` message expects.
+fn completion_text(record: execution.Execution) -> String {
+  let ended = case record.phase {
+    execution.Finished(result) ->
+      "finished\n\nIts result:\n"
+      <> clipped(json.to_string(result), notice_result_bytes)
+    execution.Lost(reason:) ->
+      "was lost: "
+      <> reason
+      <> ". Anything it did before that is not undone and not replayed."
+    execution.Starting | execution.Running | execution.Draining ->
+      "is still running"
+  }
+  "[loom] async code-mode execution "
+  <> record.id
+  <> " "
+  <> ended
+  <> "\n\nRead its full record with `code_mode` mode `check` (handle "
+  <> record.id
+  <> ")."
+}
+
+fn clipped(text: String, limit: Int) -> String {
+  case string.byte_size(text) > limit {
+    False -> text
+    True -> string.slice(text, 0, limit) <> " [clipped]"
+  }
+}
+
+// --- the idle heartbeat ---------------------------------------------------
+
+// One heartbeat sample, when one is due. Every owner of a live execution
+// is asked whether its strand has an open run, and one that has been idle
+// for the whole interval is woken with a listing of what is still running.
+fn heartbeat(state: State, now: Int) -> State {
+  let interval = state.wiring.heartbeat_ms
+  case interval > 0 && now >= state.next_sample_ms {
+    False -> state
+    True -> {
+      let owners = live_by_owner(state.live)
+      let idle = notice.retain(state.idle, dict.keys(owners))
+      let idle =
+        dict.fold(owners, idle, fn(idle, owner, records) {
+          notice.sample(
+            state.wiring.runtime,
+            idle,
+            owner,
+            now:,
+            interval_ms: interval,
+            lines: fn() { list.map(records, heartbeat_line(_, now)) },
+          )
+        })
+      State(..state, idle:, next_sample_ms: now + notice.heartbeat_tick_ms)
+    }
+  }
+}
+
+fn heartbeat_line(record: execution.Execution, now: Int) -> String {
+  "async execution "
+  <> record.id
+  <> " ("
+  <> record.seam
+  <> " seam), deadline in "
+  <> notice.minutes(int.max(record.deadline_ms - now, 0))
+}
+
+// Every execution still running, grouped by the strand that launched it.
+// A draining one is on its way out and is not work the owner is waiting
+// on.
+fn live_by_owner(
+  live: Dict(String, Held),
+) -> Dict(String, List(execution.Execution)) {
+  dict.fold(live, dict.new(), fn(owners, _id, held) {
+    case held.record.phase {
+      execution.Starting | execution.Running ->
+        dict.upsert(owners, held.record.strand, fn(existing) {
+          [held.record, ..option.unwrap(existing, [])]
+        })
+      execution.Draining | execution.Finished(_) | execution.Lost(_) -> owners
+    }
+  })
+}
+
 fn sweep(state: State) -> State {
   let recovering =
     list.filter(state.recovering, fn(record) {
@@ -962,6 +1105,7 @@ fn sweep(state: State) -> State {
       promote_progress(state, id)
     })
   let #(now, _) = clock.read(state.wiring.clock)
+  let state = heartbeat(state, now)
   dict.fold(state.live, state, fn(state, id, held) {
     case held.record.phase {
       execution.Starting | execution.Running ->
@@ -974,12 +1118,7 @@ fn sweep(state: State) -> State {
           Ok(None) if now < held.record.deadline_ms -> state
           Ok(None) ->
             close(state, id, Some(execution.Lost("execution deadline expired")))
-          Ok(Some(_)) ->
-            close(
-              state,
-              id,
-              Some(execution.Lost("initiating operation aborted")),
-            )
+          Ok(Some(_)) -> close(state, id, Some(execution.Lost(aborted_reason)))
           Error(_) ->
             close(
               state,
@@ -996,16 +1135,16 @@ fn sweep(state: State) -> State {
             id,
           )
         case drained, held.drain, held.outcome {
-          Ok(True), Proven, Some(phase) | Ok(True), LostProof, Some(phase) ->
-            case
-              save(
-                state.wiring.runtime,
-                execution.Execution(..held.record, phase:),
-              )
-            {
-              Ok(Nil) -> State(..state, live: dict.delete(state.live, id))
+          Ok(True), Proven, Some(phase) | Ok(True), LostProof, Some(phase) -> {
+            let settled = execution.Execution(..held.record, phase:)
+            case save(state.wiring.runtime, settled) {
+              Ok(Nil) -> {
+                tell(state.wiring.runtime, settled)
+                State(..state, live: dict.delete(state.live, id))
+              }
               Error(_) -> state
             }
+          }
           _, _, _ -> state
         }
       }
@@ -1041,6 +1180,11 @@ fn recover(
             )
           use Nil <- result.try(save(wiring.runtime, record))
           wiring.abort(record.operation, record.step)
+
+          // This recovery is what ended the execution, so nobody has been
+          // told; one already terminal was told, or chose not to be, by
+          // the incarnation that wrote it.
+          tell(wiring.runtime, record)
           Ok(#(record, Some(record)))
         }
       }
