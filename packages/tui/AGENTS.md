@@ -34,8 +34,8 @@ Approval previews show the captured action before opening the exact decision
 surface; they never choose a grant. General assistant questions remain in their
 update and transcript because the protocol has no separate pending-question fact.
 
-The inspector keeps Activity, Messages and Notes under `agents.Detail`, switched
-with 1/2/3. `agent_messages` admits sends only after the sending strand's
+The inspector keeps Activity, Messages, Notes and Collaboration under
+`agents.Detail`, switched with 1/2/3/4. `agent_messages` admits sends only after the sending strand's
 accepted operation prompt. It joins results within that branch and before a
 later reuse of the call ID. `Model.agent_messages` retains the latest twenty
 verified sends across operation completion, with message bodies bounded to 4096
@@ -1579,5 +1579,17 @@ not claim which configured ceiling was exhausted.
 Existing conversation rendering uses `core/origin.display_label` for both
 human and peer sources. A `PeerOrigin` appears as `peer session/strand` and
 survives the entry codec; it is not rendered as the local operator. This is
-attribution within the existing conversation view. Peer linking controls and
-a dedicated collaboration view remain follow-up work (#485).
+attribution within the existing conversation view.
+
+The Collaboration tab projects a selected strand's background executions,
+readiness, outgoing peer links, named workflow intents, and peer-authored
+entries from one captured snapshot. The existing snapshot selects `client/`
+facts; `tui/collaboration_view` reads only those facts and the loaded branch,
+so opening this tab makes no extra request or starts no session. Live execution
+records precede older terminal records. A `Running` record can still be
+compiling, and only the separate readiness fact names usable input endpoints.
+The peer message section says `stored`, never `read` or `completed`; inherited
+branch entries may appear. Workflow counts are durable step intents, not child
+outcomes. The source link fact lacks wake scope, so the tab labels that value
+unavailable rather than inferring it. Peer linking and revocation controls
+remain follow-up work (#485).

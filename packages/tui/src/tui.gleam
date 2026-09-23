@@ -57,6 +57,7 @@ import tui/attempt
 import tui/attempt_replay
 import tui/bootstrap
 import tui/cache_miss
+import tui/collaboration_view
 import tui/command
 import tui/completion_summary
 import tui/composer
@@ -3653,6 +3654,19 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
       })
     agents.Notes ->
       Some(fn(area: Rect) { notes_content(model, area, selected).lines })
+    agents.Collaboration ->
+      Some(fn(area: Rect) {
+        case model.captured {
+          Some(#(cut, view)) ->
+            collaboration_view.lines(
+              view,
+              cut.window,
+              selected,
+              area.size.width,
+            )
+          None -> [span.line_plain("Collaboration capture unavailable")]
+        }
+      })
   }
 }
 
@@ -10546,6 +10560,8 @@ fn update_agent_inspector(
     keys.Char("1") -> select_agent_detail(model, inspector, agents.Overview)
     keys.Char("2") -> select_agent_detail(model, inspector, agents.Messages)
     keys.Char("3") -> select_agent_detail(model, inspector, agents.Notes)
+    keys.Char("4") ->
+      select_agent_detail(model, inspector, agents.Collaboration)
     keys.Char("[") if inspector.detail == agents.Messages ->
       select_agent_message(model, inspector, -1)
     keys.Char("]") if inspector.detail == agents.Messages ->
@@ -10664,7 +10680,7 @@ fn select_inspector_message(
   messages: List(agent_messages.Item),
 ) -> agents.Inspector {
   case inspector.detail {
-    agents.Overview | agents.Notes -> inspector
+    agents.Overview | agents.Notes | agents.Collaboration -> inspector
     agents.Messages -> {
       let selected =
         messages
@@ -10770,7 +10786,7 @@ fn select_agent_detail(
       agent_messages.for_strand(model.agent_messages, inspector.selected)
       |> agent_message_panel.selected(inspector.message)
       |> option.map(agent_message_panel.identity)
-    agents.Overview | agents.Notes -> inspector.message
+    agents.Overview | agents.Notes | agents.Collaboration -> inspector.message
   }
   let owner_changed = case model.note_board {
     Some(board) -> board.strand != inspector.selected
@@ -10793,7 +10809,7 @@ fn select_agent_detail(
     )
   case detail {
     agents.Notes -> refresh_notes(selected)
-    agents.Overview | agents.Messages -> selected
+    agents.Overview | agents.Messages | agents.Collaboration -> selected
   }
 }
 
