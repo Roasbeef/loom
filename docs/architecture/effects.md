@@ -170,6 +170,8 @@ an `Event` for the runtime to record durably before acting on it, so the
 transcript shows the denial, the decision, and the single retry. Widening
 the session base is the caller applying approved grants explicitly, never
 a silent side effect.
+[Approvals](approvals.md) follows a refused call from the refusal through
+the operator's decision to the retry.
 
 **Who drives that machine in production.** `client/escalate` connects a
 broker refusal to a human. It wraps `Ctx.clear_call`, and a
@@ -190,32 +192,22 @@ decision, not a runtime one.
 
 ## Session approval lifetime
 
-The TUI automatically presents each pending request with three choices:
-once only, for the session, or deny. A session approval retains only the
-displayed filesystem or full-network grants. `client/permissions`
-prepares their durable union, and
-`runtime/api.approve_escalation_with_fact_at` writes that union and the
-approval in one transaction guarded by both observed sequences. Dispatch
-captures the standing authority once, without changing a running
-execution's policy.
-
-Native pre-I/O checks and declared permission preflights can identify an
-exact missing grant. Raw shell syscall errors and refusals inside a
-running code-mode program remain ordinary results: the executor does not
-report a canonical missing grant, and replay could repeat earlier
-effects. A later invocation can declare the required permissions. See
-[protocol 041](../../protocol-change/041-session-approval-dialog.md).
+An approval can also be remembered for the session. Its filesystem or
+full-network grants are stored in a session fact, and each later dispatch
+composes them into the base policy it hands the broker; a running
+execution keeps the policy it was cleared under. Only refusals that name
+an exact missing grant can be approved. A raw kernel error inside a
+running command reports no such grant and stays an ordinary tool result.
+[approvals.md](approvals.md) covers the dialog, the eligibility rules and
+the guarded commit.
 
 ## Session directory additions
 
-The operator's `/add-dir` command commits a canonical directory to the
-reserved session fact through `client/directories`, and `client/wiring`
-captures those additions for each invocation. `tools/directory_access`
-keeps native file authority separate from the jail's system read roots.
-`tools/permissions` connects declared needs to existing call-bound
-approvals before execution. Background jobs and code-mode capabilities
-retain their captured authority. The wire and lifetime rules are in
-[protocol 040](../../protocol-change/040-session-directory-access.md).
+An operator can add a directory to a running session. Each dispatch reads
+the additions once and widens the jail's base policy with them, while
+`tools/directory_access` keeps the native file tools' authority separate
+from the jail's system read roots. [approvals.md](approvals.md) covers the
+command, the validation and how the two kinds of authority are kept apart.
 
 ## Egress
 
@@ -713,10 +705,12 @@ attempted probes a pass.
 
 ### The self-test
 
-`loom-exec --self-test` runs nine probes through the real jail path:
+`loom-exec --self-test` runs eleven probes through the real jail path:
 
 - write outside the writable roots;
 - read or write a protected path;
+- reach the daemon's state root from a session jail;
+- read a host path outside the mount plan;
 - create a socket under network-off;
 - read a non-allowlisted environment variable;
 - fork-bomb against the pids cap;
@@ -743,14 +737,17 @@ failures are **data**. `run` always returns an outcome whose `is_error`
 marks an in-band failure, so a bad argument, a policy refusal, a dead
 helper, or a stale anchor comes back as a result the model can read and
 react to. An unknown tool name yields the same shape.
+[Tools](tools.md) describes the tool record, the session's registry and
+one call from start to finish.
 
 **Replay safety is a claim about what re-execution does to the world.**
 `bash` declares `Never`: a shell command is an arbitrary external effect,
 so a crash mid-execution must yield a synthetic interrupted result under
 the pre-reserved id rather than run again. `fs_edit` declares `Safe`
-because its anchors *consume themselves*. Applying a plan removes the
-lines it referenced, so re-executing the same call against the
-already-edited file is rejected as stale rather than applied twice.
+because its plan carries the digest of the whole file it was planned
+against (`tools/hashline`), and `apply` rejects any other content,
+including the plan's own output, so re-executing the same call against
+the already-edited file is rejected as stale rather than applied twice.
 Re-execution after a crash either repeats an edit that never landed or
 fails in-band; it cannot double-apply. `fs_write` is `Safe` because
 writing the same bytes to the same path is idempotent, and `fs_read` and
@@ -809,10 +806,14 @@ declare policy-shaped requirements, so a policy audit covers every tool
 uniformly.
 
 `bash` exercises the composition path end to end. It requires the
-workspace writable, `/` readable (interpreters live outside the
-workspace, and the session base determines whether to grant that),
-network off, tmpfs scratch, and the environment names it actually
-passes, so composition checks them against the session allowlist. It
+workspace writable, tmpfs scratch, and the environment names it actually
+passes, so composition checks them against the session allowlist. It also
+asks for the session base's own writable roots, readable roots, mounts
+and network (`bash.requirements`, `tool.asking_base_network`), because
+interpreters live outside the workspace and the base decides which
+system paths and what network a jail may reach. A linked worktree's git
+directories reach the shell this way
+([linked worktrees](sessions.md#linked-worktrees)). It
 clears with `RefuseNarrowed`: a session base that does not cover the
 requirements produces an in-band structured refusal carrying the exact
 wanted grants, ready for the escalation flow. Its timeout is clamped in
@@ -1091,6 +1092,8 @@ rule alone, never out of the key rule, so every waiver is deliberate and
 greppable. The test plants a provider key, a clearance token and a
 channel token under both a denylisted and an innocent key, renders, and
 greps the bytes (`packages/telemetry/test/telemetry/redaction_test.gleam`).
+[Fields and redaction](telemetry.md#fields-and-redaction) describes the
+scrubbing rules in full.
 
 ## What the end-to-end proves
 
@@ -1147,8 +1150,8 @@ run on the same time base rather than on the VM's timer wheel.
 Finally, the enforcement matrix. In the development container `loom-exec`
 reports `rlimits, pgroup, degraded, seccomp`: there is no bubblewrap
 binary, no Landlock in the kernel, and no delegated cgroup v2 hierarchy.
-Four of the seven self-test probes enforce there, and the three needing
-the missing layers skip. The suites therefore run with `BestEffort` and
+When this matrix was measured the self-test had seven probes; four
+enforced there, and the three needing the missing layers skipped. The suites therefore run with `BestEffort` and
 assert on the helper's report. Production sessions pass
 `PlatformEnforcement`, which is strict on Linux, and on Darwin is strict
 about the real Seatbelt boundary while admitting only ADR-006's explicit
@@ -1170,7 +1173,7 @@ platform gaps.
 | `sandbox/internal/policy`, `.../framing`, `.../server` | The strict policy decoder, the protocol helper-side, and the frame loop. |
 | `sandbox/internal/jail` | bwrap argv, stage 2, env construction, output limiter, cancel escalation, supervision. |
 | `sandbox/internal/llock`, `.../seccompf`, `.../cgroup` | Landlock rules, the network-off cBPF program with its TSYNC install, and cgroup v2 groups. |
-| `sandbox/internal/selftest` | The seven regression probes and the enforced/skipped report. |
+| `sandbox/internal/selftest` | The eleven regression probes and the enforced/skipped report. |
 | `tools/tool.gleam`, `tools/hashline.gleam` | The tool record, seams, registry, and in-band outcomes; anchors, windows, anchor-checked plans, stale rejections. |
 | `tools/fs.gleam`, `tools/bash.gleam`, `tools/grep.gleam` | The filesystem tools with their path discipline, and the two jailed ones. |
 | `tools/blob.gleam` | Content-addressed overflow past 64 KiB. |

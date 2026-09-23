@@ -834,8 +834,9 @@ compile service takes a `Vetted`, an opaque token with no public
 constructor, so only source that passed the lint can reach a build. It
 writes the program under the pinned module name, generates a tiny entry
 module that hands the program's `main` to the prelude's boot runtime, and
-writes a `gleam.toml` naming exactly two dependencies: one
-standard-library version and the prelude, vendored inside the build root.
+writes a `gleam.toml` naming exactly four dependencies
+(`compile.default_dependencies`): pinned `gleam_stdlib` and `gleam_json`
+versions, and the `cap` and `ext` preludes vendored inside the build root.
 Each is a single version, never a range: an offline build cannot resolve
 a range, so a range here would not merely loosen the pin, it would fail
 to build.
@@ -1180,10 +1181,11 @@ back:
 Three caveats apply to running this today.
 
 1. **`proc.run` is the one capability the default router services**,
-   which is why the sample is written in terms of it. A program calling
-   `fs.read` or `report.emit` compiles and gets `unsupported_cap` back
-   until the harness-side bridge lands, so an `Outcome` is currently the
-   only way anything leaves the satellite. Even within `proc.run`, the
+   and the sample's test rig installs `satellite.default_router` alone,
+   which is why the sample is written in terms of it. Under that router a
+   program calling `fs.read` or `report.emit` compiles and gets
+   `unsupported_cap` back. A session's `code_mode` tool stacks
+   `codemode/workspace.routing` over it, which serves both. Even within `proc.run`, the
    router services argv alone. A `Command` carrying `in_dir`, `with_env`,
    `with_stdin`, or `with_timeout` is denied in band as
    `unsupported_argument` rather than run without it. That is why the

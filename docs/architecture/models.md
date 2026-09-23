@@ -394,7 +394,8 @@ refuses a vision chain containing an explicitly text-only model.
 The differences between dialects are small and contained entirely in the
 adapters. Above that seam, every layer holds a provider-neutral
 `ProviderRequest`, and a catalogue entry only chooses an adapter and a base
-URL.
+URL. [Prompt caching](prompt.md#prompt-caching) describes where the
+Anthropic adapter places cache breakpoints and what must stay stable.
 
 ### Anthropic and OpenAI Chat Completions
 

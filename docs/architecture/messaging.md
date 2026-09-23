@@ -382,18 +382,13 @@ a delayed display, never a payload.
 Two rows use the word "heartbeat" for unrelated things. A **liveness
 ping** is the ephemeral pacing signal that §4.6 already allows to ride a
 bare process message, because losing one costs only a moment's staleness
-in a display. A **scheduled heartbeat** (`client/schedule` and
-`client/schedulescan`) is a time-triggered admission: an operator's
-`[[schedule]]` table or a strand's own schedule, firing onto a strand on a
-clock instead of at a human's or a sibling strand's request. It changes
-what the model sees, so it commits like every other durable payload: the
-injected text and its write-once fired-mark land in one transaction.
-
-That is the same `steer_marking` argument this document already makes for
-triggered project rules. Scheduled heartbeats extend it to a door those
-rules never needed, `send_to_strand_marking`, because an opt-in scheduled
-heartbeat, unlike a rule, may start a fresh run on an idle strand.
-`docs/design-notes/scheduled-heartbeats.md` has the full ruling.
+in a display. A **scheduled heartbeat** is a time-triggered admission onto
+a strand, and it changes what the model sees, so it commits like every
+other durable payload: the injected text and its write-once fired-mark
+land in one transaction, through `steer_marking` or, for a schedule
+allowed to wake an idle strand, `send_to_strand_marking`.
+[Rules and scheduled heartbeats](automation.md) covers the scanner, the
+firing path and the at-most-once argument.
 
 ## Where the code lives
 
@@ -406,11 +401,7 @@ heartbeat, unlike a rule, may start a fresh run on an idle strand.
 | `runtime/escalation.gleam` | The durable escalation record, its `CallScope`, and its status transitions. |
 | `events/bus.gleam` | The EventBus: typed per-session topics of thin hints. |
 | `events/projection.gleam` | Pull-based read models that converge from the store on each hint. |
-| `client/schedule.gleam` | The scheduled-heartbeat store — three timings, owner and target, the bounds — and the occurrence arithmetic (`interval_late`, `cron_late`, `recurring_expired`). |
-| `client/cron.gleam` | The pure five-field cron core the `Cron` timing searches with; no clock, no I/O. |
-| `client/schedulescan.gleam` | The timer-driven scanner: one marked admission per due occurrence, `steer_marking` or `send_to_strand_marking` depending on `wake`, and the settled-target check that ends a schedule with the strand it fires onto. |
-| `client/scheduleseam.gleam` | The model's door: the claim on a config cell's absence, the lineage-checked target, `retire`, and the `run_end` reaper. |
-| `client/scheduleadmin.gleam` | The operator's door over the protocol: list everything, cancel what a strand wrote, through the same `retire`. |
+| `client/schedule*.gleam`, `client/cron.gleam` | Scheduled heartbeats: the store, the timer-driven scanner, and the model's and operator's doors. See [automation.md](automation.md#where-the-code-lives). |
 | `client/advisor.gleam` | The advisor loop: the run-boundary hooks, the branch scan from a stored cursor, the framed feed, and the `advise` seam that refuses any caller but the advisor strand. |
 
 Each path is relative to its package's source root: `runtime/api.gleam`

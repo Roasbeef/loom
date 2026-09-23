@@ -32,7 +32,8 @@ helper pool. Sessions in the same persisted domain share history and
 maintenance owners. [Sessions](sessions.md) gives the ownership and shutdown
 rules, and [multiplayer](multiplayer.md) gives identity and sharing policy.
 Both describe the unreleased implementation, not the older shipped baseline in
-the historical sections.
+the historical sections. [The daemon process](daemon.md) describes `loomd`
+itself: startup, the ownership tree, admission and shutdown.
 
 ```sh
 # Discover the shared daemon and show this workspace's saved sessions.
@@ -109,6 +110,8 @@ expands at the gateway before prompt or steer admission, preserving the
 original author and the other content blocks. Neither path executes embedded
 shell text or changes tool permissions. See [skills](../skills.md) and
 [protocol 027](../../protocol-change/027-markdown-skills.md).
+[Prompt assembly](prompt.md#skills) describes how skill names reach the
+model's request.
 
 ### The authenticated v2 boundary
 
@@ -225,7 +228,8 @@ original request in its body. Refresh is explicit, and old boards stay
 labelled stale after a failure. Captured edits remain as a labelled fallback.
 [Protocol 025](../../protocol-change/025-worktree-observation.md) records
 authority, limits, and the difference between a filesystem observation and an
-atomic snapshot.
+atomic snapshot. [The diff view](sessions.md#the-diff-view) lists the Git
+commands one capture runs and the bounds on each.
 
 The completion card and `/summary` use captured operation boundaries to
 attribute edits, paired tool results, and actual command exit codes. Where
@@ -510,7 +514,7 @@ path's SHA-256.
 | `endpoints/<database-hash>.json` | Discovery hint: workspace, database, session name, address, token/log paths, process identity, start time, and `starting` or `ready` status. |
 | `tokens/<database-hash>.token` | The server-minted bearer credential, including when the database is outside the state root. |
 | `locks/<database-hash>.lock` | Cross-process launch serialization for this database under this state root. |
-| `logs/<database-hash>.log` | The launched server's stdout and stderr. |
+| `logs/<database-hash>.log` | The launched server's stdout and stderr. [Telemetry](telemetry.md#installation-and-where-lines-go) describes what the daemon writes there. |
 | `loom.toml` | The operator's default configuration for a cold start, when present. |
 
 The session database holds the conversation, strands, registers, and writer
@@ -1076,15 +1080,19 @@ the relay forwards the in-band failure exactly as before.
 
 ### Escalations, and the one check that matters
 
+This section predates `client/escalate`, which now files an escalation
+from a policy refusal in production. [Approvals](approvals.md) describes
+the current path from refusal to grant.
+
 When the broker refuses a tool call under the session's policy, the refusal
 comes back as an ordinary in-band tool result. `tool.refusal_outcome` renders a
 `PolicyRefused` as an `is_error` outcome whose `details` carry the denial's
-**wanted grants**, the exact set that would satisfy it. Nothing consumes them.
-**No production path raises an escalation from that result**, or from anywhere
-else: `api.raise_escalation` and `api.raise_escalation_for` have callers only
-in `client/demo.gleam` and the simulation surface under `conformance`. The
-wanted grants are preserved and go no further; `docs/spec-gaps.md` records the
-gap under "From WP-L".
+**wanted grants**, the exact set that would satisfy it. At this baseline
+nothing consumed them; today `client/escalate` reads them from the refusal.
+At this baseline no production path raised an escalation; today
+`client/escalate` files the record through `api.claim_escalation`.
+`api.raise_escalation` and `api.raise_escalation_for` still have callers only
+in `client/demo.gleam` and the simulation surface under `conformance`.
 
 Everything downstream of the missing raiser is built and exercised. Given a
 durable escalation record, the hub surfaces pending escalations in the full
@@ -1185,6 +1193,7 @@ into a structured tree, and Stratus owns the WebSocket actor. One immutable
 model keeps durable records, transient stream fragments, overlays, prompt
 state, scroll position, and the server-reported usage ledger separate. `view`
 is pure; socket messages and keys reduce the model before the next frame.
+[The terminal client](terminal.md) describes the current client.
 
 The protocol remains a real boundary even though both ends use Gleam. The TUI
 imports the portable `core` package only to decode durable entry bodies. It
@@ -1285,8 +1294,10 @@ Only the last frame of a replay is reproducible across runs. For a paced
 event, the client either renders a frame or leaves the previous one on screen,
 depending on how long ago it last drew, so which of the two `--at` and `--all`
 show for a key press depends on the machine. The settling tick that ends a
-replay is a flush point, so the last frame is always the current one. Making
-every frame reproducible needs an injected clock, which is separate work.
+replay is a flush point, so the last frame is always the current one. Tests
+can inject a clock with `new_model_with_clock`, but the replay command still
+uses the real one, so making every replayed frame reproducible is separate
+work.
 
 ## What the acceptance actually proves
 
@@ -1317,7 +1328,7 @@ narrated command-line program. Nothing in it reaches around the wire.
 
 The historical baseline also has narrower proofs:
 
-- Its conformance test decodes and re-encodes all thirty-five golden fixtures
+- Its conformance test decodes and re-encodes all thirty-nine golden fixtures
   byte for byte in both directions.
 - The transport tests assert the token file's mode, that a pre-planted symlink
   is left untouched, and that a wrong token of the right length and one of the
@@ -1332,6 +1343,9 @@ Those internal v1 tests are not evidence that the default listener serves v1
 or `/healthz`.
 
 ## Where the code lives
+
+[The terminal client](terminal.md#where-the-code-lives) maps the
+`packages/tui` modules in more detail.
 
 | Path | What it holds |
 |---|---|

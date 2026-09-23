@@ -296,7 +296,7 @@ absent field as the mark of a push. A frame that does carry `reply_to` is
 still matched against the outstanding request, so a stale or forged
 correlation still fails closed. A push belongs to no request: it consumes
 no credit, allocates no identity, and cannot fail the lane
-(`apply_pushed`, `tui/session_channel.gleam:569`).
+(`apply_pushed`, `tui/session_channel.gleam:591`).
 
 ```mermaid
 stateDiagram-v2
@@ -324,21 +324,21 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`tui/session_channel.gleam:1206`) starts the catch-up at the
-next transition to `Ready`. That is sooner than the idle refresh in `tick`
-(`tui/session_channel.gleam:732`) would have started it. The mark is a
+`send_queued` (`tui/session_channel.gleam:1210`) starts the catch-up at the
+next transition to `Ready`. That is sooner than the idle refresh in
+`tick` (`tui/session_channel.gleam:961`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
-Two cases drop a notice (`capture_or_defer`,
-`tui/session_channel.gleam:546`): a sequence below the current cut's
+Two cases drop a notice
+(`capture_or_defer`, `tui/session_channel.gleam:688`): a sequence below the current cut's
 `next_seq`, which the terminal already holds, and a notice that arrives
 before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
 
 Because a notice may correctly do nothing, the lane reports every one it
-reads as `Noticed` (`tui/session_channel.gleam:117`) before deciding what
-to do with it, and the model counts those arrivals (`tui.gleam:365`).
+reads as `Noticed` (`tui/session_channel.gleam:121`) before deciding what
+to do with it, and the model counts those arrivals (`tui.gleam:6317`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer.
 
@@ -424,6 +424,8 @@ deny compete through the same conditional transition, so exactly one
 resolution wins, and the result records its origin and the exact action
 and grant. The losing client receives a conflict that names the resolved
 request. Seeing an escalation never grants permission to approve it.
+[Permissions, approvals, and escalation](approvals.md#several-operators-on-one-session)
+describes the approval record and how several operators decide on it.
 
 ## What the client renders
 

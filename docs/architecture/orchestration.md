@@ -334,6 +334,8 @@ resumes at the next.
 
    Staging and placement are separate commits because parallel execution
    settles out of order while the tree stays ordered.
+   [Tools](tools.md#one-call-end-to-end) follows one call from the model's
+   block to its result.
 6. **The terminal transaction** publishes any structural result. It
    deletes `op.meta`, `op.state`, every tool-args and preparation key the
    runtime listed, and every pending id the operation still owns. It writes
@@ -347,6 +349,8 @@ ephemeral nudge, never a process message carrying a payload. One
 transaction mints the item's entry id, writes its payload to
 `pending.entry/{id}`, and appends the id to a queue, expecting the seq of
 whichever register it changes.
+[Rules and scheduled heartbeats](automation.md) describes the triggered
+rules and schedules that enqueue items through these same queues.
 
 - **steer** and **follow-up** attach to an open run whose control is
   running. Steer drains at a checkpoint before generating; follow-up drains
@@ -445,6 +449,8 @@ it, so drivers restore against the replacement writer, and the booter,
 sitting last, repopulates the factories the restart just emptied. A crash
 in one strand restarts only that strand, because each factory supervises
 its own children simple-one-for-one.
+[The ownership tree](daemon.md#the-ownership-tree) describes the daemon
+processes above this tree.
 
 The writer and strand drivers bind reclaimable reference addresses, so
 callers resolve the current incarnation without allocating permanent atoms.

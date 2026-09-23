@@ -143,6 +143,8 @@ notes: objective, constraints, decisions, progress, evidence, and next
 steps. Stable keys are preferable to one new key per event, because the
 snapshot has a fixed byte budget. Notes should include concrete file and
 entry IDs, test outcomes, failed approaches, and unfinished work.
+[Prompt assembly](prompt.md) describes how the default prompt is built and
+pinned for a session.
 
 The prompt asks the agent to update notes before a large tool batch rather
 than waiting for a capacity reminder. A single tool result can move

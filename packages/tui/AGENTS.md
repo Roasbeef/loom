@@ -1492,6 +1492,9 @@ the same rows, and row *n* means the same thing in both.
 
 ## Deep Docs
 
+- [`docs/architecture/terminal.md`](../../docs/architecture/terminal.md)
+  describes the terminal client as built: its loop, connections,
+  reconnection, rendering and recording.
 - [`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md)
   records the measured evaluation and the later adoption decision.
 - [`packages/client/protocol.md`](../client/protocol.md)

@@ -40,6 +40,11 @@ next explicit sync, or its next restart. The package's lost-event tests
 publish a hint for one commit in three and assert that the projection ends
 equal to a rebuild from zero.
 
+Telemetry is a separate channel from the bus. Its log lines are for
+operators, and no read model depends on them;
+[Telemetry](telemetry.md#telemetry-and-the-event-bus) describes how the
+two relate.
+
 The rule is what lets the bus be cheap: process-group membership plus
 plain sends, with no acknowledgements, no retries, no buffering, and no
 ordering promise beyond what a single Erlang send pair gives. The delivery
@@ -407,8 +412,10 @@ the batch into the same state.
 The cursor is stored with the session store's generation, and `sync` takes
 the current generation from its caller. A mismatch drops that session's
 index rows and re-indexes from seq zero in the same transaction, because a
-rewrite may renumber seqs and the old cursor then means nothing. A missing
-cursor takes the identical path.
+rewrite replaces payloads without moving any seq, so the old cursor cannot
+detect the change. A missing cursor takes the identical path.
+[Precise rewrite](durability.md#precise-rewrite) describes what a rewrite
+changes in the session file.
 
 The end-to-end test runs the real sequence: a SQLite session file,
 `sqlite.rewrite_into` erasing one entry's payload, and `sqlite.generation`

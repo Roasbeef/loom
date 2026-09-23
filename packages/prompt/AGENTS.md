@@ -249,6 +249,9 @@ written by whoever calls `render`, not here.
 
 ## Deep Docs
 
+- [docs/architecture/prompt.md](../../docs/architecture/prompt.md)
+  — how a request's prompt is assembled from packs, project instructions,
+  the tool array and skills, and what must stay stable for caching.
 - [docs/design-notes/agent-comms-and-system-prompt.md](../../docs/design-notes/agent-comms-and-system-prompt.md)
   — Part B: the design this package implements, including the stability
   contract and the alternatives rejected. Part A is the `agent_*` tool

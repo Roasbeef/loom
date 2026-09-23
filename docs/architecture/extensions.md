@@ -574,7 +574,8 @@ value the previous step produced.
    the registry treats an extension tool like any other: it is dispatched
    by name through `tool.dispatch`, and the collision rule that refuses a
    boot when two contributions claim one name is the same rule that
-   guards `bash`.
+   guards `bash`. [Collisions and
+   deactivation](tools.md#collisions-and-deactivation) states that rule.
 
 3. **A call is one invocation of a satellite the session already has.**
    Phase 2 launched a jailed `erl` per call and destroyed it afterwards.
