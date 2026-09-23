@@ -1096,14 +1096,26 @@ fn reopen(connected: Connected, id: String) -> Session {
   // one die. So the wait here is the lease TTL — thirty seconds
   // (`storage/sqlite.Config.lease_ttl_ms`) — with room, and the deadline
   // is what makes a refusal that is *not* the lease loud.
-  let assert poll.Answered(opened) =
+  let waited =
     poll.until(within: 60_000, every: 250, attempt: fn() {
       case selection.open(host, id) {
         Ok(target) -> poll.Done(target)
         Error(_lease_held) -> poll.Retry
       }
     })
-    as "explicit open admits the session once the crashed VM's lease expires"
+  let opened = case waited {
+    poll.Answered(opened) -> opened
+
+    // The poll keeps no refusal, so an expired wait would say only that it
+    // expired. One more open names the refusal in the failure report: the
+    // lease's own words mean the wait was too short for this host, anything
+    // else is a different failure the wait was hiding.
+    poll.Failed(_) | poll.Expired -> {
+      let assert Ok(opened) = selection.open(host, id)
+        as "explicit open admits the session once the crashed VM's lease expires"
+      opened
+    }
+  }
   assert opened.expected.session == id
   bind(connected, id)
 }
