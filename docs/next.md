@@ -52,7 +52,7 @@ finding and its validation.
 The previous edition described PR #484 as an open branch. It is merged on
 `main`. The TUI can now inspect the new collaboration records, but owner
 link and revoke controls remain in #485. The Collaboration tab labels a peer
-entry as stored, an execution as ready only when its readiness fact exists,
+entry as stored, execution endpoints as published only when their readiness fact exists,
 and a named step as an intent rather than a completed child.
 
 The first two findings on PR #484's latest review are fixed. A detached HEAD
@@ -146,7 +146,7 @@ None of these is unfinished work somebody forgot.
 
 ### Validation evidence
 
-The inspector's focused `make check-tui` passed with exit zero and 725 tests.
+The inspector's focused `make check-tui` passed with exit zero and 726 tests.
 New fixtures cover execution readiness, directional link display, workflow
 intent labels, authenticated peer origins and keyboard selection without
 retargeting the composer. The complete repository and documentation gates

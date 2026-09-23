@@ -1587,7 +1587,8 @@ entries from one captured snapshot. The existing snapshot selects `client/`
 facts; `tui/collaboration_view` reads only those facts and the loaded branch,
 so opening this tab makes no extra request or starts no session. Live execution
 records precede older terminal records. A `Running` record can still be
-compiling, and only the separate readiness fact names usable input endpoints.
+compiling. The separate readiness fact names published endpoints, including
+after an execution has closed; the phase still governs whether input is open.
 The peer message section says `stored`, never `read` or `completed`; inherited
 branch entries may appear. Workflow counts are durable step intents, not child
 outcomes. The source link fact lacks wake scope, so the tab labels that value

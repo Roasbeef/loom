@@ -99,10 +99,36 @@ pub fn custody_readiness_and_intent_have_distinct_labels_test() {
   let text = rendered(view, snapshot.Window([], 0, None))
   assert string.contains(text, "1 live executions")
   assert string.contains(text, "abc · running")
-  assert string.contains(text, "Ready: review")
+  assert string.contains(text, "Published endpoints: review")
   assert string.contains(text, "other-session/reviewer")
   assert string.contains(text, "1 recorded step intents")
   assert !string.contains(text, "completed")
+}
+
+pub fn settled_execution_keeps_only_historical_endpoint_evidence_test() {
+  let view =
+    snapshot_view.View(..empty_view(), cells: [
+      fact(
+        "client/async/record/def",
+        9,
+        json.Object([
+          #("id", json.String("def")),
+          #("strand", json.String("main")),
+          #("phase", json.String("finished")),
+          #("result", json.String("done")),
+        ]),
+      ),
+      fact(
+        "client/async/ready/def",
+        8,
+        json.Object([#("endpoints", json.Array([json.String("review")]))]),
+      ),
+    ])
+  let text = rendered(view, snapshot.Window([], 0, None))
+  assert string.contains(text, "0 live executions")
+  assert string.contains(text, "def · finished")
+  assert string.contains(text, "Published endpoints: review")
+  assert !string.contains(text, "Ready: review")
 }
 
 pub fn a_peer_origin_is_visible_as_stored_input_not_a_read_receipt_test() {
@@ -127,7 +153,8 @@ pub fn a_peer_origin_is_visible_as_stored_input_not_a_read_receipt_test() {
     )
   let text =
     rendered(view, snapshot.Window([snapshot.Loaded(placed, 100)], 100, None))
-  assert string.contains(text, "source-session/reviewer · stored #9")
+  assert string.contains(text, "stored #9")
+  assert string.contains(text, "source-session/reviewer")
   assert string.contains(text, "Check the cancellation path.")
   assert string.contains(text, "stored does not mean read")
 }

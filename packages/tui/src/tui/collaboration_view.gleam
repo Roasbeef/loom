@@ -230,7 +230,7 @@ fn execution_lines(
           cell.key == "client/async/ready/" <> item.id
         })
         |> result.map(fn(cell) { readiness(cell.value) })
-        |> result.unwrap("Input endpoints not published")
+        |> result.unwrap("Endpoints not published")
       let outcome = case item.phase, item.result {
         "lost", json.String(reason) -> " · " <> reason
         _, _ -> ""
@@ -262,7 +262,7 @@ fn readiness(value: JsonValue) -> String {
     Ok(fields) ->
       case list.key_find(fields, "endpoints") {
         Ok(json.Array(values)) ->
-          "Ready: "
+          "Published endpoints: "
           <> string.join(
             list.filter_map(values, fn(value) {
               case value {
