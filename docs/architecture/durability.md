@@ -485,6 +485,143 @@ hard-failing on. It still shows that the segmented index works: the number
 barely moves as the session grows, because a scan reads a window rather
 than a history.
 
+## Operations over whole sessions
+
+Everything above works inside one session. `session/repo` holds the three
+administrative operations that work on a session as a whole: **fork**,
+which copies a session into a new one; the **precise rewrite**, which
+changes stored payloads in place; and **erasure**, the text transform the
+rewrite exists to run. They are repository tooling above the harness. The
+conversation protocol does not reach them: its `fork` command makes a new
+strand in the *same* session, as described under
+[the tree, branches, and strands](#the-tree-branches-and-strands).
+
+Fork and rewrite are defined over a **quiescent** source, one that no
+writer is committing to. The storage actor serializes each read, but a
+copy made from several reads could still observe two half-states if the
+writer committed between them. The SQLite rewrite enforces quiescence by
+holding the writer lease for its whole run. The other operations trust
+their caller.
+
+### Fork
+
+`repo.fork` copies one coherent view of a source session into a fresh
+destination session and never modifies the source. `ForkBranch(strand,
+at)` copies the path from entry `at` back to the root. The destination
+gets one `main` strand whose leaf is `at`, seeded from the named source
+strand's configuration if it has one. `ForkTree` copies every entry and
+every strand's configuration and leaf.
+
+Entries keep their ids; the destination assigns its own seqs and
+timestamps at commit. Names (`fact.name`) are copied, and entry labels
+(`fact.label`) are copied only when their entry is. Every destination
+strand starts with a fresh, idle `StrandState`. Operation, pending, and
+last-result registers are never copied, and neither are usage rows, so
+the destination's cost ledger starts at zero. `fact.custom` cells are
+application data and are not copied either. The one exception is identity:
+the destination gets a newly minted `session/id`, and the source's id is
+written beside it as `session/parent`.
+
+The destination must be fresh. A destination that holds entries is
+refused with `ForkDestinationNotEmpty`, and one that an earlier open
+already identified is refused by an expectation that `session/id` is
+absent. All of the copy is **one destination transaction**. A crash or
+refusal before it commits leaves a destination with no entries and no
+identity, which a retry can reuse; a failure after the destination opened
+closes it. The SQLite catalog row's copy of the identity is written after
+the commit, and every open repairs it if that write was lost.
+
+### Precise rewrite
+
+`repo.rewrite_sqlite` (implemented as `sqlite.rewrite_into`) is the only
+sanctioned exception to "entries are never modified". It runs on a
+**closed** session file: an unexpired writer lease refuses it with
+`RewriteLeaseHeld`. It applies two transforms supplied by the caller. The
+entry transform may replace an entry's payload but must keep its id,
+parent, and kind. The value transform may replace any register payload
+or usage-ledger `details` blob. Either transform can abort the whole
+rewrite by returning a `CorruptionReport`.
+
+The SQLite rewrite runs in this order:
+
+1. Check that the path is a current-version session file, then claim the
+   writer lease under the reserved owner `rewrite`, with a 10-minute TTL.
+   An expired lease is stolen with a bumped fence, as any opener would.
+2. Delete any `<path>.rewrite` copy left by a crashed earlier rewrite.
+3. Checkpoint the WAL with `TRUNCATE`, so the `-wal` file is empty. If a
+   lingering reader prevents a complete checkpoint, the rewrite refuses.
+4. Copy the file with `VACUUM INTO <path>.rewrite`.
+5. In one transaction on the copy: run both transforms over every entry,
+   register, and usage row, clear the lease table, and increment the
+   `generation` counter in the session metadata. Then `VACUUM` the copy,
+   so replaced bytes do not survive in free pages.
+6. Re-read the lease in the original. If a writer stole it because the
+   rewrite outlived its TTL, abort, so that writer's commits are kept.
+7. Rename the copy over the original, close the old connection, and
+   delete the old `-wal` and `-shm` siblings.
+
+Because ids, parents, kinds, and seqs are unchanged, the tree and the
+segmented branch index stay valid and are not rebuilt; only the `payload`
+and `custom_type` columns change. Usage amounts are unchanged, so the
+statistics projection stays correct as well.
+
+Readers outside the file are a different matter. Anything that folded or
+indexed the old payloads still holds them, and the seq frontier cannot
+detect the change because no seq moved. The `generation` counter is how
+those readers find out. `sqlite.generation(path:)` reads it without taking
+the lease, and the projection driver, the search index, and the memory
+extraction cursors each compare it against the generation they last
+folded under. A mismatch discards the derived state and rebuilds it from
+seq zero. [Events](events.md#the-driver-and-what-a-rewrite-does-to-it)
+describes the driver's check, and
+[rewrite invalidation](events.md#rewrite-invalidation) the search index's.
+
+`repo.rewrite_memory` is the in-memory version. It builds a new memory
+session from the transformed entries, every register (transformed, never
+dropped), and every usage row, and returns it as a new handle; the source
+stays open and unchanged. The memory backend stores no generation, and a
+new handle is the invalidation.
+
+### Erasure
+
+`repo.erase_text` and `repo.erase_value` build the two transforms from
+one needle and one replacement. Each replaces the needle in every JSON
+string value and leaves object keys alone. `erase_text` works on an
+entry's canonical JSON encoding, so it reaches message text, thinking,
+tool-call arguments, tool-result details, summaries, custom payloads, and
+the retained-tail copies inside compaction entries. It then decodes the
+result through the entry codec, so a needle that matches structural
+vocabulary (a stop reason, an id) aborts the rewrite as corruption rather
+than leaving an unreadable store. Register and usage payloads have no
+codec at this boundary; a needle that overlaps an id they carry surfaces
+as corruption when the machine codecs next read the cell. The replacement
+must not contain the needle.
+
+The contract is that after an erasure the needle appears nowhere in the
+new file's raw bytes: entries, registers (queued input, tool arguments,
+compaction preparation, facts), and usage details. The WAL truncation and
+the two vacuums exist to make that hold for free pages and WAL frames
+too. What remains in the file is everything except the matched text:
+every entry row with its id, parent, seq, timestamp and kind, every
+register cell, and every usage row with its amounts.
+
+The rewrite reaches only the one session file. It does not touch the
+session's blob directory, where large tool outputs overflow in full, or
+any session previously forked from this one, or any copy of the file.
+Derived stores such as the search index keep the old text until they next
+sync under the bumped generation.
+
+### If an operation is interrupted
+
+| Operation | Interrupted before completion | State afterwards |
+|---|---|---|
+| Fork | Crash or refusal before the copy commits | Source unchanged. Destination has no entries and no identity, and can be reused. A SQLite destination's lease expires on its TTL. |
+| Fork | Crash after the copy commits | Fork complete. A missing catalog-row identity is repaired on the next open. |
+| SQLite rewrite | Crash before the rename | Original content unchanged. A `<path>.rewrite` copy may remain and the `rewrite` lease blocks opens until its 10-minute TTL passes; the next rewrite deletes the copy. |
+| SQLite rewrite | Failure before the rename | Copy deleted, `rewrite` lease released, original unchanged. |
+| SQLite rewrite | Crash after the rename | Rewrite complete and unleased. Leftover `-wal`/`-shm` siblings cannot replay old pages, because the WAL was truncated before the copy. |
+| Memory rewrite | Any failure | Source unchanged and still open; the partial destination is closed. |
+
 ## Where the code lives
 
 | Path | What it holds |
@@ -506,6 +643,7 @@ than a history.
 | `storage/catalogue.gleam` | Daemon registrations, defaults and membership-filtered metadata pages. |
 | `storage/access.gleam` | Stable principals, credential digests and session membership. |
 | `storage/internal/branch.gleam` | The shared stop/filter/cursor/limit pipeline. |
+| `session/repo.gleam` | Session-level administration: fork, the precise rewrite for both backends, and the erasure transforms. |
 | `conformance/storage_suite.gleam` | The suite that defines correctness. |
 
 Each path is relative to its package's source root: `core/ids.gleam` is

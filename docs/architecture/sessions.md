@@ -32,6 +32,8 @@ process, so a replacement never runs while its predecessor's external
 effects may still be alive. [Multiplayer](multiplayer.md) covers several
 terminals attached to one session. [The design note](../design-notes/single-daemon.md)
 records the alternatives and the detailed failure analysis.
+[The daemon process](daemon.md) describes the process that hosts these
+parts: its startup order, its ownership tree and its shutdown.
 
 ## One process across workspaces
 
@@ -271,10 +273,10 @@ opened with the state root as its workspace got a profile denying reads
 over the jail's own working directory, and every jailed command failed on
 `getcwd` before it ran.
 
-`client/serve.state_root_masks` enumerates what stays masked instead. Each
-entry was chosen by asking whether a jailed process reading or writing it
-could obtain a credential, another session's data, or the daemon's
-control. The masked entries are:
+`client/serve.state_root_mask_candidates` enumerates what stays masked
+instead. Each entry was chosen by asking whether a jailed process reading
+or writing it could obtain a credential, another session's data, or the
+daemon's control. The masked entries are:
 
 - the credential (`owner.token`) and the launcher's bearer tokens
   (`tokens/`);
@@ -528,6 +530,206 @@ The assembly boundary also uses reference addresses for client services.
 Cleanup custody across builder death is implemented by the owned assembly
 path described above. A lost transitive retirement proof remains a
 deliberate recovery-blocked boundary.
+
+## The session's Git working tree
+
+A session works in the operator's own directory, and Loom neither creates
+nor removes Git worktrees. The workspace is the absolute path the
+catalogue recorded when the session was created. What Loom adds around it
+is three things, all prepared during assembly on every open: a sandbox
+policy that lets `git commit` work in a linked worktree, a Git identity
+for commits made by tools, and a durable starting revision that the diff
+view compares against. The diff view itself is a bounded, owner-only
+observation served by the gateway and rendered by the terminal. Every Git
+process in this section runs through the session's broker in a
+kernel-enforced sandbox, never in the harness VM (see
+[effects](effects.md)).
+
+### Assembly order
+
+Serving assembly performs the Git steps in this order, inside
+`client/serve`:
+
+1. Build the base sandbox policy. `serve.widening_linked_worktree` adds
+   writable roots for a workspace that is a linked worktree.
+2. Publish the tool Git identity with `git_identity.prepare`.
+3. Read or record the starting revision with `session_git.prepare`,
+   through the store the boot owner still holds alone.
+4. Open the runtime, which starts the writer and any recovered work.
+5. Record the peer observation as the reserved fact
+   `client/peers/git-observation`.
+6. Hand the gateway a capture function through
+   `with_worktree_diff`.
+
+Steps 2 and 3 come before step 4 for the same reason: recovered or new
+model work can run `git commit` as soon as the runtime opens, so the
+identity and the baseline must already exist.
+
+### Linked worktrees
+
+A primary checkout keeps its metadata in `<workspace>/.git`, which is
+inside the one root a jailed tool may write. A worktree made by
+`git worktree add` has a `.git` file instead. That file names a directory
+under the main repository's `.git/worktrees/<name>`, whose `commondir`
+names the main repository's `.git`, where objects and refs live. Both are
+outside the workspace, so under the default policy a jailed `git commit`
+failed on the index lock.
+
+`serve.linked_git_directories` reads the `.git` file and its `commondir`
+and returns those two directories. `serve.widening_linked_worktree` adds
+them to the base policy's writable roots. This extends the trust a
+primary checkout already has: a tool that can write `<workspace>/.git`
+can already plant a hook or move a ref. A workspace that is not a linked
+worktree, or whose `.git` file does not parse, keeps the unchanged policy.
+
+### Git identity
+
+Tools run with `HOME` set to `<workspace>/.codemode/home`, a directory of
+their own, so Git would otherwise fall back to a guessed hostname-based
+email. `git_identity.prepare` fixes this on every open. It runs one
+read-only query, `git config --global --includes --get-regexp`, for
+`user.name` and `user.email` under the operator's real `HOME`. The query
+clears through the broker with the session's policy demoted to reads and
+with networking off. The helper binary then writes only those two values
+to `<workspace>/.codemode/home/gitconfig`, and every tool's environment
+names that file in `GIT_CONFIG_GLOBAL`.
+
+The identity is global scope only, so a repository's own `user.*`
+settings still take precedence, and commits that preserve an existing
+author are unchanged. The helper writes the file by walking directory
+descriptors from the original writable root without following symlinks,
+then renaming a temporary file into place. A `HOME` or symlink planted by
+a model therefore cannot redirect the write, and the helper builds no
+mount namespace that could create mountpoints on the host.
+
+The two failure cases are treated differently:
+
+- If the global identity cannot be read, the session still opens. It logs
+  `tools.git_identity_unavailable`, publishes an empty file, and Git then
+  requires identity from the repository's own configuration.
+- If publication fails, the open is refused, because a missing file would
+  let tools commit under a guessed identity.
+
+Imported hooks are the exception to the tool home. They run with the
+operator's `HOME` and without `GIT_CONFIG_GLOBAL`
+(`serve.hook_environment`), so they read the operator's configuration
+directly.
+
+### The starting revision
+
+The diff view shows two things: commits made since the session started,
+and uncommitted changes. The first needs a comparison point that
+survives restarts. `session_git.prepare` stores it as the register
+`fact.custom` / `session/git-start`, a JSON record of the session id, the
+workspace, and one of three `worktree_diff.Start` values:
+
+- `Revision`: the full object id of `HEAD`, validated as 40 or 64
+  lowercase hex characters.
+- `Empty`: the repository existed but had no commits.
+- `Unavailable`: no trustworthy starting point exists, with the reason.
+
+The first open records the baseline. `worktree_diff.starting_revision`
+runs `git rev-parse` through the broker, and the result is committed with
+an expectation that the cell is absent. Later opens read the cell and
+never replace it. Two cases record `Unavailable` rather than probing. A
+session that already has a pinned system prompt existed before this
+feature, and today's `HEAD` would be a misleading baseline for it. A
+stored record whose session id or workspace does not match the opening
+session also reads as `Unavailable`.
+
+A store failure refuses the open, because model work must not start
+before the baseline is durable. A Git failure does not: it becomes an
+`Unavailable` value, and the session runs normally without the committed
+section of the diff view.
+
+### The diff view
+
+`worktree_diff.capture_since` produces one `Board`: a bounded observation
+of the workspace at one moment. It is not stored in the conversation and
+has no seq. A capture runs these Git commands, each as its own sandboxed
+call:
+
+1. `status --porcelain=v1 -z`, for tracked changes.
+2. `ls-files --others` for untracked files, excluding the code-mode work
+   directory and the blob directory before Git enumerates them.
+3. `rev-parse HEAD`, to pin the comparison base.
+4. `log -p` over the range from the stored baseline to `HEAD`, capped at
+   24 commits. The range is used only if `merge-base --is-ancestor`
+   confirms the baseline is still an ancestor of `HEAD`.
+5. One `diff` per displayed file, up to 24 files.
+
+Every call uses the session's policy passed through
+`worktree_diff.read_policy`: writable roots become readable, mounts
+become read-only, networking is off, and scratch is a tmpfs. The
+environment is reduced to `PATH`, a nonexistent `HOME` and `LANG=C`, and
+Git runs with fsmonitor, rename detection and submodule recursion
+disabled. Repository configuration therefore cannot run a process with
+more than read authority.
+
+The capture has fixed bounds: one 8-second execution deadline shared by
+all calls, a 512 KiB total output budget, 24 files, and a 40 KiB encoded
+board. Anything cut is marked `Limited` and counted in `omitted`, never
+dropped silently. A failure is a typed `worktree_diff.Error` and is never
+presented as a clean tree. The observation is not atomic: status and file
+reads can interleave with concurrent edits, and only `HEAD` is pinned.
+
+The gateway serves the board over the conversation protocol. A client
+sends `worktree_diff`, and only a connection with owner authority is
+accepted, because the patches expose file contents. The gateway replies
+at once with a `pending` snapshot carrying the request id, then runs the
+capture in a Weft run outside its own actor. That run has a 14-second
+deadline and is cancelled if the requesting socket exits. The finished
+board, or its error message, arrives as a `WorktreeDiffSnapshot` push
+with the same request id. Each connection can have one observation in
+flight and the gateway runs at most two at once. If the worker dies, the
+broker cancels its Git processes.
+
+### Peer observation
+
+After the runtime opens, `worktree_diff.peer_observation` records the
+repository root, the Git common directory, and the current branch under
+`client/peers/git-observation`, with the time it was taken. Peer discovery
+uses it to find sessions working in the same repository. It is a
+timestamped observation, and it grants no messaging or filesystem
+authority.
+
+### The terminal side
+
+`tui/worktree_view` holds one attachment's latest board and file
+selection. It requests an observation when the diff view is shown, when
+a new conversation cut advances the durable sequence while the view is
+visible, and when
+the user presses `r` in file navigation. No timer polls Git. The previous
+board stays visible, labelled as possibly stale, until a reply with the
+matching request id arrives; late replies to a superseded request are
+ignored. With no live observation available, the view falls back to the
+edits captured in the conversation history and labels them as such.
+`tui/diff_panel` computes the one layout used for painting, paging and
+mouse hits: a heading, the file list, a sticky row for the selected file,
+and the patch.
+
+### When a session ends or crashes
+
+Nothing in the working tree belongs to the session, so closing or losing
+a session leaves the workspace exactly as the tools left it. Loom runs no
+cleanup and no reset there. The baseline register lives in the session's
+database and survives any stop, crash, or daemon restart, so a reopened
+session compares against the same starting revision. The tool
+`gitconfig` is rewritten on the next open. An observation interrupted by
+a crash has no durable state to repair: the broker's cleanup custody
+covers its Git processes like any other effect, and the client asks
+again.
+
+| Module | What it owns |
+|---|---|
+| `client/session_git` | The durable `session/git-start` baseline, recorded once before the runtime starts. |
+| `client/git_identity` | The read-only global identity query and the publication of the tool `gitconfig`. |
+| `client/worktree_diff` | The sandboxed Git calls, the bounded `Board`, the starting-revision probe, and the peer observation. |
+| `client/serve` | Assembly order, the linked-worktree policy widening, and the tool environment. |
+| `client/gateway` | Owner-only `worktree_diff` requests and the pending-then-push reply. |
+| `tui/worktree_view` | One attachment's board, selection, and refresh correlation. |
+| `tui/diff_panel` | The diff panel's layout. |
+| `tui/workspace` | The terminal's repository root and branch for the footer and default session name. |
 
 ## Containment and bounds
 
