@@ -101,6 +101,12 @@ requirements and verify recalled facts. Mutable notes remain user-context
 data. Existing pinned prompts are not migrated; this rollout starts fresh
 sessions.
 
+The `conduct` section asks for a phased list through the `todo` tool when it
+is available and the work has three or more steps, marked done in the same
+batch as the next piece of work. The tool's schema carries the mechanics; the
+prompt carries only the reason, which is that the operator follows progress by
+that list.
+
 The default system pack carries the canonical sections — `identity`,
 `tool_discipline`, `available_tools`, `delegation`, `conduct`,
 `environment`, `sandbox`, `repository_guidance` — plus the fragments

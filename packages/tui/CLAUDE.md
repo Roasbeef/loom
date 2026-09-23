@@ -86,6 +86,32 @@ dividers have their own color. Status labels and selection marks carry meaning
 without color. `gleam dev agents dark|light|ansi|plain` runs an illustrative,
 provider-free native fixture through the capture decoder and the shipped loop.
 
+## Todo panel
+
+`todo_panel` draws the active strand's todo board between the conversation
+and the composer. The board is the `details.todo` of the newest successful
+`todo` result, decoded with `core/todo_list.decode`, so the panel and the tool
+cannot disagree about a stored board. `Model.todo_boards` keeps each strand's
+newest board across cuts, because a capture window that has moved past the
+last `todo` call would otherwise blank the panel; session replacement releases
+it. A strand whose capture reaches no board gets one ordinary `notes` read per
+session (`Model.todo_seed`, `todo_asked`, sent by `surfaces.service_todo_seed`
+from the tick once the read lane is free). Any `notes` reply seeds a missing
+board from its complete `todo` row, and never replaces a transcript board or
+parses an excerpt. The "notes refreshed" notice appears only while a notes
+surface is open.
+
+The panel's rows come out of the body inside `layout.queue_body_layout`, between
+the conversation and the queue card, so every hit-test and scroll path sees the
+smaller conversation without knowing about the panel; `layout.todo_area`
+recomputes the same split for painting. It may take a third of the body and
+always leaves the conversation four rows. Only the phase holding the active
+task is expanded, other phases fold into one row, a long phase is windowed
+around its active task with counts above and below, and a finished board is
+one row. Each status has a glyph as well as a color (`✓ ▸ ○ ⊘ –`). A settled
+`todo` call is one compact transcript row naming what it changed and the
+progress it left, which keeps the compact height rule.
+
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.

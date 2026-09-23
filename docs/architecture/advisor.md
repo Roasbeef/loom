@@ -707,7 +707,7 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui/transcript_lines.gleam:1160`) extracts one of five
+`advisor_payload` (`tui/transcript_lines.gleam:1173`) extracts one of five
 `AdvisorMessage` variants and `advisor_lines`
 (`tui/transcript_lines.gleam:1265`) renders
 them. Nudges always show their complete body, including in compact mode.
