@@ -265,8 +265,8 @@ The command-name lists are string literals in three places
 (`session_channel`'s `outbound` and `matching_presentation`, and
 `tui/attempt`'s `decode_selection`), and the compiler checks none of them. A
 new read command must be added to all three. In `outbound`, an unlisted read
-defaults to the mutation lane and holds it forever, because the reply that
-would release a mutation never arrives. In `decode_selection`, an unlisted
+defaults to the mutation lane, and the channel fails closed when its reply
+does not match a mutation or when the request deadline passes. In `decode_selection`, an unlisted
 command fails the replay of any recording that carries it.
 
 ### Opening a session is provisional
@@ -348,7 +348,7 @@ restored to the composer; image bytes must be reattached.
 ## The composer, commands and the queue editor
 
 The composer is an etui text area plus `tui/composer` attachments. A paste
-estimated at 400 tokens or longer than eight lines becomes a compact
+estimated at 400 tokens or more, or of eight lines or more, becomes a compact
 attachment chip; its bytes are expanded into the prompt only when it is sent.
 A pasted path to a PNG, JPEG, GIF or WebP file of at most 20 MiB becomes an
 image attachment, up to four per prompt (`tui/image_drop` reads the magic bytes

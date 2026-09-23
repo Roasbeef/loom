@@ -329,8 +329,10 @@ call it.
 
 ## Prompt caching
 
-The Anthropic adapter (`provider/adapter/anthropic`) places four
-`cache_control` breakpoints on every request, which is the API's maximum:
+The Anthropic adapter (`provider/adapter/anthropic`) places at most four
+`cache_control` breakpoints on a request, which is the API's maximum. A
+request with no tools, no system prompt, or fewer than two user turns
+carries fewer:
 
 | Breakpoint | Position | Lifetime |
 |---|---|---|

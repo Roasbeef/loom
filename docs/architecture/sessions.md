@@ -576,8 +576,8 @@ outside the workspace, so under the default policy a jailed `git commit`
 failed on the index lock.
 
 `serve.linked_git_directories` reads the `.git` file and its `commondir`
-and returns those two directories. `serve.widening_linked_worktree` adds
-them to the base policy's writable roots. This extends the trust a
+and returns those two directories, or only the first when `commondir`
+cannot be read. `serve.widening_linked_worktree` adds them to the base policy's writable roots. This extends the trust a
 primary checkout already has: a tool that can write `<workspace>/.git`
 can already plant a hook or move a ref. A workspace that is not a linked
 worktree, or whose `.git` file does not parse, keeps the unchanged policy.
@@ -590,9 +590,11 @@ email. `git_identity.prepare` fixes this on every open. It runs one
 read-only query, `git config --global --includes --get-regexp`, for
 `user.name` and `user.email` under the operator's real `HOME`. The query
 clears through the broker with the session's policy demoted to reads and
-with networking off. The helper binary then writes only those two values
-to `<workspace>/.codemode/home/gitconfig`, and every tool's environment
-names that file in `GIT_CONFIG_GLOBAL`.
+with networking off. The helper binary then writes
+`<workspace>/.codemode/home/gitconfig`, which always sets
+`user.useConfigOnly = true` and adds only those two values when they are
+present. Every tool's environment names that file in
+`GIT_CONFIG_GLOBAL`.
 
 The identity is global scope only, so a repository's own `user.*`
 settings still take precedence, and commits that preserve an existing
@@ -605,8 +607,9 @@ mount namespace that could create mountpoints on the host.
 The two failure cases are treated differently:
 
 - If the global identity cannot be read, the session still opens. It logs
-  `tools.git_identity_unavailable`, publishes an empty file, and Git then
-  requires identity from the repository's own configuration.
+  `tools.git_identity_unavailable` and publishes a file that sets only
+  `useConfigOnly`, so Git requires identity from the repository's own
+  configuration.
 - If publication fails, the open is refused, because a missing file would
   let tools commit under a guessed identity.
 
@@ -650,13 +653,15 @@ has no seq. A capture runs these Git commands, each as its own sandboxed
 call:
 
 1. `status --porcelain=v1 -z`, for tracked changes.
-2. `ls-files --others` for untracked files, excluding the code-mode work
+2. `rev-parse --show-prefix`, to resolve status paths against the
+   workspace's place in the repository.
+3. `ls-files --others` for untracked files, excluding the code-mode work
    directory and the blob directory before Git enumerates them.
-3. `rev-parse HEAD`, to pin the comparison base.
-4. `log -p` over the range from the stored baseline to `HEAD`, capped at
+4. `rev-parse HEAD`, to pin the comparison base.
+5. `log -p` over the range from the stored baseline to `HEAD`, capped at
    24 commits. The range is used only if `merge-base --is-ancestor`
    confirms the baseline is still an ancestor of `HEAD`.
-5. One `diff` per displayed file, up to 24 files.
+6. One `diff` per displayed file, up to 24 files.
 
 Every call uses the session's policy passed through
 `worktree_diff.read_policy`: writable roots become readable, mounts
@@ -764,7 +769,7 @@ The default is implemented. Published `00076858` passed Linux, jailed E2E
 and the 200-seed CI job, but macOS failed the paired-latency assertion. An
 earlier head passed both platforms; that result does not make this head
 green. Exact heads, retained samples and local results are recorded in
-[the handoff](../next.md#verified-results-and-their-limits). Those results
+[the handoff](../next.md). Those results
 do not validate an unadopted dependency or establish the entire joined
 drive.
 

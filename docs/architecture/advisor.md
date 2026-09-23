@@ -291,8 +291,7 @@ promote its own output to advice by quoting the header.
 ## Advisor to primary: the verdict
 
 The advisor answers a feed with one `advise` call, and the tool itself
-decides nothing. The tool value is built by `tool`
-(`tools/advise.gleam:144`). It decodes the arguments and hands the pair
+decides nothing. The tool value is built by `tool` (`tools/advise.gleam:144`). It decodes the arguments and hands the pair
 to a single closure on an `Advice` record the host fills. `tools/agent`'s
 `Agency` and `tools/context`'s `Context` use the same arrangement for the
 same reason: `tools` depends on neither `runtime` nor `client`.
@@ -769,8 +768,7 @@ feed_every_steps = 20           # default; 0 is the run-end-only cadence
 block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
-The `advisor` route is a sixth routable role, parsed to `advisor_role`
-(`client/catalog.gleam:289`). It is `model.Custom("advisor")` rather than
+The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:289`). It is `model.Custom("advisor")` rather than
 a sixth named variant, because `provider/model.Role`'s five names are the
 design vocabulary and `Custom` is what that type provides for a role an
 application defines. It is last in the canonical order because it is the

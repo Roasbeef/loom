@@ -344,7 +344,7 @@ pass, and a cascade stays a deliberate operator action.
 
 The store and the sidecar join the session base policy's `protected` list
 wherever a writable root reaches them
-(`client/serve.gleam:2869`, `protecting_memory`).
+(`client/serve.gleam:5079`, `protecting_memory`).
 `protected` bars writes and leaves reads alone, and that asymmetry is
 intended: writing is the entire poisoning path, since the digest is injected
 into every run of every session on the repository without anyone asking for

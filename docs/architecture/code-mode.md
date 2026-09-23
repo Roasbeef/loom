@@ -315,8 +315,9 @@ timeout. The refusals a program can read are `mcp_unavailable`,
 
 A **program mode** determines which capability modules a submitted
 program may import. The `code_mode` tool's `seam` argument names it, and
-the code calls each mode a *seam*. There are two, workspace and
-orchestration, and the default server offers both. Both admit the same
+the code calls each mode a *seam*. A program may name two, workspace and
+orchestration, and the default server offers both; a third seam applies
+only to extension code (see below). Both admit the same
 capability modules, so one program can inspect files, run processes,
 spawn child strands (a strand is a named line of work: the main
 conversation, a subagent, a parallel attempt), exchange granted peer
@@ -740,8 +741,8 @@ deliberate. `CapConnection.destroy` aborts the operation, waits for the
 node's own settlement, and *returns* what the helper reported. The host
 destroys the node before it reports the execution's outcome, so the
 report travels out in `satellite.Run` together with the outcome. The
-abort does not lose the report: a cancelled execution still answers with
-`exec_exit`, carrying the same enforcement list. The launcher holds the
+abort is what makes the report reachable: a cancelled execution still
+answers with `exec_exit`, carrying the same enforcement list. The launcher holds the
 node's clearance handle, so teardown cancels it whichever of the two
 arrives first. A stage that genuinely never reported carries an
 `Unreported` naming the reason, which is a different value from a lost

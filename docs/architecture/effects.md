@@ -104,7 +104,7 @@ rather than an error. Settlement can race a crash-driven cleanup, and a
 double settlement must never underflow into free budget.
 
 **The helper pool is a separate ceiling from the budget, and a full pool
-means congestion, not refusal.** `max_outstanding` refuses amplification.
+makes a call wait rather than refusing it at once.** `max_outstanding` refuses amplification.
 The pool size is how many jails this host can afford at once, since every
 helper is an OS process running bwrap and a jail. It is sized from the
 node's scheduler count, clamped to `[4, 16]`, and overridable with

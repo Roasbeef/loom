@@ -563,8 +563,10 @@ because reordering it changes behavior:
 
 Two orderings matter most. Checking cancellation first means a cancelled
 run never diverts into a compaction on its way out. Checking tool use
-before a genuine length stop means a truncated response never executes
-calls that were cut in half.
+before a genuine length stop means a truncated response carrying calls
+is classified as tool use with `truncated` set, so its calls are
+answered with synthetic truncation errors. Checked in the other order,
+the response would finish the run with those calls unanswered.
 
 Two normalizations happen at commit, both deliberate. A cancelled response
 commits as `aborted`, and an overflow-classified one as `error`, so that

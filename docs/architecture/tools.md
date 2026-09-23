@@ -89,8 +89,8 @@ filesystem and a fake broker, and the tools run unchanged.
 
 ### Shells over seams
 
-The `tools` package depends on `core`, `broker`, `gleam_erlang`, and
-`simplifile`. It cannot import `client`, `runtime`, `events`, or
+The `tools` package depends on `core`, `broker`, `gleam_erlang`, `gleam_regexp`,
+and `simplifile`. It cannot import `client`, `runtime`, `events`, or
 `codemode`, and several of those packages depend on `tools`. So a tool
 that needs a live runtime, the search index, or the memory store is
 written as a shell over a record of closures that `tools` declares and
@@ -153,7 +153,8 @@ The rule is enforced in four places, from the tool outward:
 Refusals are worded for the model because the provider adapters send
 only the result content and, where the wire format has a slot for it,
 the error flag. The Anthropic and Gemini adapters carry `is_error`; the
-OpenAI chat adapter drops it. No adapter sends `details`, which stays
+OpenAI Responses adapter, which has no such field, wraps the content in a
+JSON envelope carrying `is_error`; the OpenAI chat adapter drops it. No adapter sends `details`, which stays
 in the durable entry for clients and for the runtime. A fact the model
 needs, such as the current file digest after a stale edit, must
 therefore appear in the text.
@@ -269,7 +270,8 @@ Two surfaces reach the model:
   registry, and renders a `ToolSpec(name, description, input_schema)`.
   Unregistered names are dropped. Each provider adapter serializes a
   `ToolSpec` in its own wire shape: `input_schema` for Anthropic,
-  `parameters` inside a `function` object for OpenAI, and
+  `parameters` inside a `function` object for OpenAI chat, `parameters`
+  beside `"type": "function"` for OpenAI Responses, and
   `parametersJsonSchema` for Gemini.
 - **The prompt index.** The system prompt lists each tool's
   `prompt_snippet` in registration order, so the five core tools come
@@ -429,8 +431,8 @@ model-authored code runs there, which is what Rule Zero requires.
 | `history_search` | Search the repository's full-text index of past sessions, or read one entry. | Harness VM | `events.md` §"Search" |
 | `remember` | Write one note into the repository's durable memory. | Harness VM | `memory.md` §"The `remember` door" |
 | `context_remaining` | Report the calling strand's context window, usage, and next compaction boundary. | Harness VM | `compaction.md` §"Triggers and context introspection" |
-| `schedule_create`, `schedule_list`, `schedule_cancel` | Create, list, and cancel the model's scheduled heartbeats. | Harness VM | No architecture doc; `tools/schedule` and `client/scheduleseam` module docs |
-| `advise` | The advisor strand's verdict: `quiet`, `nudge`, or `block`. Active on the advisor strand only. | Harness VM | `advisor.md` |
+| `schedule_create`, `schedule_list`, `schedule_cancel` | Create, list, and cancel the model's scheduled heartbeats. | Harness VM | `automation.md` §"Scheduled heartbeats" |
+| `advise` | The advisor strand's verdict: `quiet`, `nudge`, or `block`, plus `continue` and `complete` for a goal feed. Active on the advisor strand only. | Harness VM | `advisor.md` |
 | `load_skill` | Load a skill's instructions by name. | Harness VM | `docs/skills.md`; `client.md` §"Skill discovery and activation" |
 | `peer_describe`, `peer_roster`, `peer_send` | Set this session's peer description, list linked sessions, and send to a peer. | Harness VM | `messaging.md` §"Explicit peers and background workflows" |
 | Extension tools | Whatever an installed extension's manifest declares. | Jailed (the extension's satellite) | `extensions.md` |

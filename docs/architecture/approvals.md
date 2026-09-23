@@ -164,8 +164,10 @@ Step by step:
    can abort the run being asked about. The wait is a `weft/poll` loop on
    the session's clock that reads the record every `poll_interval_ms`
    (1 s). The window closes at the earlier of `park_timeout_ms` (five
-   minutes) and the call's own budget deadline, because the broker's ledger
-   refuses any reservation past that deadline.
+   minutes) and the deadline the refusal carries. On the escalating-runner
+   path that is the call's own budget deadline, because the broker's ledger
+   refuses any reservation past it. The `raise_refusal` path carries a
+   deadline ten minutes out, so the five-minute bound applies first.
 6. **Watch the record.** Each poll reads the record's cell, which includes
    the register seq. A record whose scope no longer names this call settles
    the call, because another call has taken the claim and will spend the

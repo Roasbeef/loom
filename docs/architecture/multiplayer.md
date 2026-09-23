@@ -98,9 +98,9 @@ gateway also pushes four things:
   provider rows. Captures still own cumulative usage and repair missed pushes.
 - A `stream_delta` for each provider token, clipped to the same 24 KiB
   bound the snapshot preview uses (`broadcast_delta`,
-  `client/gateway.gleam:2693`).
+  `client/gateway.gleam:3446`).
 - The presence roster when a peer departs (`publish_presence`,
-  `client/gateway.gleam:1924`). A join is not pushed; the joiner's own
+  `client/gateway.gleam:2580`). A join is not pushed; the joiner's own
   capture carries the roster, and every pushed frame costs one authority
   check per peer.
 
@@ -161,7 +161,7 @@ pushed delivery.
 ### One authority check for both kinds of frame
 
 Delivery splits on the envelope, not on the connection (`send_to`,
-`client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
+`client/gateway.gleam:3354`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
 through `deliver` (`client/gateway.gleam:3410`). Both paths call
 `check_binding` (`client/gateway.gleam:2372`) immediately before the
@@ -208,7 +208,7 @@ Two operators who submit on one strand are ordered, not refused. The first
 prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
-`client/gateway.gleam:3486`). The queue is gateway memory and holds four
+`client/gateway.gleam:4785`). The queue is gateway memory and holds four
 prompts per strand (`held_per_strand`, `client/gateway.gleam:853`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
@@ -520,7 +520,7 @@ enforcement. The ordinary Linux CI job declares that prerequisite
 missing. The delegated jail job runs the stage and rejects the skip, and
 macOS runs the full drive. The fixture does not prove filesystem
 confinement, an approval decision, or revocation of a command already
-queued. The [handoff](../next.md#verified-results-and-their-limits)
+queued. The [handoff](../next.md)
 records which revision passed each gate.
 
 ### The shipped live-delivery fixture

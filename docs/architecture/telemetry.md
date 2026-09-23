@@ -236,8 +236,9 @@ the extension hook bus.
 handler writes: the process's standard output. There is no log file, level
 file or rotation inside the package. When the `loom` launcher starts
 `loomd` itself, it appends the server's stdout and stderr to
-`logs/<database-hash>.log` under the state root (`~/.loom` by default; see
-the path table in [client](client.md)). Nothing rotates that file. If a
+`logs/<path-hash>.log` under the state root (`~/.loom` by default; see
+the path table in [client](client.md)). The name is the first 24 hex digits
+of the SHA-256 of the session database's path. Nothing rotates that file. If a
 launched server fails to become ready, the launcher's error message
 includes the recent tail of that log.
 

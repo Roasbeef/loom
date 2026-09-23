@@ -561,8 +561,9 @@ The SQLite rewrite runs in this order:
    delete the old `-wal` and `-shm` siblings.
 
 Because ids, parents, kinds, and seqs are unchanged, the tree and the
-segmented branch index stay valid and are not rebuilt; only the `payload`
-and `custom_type` columns change. Usage amounts are unchanged, so the
+segmented branch index stay valid and are not rebuilt. In `entries`, only
+the `payload` and `custom_type` columns change; registers change only
+`value`, and usage rows change only `details`. Usage amounts are unchanged, so the
 statistics projection stays correct as well.
 
 Readers outside the file are a different matter. Anything that folded or
@@ -594,8 +595,9 @@ result through the entry codec, so a needle that matches structural
 vocabulary (a stop reason, an id) aborts the rewrite as corruption rather
 than leaving an unreadable store. Register and usage payloads have no
 codec at this boundary; a needle that overlaps an id they carry surfaces
-as corruption when the machine codecs next read the cell. The replacement
-must not contain the needle.
+as corruption when the machine codecs next read the cell. Keeping the
+needle out of the replacement is the caller's obligation, and nothing
+checks it.
 
 The contract is that after an erasure the needle appears nowhere in the
 new file's raw bytes: entries, registers (queued input, tool arguments,

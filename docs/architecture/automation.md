@@ -434,8 +434,9 @@ admitted at most once. Neither feature promises at-least-once.
 
 The ordering that makes the claim hold is:
 
-1. The scanner judges from durable state only: fired-marks read from the
-   store, never from process memory.
+1. The scanner judges from fired-marks loaded from the store once per
+   incarnation. The at-most-once guarantee rests on the commit in step 2,
+   not on this read.
 2. The injection and its fired-mark commit in **one transaction**, with the
    mark expected absent (`runtime/api.Mark` on `steer_marking`,
    `send_to_strand_marking`, or the fresh-run acceptance).

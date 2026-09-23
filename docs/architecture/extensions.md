@@ -122,9 +122,9 @@ belongs behind the stronger boundary, which is the same ordering
 and unlike the other two it deliberately overlaps its siblings.
 `extension_cap_modules` is `default_cap_modules()` widened by exactly
 three names, `ext`, `ext/hook` and `ext/memory`
-(`vet/policy.gleam:611`). `extension_stdlib_modules` is the shared pure
+(`vet/policy.gleam:599`). `extension_stdlib_modules` is the shared pure
 subset widened by `gleam/bit_array` and `gleam/uri`
-(`vet/policy.gleam:633`). JSON and dynamic decoding belong to the shared
+(`vet/policy.gleam:618`). JSON and dynamic decoding belong to the shared
 subset, so ordinary code-mode programs have them too.
 
 The workspace and orchestration seams are disjoint because an
@@ -211,8 +211,8 @@ for it; `the_client_table_is_refused_test`
 (`client/test/client/extension_test.gleam:78`) checks the general rule
 rather than a named exception. Names are held to `[a-z][a-z0-9_]*` by
 codepoint (`manifest.is_legal_name` at
-`extension/manifest.gleam:257`), and environment-variable names to
-`[A-Z_][A-Z0-9_]*` (`extension/manifest.gleam:275`). The check is by
+`extension/manifest.gleam:299`), and environment-variable names to
+`[A-Z_][A-Z0-9_]*` (`extension/manifest.gleam:317`). The check is by
 codepoint because a Cyrillic lookalike in a tool name is not a
 normalization variant of anything.
 
@@ -502,11 +502,11 @@ runtime.serving(
 )
 ```
 
-`serving` (`ext/runtime.gleam:161`) hands `answer`
-(`ext/runtime.gleam:176`) to `cap/runtime.serve`, the same boot runtime a
+`serving` (`ext/runtime.gleam:172`) hands `answer`
+(`ext/runtime.gleam:193`) to `cap/runtime.serve`, the same boot runtime a
 code-mode program uses. Reusing it keeps the token file, the socket and
 the exclusive channel slot in one place, and it means this module could
-not read a token if it tried. `serve` (`ext/runtime.gleam:144`) is the
+not read a token if it tried. `serve` (`ext/runtime.gleam:148`) is the
 same call with an empty event table, which is what an artifact declaring
 no `[[hook]]` gets. The generated entry writes whichever of the two the
 manifest asked for (`entry_source` at `extension/install.gleam:586`).
@@ -617,7 +617,7 @@ value the previous step produced.
    allowlist nobody wrote.
 
 6. **The answer is settled into a `ToolOutcome`.** `settle`
-   (`extension/dispatch.gleam:832`) reads what the `hook_result` carried:
+   (`extension/dispatch.gleam:877`) reads what the `hook_result` carried:
    content blocks and an optional `terminate`. When there is no answer at
    all, it turns a `hosts.HookFailure` into a sentence the model can act
    on. A refusal is text the extension wrote, and a crash is the
@@ -652,32 +652,30 @@ deadline. `HookResult` (`broker/framing.gleam:196`) carries the
 `CapOutcome` that answers it, correlated by the same frame id. Spec
 §1.4's frozen `kinds` list gained both names. They cross the *capability*
 socket and nothing else. A helper on the exec channel that sends one is
-marked dead as a protocol violation (`framing.HookCall` at
-`broker/exec.gleam:1771`), because the two channels are two protocols,
+marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:1771`), because the two channels are two protocols,
 and a peer that confuses them is a peer whose next frame cannot be
 trusted either.
 
 **The invocation is the unit of authority.** A token is minted for one
 `{op_id, step_id}` and checked on every `cap_call`, so a node that
 outlives an execution has no token of its own. `invoke`
-(`codemode/satellite.gleam:2103`) mints one for *this* invocation, sends
+(`codemode/satellite.gleam:2130`) mints one for *this* invocation, sends
 it on the `hook_call`, and revokes it when the answer comes back. Between
 invocations the host holds no token, and a `cap_call` arriving then is
 refused `unauthorized` before any router sees it. The node's boot token
 file is not an exception: it holds thirty-two bytes this host minted
 nothing for, and it exists only because `cap/runtime`'s boot sequence
 reads one. `a_token_is_dead_once_its_invocation_closes_test`
-(`codemode/test/codemode/host_test.gleam:239`) pins this.
+(`codemode/test/codemode/host_test.gleam:289`) pins this.
 
 **One slot, and a breach costs the node.** The protocol allows one
 outstanding `hook_call` per satellite, so `Host`
-(`codemode/satellite.gleam:1907`) is a `weft/state_machine` over `Idle |
+(`codemode/satellite.gleam:1936`) is a `weft/state_machine` over `Idle |
 Answering(id) | Destroyed(reason)`. The invocation's deadline is
 `Answering`'s own state timeout, which is why these are states rather
 than a field: leaving the state cancels the timer, and weft drops a timer
 that fired while being cancelled instead of delivering it. A second
-`invoke` while one is open returns `Busy` (`InvokeError` at
-`codemode/satellite.gleam:1955`). The satellite also answers a second
+`invoke` while one is open returns `Busy` (`InvokeError` at `codemode/satellite.gleam:1955`). The satellite also answers a second
 `hook_call` with `busy` on its own side rather than queueing it, because
 a queue would mean a second token installed under the first invocation's
 worker.
@@ -1312,7 +1310,7 @@ the manifest beside `[net]`, with the same per-execution ceiling shape.
 | Path | What it holds |
 |---|---|
 | `packages/ext/src/ext.gleam` | The author-facing vocabulary: `Ctx`, `Content`, `Terminate`, `Outcome`, `Refusal`, and the `Tool` alias at `packages/ext/src/ext.gleam:110`. No effects, no FFI. |
-| `ext/runtime.gleam` | What an extension's generated entry serves from: `serve` (`ext/runtime.gleam:144`), `serving` (`ext/runtime.gleam:161`), `answer` (`ext/runtime.gleam:176`), and the five refusal codes. |
+| `ext/runtime.gleam` | What an extension's generated entry serves from: `serve` (`ext/runtime.gleam:148`), `serving` (`ext/runtime.gleam:172`), `answer` (`ext/runtime.gleam:193`), and the five refusal codes. |
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1931`) with `start`, `invoke` (`codemode/satellite.gleam:2122`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |

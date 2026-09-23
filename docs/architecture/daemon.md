@@ -79,8 +79,9 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
    port 0 asks the kernel for one), `--capacity` (1 to 1024, default 8), and
    `--owner-name`. The remaining flags (`--config`, `--helper`,
    `--read-scope`, `--network`, `--codemode-seed`, `--codemode-seams`,
-   `--best-effort`, `--full-enforcement`) are not interpreted here. They
-   are kept as `session_defaults` and handed to each session's resolver
+   `--best-effort`, `--full-enforcement`) are not interpreted here, except
+   that `--read-scope` and `--network` values are validated and the two
+   enforcement flags are refused together. They are kept as `session_defaults` and handed to each session's resolver
    when that session opens. No file is opened during parsing.
 2. **Claim the endpoint.** `main.claim_endpoint` observes this VM's own PID
    and birth identity, takes `launch.lock`, and calls `endpoint.claim`.
@@ -131,9 +132,12 @@ and the listener cannot accept a socket before the root is monitoring it.
 
 ## The ownership tree
 
-The daemon does not use OTP supervisors with restart strategies. Each owner
-is an unlinked state machine that traps exits and holds the original
-monitor of whatever it started. A restart would be wrong here: a registry
+The daemon does not use OTP supervisors with restart strategies. The root,
+the listener and the session builder are unlinked state machines that trap
+exits. The registry also traps exits but stays linked to the worker that
+started it, and treats that worker's exit as a shutdown request. A
+session's custody holder starts linked and unlinks after the ledger adopts
+it. Each owner holds the original monitor of whatever it started. A restart would be wrong here: a registry
 restarted empty would forget sessions whose effects are still running. So
 an owner that loses a child's proof of retirement stops admitting work and
 keeps its locks instead. The diagram shows who monitors whom, from the VM's
@@ -331,7 +335,8 @@ before delivering the reply. Its four refusals (`StaleEpoch`,
 `StaleIncarnation`, `Unauthorized`, `RegistryUnavailable`) stay distinct so
 that a revoked credential is reported as a revocation, not as an outage.
 
-A failed assembly is logged by `main.start_class` as
+A failed assembly is classified by `main.start_class` and logged by
+`main.diagnose_start` as
 `daemon.session_start_failed` with a fixed stage and class, and never with
 the raw reason, which can contain a path. For a held writer lease the log
 also carries `lease_expires_at_ms`, the time the session will next open;
@@ -520,8 +525,9 @@ component.
   exits abnormally, the listener's Mist tree does not retire normally, or
   the catalogue close fails, the root enters `RecoveryBlocked`. It kills
   connections, cancels the lifetime, closes the listener, and keeps
-  `daemon.lock` held. Readiness answers with the reason from then on, and
-  `main` halts with status 1.
+  `daemon.lock` held. Readiness answers with the reason from then on. The
+  root stays alive until a shutdown signal arrives, and then `main` halts
+  with status 1 because the root refuses to stop.
 - **The VM is killed.** A KILL of the root closes the lock helper's port
   before transitive cleanup is necessarily done. Nothing inside the VM can
   close that gap, which is why the endpoint's PID and birth identity, not
