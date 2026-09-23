@@ -181,8 +181,18 @@ pub fn job_virtual_read_lists_and_polls_without_advancing_a_cursor_test() {
 }
 
 pub fn job_virtual_read_preserves_owner_refusal_test() {
-  let scheme = job.scheme(refusing(job.NotFound(id: job_id)))
-  assert scheme.read(ctx(), job_id)
+  let visible = answering(recorder(), job.Running)
+  let owned =
+    job.Jobs(..visible, poll: fn(caller: tool.Ctx, id, wait_ms, cursors) {
+      case caller.strand {
+        "main" -> visible.poll(caller, id, wait_ms, cursors)
+        _ -> Error(job.NotFound(id:))
+      }
+    })
+  let scheme = job.scheme(owned)
+  let assert Ok(_output) = scheme.read(ctx(), job_id)
+  let foreign = tool.Ctx(..ctx(), strand: "other")
+  assert scheme.read(foreign, job_id)
     == Error(fs.NotFound(what: "background job `" <> job_id <> "`"))
 }
 
