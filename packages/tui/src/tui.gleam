@@ -38,8 +38,6 @@ import host/build_identity
 import host/endpoint
 import machine/strand as machine_strand
 import simplifile
-import tui/advisor_history
-import tui/advisor_pending
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_view
@@ -64,29 +62,27 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/focused_goal_panel
 import tui/frame
-import tui/goal_view
 import tui/herdr
 import tui/history_view
 import tui/image_drop
 import tui/internal/ffi_terminal
 import tui/layout
-import tui/live_jobs
 import tui/markdown
 import tui/model.{
   type Clipboard, type ControlEvent, type Interrupt, type Line, type Model,
   type Peer, type Reconnect, type ScrollDirection, type StrandWorkspace,
   type Stream, type Submission, type ToolTail, type UnconfirmedSubmission,
   AgentInspector, ApprovalInspector, Assistant, Attached, CacheNotice,
-  CacheObservation, ComposerSubmission, ConfirmGoal, ControlEvent,
-  ControlRequest, DaemonSelector, DiffAutomatic, DiffHidden, DiffVisible,
-  Disconnected, Failure, FrameCache, GoalInspector, HeldPrompt, HoldGoalReport,
-  Interjection, Interrupt, Line, Model, ModelSelector, Newer, NoClipboard,
-  NoOverlay, Older, OverlaySubmission, PageLoaded, Preview, PromptNext,
-  Reasoning, ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  Replaying, ReportGoal, SessionArchived, SessionDeleted, SessionRenamed,
-  SessionRestored, SessionSelector, Spacer, SteerNow, StrandWorkspace, Stream,
-  System, TerminalClipboard, ToolCall, ToolDetail, ToolFailure, ToolPatch,
-  ToolResult, ToolTail, UnconfirmedSubmission, User,
+  CacheObservation, ComposerSubmission, ControlEvent, ControlRequest,
+  DaemonSelector, DiffAutomatic, DiffHidden, DiffVisible, Disconnected, Failure,
+  FrameCache, GoalInspector, HeldPrompt, HoldGoalReport, Interjection, Interrupt,
+  Line, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
+  OverlaySubmission, PageLoaded, Preview, PromptNext, Reasoning, ReasoningDigest,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionArchived,
+  SessionDeleted, SessionRenamed, SessionRestored, SessionSelector, Spacer,
+  SteerNow, StrandWorkspace, Stream, System, TerminalClipboard, ToolCall,
+  ToolDetail, ToolFailure, ToolPatch, ToolResult, ToolTail,
+  UnconfirmedSubmission, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -106,6 +102,7 @@ import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
 import tui/summary_panel
+import tui/surfaces
 import tui/text_hygiene
 import tui/tool_activity
 import tui/transcript_anchor
@@ -1993,80 +1990,6 @@ fn flag_value(arguments: List(String), flag: String) -> Result(String, Nil) {
   }
 }
 
-// Inspection has its own target. Reading a worker's notes never changes the
-// active strand, its parked draft, or the next submitted message.
-fn notes_target(model: Model) -> String {
-  case model.overlay {
-    AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)) ->
-      selected
-    _ -> model.active_strand
-  }
-}
-
-fn refresh_notes(model: Model) -> Model {
-  service_notes_read(
-    Model(
-      ..model,
-      notes_requested: Some(notes_target(model)),
-      notice: "refreshing notes for " <> notes_target(model),
-    ),
-  )
-}
-
-// Reads coalesce to the latest inspected target while the existing channel
-// owns an earlier command. Old replies may be retained, but never relabelled.
-fn service_notes_read(model: Model) -> Model {
-  case model.notes_requested, model.channel {
-    None, _ -> model
-    Some(target), Some(channel) -> {
-      case session_channel.ready_for_read(channel) {
-        False -> model
-        True ->
-          outbound.send_frame(
-            Model(..model, notes_requested: None),
-            protocol.notes(model.next_id, target),
-          )
-      }
-    }
-    Some(target), None ->
-      outbound.send_frame(
-        Model(..model, notes_requested: None),
-        protocol.notes(model.next_id, target),
-      )
-  }
-}
-
-fn select_note(model: Model, direction: Int) -> Model {
-  let target = notes_target(model)
-  case model.note_board {
-    Some(board) if board.strand == target -> {
-      let index =
-        list.index_map(board.notes, fn(note, position) {
-          #(Some(note.key), position)
-        })
-        |> list.key_find(render.selected_note(model, board))
-        |> result.unwrap(0)
-      let next =
-        int.clamp(
-          index + direction,
-          0,
-          int.max(0, list.length(board.notes) - 1),
-        )
-      let selected =
-        list.drop(board.notes, next)
-        |> list.first
-        |> result.map(fn(note) { note.key })
-        |> option.from_result
-
-      // Note navigation moves only the surface that owns this key. The
-      // transcript beneath an inspector retains its independent anchor.
-      Model(..model, note_selected: selected, note_scroll: 0)
-      |> tui_model.invalidate_transcript
-    }
-    _ -> model
-  }
-}
-
 /// Applies one terminal event to the model.
 ///
 /// ## Examples
@@ -2186,9 +2109,9 @@ fn settle_update(
     True -> request_visible_worktree(updated)
     False -> updated
   }
-  let updated = sync_context(model, updated)
-  let updated = sync_advisor_nudges(model, updated)
-  let updated = sync_goal(model, updated)
+  let updated = surfaces.sync_context(model, updated)
+  let updated = surfaces.sync_advisor_nudges(model, updated)
+  let updated = surfaces.sync_goal(model, updated)
   let published = publish_herdr(updated)
 
   // The snap runs after the projection, because a gesture closes the
@@ -2306,13 +2229,13 @@ fn update_tick(model: Model) -> Model {
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
-    |> service_queue_read
-    |> service_worktree_read
-    |> service_notes_read
-    |> service_jobs_read
-    |> service_context_read
-    |> service_advisor_nudges_read
-    |> service_goal_read
+    |> surfaces.service_queue_read
+    |> surfaces.service_worktree_read
+    |> surfaces.service_notes_read
+    |> surfaces.service_jobs_read
+    |> surfaces.service_context_read
+    |> surfaces.service_advisor_nudges_read
+    |> surfaces.service_goal_read
     |> tick_channel
     |> advance_cache_outlook
   let quiet_for_ms =
@@ -4568,10 +4491,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           )
       }
     }
-    protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
+    protocol.LiveJobsSnapshot(board) -> surfaces.receive_jobs(model, board)
     protocol.AdvisorPendingSnapshot(board) ->
-      receive_advisor_nudges(model, board)
-    protocol.GoalSnapshot(board) -> receive_goal(model, board)
+      surfaces.receive_advisor_nudges(model, board)
+    protocol.GoalSnapshot(board) -> surfaces.receive_goal(model, board)
     protocol.ContextSnapshot(observation) ->
       Model(
         ..model,
@@ -4602,7 +4525,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ),
       )
     protocol.NotesSnapshot(board) ->
-      case board.strand == notes_target(model) {
+      case board.strand == surfaces.notes_target(model) {
         True -> {
           let previous = case model.note_board {
             Some(old) if old.strand == board.strand ->
@@ -5736,9 +5659,11 @@ fn update_goal_inspector(
       )
     focused_goal_panel.Continue(next) ->
       Model(..model, overlay: GoalInspector(next))
-    focused_goal_panel.Refresh -> request_goal_status(model)
-    focused_goal_panel.Pause -> submit_goal_action(model, command.GoalPause)
-    focused_goal_panel.Resume -> submit_goal_action(model, command.GoalResume)
+    focused_goal_panel.Refresh -> surfaces.request_goal_status(model)
+    focused_goal_panel.Pause ->
+      surfaces.submit_goal_action(model, command.GoalPause)
+    focused_goal_panel.Resume ->
+      surfaces.submit_goal_action(model, command.GoalResume)
   }
 }
 
@@ -5873,9 +5798,12 @@ fn update_agent_inspector(
       select_agent_message(model, inspector, -1)
     keys.Char("]") if inspector.detail == agents.Messages ->
       select_agent_message(model, inspector, 1)
-    keys.Char("[") if inspector.detail == agents.Notes -> select_note(model, -1)
-    keys.Char("]") if inspector.detail == agents.Notes -> select_note(model, 1)
-    keys.Char("r") if inspector.detail == agents.Notes -> refresh_notes(model)
+    keys.Char("[") if inspector.detail == agents.Notes ->
+      surfaces.select_note(model, -1)
+    keys.Char("]") if inspector.detail == agents.Notes ->
+      surfaces.select_note(model, 1)
+    keys.Char("r") if inspector.detail == agents.Notes ->
+      surfaces.refresh_notes(model)
     keys.Ctrl("g") if inspector.detail == agents.Notes -> toggle_note_mode(model)
     keys.Ctrl("g") -> toggle_details(model)
     keys.Char("n") ->
@@ -5970,7 +5898,7 @@ fn update_agent_inspector(
     AgentInspector(next)
       if next.detail == agents.Notes && next.selected != inspector.selected
     ->
-      refresh_notes(
+      surfaces.refresh_notes(
         Model(
           ..changed,
           note_selected: None,
@@ -6048,7 +5976,7 @@ fn note_max_scroll(model: Model) -> Int {
     AgentInspector(_) -> layout.message_detail_area(model)
     _ -> layout.note_detail_area(model)
   }
-  render.prepared_notes(model, notes_target(model), area)
+  render.prepared_notes(model, surfaces.notes_target(model), area)
   |> note_panel.max_scroll(model.note_selected)
 }
 
@@ -6093,8 +6021,8 @@ fn select_agent_detail(
       ),
     )
   case detail {
-    agents.Notes -> refresh_notes(selected)
-    agents.Overview | agents.Messages | agents.Collaboration -> selected
+    agents.Notes -> surfaces.refresh_notes(selected)
+    agents.Overview | agents.Messages -> selected
   }
 }
 
@@ -6344,11 +6272,9 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
-    keys.Char("r"), False, True -> refresh_notes(model)
-    keys.Up, False, True -> select_note(model, -1)
-    keys.Down, False, True -> select_note(model, 1)
-    keys.Char("["), False, True -> select_note(model, -1)
-    keys.Char("]"), False, True -> select_note(model, 1)
+    keys.Char("r"), False, True -> surfaces.refresh_notes(model)
+    keys.Char("["), False, True -> surfaces.select_note(model, -1)
+    keys.Char("]"), False, True -> surfaces.select_note(model, 1)
     keys.Ctrl("g"), False, True -> toggle_note_mode(model)
     keys.Ctrl("g"), _, _ -> toggle_details(model)
     keys.PageUp, False, True -> {
@@ -7197,7 +7123,7 @@ fn submit_text(model: Model) -> Model {
     command.Approve(id) -> decide(cleared, id, approval.approve)
     command.Deny(id) -> decide(cleared, id, approval.deny)
     command.Notes ->
-      refresh_notes(
+      surfaces.refresh_notes(
         Model(
           ..cleared,
           help_open: False,
@@ -7215,9 +7141,9 @@ fn submit_text(model: Model) -> Model {
         ),
       )
     command.QueueInspect -> open_queue(cleared)
-    command.Summary -> open_summary(cleared)
-    command.Context -> open_context(cleared, context_view.Overview)
-    command.ContextAll -> open_context(cleared, context_view.All)
+    command.Summary -> surfaces.open_summary(cleared)
+    command.Context -> surfaces.open_context(cleared, context_view.Overview)
+    command.ContextAll -> surfaces.open_context(cleared, context_view.All)
     command.Diff -> open_diff(cleared)
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
@@ -7242,7 +7168,7 @@ fn submit_text(model: Model) -> Model {
         ),
         protocol.set_thinking(cleared.next_id, cleared.active_strand, level),
       )
-    command.GoalStatus -> request_goal_status(cleared)
+    command.GoalStatus -> surfaces.request_goal_status(cleared)
 
     // Each mutation's confirmation waits for the board that commits it.
     // The server answers every goal mutation with the fresh board or with
@@ -7251,7 +7177,7 @@ fn submit_text(model: Model) -> Model {
     // saying no advisor is routed.
     command.GoalSet(objective:, token_budget:) ->
       outbound.send_frame(
-        confirming(
+        surfaces.confirming(
           cleared,
           "goal pinned · budget "
             <> int.to_string(token_budget)
@@ -7265,21 +7191,22 @@ fn submit_text(model: Model) -> Model {
     // is shown its result.
     command.GoalCheck(command: Some(check)) ->
       outbound.send_frame(
-        confirming(cleared, "the goal check is " <> check),
+        surfaces.confirming(cleared, "the goal check is " <> check),
         protocol.goal_check(cleared.next_id, Some(check)),
       )
     command.GoalCheck(command: None) ->
       outbound.send_frame(
-        confirming(cleared, "the goal check is cleared"),
+        surfaces.confirming(cleared, "the goal check is cleared"),
         protocol.goal_check(cleared.next_id, None),
       )
     command.GoalClear ->
       outbound.send_frame(
-        confirming(cleared, "the session goal is cleared"),
+        surfaces.confirming(cleared, "the session goal is cleared"),
         protocol.goal_clear(cleared.next_id),
       )
-    command.GoalPause -> submit_goal_action(cleared, command.GoalPause)
-    command.GoalResume -> submit_goal_action(cleared, command.GoalResume)
+    command.GoalPause -> surfaces.submit_goal_action(cleared, command.GoalPause)
+    command.GoalResume ->
+      surfaces.submit_goal_action(cleared, command.GoalResume)
 
     // The word is shown back because the operator has to see which of
     // their words was read as the budget, and a goal must never be pinned
@@ -8386,7 +8313,7 @@ fn select_queue_input(model: Model) -> Model {
               row.strand,
               row.id,
             )
-          service_queue_read(
+          surfaces.service_queue_read(
             Model(
               ..model,
               queue_editor: queue_editor.State(
@@ -8454,7 +8381,7 @@ fn reconcile_queue_draft(model: Model) -> Model {
           draft.document.strand,
           draft.document.id,
         )
-      service_queue_read(
+      surfaces.service_queue_read(
         Model(
           ..model,
           queue_editor: queue_editor.State(
@@ -8466,49 +8393,6 @@ fn reconcile_queue_draft(model: Model) -> Model {
       )
     }
     Some(_) | None -> model
-  }
-}
-
-fn service_queue_read(model: Model) -> Model {
-  case model.channel, model.queue_editor.fetch {
-    Some(channel), Some(fetch) ->
-      case session_channel.ready_for_read(channel) {
-        True ->
-          case tui_model.queue_owner(model) == fetch.owner {
-            True ->
-              outbound.send_frame(
-                Model(
-                  ..model,
-                  queue_editor: queue_editor.State(
-                    ..model.queue_editor,
-                    fetch: None,
-                    awaiting: Some(fetch),
-                  ),
-                ),
-                protocol.queued_input(model.next_id, fetch.strand, fetch.id),
-              )
-            False ->
-              Model(
-                ..model,
-                queue_editor: queue_editor.State(
-                  ..model.queue_editor,
-                  fetch: None,
-                  message: "Attachment changed; select the input again",
-                ),
-              )
-          }
-        False -> model
-      }
-    None, Some(_) ->
-      Model(
-        ..model,
-        queue_editor: queue_editor.State(
-          ..model.queue_editor,
-          fetch: None,
-          message: "Queue editing requires a live conversation attachment",
-        ),
-      )
-    _, None -> model
   }
 }
 
@@ -8643,7 +8527,7 @@ fn request_visible_worktree(model: Model) -> Model {
 fn refresh_worktree(model: Model) -> Model {
   case model.peer, model.channel {
     Attached(_), Some(_) ->
-      service_worktree_read(
+      surfaces.service_worktree_read(
         Model(
           ..model,
           worktree: worktree_view.request(
@@ -8658,21 +8542,6 @@ fn refresh_worktree(model: Model) -> Model {
         worktree: worktree_view.new(),
         notice: "Captured edits · live worktree observation unavailable",
       )
-  }
-}
-
-fn service_worktree_read(model: Model) -> Model {
-  // Both observations borrow the same server worker slot. An acknowledged
-  // context read still owns it until its final push arrives.
-  use <- bool.guard(context_in_flight(model.context), model)
-  case model.channel, model.worktree.refresh, model.worktree.awaiting {
-    Some(channel), worktree_view.Requested, None ->
-      case session_channel.ready_for_read(channel) {
-        True ->
-          outbound.send_frame(model, protocol.worktree_diff(model.next_id))
-        False -> model
-      }
-    _, _, _ -> model
   }
 }
 
@@ -8821,511 +8690,6 @@ fn retain_queue_selection(
   )
 }
 
-/// Opens detailed completion evidence while preserving the ordinary composer.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.open_summary(model)
-/// ```
-@internal
-pub fn open_summary(model: Model) -> Model {
-  service_jobs_read(
-    Model(
-      ..model,
-      summary_surface: queue_editor.Inspector,
-      summary_scroll: 0,
-      summary_tab: summary_panel.Completion,
-      summary_job_selected: 0,
-      jobs_refresh: worktree_view.Requested,
-    ),
-  )
-  |> tui_model.invalidate_frame
-}
-
-fn service_jobs_read(model: Model) -> Model {
-  case model.channel, model.jobs_refresh, model.peer {
-    Some(channel), worktree_view.Requested, Attached(_) ->
-      case session_channel.ready_for_read(channel) {
-        True ->
-          outbound.send_frame(
-            Model(
-              ..model,
-              jobs_refresh: worktree_view.Settled,
-              jobs_awaiting: Some(#(
-                tui_model.queue_owner(model),
-                model.active_strand,
-              )),
-              jobs_notice: "Refreshing live jobs; previous observation may be stale",
-            ),
-            protocol.live_jobs(model.next_id, model.active_strand),
-          )
-        False -> model
-      }
-    _, worktree_view.Requested, _ ->
-      Model(
-        ..model,
-        jobs_refresh: worktree_view.Settled,
-        jobs_notice: "Live jobs unavailable without a live conversation attachment",
-      )
-    _, worktree_view.Settled, _ -> model
-  }
-}
-
-// --- the advisor's pending nudges -------------------------------------------
-
-/// What one model transition asks of the pending-nudge panel.
-///
-/// Named rather than answered with a pair of booleans, because the three
-/// cases are genuinely different events and a caller reading `False, True`
-/// would have to remember which question each half asked.
-pub type NudgeAction {
-  /// The primary is running. Anything the panel holds is no longer a
-  /// pending queue, because a run start drains it into that run.
-  DropNudges
-
-  /// The primary is idle at a boundary worth exactly one observation.
-  ReadNudges
-
-  /// Nothing the panel depends on moved.
-  HoldNudges
-}
-
-/// Whether this transition is worth a pending-nudge read, a clear, or
-/// neither.
-///
-/// Three edges are worth a read and no others: the primary's own operation
-/// settling, a review settling while the primary waits — which is where a
-/// nudge is queued in the first place — and the primary appearing in the
-/// roster at all, which is the first snapshot after an attachment or a
-/// session switch. Everything else holds, a phase change on an unrelated
-/// strand included, because the queue cannot have grown without the advisor
-/// finishing a review.
-///
-/// Whether there is an attachment to ask is deliberately not asked here.
-/// `service_advisor_nudges_read` refuses to send without one and a closed
-/// conversation clears the board outright, so this function answers only
-/// about the conversation's own edges.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.advisor_nudges_action(before, after)
-/// ```
-@internal
-pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
-  case layout.strand_running(after, advisor_pending.primary_strand) {
-    // A run on the primary folds the whole queue into its first message, so
-    // what the panel was showing has been delivered rather than discarded.
-    // The local submit flag counts: it is the edge the operator sees, and
-    // waiting for the server's phase would leave delivered advice on screen.
-    True -> DropNudges
-
-    False -> idle_boundary(before, after)
-  }
-}
-
-// The primary is idle in `after`, so a primary that was running in `before`
-// is one that just settled. The advisor needs both halves of its own edge,
-// because it can still be mid-review and only a review's end adds to the
-// queue.
-fn idle_boundary(before: Model, after: Model) -> NudgeAction {
-  let primary_settled =
-    layout.strand_running(before, advisor_pending.primary_strand)
-  let review_settled =
-    layout.strand_running(before, advisor_pending.advisor_strand)
-    && !layout.strand_running(after, advisor_pending.advisor_strand)
-  let newly_listed =
-    !layout.strand_listed(before, advisor_pending.primary_strand)
-    && layout.strand_listed(after, advisor_pending.primary_strand)
-
-  let session_changed = before.session != after.session
-  case primary_settled || newly_listed || session_changed {
-    True -> ReadNudges
-    False -> HoldNudges
-  }
-}
-
-fn sync_advisor_nudges(before: Model, after: Model) -> Model {
-  case advisor_nudges_action(before, after) {
-    HoldNudges -> after
-
-    DropNudges ->
-      Model(
-        ..after,
-        nudges: None,
-        nudges_refresh: worktree_view.Settled,
-        nudges_awaiting: None,
-        nudges_request: None,
-      )
-
-    ReadNudges -> {
-      let started =
-        !strand_running(before, advisor_pending.primary_strand)
-        && strand_running(after, advisor_pending.primary_strand)
-      Model(
-        ..after,
-        nudges: case started {
-          True -> None
-          False -> after.nudges
-        },
-        nudges_refresh: worktree_view.Requested,
-      )
-    }
-  }
-}
-
-// The read waits for a free command lane like every other observation, so a
-// queued prompt is never held up behind an advisory panel.
-fn service_advisor_nudges_read(model: Model) -> Model {
-  case model.channel, model.nudges_refresh, model.peer {
-    Some(channel), worktree_view.Requested, Attached(_) ->
-      case session_channel.ready_for_read(channel) {
-        True ->
-          outbound.send_frame(
-            Model(
-              ..model,
-              nudges_refresh: worktree_view.Settled,
-              nudges_awaiting: Some(tui_model.queue_owner(model)),
-            ),
-            protocol.advisor_pending(model.next_id),
-          )
-        False -> model
-      }
-
-    // A request that cannot be sent is dropped rather than left standing:
-    // the next attachment reaches an idle primary and raises it again.
-    _, worktree_view.Requested, _ ->
-      Model(..model, nudges_refresh: worktree_view.Settled)
-
-    _, worktree_view.Settled, _ -> model
-  }
-}
-
-// Only the attachment that asked may be answered. Request ids restart with an
-// attachment, so the owner is what tells a fresh board from a stale one.
-fn receive_advisor_nudges(model: Model, board: advisor_pending.Board) -> Model {
-  let current = tui_model.queue_owner(model)
-  case model.nudges_awaiting {
-    Some(owner) ->
-      case owner == current {
-        True ->
-          Model(
-            ..model,
-            nudges: Some(board),
-            nudges_awaiting: None,
-            nudges_request: None,
-          )
-          |> tui_model.invalidate_transcript
-          |> tui_model.invalidate_frame
-
-        False -> model
-      }
-
-    None -> model
-  }
-}
-
-/// What one model transition asks of the goal panel.
-pub type GoalAction {
-  /// The goal may have moved; one read is worth its round trip.
-  ReadGoal
-
-  /// Nothing the panel depends on moved.
-  HoldGoal
-}
-
-/// Whether this transition is worth one goal read.
-///
-/// The three edges the pending-nudge panel reads on are all goal edges too:
-/// the primary settling is where a continuation is decided, a review
-/// settling is where the `complete` verdict lands, and the primary first
-/// appearing in the roster is the attachment edge where nothing is known
-/// yet. The goal adds one the queue does not have — the primary *starting*
-/// a run — because a goal continuation is exactly such a start, and it is
-/// the transition that moves `continuations`, the accounting and, at the
-/// bounds, the status.
-///
-/// Unlike the nudge queue, no transition clears the board: a goal is pinned
-/// until the operator unpins it, and a run in flight is the goal working
-/// rather than evidence that it is gone.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.goal_action(before, after)
-/// ```
-@internal
-pub fn goal_action(before: Model, after: Model) -> GoalAction {
-  let started =
-    before.session != after.session
-    || {
-      !layout.strand_running(before, advisor_pending.primary_strand)
-      && layout.strand_running(after, advisor_pending.primary_strand)
-    }
-
-  case started, advisor_nudges_action(before, after) {
-    True, _ -> ReadGoal
-    False, ReadNudges -> ReadGoal
-    False, DropNudges | False, HoldNudges -> HoldGoal
-  }
-}
-
-fn sync_goal(before: Model, after: Model) -> Model {
-  case goal_action(before, after) {
-    HoldGoal -> after
-    ReadGoal -> Model(..after, goal_refresh: worktree_view.Requested)
-  }
-}
-
-// The operator's own `/goal` opens the retained observation immediately and
-// requests a current board. Its label distinguishes that retained board from
-// the correlated refresh which replaces it.
-// Arms the one line a committed goal mutation prints. The board that
-// commits it is the mutation's own reply, so nothing else has to be
-// scheduled: `report_goal` finds the line where `receive_goal` leaves it.
-fn confirming(model: Model, line: String) -> Model {
-  Model(..model, goal_report: ConfirmGoal(line:))
-}
-
-// Slash commands and inspector keys enter one gate. The pending-submission
-// marker tells the shared send path whether a composer draft belongs to this
-// command; an inspector action supplies `OverlaySubmission`, so the draft is
-// never cleared as though the operator had submitted it.
-fn submit_goal_action(model: Model, action: command.Command) -> Model {
-  case outbound.mutation_refusal(model, action) {
-    Some(reason) -> tui_model.append_error(model, reason)
-    None -> {
-      let prepared = case model.pending_submission {
-        Some(_) -> model
-        None -> Model(..model, pending_submission: Some(OverlaySubmission))
-      }
-      case action {
-        command.GoalPause ->
-          outbound.send_frame(
-            confirming(prepared, "the session goal is held"),
-            protocol.goal_pause(prepared.next_id),
-          )
-        command.GoalResume ->
-          outbound.send_frame(
-            confirming(prepared, "the session goal continues"),
-            protocol.goal_resume(prepared.next_id),
-          )
-        _ -> prepared
-      }
-    }
-  }
-}
-
-fn request_goal_status(model: Model) -> Model {
-  let panel = case model.overlay {
-    GoalInspector(state) -> state
-    _ -> focused_goal_panel.new(model.goal, goal_observation(model))
-  }
-  case model.peer {
-    Preview ->
-      Model(
-        ..model,
-        overlay: GoalInspector(panel),
-        goal_report: HoldGoalReport,
-        repaint_phase: !model.repaint_phase,
-        notice: "goal inspector · illustrative observation",
-      )
-    Attached(_) | Disconnected | Replaying ->
-      Model(
-        ..model,
-        overlay: GoalInspector(panel),
-        goal_refresh: worktree_view.Requested,
-        goal_report: ReportGoal,
-        repaint_phase: !model.repaint_phase,
-      )
-  }
-}
-
-fn goal_observation(model: Model) -> String {
-  case model.goal, model.peer {
-    Some(_), Attached(_) -> "Last server observation · refreshing"
-    Some(_), Disconnected -> "Last server observation · disconnected"
-    Some(_), Preview | Some(_), Replaying -> "Illustrative observation"
-    None, Attached(_) -> "Reading current goal"
-    None, Disconnected -> "Goal unavailable · disconnected"
-    None, Preview | None, Replaying -> "Goal unavailable in this preview"
-  }
-}
-
-// The read waits for a free command lane like every other observation.
-fn service_goal_read(model: Model) -> Model {
-  case model.channel, model.goal_refresh, model.peer {
-    Some(channel), worktree_view.Requested, Attached(_) ->
-      case session_channel.ready_for_read(channel) {
-        True ->
-          outbound.send_frame(
-            Model(..model, goal_refresh: worktree_view.Settled),
-            protocol.goal_get(model.next_id),
-          )
-        False -> model
-      }
-
-    // A request that cannot be sent is dropped rather than left standing,
-    // and an operator who asked for the panel is told why it is not coming
-    // instead of watching for it.
-    _, worktree_view.Requested, _ -> unreachable_goal(model)
-
-    _, worktree_view.Settled, _ -> model
-  }
-}
-
-fn unreachable_goal(model: Model) -> Model {
-  let settled =
-    Model(
-      ..model,
-      goal_refresh: worktree_view.Settled,
-      overlay: case model.overlay {
-        GoalInspector(state) ->
-          GoalInspector(focused_goal_panel.unavailable(
-            state,
-            "no conversation is attached",
-          ))
-        other -> other
-      },
-    )
-  case model.goal_report {
-    HoldGoalReport -> settled
-
-    ReportGoal | ConfirmGoal(..) ->
-      tui_model.append_error(
-        Model(..settled, goal_report: HoldGoalReport),
-        "the session goal cannot be read: no conversation is attached",
-      )
-  }
-}
-
-// Only the attachment that asked may be answered. Request ids restart with
-// an attachment, so the owner is what tells a fresh board from a stale one.
-fn receive_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.goal_awaiting == Some(tui_model.queue_owner(model)) {
-    False -> model
-
-    True ->
-      report_goal(
-        Model(
-          ..model,
-          goal: Some(board),
-          overlay: case model.overlay {
-            GoalInspector(state) ->
-              GoalInspector(focused_goal_panel.observe(state, board))
-            other -> other
-          },
-          goal_awaiting: None,
-          goal_request: None,
-        ),
-        board,
-      )
-  }
-}
-
-// The operator's own question is answered in the transcript, in the system
-// voice, because the status block is several lines and the band beside the
-// composer holds one. An automatic refresh updates the row and prints
-// nothing.
-fn report_goal(model: Model, board: goal_view.Board) -> Model {
-  case model.goal_report {
-    HoldGoalReport -> tui_model.invalidate_frame(model)
-
-    // A committed mutation prints its one line here and nothing else. The
-    // fresh board is already in the model, so the row beside the composer
-    // carries the new state and a second block would repeat it.
-    ConfirmGoal(line:) ->
-      Model(..model, goal_report: HoldGoalReport)
-      |> tui_model.append_system(line)
-      |> tui_model.invalidate_frame
-
-    ReportGoal ->
-      goal_view.lines(board)
-      |> list.fold(
-        Model(..model, goal_report: HoldGoalReport),
-        tui_model.append_system,
-      )
-      |> tui_model.invalidate_frame
-  }
-}
-
-// A refused goal command, worded once. A refusal answering a request this
-// terminal no longer owns says nothing about the goal it is watching now.
-fn refuse_goal(
-  model: Model,
-  command: String,
-  request_id: Int,
-  code: String,
-  message: String,
-) -> Model {
-  use <- bool.guard(model.goal_request != Some(request_id), model)
-  let cleared =
-    Model(
-      ..model,
-      goal: None,
-      overlay: case model.overlay {
-        GoalInspector(state) ->
-          GoalInspector(focused_goal_panel.unavailable(
-            state,
-            goal_view.refusal(code, message),
-          ))
-        other -> other
-      },
-      goal_request: None,
-      goal_awaiting: None,
-      goal_report: HoldGoalReport,
-    )
-
-  // An automatic refresh the operator never asked for stays silent: an
-  // older daemon refuses every one of them, and a row per idle boundary
-  // would be a scrolling complaint about a feature this session lacks. A
-  // mutation and an explicit `/goal` are always the operator's own.
-  use <- bool.guard(
-    model.goal_report == HoldGoalReport && command == "goal_get",
-    cleared,
-  )
-
-  tui_model.append_error(cleared, goal_view.refusal(code, message))
-}
-
-fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
-  case model.jobs_awaiting {
-    Some(#(owner, strand)) if strand == board.strand ->
-      case owner == tui_model.queue_owner(model) {
-        True -> {
-          let old = case model.jobs {
-            Some(previous) if previous.strand == board.strand ->
-              previous.jobs
-              |> list.drop(model.summary_job_selected)
-              |> list.first
-            Some(_) | None -> Error(Nil)
-          }
-          let selected = case old {
-            Ok(job) ->
-              board.jobs
-              |> list.index_map(fn(item, index) { #(item.id, index) })
-              |> list.key_find(job.id)
-              |> result.unwrap(0)
-            Error(Nil) -> 0
-          }
-          Model(
-            ..model,
-            jobs: Some(board),
-            summary_job_selected: selected,
-            jobs_observed_ms: Some(model.monotonic_time_ms()),
-            jobs_awaiting: None,
-            jobs_request: None,
-            jobs_notice: "Live jobs observed separately from operation completion",
-          )
-          |> tui_model.invalidate_transcript
-        }
-        False -> model
-      }
-    Some(_) | None -> model
-  }
-}
-
 fn update_summary_key(key: keys.Key, model: Model) -> Model {
   let screen = layout.model_screen(model)
   let body = layout.summary_body_area(screen)
@@ -9340,7 +8704,7 @@ fn update_summary_key(key: keys.Key, model: Model) -> Model {
     keys.Ctrl("c") -> quit(model)
     keys.Escape -> Model(..model, summary_surface: queue_editor.Closed)
     keys.Char("r") ->
-      service_jobs_read(
+      surfaces.service_jobs_read(
         Model(..model, jobs_refresh: worktree_view.Requested, summary_scroll: 0),
       )
     keys.Char("1") ->
@@ -9400,7 +8764,7 @@ fn apply_request_refused(
   // refuses all five, and an operator watching a panel fail to appear has
   // no way to tell that from a session with no goal.
   use <- bool.lazy_guard(string.starts_with(command, "goal_"), fn() {
-    refuse_goal(model, command, request_id, code, message)
+    surfaces.refuse_goal(model, command, request_id, code, message)
   })
   let reason = code <> ": " <> message
   let updated = case command {
@@ -9454,110 +8818,6 @@ fn apply_request_refused(
   apply_event(updated, protocol.ServerError(code, message))
 }
 
-// Context follows the server's selected configuration and the end of the
-// active strand's operation, never scrollback retention and no longer the
-// leaf. The leaf moves once per committed entry, so a refresh keyed on it
-// cost the server a full branch scan per tool call: a thirty-tool turn ran
-// about sixty of them for a percentage nobody reads until the turn ends.
-// Streaming tokens and unrelated captures start no read.
-fn sync_context(before: Model, after: Model) -> Model {
-  let selected =
-    context_view.select(
-      after.context,
-      tui_model.queue_owner(after),
-      after.active_strand,
-    )
-  let changed = context_refresh_due(before, after)
-  let context = case after.peer {
-    Attached(_) ->
-      case changed {
-        True -> context_view.invalidate(selected)
-        False -> selected
-      }
-    Replaying -> selected
-    Preview | Disconnected ->
-      context_view.State(
-        ..selected,
-        board: None,
-        request: context_view.Idle,
-        notice: "Context observation requires a live connection",
-      )
-  }
-  Model(..after, context:)
-}
-
-/// Whether this model transition is worth another automatic context read.
-///
-/// Four transitions are worth one: the first capture, a strand switch, a
-/// configuration change, and the active strand's operation reaching `done`.
-/// A leaf that moved while that operation is still running is not one of
-/// them, which is what holds a thirty-tool turn to a single observation.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.context_refresh_due(before, after)
-/// ```
-@internal
-pub fn context_refresh_due(before: Model, after: Model) -> Bool {
-  case before.captured, after.captured {
-    Some(#(_, old)), Some(#(_, current)) ->
-      before.active_strand != after.active_strand
-      || dict.get(old.configurations, before.active_strand)
-      != dict.get(current.configurations, after.active_strand)
-      || operation_settled(before, after)
-    None, Some(_) -> True
-    _, None -> False
-  }
-}
-
-// The settling edge of the active strand's operation: the phase this terminal
-// already tracks for the agent roster leaves `Some(_)` exactly once per
-// operation, when the server reports `done`. Reading on that edge gives one
-// observation per turn instead of one per committed entry.
-fn operation_settled(before: Model, after: Model) -> Bool {
-  tui_model.active_strand_live(before) && !tui_model.active_strand_live(after)
-}
-
-fn service_context_read(model: Model) -> Model {
-  // A worktree acknowledgement releases the command lane, not its worker.
-  // Wait for that observation before borrowing the shared slot for context.
-  use <- bool.guard(model.worktree.awaiting != None, model)
-  case model.channel, model.context.request, model.peer, model.captured {
-    Some(channel), context_view.Requested, Attached(_), Some(_) ->
-      case session_channel.ready_for_read(channel) {
-        True ->
-          outbound.send_frame(
-            model,
-            protocol.context(model.next_id, model.active_strand),
-          )
-        False -> model
-      }
-    _, _, _, _ -> model
-  }
-}
-
-/// Opens context inspection while retaining the composer's draft and selection.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.open_context(model, context_view.Overview)
-/// ```
-@internal
-pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
-  service_context_read(
-    Model(
-      ..model,
-      context: context_view.State(
-        ..context_view.invalidate(model.context),
-        surface:,
-        scroll: 0,
-      ),
-    ),
-  )
-}
-
 fn update_context_key(key: keys.Key, model: Model) -> Model {
   let state = model.context
   let viewport = layout.panel_inner(layout.model_screen(model)).size.height
@@ -9569,7 +8829,7 @@ fn update_context_key(key: keys.Key, model: Model) -> Model {
         context: context_view.State(..state, surface: context_view.Hidden),
       )
     keys.Char("r") ->
-      service_context_read(
+      surfaces.service_context_read(
         Model(
           ..model,
           context: context_view.State(
@@ -9614,12 +8874,4 @@ fn scroll_context(model: Model, delta: Int) -> Model {
       scroll: int.clamp(current + delta, 0, maximum),
     ),
   )
-}
-
-fn context_in_flight(state: context_view.State) -> Bool {
-  case state.request {
-    context_view.Awaiting(_) | context_view.RefreshAfter(_) -> True
-    context_view.Idle | context_view.Requested | context_view.Unavailable ->
-      False
-  }
 }

@@ -27,6 +27,7 @@ import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/surfaces
 import tui/workspace
 import tui/worktree_view
 import tui_test/pushed
@@ -205,7 +206,7 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
       input: textarea.state_from_string("unfinished draft"),
     )
   let opened =
-    tui.open_context(original, context.Overview)
+    surfaces.open_context(original, context.Overview)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let #(buf, _) = render.view(opened, geometry.rect_new(0, 0, 100, 30))
   assert string.contains(
@@ -243,7 +244,7 @@ pub fn wheel_scrolls_the_visible_inspector_without_moving_transcript_test() {
       fn() { 0 },
     )
   let opened =
-    tui.open_context(base, context.All)
+    surfaces.open_context(base, context.All)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
   let moved = tui.update(backend.MouseScroll(5, 5, False), opened)
   assert moved.context.scroll == 0
@@ -390,7 +391,10 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // A strand with no capture yet has nothing to show, so the first cut is
   // always worth a read.
   let idle = observing(first, "first", None)
-  assert tui.context_refresh_due(tui_model.Model(..idle, captured: None), idle)
+  assert surfaces.context_refresh_due(
+    tui_model.Model(..idle, captured: None),
+    idle,
+  )
 
   // An entry committed while the operation runs moves the leaf. That is the
   // transition this refresh deliberately ignores: a thirty-tool turn would
@@ -398,20 +402,23 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // nobody reads until the turn ends.
   let running = observing(first, "first", Some("running tools"))
   let running_later = observing(second, "first", Some("running tools"))
-  assert !tui.context_refresh_due(running, running_later)
+  assert !surfaces.context_refresh_due(running, running_later)
 
   // The operation reaching `done` is the boundary the footer is read at.
   let settled = observing(second, "first", None)
-  assert tui.context_refresh_due(running_later, settled)
+  assert surfaces.context_refresh_due(running_later, settled)
 
   // A strand switch and a configuration change each stand on their own, and
   // a transition that changes none of the four starts nothing.
-  assert tui.context_refresh_due(
+  assert surfaces.context_refresh_due(
     settled,
     tui_model.Model(..settled, active_strand: "fork"),
   )
-  assert tui.context_refresh_due(settled, observing(second, "second", None))
-  assert !tui.context_refresh_due(settled, settled)
+  assert surfaces.context_refresh_due(
+    settled,
+    observing(second, "second", None),
+  )
+  assert !surfaces.context_refresh_due(settled, settled)
 }
 
 pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {

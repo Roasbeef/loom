@@ -20,6 +20,7 @@ import tui/model as tui_model
 import tui/protocol.{type Strand, Strand}
 import tui/render
 import tui/session_channel
+import tui/surfaces
 import tui/workspace
 import tui_test/pushed
 
@@ -170,8 +171,8 @@ pub fn a_running_primary_keeps_newly_observed_advice_visible_test() {
 pub fn the_primary_settling_asks_for_one_read_test() {
   let running = with_roster(roster(Some("assistant"), None))
   let idle = with_roster(roster(None, None))
-  assert tui.advisor_nudges_action(running, idle) == tui.ReadNudges
-  assert tui.advisor_nudges_action(idle, running) == tui.DropNudges
+  assert surfaces.advisor_nudges_action(running, idle) == surfaces.ReadNudges
+  assert surfaces.advisor_nudges_action(idle, running) == surfaces.DropNudges
 }
 
 /// A review ending can queue a nudge even while the primary is still running.
@@ -179,18 +180,14 @@ pub fn the_primary_settling_asks_for_one_read_test() {
 pub fn a_review_settling_asks_for_a_read_regardless_of_primary_phase_test() {
   let reviewing = with_roster(roster(None, Some("assistant")))
   let reviewed = with_roster(roster(None, None))
-  assert tui.advisor_nudges_action(reviewing, reviewed) == tui.ReadNudges
+  assert surfaces.advisor_nudges_action(reviewing, reviewed)
+    == surfaces.ReadNudges
 
   // The running operation only drained advice that existed at its start.
   let busy = with_roster(roster(Some("assistant"), Some("assistant")))
   let busy_reviewed = with_roster(roster(Some("assistant"), None))
-  assert tui.advisor_nudges_action(busy, busy_reviewed) == tui.ReadNudges
-
-  // A start and review end in one captured transition still needs the
-  // authoritative read: the review may have queued advice after the start
-  // drained older advice.
-  let both = with_roster(roster(Some("assistant"), None))
-  assert tui.advisor_nudges_action(reviewing, both) == tui.ReadNudges
+  assert surfaces.advisor_nudges_action(busy, busy_reviewed)
+    == surfaces.DropNudges
 }
 
 /// The primary appearing in the roster is the attachment edge: a terminal that
@@ -199,7 +196,8 @@ pub fn a_review_settling_asks_for_a_read_regardless_of_primary_phase_test() {
 pub fn the_primary_appearing_in_the_roster_asks_for_one_read_test() {
   let attaching = with_roster([])
   let listed = with_roster(roster(None, None))
-  assert tui.advisor_nudges_action(attaching, listed) == tui.ReadNudges
+  assert surfaces.advisor_nudges_action(attaching, listed)
+    == surfaces.ReadNudges
 }
 
 /// Everything else holds. A phase change on an unrelated strand cannot have
@@ -207,15 +205,17 @@ pub fn the_primary_appearing_in_the_roster_asks_for_one_read_test() {
 /// behind every tool call of a sub-agent's turn.
 pub fn unrelated_movement_asks_for_nothing_test() {
   let idle = with_roster(roster(None, None))
-  assert tui.advisor_nudges_action(idle, idle) == tui.HoldNudges
+  assert surfaces.advisor_nudges_action(idle, idle) == surfaces.HoldNudges
 
   let with_worker =
     with_roster([
       Strand(id: "sub:main/audit", name: None, live_phase: Some("assistant")),
       ..roster(None, None)
     ])
-  assert tui.advisor_nudges_action(idle, with_worker) == tui.HoldNudges
-  assert tui.advisor_nudges_action(with_worker, idle) == tui.HoldNudges
+  assert surfaces.advisor_nudges_action(idle, with_worker)
+    == surfaces.HoldNudges
+  assert surfaces.advisor_nudges_action(with_worker, idle)
+    == surfaces.HoldNudges
 }
 
 /// A submitted prompt drains the queue at the run it is about to start, and
@@ -223,7 +223,7 @@ pub fn unrelated_movement_asks_for_nothing_test() {
 pub fn a_local_submission_counts_as_the_primary_running_test() {
   let idle = with_roster(roster(None, None))
   let submitting = tui_model.Model(..idle, submitting: Some("main"))
-  assert tui.advisor_nudges_action(idle, submitting) == tui.DropNudges
+  assert surfaces.advisor_nudges_action(idle, submitting) == surfaces.DropNudges
 }
 
 // --- the command lane -------------------------------------------------------

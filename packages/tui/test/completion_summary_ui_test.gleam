@@ -21,6 +21,7 @@ import tui/queue_editor
 import tui/render
 import tui/session_channel
 import tui/summary_panel
+import tui/surfaces
 import tui/workspace
 
 fn model() {
@@ -43,7 +44,7 @@ fn key(model, value) {
 
 pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test() {
   let initial = model()
-  let opened = tui.open_summary(initial)
+  let opened = surfaces.open_summary(initial)
   assert opened.summary_surface == queue_editor.Inspector
   assert opened.input == initial.input
   assert opened.attachments == initial.attachments
@@ -84,7 +85,7 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
       0,
     )
   let initial = tui_model.Model(..model(), jobs: Some(board))
-  let opened = tui.open_summary(initial) |> key("3")
+  let opened = surfaces.open_summary(initial) |> key("3")
   let text = painted(opened)
   assert string.contains(text, "3 Jobs")
   assert string.contains(text, "Observed roster: 1 total · 0 omitted")
@@ -157,7 +158,7 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
       records: [protocol.EntryRecord("main", measured)],
       usage: cumulative,
     )
-  let text = painted(tui.open_summary(updated) |> key("2"))
+  let text = painted(surfaces.open_summary(updated) |> key("2"))
   assert string.contains(text, "Input 9000")
   assert string.contains(text, "cache read 20000")
   assert string.contains(text, "610 input tokens (including cache)")
@@ -171,7 +172,7 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let board = live_jobs.Board("main", 50, [first, second], 3, 1)
   let opened =
     tui_model.Model(..model(), jobs: Some(board))
-    |> tui.open_summary
+    |> surfaces.open_summary
     |> fn(model) {
       tui_model.Model(
         ..model,

@@ -35,6 +35,7 @@ import tui/protocol
 import tui/recording
 import tui/session_channel
 import tui/snapshot
+import tui/surfaces
 import tui/virtual_backend
 import tui/workspace
 
@@ -1087,8 +1088,8 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   assert adopted.nudges_request == None
   assert adopted.goal_awaiting == None
   assert adopted.goal_request == None
-  assert tui.advisor_nudges_action(model, adopted) == tui.ReadNudges
-  assert tui.goal_action(model, adopted) == tui.ReadGoal
+  assert surfaces.advisor_nudges_action(model, adopted) == surfaces.ReadNudges
+  assert surfaces.goal_action(model, adopted) == surfaces.ReadGoal
   assert adopted.pending_submission == None
   assert textarea.value(adopted.input) == ""
     as "a replacement session never inherits the previous recipient's draft"

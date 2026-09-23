@@ -38,6 +38,7 @@ import tui/protocol.{type Strand, Strand}
 import tui/render
 import tui/reviewer_status
 import tui/session_channel
+import tui/surfaces
 import tui/transcript_lines
 import tui/workspace
 import tui_test/pushed
@@ -968,19 +969,19 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
   let running = with_roster(roster(Some("assistant"), None))
   let reviewing = with_roster(roster(None, Some("assistant")))
 
-  assert tui.goal_action(running, idle) == tui.ReadGoal
-  assert tui.goal_action(reviewing, idle) == tui.ReadGoal
-  assert tui.goal_action(with_roster([]), idle) == tui.ReadGoal
-  assert tui.goal_action(idle, running) == tui.ReadGoal
+  assert surfaces.goal_action(running, idle) == surfaces.ReadGoal
+  assert surfaces.goal_action(reviewing, idle) == surfaces.ReadGoal
+  assert surfaces.goal_action(with_roster([]), idle) == surfaces.ReadGoal
+  assert surfaces.goal_action(idle, running) == surfaces.ReadGoal
 
   // A goal is pinned until the operator unpins it, so an unrelated
   // transition asks for nothing and nothing clears the board.
-  assert tui.goal_action(idle, idle) == tui.HoldGoal
-  assert tui.goal_action(running, running) == tui.HoldGoal
+  assert surfaces.goal_action(idle, idle) == surfaces.HoldGoal
+  assert surfaces.goal_action(running, running) == surfaces.HoldGoal
 
   // A different session owns a different goal even when both primaries run.
   let other = tui_model.Model(..running, session: "other session")
-  assert tui.goal_action(running, other) == tui.ReadGoal
+  assert surfaces.goal_action(running, other) == surfaces.ReadGoal
 }
 
 /// A lifecycle-driven goal read is background observation. Sending it must
