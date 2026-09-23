@@ -3,6 +3,8 @@
 
 import client/codex/cli
 import client/codex_bridge
+import gleam/dynamic
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -81,4 +83,17 @@ pub fn codex_cli_refuses_terminal_escape_in_auth_observations_test() {
     == cli.Refused("invalid_login_instructions")
   assert cli.presentation(codex_bridge.LoginComplete("pro\nforged"))
     == cli.Complete(["Signed in to Codex (plan unavailable)."])
+}
+
+pub fn codex_cli_requires_normal_owner_drain_after_success_test() {
+  let success = cli.Complete(["Signed in to Codex (pro)."])
+  assert cli.drained_result(process.Normal, success)
+    == Ok(["Signed in to Codex (pro)."])
+  assert cli.drained_result(
+      process.Abnormal(dynamic.string("helper exited")),
+      success,
+    )
+    == Error("subscription helper drain proof lost")
+  assert cli.drained_result(process.Killed, success)
+    == Error("subscription helper drain proof lost")
 }

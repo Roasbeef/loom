@@ -81,20 +81,21 @@ pub fn transport() -> gateway.CodexTransport {
 }
 
 /// Starts one control operation through the same long-lived profile helper.
-/// The returned owner is monitorable and cancellable. `events` receives only
-/// redacted control observations; login instructions may precede completion.
+/// The returned owner is monitorable and cancellable before `begin` starts
+/// helper work. `events` receives only redacted control observations; login
+/// instructions may precede completion.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(running) = codex_bridge.command("default", Status, events)
-/// // Monitor `http.owner(running)` before waiting for a terminal event.
+/// // let assert Ok(prepared) = codex_bridge.command("default", Status, events)
+/// // Monitor `http.owner(prepared.running)` before calling prepared.begin().
 /// ```
 pub fn command(
   profile: String,
   action: Command,
   events: Subject(ControlEvent),
-) -> Result(http.RunningRequest, String) {
+) -> Result(http.PreparedRequest, String) {
   use manager <- result.try(ensure_manager(profile))
   let id = new_id()
   use #(owner, pid) <- result.try(start_owner(
@@ -103,9 +104,13 @@ pub fn command(
     id,
     Control(events),
   ))
-  process.send(owner, Begin(command_name(action), None))
   Ok(
-    http.RunningRequest(owner: pid, cancel: fn() { process.send(owner, Cancel) }),
+    http.PreparedRequest(
+      running: http.RunningRequest(owner: pid, cancel: fn() {
+        process.send(owner, Cancel)
+      }),
+      begin: fn() { process.send(owner, Begin(command_name(action), None)) },
+    ),
   )
 }
 

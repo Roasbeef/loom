@@ -125,16 +125,20 @@ fn all_permitted(chars: List(String), permitted: String) -> Bool {
 
 fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
   let events = process.new_subject()
-  use running <- result.try(codex_bridge.command(
+  use prepared <- result.try(codex_bridge.command(
     request.profile,
     request.command,
     events,
   ))
+  let running = prepared.running
   let monitor = process.monitor(http.owner(running))
   let selector =
     process.new_selector()
     |> process.select_map(events, Observed)
-    |> process.select_specific_monitor(monitor, fn(_) { OwnerGone })
+    |> process.select_specific_monitor(monitor, fn(down) {
+      OwnerGone(down.reason)
+    })
+  prepared.begin()
   let answer = await_event(selector, request.command, emit)
   case answer {
     Error("subscription command timed out") -> http.cancel(running)
@@ -146,7 +150,7 @@ fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
 
 type Observation {
   Observed(ControlEvent)
-  OwnerGone
+  OwnerGone(process.ExitReason)
 }
 
 // OAuth can involve a human leaving the terminal for several minutes. The
@@ -168,7 +172,7 @@ fn await_event(
   }
   case process.selector_receive(selector, within) {
     Error(Nil) -> Error("subscription command timed out")
-    Ok(OwnerGone) -> Error("subscription helper stopped before completion")
+    Ok(OwnerGone(_)) -> Error("subscription helper stopped before completion")
     Ok(Observed(event)) ->
       case presentation(event) {
         Continue(lines) -> {
@@ -191,17 +195,36 @@ fn await_owner(
 ) -> Result(Nil, String) {
   case process.selector_receive(selector, drain_wait_ms) {
     Error(Nil) -> Error("subscription command timed out")
-    Ok(OwnerGone) ->
-      case terminal {
-        Complete(lines) -> {
-          print_lines(lines, emit)
-          Ok(Nil)
-        }
-        Refused(code) -> Error("subscription helper refused " <> code)
-        Continue(_) -> Error("subscription helper ended before completion")
-      }
+    Ok(OwnerGone(reason)) -> {
+      use lines <- result.try(drained_result(reason, terminal))
+      print_lines(lines, emit)
+      Ok(Nil)
+    }
     Ok(Observed(_)) ->
       Error("subscription helper sent duplicate terminal result")
+  }
+}
+
+/// Accepts a control result only when its request owner exited normally.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // drained_result(process.Normal, Complete(["done"])) == Ok(["done"])
+/// ```
+@internal
+pub fn drained_result(
+  reason: process.ExitReason,
+  terminal: Presentation,
+) -> Result(List(String), String) {
+  case reason, terminal {
+    process.Normal, Complete(lines) -> Ok(lines)
+    process.Normal, Refused(code) ->
+      Error("subscription helper refused " <> code)
+    process.Normal, Continue(_) ->
+      Error("subscription helper ended before completion")
+    process.Killed, _ | process.Abnormal(_), _ ->
+      Error("subscription helper drain proof lost")
   }
 }
 
