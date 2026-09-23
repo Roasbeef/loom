@@ -5,7 +5,7 @@ boundary and the next scoped work. Rewrite it after the next body of work;
 use the architecture and protocol documents for enduring contracts.
 
 The collaboration implementation is in PR #484, rebased onto `main` after
-#482, #490 and #278. This edition records the current behavior and the follow-ups
+#482, #490, #278 and #491. This edition records the current behavior and the follow-ups
 that remain after the platform gate and merge.
 
 ## Where the tree is
@@ -126,13 +126,13 @@ None of these is unfinished work somebody forgot.
 
 ## Validation evidence
 
-The prior PR head `fb1eff2a` passed the complete local gate and hosted CI on
-Linux and macOS. The final rebase and full code-mode widening need their own
-complete local and hosted checks; the PR and CI run are the result authority.
-Focused codemode, tools and prompt gates passed after widening the capability
-policy. The client gate passed all 2,072 tests, including real jailed programs
-combining `cap/fs` with named child workflow steps in both modes. The
-model-facing description checks both offers and installed MCP surfaces.
+The complete `make check` passed with exit zero on rebased source head
+`5c264b0f`, based on `main` at `db7e0969`. It passed 2,079 client and 722 TUI
+tests, every other package, the sandbox Go tests and house lint. The real
+jailed client tests combine `cap/fs` with named child workflow steps in both
+program modes, and the model-facing description checks both offers and
+installed MCP surfaces. `make doc-check` passed with zero errors after the
+rebase. The public PR head and its hosted CI must still be checked after push.
 
 The unchanged MCP deadline regression took 119 ms against its 500 ms ceiling.
 Earlier staged runs exposed a queued-provenance assertion error and a goal-check
