@@ -90,6 +90,43 @@ func TestRequestErrorEndsAfterWorkerCleanup(t *testing.T) {
 	}
 }
 
+func TestCancellationProducesOneTerminal(t *testing.T) {
+	var output bytes.Buffer
+	s := &server{
+		writer: &frameWriter{w: &output},
+		active: make(map[string]context.CancelFunc),
+	}
+	workDone := make(chan struct{})
+	releaseTerminal := make(chan struct{})
+	s.start("cancelled", func(context.Context) { close(workDone) }, func(ctx context.Context) {
+		<-releaseTerminal
+		s.asyncComplete("cancelled", ctx)
+	})
+	<-workDone
+	s.cancel("cancelled")
+	close(releaseTerminal)
+	s.wg.Wait()
+	s.cancel("cancelled")
+	if !bytes.Contains(output.Bytes(), []byte(`"cancel_ack"`)) || bytes.Contains(output.Bytes(), []byte(`"end"`)) {
+		t.Fatalf("cancelled request emitted the wrong terminal: %s", output.Bytes())
+	}
+	firstLength := output.Len()
+	s.cancel("cancelled")
+	if output.Len() != firstLength {
+		t.Fatal("late cancellation emitted a second terminal")
+	}
+
+	output.Reset()
+	s.start("completed", func(context.Context) {}, func(ctx context.Context) {
+		s.asyncComplete("completed", ctx)
+	})
+	s.wg.Wait()
+	s.cancel("completed")
+	if !bytes.Contains(output.Bytes(), []byte(`"end"`)) || bytes.Contains(output.Bytes(), []byte(`"cancel_ack"`)) {
+		t.Fatalf("completed request emitted the wrong terminal: %s", output.Bytes())
+	}
+}
+
 func TestProfileValidationAndPermissions(t *testing.T) {
 	if _, err := newProfileStore(t.TempDir(), "../escape"); err == nil {
 		t.Fatal("profile traversal accepted")

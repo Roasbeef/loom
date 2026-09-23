@@ -77,10 +77,10 @@ func (s *server) start(id string, work func(context.Context), drained func(conte
 	s.mu.Unlock()
 	go func() {
 		work(ctx)
-		s.finish(id)
 		if drained != nil {
 			drained(ctx)
 		}
+		s.finish(id)
 		cancel()
 	}()
 }
@@ -91,9 +91,7 @@ func (s *server) cancel(id string) {
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		return
 	}
-	s.send(event{ID: id, Event: "cancel_ack"})
 }
 
 func (s *server) handle(c command) {
