@@ -36,15 +36,24 @@ and `loomd codex` login, status, models, and logout commands. The full
 85 conformance tests, plus the other package suites, both Go packages, and
 house lint with zero errors. A subscription conformance fixture completed a
 real Loom tool call and replayed its durable reasoning and tool result over
-the private `response.done` dialect. The lean `DIST_CODEMODE=0` server release
-built and passed `make release-smoke`, including the bundled helper and a
-credential-free `loomd codex status` probe. The normal code-mode release seed
+the private `response.done` dialect. The lean `DIST_CODEMODE=0 make -j1 dist`
+built the server and client archives and passed their release smokes,
+including the bundled helper and a credential-free `loomd codex status`
+probe. The normal code-mode release seed
 could not be prepared because Hex reported an API rate limit, so its release
 smoke is still open. No live authenticated Sol or Astra inference or official
 third-party support claim has been verified here. The helper accepts one
 active profile per VM, binds saved credentials to a ChatGPT account ID, and
 reports unsafe stored credentials as `credential_unavailable` rather than
 replacing them.
+An independent review found a late-cancellation double-terminal race, a
+packaged named-profile argument collision, and a CLI drain-reporting error.
+All three have focused regressions; the CLI now monitors its parked owner
+before beginning work and requires a normal drain exit. The remaining
+operational gap is profile control after the daemon's first use: its helper
+retains the exclusive profile lock, so separate `loomd codex` commands require
+stopping that daemon until owner-authenticated control forwarding is added.
+The subscription branch remains experimental and is not ready to merge.
 The earlier public live smoke reached `credit_balance_exhausted` and confirmed
 transport drain; funded inference remains unverified.
 

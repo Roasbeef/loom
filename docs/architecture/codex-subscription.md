@@ -47,6 +47,14 @@ credentials per request and, after a 401, reloads or refreshes and replays
 the request at most once. Permanent authentication errors are terminal;
 ordinary provider fallback must not turn them into an unbounded login loop.
 
+The profile lock spans the helper lifetime. A daemon can start without taking
+it, so an operator can log in before the first subscription request. Once a
+daemon has used that profile, `loomd codex` in another process cannot manage
+it until the daemon stops. Forwarding owner-authenticated operator commands
+through the existing daemon control connection is the remaining runtime
+control gap. Loosening the lock would permit concurrent refresh and logout
+to race with in-flight inference.
+
 The helper pins the Codex backend origin internally. Loom sends a relative
 `/responses` request with a Responses body and non-secret content headers;
 the helper adds the bearer and account routing headers. It refuses an

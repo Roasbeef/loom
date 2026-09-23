@@ -471,9 +471,10 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/codex_bridge.{Command, ControlEvent, transport, command}` — a
   VM-shared, profile-bound helper transport and redacted control surface.
   `transport` supplies the provider's parked request seam;
-  `command` uses the same helper for status, browser or device login, logout,
-  and account model discovery. Control observations contain no access token,
-  refresh token, or account ID.
+  `command` prepares a parked owner for status, browser or device login,
+  logout, and account model discovery. The CLI monitors that owner before
+  calling `begin` and accepts a result only after a normal drain exit.
+  Control observations contain no access token, refresh token, or account ID.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -2699,7 +2700,10 @@ these forks because they define the same modules.
   events. Cancellation waits for `cancel_ack`. Only these terminal frames
   allow the request owner to exit normally; malformed frames, port exit,
   and manager loss make its drain witness abnormal. The VM admits only one
-  active profile at a time and refuses a different profile explicitly.
+  active profile at a time and refuses a different profile explicitly. The
+  helper holds an exclusive profile lock for the manager lifetime; after the
+  daemon first uses a profile, separate operator commands for it require
+  stopping the daemon until a control-forwarding path exists.
 
 - `protocol.ListSkills(offset)` is a subscribed read available to observers.
   `SkillsSnapshot(board)` returns bounded consecutive metadata rows with a next
