@@ -2832,6 +2832,10 @@ pub fn a_passing_check_reaches_the_reviewers_frame_test() {
       ran_at_ms: 1_756_000_000_000,
     ))
 
+  // The check cell commits before the actor finishes publishing its feed.
+  // Drain that actor before checking the reviewer's stored conversation.
+  barrier(subject)
+
   assert list.any(advisor_texts(rig.opened), fn(text) {
     string.contains(text, advisorslice.check_label)
     && string.contains(text, "command: make check")
@@ -2862,6 +2866,7 @@ pub fn a_failing_check_still_feeds_the_reviewer_test() {
       output: "all green",
       ran_at_ms: 1_756_000_000_000,
     ))
+  barrier(subject)
   assert list.any(advisor_texts(rig.opened), fn(text) {
     string.contains(text, "exit status 1 (the check failed)")
   })
