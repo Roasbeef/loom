@@ -140,7 +140,8 @@ pub fn publish_herdr(model: Model) -> Model {
 /// cadence but does not by itself force the fast polling regime forever.
 @internal
 pub fn update_tick(model: Model) -> Model {
-  let animated = advance_activity_indicator(drain_replay(model))
+  let animated =
+    inbound.tick_strip(advance_activity_indicator(drain_replay(model)))
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let switched = drain_reconnect(switched)
   let drained = inbound.drain_connection(switched, 64)

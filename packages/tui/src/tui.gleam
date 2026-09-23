@@ -50,6 +50,7 @@ import host/build_identity
 import host/endpoint
 import simplifile
 import tui/advisor_history
+import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/attachment
@@ -495,6 +496,7 @@ pub fn new_model_with_clock(
     agent_rows: [],
     agent_messages: [],
     advisor_history: advisor_history.Board(items: [], unloaded: None),
+    strip: agent_strip.new(),
     todo_boards: dict.new(),
     todo_seed: None,
     todo_asked: set.new(),

@@ -34,6 +34,7 @@ import gleam/set
 import tui/advisor_history
 import tui/advisor_pending
 import tui/agent_messages
+import tui/agent_strip
 import tui/agent_view
 import tui/agents
 import tui/appearance
@@ -645,6 +646,9 @@ pub type Model {
     reviewer_rows: List(reviewer_status.Row),
     /// Stable, operation-owned summaries of the captured agent roster.
     agent_rows: List(agent_view.Row),
+    /// The pinned agent strip: its keyboard focus, the daemon's glances,
+    /// and the per-operation clocks and context sizes its rows show.
+    strip: agent_strip.State,
     /// At most twenty provenance-verified sends observed in this attachment.
     agent_messages: List(agent_messages.Item),
     /// Full advisor-only commentary from the bounded captured ancestry.

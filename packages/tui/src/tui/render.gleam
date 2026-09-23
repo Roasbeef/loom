@@ -34,7 +34,7 @@ import gleam/string
 import tui/advisor_pending
 import tui/agent_message_panel
 import tui/agent_messages
-import tui/agent_view
+import tui/agent_strip
 import tui/agents
 import tui/appearance
 import tui/approval_panel
@@ -50,10 +50,10 @@ import tui/layout
 import tui/live_jobs
 import tui/markdown
 import tui/model.{
-  type Line, type Model, AgentInspector, ApprovalInspector, Assistant, Attached,
+  type Line, type Model, AgentInspector, ApprovalInspector, Assistant,
   DaemonSelector, Disconnected, Failure, FrameCache, GoalInspector, Line, Model,
-  ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext, Reasoning,
-  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying,
+  ModelSelector, NoOverlay, PeerLinkManager, PromptNext, Reasoning,
+  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
   SessionSelector, Spacer, SteerNow, System, ToolCall, ToolDetail, ToolFailure,
   ToolPatch, ToolResult, User,
 } as tui_model
@@ -139,6 +139,8 @@ pub fn render_frame(
     layout.pending_layout(layout.panel_inner(input_area), model)
   let #(paste_area, editor_area) =
     layout.input_layout(composer_area, model.attachments)
+  let #(footer_area, strip_area) = layout.footer_split(footer_area, model)
+  let strip = layout.strip_lines(model)
 
   // The editor is wrapped to the cells the chip leaves it, never resized to
   // fit: the source text and cursor stay exactly what history will replay.
@@ -164,11 +166,21 @@ pub fn render_frame(
     |> render_changes_panel(changes_panel, model)
     |> render_inline_queue(queue_area, model)
     |> render_todo_panel(layout.todo_area(body_area, model), model)
-    |> render_composer_chrome(input_area, input_title(model))
+    |> render_composer_chrome(
+      input_area,
+      input_title(model),
+      agent_strip.badge(strip, model.active_strand),
+    )
     |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, input_view)
     |> render_footer(footer_area, model)
+    |> agent_strip.render(
+      strip_area,
+      strip,
+      model.strip.focus,
+      model.active_strand,
+    )
     |> render_command_palette(body_area, model)
   let base = case layout.borrowed_diff_panel(model) {
     Some(area) ->
@@ -185,7 +197,7 @@ pub fn render_frame(
       agents.render_inspection(
         base,
         body_area,
-        displayed_agents(model),
+        layout.displayed_agents(model),
         model.active_strand,
         selected,
         agent_detail_content(model, selected),
@@ -381,7 +393,7 @@ fn render_agent_rail(
           buf
           |> agents.render_rail(
             roster,
-            displayed_agents(model),
+            layout.displayed_agents(model),
             model.active_strand,
           )
           |> paragraph.render_styled(
@@ -399,7 +411,7 @@ fn render_agent_rail(
           agents.render_rail(
             buf,
             area,
-            displayed_agents(model),
+            layout.displayed_agents(model),
             model.active_strand,
           )
       }
@@ -513,18 +525,42 @@ fn render_conversation_heading(
 
 // Horizontal rules distinguish input from output without boxing the whole
 // conversation. The editor keeps its established inset for selection/copy.
+// The badge names the task of the agent being viewed, right-aligned on the
+// composer's top rule, so an operator who opened a sub-agent from the strip
+// can see which task the transcript and the composer now belong to. It
+// yields to the title: the send mode is never truncated to fit a badge.
 fn render_composer_chrome(
   buf: buffer.Buffer,
   area: Rect,
   title: String,
+  badge: Option(String),
 ) -> buffer.Buffer {
   let width = int.max(0, area.size.width - 2)
   let border = style.new(theme.signal, style.Default, style.none())
+  let title = text.truncate(title, width, "…")
+  let badge = case badge {
+    None -> ""
+    Some(words) ->
+      text.truncate(
+        " " <> text_hygiene.single_line(words) <> " ",
+        int.max(0, width - text.cell_width(title) - 2),
+        "… ",
+      )
+  }
+  let gap = int.max(0, width - text.cell_width(title) - text.cell_width(badge))
   buf
   |> buffer.set_string(
     area.position,
-    "─" <> text.pad_right(text.truncate(title, width, "…"), width) <> "─",
+    "─" <> title <> string.repeat(" ", gap + text.cell_width(badge)) <> "─",
     border,
+  )
+  |> buffer.set_string(
+    geometry.Position(
+      area.position.x + 1 + text.cell_width(title) + gap,
+      area.position.y,
+    ),
+    badge,
+    style.new(theme.graphite, theme.current, style.bold()),
   )
   |> buffer.set_string(
     geometry.Position(area.position.x, geometry.bottom(area) - 1),
@@ -1160,7 +1196,7 @@ fn render_compact_footer(
     <> context_view.footer(model.context)
     <> " · est $"
     <> transcript_lines.money(model.usage.cost.total)
-  let status = agents.summary_rows(displayed_agents(model))
+  let status = agents.summary_rows(layout.displayed_agents(model))
   let context = case model.cache_outlook, model.notice {
     "", "" -> info
     "", notice -> text_hygiene.single_line(notice) <> " · " <> info
@@ -1472,10 +1508,12 @@ fn render_pending_band(
 }
 
 fn input_title(model: Model) -> String {
-  let behavior = case model.overlay {
-    AgentInspector(agents.Inspector(focus: agents.Browsing, ..)) ->
+  let behavior = case model.overlay, model.strip.focus {
+    AgentInspector(agents.Inspector(focus: agents.Browsing, ..)), _ ->
       " Tab writes · Enter opens agent "
-    _ -> input_behavior(model)
+    _, agent_strip.Browsing(_) ->
+      " ↑↓ select agent · enter opens · x stops · esc back "
+    _, agent_strip.Composing -> input_behavior(model)
   }
   " To " <> recipient_label(model) <> " ·" <> behavior
 }
@@ -1615,28 +1653,6 @@ pub fn goal_availability(model: Model) -> focused_goal_panel.Availability {
   case model.goal_request {
     Some(_) -> focused_goal_panel.Pending
     None -> focused_goal_panel.Ready
-  }
-}
-
-/// Legacy fixtures have no captured register cut. Their rows explicitly expose
-/// unavailable task and result evidence instead of inventing successful work.
-@internal
-pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
-  let rows = case model.captured {
-    Some(_) -> model.agent_rows
-    None -> agent_view.legacy(model.strands)
-  }
-  case model.peer {
-    Disconnected ->
-      list.map(rows, fn(row) {
-        agent_view.Row(
-          ..row,
-          status: agent_view.Unavailable,
-          activity: "Disconnected · last observation may be stale",
-          approvals: [],
-        )
-      })
-    Attached(_) | Preview | Replaying -> rows
   }
 }
 

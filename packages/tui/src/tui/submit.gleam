@@ -827,6 +827,31 @@ pub fn interrupt_active(model: Model) -> Model {
   }
 }
 
+/// Stops one strand's running operation from the agent strip.
+///
+/// The active strand goes through `interrupt_active`, which also holds its
+/// queued input and arms the composer to send it. Any other strand gets the
+/// same `abort` command without that bookkeeping: its queue is its own, and
+/// the operator's composer is still addressed to the strand on screen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // submit.stop_strand(model, "sub:main/audit-1a2b")
+/// ```
+@internal
+pub fn stop_strand(model: Model, strand: String) -> Model {
+  case strand == model.active_strand, layout.strand_running(model, strand) {
+    True, _ -> interrupt_active(model)
+    False, False -> Model(..model, notice: strand <> " is not running")
+    False, True ->
+      outbound.send_frame(
+        Model(..model, notice: "stopping " <> strand),
+        protocol.abort(model.next_id, strand),
+      )
+  }
+}
+
 /// Terminals encode Alt+character as Escape followed by that character. If a
 /// user begins typing immediately after Escape, the backend cannot distinguish
 /// the two intentions before its disambiguation timeout. The client reserves no

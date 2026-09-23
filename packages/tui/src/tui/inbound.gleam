@@ -37,6 +37,7 @@ import machine/strand as machine_strand
 import tui/advisor_history
 import tui/agent_message_panel
 import tui/agent_messages
+import tui/agent_strip
 import tui/agent_view
 import tui/agents
 import tui/approval
@@ -686,6 +687,7 @@ fn render_cut(
     agent_summary: agents.summary_rows(rows),
     reviewer_rows: reviewers,
     agent_rows: rows,
+    strip: agent_strip.observe(model.strip, view, model.monotonic_time_ms()),
     agent_messages: captured_messages,
     advisor_history:,
     todo_boards: boards,
@@ -1961,6 +1963,12 @@ fn receive_usage(
   watch_cache(Model(..updated, usage:), strand, settled)
 }
 
+// The context a generation leaves the agent holding: everything it sent,
+// cached or not, plus what it wrote.
+fn context_size(usage: message.Usage) -> Int {
+  usage.input + usage.cache_read + usage.cache_write + usage.output
+}
+
 // A network push is an observation of one durable row, not a second owner of
 // session totals. A capture may already include its sequence, or a delayed
 // push may arrive after that capture; only the capture sets cumulative usage.
@@ -1976,6 +1984,20 @@ fn receive_usage_observation(
 ) -> Model {
   let seen = dict.get(model.cache_seen_seq, strand) |> result.unwrap(-1)
   use <- bool.guard(when: seq <= seen, return: model)
+
+  // A row newer than any this strand has shown is the agent's current
+  // context size. The sequence guard above is what keeps a delayed push from
+  // replacing a newer reading in the strip.
+  let model =
+    Model(
+      ..model,
+      strip: agent_strip.observe_usage(
+        model.strip,
+        strand,
+        operation,
+        context_size(settled),
+      ),
+    )
 
   // A first row already included in a capture may have belonged to an
   // operation accepted under the previous model. The gateway can deliver
@@ -2826,6 +2848,10 @@ pub fn select_workspace(
       True -> model.agent_rows
       False -> []
     },
+    strip: case model.session == session {
+      True -> model.strip
+      False -> agent_strip.new()
+    },
     agent_messages: case model.session == session {
       True -> model.agent_messages
       False -> []
@@ -3077,4 +3103,34 @@ fn apply_request_refused(
     _ -> model
   }
   apply_event(updated, protocol.ServerError(code, message))
+}
+
+/// Advances the agent strip's clock on the terminal tick.
+///
+/// The strip's elapsed figures are whole seconds, so the frame is rebuilt
+/// only when one of them moves. A strip that is not drawn is left alone,
+/// which keeps a single-agent session from repainting once a second for a
+/// row nobody can see. This lives outside `tui/tick` so the tick's drain
+/// chain gains a cross-module call, which the inliner never attempts,
+/// rather than another local step for it to revisit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // inbound.tick_strip(model)
+/// ```
+@internal
+pub fn tick_strip(model: Model) -> Model {
+  case layout.strip_height(model) > 0 {
+    False -> model
+    True -> {
+      let #(strip, repaint) =
+        agent_strip.tick(model.strip, model.monotonic_time_ms())
+      case repaint {
+        agent_strip.Changed ->
+          tui_model.invalidate_frame(Model(..model, strip:))
+        agent_strip.Unchanged -> Model(..model, strip:)
+      }
+    }
+  }
 }
