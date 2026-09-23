@@ -700,20 +700,22 @@ sees.
 
 ## How the terminal draws it
 
-The terminal draws all three frames in the system voice, not as the
+The terminal draws advisor frames in the system voice, not as the
 operator's turns. The frames are stored as user messages, because a user
 turn is the only shape a provider API has for context the harness
 supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui.gleam:8958`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9063`) renders
-them. Nudges always show their complete body, including in compact mode.
-The other variants collapse to one attribution row (`advisor`, `advisor
-feed`, `advisor goal feed`, or `goal continuation`) with an opening
-excerpt and an expand hint. Expanded bodies keep their heading but drop
-the frame delimiters, which address the model rather than the operator.
+`advisor_payload` (`tui.gleam:9142`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9247`) renders
+them. Delivered advice and nudges show their complete bodies even in
+compact mode, with a delivery label. Feeds and goal continuations
+collapse to one attribution row with an opening excerpt and expand hint.
+Expanded bodies keep their heading but drop the frame delimiters, which
+address the model rather than the operator. Captured advisor-only
+commentary is shown separately from delivered frames; a verdict
+annotation names the advisor's request and does not claim delivery.
 
 Each frame is recognized by its first line *and* its body delimiter, the
 same two-token test the notes envelope makes, so an operator pasting a

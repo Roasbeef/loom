@@ -61,7 +61,7 @@ the same owner retains the stable key through reorder and clamps the note scroll
 to the refreshed body. Note mode and scroll remain independent of transcript
 detail mode and transcript scroll. Only the selected body is formatted, with
 modifiers and links preserved. Compact layouts retain stale and omitted facts
-and give the body the rows actually available. Brackets select notes, Ctrl+g
+and give the body the rows actually available. Up/Down or brackets select notes, Ctrl+g
 switches readable/raw note mode, PgUp/PgDn scroll the body, and `r` refreshes.
 The composer remains intact, and opening `/notes` clears the competing diff
 surface.
@@ -220,13 +220,22 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   Raw inspection pretty-prints complete JSON; excerpts remain literal.
   `session_selector.prioritize` sorts exact workspace matches first, related
   directories next, and preserves order within each group and selection by ID.
-- `tui.AdvisorMessage` names the three advisor frames the transcript
-  recognizes — `Advice`, `Nudges` and `Feed` — each carrying the body left
+- `tui.AdvisorMessage` names the advisor frames the transcript
+  recognizes — `Advice`, `Nudges`, `Feed`, `GoalFeed`, and `Continuation` — each carrying the body left
   after its frame lines are stripped. `tui.advisor_payload` extracts one from
-  a durable message and `tui.advisor_lines` renders it, collapsed or whole,
-  against `notes_view.Extent`. `composer.expand_hint` is the suffix every
-  collapsed row ends with, shared with the `[loom] ` injection collapse so
+  a durable message and `tui.advisor_lines` renders delivered advice and nudges
+  in full in both modes; feeds and continuations use `notes_view.Extent`.
+  `composer.expand_hint` is the suffix every collapsed row ends with, shared with the `[loom] ` injection collapse so
   the two spellings cannot drift.
+- `advisor_history.project` reads the bounded captured advisor ancestry and
+  excludes entries inherited from main. The main transcript also shows each
+  settled advisor text block in full under a separate "captured, not sent to
+  primary" heading. A verdict annotation comes only from one valid `advise`
+  request in the same assistant entry; it names a request, never its delivery.
+  Missing older ancestry is labeled instead of implying complete history.
+  Captured blocks join primary entries by durable sequence in the settled row
+  cache, with entry-and-block anchors. The live primary tail stays last, and
+  stream deltas do not rewrap settled advisor Markdown.
 
 - `Model.reading_lines` retains one bounded transient projection when scrolling
   above the live tail. Incoming streams continue collecting without changing
@@ -859,15 +868,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   than presenting illustrative data as fetched state. Compact help retains the
   Escape control at 40 columns. Escape returns without discarding the composer.
 - **Advisor pending-nudge panel**: `tui.sync_advisor_nudges` issues an
-  `advisor_pending` read itself, with no operator keystroke, on exactly
-  three transitions — `tui.advisor_nudges_action` names them `ReadNudges`:
-  the primary's own operation settling, a review settling while the
-  primary is already idle (a review ending is where a nudge is queued),
-  and the primary first appearing in the roster (the attach edge, where
-  idleness is otherwise unknown until the first snapshot). Every other
-  transition, a phase change on an unrelated strand included, is
-  `HoldNudges`: the queue cannot have grown without one of the three
-  edges above. The primary starting a run is `DropNudges` — a local
+  `advisor_pending` read itself, with no operator keystroke, when the
+  primary settles, a review settles even while the primary is running,
+  or the primary first appears in the roster. A session switch also
+  requests a fresh read. Other movement is `HoldNudges` because it cannot
+  have grown the queue. The primary starting a run is `DropNudges` — a local
   submission counts, so the operator's own send clears the panel before
   the server confirms the phase — because that run start is what drains
   the queue into the prompt. A compact heading stays beside the composer;
@@ -1232,8 +1237,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `tui.advisor_payload` recognizes each by its whole frame — a header line
   with its footer, or the header with the `advisor-nudges` fence — and
   `tui.advisor_lines` draws the row as `System` under the advisor's name:
-  advice and feeds collapse to one attribution line, while nudges retain their
-  full body in both modes. Expanded advice and feeds drop their frame lines,
+  delivered advice and nudges retain their full body in both modes, with
+  explicit delivery labels. Feeds and continuations collapse until expanded.
+  Expanded bodies drop their frame lines,
   since those address the model rather than the operator. Both
   tokens are required, so an operator quoting a verdict back keeps their own
   attribution. The frame literals are copies of `client/advisorslice`'s,

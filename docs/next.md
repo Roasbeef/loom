@@ -36,9 +36,9 @@ resource from an already-running command; stderr remains diagnostic only.
 | Async execution, #107 | Launch/send/check/join/cancel, fixed authority and deadline, immutable readiness, typed endpoints, intermediate progress, explicit idle expiry and cumulative launch limits are implemented. |
 | Peer messaging, #382 | Exact directional grants, resident routing, atomic receipt/message admission, owner-authenticated control send and structured peer origins are implemented. |
 | Named workflows | Named steps reconcile original child operations and durable results; version, input and assignment remain immutable. |
-| Presentation and examples | F2 now has a Collaboration tab for peer-origin messages, background execution custody and readiness, outgoing links, and named workflow intents. TUI link controls are #485, CLI conveniences are #488, and a complete example is #489. |
+| Presentation and examples | F2 now has a Collaboration tab for peer-origin messages, background execution custody and readiness, outgoing links, and named workflow intents. Standalone notes accept Up/Down navigation. The main transcript shows delivered advisor advice in full, labels pending advice as not delivered, and shows captured advisor-only commentary separately from delivered messages. TUI link controls are #485, CLI conveniences are #488, and a complete example is #489. |
 | Code-mode surface | The default server admits the full capability set from either program mode. Omitted `seam` selects workspace. An explicit workspace-only host remains effect-only; extensions and resident hooks keep their own policies. |
-| Integration | PR #484 is merged. The terminal inspector adds a read-only TUI projection and its package handoff. |
+| Integration | PR #484 is merged. The inspector adds a read-only TUI projection and fixes admission of an advisor nudge that arrives after the primary run-end hook but before its terminal commit. A delivered block still enters the primary's ordinary steer queue and waits for a safe checkpoint; priority and in-flight interruption need a separate protocol decision. |
 
 The [architecture](architecture/async-collaboration.md) explains host and
 satellite ownership. The [API guide](async-collaboration.md) gives callable
