@@ -17,6 +17,11 @@ import provider/internal/responses_items as items
 import provider/internal/wire
 import provider/model
 
+type RequestMode {
+  PublicApi
+  Subscription
+}
+
 /// Builds the API-key dialect body, without any authentication material.
 ///
 /// ## Examples
@@ -27,6 +32,29 @@ import provider/model
 pub fn body(
   resolved: model.ResolvedModel,
   request: model.ProviderRequest,
+) -> String {
+  encode_body(resolved, request, PublicApi)
+}
+
+/// Builds the subscription body without a caller-supplied output ceiling.
+/// The Codex backend owns that limit and rejects `max_output_tokens`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // responses_request.subscription_body(resolved, request)
+/// ```
+pub fn subscription_body(
+  resolved: model.ResolvedModel,
+  request: model.ProviderRequest,
+) -> String {
+  encode_body(resolved, request, Subscription)
+}
+
+fn encode_body(
+  resolved: model.ResolvedModel,
+  request: model.ProviderRequest,
+  mode: RequestMode,
 ) -> String {
   let system = case request.system {
     None -> []
@@ -41,6 +69,14 @@ pub fn body(
   let max_tokens = case request.max_output_tokens {
     None -> resolved.max_output_tokens
     Some(count) -> count
+  }
+  let output_options = case mode {
+    PublicApi -> [
+      #("tool_choice", json.String("auto")),
+      #("parallel_tool_calls", json.Bool(True)),
+      #("max_output_tokens", json.Int(max_tokens)),
+    ]
+    Subscription -> []
   }
   json.Object(
     list.flatten([
@@ -61,10 +97,8 @@ pub fn body(
             }),
           ),
         ),
-        #("tool_choice", json.String("auto")),
-        #("parallel_tool_calls", json.Bool(True)),
-        #("max_output_tokens", json.Int(max_tokens)),
       ],
+      output_options,
       reasoning,
       [
         #("include", json.Array([json.String("reasoning.encrypted_content")])),
@@ -102,6 +136,7 @@ fn encode_message(value: message.AgentMessage) -> List(JsonValue) {
     message.AssistantMessage(content:, api:, diagnostics:, ..) -> {
       let replay = case api, diagnostics {
         "openai-responses", Some(diagnostics) -> replay(diagnostics, content)
+        "codex-subscription", Some(diagnostics) -> replay(diagnostics, content)
         _, _ -> Error(Nil)
       }
       case replay {

@@ -3,7 +3,8 @@
 //// `resolve(gw, role)` and `request(gw, req)`.
 ////
 //// The gateway is pure data plus injected effects: a `Transport` (HTTP),
-//// a `SecretStore` (API keys), and a `Clock` (timestamps). Construction
+//// an optional isolated Codex transport, a `SecretStore` (API keys), and a
+//// `Clock` (timestamps). Construction
 //// is the builder pattern; `prepare` allocates only a parked owner, and
 //// nothing resolves a route, reads a secret, or touches the network until its
 //// begin permit is granted. `request` is the synchronous facade which grants
@@ -132,9 +133,29 @@ pub type ProviderConfig {
     api_key_secret: String,
   )
 
+  /// An experimental subscription profile owned by the trusted Codex bridge.
+  /// The profile is a name, never a credential, path, or endpoint URL.
+  CodexSubscriptionProvider(name: String, profile: String)
+
   /// A Gemini `generateContent` endpoint (the Gemini Developer API, or
   /// any host speaking that dialect).
   GeminiProvider(name: String, base_url: String, api_key_secret: String)
+}
+
+/// A parked request bridge which owns the Codex credential and fixed host.
+///
+/// Its prepared owner must satisfy `http.Transport`'s drain contract. The
+/// gateway supplies only a profile and a relative, uncredentialed request;
+/// this function adds authentication outside the gateway and returns a
+/// monitorable owner before any outbound work begins.
+pub type CodexTransport {
+  CodexTransport(
+    prepare_streaming: fn(
+      String,
+      http.HttpRequest,
+      process.Subject(http.HttpEvent),
+    ) -> Result(http.PreparedRequest, String),
+  )
 }
 
 /// The gateway registry. Built with `new` and the pipeable setters;
@@ -156,6 +177,7 @@ pub opaque type Gateway {
     image_limits: List(#(#(String, String), Int)),
     protected_images: Int,
     transport: Transport,
+    codex_transport: Option(CodexTransport),
     secrets: SecretStore,
     clock: Clock,
     attempt_timeout_ms: Int,
@@ -187,10 +209,26 @@ pub fn new(
     image_limits: [],
     protected_images: 0,
     transport:,
+    codex_transport: None,
     secrets:,
     clock:,
     attempt_timeout_ms: 300_000,
   )
+}
+
+/// Attaches the isolated subscription transport to this gateway.
+/// Without it, subscription dispatch fails locally and opens no socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_codex_transport(gw, bridge)
+/// ```
+pub fn with_codex_transport(
+  gateway: Gateway,
+  transport: CodexTransport,
+) -> Gateway {
+  Gateway(..gateway, codex_transport: Some(transport))
 }
 
 /// Registers a provider endpoint.
@@ -1776,61 +1814,84 @@ fn attempt_one(
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
     AttemptTerminal(Failed(UnknownProvider(provider: target.provider)))
   })
-  use api_key <- or_failure(
-    secret.lookup(gateway.secrets, config.api_key_secret),
-    fn() {
-      AttemptTerminal(
-        Failed(NoSecret(
-          provider: config.name,
-          secret_name: config.api_key_secret,
-        )),
-      )
-    },
-  )
   let outcome = case config {
-    AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        anthropic.build_request(base_url:, api_key:, resolved: target, request:),
+    AnthropicProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        gateway,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          anthropic.build_request(
+            base_url:,
+            api_key:,
+            resolved: target,
+            request:,
+          )
+        },
         anthropic.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
+        attempts,
+        control,
+        consumer,
       )
-    OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        openai.build_request(base_url:, api_key:, resolved: target, request:),
+    OpenAiCompatibleProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        gateway,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          openai.build_request(base_url:, api_key:, resolved: target, request:)
+        },
         openai.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
+        attempts,
+        control,
+        consumer,
       )
-    OpenAiResponsesProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        responses.build_request(base_url:, api_key:, resolved: target, request:),
+    OpenAiResponsesProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        gateway,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          responses.build_request(
+            base_url:,
+            api_key:,
+            resolved: target,
+            request:,
+          )
+        },
         responses.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
+        attempts,
+        control,
+        consumer,
       )
-    GeminiProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run_tracked(
-        gateway.transport,
-        gemini.build_request(base_url:, api_key:, resolved: target, request:),
+    GeminiProvider(name:, base_url:, api_key_secret:) ->
+      keyed_attempt(
+        gateway,
+        name,
+        api_key_secret,
+        fn(api_key) {
+          gemini.build_request(base_url:, api_key:, resolved: target, request:)
+        },
         gemini.response_machine(target, now:),
         deliver,
-        fn(running) { register_attempt(attempts, running, consumer) },
-        control:,
-        consumer:,
-        within: gateway.attempt_timeout_ms,
+        attempts,
+        control,
+        consumer,
+      )
+    CodexSubscriptionProvider(name: _, profile:) ->
+      subscription_attempt(
+        gateway,
+        profile,
+        target,
+        request,
+        now,
+        deliver,
+        attempts,
+        control,
+        consumer,
       )
   }
 
@@ -1842,7 +1903,82 @@ fn attempt_one(
   // priced record without a second costing pass anywhere above the seam.
   priced(gateway, outcome, target)
   |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
+}
+
+// API-key dispatch remains the only branch that reads a secret. Scrubbing
+// happens before the fallback walk can inspect or retain a remote failure.
+fn keyed_attempt(
+  gateway: Gateway,
+  name: String,
+  secret_name: String,
+  build: fn(String) -> http.HttpRequest,
+  machine: stream.ResponseMachine(state),
+  deliver: fn(stream.Delta) -> Nil,
+  attempts: process.Subject(AttemptRegistration),
+  control: process.Subject(Control),
+  consumer: process.Pid,
+) -> AttemptOutcome {
+  use api_key <- or_failure(secret.lookup(gateway.secrets, secret_name), fn() {
+    AttemptTerminal(Failed(NoSecret(provider: name, secret_name:)))
+  })
+  stream.run_tracked(
+    gateway.transport,
+    build(api_key),
+    machine,
+    deliver,
+    fn(running) { register_attempt(attempts, running, consumer) },
+    control:,
+    consumer:,
+    within: gateway.attempt_timeout_ms,
+  )
   |> scrub_attempt(api_key)
+}
+
+// The optional bridge is never substituted with the public API-key transport.
+// A missing bridge or profile fails before request preparation.
+fn subscription_attempt(
+  gateway: Gateway,
+  profile: String,
+  target: ResolvedModel,
+  request: ProviderRequest,
+  now: Int,
+  deliver: fn(stream.Delta) -> Nil,
+  attempts: process.Subject(AttemptRegistration),
+  control: process.Subject(Control),
+  consumer: process.Pid,
+) -> AttemptOutcome {
+  case profile, gateway.codex_transport {
+    "", _ ->
+      AttemptTerminal(
+        Failed(stream.StreamError(
+          api_error_type: "codex_profile_missing",
+          message: "Codex subscription profile is empty",
+        )),
+      )
+    _, None ->
+      AttemptTerminal(
+        Failed(stream.StreamError(
+          api_error_type: "codex_transport_unavailable",
+          message: "Codex subscription transport is unavailable",
+        )),
+      )
+    profile, Some(CodexTransport(prepare_streaming:)) -> {
+      let transport =
+        http.Transport(prepare_streaming: fn(built, events) {
+          prepare_streaming(profile, built, events)
+        })
+      stream.run_tracked(
+        transport,
+        responses.build_subscription_request(target, request),
+        responses.subscription_response_machine(target, now:),
+        deliver,
+        fn(running) { register_attempt(attempts, running, consumer) },
+        control:,
+        consumer:,
+        within: gateway.attempt_timeout_ms,
+      )
+    }
+  }
 }
 
 // The ordinal names this route walk, independently of the machine's retries.

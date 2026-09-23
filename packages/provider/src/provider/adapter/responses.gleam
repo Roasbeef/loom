@@ -26,6 +26,9 @@ import provider/stream.{type StreamEvent}
 /// The distinct durable API identity for this adapter.
 pub const api_name = "openai-responses"
 
+/// The durable dialect identity of a Codex subscription settlement.
+pub const subscription_api_name = "codex-subscription"
+
 /// Builds a stateless streaming Responses request. The base includes the API
 /// root; the gateway normalizes its trailing slash before dispatch.
 ///
@@ -50,6 +53,29 @@ pub fn build_request(
       #("accept", "text/event-stream"),
     ],
     body: responses_request.body(resolved, request),
+  )
+}
+
+/// Builds an uncredentialed request for the trusted subscription bridge.
+/// Its relative path cannot redirect an OAuth token to a configured host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // responses.build_subscription_request(resolved, request)
+/// ```
+pub fn build_subscription_request(
+  resolved: ResolvedModel,
+  request: ProviderRequest,
+) -> http.HttpRequest {
+  http.HttpRequest(
+    method: "POST",
+    url: "/responses",
+    headers: [
+      #("content-type", "application/json"),
+      #("accept", "text/event-stream"),
+    ],
+    body: responses_request.subscription_body(resolved, request),
   )
 }
 
@@ -125,6 +151,8 @@ pub opaque type Accumulator {
   /// One attempt's parser and validation state; no request or credential is
   /// retained here. The response byte count includes discarded SSE framing.
   Accumulator(
+    /// The fixed API dialect selected before any remote bytes arrive.
+    api: String,
     /// Configured identity and limits, not the remote model's claims.
     resolved: ResolvedModel,
     /// Injected settlement timestamp.
@@ -164,8 +192,31 @@ pub fn response_machine(
   resolved: ResolvedModel,
   now now: Int,
 ) -> stream.ResponseMachine(Accumulator) {
+  machine_for(resolved, now, api_name)
+}
+
+/// Supplies the same verified Responses fold with subscription identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // responses.subscription_response_machine(resolved, now: 1000)
+/// ```
+pub fn subscription_response_machine(
+  resolved: ResolvedModel,
+  now now: Int,
+) -> stream.ResponseMachine(Accumulator) {
+  machine_for(resolved, now, subscription_api_name)
+}
+
+fn machine_for(
+  resolved: ResolvedModel,
+  now: Int,
+  api: String,
+) -> stream.ResponseMachine(Accumulator) {
   stream.ResponseMachine(
     init: Accumulator(
+      api:,
       resolved:,
       now:,
       status: 0,
@@ -357,6 +408,8 @@ fn dispatch(
     | "response.function_call_arguments.done" -> arguments(acc, kind, value)
     "response.output_item.done" -> close_item(acc, value)
     "response.completed" | "response.incomplete" | "response.cancelled" ->
+      terminal(acc, kind, value)
+    "response.done" if acc.api == subscription_api_name ->
       terminal(acc, kind, value)
     "response.failed" | "error" -> {
       let error = case kind {
@@ -1012,6 +1065,15 @@ fn terminal(
         "completed",
         None,
       ))
+    "response.done", "completed" ->
+      Ok(#(
+        case has_calls {
+          True -> message.ToolUse
+          False -> message.Stop
+        },
+        "completed",
+        None,
+      ))
     "response.cancelled", "cancelled" ->
       Ok(#(message.Aborted, "cancelled", None))
     "response.incomplete", "incomplete" -> incomplete(response)
@@ -1107,7 +1169,7 @@ fn settle(
   let assistant =
     message.AssistantMessage(
       content:,
-      api: api_name,
+      api: acc.api,
       provider: acc.resolved.provider,
       model: acc.resolved.model_id,
       response_model: Some(identity.1),

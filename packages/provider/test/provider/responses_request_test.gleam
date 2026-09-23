@@ -360,6 +360,21 @@ pub fn compact_template_replays_long_answer_and_required_reasoning_identity_test
   assert wire.string_field(part, "text") == Ok(long)
 }
 
+pub fn subscription_settlement_replays_verified_responses_metadata_test() {
+  let original =
+    assistant(
+      responses.subscription_api_name,
+      [message.AssistantText("subscription answer", None)],
+      Some(metadata([message_template()], [0])),
+    )
+  let assert [answer] = input([original])
+    as "subscription identity must retain the same verified replay template"
+  assert wire.string_field(answer, "id") == Ok("msg-required")
+  let assert Ok([part]) = wire.array_field(answer, "content")
+    as "the replayed answer contains its original content part"
+  assert wire.string_field(part, "text") == Ok("subscription answer")
+}
+
 pub fn invalid_replay_metadata_cannot_inject_calls_or_unsigned_reasoning_test() {
   let injected =
     json.Object([
