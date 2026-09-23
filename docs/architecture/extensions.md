@@ -1009,7 +1009,7 @@ approving, and read back what it was never shown.
 contribution, a repeated name is the author overriding themselves, and
 the later one wins. *Between* contributions, a repeated name takes the
 boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:267`). An
+(`contributions.registry` at `client/contributions.gleam:280`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
