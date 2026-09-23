@@ -257,10 +257,15 @@ one.
   tree), `docs/notebook.md`.
 - **Design and spec** — `docs/loom-design.md`,
   `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
-- **Architecture, per plane and subsystem** — `docs/architecture/`:
-  `durability`, `orchestration`, `effects`, `code-mode`, `mcp`,
-  `extensions`, `messaging`, `compaction`, `memory`, `events`, `client`,
-  `models`, `simulation`.
+- **Architecture, per plane and subsystem** — `docs/architecture/`.
+  The three planes: `durability`, `orchestration`, `effects`. The
+  process and its sessions: `daemon`, `sessions`, `client`,
+  `terminal`, `multiplayer`. What the model sees and does: `prompt`,
+  `tools`, `approvals`, `models`, `compaction`, `memory`.
+  Programs and extensions: `code-mode`, `extensions`, `mcp`,
+  `async-collaboration`. Strands and automation: `messaging`,
+  `advisor`, `goals`, `automation`, `hooks-compat`. Observation and
+  testing: `events`, `telemetry`, `simulation`.
 - **Decisions** — `docs/adr/`, `protocol-change/`.
 - **Design notes** (explorations, not commitments) — `docs/design-notes/`.
 - **Review waves** — `docs/review/`, one file per wave with its triage.
