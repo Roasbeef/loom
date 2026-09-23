@@ -46,6 +46,7 @@ fn padded_agency(padding_words: Int) -> agent.Agency {
     notes: fn(_caller, _prefix) { Ok([]) },
     // The padded slot. `list.length` keeps the capture live rather than
     // one the compiler could drop as unused.
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(_caller) {
       case list.length(padding) {
         0 -> Ok([])

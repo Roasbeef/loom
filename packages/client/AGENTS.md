@@ -3239,6 +3239,15 @@ these forks because they define the same modules.
   `agent/{caller}/`; `agent_notes` with no prefix reads `agent/` and not
   the whole non-reserved fact namespace, which is what
   `api.facts(prefix: None)` would hand back.
+- **The todo cell has one writer.** `agent/{strand}/todo` holds the
+  strand's `core/todo_list` board, and `note` refuses the `todo` key, which
+  covers `cap/notes.put` too since it reaches the same closure. The
+  `todos` closure is the only writer: it reads the cell with
+  `api.fact_cell`, runs the tool's pure step, skips the write when the
+  board is unchanged, and commits with `api.put_fact_expecting` against the
+  sequence it read, retrying up to `todo_attempts` times on
+  `FactConflict`. A conflict can come only from a sibling `todo` call in
+  the same batch, so the retry is what lets the tool stay `Concurrent`.
 - **A result contract is enforced on the child's write, not on the
   parent's read.** A spawn's `result_schema` is stored at
   `result-schema/{child}` — written *before* the lineage cell, so a crash

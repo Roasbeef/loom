@@ -124,6 +124,7 @@ fn echoing_agency() -> agent.Agency {
         ),
       ])
     },
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(caller) {
       Ok([
         agent.Peer(
@@ -238,6 +239,7 @@ fn refusing_agency(refusal: agent.Refusal) -> agent.Agency {
     wait: fn(_caller, _handles, _within) { Error(refusal) },
     note: fn(_caller, _key, _value) { Error(refusal) },
     notes: fn(_caller, _prefix) { Error(refusal) },
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
