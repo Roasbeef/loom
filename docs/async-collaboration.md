@@ -199,9 +199,21 @@ daemon epoch and canonical session IDs are required:
 
 Peer messaging is disabled until the owner grants a link. There is no automatic
 link for sessions in the same repository, and granting A-to-B does not grant
-B-to-A. Both sessions must be open when the owner creates the link.
+B-to-A. Both sessions must be resident when the owner creates the link.
 Each source strand can hold 64 outgoing links. The next distinct link is
 refused at admission; replacing an existing link does not consume another slot.
+
+The TUI provides the same owner controls. Enter `/peers` to inspect the active
+strand, or open `/agents`, select a strand, and press `p` to inspect that exact
+source. Press `l` to choose a resident target session, type its exact strand
+name, and review the direction before granting it. `busy_only` is the default;
+Tab or the arrow keys select `may_wake` explicitly. Press `d` to revoke the
+selected incoming or outgoing direction. Press `v` to propose the reverse link;
+that proposal still requires a separate confirmation. Press `r` to refresh, and
+Escape to close the view. The session chooser shows saved sessions as unavailable
+and never opens one. The target strand name is explicit because the daemon does
+not enumerate resident strands. Link management uses the daemon's authenticated
+owner control connection and leaves the conversation draft unchanged.
 
 `busy_only` permits messages during an existing run. `may_wake` also permits a
 new run on that exported strand. Neither opens a saved session. A link permits

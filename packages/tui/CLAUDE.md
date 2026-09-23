@@ -692,6 +692,9 @@ boundaries and the split's measurements under Invariants.
 - `tui/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
+- `tui/peer_links` owns the peer-grant inspector, exact target-strand draft,
+  and review step. `tui.gleam` routes each inspected, linked, or revoked grant
+  through a separate owner-authenticated daemon control request.
 - `tui/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local
@@ -807,7 +810,14 @@ boundaries and the split's measurements under Invariants.
   <name> [target]` retires one a strand created (the target defaults to
   the active strand, and an operator `[[schedule]]` comes back as a
   `conflict` naming the configuration file),
-  `/sessions` opens the daemon's authorized metadata selector. `/approve <id>`
+  `/sessions` opens the daemon's authorized metadata selector. `/peers` inspects
+the active strand's owner-managed directional links; press `l` to choose a resident
+session and enter its exact strand, `d` to revoke the selected direction, and `v`
+to propose a separately confirmed reverse link. `busy_only` is the default wake
+permission; Tab or the arrow keys select `may_wake`. Saved sessions remain
+unavailable in the chooser and are never opened. Press `p` in `/agents` to manage
+links for the selected strand. The peer view leaves composer text untouched.
+`/approve <id>`
   and `/deny <id>` answer the captured request; `/approvals <id>` loads an exact
   decision. `/notes` opens the
   current note values with their revisions, `Shift+Tab` toggles the compact rail,

@@ -28,6 +28,7 @@ import core/json
 import core/message
 import core/origin
 import etui/backend
+import etui/widgets/textarea
 import filepath
 import gleam/bit_array
 import gleam/dict
@@ -51,6 +52,7 @@ import tui/attachment
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
+import tui/peer_links
 import tui/daemon/selection
 import tui/model as tui_model
 import tui/protocol as conversation
@@ -342,6 +344,9 @@ fn exercise(
       configuration,
     )
     as "the owner creates an independently resident uninvited session"
+  let peer_driver =
+    exercise_peer_link_overlay(address, owner, id, foreign.expected.session)
+  stop_driver(peer_driver)
   let assert endpoint.Ready(port:, ..) = connected.record
     as "authenticated bootstrap retains the published listener port"
   invitation_boundaries(
@@ -1416,6 +1421,95 @@ fn observer_mutation_refused(
   assert list.key_find(body, "code") == Ok(json.String("forbidden"))
   let _ = ffi_ws.tcp_close(socket)
   Nil
+}
+
+fn exercise_peer_link_overlay(
+  address: String,
+  owner: String,
+  source: String,
+  target: String,
+) -> actor.Started(process.Subject(tui_driver.Message)) {
+  let assert Ok(driver) = tui_driver.start(address, owner, source)
+    as "the owner terminal attaches to the resident source session"
+  let _ = await_open(driver.data, writable)
+
+  // The modal opens from the selected strand while an unrelated draft sits in
+  // the composer. Its state owns its input and must leave that draft intact.
+  let _ = tui_driver.play(driver.data, [
+    backend.Paste("draft survives peer management"),
+    backend.KeyPress("f2"),
+    backend.KeyPress("p"),
+  ])
+  let loaded =
+    tui_v2_test.await(driver.data, fn(sample) {
+      case sample.model.overlay {
+        tui.PeerLinkManager(peer_links.State(
+          prompt: peer_links.Browsing,
+          inspection: Some(_),
+          ..
+        )) -> True
+        _ -> False
+      }
+    })
+  assert textarea.value(loaded.model.input) == "draft survives peer management"
+    as "opening the modal leaves unrelated composer text intact"
+
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("l")])
+  let chooser = tui_driver.play(driver.data, [backend.KeyPress("enter")])
+  let assert tui.PeerLinkManager(state) = chooser.model.overlay
+    as "link opens a resident-session chooser"
+  let target_index =
+    list.index_fold(state.sessions, -1, fn(found, row, index) {
+      case row.session_id == target {
+        True -> index
+        False -> found
+      }
+    })
+  let assert target_index >= 0 as "the resident target is in the owner catalogue"
+  let distance = int.absolute_value(target_index - state.selected_session)
+  let direction = case target_index >= state.selected_session {
+    True -> "down"
+    False -> "up"
+  }
+  let _ = tui_driver.play(
+    driver.data,
+    list.repeat(backend.KeyPress(direction), distance),
+  )
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
+  let _ = tui_driver.play(driver.data, [backend.Paste("main")])
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
+  let linked = tui_v2_test.await(driver.data, fn(sample) {
+    case sample.model.overlay {
+      tui.PeerLinkManager(peer_links.State(
+        inspection: Some(peer_links.Inspection(outgoing:, ..)),
+        ..
+      )) -> list.any(outgoing, fn(grant) {
+        grant.target_session == target
+          && grant.target_strand == "main"
+          && grant.wake == Some(protocol.BusyOnly)
+      })
+      _ -> False
+    }
+  })
+  assert string.contains(linked.frame, target)
+    as "inspection renders the exact outgoing session identity"
+  assert textarea.value(linked.model.input) == "draft survives peer management"
+    as "link creation preserves the composer draft"
+
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("d")])
+  let revoked = tui_v2_test.await(driver.data, fn(sample) {
+    case sample.model.overlay {
+      tui.PeerLinkManager(peer_links.State(
+        inspection: Some(peer_links.Inspection(outgoing: [], ..)),
+        ..
+      )) -> True
+      _ -> False
+    }
+  })
+  assert textarea.value(revoked.model.input) == "draft survives peer management"
+    as "revoke and refresh preserve the composer draft"
+  driver
 }
 
 fn assert_shared_turns(

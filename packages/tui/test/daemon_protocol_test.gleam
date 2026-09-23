@@ -1,5 +1,7 @@
+import core/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import tui/command
 import tui/daemon/protocol
@@ -124,6 +126,54 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
     == Ok(
       "{\"v\":2,\"id\":1,\"cmd\":\"daemon.shutdown\",\"body\":{\"epoch\":\"current\"}}",
     )
+}
+
+pub fn peer_control_commands_bind_epoch_exact_coordinates_and_wake_test() {
+  let epoch = protocol.Epoch("current")
+  let source = "00000000-0000-7000-8000-000000000001"
+  let target = "00000000-0000-7000-8000-000000000002"
+  assert protocol.mutates(protocol.InspectPeers(source, "main")) == False
+  assert protocol.mutates(protocol.LinkPeers(
+    source,
+    "main",
+    target,
+    "reviewer",
+    protocol.BusyOnly,
+  ))
+  assert protocol.encode(1, protocol.InspectPeers(source, "main"), epoch)
+    == Ok(
+      "{\"v\":2,\"id\":1,\"cmd\":\"peers.inspect\",\"body\":{\"epoch\":\"current\",\"source_session\":\"00000000-0000-7000-8000-000000000001\",\"source_strand\":\"main\"}}",
+    )
+  assert protocol.encode(
+      2,
+      protocol.LinkPeers(source, "main", target, "reviewer", protocol.MayWake),
+      epoch,
+    )
+    == Ok(
+      "{\"v\":2,\"id\":2,\"cmd\":\"peers.link\",\"body\":{\"epoch\":\"current\",\"source_session\":\"00000000-0000-7000-8000-000000000001\",\"source_strand\":\"main\",\"target_session\":\"00000000-0000-7000-8000-000000000002\",\"target_strand\":\"reviewer\",\"wake\":\"may_wake\"}}",
+    )
+  assert protocol.encode(
+      3,
+      protocol.UnlinkPeers(source, "main", target, "reviewer"),
+      epoch,
+    )
+    |> result.is_ok
+}
+
+pub fn peer_inspection_reply_preserves_server_document_test() {
+  assert protocol.decode(
+      "{\"v\":2,\"reply_to\":9,\"event\":\"peers.inspect\",\"body\":{\"incoming\":[],\"outgoing\":[]}}",
+    )
+    == Ok(protocol.Answer(
+      9,
+      "peers.inspect",
+      protocol.PeersInspectionReply(
+        json.Object([
+          #("incoming", json.Array([])),
+          #("outgoing", json.Array([])),
+        ]),
+      ),
+    ))
 }
 
 pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
