@@ -215,6 +215,14 @@ these modules in both program modes, so one program can inspect files and
 coordinate subagents. Configured MCP servers become generated modules in both
 modes. An explicit workspace-only host keeps an effect-only policy.
 
+`fs_read` also accepts `cap://` to list the installed capability modules and
+`cap://<module>` to read their full Gleam declarations when an agent needs a
+signature or example. `job://` lists the caller's background jobs, and
+`job://<id>` polls one without consuming its result. These are capability
+views, not filesystem mounts; ordinary file and image reads keep their existing
+behavior. The [code-mode architecture](docs/architecture/code-mode.md)
+describes the routing and ownership rules.
+
 With `code_mode` in `launch` mode, a program can keep typed actors alive after
 the tool call returns. Programs register named typed input endpoints and
 publish intermediate progress. Later turns can check readiness, send data,

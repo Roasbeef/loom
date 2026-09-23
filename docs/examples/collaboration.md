@@ -15,28 +15,39 @@ make sandbox codemode-seed
 make release
 ```
 
-Start `loomd`, then create and open three sessions through the client protocol.
-Keep their canonical IDs as `COORDINATOR`, `SECURITY`, and `PERFORMANCE`. The
-daemon's owner token and control endpoint are described in
+Start `build/release/loom/bin/loomd`, then create and open three sessions
+through the client protocol. Record their canonical IDs as shell variables
+before running the commands below:
+
+```sh
+COORDINATOR='replace-with-coordinator-session-id'
+SECURITY='replace-with-security-session-id'
+PERFORMANCE='replace-with-performance-session-id'
+```
+
+The daemon's owner token and control endpoint are described in
 [client protocol §2](../client-protocol.md#2-connecting).
 Use the owner credential for peer administration. Both specialist sessions must
 remain resident; a peer send never opens a saved session.
 
 ## Grant the exchange
 
-The owner sends these requests on the authenticated v2 control connection,
-using the `epoch` from its `hello` event. The first link lets the security
-session's `main` strand address the performance session's `main` strand. The
-second grants the reverse direction. Each `busy_only` grant delivers while the
-recipient already has an active run; select `may_wake` if a finding must start
-an idle recipient run.
+The first link lets the security session's `main` strand address the
+performance session's `main` strand. The second grants the reverse direction.
+Use the owner-authenticated CLI with the canonical IDs you recorded above:
 
-```json
-{"v":2,"id":1,"cmd":"peers.link","body":{"source_session":"SECURITY","source_strand":"main","target_session":"PERFORMANCE","target_strand":"main","wake":"busy_only","epoch":"EPOCH"}}
-{"v":2,"id":2,"cmd":"peers.link","body":{"source_session":"PERFORMANCE","source_strand":"main","target_session":"SECURITY","target_strand":"main","wake":"busy_only","epoch":"EPOCH"}}
+```sh
+loomd peer link "$SECURITY" main "$PERFORMANCE" main --wake busy_only
+loomd peer link "$PERFORMANCE" main "$SECURITY" main --wake busy_only
+loomd peer inspect "$SECURITY" main
 ```
 
-The replies identify whether both halves of each link were installed. An
+Pass `--state-dir PATH` after `peer` if the daemon uses a nondefault state
+directory. The CLI reads the current epoch and prints a JSON result; the
+equivalent v2 requests are specified in [client protocol](../client-protocol.md).
+Each `busy_only` grant delivers while the recipient already has an active run;
+select `may_wake` if a finding must start an idle recipient run. The replies
+identify whether both halves of each link were installed. An
 outgoing link alone is insufficient: the recipient checks its grant when it
 commits the message and receipt. The model-facing `peer_roster` tool shows
 outgoing links; the recipient's grant is independently revocable. Granting
@@ -91,16 +102,17 @@ Launch `collaboration_review.gleam` in the coordinator session and wait for its
 ```
 
 The source calls `workflow.step` for `security` and `performance`, then waits
-up to one second for both handles. `check.progress` first reports `reviewing`,
-then `joined` with the count and text of completed child reports. If a child
-is still running, progress reports `waiting` with each handle's status. Send
+up to one second for both handles. It publishes `reviewing` before the wait
+and `joined` with the count and text of completed child reports afterward.
+Progress is a latest snapshot, so `check.progress` may expose only `joined`
+when the children finish quickly. If a child is still running, progress
+reports `waiting` with each handle's status. Send
 the same `review` input again to collect the existing named steps; no new
 child is started. A terminal child failure reports `failed` and includes its
 reason in `statuses`. A rejected delivery after a wait error can also be
-retried with the same input.
-The named steps retain their original child operations and durable results even if the
-coordinator satellite is lost. The progress snapshot and typed endpoint do not
-survive that loss.
+retried with the same input. The named steps retain their original child
+operations and durable results even if the coordinator satellite is lost. The
+progress snapshot and typed endpoint do not survive that loss.
 
 If the coordinator execution is lost, launch the same source again on the
 same strand and send the same `run` and `commit`. Each `workflow.step` returns

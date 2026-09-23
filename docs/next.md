@@ -1,20 +1,24 @@
 # Current handoff
 
-This file records the latest scoped work and retains the prior collaboration
-handoff below it. Use the architecture and protocol documents for enduring
-contracts.
+The collaboration stack is being rebased onto current `main`. PR #484 already
+merged the async execution, resident peer messaging, and named workflow core.
+The four PRs below add model-visible virtual reads, owner controls, a terminal
+link manager, and executable collaboration examples. Merge the stack from the
+bottom after CI passes on the rebased heads.
 
-## Virtual reads and peer-link controls
+| PR | Result |
+|---|---|
+| [#494](https://github.com/Roasbeef/loom/pull/494) | `fs_read` discovers full capability declarations at `cap://` and polls caller-owned jobs at `job://`. Prompt pack v9 describes both program modes. |
+| [#499](https://github.com/Roasbeef/loom/pull/499) | The owner CLI inspects, links, unlinks, and sends across exact session and strand pairs. |
+| [#502](https://github.com/Roasbeef/loom/pull/502) | The TUI manages directional links, wake policy, and paged grants and targets. |
+| [#503](https://github.com/Roasbeef/loom/pull/503) | A coordinator and two specialists exercise durable child steps and granted peer exchange in jailed code mode. |
 
-The September 2026 collaboration stack is ordered as PRs
-[#494](https://github.com/Roasbeef/loom/pull/494),
-[#499](https://github.com/Roasbeef/loom/pull/499),
-[#502](https://github.com/Roasbeef/loom/pull/502), and
-[#503](https://github.com/Roasbeef/loom/pull/503). It adds virtual `cap://`
-and `job://` reads, owner CLI controls for directional peer links, TUI link
-administration, and a runnable collaboration example. The code-mode and
-collaboration guides describe the callable surfaces; this file records the
-operator flow and remaining boundary.
+The [code-mode architecture](architecture/code-mode.md) explains virtual-read
+routing. The [async architecture](architecture/async-collaboration.md) and
+[messaging architecture](architecture/messaging.md) explain execution custody
+and peer delivery. The [API guide](async-collaboration.md) and
+[collaboration example](examples/collaboration.md) show the calls. Protocol 048
+owns the async and peer wire; protocol 049 adds owner inspection.
 
 In the TUI, `/sessions` is the normal target-discovery path. Selecting a
 resident row and pressing `l` starts a link from the currently attached
@@ -41,7 +45,7 @@ captured execution, workflow and peer-message facts without starting work.
 Protocol 048 owns the backend contracts. The sections below record
 earlier validation and follow-ups as a historical handoff.
 
-## Shell approval recovery
+## Shell approval recovery on main
 
 A running shell can hit a kernel permission error after earlier effects. It
 still settles in band: stderr cannot supply a trusted canonical grant, and
@@ -49,163 +53,67 @@ replaying a `Never` command could repeat those effects. A failed `bash` call
 now tells the agent to make a fresh invocation with `permissions` declaring
 the needed roots. For a quoted Git lock path, it names the reported `.git`
 directory as a possible writable root. The declared request goes through
-canonicalization, protected-path checks and the ordinary operator dialog
-before the new command starts.
+canonicalization, protected-path checks, and the operator dialog before the
+new command starts.
 
-The real-jail Git worktree regression exercises the denied write and the
-approved retry. The client regression checks the durable question, displayed
-command and exact grants through production wiring. `make check` and
-`make doc-check` passed on the isolated branch. A trusted helper-side denial
+The real-jail Git worktree regression exercises the denied write and approved
+retry. The client regression checks the durable question, displayed command,
+and exact grants through production wiring. A trusted helper-side denial
 report would be needed before an automatic prompt could safely identify a
 resource from an already-running command; stderr remains diagnostic only.
 
-## Prior collaboration handoff
+## Rulings to preserve
 
-### Where the tree was
+**Authority and communication are separate.** A link grants neither child
+custody nor filesystem access. The source index permits discovery; the
+recipient grant authorizes admission. A peer receipt proves durable message
+admission, not model consumption or review completion. `busy_only` never wakes
+an idle target; `may_wake` is a separate owner choice.
 
-| Body of work | Current state |
-|---|---|
-| Async execution, #107 | Launch/send/check/join/cancel, fixed authority and deadline, immutable readiness, typed endpoints, intermediate progress, explicit idle expiry and cumulative launch limits are implemented. |
-| Peer messaging, #382 | Exact directional grants, resident routing, atomic receipt/message admission, owner-authenticated control send and structured peer origins are implemented. |
-| Named workflows | Named steps reconcile original child operations and durable results; version, input and assignment remain immutable. |
-| Presentation and examples | F2 now has a Collaboration tab for peer-origin messages, background execution custody and readiness, outgoing links, and named workflow intents. Standalone notes accept Up/Down navigation. The main transcript shows delivered advisor advice in full, labels pending advice as not delivered, and shows captured advisor-only commentary separately from delivered messages. TUI link controls are #485, CLI conveniences are #488, and a complete example is #489. |
-| Code-mode surface | The default server admits the full capability set from either program mode. Omitted `seam` selects workspace. An explicit workspace-only host remains effect-only; extensions and resident hooks keep their own policies. |
-| Integration | PR #484 is merged. The inspector adds a read-only TUI projection and fixes admission of an advisor nudge that arrives after the primary run-end hook but before its terminal commit. A delivered block still enters the primary's ordinary steer queue and waits for a safe checkpoint; priority and in-flight interruption need a separate protocol decision. |
+**A virtual read is a capability call.** `cap://` serves generated declarations
+for modules the selected code-mode seam admits. `job://` exposes only the
+calling strand's jobs. Neither is an operating-system mount. Ordinary file
+reads and image support retain their path. Prompt guidance must match the
+installed router and generated prelude in both workspace and orchestration.
 
-The [architecture](architecture/async-collaboration.md) explains host and
-satellite ownership. The [API guide](async-collaboration.md) gives callable
-examples and limits. [Protocol 048](../protocol-change/048-async-collaboration.md)
-owns the wire and custody decisions, and the
-[follow-up review](review/async-collaboration-followups.md) records the adversarial
-finding and its validation.
+**Recovery retains identity, not execution state.** Typed input is admitted
+before callback completion. Progress is an intermediate observation. A named
+workflow step reconciles its original child operation and result after a lost
+satellite. It cannot replay arbitrary effects or restore an actor heap.
 
-#### Corrections to the previous edition
+**Operator surfaces do not open saved sessions.** CLI and TUI use the
+owner/epoch-checked control protocol. Inspection is bounded into pages. A
+large catalogue or grant set is not permission to activate a saved target.
+The CLI reports partial unlink when source authority was removed but
+recipient revocation could not finish.
 
-The previous edition described PR #484 as an open branch. It is merged on
-`main`. The TUI can now inspect the new collaboration records, but owner
-link and revoke controls remain in #485. The Collaboration tab labels a peer
-entry as stored, execution endpoints as published only when their readiness fact exists,
-and a named step as an intent rather than a completed child.
+## Remaining work
 
-The first two findings on PR #484's latest review are fixed. A detached HEAD
-retains the observed repository identity with `branch: null`, and the source
-Agency refuses a 65th distinct outgoing link before its index becomes
-unreadable. A repeat link remains valid at the bound.
+1. Rebase and submit the entire stack. Verify each PR's base and exact head.
+2. Capture the real #502 peer-link terminal and post screenshots on its PR.
+3. Wait for Linux and macOS CI on the rebased heads, then merge the stack
+   through #503. Close #485, #488, and #489 through their PRs.
+4. After merge, update this handoff with the resulting `main` commit and any
+   measured limits. The enlarged code-mode description may still merit a
+   cached-prefix measurement.
 
-Hosted CI for #484 passed before merge. The terminal branch needs its own
-hosted result after push.
+The current examples demonstrate fan-out, a bounded join, named steps, progress,
+and recovery. They do not yet show one coordinator doing independent work after
+launching children and then sending follow-up tasks to the same children.
 
-### Integration with current main
+Saved-session outboxes, cross-machine peer transport, actor-heap persistence,
+automatic deadline renewal, general effect replay, and an automatic workflow
+retry language remain separate designs. At the outgoing-link limit, creation
+can still write a recipient grant before the source refuses its 65th distinct
+link. This pre-existing sequence cannot send without the source index, but it
+can leave a stale incoming grant. A future atomic or reserved link-admission
+protocol should address it; a compensating revoke can race a successful link
+to the same pair.
 
-Main also includes the code-mode notes and utilities work merged in #483.
-Both workspace and orchestration are offered by default; an omitted seam still
-selects workspace, and explicit workspace-only configuration remains supported.
-The host-installed `cap/notes` door exposes session-local durable data to both
-program modes. It does not itself grant agent lifecycle authority to an explicit
-workspace-only host. Backend note-read
-failures remain refusals rather than empty results, including completed-child
-joins. `note://` is a capability view, not an operating-system mount.
+## Validation boundary
 
-`report.decode_json` and `report.encode_json` share core's lossless conversion.
-`strand.map` admits bounded batches and preserves ordered results, known handles
-and unstarted assignments when a batch cannot complete. The real jailed recipe
-fixtures cover these utilities alongside the collaboration fixtures. See
-[notes](../protocol-change/045-code-mode-notes.md),
-[utilities](../protocol-change/046-code-mode-utilities.md), and their review
-records for the enduring contracts. The validation below covers their resolved
-integration with collaboration, including the regenerated prelude and seed.
-
-### What to do next
-
-1. Add owner-authorized link and revoke controls in **#485**. The terminal
-   currently inspects source links but cannot change them or show wake scope;
-   that scope is absent from the source fact. Scripts still need **#488**.
-   Neither issue authorizes saved-session activation or cross-machine routing.
-2. Add the complete collaboration workflow example in **#489**. The example
-   should launch named children, exchange granted messages, observe progress,
-   and recover durable results, with executable validation.
-3. Measure the enlarged model-facing code-mode description and decide whether
-   both equivalent mode names still earn their cached-prefix cost. Any narrower
-   deployment must advertise only capabilities its router services.
-
-### Rulings already made
-
-Each of these is settled. Re-open one only with new evidence, and record the
-reopening where the ruling lives.
-
-**Authority and communication are separate.** Protocol 048 makes peer links
-directional, with a separate wake permission. They confer neither child
-custody nor join, cancel or filesystem authority. Peer identity is bound by
-the harness and stored as structured attribution; rendered text is not an
-access-control record.
-
-**Readiness and custody are separate.** `Running` can include compilation and
-startup. Sends require an immutable registered endpoint. Progress and latest
-delivery are volatile observations, while input admission is durable. A callback
-which enqueues actor work has not proved that work complete. Protocol 048 and
-the async architecture state these acknowledgement boundaries.
-
-**The execution retains its original limits.** Interaction never changes its
-source, token, grants or wall deadline. The session admits eight live executions
-and each initiating operation admits 32 in total, including settled records.
-Typed idle service renews only on successful callback delivery and is checked
-at receive boundaries. `Exclusive` governs the tool invocation, not the
-remaining lifetime of an admitted background.
-
-**Recovery preserves durable identity, not actor heaps.** A lost satellite is
-not replayed. Named step intents recover their original caller coordinates;
-the original-child-operation pointer commits with child admission. Completed
-and failed child results remain authoritative, and a new step name selects an
-intentional retry. Protocol 048 records this ordering.
-
-**A peer receipt proves admission.** The recipient checks its grant and commits
-the receipt and message in one transaction. It does not prove model consumption.
-Saved targets stay saved; an unavailable target does not prevent outgoing-link
-removal or discovery of healthy peers. The messaging architecture describes
-these residency and revocation boundaries.
-
-### Deliberately open
-
-None of these is unfinished work somebody forgot.
-
-- Operator CLI convenience (#488), TUI link controls (#485), and the full
-  workflow example (#489) remain follow-ups. The inspector is read-only.
-- Saved-session outboxes, cross-machine transport, automatic deadline renewal
-  and actor-heap persistence are unbuilt extensions with separate authority
-  and recovery questions.
-- General effect replay and an automatic workflow retry language are undesigned.
-  The current primitive reconciles named child operations.
-
-### Validation evidence
-
-The inspector's focused `make check-tui` passed with exit zero and 726 tests.
-New fixtures cover execution readiness, directional link display, workflow
-intent labels, authenticated peer origins and keyboard selection without
-retargeting the composer. The complete repository and documentation gates
-must be run after the final terminal edits. Hosted CI must be checked on the
-new PR head after push.
-
-The merged backend's validation remains in
-[the #484 review record](review/async-collaboration-followups.md). Its jailed
-tests cover typed actor state, rejected input, progress, idle reaping and named
-child workflows. Those tests do not turn a TUI rendering fixture into a live
-peer-link administration test; #485 owns that separate path.
-
-### How to verify
-
-```sh
-make sandbox codemode-seed
-make check
-make doc-check
-```
-
-For focused development, use `bash scripts/test.sh client --match async_`,
-`bash scripts/test.sh client --match peer_`, and the runtime/capability suites.
-The offline seed must include the current capability API before jailed tests.
-Regenerate the committed prelude with `make gen-prelude` after public cap changes.
-
-**Capture each gate's own exit status.** A successful log reader does not prove
-the command which wrote it succeeded. **Use one build per checkout.** Concurrent
-builds can replace BEAM modules while EUnit loads them. **Keep enforced test
-workspaces outside `/tmp`.** The jail replaces that path with scratch storage.
-See [execution](execution.md) for the remaining verification rules.
+The four PRs passed Linux and macOS CI before this rebase. That result does
+not establish the rebased heads. Run the repository checks on the new commits
+and use each command's exit status. The top example layer previously passed
+all 2,093 client tests; the shipped bootstrap fixture covered peer delivery
+on a clean CI host. Keep those results separate from the new CI run.
