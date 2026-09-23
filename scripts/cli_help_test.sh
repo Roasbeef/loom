@@ -118,6 +118,8 @@ run_help loom "usage: loom ext" help ext
 run_help loomd "usage: loomd access" access --help
 run_help loomd "usage: loomd access" access -h
 run_help loomd "usage: loomd access" help access
+run_help loomd "usage: loomd peer" peer --help
+run_help loomd "usage: loomd peer" help peer
 run_help loomd "usage: loom ext" ext --help
 cmp "$scratch/loom-ext.stdout" "$scratch/loomd.stdout"
 run_help loomd "usage: loom ext" ext -h

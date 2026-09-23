@@ -245,6 +245,33 @@ storage and replay, and provider rendering labels it as a peer-agent message.
 The receipt separately retains optional source metadata supplied by the host. The sending model
 cannot override the origin; message text and model descriptions carry no authority.
 
+The `loomd peer` CLI uses the same owner credential and epoch-checked control
+socket. It prints one JSON object, so a script can keep the exact coordinates
+and message ID from a result:
+
+```sh
+loomd peer inspect SOURCE main
+loomd peer link SOURCE main TARGET reviewer --wake busy_only
+loomd peer send SOURCE main TARGET reviewer --message-id review-42-finding-1 --text 'The review found a missing cancellation check.'
+loomd peer unlink SOURCE main TARGET reviewer
+```
+
+`SOURCE` and `TARGET` are canonical session IDs. Pass `--state-dir PATH` after
+`peer` when the daemon uses a nondefault state directory. `inspect` reports the
+source strand's outgoing links and incoming grants. Each outgoing row shows
+the target's catalogue state, current wake permission when the target is
+resident, and `wake: null` when it is unavailable. Incoming rows show their
+source metadata and wake permission. These are observations; sends recheck
+the current grant. The CLI never opens a saved session.
+
+The CLI requires `--message-id` on every send. Reuse it only for an explicit
+retry with the same body and target. A successful send returns a durable
+admission receipt, not proof of model consumption. Exit 0 acknowledges a
+complete operation; exit 2 rejects arguments, 3 reports a daemon refusal, 4
+reports a transport or unknown outcome, and 5 reports that unlink removed the
+outgoing link but could not revoke the unavailable recipient's grant. The JSON
+result includes `partial: true` for that last case.
+
 Discovery shows linked resident and saved sessions, catalogue name and workspace,
 exported strands, current operation and state sequence, latest terminal result,
 and a separately labeled model self-description. Git root, common directory and
