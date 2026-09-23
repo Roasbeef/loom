@@ -16,6 +16,7 @@ import tui/frame
 import tui/model as tui_model
 import tui/notes_view
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/workspace
 import tui_test/gateway
@@ -46,7 +47,7 @@ fn press(model, key) {
 fn shown(model, width, height) {
   let model = tui.update(backend.Resize(width, height), model)
   let model = tui.update(backend.Tick, model)
-  tui.view(model, geometry.rect_new(0, 0, width, height)).0
+  render.view(model, geometry.rect_new(0, 0, width, height)).0
   |> frame.buffer_to_text
 }
 
@@ -284,12 +285,12 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
     )
   let settled = tui.update(backend.Tick, loaded)
   let inspected_frame =
-    tui.view(settled, geometry.rect_new(0, 0, 100, 30)).0
+    render.view(settled, geometry.rect_new(0, 0, 100, 30)).0
     |> frame.buffer_to_text
   assert string.contains(inspected_frame, "WORKER ONLY BODY")
   let closed = press(settled, "esc")
   let rendered =
-    tui.view(
+    render.view(
       tui_model.Model(..closed, frame_cache: None),
       geometry.rect_new(0, 0, 100, 30),
     ).0

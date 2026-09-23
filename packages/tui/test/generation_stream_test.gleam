@@ -18,6 +18,7 @@ import machine/strand
 import tui
 import tui/frame
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -185,7 +186,7 @@ fn captured(model, metadata) {
 
 fn rendered(model) {
   let painted = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(painted, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 

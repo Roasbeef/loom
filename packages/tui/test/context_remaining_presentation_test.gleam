@@ -15,6 +15,7 @@ import tui
 import tui/connection
 import tui/frame
 import tui/protocol
+import tui/render
 import tui/workspace
 import tui_test/gateway
 
@@ -103,7 +104,7 @@ fn received(model, value) {
 
 fn text(model) {
   let model = tui.update(backend.Resize(120, 40), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 40))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 40))
   #(model, frame.buffer_to_text(buffer))
 }
 

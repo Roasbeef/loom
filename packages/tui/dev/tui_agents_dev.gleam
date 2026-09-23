@@ -34,6 +34,7 @@ import tui/model as tui_model
 import tui/notes_view
 import tui/protocol
 import tui/queue_editor
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -227,7 +228,7 @@ fn run_model(initial: tui_model.Model) -> Nil {
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
       initial,
-      tui.view,
+      render.view,
       fixture_update,
       fn(model) { model.quit },
       tui.terminal_poll_timeout,

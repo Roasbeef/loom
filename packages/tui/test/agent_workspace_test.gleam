@@ -29,6 +29,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/reviewer_status
 import tui/session_channel
 import tui/snapshot
@@ -370,7 +371,7 @@ pub fn compact_pending_nudges_keep_all_lines_in_the_scrollable_tail_test() {
     )
   let rendered = tui.update(backend.Resize(100, 30), initial)
   let text =
-    tui.view(rendered, geometry.rect_new(0, 0, 100, 30)).0
+    render.view(rendered, geometry.rect_new(0, 0, 100, 30)).0
     |> frame.buffer_to_text
   assert string.contains(text, "pending, not delivered")
   assert string.contains(text, "first line")
@@ -478,7 +479,7 @@ pub fn a_disappeared_recipient_is_retained_and_cannot_accept_a_prompt_test() {
   assert refused.pending_submission == None
   assert refused.queued == []
   let text =
-    tui.view(refused, geometry.rect_new(0, 0, refused.width, refused.height)).0
+    render.view(refused, geometry.rect_new(0, 0, refused.width, refused.height)).0
     |> frame.buffer_to_text
   assert string.contains(text, "recipient unavailable")
 }
@@ -740,7 +741,7 @@ pub fn short_detail_with_multiline_draft_keeps_selected_body_visible_test() {
     )
     |> tui.update(backend.Resize(80, 24), _)
   let rendered =
-    tui.view(inspected, geometry.rect_new(0, 0, 80, 24)).0
+    render.view(inspected, geometry.rect_new(0, 0, 80, 24)).0
     |> frame.buffer_to_text
   assert string.contains(rendered, "visible-message-body")
 }
@@ -808,14 +809,14 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
         |> tui.update(backend.Resize(size.0, size.1), _)
         |> press("f2")
       let rendered =
-        tui.view(initial, geometry.rect_new(0, 0, size.0, size.1)).0
+        render.view(initial, geometry.rect_new(0, 0, size.0, size.1)).0
         |> frame.buffer_to_text
       assert string.contains(rendered, "To main")
       assert string.contains(rendered, "attention")
       assert string.contains(rendered, "retained draft")
       let editing = initial |> press("tab")
       let rendered =
-        tui.view(editing, geometry.rect_new(0, 0, size.0, size.1)).0
+        render.view(editing, geometry.rect_new(0, 0, size.0, size.1)).0
         |> frame.buffer_to_text
       assert string.contains(rendered, "enter")
       assert editing.active_strand == "main"
@@ -911,7 +912,7 @@ pub fn long_checkout_paths_do_not_hide_the_session_identity_test() {
     )
     |> tui.update(backend.Resize(80, 24), _)
   let header =
-    tui.view(initial, geometry.rect_new(0, 0, 80, 24)).0
+    render.view(initial, geometry.rect_new(0, 0, 80, 24)).0
     |> frame.buffer_to_text
     |> string.split("\n")
     |> list.first
@@ -931,7 +932,7 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     |> press("f2")
     |> press("down")
   let rendered =
-    tui.view(
+    render.view(
       tui_model.Model(..initial, frame_cache: None),
       geometry.rect_new(0, 0, 40, 12),
     ).0

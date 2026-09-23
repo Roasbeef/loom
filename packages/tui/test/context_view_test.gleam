@@ -23,6 +23,7 @@ import tui/context_view as context
 import tui/frame
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -206,7 +207,7 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
   let opened =
     tui.open_context(original, context.Overview)
     |> fn(model) { tui.update(backend.Resize(100, 30), model) }
-  let #(buf, _) = tui.view(opened, geometry.rect_new(0, 0, 100, 30))
+  let #(buf, _) = render.view(opened, geometry.rect_new(0, 0, 100, 30))
   assert string.contains(
     frame.buffer_to_text(buf),
     "requires a live connection",

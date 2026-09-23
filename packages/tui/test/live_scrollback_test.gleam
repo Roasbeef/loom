@@ -12,6 +12,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/workspace
 import tui_test/gateway
 
@@ -100,7 +101,7 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
   let arrived = deliver(reading, "\n\nNew output below.")
   let drafting = tui.update(backend.KeyPress("x"), arrived)
   let shown =
-    tui.view(
+    render.view(
       tui_model.Model(..drafting, frame_cache: None),
       geometry.rect_new(0, 0, drafting.width, drafting.height),
     ).0
@@ -123,7 +124,7 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
 // the one drawn.
 fn border_text(model: tui_model.Model) -> String {
   let drawn = tui.update(backend.Resize(90, 24), model)
-  let #(buffer, _) = tui.view(drawn, geometry.rect_new(0, 0, 90, 24))
+  let #(buffer, _) = render.view(drawn, geometry.rect_new(0, 0, 90, 24))
   frame.buffer_to_text(buffer)
 }
 

@@ -25,6 +25,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -101,7 +102,7 @@ fn text(model: tui_model.Model) -> String {
 
 fn render_text(model: tui_model.Model, width: Int, height: Int) -> String {
   let model = tui.update(backend.Resize(width, height), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, width, height))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, width, height))
   frame.buffer_to_text(buffer)
 }
 

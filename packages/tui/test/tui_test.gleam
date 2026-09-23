@@ -36,6 +36,7 @@ import tui/model_selector
 import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
+import tui/render
 import tui/selection
 import tui/session_channel
 import tui/sessions
@@ -199,22 +200,22 @@ pub fn workspace_metadata_read_is_descriptor_bounded_test() {
 }
 
 pub fn footer_status_preserves_transient_operator_feedback_test() {
-  assert tui.footer_status("0 live / 3 agents", "queued after main", 40)
+  assert render.footer_status("0 live / 3 agents", "queued after main", 40)
     == "0 live / 3 agents · queued after main"
 }
 
 pub fn footer_project_label_grows_on_stacked_footers_test() {
   // One row: the label shares its row with usage and the model, so the cap
   // holds however wide the screen is.
-  assert tui.footer_project_limit(213) == 68
-  assert tui.footer_project_limit(300) == 68
+  assert render.footer_project_limit(213) == 68
+  assert render.footer_project_limit(300) == 68
 
   // Two or three rows: the primary row holds only the label and the model,
   // so the label takes every column the model's cap leaves, never less
   // than its own cap.
-  assert tui.footer_project_limit(150) == 118
-  assert tui.footer_project_limit(100) == 68
-  assert tui.footer_project_limit(60) == 68
+  assert render.footer_project_limit(150) == 118
+  assert render.footer_project_limit(100) == 68
+  assert render.footer_project_limit(60) == 68
 }
 
 pub fn footer_status_grows_with_a_wide_terminal_test() {
@@ -222,27 +223,27 @@ pub fn footer_status_grows_with_a_wide_terminal_test() {
 
   // At the single-row threshold the fixed cap holds and the notice is cut;
   // every column past it goes to the status, so a wide screen shows it all.
-  assert tui.footer_status_limit(213) == 40
-  assert tui.footer_status("2 live / 3 agents", notice, 40)
+  assert render.footer_status_limit(213) == 40
+  assert render.footer_status("2 live / 3 agents", notice, 40)
     == "2 live / 3 agents · steer captured; wai…"
-  assert tui.footer_status_limit(246) == 73
-  assert tui.footer_status("2 live / 3 agents", notice, 73)
+  assert render.footer_status_limit(246) == 73
+  assert render.footer_status("2 live / 3 agents", notice, 73)
     == "2 live / 3 agents · steer captured; waiting for stop"
 
   // Stacked layouts give the status its shared or whole row, never less
   // than the floor.
-  assert tui.footer_status_limit(150) == 78
-  assert tui.footer_status_limit(60) == 58
-  assert tui.footer_status_limit(30) == 40
+  assert render.footer_status_limit(150) == 78
+  assert render.footer_status_limit(60) == 58
+  assert render.footer_status_limit(30) == 40
 }
 
 pub fn footer_status_sanitizes_untrusted_server_text_test() {
-  assert tui.footer_status("0 live", "\u{1b}[31mhostile\nnotice", 40)
+  assert render.footer_status("0 live", "\u{1b}[31mhostile\nnotice", 40)
     == "0 live · hostile notice"
 }
 
 pub fn footer_status_omits_the_dedicated_model_label_test() {
-  assert tui.footer_status("0 live / 3 agents", "model: baseten-kimi-k3", 40)
+  assert render.footer_status("0 live / 3 agents", "model: baseten-kimi-k3", 40)
     == "0 live / 3 agents"
 }
 
@@ -259,7 +260,7 @@ pub fn cached_frame_reuses_the_exact_buffer_term_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Ok(Position(2, 1)))
   let #(reused, cursor) =
-    tui.cached_frame(cached, screen, screen, fn() {
+    render.cached_frame(cached, screen, screen, fn() {
       panic as "a matching frame cache must not rebuild"
     })
 
@@ -276,7 +277,7 @@ pub fn cached_frame_keeps_a_deferred_frame_on_screen_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Error(Nil))
   let #(shown, _) =
-    tui.cached_frame(cached, screen, screen, fn() {
+    render.cached_frame(cached, screen, screen, fn() {
       panic as "a deferred frame must not be rebuilt by the view"
     })
   assert ffi_term.same_term(cached_buffer, shown)
@@ -346,7 +347,7 @@ pub fn panel_border_matches_the_block_it_replaces_test() {
       |> block.render(buffer.buffer_new(screen), area, _)
     let actual =
       buffer.buffer_new(screen)
-      |> tui.render_panel_border(area, title, theme.quiet)
+      |> render.render_panel_border(area, title, theme.quiet)
     assert buffer.to_ansi(actual) == buffer.to_ansi(expected)
   })
 }
@@ -358,7 +359,7 @@ pub fn panel_border_preserves_prepainted_interior_test() {
     buffer.buffer_new(screen)
     |> buffer.set_string(inside, "kept", theme.current_bold())
   let drawn =
-    tui.render_panel_border(painted, screen, " transcript ", theme.quiet)
+    render.render_panel_border(painted, screen, " transcript ", theme.quiet)
 
   // The border renderer must leave both the content and style untouched.
   assert buffer.get_cell(drawn, inside) == buffer.get_cell(painted, inside)
@@ -368,7 +369,7 @@ pub fn panel_border_draws_nothing_when_too_small_test() {
   let screen = geometry.rect_new(0, 0, 4, 4)
   let blank = buffer.buffer_new(screen)
   let drawn =
-    tui.render_panel_border(
+    render.render_panel_border(
       blank,
       geometry.rect_new(0, 0, 1, 3),
       "t",
@@ -383,9 +384,12 @@ pub fn cached_frame_rebuilds_for_resize_test() {
   let cached_buffer = buffer.buffer_new(before)
   let replacement = buffer.buffer_new(after)
   let #(rebuilt, cursor) =
-    tui.cached_frame(#(cached_buffer, Ok(Position(1, 1))), before, after, fn() {
-      #(replacement, Ok(Position(1, 1)))
-    })
+    render.cached_frame(
+      #(cached_buffer, Ok(Position(1, 1))),
+      before,
+      after,
+      fn() { #(replacement, Ok(Position(1, 1))) },
+    )
 
   assert ffi_term.same_term(replacement, rebuilt)
   assert cursor == Ok(Position(1, 1))
@@ -2486,7 +2490,7 @@ pub fn image_preview_renders_fourth_image_and_keeps_prompt_visible_test() {
       ),
       input: text_area.state_from_string("review these screenshots"),
     )
-  let #(drawn, _) = tui.view(model, geometry.rect_new(0, 0, 50, 24))
+  let #(drawn, _) = render.view(model, geometry.rect_new(0, 0, 50, 24))
   let shown = frame.buffer_to_text(drawn)
   assert string.contains(shown, "4/4 images attached")
   assert string.contains(shown, "1. one.png")

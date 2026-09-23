@@ -24,6 +24,7 @@ import tui/frame
 import tui/layout
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/snapshot_view
 import tui/tool_activity
 import tui/workspace
@@ -198,7 +199,7 @@ fn received(model, value) {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 40), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 40))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 40))
   #(model, frame.buffer_to_text(buffer))
 }
 
@@ -272,7 +273,7 @@ fn toggle_diff(model) {
 
 fn painted_buffer(model, width) {
   let updated = tui.update(backend.Resize(width, 40), model)
-  let #(drawn, _) = tui.view(updated, geometry.rect_new(0, 0, width, 40))
+  let #(drawn, _) = render.view(updated, geometry.rect_new(0, 0, width, 40))
   #(updated, drawn)
 }
 

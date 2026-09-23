@@ -11,6 +11,7 @@ import tui/connection
 import tui/daemon/protocol
 import tui/frame
 import tui/model as tui_model
+import tui/render
 import tui/session_selector
 import tui/theme
 import tui/workspace
@@ -128,10 +129,10 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
     tui_model.Model(..initial, overlay: tui_model.DaemonSelector(selector(0)))
   let initial = tui.update(backend.Resize(96, 24), initial)
   let screen = geometry.rect_new(0, 0, 96, 24)
-  let #(first, _) = tui.view(initial, screen)
+  let #(first, _) = render.view(initial, screen)
   let down = tui.update(backend.KeyPress("down"), initial)
   let down = tui.update(backend.Tick, down)
-  let #(second, _) = tui.view(down, screen)
+  let #(second, _) = render.view(down, screen)
   assert row_with(second, "▸") == row_with(first, "▸") + 2
   assert row_with(second, "●") == row_with(first, "●")
   assert first != second
@@ -140,7 +141,7 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
   // merely the pure widget: the next terminal tick must expose both moves.
   let up = tui.update(backend.KeyPress("up"), down)
   let up = tui.update(backend.Tick, up)
-  let #(third, _) = tui.view(up, screen)
+  let #(third, _) = render.view(up, screen)
   let selected = row_with(third, "▸")
   assert selected == row_with(first, "▸")
   let assert Ok(#(before, _)) = string.split_once(line_at(third, selected), "▸")

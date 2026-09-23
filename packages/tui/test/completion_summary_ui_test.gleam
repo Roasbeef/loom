@@ -18,6 +18,7 @@ import tui/live_jobs
 import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
+import tui/render
 import tui/session_channel
 import tui/summary_panel
 import tui/workspace
@@ -32,7 +33,7 @@ fn model() {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 

@@ -26,6 +26,7 @@ import tui/frame
 import tui/model as tui_model
 import tui/pacing
 import tui/protocol
+import tui/render
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -318,13 +319,13 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     as "the fixture must actually carry a backlog, or the scroll below tests nothing"
 
   let before =
-    tui.view(
+    render.view(
       tui_model.Model(..backlogged, frame_cache: None),
       geometry.rect_new(0, 0, 84, 24),
     ).0
   let scrolled = tui.update(backend.MouseScroll(5, 5, True), backlogged)
   let after =
-    tui.view(
+    render.view(
       tui_model.Model(..scrolled, frame_cache: None),
       geometry.rect_new(0, 0, 84, 24),
     ).0
@@ -385,7 +386,7 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
     as "an idle strand has no tail to walk toward, so the trailing frame must be the complete one"
 
   let #(buffer, _) =
-    tui.view(
+    render.view(
       tui_model.Model(..settled, frame_cache: None),
       geometry.rect_new(0, 0, 84, 24),
     )

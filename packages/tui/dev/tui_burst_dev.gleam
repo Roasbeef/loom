@@ -16,7 +16,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/string
-import tui
+import tui/render
 import tui/theme
 
 type Script {
@@ -77,8 +77,8 @@ fn loom_frame(area: Rect, frame: Int) -> buffer.Buffer {
     row,
     style.new(theme.paper, style.Default, style.none()),
   )
-  |> tui.render_panel_border(transcript, " transcript / main ", theme.quiet)
-  |> tui.render_panel_border(input, " message ", theme.signal)
+  |> render.render_panel_border(transcript, " transcript / main ", theme.quiet)
+  |> render.render_panel_border(input, " message ", theme.signal)
   |> buffer.set_string(
     Position(2, 2),
     int.to_string(frame),

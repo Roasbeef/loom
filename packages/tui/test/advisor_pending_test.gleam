@@ -18,6 +18,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/protocol.{type Strand, Strand}
+import tui/render
 import tui/session_channel
 import tui/workspace
 import tui_test/pushed
@@ -28,7 +29,7 @@ fn model() {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 

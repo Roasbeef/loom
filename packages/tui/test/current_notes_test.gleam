@@ -18,6 +18,7 @@ import tui/model as tui_model
 import tui/note_panel
 import tui/notes_view
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -93,7 +94,7 @@ fn board_rows(
 
 fn text(model) {
   let model = tui.update(backend.Tick, model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 
@@ -244,7 +245,7 @@ pub fn note_body_remains_visible_at_supported_native_geometry_test() {
   list.each([#(132, 42), #(80, 24), #(40, 12)], fn(size) {
     let resized = tui.update(backend.Resize(size.0, size.1), shown)
     let #(buffer, _) =
-      tui.view(resized, geometry.rect_new(0, 0, size.0, size.1))
+      render.view(resized, geometry.rect_new(0, 0, size.0, size.1))
     assert string.contains(frame.buffer_to_text(buffer), "visible-note-body")
   })
 }

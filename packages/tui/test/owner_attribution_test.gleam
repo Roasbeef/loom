@@ -15,6 +15,7 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
@@ -88,7 +89,7 @@ fn record(origin, text) {
 
 fn paint(model) {
   let updated = tui.update(backend.Resize(96, 30), model)
-  let #(painted, _) = tui.view(updated, geometry.rect_new(0, 0, 96, 30))
+  let #(painted, _) = render.view(updated, geometry.rect_new(0, 0, 96, 30))
   frame.buffer_to_text(painted)
 }
 

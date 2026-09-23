@@ -3,7 +3,7 @@
 //// This module stays in `dev/` so neither its runner nor `gleamy_bench` enters
 //// the shipped client. The panel pair mirrors the two large bordered regions
 //// in a normal frame and isolates the cell-by-cell interior clear removed by
-//// `tui.render_panel_border`.
+//// `render.render_panel_border`.
 
 import argv
 import etui/buffer
@@ -13,7 +13,7 @@ import etui/widgets/block
 import gleam/int
 import gleam/io
 import gleamy/bench
-import tui
+import tui/render
 import tui/theme
 import tui_agents_dev
 import tui_burst_dev
@@ -111,10 +111,10 @@ fn render_etui_panels(pair: PanelPair) -> buffer.Buffer {
 
 fn render_loom_panels(pair: PanelPair) -> buffer.Buffer {
   pair.base
-  |> tui.render_panel_border(
+  |> render.render_panel_border(
     pair.transcript,
     " transcript / main ",
     theme.quiet,
   )
-  |> tui.render_panel_border(pair.input, " message ", theme.signal)
+  |> render.render_panel_border(pair.input, " message ", theme.signal)
 }

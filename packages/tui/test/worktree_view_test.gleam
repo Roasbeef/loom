@@ -15,6 +15,7 @@ import tui/frame
 import tui/layout
 import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/workspace
 import tui/worktree_view
@@ -200,7 +201,7 @@ fn key(model, key) {
 fn painted(model: tui_model.Model) {
   let model = tui.update(backend.Tick, model)
   let #(buf, _) =
-    tui.view(model, geometry.rect_new(0, 0, model.width, model.height))
+    render.view(model, geometry.rect_new(0, 0, model.width, model.height))
   frame.buffer_to_text(buf)
 }
 

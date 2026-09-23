@@ -35,6 +35,7 @@ import tui/goal_view
 import tui/model as tui_model
 import tui/notes_view
 import tui/protocol.{type Strand, Strand}
+import tui/render
 import tui/reviewer_status
 import tui/session_channel
 import tui/transcript_lines
@@ -47,7 +48,7 @@ fn model() {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 
@@ -900,7 +901,7 @@ pub fn the_real_small_layout_starts_with_status_and_objective_test() {
       )),
     )
   let resized = tui.update(backend.Resize(40, 12), opened)
-  let #(rendered, _) = tui.view(resized, geometry.rect_new(0, 0, 40, 12))
+  let #(rendered, _) = render.view(resized, geometry.rect_new(0, 0, 40, 12))
   let text = frame.buffer_to_text(rendered)
   assert string.contains(text, "active")
   assert string.contains(text, "get the branch green")
@@ -926,7 +927,7 @@ pub fn the_busy_small_layout_keeps_goal_content_and_editor_test() {
       )),
     )
   let resized = tui.update(backend.Resize(40, 12), opened)
-  let #(rendered, _) = tui.view(resized, geometry.rect_new(0, 0, 40, 12))
+  let #(rendered, _) = render.view(resized, geometry.rect_new(0, 0, 40, 12))
   let text = frame.buffer_to_text(rendered)
   assert string.contains(text, "active")
   assert string.contains(text, "get the branch green")

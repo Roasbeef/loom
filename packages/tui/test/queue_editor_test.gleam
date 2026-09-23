@@ -22,6 +22,7 @@ import tui/frame
 import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -186,7 +187,7 @@ fn painted(model) {
 
 fn painted_at(model, width, height) {
   let model = tui.update(backend.Resize(width, height), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, width, height))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, width, height))
   frame.buffer_to_text(buffer)
 }
 
