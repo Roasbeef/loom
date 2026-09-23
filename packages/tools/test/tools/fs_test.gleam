@@ -77,6 +77,47 @@ fn first_text(outcome: tool.ToolOutcome) -> String {
   text
 }
 
+pub fn virtual_read_windows_plain_text_without_file_anchors_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let scheme =
+    fs.Scheme(
+      name: "cap",
+      summary: "`cap://` lists modules.",
+      read: fn(_ctx, reference) {
+        case reference {
+          "fs" -> Ok("one\ntwo\nthree")
+          _ -> Error(fs.NotFound(what: reference))
+        }
+      },
+    )
+  let reader = fs.read_tool_with([scheme])
+  let outcome =
+    reader.run(
+      ctx,
+      args([
+        #("path", json.String("cap://fs")),
+        #("offset", json.Int(2)),
+        #("limit", json.Int(1)),
+      ]),
+    )
+  assert !outcome.is_error
+  assert string.starts_with(first_text(outcome), "two")
+  assert !string.contains(first_text(outcome), "digest:")
+  assert !string.contains(first_text(outcome), "2:")
+  assert string.contains(first_text(outcome), "offset 3")
+  let assert Some(json.Object(details)) = outcome.details
+  assert list.contains(details, #("scheme", json.String("cap")))
+}
+
+pub fn unknown_virtual_scheme_never_falls_back_to_a_file_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let reader = fs.read_tool_with([])
+  let outcome = reader.run(ctx, args([#("path", json.String("cap://fs"))]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "unknown scheme `cap://`")
+  assert !string.contains(first_text(outcome), "no such file")
+}
+
 // Exactly the text provider adapters expose to the model, without borrowing
 // the presentation-only details that used to hide this edit prerequisite.
 fn visible_digest(outcome: tool.ToolOutcome) -> String {

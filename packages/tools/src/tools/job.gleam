@@ -76,6 +76,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/fs
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 /// The polling tool's name.
@@ -490,17 +491,31 @@ fn run_list(
   use listed <- tool.or_outcome(list_jobs(ctx), refusal_outcome)
   case listed {
     [] ->
-      tool.success(
-        "you have no background jobs. Start one with `bash` and "
-        <> "`mode: \"background\"`.",
-      )
+      tool.success(render_listed([]))
       |> tool.with_details(json.Object([#("jobs", json.Array([]))]))
 
     rows ->
-      tool.success(string.join(list.map(rows, describe_listed), "\n"))
+      tool.success(render_listed(rows))
       |> tool.with_details(
         json.Object([#("jobs", json.Array(list.map(rows, listed_json)))]),
       )
+  }
+}
+
+/// Render the owner-visible job list for a tool or virtual read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(job.render_listed([]), "no background jobs")
+/// ```
+///
+pub fn render_listed(rows: List(Listed)) -> String {
+  case rows {
+    [] ->
+      "you have no background jobs. Start one with `bash` and "
+      <> "`mode: \"background\"`."
+    _ -> string.join(list.map(rows, describe_listed), "\n")
   }
 }
 
@@ -526,6 +541,19 @@ fn listed_json(row: Listed) -> JsonValue {
 // because a model that polled a job into its terminal state still has to
 // be able to ask again for the tail it did not consume.
 fn polled_outcome(polled: Polled) -> ToolOutcome {
+  tool.success(render_polled(polled))
+  |> tool.with_details(polled_json(polled))
+}
+
+/// Render a zero-wait job poll for a tool or virtual read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // job.render_polled(polled)
+/// ```
+///
+pub fn render_polled(polled: Polled) -> String {
   let heading =
     polled.id
     <> " — "
@@ -533,21 +561,15 @@ fn polled_outcome(polled: Polled) -> ToolOutcome {
     <> ", "
     <> age_text(polled.age_ms)
 
-  let body =
-    [
-      [heading],
-      stream_lines("stdout", polled.stdout),
-      stream_lines("stderr", polled.stderr),
-      spill_lines(polled.spill),
-      ["cursor: " <> cursor_to_string(next_cursors(polled))],
-    ]
-    |> list.flatten
-    |> string.join(with: "\n")
-
-  // A pending job is a success. See the module doc: an `is_error` here
-  // would teach a model that waiting is a fault to retry out of.
-  tool.success(body)
-  |> tool.with_details(polled_json(polled))
+  [
+    [heading],
+    stream_lines("stdout", polled.stdout),
+    stream_lines("stderr", polled.stderr),
+    spill_lines(polled.spill),
+    ["cursor: " <> cursor_to_string(next_cursors(polled))],
+  ]
+  |> list.flatten
+  |> string.join(with: "\n")
 }
 
 fn next_cursors(polled: Polled) -> Cursors {
@@ -1093,6 +1115,54 @@ pub fn refusal_reason(refusal: Refusal) -> String {
       "the background jobs plane could not be reached (" <> reason <> ")."
 
     NoJobsPlane -> "this session runs no background jobs."
+  }
+}
+
+/// The `job://` virtual read namespace for background jobs.
+///
+/// `job://` lists jobs visible to the caller. `job://<id>` makes a
+/// non-blocking poll from the retained output's beginning. The read carries
+/// no cursor and therefore does not advance the caller's `job_poll` cursor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_tool_with([job.scheme(jobs)])
+/// ```
+///
+pub fn scheme(jobs: Jobs) -> fs.Scheme {
+  fs.Scheme(
+    name: "job",
+    summary: "`job://<id>` reads a background job's state and retained "
+      <> "output without waiting; `job://` lists this strand's jobs.",
+    read: fn(ctx, reference) { read_job(jobs, ctx, reference) },
+  )
+}
+
+fn read_job(
+  jobs: Jobs,
+  ctx: Ctx,
+  reference: String,
+) -> Result(String, fs.SchemeRefusal) {
+  case string.is_empty(reference) {
+    True ->
+      jobs.list(ctx)
+      |> result.map(render_listed)
+      |> result.map_error(scheme_refusal)
+
+    False ->
+      jobs.poll(ctx, reference, 0, Cursors(stdout: 0, stderr: 0))
+      |> result.map(render_polled)
+      |> result.map_error(scheme_refusal)
+  }
+}
+
+fn scheme_refusal(refusal: Refusal) -> fs.SchemeRefusal {
+  case refusal {
+    NotFound(id:) -> fs.NotFound(what: "background job `" <> id <> "`")
+    Invalid(reason:) -> fs.Malformed(reason:)
+    CeilingReached(..) | ClearanceRefused(..) | Unavailable(..) ->
+      fs.Unavailable(reason: refusal_reason(refusal))
   }
 }
 

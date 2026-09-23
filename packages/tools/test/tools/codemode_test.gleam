@@ -27,6 +27,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import tools/codemode
 import tools/directory_access
+import tools/fs
 import tools/prelude
 import tools/tool.{type Ctx}
 
@@ -919,15 +920,17 @@ pub fn the_requirements_ask_for_the_workspace_and_nothing_else_test() {
 
 // --- the prelude signatures in the description -----------------------------
 
-pub fn the_description_carries_the_signatures_of_every_admitted_module_test() {
-  // The point of the whole exercise: a model writing a program can read
-  // what is in the modules it may import, instead of learning it from a
-  // `CompileFailed` round trip that carried a hermetic build (issue #36).
+pub fn the_description_indexes_types_and_discovery_returns_signatures_test() {
+  // The cached description gives a model the import map and record shapes.
+  // One virtual read supplies the full signature before compilation.
   let described = codemode.description(echoing())
   assert string.contains(described, "### cap/proc")
   assert string.contains(described, "### cap/report")
+  assert !string.contains(described, "pub fn run(Command)")
+  let assert Ok(surface) =
+    codemode.cap_scheme(echoing()).read(ctx_for("discovery"), "proc")
   assert string.contains(
-    described,
+    surface,
     "pub fn run(Command) -> Result(Output, ProcError)",
   )
   // The record a signature returns, not only the signature: a program
@@ -936,6 +939,19 @@ pub fn the_description_carries_the_signatures_of_every_admitted_module_test() {
   // And the labelled/positional convention the rendering depends on is
   // stated rather than left to be guessed at.
   assert string.contains(described, "`label: Type` is labelled")
+}
+
+pub fn cap_discovery_obeys_the_offered_seam_allowlist_test() {
+  let mode = echoing_over(codemode.one_seam(workspace_offer()))
+  let scheme = codemode.cap_scheme(mode)
+  let ctx = ctx_for("discovery")
+  let assert Ok(index) = scheme.read(ctx, "")
+  assert string.contains(index, "cap/proc:")
+  assert !string.contains(index, "cap/strand:")
+  assert scheme.read(ctx, "strand")
+    == Error(fs.NotFound(what: "prelude module `cap/strand`"))
+  assert scheme.read(ctx, "runtime")
+    == Error(fs.NotFound(what: "prelude module `cap/runtime`"))
 }
 
 pub fn the_signatures_never_advertise_a_module_the_seam_refuses_test() {
@@ -1004,7 +1020,7 @@ pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
   // the half of the sentence this host controls. The signature blocks
   // below carry the prelude's own doc comments verbatim, so what they say
   // is `packages/cap`'s business rather than this rendering's.
-  let assert [prose, ..] = string.split(described, "Each module's public")
+  let assert [prose, ..] = string.split(described, "Each importable module")
   assert !string.contains(prose, "seam")
 }
 
@@ -1038,7 +1054,8 @@ pub fn generated_surface_shared_by_full_modes_is_rendered_once_test() {
         codemode.Seams(default: workspace, alternates: [orchestration]),
       ),
     )
-  assert occurrences(described, shared) == 1
+  assert occurrences(described, "### cap/mcp/github") == 1
+  assert !string.contains(described, "pub fn issues()")
   assert string.contains(described, "## On every seam")
 }
 
@@ -1051,7 +1068,11 @@ pub fn a_generated_surface_is_rendered_after_the_committed_ones_test() {
   let offer =
     codemode.SeamOffer(..workspace_offer(), extra_surfaces: [generated])
   let described = codemode.description(echoing_over(codemode.one_seam(offer)))
-  assert string.contains(described, generated)
+  assert string.contains(described, "### cap/mcp/github")
+  assert !string.contains(described, "pub fn create_issue")
+  let mode = echoing_over(codemode.one_seam(offer))
+  assert codemode.cap_scheme(mode).read(ctx_for("discovery"), "mcp/github")
+    == Ok(generated)
   // After the committed blocks, not instead of them.
   let assert [_before, after] = string.split(described, "### cap/mcp/github")
     as "the generated block appears exactly once"

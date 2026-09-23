@@ -19,7 +19,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import tools/codemode as codemode_tool
 import tools/directory_access
+import tools/job
 import tools/tool
 
 // A tool an extension might contribute, under whatever name the test
@@ -71,6 +73,50 @@ pub fn an_unwired_host_contributes_the_five_core_tools_test() {
     as "the built-in contributions never collide"
   assert tool.names(registry)
     == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
+}
+
+pub fn wired_host_advertises_only_its_available_virtual_reads_test() {
+  let offer =
+    codemode_tool.SeamOffer(
+      seam: codemode_tool.WorkspaceSeam,
+      allowed_imports: ["cap/fs", "cap/report"],
+      serviced_caps: ["fs.read"],
+      extra_surfaces: [],
+    )
+  let mode =
+    codemode_tool.CodeMode(
+      execute: fn(_request) { panic as "this test does not run a program" },
+      background: None,
+      seams: codemode_tool.one_seam(offer),
+      default_within_ms: 1000,
+      max_within_ms: 1000,
+    )
+  let assert Ok(registry) =
+    contributions.registry(contributions.built_in(
+      None,
+      Some(mode),
+      None,
+      None,
+      None,
+      None,
+      Some(job.unavailable()),
+    ))
+  let assert Ok(reader) = tool.lookup(registry, "fs_read")
+  assert string.contains(reader.description, "cap://<module>")
+  assert string.contains(reader.description, "job://<id>")
+  let assert Ok(core_only) =
+    contributions.registry(contributions.built_in(
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+    ))
+  let assert Ok(bare) = tool.lookup(core_only, "fs_read")
+  assert !string.contains(bare.description, "cap://")
+  assert !string.contains(bare.description, "job://")
 }
 
 pub fn the_host_makes_exactly_one_contribution_test() {

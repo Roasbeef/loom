@@ -186,6 +186,17 @@ pub fn built_in(
   // are — a host without the actor pays no cached bytes for tools that
   // could only refuse.
   let door = option.unwrap(jobs, job_tool.unavailable())
+  let read_schemes =
+    list.flatten([
+      case code_mode {
+        None -> []
+        Some(mode) -> [codemode_tool.cap_scheme(mode)]
+      },
+      case jobs {
+        None -> []
+        Some(available) -> [job_tool.scheme(available)]
+      },
+    ])
   [
     Contribution(
       origin: BuiltIn,
@@ -193,7 +204,7 @@ pub fn built_in(
         [
           bash.tool(door),
           grep.tool(),
-          fs.read_tool(),
+          fs.read_tool_with(read_schemes),
           fs.write_tool(),
           fs.edit_tool(),
         ],
