@@ -48,6 +48,8 @@ fn generated_queries() -> List(#(String, String)) {
   let #(search_entries, _, _) = sql.search_entries(text: "", limit: 0)
   let #(search_entries_in_session, _, _) =
     sql.search_entries_in_session(text: "", session_id: "", limit: 0)
+  let #(recent_entries_in_session, _, _) =
+    sql.recent_entries_in_session(session_id: "", limit: 0)
   let #(get_cursor, _, _) = sql.get_cursor(session_id: "")
   let #(search_authorized_entries, _, _) =
     sql.search_authorized_entries("", "", 0)
@@ -62,6 +64,7 @@ fn generated_queries() -> List(#(String, String)) {
     #("DeleteSessionIndex", delete_session_index),
     #("SearchEntries", search_entries),
     #("SearchEntriesInSession", search_entries_in_session),
+    #("RecentEntriesInSession", recent_entries_in_session),
     #("GetCursor", get_cursor),
     #("SearchAuthorizedEntries", search_authorized_entries),
     #("SetCursor", set_cursor),

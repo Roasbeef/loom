@@ -84,6 +84,39 @@ pub fn search_entries_in_session_decoder() -> decode.Decoder(
   decode.success(SearchEntriesInSession(session_id:, entry_id:, snippet:))
 }
 
+pub type RecentEntriesInSession {
+  RecentEntriesInSession(session_id: String, entry_id: String, snippet: String)
+}
+
+pub fn recent_entries_in_session(
+  session_id session_id: String,
+  limit limit: Int,
+) {
+  let sql =
+    "SELECT
+  session_id,
+  entry_id,
+  substr(text, 1, 160) AS snippet
+FROM entry_fts
+WHERE session_id = ?
+ORDER BY rowid DESC
+LIMIT ?"
+  #(
+    sql,
+    [dev.ParamString(session_id), dev.ParamInt(limit)],
+    recent_entries_in_session_decoder(),
+  )
+}
+
+pub fn recent_entries_in_session_decoder() -> decode.Decoder(
+  RecentEntriesInSession,
+) {
+  use session_id <- decode.field(0, decode.string)
+  use entry_id <- decode.field(1, decode.string)
+  use snippet <- decode.field(2, decode.string)
+  decode.success(RecentEntriesInSession(session_id:, entry_id:, snippet:))
+}
+
 pub type GetCursor {
   GetCursor(generation: Int, high_water: Int)
 }

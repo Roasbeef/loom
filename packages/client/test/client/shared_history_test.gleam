@@ -68,6 +68,10 @@ pub fn shared_history_fresh_membership_and_retirement_test() {
   let assert Ok(hits) = first.search("nebula", 10, tool.Repository)
     as "both live leased source databases must be readable"
   assert list.length(hits) == 2
+  let assert Ok([mine]) = first.recent(10)
+    as "a browse must list the seam's own session and no other"
+  assert mine.session == ids.session_id_to_string(a.session)
+  assert mine.entry == ids.entry_id_to_string(a_entry.id)
   assert second.read(a.session, a_entry.id) == Ok(codec.encode_entry(a_entry))
   assert first.read(b.session, b_entry.id) == Ok(codec.encode_entry(b_entry))
 
@@ -80,6 +84,8 @@ pub fn shared_history_fresh_membership_and_retirement_test() {
   let assert Error(tool.IndexRefused(_)) =
     second.search("nebula", 1, tool.Repository)
     as "a seam's own session must still belong to the current domain"
+  let assert Error(tool.IndexRefused(_)) = second.recent(1)
+    as "a browse is admitted by the same membership as a search"
 
   assert prepared.retire() == Ok(Nil)
   assert !process.is_alive(prepared.pid)

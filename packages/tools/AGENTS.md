@@ -221,7 +221,12 @@ was asked.
   (`IndexUnavailable` | `IndexRefused` | `IndexNotReady` | `IndexBusy`).
   The last two are transient and their rendered text says the request was
   fine and to send the same call again; only `IndexRefused` tells the model
-  to change the query or check the IDs. `History.read` takes canonical
+  to change the query or check the IDs. `History.recent` takes an
+  already-clamped limit and answers the calling session's newest indexed
+  entries, newest first; the tool calls it for a search with no query (or
+  a blank one) in the `session` scope, and refuses the same call in the
+  repository scope with a message naming both the search and the browse.
+  `History.read` takes canonical
   session and entry IDs and returns a complete codec entry. The host
   resolves registered source paths and validates source identity without
   acquiring a writer lease. `action=read` spills entries over 64 KiB through

@@ -313,6 +313,9 @@ fn unused_history() -> history.History {
     search: fn(_text, _limit, _scope) {
       Error(history.IndexUnavailable(reason: unused_refusal()))
     },
+    recent: fn(_limit) {
+      Error(history.IndexUnavailable(reason: unused_refusal()))
+    },
   )
 }
 

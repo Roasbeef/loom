@@ -805,6 +805,47 @@ pub fn query_in_session(
   )
 }
 
+/// The newest entries one session has indexed, newest first, with no
+/// query at all: how a session browses its own recent history.
+///
+/// FTS5 assigns rowids in insertion order and `sync` inserts a session's
+/// entries in log order, so the highest rowids are its latest entries; a
+/// resync after a generation change deletes and reinserts them in the same
+/// order. With no `MATCH` there is nothing for `snippet()` to anchor on, so
+/// each hit's excerpt is the opening of its indexed text and carries no
+/// `[`/`]` markers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.recent_in_session(search, session: id, limit: 10)
+/// ```
+///
+pub fn recent_in_session(
+  search: Search,
+  session session: SessionId,
+  limit limit: Int,
+) -> Result(List(Hit), SearchError) {
+  let #(statement, params, decoder) =
+    sql.recent_entries_in_session(
+      session_id: ids.session_id_to_string(session),
+      limit:,
+    )
+  sqlight.query(
+    statement,
+    on: search.db,
+    with: list.map(params, param_to_sqlight),
+    expecting: decoder,
+  )
+  |> result.map_error(index_fault)
+  |> result.map(
+    list.map(_, fn(row) {
+      let sql.RecentEntriesInSession(session_id:, entry_id:, snippet:) = row
+      Hit(session: session_id, entry: entry_id, snippet:)
+    }),
+  )
+}
+
 // --- the parrot bridge -----------------------------------------------------
 
 /// The documented ten-line parrot-to-sqlight parameter bridge (ADR-004):

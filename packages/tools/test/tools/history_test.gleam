@@ -45,6 +45,33 @@ fn answering(
       process.send(asked, Asked(text:, limit:, scope:))
       Ok(hits)
     },
+    recent: fn(_limit) {
+      Error(history.IndexUnavailable(
+        reason: "browsing not configured in this fixture",
+      ))
+    },
+  )
+}
+
+// A seam that answers only a browse, recording the limit it was handed. A
+// search reaching it is the bug, so it refuses with a message a failing
+// assertion would show.
+fn browsing(hits: List(history.Hit), asked: Subject(Int)) -> history.History {
+  history.History(
+    read: fn(_, _) {
+      Error(history.IndexUnavailable(
+        reason: "read not configured in this fixture",
+      ))
+    },
+    search: fn(_text, _limit, _scope) {
+      Error(history.IndexUnavailable(
+        reason: "a browse must never reach the search",
+      ))
+    },
+    recent: fn(limit) {
+      process.send(asked, limit)
+      Ok(hits)
+    },
   )
 }
 
@@ -56,6 +83,7 @@ fn refusing(refusal: history.Refusal) -> history.History {
       ))
     },
     search: fn(_text, _limit, _scope) { Error(refusal) },
+    recent: fn(_limit) { Error(refusal) },
   )
 }
 
@@ -69,6 +97,11 @@ fn unreachable() -> history.History {
       ))
     },
     search: fn(_text, _limit, _scope) {
+      Error(history.IndexUnavailable(
+        reason: "this test's seam must never be called",
+      ))
+    },
+    recent: fn(_limit) {
       Error(history.IndexUnavailable(
         reason: "this test's seam must never be called",
       ))
@@ -227,13 +260,93 @@ pub fn no_limit_takes_the_default_test() {
 pub fn an_empty_query_is_refused_in_band_test() {
   let outcome = run(unreachable(), [#("query", json.String(""))])
   assert outcome.is_error
-  assert string.contains(text_of(outcome), "`query` is empty")
+  assert string.contains(text_of(outcome), "`query` is required")
 }
 
 pub fn a_whitespace_query_is_refused_in_band_test() {
   let outcome = run(unreachable(), [#("query", json.String("   \n\t "))])
   assert outcome.is_error
-  assert string.contains(text_of(outcome), "`query` is empty")
+  assert string.contains(text_of(outcome), "`query` is required")
+}
+
+/// The refusal names the browse, since a model that sends no query is
+/// usually asking for its own recent history, and a refusal that offers
+/// only the search leaves it retrying the same call.
+pub fn a_repository_call_without_a_query_names_the_browse_test() {
+  let outcome = run(unreachable(), [#("limit", json.Int(5))])
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "{\"scope\":\"session\"}")
+}
+
+// --- browsing this session ---------------------------------------------------
+
+/// The call the model made when the tool had no browse: `scope: session`
+/// with no query. It now lists the session's newest entries, fenced as
+/// quoted history like every search result.
+pub fn a_session_call_without_a_query_browses_test() {
+  let asked = process.new_subject()
+  let hits = [
+    history.Hit(session: "s1", entry: "e3", snippet: "newest words"),
+    history.Hit(session: "s1", entry: "e2", snippet: "older words"),
+  ]
+  let outcome =
+    run(browsing(hits, asked), [
+      #("action", json.String("search")),
+      #("scope", json.String("session")),
+      #("limit", json.Int(15)),
+    ])
+  let assert Ok(limit) = process.receive(asked, within: 100)
+  let text = text_of(outcome)
+
+  assert !outcome.is_error
+  assert limit == 15
+  assert string.contains(text, "2 entries from this session's history")
+  assert string.contains(text, history.fence)
+  assert string.contains(text, "1. session s1 entry e3\n   newest words")
+}
+
+/// A blank query in the session scope is the same browse as an absent one.
+pub fn a_blank_session_query_browses_test() {
+  let asked = process.new_subject()
+  let _outcome =
+    run(browsing([], asked), [
+      #("query", json.String("  ")),
+      #("scope", json.String("session")),
+    ])
+  let assert Ok(limit) = process.receive(asked, within: 100)
+  assert limit == history.default_limit
+}
+
+/// The browse's limit reaches the index through the same clamp as a
+/// search's, which is what keeps a negative limit from reading as SQL's
+/// unbounded.
+pub fn a_browse_limit_is_clamped_test() {
+  let asked = process.new_subject()
+  let _outcome =
+    run(browsing([], asked), [
+      #("scope", json.String("session")),
+      #("limit", json.Int(-3)),
+    ])
+  let assert Ok(limit) = process.receive(asked, within: 100)
+  assert limit == history.min_limit
+}
+
+pub fn an_empty_browse_is_not_an_error_test() {
+  let outcome =
+    run(browsing([], process.new_subject()), [
+      #("scope", json.String("session")),
+    ])
+  assert !outcome.is_error
+  assert string.contains(text_of(outcome), "no indexed history yet")
+}
+
+pub fn a_browse_refusal_is_rendered_in_band_test() {
+  let outcome =
+    run(refusing(history.IndexBusy(reason: "serving a sibling")), [
+      #("scope", json.String("session")),
+    ])
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "send the same call again")
 }
 
 pub fn a_query_is_trimmed_before_it_reaches_the_index_test() {
@@ -517,10 +630,7 @@ pub fn exact_inline_json_preserves_fences_and_literal_escape_sequences_test() {
 pub fn a_missing_search_query_returns_a_corrective_example_test() {
   let outcome = run(unreachable(), [])
   assert outcome.is_error
-  assert string.contains(
-    text_of(outcome),
-    "search requires {\"query\":\"words to find\"}",
-  )
+  assert string.contains(text_of(outcome), "{\"query\":\"timeout retry\"}")
   assert string.contains(
     text_of(outcome),
     "action=read with session and entry IDs",
