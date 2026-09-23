@@ -65,8 +65,9 @@ pub fn code_mode_guidance_matches_the_full_default_surface_test() {
   assert string.contains(text, "seam selects workspace")
   assert string.contains(text, "cap/peer needs a directional grant")
   assert string.contains(text, "workflow.step needs background launch")
-  assert string.contains(text, "read `cap://` with `fs_read`")
-  assert string.contains(text, "`job://<id>` reads")
+  assert string.contains(text, "fs_read: cap:// lists modules")
+  assert string.contains(text, "cap://<module> gives signatures")
+  assert string.contains(text, "job:// polls without waiting")
   assert !string.contains(text, "workspace for files/processes")
 }
 

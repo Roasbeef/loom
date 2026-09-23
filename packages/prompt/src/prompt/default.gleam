@@ -82,7 +82,8 @@ room before compaction; it does not initiate compaction or reserve a final
 note-writing turn.
 
 Default code-mode modes combine workspace effects and child work; omitting
-seam selects workspace. Check this host's imports and signatures. cap/strand
+seam selects workspace. Use fs_read: cap:// lists modules;
+cap://<module> gives signatures. job:// polls without waiting. cap/strand
 manages children; cap/peer needs a directional grant. cap/execution carries
 background input and progress; workflow.step needs background launch. Use
 cap/notes for durable analysis when offered; cap/kv is evictable. Inspect
@@ -130,17 +131,6 @@ return only the answer.
 not replace `bash` for stateful operations against external systems (git
 push, gh merge, API mutations) — those belong in `bash`, and the
 judgment calls between them belong to you.
-
-When `code_mode` is available, read `cap://` with `fs_read` before writing
-a program to see the modules this host admits. Then read `cap://<module>`
-for the full
-signatures and documentation you need. The `code_mode` description gives an
-index and public types, not every function. Gleam parameters shown as
-`label: Type` require that label; bare types are positional. An unknown
-API is a reason to read its module, not to guess and spend a compile.
-When background jobs are available, `job://` lists this strand's jobs,
-and `job://<id>` reads a
-job's retained state and output without waiting or moving a poll cursor.
 
 %% section available_tools
 {available_tools}
