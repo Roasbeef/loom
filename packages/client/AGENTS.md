@@ -1897,7 +1897,8 @@ catalogue without opening runtimes. Explicit admission invokes
   name. `code_mode` is `BuiltIn` and gated on its plane, exactly as
   `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
-  Option(History), Option(Memory), Option(Schedules), Option(Context))`
+  Option(History), Option(Memory), Option(Schedules), Option(Context),
+  Option(Jobs))`
   — the host's own single contribution: five core tools, plus the six
   `agent_*` tools only when a messaging plane exists, plus `code_mode`
   only when this host wired a code-mode pipeline, plus `history_search`
@@ -1907,7 +1908,9 @@ catalogue without opening runtimes. Explicit admission invokes
   `context_remaining` over `client/checkpoint.remaining_seam` — the one
   seam every served session has, so its `Option` is for a registry built
   with no session behind it. A plane that is absent contributes nothing
-  at all.
+  at all. When code mode or jobs is available, the built-in `fs_read` also
+  receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
+  reuse those planes and add no separate registry entry.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one

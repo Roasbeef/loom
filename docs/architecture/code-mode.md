@@ -620,74 +620,61 @@ session.
 
 ### What the description tells a model about the prelude
 
-A model writes a program **blind**. It has no autocomplete, no hover and
-no language server; it emits source and submits it. While the
-description listed only module *names*, the compiler was the only source
-of a signature, and the model reached it only by being wrong first: a
-`CompileFailed` round trip, carrying a whole hermetic build, to learn
-that `proc.run` takes a `Command` rather than a `String`. The design note
-`docs/design-notes/tool-search-and-code-mode.md` put it this way: the
-module namespace is the discovery index and the compiler is the schema
-oracle, and the index is listed for free while the oracle is reachable
-only by being wrong first.
+The model has no autocomplete or language server when it writes a program.
+The `code_mode` description therefore lists the modules the host admits and
+their public types, including constructors and record fields. To get function
+signatures, constants, and documentation, it calls the existing `fs_read` tool
+with `cap://<module>`. For example, `cap://fs` returns the full `cap/fs`
+surface, and bare `cap://` lists the readable modules. The prompt names this
+path explicitly. A model can check a signature before writing a program
+instead of using a failed compilation as its first lookup.
 
-The description now includes the signatures. Every module a seam admits
-is rendered into it in full: `pub type` declarations with their
-constructors and fields, `pub const`, and `pub fn` signatures, each under
-the prelude's own `///` documentation. The model reads the contract
-before it writes, rather than after it is refused. Four decisions shaped
-the rendering.
+The split keeps module names and record shapes in the cached tool description.
+Those facts are needed to choose an import and handle a result. Full function
+declarations appear only when requested, in the conversation tail. No new tool
+definition is registered: `fs_read` routes registered `://` schemes before
+filesystem path resolution. An unknown scheme is refused by name and never
+retried as a file. Virtual text uses the usual `offset` and `limit` window and
+inline byte ceiling, without file edit anchors or a digest. Ordinary file reads
+still resolve through the session's path-access boundary and still return image
+blocks for PNG, JPEG, GIF, and WebP.
 
-**It is static, not a tool.** The original proposal was a
-`code_mode_signatures(module)` tool, rejected on the cache arithmetic.
-Tool bytes render ahead of the system prompt and are the byte prefix of
-the provider's one-hour cached region. A static rendering is written once
-per cache lifetime and read at about a tenth of base input on every later
-request. A tool costs a round trip *every* time the model wants a
-signature: a request/response cycle, output tokens, latency, and the
-model having to know to ask before writing. The static rendering adds
-nothing to the tool array and nothing that varies between turns, so the
-arithmetic that note prices is untouched.
-
-**It is generated at build time, and drift is a build failure.**
+**The declarations are generated at build time, and drift is a build failure.**
 `make gen-prelude` runs `gleam export package-interface` over
-`packages/cap`, renders the result with `scripts/gen-prelude.py`, and
-commits it as `tools/prelude`. The package interface is the compiler's
-own account of what it will accept, so the description cannot describe a
-prelude the hermetic build would reject. `scripts/gen-prelude.sh --check`
-runs inside `make check` and refuses a tree where the artifact and its
-inputs disagree, naming the file that moved and the command that fixes
-it. The gate is a digest comparison and nothing more, so it needs no
-toolchain and costs nothing to run constantly. Regeneration is the step
-that needs `gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
+`packages/cap` — the compiler's own account of what it will accept, so
+the description and virtual read cannot describe a prelude the hermetic
+build would reject. `scripts/gen-prelude.py` renders each module twice:
+`prelude.surfaces` contains its full public surface, while
+`prelude.type_surfaces` is a character-for-character prefix ending after
+its type declarations. `scripts/gen-prelude.sh --check` runs inside `make
+check` and refuses a tree where the artifact and its inputs have parted
+company, naming the file that moved and the command that fixes it. The
+gate is digest comparison and nothing more, so it needs no toolchain and
+costs nothing to run constantly; regeneration is the step that needs
+`gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
 
-**It is filtered through the allowlist, not through the package.**
-`package-interface` reports the public modules. All three allowlists
-exclude `cap/runtime`, the satellite's trusted boot runtime, and
-`cap/mcp`, the types-only vocabulary a generated façade imports.
-`tools/codemode` selects from the artifact using each `SeamOffer`'s own
-`allowed_imports`, the same list vetting judges against, so a module
-vetting will reject is never advertised. Advertising one would be the
-same error as classifying a submission by reading its imports: the model
-would write against a module it cannot import and read a refusal it has
-no way to understand.
+**Discovery is filtered through the offered seams.**
+`package-interface` reports the public modules. All three allowlists exclude
+`cap/runtime`, the satellite's trusted boot runtime, and `cap/mcp`, the types-only
+vocabulary a generated façade imports. `tools/codemode` selects both the
+description and `cap://` answers through each offered `SeamOffer`'s
+`allowed_imports`, the same list vetting judges against. Host-generated MCP
+façades are indexed by their heading and read in full through `cap://mcp/<server>`.
+Neither path advertises a module the host refuses.
 
-**Each seam pays only for what it adds.** The signatures follow the same
-split as the import lists: modules on every offered seam are rendered
-once under a shared heading, and each seam renders only its own. The
-default host renders the full shared program surface once, including
-configured MCP façades.
+**Each seam pays only for what it adds.** Modules admitted by every offered
+seam appear once under a shared heading. A mode-specific module appears only
+under that mode. The default server shares its full capability set between
+workspace and orchestration, so it prints that index once. Configured MCP
+façades contribute an index line in the description and their complete
+declarations through discovery.
 
-Before the Protocol 048 additions, the measured description sizes were
-17,678 bytes for a workspace-only host, 15,205 for an orchestration-only
-host, and 28,818 for a host serving both: roughly 4,400, 3,800 and 7,200
-tokens. About half of that is the `pub type` declarations. The estimate
-this work was scoped against did not include them, but they are not
-optional: `proc.run` returns a `proc.Output`, and a program that cannot
-name the `stdout` field cannot read the output it just paid for.
-`scripts/gen-prelude.py` argues what was deliberately left out, with the
-bytes each omission saves: the `## Examples` doctests, and all but the
-first sentence of each module's own doc.
+`job://` uses the same `fs_read` routing for background-job observation.
+Bare `job://` lists the calling strand's jobs. `job://<id>` polls one job with
+zero wait from the beginning of its retained output. It carries no cursor and
+does not advance `job_poll`; callers that need to block or read only new output
+still use `job_poll`. Both virtual namespaces are registered only when their
+backing code-mode or jobs plane exists.
 
 `docs/examples/fan_out_review.gleam` is the worked orchestration sample,
 run verbatim by

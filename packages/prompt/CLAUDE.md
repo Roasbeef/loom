@@ -288,3 +288,9 @@ agent orchestration. It names workspace as the default mode and directs the
 model to the tool's actual host imports and signatures. It flags partial
 strand.map outcomes and names granted peer
 messages and background-only workflow steps when their modules are offered.
+
+Version 9 tells the agent to use `fs_read` at `cap://` and
+`cap://<module>` before writing a code-mode program. It explains labelled
+versus positional Gleam parameters and names `job://` as a non-blocking,
+cursor-free job read. These are build-constant tool-discipline instructions;
+the installed tool descriptions determine which namespaces a host serves.
