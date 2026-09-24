@@ -54,7 +54,7 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` (`tui.gleam:4799`) is three steps:
+`update` (`tui.gleam:4807`) is three steps:
 
 1. `recording.note_input` writes the raw event to the `--record` file, if one
    is open, before anything interprets it.
@@ -67,7 +67,7 @@ and `view` draws a frame from it.
    determines whether to paint a fresh frame.
 
 `Tick` is the event etui delivers when a poll times out with no input, so it
-is where socket traffic enters the model. `update_tick` (`tui.gleam:5015`)
+is where socket traffic enters the model. `update_tick` (`tui.gleam:5026`)
 drains, in order, the replay inbox, the session-switch and candidate
 attachment results, control replies, the reconnect outcome, and up to 64
 messages from the conversation socket. `settle_tick` then services the
@@ -244,7 +244,7 @@ the phase diagram and the push rules; this document does not repeat them.
 
 The channel reports to the model as `session_channel.Update` values, and
 `apply_channel_update` folds each one in. `Captured` carries a new cut to
-`reconcile_cut` and then `render_cut` (`tui.gleam:6628`). `Streamed` and
+`reconcile_cut` and then `render_cut` (`tui.gleam:6639`). `Streamed` and
 `ToolStreamed` feed the transient region. `HistoryPage` feeds scrollback.
 `LookedUp` answers exact approval lookups. `RequestRefused` carries the command
 name and request ID, so a refusal settles only the request it answers.
