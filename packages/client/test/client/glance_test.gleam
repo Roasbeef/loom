@@ -110,9 +110,12 @@ pub fn a_sub_agent_step_writes_a_glance_and_main_does_not_test() {
 // machine's own wake asks once the interval has passed, reusing the title
 // it already wrote and asking only for the "now" line. Deleting the wake's
 // arming fails this test, which is what makes the timer a tested one
-// (`docs/weft.md` rule 7).
+// (`docs/weft.md` rule 7). The interval is wide enough that the scripted
+// first round trip cannot outlast it even on a loaded box: if it did, the
+// second step would launch on its own arrival and the test would pass with
+// no timer at all.
 pub fn a_later_step_is_summarized_on_the_wake_test() {
-  let pace = glancepace.Pace(..glancepace.default_pace, every_ms: 400)
+  let pace = glancepace.Pace(..glancepace.default_pace, every_ms: 1500)
   let assert Ok(rig) = a_rig(pace, wall_clock()) as "the glance rig must open"
   let hooked = glance.hooks(hooks.build(hooks.new()), rig.name)
 
