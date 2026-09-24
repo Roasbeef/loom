@@ -276,9 +276,19 @@ pub fn next_clock(
 ) -> Clock {
   let kept = option.unwrap(previous, Clock(operation, None, 0, now_ms))
   let anchored = option.map(current, fn(seen) { seen.at })
+
+  // The daemon measured `seen.at - started` when it wrote the glance, and
+  // the terminal sees it a capture later, so the measurement is always a
+  // little behind. Taking the larger of it and the running figure keeps the
+  // drawn time from stepping backwards at each re-anchor.
   case current, started {
     Some(seen), Some(started) if kept.glance_at != anchored ->
-      Clock(operation, anchored, int.max(0, seen.at - started), now_ms)
+      Clock(
+        operation,
+        anchored,
+        int.max(seen.at - started, elapsed_ms(kept, now_ms)),
+        now_ms,
+      )
     _, _ -> kept
   }
 }
@@ -542,6 +552,18 @@ pub fn enter(state: State, lines: List(Line), active: String) -> State {
     Ok(id), _ | Error(Nil), [id, ..] -> State(..state, focus: Browsing(id))
     Error(Nil), [] -> state
   }
+}
+
+/// Hands the keyboard back to the composer, keeping everything observed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_strip.leave(agent_strip.new()).focus == agent_strip.Composing
+/// ```
+@internal
+pub fn leave(state: State) -> State {
+  State(..state, focus: Composing)
 }
 
 /// Answers one key while the strip holds the keyboard.

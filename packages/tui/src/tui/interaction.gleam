@@ -344,6 +344,14 @@ fn retire_previous(model: Model) -> Model {
 }
 
 fn update_key(key: keys.Key, model: Model) -> Model {
+  // The strip owns the keyboard only while nothing else is in front of it.
+  // An overlay, including an approval the daemon opened on its own, takes
+  // the cursor out of the strip, so closing it leaves the composer, not a
+  // cursor waiting to turn the next Enter into a strand switch.
+  let model = case strip_covered(model) {
+    True -> Model(..model, strip: agent_strip.leave(model.strip))
+    False -> model
+  }
   case model.context.surface {
     context_view.Overview | context_view.All -> update_context_key(key, model)
     context_view.Hidden -> update_key_without_context(key, model)
@@ -852,9 +860,18 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
-  case model.strip.focus {
-    agent_strip.Browsing(_) -> update_strip_key(key, model)
-    agent_strip.Composing -> update_main_key_composing(key, model)
+  case model.strip.focus, layout.strip_height(model) > 0 {
+    agent_strip.Browsing(_), True -> update_strip_key(key, model)
+
+    // Every agent settled while the cursor was in the strip, so the strip
+    // is gone. The keyboard returns to the composer with this key, rather
+    // than an invisible cursor taking an Enter the operator meant to send.
+    agent_strip.Browsing(_), False ->
+      update_main_key_composing(
+        key,
+        Model(..model, strip: agent_strip.leave(model.strip)),
+      )
+    agent_strip.Composing, _ -> update_main_key_composing(key, model)
   }
 }
 
@@ -967,6 +984,13 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
       }
     _, _, _ -> update_main_key_without_palette(key, model)
   }
+}
+
+fn strip_covered(model: Model) -> Bool {
+  model.overlay != NoOverlay
+  || model.context.surface != context_view.Hidden
+  || model.queue_editor.surface != queue_editor.Closed
+  || model.summary_surface != queue_editor.Closed
 }
 
 // Down walks forward through prompt history while the operator is browsing

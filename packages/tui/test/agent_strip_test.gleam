@@ -7,6 +7,7 @@ import core/clock
 import core/glance.{Glance}
 import core/ids
 import core/json
+import core/message
 import core/register
 import etui/backend
 import etui/geometry
@@ -23,11 +24,15 @@ import tui/agent_strip.{
   Select, Stop, Unchanged, Up,
 }
 import tui/agent_view
+import tui/agents
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/render
+import tui/session_channel
+import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
 
@@ -526,7 +531,7 @@ pub fn escape_and_up_from_the_top_hand_the_keyboard_back_test() {
     tui_model.Model(..model(), strands: roster())
     |> sized(120, 30)
     |> press("down")
-  assert { browsing |> press("escape") }.strip.focus == Composing
+  assert { browsing |> press("esc") }.strip.focus == Composing
   let top = browsing |> press("up")
   assert top.strip.focus == Browsing("main")
   assert { top |> press("up") }.strip.focus == Composing
@@ -564,4 +569,149 @@ pub fn x_stops_the_selected_agent_without_retargeting_test() {
   assert stopped.active_strand == "main"
   assert stopped.notice == "stopping sub:main/audit-panics-1a2b3c"
   assert stopped.strip.focus == Browsing("sub:main/audit-panics-1a2b3c")
+}
+
+// The re-anchor to a glance lands a capture after the daemon measured it,
+// so the measurement trails the running figure; the drawn time must not
+// step backwards at that moment.
+pub fn a_re_anchor_never_steps_the_elapsed_time_backwards_test() {
+  let running = agent_strip.Clock("op", None, 0, 0)
+  let seen = Glance("op", "t", "s", 1_099_700, 0)
+  let anchored =
+    agent_strip.next_clock(
+      Some(running),
+      "op",
+      Some(seen),
+      Some(1_000_000),
+      100_000,
+    )
+  assert agent_strip.elapsed_ms(anchored, 100_000) == 100_000
+}
+
+// An overlay the daemon opens on its own, such as an approval, takes the
+// cursor out of the strip; closing it must leave the composer holding the
+// keyboard, not a cursor that turns the next Enter into a strand switch.
+pub fn an_overlay_takes_the_keyboard_out_of_the_strip_test() {
+  let browsing =
+    tui_model.Model(
+      ..model(),
+      strands: roster(),
+      input: textarea.state_from_string("send me"),
+    )
+    |> sized(120, 30)
+    |> press("down")
+  assert browsing.strip.focus == Browsing("sub:main/audit-panics-1a2b3c")
+  let covered =
+    tui_model.Model(
+      ..browsing,
+      overlay: tui_model.AgentInspector(agents.inspect("main")),
+    )
+  let closed = covered |> press("esc")
+  assert closed.overlay == tui_model.NoOverlay
+  assert closed.strip.focus == Composing
+  let sent = closed |> press("enter")
+  assert sent.active_strand == "main"
+  assert textarea.value(sent.input) == ""
+}
+
+// Every agent settles while the cursor rests in the strip, so the strip is
+// no longer drawn; the next Enter is the composer's.
+pub fn a_strip_that_disappears_returns_the_keyboard_test() {
+  let browsing =
+    tui_model.Model(
+      ..model(),
+      strands: roster(),
+      input: textarea.state_from_string("send me"),
+    )
+    |> sized(120, 30)
+    |> press("down")
+  let settled =
+    tui_model.Model(..browsing, strands: [
+      protocol.Strand("main", Some("main"), None),
+    ])
+  let sent = settled |> press("enter")
+  assert sent.strip.focus == Composing
+  assert sent.active_strand == "main"
+  assert textarea.value(sent.input) == ""
+}
+
+pub fn x_on_an_idle_primary_stops_nothing_test() {
+  let stopped =
+    tui_model.Model(..model(), strands: roster())
+    |> sized(120, 30)
+    |> press("down")
+    |> press("up")
+    |> press("x")
+  assert stopped.strip.focus == Browsing("main")
+  assert stopped.notice == "nothing is running"
+}
+
+// The whole path the daemon's glance takes to the screen: a capture whose
+// metadata carries a live sub-agent operation and its glance cell reaches
+// `render_cut`, and the strip row and the opened agent's badge show the
+// model-written words rather than the deterministic fallback.
+pub fn a_captured_glance_reaches_the_strip_and_the_badge_test() {
+  let current = op_id(1)
+  let child = "sub:main/audit-panics-1a2b3c"
+  let seen =
+    Glance(current, "Audit funding panics", "Reading manager.go", 5000, 58_200)
+  let live =
+    snapshot_view.View(
+      ..view([#(child, current)], [
+        snapshot_view.Cell(
+          register.OpState,
+          current,
+          1,
+          codec.encode_state(running_state()),
+        ),
+        meta_cell(1, 1000),
+        glance_cell(child, seen),
+      ]),
+      strands: [
+        protocol.Strand("main", Some("main"), None),
+        protocol.Strand(child, None, Some("assistant")),
+      ],
+    )
+  let initial = model() |> sized(120, 30)
+  let cut =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected(initial.session, "epoch", "instance"),
+        "peer",
+        message.Origin("operator", "Operator"),
+        snapshot.Owner,
+      ),
+      1,
+      json.Object([]),
+      snapshot.empty(),
+      None,
+    )
+  let captured =
+    inbound.apply_channel_update(
+      initial,
+      session_channel.Captured(cut, live, session_channel.Notified),
+    )
+  let text = painted(captured, 120, 30)
+  assert string.contains(text, "audit-panics")
+  assert string.contains(text, "Reading manager.go")
+  assert string.contains(text, "58.2k ctx")
+
+  let opened = captured |> press("down") |> press("enter")
+  assert opened.active_strand == child
+  assert string.contains(painted(opened, 120, 30), " Audit funding panics ")
+}
+
+fn running_state() -> operation.OperationState {
+  operation.RunState(
+    operation.Running,
+    operation.RunSettings(
+      operation.CompactionSettings(False, 0, 0),
+      operation.ConsumeAll,
+      operation.ConsumeAll,
+      operation.Parallel,
+    ),
+    operation.Starting,
+    operation.Inbox([], [], []),
+    None,
+  )
 }
