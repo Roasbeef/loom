@@ -9,6 +9,7 @@ import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
 import etui/span
+import etui/style
 import etui/text
 import etui/widgets/block
 import etui/widgets/paragraph
@@ -21,6 +22,7 @@ import tui/agents
 import tui/daemon/protocol.{
   type PeerWake, type Session, BusyOnly, MayWake, Resident,
 }
+import tui/session_selector
 import tui/text_hygiene
 import tui/theme
 
@@ -102,6 +104,27 @@ pub type Proposal {
   )
 }
 
+/// The view to resume when peer management closes.
+pub type ReturnTo {
+  /// Return to the attached conversation.
+  Conversation
+
+  /// Return to the same agent selection.
+  Agents(inspector: agents.Inspector)
+
+  /// Return to the same session catalogue page and selection.
+  Sessions(selector: session_selector.State)
+}
+
+/// The step that opened the current target-strand editor.
+pub type TargetEntry {
+  /// The session selector supplied the target directly.
+  SessionRow
+
+  /// Peer management's own chooser supplied the target.
+  PeerChooser
+}
+
 /// Modal state owned by the terminal until close or an explicit action.
 pub type State {
   State(
@@ -123,6 +146,10 @@ pub type State {
     selected_grant: Int,
     /// Highlighted target session while choosing a new link.
     selected_session: Int,
+    /// Target captured before a catalogue refresh can replace its page.
+    selected_target: Option(Session),
+    /// Where Escape from the target editor must return.
+    target_entry: TargetEntry,
     /// Local draft for the target strand; never borrows the composer buffer.
     target_strand: String,
     /// Restrictive default, changed only by an explicit operator key.
@@ -133,8 +160,8 @@ pub type State {
     notice: String,
     /// Mutation acknowledgement retained across the following inspection.
     operation_result: Option(String),
-    /// Agent workspace to resume after this modal, with its cursor intact.
-    return_to: Option(agents.Inspector),
+    /// Caller to resume after this modal, with its selection intact.
+    return_to: ReturnTo,
   )
 }
 
@@ -180,12 +207,14 @@ pub fn new(source_session: String, source_strand: String) -> State {
     next_cursor: None,
     selected_grant: 0,
     selected_session: 0,
+    selected_target: None,
+    target_entry: PeerChooser,
     target_strand: "",
     wake: BusyOnly,
     prompt: Browsing,
     notice: "loading peer grants",
     operation_result: None,
-    return_to: None,
+    return_to: Conversation,
   )
 }
 
@@ -200,7 +229,29 @@ pub fn from_agent(
   source_session: String,
   inspector: agents.Inspector,
 ) -> State {
-  State(..new(source_session, inspector.selected), return_to: Some(inspector))
+  State(..new(source_session, inspector.selected), return_to: Agents(inspector))
+}
+
+/// Starts a link from the attached strand to the selected session row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = peer_links.from_session("source", "main", selector, target)
+/// ```
+pub fn from_session(
+  source_session: String,
+  source_strand: String,
+  selector: session_selector.State,
+  target: Session,
+) -> State {
+  State(
+    ..new(source_session, source_strand),
+    selected_target: Some(target),
+    target_entry: SessionRow,
+    prompt: EditingTargetStrand,
+    return_to: Sessions(selector),
+  )
 }
 
 /// Replaces catalogue and grant observations after a successful control read.
@@ -416,7 +467,13 @@ fn update_session_choice(key: keys.Key, state: State) -> Action {
           case is_resident(row) {
             True ->
               Continue(
-                State(..state, prompt: EditingTargetStrand, target_strand: ""),
+                State(
+                  ..state,
+                  prompt: EditingTargetStrand,
+                  selected_target: Some(row),
+                  target_entry: PeerChooser,
+                  target_strand: "",
+                ),
               )
             False ->
               Continue(
@@ -452,7 +509,11 @@ fn update_session_choice(key: keys.Key, state: State) -> Action {
 
 fn update_target_strand(key: keys.Key, state: State) -> Action {
   case key {
-    keys.Escape -> Continue(State(..state, prompt: ChoosingSession))
+    keys.Escape ->
+      case state.target_entry {
+        SessionRow -> Close
+        PeerChooser -> Continue(State(..state, prompt: ChoosingSession))
+      }
     keys.Enter ->
       case string.byte_size(state.target_strand) > 0 {
         True -> Continue(State(..state, prompt: Confirming(proposal(state))))
@@ -497,7 +558,14 @@ fn update_confirmation(
   pending: Proposal,
 ) -> Action {
   case key {
-    keys.Escape -> Continue(State(..state, prompt: EditingTargetStrand))
+    keys.Escape ->
+      case
+        pending.source_session == state.source_session
+        && pending.source_strand == state.source_strand
+      {
+        True -> Continue(State(..state, prompt: EditingTargetStrand))
+        False -> Continue(State(..state, prompt: Browsing))
+      }
     keys.Left | keys.Right | keys.Tab ->
       Continue(
         State(..state, wake: case state.wake {
@@ -532,8 +600,9 @@ fn update_confirmation(
 /// let frame = peer_links.render(buffer, screen, state)
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
-  let width = int.max(1, int.min(100, screen.size.width - 4))
-  let height = int.max(7, int.min(22, screen.size.height - 2))
+  let width = int.max(1, int.min(88, screen.size.width - 4))
+  let desired = list.length(render_lines(state, width - 2, 1000)) + 2
+  let height = int.max(7, int.min(int.min(desired, 22), screen.size.height - 2))
   let area = geometry.centered_rect(width, height, screen)
   let frame =
     block.block_new()
@@ -556,11 +625,8 @@ fn render_lines(state: State, width: Int, height: Int) {
   let content = case state.prompt {
     Browsing -> listing_lines(state, width)
     ChoosingSession -> session_lines(state, width)
-    EditingTargetStrand -> [
-      plain("Target strand: " <> state.target_strand <> "▏"),
-      quiet("Type the exact strand name · Enter continues · Esc returns"),
-    ]
-    Confirming(proposal) -> confirmation_lines(state, proposal)
+    EditingTargetStrand -> editor_lines(state, width)
+    Confirming(proposal) -> confirmation_lines(state, proposal, width)
   }
   let footer = case state.prompt {
     Browsing -> {
@@ -569,18 +635,16 @@ fn render_lines(state: State, width: Int, height: Int) {
         None -> ""
       }
       quiet(
-        "↑↓ select · d revoke · l link · v reverse · r refresh · p from agents"
+        "↑↓ select · d revoke · l link · v reverse · r refresh"
         <> continuation
         <> " · Esc close",
       )
     }
     ChoosingSession ->
       quiet("↑↓ select resident · Enter · n load more · Esc back")
-    EditingTargetStrand -> quiet("Exact strand name · Enter review · Esc back")
+    EditingTargetStrand -> quiet("Enter review · Esc back")
     Confirming(_) ->
-      quiet(
-        "←→ or Tab wake permission · Enter create this direction · Esc back",
-      )
+      quiet("←→ or Tab change wake · Enter create link · Esc back")
   }
   let result = case state.operation_result {
     Some(message) -> [quiet(text.truncate(message, width, "…"))]
@@ -628,7 +692,12 @@ fn row_viewport(content, selected: Int, row_height: Int, room: Int) {
 fn listing_lines(state: State, width: Int) {
   let rows = grants(state.inspection)
   let header =
-    quiet("Source " <> state.source_session <> "/" <> state.source_strand)
+    plain(
+      "Links for "
+      <> session_label(state, state.source_session)
+      <> " / "
+      <> state.source_strand,
+    )
   let rendered =
     list.index_map(rows, fn(grant, index) { #(grant, index) })
     |> list.flat_map(fn(pair) {
@@ -649,7 +718,7 @@ fn listing_lines(state: State, width: Int) {
         Unavailable(reason) -> "unavailable: " <> reason
       }
       [
-        quiet(text.truncate(
+        row_line(
           marker
             <> direction
             <> "from "
@@ -657,8 +726,9 @@ fn listing_lines(state: State, width: Int) {
             <> "/"
             <> grant.source_strand,
           width,
-          "…",
-        )),
+          state.selected_grant,
+          index,
+        ),
         quiet(text.truncate(
           "    to "
             <> grant.target_session
@@ -677,11 +747,11 @@ fn listing_lines(state: State, width: Int) {
     [] -> [
       header,
       quiet("No incoming or outgoing grants for this strand."),
-      quiet("Each page is fresh; the daemon rechecks every mutation."),
+      quiet("Press l to link another resident session."),
     ]
     rows -> [
       header,
-      quiet("Each page is fresh; the daemon rechecks every mutation."),
+      quiet("Select a direction to revoke or add its reverse."),
       ..rows
     ]
   }
@@ -701,11 +771,12 @@ fn session_lines(state: State, width: Int) {
         _ -> "unavailable · saved sessions are not opened here"
       }
       [
-        quiet(text.truncate(
+        row_line(
           marker <> row.name <> " · " <> availability,
           width,
-          "…",
-        )),
+          state.selected_session,
+          index,
+        ),
         quiet(text.truncate("    id " <> row.session_id, width, "…")),
         quiet(text.truncate("    workspace " <> row.workspace, width, "…")),
       ]
@@ -718,22 +789,56 @@ fn session_lines(state: State, width: Int) {
   }
 }
 
-fn confirmation_lines(state: State, pending: Proposal) {
-  [
-    plain(
-      "Grant "
-      <> pending.source_session
-      <> "/"
-      <> pending.source_strand
-      <> " → "
-      <> pending.target_session
-      <> "/"
-      <> pending.target_strand,
-    ),
-    plain("Wake permission: " <> wake_choice_label(state.wake)),
-    quiet("busy_only means during an active run"),
-    quiet("may_wake also starts an idle strand"),
-  ]
+fn editor_lines(state: State, width: Int) {
+  [plain("From  " <> session_label(state, state.source_session))]
+  |> list.append(wrapped_identity(
+    state.source_session,
+    state.source_strand,
+    width,
+  ))
+  |> list.append([plain("To    " <> target_label(state))])
+  |> list.append(wrapped_identity(target_identity(state), "", width))
+  |> list.append([plain("Receiving strand")])
+  |> list.append(wrapped_field(state.target_strand <> "▏", width))
+}
+
+fn confirmation_lines(state: State, pending: Proposal, width: Int) {
+  [plain("From  " <> session_label(state, pending.source_session))]
+  |> list.append(wrapped_identity(
+    pending.source_session,
+    pending.source_strand,
+    width,
+  ))
+  |> list.append([
+    plain("To    " <> session_label(state, pending.target_session)),
+  ])
+  |> list.append(wrapped_identity(
+    pending.target_session,
+    pending.target_strand,
+    width,
+  ))
+  |> list.append([
+    plain("Wake  " <> wake_choice_label(state.wake)),
+    quiet(case state.wake {
+      BusyOnly -> "Senders can reach this strand during an active run."
+      MayWake -> "A message may start the recipient strand."
+    }),
+  ])
+}
+
+fn wrapped_identity(session: String, strand: String, width: Int) {
+  let strand_lines = case strand {
+    "" -> []
+    _ -> wrapped_field("Strand: " <> strand, width)
+  }
+  list.append(wrapped_field("Session: " <> session, width), strand_lines)
+}
+
+fn wrapped_field(value: String, width: Int) {
+  value
+  |> text_hygiene.single_line
+  |> text.wrap(int.max(1, width))
+  |> list.map(quiet)
 }
 
 /// Decodes one owner-only inspect page into exact directions.
@@ -851,8 +956,8 @@ fn same_grant(left: Grant, right: Grant) -> Bool {
 }
 
 fn proposal(state: State) -> Proposal {
-  case item_at(state.sessions, state.selected_session) {
-    Ok(row) ->
+  case state.selected_target {
+    Some(row) ->
       Proposal(
         source_session: state.source_session,
         source_strand: state.source_strand,
@@ -860,7 +965,7 @@ fn proposal(state: State) -> Proposal {
         target_strand: state.target_strand,
         wake: state.wake,
       )
-    Error(Nil) ->
+    None ->
       Proposal(
         source_session: state.source_session,
         source_strand: state.source_strand,
@@ -1022,17 +1127,55 @@ fn drop_last_grapheme(value) {
 
 fn wake_label(wake: Option(PeerWake)) -> String {
   case wake {
-    Some(BusyOnly) -> "busy_only"
-    Some(MayWake) -> "may_wake"
+    Some(BusyOnly) -> "while running"
+    Some(MayWake) -> "can wake"
     None -> "unavailable"
   }
 }
 
 fn wake_choice_label(wake: PeerWake) -> String {
   case wake {
-    BusyOnly -> "busy_only · during an active run"
-    MayWake -> "may_wake · also start an idle strand"
+    BusyOnly -> "Only while running"
+    MayWake -> "May start an idle strand"
   }
+}
+
+fn session_label(state: State, identity: String) -> String {
+  case state.selected_target {
+    Some(target) if target.session_id == identity -> target.name
+    _ ->
+      case list.find(state.sessions, fn(row) { row.session_id == identity }) {
+        Ok(row) -> row.name
+        Error(Nil) -> "Session"
+      }
+  }
+}
+
+fn target_label(state: State) -> String {
+  case state.selected_target {
+    Some(target) -> target.name
+    None -> "Select a resident session"
+  }
+}
+
+fn target_identity(state: State) -> String {
+  case state.selected_target {
+    Some(target) -> target.session_id
+    None -> ""
+  }
+}
+
+fn row_line(value: String, width: Int, selected_index: Int, row_index: Int) {
+  let value =
+    value
+    |> text_hygiene.single_line
+    |> text.truncate(width, "…")
+    |> text.pad_right(width)
+  let row_style = case selected_index == row_index {
+    True -> style.new(theme.signal, theme.raised, style.bold())
+    False -> theme.overlay_quiet()
+  }
+  span.line_new([span.span_styled(value, row_style)])
 }
 
 fn plain(value) {

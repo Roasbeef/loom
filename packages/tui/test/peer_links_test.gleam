@@ -9,8 +9,56 @@ import gleam/string
 import tui/daemon/protocol
 import tui/peer_links
 import tui/selection
+import tui/session_selector
 
 const inspection = "{\"outgoing\":[{\"session\":\"target-id\",\"target_strand\":\"reviewer\",\"wake\":\"busy_only\",\"metadata\":{\"status\":\"resident\"}}],\"incoming\":[{\"source_session\":\"sender-id\",\"source_strand\":\"builder\",\"target_strand\":\"main\",\"wake\":\"may_wake\",\"metadata\":{\"status\":\"saved\"}}],\"next\":null}"
+
+pub fn session_link_keeps_target_across_catalogue_refresh_test() {
+  let target =
+    protocol.Session(
+      "target-id",
+      "/workspace/review",
+      "Review session",
+      0,
+      protocol.Resident("live"),
+    )
+  let selector =
+    session_selector.State(
+      protocol.Page(7, [target], None),
+      0,
+      "source-id",
+      session_selector.Active,
+      session_selector.Browsing,
+    )
+  let state = peer_links.from_session("source-id", "builder", selector, target)
+  let state = peer_links.loaded(state, [], peer_links.Inspection([], []), None)
+  let assert Some(selected) = state.selected_target
+  assert selected == target
+  assert state.return_to == peer_links.Sessions(selector)
+  let assert peer_links.Continue(state) =
+    peer_links.update(keys.Char("main"), state)
+  let assert peer_links.Continue(state) = peer_links.update(keys.Enter, state)
+  assert peer_links.update(keys.Enter, state)
+    == peer_links.Link(peer_links.Proposal(
+      "source-id",
+      "builder",
+      "target-id",
+      "main",
+      protocol.BusyOnly,
+    ))
+  let browsing = peer_links.State(..state, prompt: peer_links.Browsing)
+  let browsing =
+    peer_links.loaded(browsing, [target], peer_links.Inspection([], []), None)
+  let assert peer_links.Continue(choosing) =
+    peer_links.update(keys.Char("l"), browsing)
+  let assert peer_links.Continue(editing) =
+    peer_links.update(keys.Enter, choosing)
+  let assert peer_links.Continue(back) = peer_links.update(keys.Escape, editing)
+  assert back.prompt == peer_links.ChoosingSession
+  let assert peer_links.Continue(back) = peer_links.update(keys.Escape, state)
+  assert back.prompt == peer_links.EditingTargetStrand
+  assert peer_links.update(keys.Escape, back) == peer_links.Close
+}
 
 pub fn inspection_keeps_exact_directions_and_wake_permissions_test() {
   let assert Ok(document) = json.parse(inspection)
@@ -245,6 +293,32 @@ pub fn reverse_requires_a_separate_confirmed_link_action_test() {
       "main",
       protocol.BusyOnly,
     ))
+  let assert peer_links.Continue(cancelled) =
+    peer_links.update(keys.Escape, confirming)
+  assert cancelled.prompt == peer_links.Browsing
+}
+
+pub fn long_exact_strand_is_visible_on_confirmation_test() {
+  let long_strand = string.repeat("x", 128)
+  let state =
+    peer_links.State(
+      ..peer_links.new("source-id", "main"),
+      prompt: peer_links.Confirming(peer_links.Proposal(
+        "source-id",
+        "main",
+        "target-id",
+        long_strand,
+        protocol.BusyOnly,
+      )),
+    )
+  let screen = geometry.rect_new(0, 0, 100, 38)
+  let rendered = peer_links.render(buffer.buffer_new(screen), screen, state)
+  let selected =
+    selection.start(screen, Position(0, 0))
+    |> selection.extend(Position(99, 37))
+  let visible = selection.text(rendered, selected)
+  assert string.contains(visible, string.repeat("x", 80))
+  assert string.contains(visible, string.repeat("x", 48))
 }
 
 pub fn malformed_or_oversized_inspection_is_refused_test() {

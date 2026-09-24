@@ -1701,16 +1701,23 @@ branch entries may appear. Workflow counts are durable step intents, not child
 outcomes. The source link fact lacks wake scope, so the tab labels that value
 unavailable rather than inferring it.
 
-`/peers` and `p` from `/agents` open `PeerLinkManager` for the selected exact
-session and strand. `tui/peer_links.State` owns the grant inspection, target
-strand draft, selected row, catalogue revision and continuation cursors. The
-overlay never changes the composer recipient or opens a saved session. A link
-starts with `BusyOnly`; the operator explicitly reviews its direction and wake
-permission before `LinkPeers`. A successful mutation returns to browsing, and
+`/sessions` selects the target session for a link with `l`, while Enter still
+opens the row. The selected row must be resident; a saved row displays a refusal
+in the selector. The attached session and exact strand remain the source.
+`/peers` opens `PeerLinkManager` for the active strand, and `p` from `/agents`
+uses that selected source strand. `tui/peer_links.State` owns the grant
+inspection, target strand draft, selected target, catalogue revision and
+continuation cursors. `ReturnTo` restores the original session selector, agent
+inspector or conversation after close. `TargetEntry` sends Escape back to the
+session selector for a direct link, or to the peer chooser for a later link.
+The selected target survives a catalogue refresh, even when it came from a
+later page. The overlay never changes the
+composer recipient or opens a saved session. A link starts with `BusyOnly`; the
+operator explicitly reviews its direction and wake permission before
+`LinkPeers`. A successful mutation returns to browsing, and
 `operation_result` keeps its acknowledgement visible through the inspection
 refresh, including a partial unlink. The grant and session lists scroll with
 selection while reserving rows for the result and controls. Target-session
 pages retain the first catalogue revision, so a later page cannot silently
 mix another catalogue snapshot. Control requests still carry the owner's epoch
 and are checked by the daemon; TUI selection itself confers no peer authority.
-

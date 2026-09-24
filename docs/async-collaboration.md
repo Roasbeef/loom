@@ -203,17 +203,22 @@ B-to-A. Both sessions must be resident when the owner creates the link.
 Each source strand can hold 64 outgoing links. The next distinct link is
 refused at admission; replacing an existing link does not consume another slot.
 
-The TUI provides the same owner controls. Enter `/peers` to inspect the active
-strand, or open `/agents`, select a strand, and press `p` to inspect that exact
-source. Press `l` to choose a resident target session, type its exact strand
-name, and review the direction before granting it. `busy_only` is the default;
-Tab or the arrow keys select `may_wake` explicitly. Press `d` to revoke the
-selected incoming or outgoing direction. Press `v` to propose the reverse link;
-that proposal still requires a separate confirmation. Press `r` to refresh, and
-Escape to close the view. The session chooser shows saved sessions as unavailable
-and never opens one. The target strand name is explicit because the daemon does
-not enumerate resident strands. Link management uses the daemon's authenticated
-owner control connection and leaves the conversation draft unchanged.
+To link from the TUI, open `/sessions`, select a resident target session, and
+press `l`. The attached session and strand remain the source; selecting a row
+does not switch sessions. Type the exact receiving strand, then review the
+source, target and wake permission before pressing Enter. The default is
+`busy_only`, which accepts messages while the recipient is running. Tab or the
+arrow keys select `may_wake`, which can start an idle recipient strand. Enter
+still opens the selected session, and a saved row must be opened before it can
+receive a link. Escape returns to the same session selection.
+
+Enter `/peers` to inspect links for the active strand. To inspect a different
+source strand, open `/agents`, select it, and press `p`. From the link view,
+press `l` to choose a target, `d` to revoke the selected direction, `v` to
+propose its reverse, or `r` to refresh. A reverse link requires its own
+confirmation. The daemon does not enumerate target strands, so the receiving
+strand name must be entered explicitly. Link management uses the authenticated
+owner control connection and preserves the conversation draft.
 
 The TUI loads a bounded inspection page at a time. Press `n` to append the next
 page; the view merges duplicate coordinates so a grant that moves across a page

@@ -38,6 +38,9 @@ pub type Prompt {
   /// Ordinary navigation; every key means what the help line says.
   Browsing
 
+  /// The selected session must be opened before it can receive a link.
+  LinkUnavailable
+
   /// A draft belongs to the identity selected when editing began.
   Renaming(
     /// Stable identity, independent of the highlighted row.
@@ -84,6 +87,9 @@ pub type Action {
 
   /// Enter explicitly selects this row for bounded open and attachment.
   Choose(protocol.Session)
+
+  /// Start a directional link to this selected session without opening it.
+  Link(protocol.Session)
 
   /// Request explicit creation under the terminal's retained durable key.
   NewSession
@@ -220,6 +226,11 @@ pub fn without(state: State, session_id: String) -> State {
 pub fn update(key: keys.Key, state: State) -> Action {
   case state.prompt {
     Browsing -> browsing(key, state)
+    LinkUnavailable ->
+      case key {
+        keys.Escape -> Continue(State(..state, prompt: Browsing))
+        _ -> browsing(key, State(..state, prompt: Browsing))
+      }
     Renaming(id, draft) -> renaming(key, state, id, draft)
     ConfirmingDelete(session_id) -> confirming(key, state, Delete(session_id))
     ConfirmingArchive(session_id) -> confirming(key, state, Archive(session_id))
@@ -287,6 +298,19 @@ fn browsing(key: keys.Key, state: State) -> Action {
           case state.collection {
             Active -> Choose(row)
             Archived -> Restore(row.session_id)
+          }
+        Error(Nil) -> Continue(state)
+      }
+    keys.Char("l") ->
+      case list.first(list.drop(state.page.sessions, state.selected)) {
+        Ok(row) ->
+          case state.collection {
+            Active ->
+              case row.status {
+                protocol.Resident(_) -> Link(row)
+                _ -> Continue(State(..state, prompt: LinkUnavailable))
+              }
+            Archived -> Continue(state)
           }
         Error(Nil) -> Continue(state)
       }
@@ -470,7 +494,7 @@ fn help_line(state: State, width: Int) {
           text.truncate(
             case state.collection {
               Active ->
-                "↑↓ select · Enter open · n new · r rename · d archive · a archived · → next · ← first · Esc close"
+                "↑↓ select · Enter open · l link · n new · r rename · d archive · a archived · → next · ← first · Esc close"
               Archived ->
                 "↑↓ select · Enter restore · r rename · d permanently delete · a active · → next · ← first · Esc close"
             },
@@ -478,6 +502,18 @@ fn help_line(state: State, width: Int) {
             "…",
           ),
           theme.overlay_quiet(),
+        ),
+      ])
+
+    LinkUnavailable ->
+      span.line_new([
+        span.span_styled(
+          text.truncate(
+            "Open this saved session before linking it · Esc back",
+            width,
+            "…",
+          ),
+          theme.overlay_signal(),
         ),
       ])
 

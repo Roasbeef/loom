@@ -404,7 +404,7 @@ already have.
 | Advisor pending nudges | Automatically, on the primary's idle edges | Undelivered nudges from `advisor_pending`, in the transient tail | `advisor_pending` |
 | Goal | `/goal`, plus a row beside the composer | The `goal_get` board | `goal_view`, `focused_goal_panel` |
 | Model selector | `/model` | The model catalogue; selection sends `set_config` | `model_selector` |
-| Session picker | `/sessions`, and at a `Local` launch | One authorized catalogue page, active or archived | `session_selector`, `daemon/selection` |
+| Session picker | `/sessions`, and at a `Local` launch | One authorized catalogue page; Enter opens a session, while `l` links the attached strand to the selected resident session | `session_selector`, `daemon/selection`, `peer_links` |
 
 A few rules apply to every surface. An open overlay owns focus, so ordinary
 prompt editing is inert while it is up, and `Ctrl+C` stays global. Overlay
