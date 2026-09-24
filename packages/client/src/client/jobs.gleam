@@ -1810,8 +1810,9 @@ fn promote_stream(
 // same number reaches the token, the relay, the helper's timer and the
 // ledger because all four read this one record. That is also why
 // `granted_wall` meets a *default* against the policy the job runs under
-// before it ever becomes a deadline: `response` below is `RefuseNarrowed`, so a wall the
-// base does not grant is refused here rather than quietly clamped.
+// before it ever becomes a deadline: `response` below is `RefuseNarrowed`,
+// so a wall that policy does not grant is refused here rather than quietly
+// clamped.
 //
 // And no escalation grants are carried: the approval that admitted the
 // starting call bound to that call's arguments, and a detached job has no
