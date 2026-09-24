@@ -15,6 +15,11 @@ and calls the existing action-bound escalation before execution. Native file
 tools can request their exact target before I/O. Approval is confined to the
 invocation and never updates session additions. Kernel errors after a program
 starts remain ordinary results and never trigger automatic replay.
+For a nonzero shell exit with a permission error on stderr, `bash` adds
+fresh-call guidance to the tool result. A quoted absolute Git lock under
+`.git` contributes a possible metadata root to that guidance, but stderr
+never grants access; the next invocation's declared paths still go through
+canonicalization, protected-path checks and operator approval.
 
 
 ## Purpose
