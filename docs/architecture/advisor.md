@@ -707,8 +707,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui.gleam:9142`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9247`) renders
+`advisor_payload` (`tui.gleam:9149`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9254`) renders
 them. Delivered advice and nudges show their complete bodies even in
 compact mode, with a delivery label. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.

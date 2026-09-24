@@ -224,6 +224,32 @@ fn open_selected(host: Host, selected: protocol.Session) {
   )
 }
 
+/// Builds the admission request for a new session in the terminal's workspace.
+///
+/// The context's path is sent verbatim as the session's jail root. It is
+/// whatever the launch settled, an explicit `--workspace` included, so nothing
+/// here may widen it to an enclosing repository; the branch only shapes the
+/// display name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert selection.creation("k", workspace.Context("/w/scratch", None), "")
+///   == protocol.CreateSession("k", "/w/scratch", "scratch", "")
+/// ```
+pub fn creation(
+  key: String,
+  project: workspace.Context,
+  configuration: String,
+) -> protocol.Command {
+  protocol.CreateSession(
+    key,
+    project.path,
+    workspace.session_name(project),
+    configuration,
+  )
+}
+
 /// Creates with a name derived from the terminal's cached workspace context.
 ///
 /// Naming is metadata supplied with the original admission, not a later
@@ -232,21 +258,16 @@ fn open_selected(host: Host, selected: protocol.Session) {
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create_named(host, key, project.path, workspace.session_name(project), config)
+/// // selection.create_named(host, key, model.workspace, config)
 /// ```
 pub fn create_named(
   host: Host,
   key: String,
-  workspace: String,
-  name: String,
+  project: workspace.Context,
   configuration: String,
 ) -> Result(attachment.Target, String) {
   use reply <- result.try(
-    daemon.request(
-      host.control,
-      protocol.CreateSession(key, workspace, name, configuration),
-      10_000,
-    )
+    daemon.request(host.control, creation(key, project, configuration), 10_000)
     |> result.map_error(failure),
   )
   case reply {
@@ -478,7 +499,7 @@ fn target(host: Host, session, workspace, name, creation_key, status) {
     uri.to_string(address),
     host.token,
     snapshot.Expected(session, epoch, incarnation),
-    workspace.Context(..workspace.discover_from(workspace), path: workspace),
+    workspace.explicit(workspace),
     name,
     creation_key,
   ))

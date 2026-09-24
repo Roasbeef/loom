@@ -20,6 +20,7 @@ import host/endpoint as daemon_endpoint
 import tui/connection
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/protocol
+import tui/workspace
 import weft/poll
 
 const endpoint_version = 2
@@ -719,6 +720,27 @@ fn acquire_lock(path: String) -> Result(host.LaunchLock, String) {
     poll.Failed(reason) -> Error("acquire launch lock: " <> reason)
     poll.Expired -> Error("timed out waiting for the local server launch lock")
   }
+}
+
+/// Chooses the workspace a local launch creates its sessions in.
+///
+/// The flag, or the process directory when it is empty, is canonicalized
+/// exactly as `resolve` canonicalizes it, so the picker's `CreateSession` and
+/// the launcher's per-workspace state name the same directory. The path on
+/// the wire is therefore absolute rather than relative to the daemon's working
+/// directory, and it is kept as named rather than widened to its enclosing
+/// repository. A flag naming no directory is an error, because every fallback
+/// would jail the agent somewhere the operator did not ask for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.launch_workspace(bootstrap.Options("scratch", "", "", "", ""))
+/// // -> Ok(workspace.Context("/abs/scratch", Some("main")))
+/// ```
+@internal
+pub fn launch_workspace(options: Options) -> Result(workspace.Context, String) {
+  canonical_workspace(options.workspace) |> result.map(workspace.explicit)
 }
 
 fn canonical_workspace(path: String) -> Result(String, String) {

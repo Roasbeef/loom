@@ -23,7 +23,6 @@ import tui/daemon/selection
 import tui/session_channel
 import tui/session_selector
 import tui/sessions
-import tui/workspace
 import weft
 import weft/poll
 
@@ -483,8 +482,12 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert first.paths.token == filepath.join(first.paths.root, "owner.token")
   let assert Ok(host) =
     selection.host(first.control, address, string.trim(token))
-  let model =
-    tui.new_model(connection.new_inbox(), workspace.discover_from(workspace))
+  // The fixture workspace sits under `build/`, inside this checkout, so the
+  // model takes it the way an interactive `--workspace` launch does rather
+  // than by the repository walk that would widen it to the checkout root.
+  let assert Ok(project) = bootstrap.launch_workspace(options)
+  assert project.path == workspace
+  let model = tui.new_model(connection.new_inbox(), project)
   let model =
     tui.Model(
       ..model,
@@ -549,6 +552,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert_build_notice(refreshed)
   let assert Ok(target) = selection.open(host, cut.attachment.expected.session)
     as "the created session is already resident"
+  assert target.workspace.path == workspace
+    as "the catalogue records the explicit workspace, not its repository"
   assert cut.attachment.expected == target.expected
   assert selected_name == target.session_name
   assert adopted.session_label

@@ -54,7 +54,7 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` (`tui.gleam:4799`) is three steps:
+`update` (`tui.gleam:4807`) is three steps:
 
 1. `recording.note_input` writes the raw event to the `--record` file, if one
    is open, before anything interprets it.
@@ -67,7 +67,7 @@ and `view` draws a frame from it.
    determines whether to paint a fresh frame.
 
 `Tick` is the event etui delivers when a poll times out with no input, so it
-is where socket traffic enters the model. `update_tick` (`tui.gleam:5015`)
+is where socket traffic enters the model. `update_tick` (`tui.gleam:5026`)
 drains, in order, the replay inbox, the session-switch and candidate
 attachment results, control replies, the reconnect outcome, and up to 64
 messages from the conversation socket. `settle_tick` then services the
@@ -244,7 +244,7 @@ the phase diagram and the push rules; this document does not repeat them.
 
 The channel reports to the model as `session_channel.Update` values, and
 `apply_channel_update` folds each one in. `Captured` carries a new cut to
-`reconcile_cut` and then `render_cut` (`tui.gleam:6628`). `Streamed` and
+`reconcile_cut` and then `render_cut` (`tui.gleam:6639`). `Streamed` and
 `ToolStreamed` feed the transient region. `HistoryPage` feeds scrollback.
 `LookedUp` answers exact approval lookups. `RequestRefused` carries the command
 name and request ID, so a refusal settles only the request it answers.
@@ -462,12 +462,16 @@ itself does no I/O.
 
 ## Workspace and Herdr
 
-`tui/workspace` discovers the repository around the working directory (or
-`--workspace`) once, before the loop starts: the repository root and the
-branch read from `HEAD`, through bounded file reads. The footer label and the
-default name of a newly created session come from that `workspace.Context`,
-and the session picker sorts rows for the same workspace first. A session
-switch derives the context again from the selected row's workspace.
+`tui/workspace` settles the workspace once, before the loop starts. For a
+local launch that is `bootstrap.launch_workspace`: the `--workspace`
+directory, or the launch directory without one, canonicalized exactly as the
+launcher keys its own per-workspace state. The path is never widened to the
+repository around it; the enclosing repository contributes only the branch,
+read from `HEAD` through bounded file reads. The picker's `n` sends that path
+as the new session's workspace, and the footer label and the default session
+name come from the same `workspace.Context`. The session picker sorts rows
+for the same workspace first. A session switch takes the selected row's
+recorded workspace as it is, borrowing the branch the same way.
 
 `tui/herdr` reports the terminal's state to the Herdr terminal multiplexer
 when the terminal runs inside one of its panes. It is enabled only when
@@ -619,7 +623,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/model_selector` | The `/model` overlay. |
 | `tui/cache_miss` | Prompt-cache miss detection and TTL outlook from usage rows. |
 | `tui/selection`, `tui/frame` | Mouse selection and OSC 52 copy; a `Buffer` as plain text. |
-| `tui/workspace`, `tui/internal/workspace_file` | Repository root and branch discovery. |
+| `tui/workspace`, `tui/internal/workspace_file` | The session workspace, kept as named, and its branch label. |
 | `tui/herdr`, `tui/internal/ffi_herdr` | Herdr pane-state reporting and its one socket exchange. |
 | `tui/recording`, `tui/attempt`, `tui/attempt_replay`, `tui/virtual_backend` | The `--record` format, attempt custody, replay reduction, and the scripted etui backend. |
 | `tui/update`, `tui/update/*` | The `loom update` release installer and daemon restart. |
