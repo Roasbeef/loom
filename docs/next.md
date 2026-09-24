@@ -4,10 +4,38 @@ This file records the latest scoped work and retains the prior collaboration
 handoff below it. Use the architecture and protocol documents for enduring
 contracts.
 
-PR #484 merged at `77269e50`. This branch adds the first native collaboration
-inspector to the terminal. The backend contracts remain in protocol 048; the
-terminal projects them without starting work. The collaboration sections below
-record the branch's validation and follow-ups, not a current PR status report.
+## Virtual reads and peer-link controls
+
+The September 2026 collaboration stack is ordered as PRs
+[#494](https://github.com/Roasbeef/loom/pull/494),
+[#499](https://github.com/Roasbeef/loom/pull/499),
+[#502](https://github.com/Roasbeef/loom/pull/502), and
+[#503](https://github.com/Roasbeef/loom/pull/503). It adds virtual `cap://`
+and `job://` reads, owner CLI controls for directional peer links, TUI link
+administration, and a runnable collaboration example. The code-mode and
+collaboration guides describe the callable surfaces; this file records the
+operator flow and remaining boundary.
+
+In the TUI, `/sessions` is the normal target-discovery path. Selecting a
+resident row and pressing `l` starts a link from the currently attached
+session and strand. Enter still opens a session. The form asks for the exact
+receiving strand and shows both endpoints and wake permission before sending
+the grant. Escape returns to the same session selection. `/agents` plus `p`
+selects another source strand, and `/peers` opens inspection and revocation
+directly. A saved session must be opened explicitly before it can receive a
+link. The daemon does not enumerate target strands or activate saved sessions
+as a side effect of discovery.
+
+The stack's images in `docs/images/peer-links-*.png` come from the native
+116-by-38 terminal with two resident sample sessions. The target name and
+source name are fixture metadata, and no model request was sent. The current
+design leaves cross-machine routing, saved-session outboxes, deadline renewal,
+and actor-heap recovery for separate work.
+
+PR #484 merged at `77269e50`. The native Collaboration tab projects
+captured execution, workflow and peer-message facts without starting work.
+Protocol 048 owns the backend contracts. The sections below record
+earlier validation and follow-ups as a historical handoff.
 
 ## Shell approval recovery
 
