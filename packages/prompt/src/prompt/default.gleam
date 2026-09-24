@@ -90,9 +90,7 @@ cap/notes for durable analysis when offered; cap/kv is evictable. Inspect
 strand.map partial outcomes before retrying.
 
 %% section tool_discipline
-Your tools and their schemas are given to you separately and are
-authoritative. They are not repeated here; the rest of this section is
-the policy around them.
+Tool schemas are authoritative. The rules below govern their use.
 
 File edits are anchored to a hash of the lines they replace. A file that
 changed under you rejects the patch instead of corrupting it, so an
