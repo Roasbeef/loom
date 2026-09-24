@@ -134,10 +134,22 @@ fn hold_snapshot_end(model: tui.Model, remaining: Int) {
 /// ```
 @internal
 pub fn await(driver, predicate) {
+  await_within(driver, predicate, 8000)
+}
+
+/// Samples the real terminal until a visible condition or the supplied deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui_v2_test.await_within(driver, settled, 30_000)
+/// ```
+@internal
+pub fn await_within(driver, predicate, within) {
   let outcome =
     poll.fold_until(
       clock: poll.monotonic(),
-      within: 8000,
+      within: within,
       every: poll.Fixed(10),
       from: "no terminal sample",
       attempt: fn(_) {

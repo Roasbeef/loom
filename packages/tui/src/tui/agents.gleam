@@ -60,6 +60,9 @@ pub type Detail {
 
   /// Explicitly read durable notes for the inspected strand.
   Notes
+
+  /// Captured async custody, peer links, workflows, and peer-authored input.
+  Collaboration
 }
 
 /// Direction is explicit at navigation call sites.
@@ -326,7 +329,7 @@ fn render_compact_inspection(
   }
   let offset = case inspector.detail {
     Messages -> 0
-    Overview | Notes ->
+    Overview | Notes | Collaboration ->
       int.min(inspector.scroll, int.max(0, list.length(body) - height))
   }
   paragraph.render_styled(buffer.clear(buf, area), area, [
@@ -338,7 +341,8 @@ fn render_compact_inspection(
             case inspector.detail {
               Messages -> "[/] message · o sender · Pg body · Esc close"
               Notes -> "[/] note · ^g raw · Pg body · Esc close"
-              Overview -> "↑↓ inspect · 1/2/3 view · Esc close"
+              Overview -> "↑↓ inspect · 1/2/3/4 view · Esc close"
+              Collaboration -> "Pg scroll · Tab write · Esc close"
             }
           Composing -> "Editing composer · Esc inspects"
         },
@@ -400,7 +404,9 @@ fn render_full_inspection(
               "[/] note · r refresh · PgUp/Dn scroll · Tab write · Esc close"
             Messages ->
               "[/] message · o sender · PgUp/Dn body · Tab write · Esc close"
-            Overview -> "1/2/3 view · PgUp/Dn scroll · Tab write · Esc close"
+            Overview -> "1/2/3/4 view · PgUp/Dn scroll · Tab write · Esc close"
+            Collaboration ->
+              "4 Collaboration · PgUp/Dn scroll · Tab write · Esc close"
           }
         Composing -> "Editing To " <> active <> " · Esc returns to roster"
       },
@@ -509,9 +515,10 @@ fn render_detail(
     ]
     Ok(row) -> {
       let heading = case inspector.detail {
-        Overview -> "[1 Activity]  2 Messages  3 Notes"
-        Messages -> "1 Activity  [2 Messages]  3 Notes"
-        Notes -> "1 Activity  2 Messages  [3 Notes]"
+        Overview -> "[1 Activity]  2 Messages  3 Notes  4 Collaborate"
+        Messages -> "1 Activity  [2 Messages]  3 Notes  4 Collaborate"
+        Notes -> "1 Activity  2 Messages  [3 Notes]  4 Collaborate"
+        Collaboration -> "1 Activity  2 Messages  3 Notes  [4 Collaborate]"
       }
       let body = case content {
         Some(render) ->
@@ -532,7 +539,7 @@ fn render_detail(
   }
   let offset = case inspector.detail {
     Messages -> 0
-    Overview | Notes ->
+    Overview | Notes | Collaboration ->
       int.min(
         inspector.scroll,
         int.max(0, list.length(lines) - area.size.height),

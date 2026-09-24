@@ -44,6 +44,7 @@ import host/build_identity
 import host/endpoint
 import machine/strand as machine_strand
 import simplifile
+import tui/advisor_history
 import tui/advisor_pending
 import tui/agent_message_panel
 import tui/agent_messages
@@ -57,6 +58,7 @@ import tui/attempt
 import tui/attempt_replay
 import tui/bootstrap
 import tui/cache_miss
+import tui/collaboration_view
 import tui/command
 import tui/completion_summary
 import tui/composer
@@ -752,6 +754,8 @@ pub type Model {
     agent_rows: List(agent_view.Row),
     /// At most twenty provenance-verified sends observed in this attachment.
     agent_messages: List(agent_messages.Item),
+    /// Full advisor-only commentary from the bounded captured ancestry.
+    advisor_history: advisor_history.Board,
     active_strand: String,
     session: String,
     /// One catalogue display name, paired with the identity that owns it.
@@ -1233,6 +1237,7 @@ pub fn new_model_with_clock(
     reviewer_rows: [],
     agent_rows: [],
     agent_messages: [],
+    advisor_history: advisor_history.Board(items: [], unloaded: None),
     active_strand: "main",
     session: "demo",
     session_label: None,
@@ -1989,6 +1994,7 @@ fn live_base(base: Model) -> Model {
     current_model: "unconfigured",
     agent_summary: agents.summary([]),
     reviewer_rows: [],
+    advisor_history: advisor_history.Board(items: [], unloaded: None),
     notice: "select a saved session or create one",
   )
 }
@@ -3653,6 +3659,19 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
       })
     agents.Notes ->
       Some(fn(area: Rect) { notes_content(model, area, selected).lines })
+    agents.Collaboration ->
+      Some(fn(area: Rect) {
+        case model.captured {
+          Some(#(cut, view)) ->
+            collaboration_view.lines(
+              view,
+              cut.window,
+              selected,
+              area.size.width,
+            )
+          None -> [span.line_plain("Collaboration capture unavailable")]
+        }
+      })
   }
 }
 
@@ -3801,7 +3820,7 @@ fn note_compact_status(board: notes_view.Board, model: Model) -> String {
     count if count > 0 -> int.to_string(count) <> " more notes omitted · "
     _ -> ""
   }
-  freshness <> omitted <> "[/] select · r refresh · Ctrl+g readable/raw"
+  freshness <> omitted <> "↑/↓ or [/] select · r refresh · Ctrl+g readable/raw"
 }
 
 fn historical_note_payload(model: Model, target: String) -> Option(String) {
@@ -5610,11 +5629,21 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
   // answers which records can rewrite a group already projected; the rest —
   // prose, a user turn, structural history — end the group with the rows it
   // already had and keep the append path.
+  // A new primary record may have been committed before an advisor item
+  // already in the cached window. Rebuild that mixed sequence instead of
+  // prepending the primary row above every advisor row.
   let regrouped =
-    !model.details_expanded
-    && list.any(model.pending_records, fn(record) {
-      tool_activity.regroups(record.entry)
-    })
+    {
+      !model.details_expanded
+      && list.any(model.pending_records, fn(record) {
+        tool_activity.regroups(record.entry)
+      })
+    }
+    || {
+      model.active_strand == "main"
+      && model.advisor_history.items != []
+      && model.pending_records != []
+    }
   let cache_matches = record_cache_matches(model, width) && !regrouped
   case cache_matches, model.pending_records {
     False, _ -> {
@@ -5623,7 +5652,12 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         False -> dict.new()
       }
       let #(lines, compact_call_cache, compact_entry_cache) =
-        record_lines(model.records, model, active_notices(model))
+        record_lines(
+          model.records,
+          model,
+          active_notices(model),
+          visible_advisor_history(model),
+        )
       let #(record_rows, record_line_cache, record_gutters) =
         model.transcript
         |> list.append(lines)
@@ -5644,7 +5678,8 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     }
     True, [] -> model
     True, pending -> {
-      let #(lines, calls, narratives) = record_lines(pending, model, [])
+      let #(lines, calls, narratives) =
+        record_lines(pending, model, [], advisor_history.Board([], None))
       let #(newest_rows, appended, newest_gutters) =
         lines
         |> separated_from_screen(model)
@@ -5729,6 +5764,7 @@ fn record_anchors_for(
   width: Int,
 ) -> List(Option(transcript_anchor.Row)) {
   let entries = strand_entries(model.records, model.active_strand)
+  let sequences = entry_sequences(entries)
   let notices = active_notices(model)
   let blocks = case model.details_expanded {
     True -> {
@@ -5768,17 +5804,22 @@ fn record_anchors_for(
       // wider rule would ask for, and a spacer's own last row is blank, so a
       // second pass can only decline.
       entries
-      |> splice_notices(notices, entry_holds)
-      |> list.flat_map(fn(spliced) {
+      |> splice_notices(notices, entry_holds, fn(value) { value.seq })
+      |> list.map(fn(spliced) {
         case spliced {
-          Transient(text) -> [#("", [Line(System, text)])]
+          Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
           Projected(value) ->
             anchored_entry_blocks(value, model)
             |> list.map(fn(block) {
               #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
             })
+            |> fn(blocks) { #(value.seq, blocks) }
         }
       })
+      |> merge_sequence_blocks(
+        advisor_anchor_blocks(visible_advisor_history(model)),
+      )
+      |> list.flat_map(fn(group) { group.1 })
       |> separated_tool_blocks(BetweenEntries)
     }
 
@@ -5789,12 +5830,14 @@ fn record_anchors_for(
     False ->
       entries
       |> tool_activity.project
-      |> splice_notices(notices, item_holds)
-      |> list.flat_map(fn(spliced) {
+      |> splice_notices(notices, item_holds, item_sequence(_, sequences))
+      |> list.map(fn(spliced) {
         case spliced {
-          Transient(text) -> [#("", [Line(System, text)])]
-          Projected(tool_activity.Narrative(value)) ->
-            anchored_entry_blocks(value, model)
+          Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
+          Projected(tool_activity.Narrative(value)) -> #(
+            value.seq,
+            anchored_entry_blocks(value, model),
+          )
           Projected(tool_activity.Tools(calls)) -> {
             let heading = [activity_heading(calls)]
             let called =
@@ -5807,10 +5850,17 @@ fn record_anchors_for(
                     |> result.lazy_unwrap(fn() { activity_call_lines(call) }),
                 )
               })
-            [#("", heading), ..separated_tool_blocks(called, WithinResponse)]
+            #(item_sequence(tool_activity.Tools(calls), sequences), [
+              #("", heading),
+              ..separated_tool_blocks(called, WithinResponse)
+            ])
           }
         }
       })
+      |> merge_sequence_blocks(
+        advisor_anchor_blocks(visible_advisor_history(model)),
+      )
+      |> list.flat_map(fn(group) { group.1 })
       |> separated_tool_blocks(BetweenEntries)
   }
   [#("", model.transcript), ..blocks]
@@ -5955,6 +6005,26 @@ fn transient_lines(model: Model) -> List(Line) {
   |> list.append(pending_input_lines(model))
   |> list.append(pending_nudge_lines(model))
   |> separated_from_screen(model)
+}
+
+// Advisor-only commentary is visible beside the primary's captured entries.
+// The advisor's own branch retains its ordinary transcript instead.
+fn visible_advisor_history(model: Model) -> advisor_history.Board {
+  case model.active_strand {
+    "main" -> model.advisor_history
+    _ -> advisor_history.Board([], None)
+  }
+}
+
+fn advisor_history_label(annotation: advisor_history.Annotation) -> String {
+  case annotation {
+    advisor_history.AdvisorUpdate -> "Advisor · commentary"
+    advisor_history.RequestedQuiet -> "Advisor · quiet requested"
+    advisor_history.RequestedNudge -> "Advisor · nudge requested"
+    advisor_history.RequestedBlock -> "Advisor · block requested"
+    advisor_history.RequestedContinue -> "Advisor · continue requested"
+    advisor_history.RequestedComplete -> "Advisor · complete requested"
+  }
 }
 
 // Pending advice is a labeled, disposable observation in the scrollable tail.
@@ -6634,10 +6704,12 @@ fn render_cut(
   // phases or timestamps leaves the cache standing. Cuts arrive on a
   // quarter-second cadence throughout a turn, and invalidating on every one
   // of them made each a full re-projection of the whole session.
+  let advisor_history = advisor_history.project(view, cut.window)
   let record_cache_valid =
     model.record_cache_valid
     && model.active_strand == active
     && model.records == branch.records
+    && model.advisor_history == advisor_history
     && model.transcript == transcript
     && solo_owner(model.captured) == solo_owner(Some(#(cut, view)))
 
@@ -6693,6 +6765,7 @@ fn render_cut(
     reviewer_rows: reviewers,
     agent_rows: rows,
     agent_messages: captured_messages,
+    advisor_history:,
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -8245,7 +8318,7 @@ type Spliced(a) {
   Projected(a)
 
   /// A transient system-voice row that follows the item before it.
-  Transient(String)
+  Transient(text: String, after_seq: Int)
 }
 
 // Places each notice after the projected item that holds the entry it was
@@ -8262,12 +8335,13 @@ fn splice_notices(
   items: List(a),
   notices: List(CacheNotice),
   holds: fn(a, CacheNotice) -> Bool,
+  sequence: fn(a) -> Int,
 ) -> List(Spliced(a)) {
   list.flat_map(items, fn(item) {
     let rows =
       notices
       |> list.filter(holds(item, _))
-      |> list.map(fn(notice) { Transient(notice.text) })
+      |> list.map(fn(notice) { Transient(notice.text, sequence(item)) })
     [Projected(item), ..rows]
   })
 }
@@ -8310,16 +8384,113 @@ fn active_notices(model: Model) -> List(CacheNotice) {
   })
 }
 
+// Compact tool groups keep the sequence of their first call. A later result
+// changes that group's contents, but cannot move the group past commentary
+// committed after the call began.
+fn entry_sequences(entries: List(entry.Entry)) -> Dict(ids.EntryId, Int) {
+  entries
+  |> list.map(fn(value) { #(value.id, value.seq) })
+  |> dict.from_list
+}
+
+fn item_sequence(
+  item: tool_activity.Item,
+  sequences: Dict(ids.EntryId, Int),
+) -> Int {
+  case item {
+    tool_activity.Narrative(value) -> value.seq
+    tool_activity.Tools([first, ..]) ->
+      dict.get(sequences, first.source)
+      |> result.unwrap(0)
+    tool_activity.Tools([]) -> 0
+  }
+}
+
+fn spliced_sequence(item: Spliced(a), sequence: fn(a) -> Int) -> Int {
+  case item {
+    Projected(value) -> sequence(value)
+    Transient(_, after_seq) -> after_seq
+  }
+}
+
+// Both inputs are oldest first. The advisor block is placed after a primary
+// block at the same sequence, which keeps a local notice beside its owner.
+fn merge_sequence_blocks(
+  primary: List(#(Int, a)),
+  advisor: List(#(Int, a)),
+) -> List(#(Int, a)) {
+  case primary, advisor {
+    [], rest -> rest
+    rest, [] -> rest
+    [first, ..primary_rest], [next, ..advisor_rest] ->
+      case first.0 <= next.0 {
+        True -> [first, ..merge_sequence_blocks(primary_rest, advisor)]
+        False -> [next, ..merge_sequence_blocks(primary, advisor_rest)]
+      }
+  }
+}
+
+// The heading travels with the first captured block, so a long advisor
+// history occupies its chronological place inside the settled row cache.
+fn advisor_history_blocks(
+  board: advisor_history.Board,
+) -> List(#(Int, List(Line))) {
+  case board.items {
+    [] -> []
+    [_, ..] -> {
+      let heading = [
+        Line(System, "Advisor transcript · captured, not sent to primary"),
+      ]
+      let missing = case board.unloaded {
+        Some(_) -> [Line(System, "Earlier advisor commentary is not loaded")]
+        None -> []
+      }
+      board.items
+      |> list.index_map(fn(item, index) {
+        let body = [
+          Line(System, advisor_history_label(item.annotation)),
+          Line(ToolDetail, item.text),
+        ]
+        case index {
+          0 -> #(item.seq, list.append(heading, list.append(missing, body)))
+          _ -> #(item.seq, body)
+        }
+      })
+    }
+  }
+}
+
+// The row and anchor projections merge the same captured blocks. The stable
+// entry and text-block identity lets reading mode stay on an advisor update
+// when a later capture extends the conversation.
+fn advisor_anchor_blocks(
+  board: advisor_history.Board,
+) -> List(#(Int, List(#(String, List(Line))))) {
+  list.map2(advisor_history_blocks(board), board.items, fn(block, item) {
+    #(block.0, [
+      #(
+        "advisor/"
+          <> item.entry_id
+          <> "/block/"
+          <> int.to_string(item.block_index),
+        block.1,
+      ),
+    ])
+  })
+}
+
 fn record_lines(
   records: List(protocol.EntryRecord),
   model: Model,
   notices: List(CacheNotice),
+  advisor: advisor_history.Board,
 ) -> #(
   List(Line),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
   let entries = strand_entries(records, model.active_strand)
+  let sequences = entry_sequences(entries)
   let owner = solo_owner(model.captured)
   case model.details_expanded {
     // Expanded history alternates a response carrying a call with the entry
@@ -8329,8 +8500,15 @@ fn record_lines(
     // one response at a time.
     True -> #(
       entries
-        |> splice_notices(notices, entry_holds)
-        |> list.map(expanded_lines(_, owner))
+        |> splice_notices(notices, entry_holds, fn(value) { value.seq })
+        |> list.map(fn(item) {
+          #(
+            spliced_sequence(item, fn(value) { value.seq }),
+            expanded_lines(item, owner),
+          )
+        })
+        |> merge_sequence_blocks(advisor_history_blocks(advisor))
+        |> list.map(fn(block) { block.1 })
         |> separated_tool_groups(BetweenEntries),
       dict.new(),
       dict.new(),
@@ -8344,15 +8522,30 @@ fn record_lines(
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project
-        |> splice_notices(notices, item_holds)
+        |> splice_notices(notices, item_holds, item_sequence(_, sequences))
         |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
           case spliced {
-            Transient(text) -> #([[Line(System, text)], ..acc.0], acc.1, acc.2)
-            Projected(item) -> compact_item_lines(acc, item, model, owner)
+            Transient(text, seq) -> #(
+              [#(seq, [Line(System, text)]), ..acc.0],
+              acc.1,
+              acc.2,
+            )
+            Projected(item) ->
+              compact_item_lines(
+                acc,
+                item,
+                item_sequence(item, sequences),
+                model,
+                owner,
+              )
           }
         })
       #(
-        reversed |> list.reverse |> separated_tool_groups(BetweenEntries),
+        reversed
+          |> list.reverse
+          |> merge_sequence_blocks(advisor_history_blocks(advisor))
+          |> list.map(fn(block) { block.1 })
+          |> separated_tool_groups(BetweenEntries),
         calls,
         narratives,
       )
@@ -8367,7 +8560,7 @@ fn expanded_lines(
   owner: Option(message.Origin),
 ) -> List(Line) {
   case spliced {
-    Transient(text) -> [Line(System, text)]
+    Transient(text, _) -> [Line(System, text)]
     Projected(value) -> entry_lines(value, True, owner)
   }
 }
@@ -8379,15 +8572,16 @@ fn expanded_lines(
 // shape.
 fn compact_item_lines(
   acc: #(
-    List(List(Line)),
+    List(#(Int, List(Line))),
     Dict(tool_activity.Call, List(Line)),
     Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
   ),
   item: tool_activity.Item,
+  seq: Int,
   model: Model,
   owner: Option(message.Origin),
 ) -> #(
-  List(List(Line)),
+  List(#(Int, List(Line))),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
@@ -8397,12 +8591,12 @@ fn compact_item_lines(
       let lines =
         dict.get(model.compact_entry_cache, key)
         |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
-      #([lines, ..acc.0], acc.1, dict.insert(acc.2, key, lines))
+      #([#(seq, lines), ..acc.0], acc.1, dict.insert(acc.2, key, lines))
     }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
         cached_activity_lines(calls, model.compact_call_cache)
-      #([lines, ..acc.0], dict.merge(acc.1, cached), acc.2)
+      #([#(seq, lines), ..acc.0], dict.merge(acc.1, cached), acc.2)
     }
   }
 }
@@ -9038,10 +9232,10 @@ fn nudges_body(text: String) -> Option(String) {
 
 /// Renders advisor traffic as transcript lines.
 ///
-/// Collapsed, the row is one attribution line, so a verdict the operator
-/// has already read costs a line rather than a screen; expanded, the body
-/// follows under the same heading. The frame lines appear in neither: they
-/// address the model that reads the message.
+/// Delivered advice and nudges keep their full bodies in both detail modes.
+/// Review feeds and goal continuations remain compact until expanded: they
+/// are harness context, not a message from the advisor to the primary. Frame
+/// lines appear in neither mode because they address the model.
 ///
 /// ## Examples
 ///
@@ -9060,7 +9254,10 @@ pub fn advisor_lines(
   // on this branch, and the shaded `› User` block a user turn is drawn in
   // would say the operator typed it.
   case value, extent {
-    Nudges(..), _ -> [Line(System, heading), Line(ToolDetail, value.body)]
+    Advice(..), _ | Nudges(..), _ -> [
+      Line(System, heading),
+      Line(ToolDetail, value.body),
+    ]
     _, notes_view.Excerpt -> [
       Line(System, heading <> advisor_preview(value) <> composer.expand_hint),
     ]
@@ -9077,10 +9274,10 @@ pub fn advisor_lines(
 // deciding whether to expand wants to know there are three of them.
 fn advisor_heading(value: AdvisorMessage) -> String {
   case value {
-    Advice(..) -> "advisor"
+    Advice(..) -> "Advisor · block delivered"
 
     Nudges(body:) ->
-      "advisor nudges (" <> int.to_string(nudge_count(body)) <> ")"
+      "Advisor · nudges delivered (" <> int.to_string(nudge_count(body)) <> ")"
 
     Feed(..) -> "advisor feed"
 
@@ -10546,6 +10743,8 @@ fn update_agent_inspector(
     keys.Char("1") -> select_agent_detail(model, inspector, agents.Overview)
     keys.Char("2") -> select_agent_detail(model, inspector, agents.Messages)
     keys.Char("3") -> select_agent_detail(model, inspector, agents.Notes)
+    keys.Char("4") ->
+      select_agent_detail(model, inspector, agents.Collaboration)
     keys.Char("[") if inspector.detail == agents.Messages ->
       select_agent_message(model, inspector, -1)
     keys.Char("]") if inspector.detail == agents.Messages ->
@@ -10664,7 +10863,7 @@ fn select_inspector_message(
   messages: List(agent_messages.Item),
 ) -> agents.Inspector {
   case inspector.detail {
-    agents.Overview | agents.Notes -> inspector
+    agents.Overview | agents.Notes | agents.Collaboration -> inspector
     agents.Messages -> {
       let selected =
         messages
@@ -10770,7 +10969,7 @@ fn select_agent_detail(
       agent_messages.for_strand(model.agent_messages, inspector.selected)
       |> agent_message_panel.selected(inspector.message)
       |> option.map(agent_message_panel.identity)
-    agents.Overview | agents.Notes -> inspector.message
+    agents.Overview | agents.Notes | agents.Collaboration -> inspector.message
   }
   let owner_changed = case model.note_board {
     Some(board) -> board.strand != inspector.selected
@@ -10793,7 +10992,7 @@ fn select_agent_detail(
     )
   case detail {
     agents.Notes -> refresh_notes(selected)
-    agents.Overview | agents.Messages -> selected
+    agents.Overview | agents.Messages | agents.Collaboration -> selected
   }
 }
 
@@ -11044,6 +11243,8 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
     keys.Char("r"), False, True -> refresh_notes(model)
+    keys.Up, False, True -> select_note(model, -1)
+    keys.Down, False, True -> select_note(model, 1)
     keys.Char("["), False, True -> select_note(model, -1)
     keys.Char("]"), False, True -> select_note(model, 1)
     keys.Ctrl("g"), False, True -> toggle_note_mode(model)
@@ -13102,6 +13303,10 @@ fn select_workspace(model: Model, session: String, strand: String) -> Model {
       True -> model.agent_messages
       False -> []
     },
+    advisor_history: case model.session == session {
+      True -> model.advisor_history
+      False -> advisor_history.Board(items: [], unloaded: None)
+    },
     reviewer_rows: case model.session == session {
       True -> model.reviewer_rows
       False -> []
@@ -14476,32 +14681,39 @@ pub type NudgeAction {
 /// ```
 @internal
 pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
-  case strand_running(after, advisor_pending.primary_strand) {
-    // A run on the primary folds the whole queue into its first message, so
-    // what the panel was showing has been delivered rather than discarded.
-    // The local submit flag counts: it is the edge the operator sees, and
-    // waiting for the server's phase would leave delivered advice on screen.
-    True -> DropNudges
-
-    False -> idle_boundary(before, after)
-  }
-}
-
-// The primary is idle in `after`, so a primary that was running in `before`
-// is one that just settled. The advisor needs both halves of its own edge,
-// because it can still be mid-review and only a review's end adds to the
-// queue.
-fn idle_boundary(before: Model, after: Model) -> NudgeAction {
-  let primary_settled = strand_running(before, advisor_pending.primary_strand)
+  let primary_started =
+    !strand_running(before, advisor_pending.primary_strand)
+    && strand_running(after, advisor_pending.primary_strand)
   let review_settled =
     strand_running(before, advisor_pending.advisor_strand)
     && !strand_running(after, advisor_pending.advisor_strand)
+  case review_settled, primary_started {
+    // When both edges share one snapshot, the new review may have queued
+    // advice after the primary drained its older queue. Read the current
+    // board instead of losing that edge behind the run start.
+    True, _ -> ReadNudges
+
+    // A new run drains the old queue. An already-running primary can still
+    // receive a new nudge when the advisor settles, so its running phase
+    // alone must not erase or suppress that observation.
+    False, True -> DropNudges
+
+    False, False -> nudge_boundary(before, after)
+  }
+}
+
+// A review can add advice while the primary is still running. Its end is the
+// read edge; the primary's end and a fresh attachment are recovery edges.
+fn nudge_boundary(before: Model, after: Model) -> NudgeAction {
+  let primary_settled =
+    strand_running(before, advisor_pending.primary_strand)
+    && !strand_running(after, advisor_pending.primary_strand)
   let newly_listed =
     !strand_listed(before, advisor_pending.primary_strand)
     && strand_listed(after, advisor_pending.primary_strand)
 
   let session_changed = before.session != after.session
-  case primary_settled || review_settled || newly_listed || session_changed {
+  case primary_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges
   }
@@ -14541,7 +14753,19 @@ fn sync_advisor_nudges(before: Model, after: Model) -> Model {
         nudges_request: None,
       )
 
-    ReadNudges -> Model(..after, nudges_refresh: worktree_view.Requested)
+    ReadNudges -> {
+      let started =
+        !strand_running(before, advisor_pending.primary_strand)
+        && strand_running(after, advisor_pending.primary_strand)
+      Model(
+        ..after,
+        nudges: case started {
+          True -> None
+          False -> after.nudges
+        },
+        nudges_refresh: worktree_view.Requested,
+      )
+    }
   }
 }
 

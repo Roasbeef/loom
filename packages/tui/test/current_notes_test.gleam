@@ -204,6 +204,31 @@ pub fn stable_key_refresh_reorder_and_foreign_owner_preserve_state_test() {
   assert foreign.note_scroll == reordered.note_scroll
 }
 
+pub fn arrows_browse_standalone_notes_without_moving_the_transcript_test() {
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let shown =
+    delivered(
+      tui.Model(..base, notes_open: True, scroll_offset: 7),
+      board_rows("main", 20, 2, [
+        #("plan", 20, "first note body", "complete"),
+        #("objective", 19, "second note body", "complete"),
+      ]),
+    )
+  assert shown.note_selected == Some("plan")
+  assert string.contains(text(shown), "first note body")
+
+  let next = tui.update(backend.KeyPress("down"), shown)
+  assert next.note_selected == Some("objective")
+  assert next.scroll_offset == 7
+  assert string.contains(text(next), "second note body")
+
+  let previous = tui.update(backend.KeyPress("up"), next)
+  assert previous.note_selected == Some("plan")
+  assert previous.scroll_offset == 7
+  assert string.contains(text(previous), "first note body")
+}
+
 pub fn note_body_remains_visible_at_supported_native_geometry_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))

@@ -147,18 +147,18 @@ pub fn an_observed_queue_is_drawn_beside_the_composer_test() {
   assert string.contains(text, "the migration has no down step")
 }
 
-/// A run on the primary folds the queue into its first message, so the panel
-/// clears the moment the primary leaves idle rather than describing advice the
-/// model has now been given.
-pub fn the_panel_clears_when_the_primary_leaves_idle_test() {
+/// A nudge observed after a review settles during an open primary run remains
+/// visible until a new run starts or another authoritative read replaces it.
+pub fn a_running_primary_keeps_newly_observed_advice_visible_test() {
   let running =
     tui.Model(
       ..with_roster(roster(Some("assistant"), None)),
       nudges: Some(board(["no down step"], 1)),
     )
-  let settled = tui.update(backend.Resize(120, 30), running)
-  assert settled.nudges == None
-  assert !string.contains(painted(settled), "advisor nudges pending")
+  let resized = tui.update(backend.Resize(120, 30), running)
+  assert resized.nudges == running.nudges
+  assert string.contains(painted(resized), "advisor nudges pending")
+  assert string.contains(painted(resized), "no down step")
 }
 
 // --- the three read edges ---------------------------------------------------
@@ -172,18 +172,23 @@ pub fn the_primary_settling_asks_for_one_read_test() {
   assert tui.advisor_nudges_action(idle, running) == tui.DropNudges
 }
 
-/// A review ending is where a nudge is queued, so a review that settles while
-/// the primary waits is the edge that finds newly queued advice.
-pub fn a_review_settling_over_an_idle_primary_asks_for_one_read_test() {
+/// A review ending can queue a nudge even while the primary is still running.
+/// That edge must read the queue so the operator sees the full advice at once.
+pub fn a_review_settling_asks_for_a_read_regardless_of_primary_phase_test() {
   let reviewing = with_roster(roster(None, Some("assistant")))
   let reviewed = with_roster(roster(None, None))
   assert tui.advisor_nudges_action(reviewing, reviewed) == tui.ReadNudges
 
-  // A review that settles while the primary runs is not an edge: that run
-  // already drained whatever was queued before it started.
+  // The running operation only drained advice that existed at its start.
   let busy = with_roster(roster(Some("assistant"), Some("assistant")))
   let busy_reviewed = with_roster(roster(Some("assistant"), None))
-  assert tui.advisor_nudges_action(busy, busy_reviewed) == tui.DropNudges
+  assert tui.advisor_nudges_action(busy, busy_reviewed) == tui.ReadNudges
+
+  // A start and review end in one captured transition still needs the
+  // authoritative read: the review may have queued advice after the start
+  // drained older advice.
+  let both = with_roster(roster(Some("assistant"), None))
+  assert tui.advisor_nudges_action(reviewing, both) == tui.ReadNudges
 }
 
 /// The primary appearing in the roster is the attachment edge: a terminal that

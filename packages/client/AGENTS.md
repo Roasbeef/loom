@@ -807,7 +807,10 @@ catalogue without opening runtimes. Explicit admission invokes
   a block uses — when the verdict is `Queued` or `Downgraded` and the
   primary is idle with its turn unspent, so the decoupled `TakePending`/
   `TakeAtRunEnd` drains are joined by a third, synchronous one inside
-  `decide`. `seam` is the `advise` door, which refuses any caller whose
+  `decide`. The run-end drain also remembers the operation it checked. A
+  nudge judged before that operation settles joins its durable follow-up
+  queue, so it need not wait for another operator prompt. `seam` is the
+  `advise` door, which refuses any caller whose
   durable strand name is not `advisor`. The actor owns `cursor_key` and
   `guard_key`, reads them lazily on its first message because the runtime
   it borrows may not be up at start. Its `Memory` carries two fields
