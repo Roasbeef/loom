@@ -1202,8 +1202,11 @@ catalogue without opening runtimes. Explicit admission invokes
   `TITLE:` and `NOW:` when `Untitled`, `NOW:` alone when `Titled`.
   `parse` is total: labels match case-insensitively through markdown
   bullets, bold and quoting, and the first non-empty line per label
-  wins. A missing or empty line is `Error(Nil)`, and values are clipped
-  to `glance.max_title_bytes` and `max_summary_bytes`.
+  wins. Against `Titled` an answer without a `NOW:` label may stand on
+  its first unlabelled line, provided that line starts with a word ending
+  in "ing", since models asked for one line often drop the label. A
+  missing or empty line is `Error(Nil)`, and values are clipped to
+  `glance.max_title_bytes` and `max_summary_bytes`.
 - `client/distillpass.{Cadence, Options, Pass, Config, Message,
   default_wall_ms, default_options, no_pass, parse, start, supervised,
   settled,

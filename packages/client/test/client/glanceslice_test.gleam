@@ -277,3 +277,34 @@ fn an_id(seed: Int) -> EntryId {
   let #(id, _generator) = ids.mint_entry(ids.generator(clock.fixed(1), seed))
   id
 }
+
+// A model asked for one line often drops the label; a live drive against
+// GLM-5.3-Flash answered this way in two of three refreshes. The bare
+// line stands in, cleaned of quoting and a trailing period, but only when
+// it reads as the present-participle line the request asked for.
+pub fn a_titled_answer_may_omit_its_label_test() {
+  assert glanceslice.parse(
+      "Searching locally for stdlib bit_array.gleam source",
+      Titled("Audit msgpack bounds"),
+    )
+    == Ok(Reply(
+      "Audit msgpack bounds",
+      "Searching locally for stdlib bit_array.gleam source",
+    ))
+  assert glanceslice.parse("\n  \"Reading lexer.go.\"  \n", Titled("x"))
+    == Ok(Reply("x", "Reading lexer.go"))
+
+  // A restated title is skipped rather than read as the summary.
+  assert glanceslice.parse("TITLE: Audit\nEditing parser.go", Titled("x"))
+    == Ok(Reply("x", "Editing parser.go"))
+}
+
+// A refusal or a preamble is not the line that was asked for.
+pub fn an_unlabelled_line_must_read_as_an_activity_test() {
+  assert glanceslice.parse("I cannot help with that.", Titled("x"))
+    == Error(Nil)
+  assert glanceslice.parse("Sure, here it is:", Titled("x")) == Error(Nil)
+
+  // A title request keeps both labels mandatory.
+  assert glanceslice.parse("Reading lexer.go", Untitled) == Error(Nil)
+}

@@ -34,6 +34,7 @@ import core/entry.{type Entry}
 import core/glance
 import core/json
 import core/message.{type AgentMessage}
+import gleam/bool
 import gleam/list
 import gleam/result
 import gleam/string
@@ -180,8 +181,15 @@ pub fn parse(answer: String, title: Title) -> Result(Reply, Nil) {
       Reply(title: named, summary: now)
     }
 
+    // Asked for one line, a model often drops the label and answers with
+    // the line alone; a live drive against GLM-5.3-Flash did so in two
+    // answers of three. With a single line requested there is nothing to
+    // confuse it with, so the first unlabelled line stands in. A title
+    // request keeps both labels mandatory, because there an unlabelled
+    // line could be either.
     Titled(text:) ->
       labelled(lines, "now", glance.max_summary_bytes)
+      |> result.lazy_or(fn() { unlabelled(lines, glance.max_summary_bytes) })
       |> result.map(fn(now) { Reply(title: text, summary: now) })
   }
 }
@@ -320,6 +328,31 @@ fn labelled(
     case glance.clip(value, bound) {
       "" -> Error(Nil)
       clipped -> Ok(clipped)
+    }
+  })
+}
+
+// The first unlabelled line that reads as the line the request asked for,
+// cleaned the way a labelled value is. The request asks for a line that
+// starts with a present participle, and holding the bare line to that is
+// what keeps a refusal or a preamble ("Sure, here it is:") from becoming
+// the operator's summary. A `TITLE:` line is skipped rather than taken, so
+// a model that restates the title first cannot have it read as the line.
+fn unlabelled(lines: List(String), bound: Int) -> Result(String, Nil) {
+  list.find_map(lines, fn(line) {
+    use <- bool.guard(
+      when: value_after(line, "title") != Error(Nil),
+      return: Error(Nil),
+    )
+    let value =
+      line
+      |> strip(quoting)
+      |> trim_trailing_periods
+      |> strip(quoting)
+    let first = string.split(value, on: " ") |> list.first |> result.unwrap("")
+    case string.ends_with(string.lowercase(first), "ing") {
+      False -> Error(Nil)
+      True -> Ok(glance.clip(value, bound))
     }
   })
 }
