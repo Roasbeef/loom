@@ -164,6 +164,16 @@ directional, and permission to wake an idle target is granted separately.
 Messaging does not grant access to the peer's files or permission to join or
 cancel its work. Saved sessions are not opened by a message.
 
+In the terminal, `/sessions` lists resident targets. Select one and press `l`
+to link it from the attached strand; Enter still opens the selected session.
+The review shows both endpoints and the wake permission before creating the
+link. `/peers` inspects and revokes grants, while `/agents` plus `p` starts from
+a selected source strand.
+
+![Loom reviewing a directional peer link between two resident sessions](docs/images/peer-links-confirm.png)
+
+*The owner reviews an exact source and target strand before granting the link.*
+
 The [API guide](docs/async-collaboration.md) shows launch, typed endpoints,
 workflow steps, and peer-link commands. The
 [architecture guide](docs/architecture/async-collaboration.md) explains durable
