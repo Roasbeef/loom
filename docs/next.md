@@ -1,16 +1,16 @@
 # Current handoff
 
-The collaboration stack is being rebased onto current `main`. PR #484 already
+The collaboration stack was rebased onto `main` at `125b7925`. PR #484 already
 merged the async execution, resident peer messaging, and named workflow core.
 The four PRs below add model-visible virtual reads, owner controls, a terminal
-link manager, and executable collaboration examples. Merge the stack from the
-bottom after CI passes on the rebased heads.
+link manager, and executable collaboration examples. The four PRs must pass
+CI on their rebased heads before the stack merges through #503.
 
 | PR | Result |
 |---|---|
 | [#494](https://github.com/Roasbeef/loom/pull/494) | `fs_read` discovers full capability declarations at `cap://` and polls caller-owned jobs at `job://`. Prompt pack v9 describes both program modes. |
 | [#499](https://github.com/Roasbeef/loom/pull/499) | The owner CLI inspects, links, unlinks, and sends across exact session and strand pairs. |
-| [#502](https://github.com/Roasbeef/loom/pull/502) | The TUI manages directional links, wake policy, and paged grants and targets. |
+| [#502](https://github.com/Roasbeef/loom/pull/502) | `/sessions` links the attached strand to a selected resident target; `/peers` inspects and revokes directional grants, and `/agents` can choose another source strand. |
 | [#503](https://github.com/Roasbeef/loom/pull/503) | A coordinator and two specialists exercise durable child steps and granted peer exchange in jailed code mode. |
 
 The [code-mode architecture](architecture/code-mode.md) explains virtual-read
@@ -89,9 +89,9 @@ recipient revocation could not finish.
 
 ## Remaining work
 
-1. Rebase and submit the entire stack. Verify each PR's base and exact head.
-2. Capture the real #502 peer-link terminal and post screenshots on its PR.
-3. Wait for Linux and macOS CI on the rebased heads, then merge the stack
+1. Submit the rebased stack and verify each PR's base and exact head.
+2. Post the committed #502 native terminal captures on its PR.
+3. Wait for Linux and macOS CI on those exact heads, then merge the stack
    through #503. Close #485, #488, and #489 through their PRs.
 4. After merge, update this handoff with the resulting `main` commit and any
    measured limits. The enlarged code-mode description may still merit a
