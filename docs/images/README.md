@@ -30,11 +30,12 @@ results, and UI elements were not composited or rewritten for the image.
 ## Peer-link captures
 
 `peer-links-chooser.png`, `peer-links-confirm.png`, and `peer-links-linked.png`
-show the native 116-by-38 terminal at code commit `1a7391b5`. Two sample
-sessions were resident in the same isolated daemon. The operator selected the
-second session, entered its `main` strand, reviewed the directional grant with
-the default `busy_only` permission, then explicitly selected `may_wake` and
-created the link. No model request was sent.
+show the native 116-by-38 terminal at pre-rebase code commit `24eba5e1`. Two
+sample sessions were resident in the same isolated daemon. The operator
+selected **Review target** from `/sessions`, keeping **Coordinator / main** as
+the source, then pressed `l`. The operator entered the target's exact `main`
+strand, explicitly selected the `may_wake` permission, and created the link.
+No model request was sent.
 
 Each image renders an actual `tmux capture-pane -e -p` frame with
 `docs/design-notes/tui-agent-workspace/render_capture.py`. The UI content was
