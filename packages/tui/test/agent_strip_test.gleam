@@ -715,3 +715,16 @@ fn running_state() -> operation.OperationState {
     None,
   )
 }
+
+// A deterministic wait names strands by minted ID; the strip shows each as
+// the slug it uses for that agent's name.
+pub fn minted_ids_in_the_activity_read_as_names_test() {
+  let waiting =
+    agent_view.Row(
+      ..row("main", agent_view.Waiting, None),
+      activity: "Waiting for sub:main/audit-json-8ced6f2a0ef27421, sub:main/read-docs-8ced6e2a",
+    )
+  let assert [line] = agent_strip.lines(agent_strip.new(), [waiting], "main")
+    as "main is always listed"
+  assert line.text == "Waiting for audit-json, read-docs"
+}

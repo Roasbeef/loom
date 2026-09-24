@@ -417,7 +417,7 @@ fn line(state: State, row: agent_view.Row) -> Line {
   // and an empty row reads as a stall; the deterministic activity stands in.
   let text = case current {
     Some(seen) if seen.summary != "" -> seen.summary
-    Some(_) | None -> row.activity
+    Some(_) | None -> shorten_names(row.activity)
   }
   let title = case current {
     Some(seen) if seen.title != "" -> seen.title
@@ -487,6 +487,23 @@ pub fn short_name(name: String) -> String {
       }
     }
   }
+}
+
+// The deterministic activity names other strands by their minted IDs, as
+// in `Waiting for sub:main/audit-1a2b…, sub:main/review-3c4d…`. On a row
+// that is the operator's glance, each ID is cut to the slug the strip
+// already shows as that agent's name, so the waits read as names.
+fn shorten_names(text: String) -> String {
+  text
+  |> string.split(" ")
+  |> list.map(fn(word) {
+    case string.starts_with(word, "sub:"), string.ends_with(word, ",") {
+      False, _ -> word
+      True, True -> short_name(string.drop_end(word, 1)) <> ","
+      True, False -> short_name(word)
+    }
+  })
+  |> string.join(" ")
 }
 
 fn is_digest(value: String) -> Bool {
