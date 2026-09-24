@@ -322,6 +322,45 @@ pub fn long_exact_strand_is_visible_on_confirmation_test() {
   assert string.contains(visible, string.repeat("x", 48))
 }
 
+pub fn linked_row_shows_names_and_exact_session_ids_test() {
+  let source =
+    protocol.Session(
+      "source-id",
+      "/workspace",
+      "Coordinator",
+      0,
+      protocol.Resident("a"),
+    )
+  let target =
+    protocol.Session(
+      "target-id",
+      "/workspace",
+      "Review target",
+      0,
+      protocol.Resident("b"),
+    )
+  let grant =
+    peer_links.Grant(
+      "source-id",
+      "main",
+      "target-id",
+      "reviewer",
+      Some(protocol.MayWake),
+      peer_links.Available,
+    )
+  let state =
+    peer_links.loaded(
+      peer_links.new("source-id", "main"),
+      [source, target],
+      peer_links.Inspection([grant], []),
+      None,
+    )
+  let visible = view_text(state)
+  assert string.contains(visible, "Outgoing  Coordinator / main")
+  assert string.contains(visible, "To  Review target / reviewer")
+  assert string.contains(visible, "IDs source-id → target-id")
+}
+
 pub fn malformed_or_oversized_inspection_is_refused_test() {
   assert peer_links.decode_inspection(json.Null, "local-id", "main")
     == Error("expected peer inspection object")

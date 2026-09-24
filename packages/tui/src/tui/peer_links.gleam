@@ -680,7 +680,7 @@ fn grant_viewport(content, selected: Int, room: Int) {
       }
       let rows = list.drop(content, 2)
       let row_room = int.max(0, room - list.length(heading))
-      list.append(heading, row_viewport(rows, selected, 2, row_room))
+      list.append(heading, row_viewport(rows, selected, 3, row_room))
     }
   }
 }
@@ -715,8 +715,8 @@ fn listing_lines(state: State, width: Int) {
         grant.source_session == state.source_session
         && grant.source_strand == state.source_strand
       {
-        True -> "out "
-        False -> "in  "
+        True -> "Outgoing"
+        False -> "Incoming"
       }
       let availability = case grant.availability {
         Available -> "resident"
@@ -726,23 +726,28 @@ fn listing_lines(state: State, width: Int) {
         row_line(
           marker
             <> direction
-            <> "from "
-            <> grant.source_session
-            <> "/"
+            <> "  "
+            <> session_label(state, grant.source_session)
+            <> " / "
             <> grant.source_strand,
           width,
           state.selected_grant,
           index,
         ),
         quiet(text.truncate(
-          "    to "
-            <> grant.target_session
-            <> "/"
+          "    To  "
+            <> session_label(state, grant.target_session)
+            <> " / "
             <> grant.target_strand
             <> " · "
             <> wake_label(grant.wake)
             <> " · "
             <> availability,
+          width,
+          "…",
+        )),
+        quiet(text.truncate(
+          "    IDs " <> grant.source_session <> " → " <> grant.target_session,
           width,
           "…",
         )),
