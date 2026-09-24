@@ -3,6 +3,7 @@
 //// target identity, selection identity, and surface ownership stay visible.
 
 import core/json
+import core/todo_list.{Phase, Task}
 import etui/backend
 import etui/geometry
 import etui/widgets/textarea
@@ -299,4 +300,33 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
   assert closed.active_strand == "main"
   assert !string.contains(rendered, "WORKER ONLY BODY")
   assert string.contains(rendered, "No observed notes for main")
+}
+
+// The inspector's Notes tab shares the notes browser, so a worker's todo
+// cell reads as the same checklist there, not as nested JSON bullets.
+pub fn inspected_worker_todo_cell_reads_as_a_checklist_test() {
+  let inspected =
+    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
+  let value =
+    todo_list.Board([
+      Phase("Module", [
+        Task("Split the parser", todo_list.Done),
+        Task("Port the tests", todo_list.Active),
+      ]),
+    ])
+    |> todo_list.encode
+    |> json.to_string
+  let loaded =
+    inbound.apply_channel_update(
+      inspected,
+      session_channel.Auxiliary(
+        protocol.NotesSnapshot(board("worker", [note("todo", value)])),
+      ),
+    )
+  let rendered = shown(loaded, 100, 30)
+  assert string.contains(rendered, "Module · 1/2")
+  assert string.contains(rendered, "✓ Split the parser")
+  assert string.contains(rendered, "▸ Port the tests")
+  assert string.contains(rendered, "1/2 done · active: Port the tests")
+  assert !string.contains(rendered, "Phases")
 }

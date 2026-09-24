@@ -948,7 +948,7 @@ pub fn prepared_notes(
             let value = case model.note_mode, note.extent {
               note_panel.Raw, notes_view.Complete -> raw_note_line(note.text)
               note_panel.Readable, notes_view.Complete ->
-                Line(ToolDetail, notes_view.readable(note.text))
+                Line(ToolDetail, notes_view.readable_note(note))
               note_panel.Raw, notes_view.Excerpt
               | note_panel.Readable, notes_view.Excerpt
               -> Line(ToolResult, note.text)
@@ -959,13 +959,7 @@ pub fn prepared_notes(
         note_panel.Row(
           key: note.key,
           seq: note.seq,
-          excerpt: transcript_lines.compact(
-            case note.extent {
-              notes_view.Complete -> notes_view.readable(note.text)
-              notes_view.Excerpt -> note.text
-            },
-            48,
-          ),
+          excerpt: transcript_lines.compact(notes_view.summary(note), 48),
           extent:,
           relation: note_turn_relation(note.seq, model, target),
           body:,

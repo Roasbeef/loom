@@ -5,6 +5,7 @@
 import core/json
 import core/message
 import core/register
+import core/todo_list.{Phase, Task}
 import etui/backend
 import etui/geometry
 import gleam/dict
@@ -349,4 +350,116 @@ pub fn historical_notes_are_readable_compact_and_raw_after_detail_expansion_test
     text(expanded),
     "plan = {\"done\":[\"Built modules\"]}",
   )
+}
+
+// A board with every status, shaped like the cell the `todo` tool writes.
+fn todo_board() {
+  todo_list.Board([
+    Phase("Survey", [
+      Task("Read the notes view", todo_list.Done),
+      Task("Skip the old panel", todo_list.Dropped),
+    ]),
+    Phase("Build", [
+      Task("Render the checklist", todo_list.Active),
+      Task("Wire the row excerpt", todo_list.Pending),
+      Task("Run the live drive", todo_list.Blocked(Some("needs a key"))),
+      Task("Ask for review", todo_list.Blocked(None)),
+    ]),
+  ])
+}
+
+fn todo_note(board, extent) {
+  notes_view.Note("todo", 7, json.to_string(todo_list.encode(board)), extent)
+}
+
+pub fn todo_note_renders_as_a_phased_checklist_test() {
+  let note = todo_note(todo_board(), notes_view.Complete)
+  assert notes_view.readable_note(note)
+    == "### Survey · 2/2\n\n"
+    <> "- ✓ ~~Read the notes view~~\n"
+    <> "- – ~~Skip the old panel~~\n\n"
+    <> "### Build · 0/4\n\n"
+    <> "- ▸ **Render the checklist**\n"
+    <> "- ○ Wire the row excerpt\n"
+    <> "- ⊘ Run the live drive · needs a key\n"
+    <> "- ⊘ Ask for review"
+  assert notes_view.summary(note) == "2/6 done · active: Render the checklist"
+}
+
+// The summary names the active task only when there is one, and an empty
+// board says so rather than showing a bare `0/0`.
+pub fn todo_summary_without_an_active_task_is_the_count_test() {
+  let idle =
+    todo_list.Board([
+      Phase("Build", [
+        Task("Render", todo_list.Done),
+        Task("Wire", todo_list.Pending),
+      ]),
+    ])
+  assert notes_view.summary(todo_note(idle, notes_view.Complete)) == "1/2 done"
+  let empty = todo_note(todo_list.empty(), notes_view.Complete)
+  assert notes_view.summary(empty) == "no tasks"
+  assert notes_view.readable_note(empty) == "No tasks."
+}
+
+// Task text comes from the model, so Markdown in it must stay literal
+// rather than restyling the checklist around it.
+pub fn todo_task_text_cannot_restyle_the_checklist_test() {
+  let board =
+    todo_list.Board([
+      Phase("*Loud* phase", [Task("fix ~~this~~ and `that`", todo_list.Pending)]),
+    ])
+  let rendered = notes_view.readable_note(todo_note(board, notes_view.Complete))
+  assert rendered
+    == "### \\*Loud\\* phase · 0/1\n\n- ○ fix \\~\\~this\\~\\~ and \\`that\\`"
+}
+
+// Only a complete cell under the `todo` key that passes the board's total
+// decoder is drawn as a checklist; everything else keeps the generic view.
+pub fn todo_fallbacks_keep_the_generic_projection_test() {
+  let excerpt = todo_note(todo_board(), notes_view.Excerpt)
+  assert notes_view.todo_board(excerpt) == Error(Nil)
+  assert notes_view.readable_note(excerpt) == notes_view.readable(excerpt.text)
+  assert notes_view.summary(excerpt) == excerpt.text
+
+  let other_key =
+    notes_view.Note(..todo_note(todo_board(), notes_view.Complete), key: "plan")
+  assert notes_view.todo_board(other_key) == Error(Nil)
+  assert notes_view.readable_note(other_key)
+    == notes_view.readable(other_key.text)
+
+  let corrupt =
+    notes_view.Note(
+      "todo",
+      7,
+      "{\"phases\":[{\"name\":\"Build\",\"tasks\":[{\"text\":\"x\",\"status\":\"someday\"}]}]}",
+      notes_view.Complete,
+    )
+  assert notes_view.todo_board(corrupt) == Error(Nil)
+  assert notes_view.readable_note(corrupt) == notes_view.readable(corrupt.text)
+  assert notes_view.summary(corrupt) == notes_view.readable(corrupt.text)
+
+  let cut = notes_view.Note(..corrupt, text: "{\"phases\":[{\"name\":")
+  assert notes_view.readable_note(cut) == cut.text
+}
+
+pub fn todo_cell_reads_as_a_checklist_in_the_notes_browser_test() {
+  let value = json.to_string(todo_list.encode(todo_board()))
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let shown =
+    delivered(
+      tui_model.Model(..base, notes_open: True),
+      board_rows("main", 20, 1, [#("todo", 7, value, "complete")]),
+    )
+  let rendered = text(shown)
+  assert string.contains(rendered, "Build · 0/4")
+  assert string.contains(rendered, "▸ Render the checklist")
+  assert string.contains(rendered, "⊘ Run the live drive · needs a key")
+  assert string.contains(rendered, "2/6 done · active: Render the")
+  assert !string.contains(rendered, "Phases")
+
+  let raw = tui.update(backend.KeyPress("ctrl+g"), shown)
+  assert string.contains(text(raw), "\"phases\"")
+    as "raw mode keeps the stored JSON"
 }
