@@ -26,3 +26,16 @@ each file. The macOS enforcement report remains visible in the capture.
 The image renders an actual 116-by-48 terminal frame from
 `tmux capture-pane -e -p` with its ANSI colors and Menlo typeface. Transcript text,
 results, and UI elements were not composited or rewritten for the image.
+
+## Peer-link captures
+
+`peer-links-chooser.png`, `peer-links-confirm.png`, and `peer-links-linked.png`
+show the native 116-by-38 terminal at code commit `1a7391b5`. Two sample
+sessions were resident in the same isolated daemon. The operator selected the
+second session, entered its `main` strand, reviewed the directional grant with
+the default `busy_only` permission, then explicitly selected `may_wake` and
+created the link. No model request was sent.
+
+Each image renders an actual `tmux capture-pane -e -p` frame with
+`docs/design-notes/tui-agent-workspace/render_capture.py`. The UI content was
+not composited or rewritten.
