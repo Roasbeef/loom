@@ -19,6 +19,7 @@
 //// them their own compact rows.
 
 import core/entry
+import core/ids
 import core/json
 import core/message
 import core/origin
@@ -30,6 +31,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tui/advisor_history
 import tui/composer
 import tui/file_read_view
 import tui/model.{
@@ -439,7 +441,7 @@ pub type Spliced(a) {
   Projected(a)
 
   /// A transient system-voice row that follows the item before it.
-  Transient(String)
+  Transient(text: String, after_seq: Int)
 }
 
 /// Places each notice after the projected item that holds the entry it was
@@ -457,12 +459,13 @@ pub fn splice_notices(
   items: List(a),
   notices: List(CacheNotice),
   holds: fn(a, CacheNotice) -> Bool,
+  sequence: fn(a) -> Int,
 ) -> List(Spliced(a)) {
   list.flat_map(items, fn(item) {
     let rows =
       notices
       |> list.filter(holds(item, _))
-      |> list.map(fn(notice) { Transient(notice.text) })
+      |> list.map(fn(notice) { Transient(notice.text, sequence(item)) })
     [Projected(item), ..rows]
   })
 }
@@ -517,12 +520,14 @@ pub fn record_lines(
   records: List(protocol.EntryRecord),
   model: Model,
   notices: List(CacheNotice),
+  advisor: advisor_history.Board,
 ) -> #(
   List(Line),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
   let entries = strand_entries(records, model.active_strand)
+  let sequences = entry_sequences(entries)
   let owner = solo_owner(model.captured)
   case model.details_expanded {
     // Expanded history alternates a response carrying a call with the entry
@@ -532,8 +537,15 @@ pub fn record_lines(
     // one response at a time.
     True -> #(
       entries
-        |> splice_notices(notices, entry_holds)
-        |> list.map(expanded_lines(_, owner))
+        |> splice_notices(notices, entry_holds, fn(value) { value.seq })
+        |> list.map(fn(item) {
+          #(
+            spliced_sequence(item, fn(value) { value.seq }),
+            expanded_lines(item, owner),
+          )
+        })
+        |> merge_sequence_blocks(advisor_history_blocks(advisor))
+        |> list.map(fn(block) { block.1 })
         |> separated_tool_groups(BetweenEntries),
       dict.new(),
       dict.new(),
@@ -547,15 +559,30 @@ pub fn record_lines(
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project
-        |> splice_notices(notices, item_holds)
+        |> splice_notices(notices, item_holds, item_sequence(_, sequences))
         |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
           case spliced {
-            Transient(text) -> #([[Line(System, text)], ..acc.0], acc.1, acc.2)
-            Projected(item) -> compact_item_lines(acc, item, model, owner)
+            Transient(text, seq) -> #(
+              [#(seq, [Line(System, text)]), ..acc.0],
+              acc.1,
+              acc.2,
+            )
+            Projected(item) ->
+              compact_item_lines(
+                acc,
+                item,
+                item_sequence(item, sequences),
+                model,
+                owner,
+              )
           }
         })
       #(
-        reversed |> list.reverse |> separated_tool_groups(BetweenEntries),
+        reversed
+          |> list.reverse
+          |> merge_sequence_blocks(advisor_history_blocks(advisor))
+          |> list.map(fn(block) { block.1 })
+          |> separated_tool_groups(BetweenEntries),
         calls,
         narratives,
       )
@@ -570,7 +597,7 @@ fn expanded_lines(
   owner: Option(message.Origin),
 ) -> List(Line) {
   case spliced {
-    Transient(text) -> [Line(System, text)]
+    Transient(text, _) -> [Line(System, text)]
     Projected(value) -> entry_lines(value, True, owner)
   }
 }
@@ -582,15 +609,16 @@ fn expanded_lines(
 // shape.
 fn compact_item_lines(
   acc: #(
-    List(List(Line)),
+    List(#(Int, List(Line))),
     Dict(tool_activity.Call, List(Line)),
     Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
   ),
   item: tool_activity.Item,
+  seq: Int,
   model: Model,
   owner: Option(message.Origin),
 ) -> #(
-  List(List(Line)),
+  List(#(Int, List(Line))),
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
 ) {
@@ -600,12 +628,12 @@ fn compact_item_lines(
       let lines =
         dict.get(model.compact_entry_cache, key)
         |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
-      #([lines, ..acc.0], acc.1, dict.insert(acc.2, key, lines))
+      #([#(seq, lines), ..acc.0], acc.1, dict.insert(acc.2, key, lines))
     }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
         cached_activity_lines(calls, model.compact_call_cache)
-      #([lines, ..acc.0], dict.merge(acc.1, cached), acc.2)
+      #([#(seq, lines), ..acc.0], dict.merge(acc.1, cached), acc.2)
     }
   }
 }
@@ -1269,10 +1297,10 @@ fn nudges_body(text: String) -> Option(String) {
 
 /// Renders advisor traffic as transcript lines.
 ///
-/// Collapsed, the row is one attribution line, so a verdict the operator
-/// has already read costs a line rather than a screen; expanded, the body
-/// follows under the same heading. The frame lines appear in neither: they
-/// address the model that reads the message.
+/// Delivered advice and nudges keep their full bodies in both detail modes.
+/// Review feeds and goal continuations remain compact until expanded: they
+/// are harness context, not a message from the advisor to the primary. Frame
+/// lines appear in neither mode because they address the model.
 ///
 /// ## Examples
 ///
@@ -1291,7 +1319,10 @@ pub fn advisor_lines(
   // on this branch, and the shaded `› User` block a user turn is drawn in
   // would say the operator typed it.
   case value, extent {
-    Nudges(..), _ -> [Line(System, heading), Line(ToolDetail, value.body)]
+    Advice(..), _ | Nudges(..), _ -> [
+      Line(System, heading),
+      Line(ToolDetail, value.body),
+    ]
     _, notes_view.Excerpt -> [
       Line(System, heading <> advisor_preview(value) <> composer.expand_hint),
     ]
@@ -1308,10 +1339,10 @@ pub fn advisor_lines(
 // deciding whether to expand wants to know there are three of them.
 fn advisor_heading(value: AdvisorMessage) -> String {
   case value {
-    Advice(..) -> "advisor"
+    Advice(..) -> "Advisor · block delivered"
 
     Nudges(body:) ->
-      "advisor nudges (" <> int.to_string(nudge_count(body)) <> ")"
+      "Advisor · nudges delivered (" <> int.to_string(nudge_count(body)) <> ")"
 
     Feed(..) -> "advisor feed"
 
@@ -2115,4 +2146,95 @@ pub fn money(value: Float) -> String {
   int.to_string(cents / 100)
   <> "."
   <> string.pad_start(int.to_string(cents % 100), 2, "0")
+}
+
+fn advisor_history_label(annotation: advisor_history.Annotation) -> String {
+  case annotation {
+    advisor_history.AdvisorUpdate -> "Advisor · commentary"
+    advisor_history.RequestedQuiet -> "Advisor · quiet requested"
+    advisor_history.RequestedNudge -> "Advisor · nudge requested"
+    advisor_history.RequestedBlock -> "Advisor · block requested"
+    advisor_history.RequestedContinue -> "Advisor · continue requested"
+    advisor_history.RequestedComplete -> "Advisor · complete requested"
+  }
+}
+
+/// Compact tool groups keep the sequence of their first call. A later result
+/// changes that group's contents, but cannot move the group past commentary
+/// committed after the call began.
+@internal
+pub fn entry_sequences(entries: List(entry.Entry)) -> Dict(ids.EntryId, Int) {
+  entries
+  |> list.map(fn(value) { #(value.id, value.seq) })
+  |> dict.from_list
+}
+
+@internal
+pub fn item_sequence(
+  item: tool_activity.Item,
+  sequences: Dict(ids.EntryId, Int),
+) -> Int {
+  case item {
+    tool_activity.Narrative(value) -> value.seq
+    tool_activity.Tools([first, ..]) ->
+      dict.get(sequences, first.source)
+      |> result.unwrap(0)
+    tool_activity.Tools([]) -> 0
+  }
+}
+
+fn spliced_sequence(item: Spliced(a), sequence: fn(a) -> Int) -> Int {
+  case item {
+    Projected(value) -> sequence(value)
+    Transient(_, after_seq) -> after_seq
+  }
+}
+
+/// Both inputs are oldest first. The advisor block is placed after a primary
+/// block at the same sequence, which keeps a local notice beside its owner.
+@internal
+pub fn merge_sequence_blocks(
+  primary: List(#(Int, a)),
+  advisor: List(#(Int, a)),
+) -> List(#(Int, a)) {
+  case primary, advisor {
+    [], rest -> rest
+    rest, [] -> rest
+    [first, ..primary_rest], [next, ..advisor_rest] ->
+      case first.0 <= next.0 {
+        True -> [first, ..merge_sequence_blocks(primary_rest, advisor)]
+        False -> [next, ..merge_sequence_blocks(primary, advisor_rest)]
+      }
+  }
+}
+
+/// The heading travels with the first captured block, so a long advisor
+/// history occupies its chronological place inside the settled row cache.
+@internal
+pub fn advisor_history_blocks(
+  board: advisor_history.Board,
+) -> List(#(Int, List(Line))) {
+  case board.items {
+    [] -> []
+    [_, ..] -> {
+      let heading = [
+        Line(System, "Advisor transcript · captured, not sent to primary"),
+      ]
+      let missing = case board.unloaded {
+        Some(_) -> [Line(System, "Earlier advisor commentary is not loaded")]
+        None -> []
+      }
+      board.items
+      |> list.index_map(fn(item, index) {
+        let body = [
+          Line(System, advisor_history_label(item.annotation)),
+          Line(ToolDetail, item.text),
+        ]
+        case index {
+          0 -> #(item.seq, list.append(heading, list.append(missing, body)))
+          _ -> #(item.seq, body)
+        }
+      })
+    }
+  }
 }

@@ -19,6 +19,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/advisor_history
 import tui/layout
 import tui/markdown
 import tui/model.{
@@ -286,11 +287,21 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
   // answers which records can rewrite a group already projected; the rest —
   // prose, a user turn, structural history — end the group with the rows it
   // already had and keep the append path.
+  // A new primary record may have been committed before an advisor item
+  // already in the cached window. Rebuild that mixed sequence instead of
+  // prepending the primary row above every advisor row.
   let regrouped =
-    !model.details_expanded
-    && list.any(model.pending_records, fn(record) {
-      tool_activity.regroups(record.entry)
-    })
+    {
+      !model.details_expanded
+      && list.any(model.pending_records, fn(record) {
+        tool_activity.regroups(record.entry)
+      })
+    }
+    || {
+      model.active_strand == "main"
+      && model.advisor_history.items != []
+      && model.pending_records != []
+    }
   let cache_matches = record_cache_matches(model, width) && !regrouped
   case cache_matches, model.pending_records {
     False, _ -> {
@@ -303,6 +314,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           model.records,
           model,
           transcript_lines.active_notices(model),
+          visible_advisor_history(model),
         )
       let #(record_rows, record_line_cache, record_gutters) =
         model.transcript
@@ -325,7 +337,12 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     True, [] -> model
     True, pending -> {
       let #(lines, calls, narratives) =
-        transcript_lines.record_lines(pending, model, [])
+        transcript_lines.record_lines(
+          pending,
+          model,
+          [],
+          advisor_history.Board([], None),
+        )
       let #(newest_rows, appended, newest_gutters) =
         lines
         |> separated_from_screen(model)
@@ -411,6 +428,7 @@ fn record_anchors_for(
 ) -> List(Option(transcript_anchor.Row)) {
   let entries =
     transcript_lines.strand_entries(model.records, model.active_strand)
+  let sequences = transcript_lines.entry_sequences(entries)
   let notices = transcript_lines.active_notices(model)
   let blocks = case model.details_expanded {
     True -> {
@@ -450,17 +468,26 @@ fn record_anchors_for(
       // wider rule would ask for, and a spacer's own last row is blank, so a
       // second pass can only decline.
       entries
-      |> transcript_lines.splice_notices(notices, transcript_lines.entry_holds)
-      |> list.flat_map(fn(spliced) {
+      |> transcript_lines.splice_notices(
+        notices,
+        transcript_lines.entry_holds,
+        fn(value) { value.seq },
+      )
+      |> list.map(fn(spliced) {
         case spliced {
-          Transient(text) -> [#("", [Line(System, text)])]
+          Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
           Projected(value) ->
             anchored_entry_blocks(value, model)
             |> list.map(fn(block) {
               #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
             })
+            |> fn(blocks) { #(value.seq, blocks) }
         }
       })
+      |> transcript_lines.merge_sequence_blocks(
+        advisor_anchor_blocks(visible_advisor_history(model)),
+      )
+      |> list.flat_map(fn(group) { group.1 })
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
     }
 
@@ -471,12 +498,18 @@ fn record_anchors_for(
     False ->
       entries
       |> tool_activity.project
-      |> transcript_lines.splice_notices(notices, transcript_lines.item_holds)
-      |> list.flat_map(fn(spliced) {
+      |> transcript_lines.splice_notices(
+        notices,
+        transcript_lines.item_holds,
+        transcript_lines.item_sequence(_, sequences),
+      )
+      |> list.map(fn(spliced) {
         case spliced {
-          Transient(text) -> [#("", [Line(System, text)])]
-          Projected(tool_activity.Narrative(value)) ->
-            anchored_entry_blocks(value, model)
+          Transient(text, seq) -> #(seq, [#("", [Line(System, text)])])
+          Projected(tool_activity.Narrative(value)) -> #(
+            value.seq,
+            anchored_entry_blocks(value, model),
+          )
           Projected(tool_activity.Tools(calls)) -> {
             let heading = [transcript_lines.activity_heading(calls)]
             let called =
@@ -491,13 +524,23 @@ fn record_anchors_for(
                     }),
                 )
               })
-            [
-              #("", heading),
-              ..transcript_lines.separated_tool_blocks(called, WithinResponse)
-            ]
+            #(
+              transcript_lines.item_sequence(
+                tool_activity.Tools(calls),
+                sequences,
+              ),
+              [
+                #("", heading),
+                ..transcript_lines.separated_tool_blocks(called, WithinResponse)
+              ],
+            )
           }
         }
       })
+      |> transcript_lines.merge_sequence_blocks(
+        advisor_anchor_blocks(visible_advisor_history(model)),
+      )
+      |> list.flat_map(fn(group) { group.1 })
       |> transcript_lines.separated_tool_blocks(BetweenEntries)
   }
   [#("", model.transcript), ..blocks]
@@ -715,4 +758,36 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
     False, True -> offset + after - before
     False, False -> offset
   }
+}
+
+// Advisor-only commentary is visible beside the primary's captured entries.
+// The advisor's own branch retains its ordinary transcript instead.
+fn visible_advisor_history(model: Model) -> advisor_history.Board {
+  case model.active_strand {
+    "main" -> model.advisor_history
+    _ -> advisor_history.Board([], None)
+  }
+}
+
+// The row and anchor projections merge the same captured blocks. The stable
+// entry and text-block identity lets reading mode stay on an advisor update
+// when a later capture extends the conversation.
+fn advisor_anchor_blocks(
+  board: advisor_history.Board,
+) -> List(#(Int, List(#(String, List(Line))))) {
+  list.map2(
+    transcript_lines.advisor_history_blocks(board),
+    board.items,
+    fn(block, item) {
+      #(block.0, [
+        #(
+          "advisor/"
+            <> item.entry_id
+            <> "/block/"
+            <> int.to_string(item.block_index),
+          block.1,
+        ),
+      ])
+    },
+  )
 }

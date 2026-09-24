@@ -38,6 +38,7 @@ import tui/agent_view
 import tui/agents
 import tui/appearance
 import tui/approval_panel
+import tui/collaboration_view
 import tui/command
 import tui/completion_summary
 import tui/composer
@@ -890,6 +891,19 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
       })
     agents.Notes ->
       Some(fn(area: Rect) { notes_content(model, area, selected).lines })
+    agents.Collaboration ->
+      Some(fn(area: Rect) {
+        case model.captured {
+          Some(#(cut, view)) ->
+            collaboration_view.lines(
+              view,
+              cut.window,
+              selected,
+              area.size.width,
+            )
+          None -> [span.line_plain("Collaboration capture unavailable")]
+        }
+      })
   }
 }
 
@@ -1041,7 +1055,7 @@ fn note_compact_status(board: notes_view.Board, model: Model) -> String {
     count if count > 0 -> int.to_string(count) <> " more notes omitted · "
     _ -> ""
   }
-  freshness <> omitted <> "[/] select · r refresh · Ctrl+g readable/raw"
+  freshness <> omitted <> "↑/↓ or [/] select · r refresh · Ctrl+g readable/raw"
 }
 
 fn historical_note_payload(model: Model, target: String) -> Option(String) {

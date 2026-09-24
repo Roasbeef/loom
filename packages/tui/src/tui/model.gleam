@@ -31,6 +31,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
+import tui/advisor_history
 import tui/advisor_pending
 import tui/agent_messages
 import tui/agent_view
@@ -632,6 +633,8 @@ pub type Model {
     agent_rows: List(agent_view.Row),
     /// At most twenty provenance-verified sends observed in this attachment.
     agent_messages: List(agent_messages.Item),
+    /// Full advisor-only commentary from the bounded captured ancestry.
+    advisor_history: advisor_history.Board,
     /// Each strand's newest todo board seen in a capture or an arriving
     /// entry. Kept across cuts so a window that has moved past the last
     /// `todo` call does not blank the pinned panel; released with the

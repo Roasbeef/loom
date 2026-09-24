@@ -337,8 +337,8 @@ before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
 
 Because a notice may correctly do nothing, the lane reports every one it
-reads as `Noticed` (`tui/session_channel.gleam:117`) before deciding what
-to do with it, and the model counts those arrivals (`tui/inbound.gleam:282`).
+reads as `Noticed` (`tui/session_channel.gleam:121`) before deciding what
+to do with it, and the model counts those arrivals (`tui/inbound.gleam:286`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer.
 
@@ -347,22 +347,27 @@ The other pushed events are simpler. A `stream_delta` becomes a
 pushed `error` reports a failure the daemon had on this terminal's behalf,
 so it is rendered as an ordinary refusal and the socket stays open.
 
-A `stream_delta` arrives per provider token, and what the terminal keeps of
-one is bounded in two ways it did not used to be. The delta's `text` is a
-slice of the whole received frame, so the model rebuilds it before storing
-it; keeping the slice kept the frame, and a long answer kept one frame per
-token. And the accumulated live region collapses to its newest 24 KiB —
-`tui/transcript_lines.live_stream_limit`, the same clip `stream_preview` takes — whenever it
-would pass twice that. Without the second bound every paint reflowed the
-whole answer, so a terminal on a long turn drained its socket more slowly
-the longer the turn ran, until the socket was not being drained at all and
-the growth moved into the mailbox, a whole frame per queued message. That is
-what put two terminals at 32 GB and 26 GB against daemons at 3.5 GB and
-1.6 GB. `packages/tui/test/stream_bounds_test.gleam` holds the bound: across
-40,000 deltas the model stays flat at a few hundred kilobytes and sustains
-above 3,500 deltas a second. What a reader loses is the head of an answer
-that has not committed, and the durable record replaces the whole region the
-moment it does.
+A `stream_delta` arrives per provider token, and the terminal bounds
+what it keeps of the stream in two ways. Both bounds are recent fixes.
+
+First, the delta's `text` is a slice of the whole received frame, so the
+model copies it before storing it. Keeping the slice kept the whole frame
+alive, and a long answer kept one frame per token.
+
+Second, the accumulated live region collapses to its newest 24 KiB
+(`tui.live_stream_limit`, the same clip `stream_preview` takes) whenever
+it would exceed twice that. Without this bound every paint reflowed the
+whole answer. A terminal on a long turn then drained its socket more
+slowly the longer the turn ran, until it stopped draining the socket at
+all and the growth moved into the mailbox, one whole frame per queued
+message. That is what put two terminals at 32 GB and 26 GB against
+daemons at 3.5 GB and 1.6 GB.
+
+`packages/tui/test/stream_bounds_test.gleam` holds the bound: across
+40,000 deltas the model stays flat at a few hundred kilobytes and
+sustains above 3,500 deltas a second. The cost is that a reader loses the
+head of an answer that has not yet committed, and the durable record
+replaces the whole region the moment it commits.
 
 ### One turn on the wire
 

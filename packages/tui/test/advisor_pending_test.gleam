@@ -187,7 +187,13 @@ pub fn a_review_settling_asks_for_a_read_regardless_of_primary_phase_test() {
   let busy = with_roster(roster(Some("assistant"), Some("assistant")))
   let busy_reviewed = with_roster(roster(Some("assistant"), None))
   assert surfaces.advisor_nudges_action(busy, busy_reviewed)
-    == surfaces.DropNudges
+    == surfaces.ReadNudges
+
+  // A start and review end in one captured transition still needs the
+  // authoritative read: the review may have queued advice after the start
+  // drained older advice.
+  let both = with_roster(roster(Some("assistant"), None))
+  assert surfaces.advisor_nudges_action(reviewing, both) == surfaces.ReadNudges
 }
 
 /// The primary appearing in the roster is the attachment edge: a terminal that

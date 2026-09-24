@@ -826,14 +826,14 @@ pub fn workspace_preserves_recipient_controls_and_attention_at_small_sizes_test(
 }
 
 pub fn collaboration_tab_preserves_inspection_and_composer_target_test() {
-  let initial = tui.Model(..model(), strands: roster()) |> press("f2")
+  let initial = tui_model.Model(..model(), strands: roster()) |> press("f2")
   let opened = initial |> press("down") |> press("4")
-  let assert tui.AgentInspector(inspector) = opened.overlay
+  let assert tui_model.AgentInspector(inspector) = opened.overlay
   assert inspector.detail == agents.Collaboration
   assert inspector.selected == "worker"
   assert opened.active_strand == "main"
   let rendered =
-    tui.view(opened, geometry.rect_new(0, 0, 100, 30)).0
+    render.view(opened, geometry.rect_new(0, 0, 100, 30)).0
     |> frame.buffer_to_text
   assert string.contains(rendered, "4 Collaborate")
   assert string.contains(rendered, "To main")

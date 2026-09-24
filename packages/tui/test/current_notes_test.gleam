@@ -215,7 +215,7 @@ pub fn arrows_browse_standalone_notes_without_moving_the_transcript_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let shown =
     delivered(
-      tui.Model(..base, notes_open: True, scroll_offset: 7),
+      tui_model.Model(..base, notes_open: True, scroll_offset: 7),
       board_rows("main", 20, 2, [
         #("plan", 20, "first note body", "complete"),
         #("objective", 19, "second note body", "complete"),

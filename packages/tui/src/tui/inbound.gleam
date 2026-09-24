@@ -34,6 +34,7 @@ import gleam/set
 import gleam/string
 import host/build_identity
 import machine/strand as machine_strand
+import tui/advisor_history
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/agent_view
@@ -613,10 +614,12 @@ fn render_cut(
   // phases or timestamps leaves the cache standing. Cuts arrive on a
   // quarter-second cadence throughout a turn, and invalidating on every one
   // of them made each a full re-projection of the whole session.
+  let advisor_history = advisor_history.project(view, cut.window)
   let record_cache_valid =
     model.record_cache_valid
     && model.active_strand == active
     && model.records == branch.records
+    && model.advisor_history == advisor_history
     && model.transcript == transcript
     && transcript_lines.solo_owner(model.captured)
     == transcript_lines.solo_owner(Some(#(cut, view)))
@@ -684,6 +687,7 @@ fn render_cut(
     reviewer_rows: reviewers,
     agent_rows: rows,
     agent_messages: captured_messages,
+    advisor_history:,
     todo_boards: boards,
     todo_seed:,
     todo_asked:,
@@ -2354,7 +2358,7 @@ pub fn select_inspector_message(
   messages: List(agent_messages.Item),
 ) -> agents.Inspector {
   case inspector.detail {
-    agents.Overview | agents.Notes -> inspector
+    agents.Overview | agents.Notes | agents.Collaboration -> inspector
     agents.Messages -> {
       let selected =
         messages
@@ -2824,6 +2828,10 @@ pub fn select_workspace(
     agent_messages: case model.session == session {
       True -> model.agent_messages
       False -> []
+    },
+    advisor_history: case model.session == session {
+      True -> model.advisor_history
+      False -> advisor_history.Board(items: [], unloaded: None)
     },
     todo_boards: case model.session == session {
       True -> model.todo_boards

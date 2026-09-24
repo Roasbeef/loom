@@ -546,6 +546,8 @@ fn update_agent_inspector(
     keys.Char("1") -> select_agent_detail(model, inspector, agents.Overview)
     keys.Char("2") -> select_agent_detail(model, inspector, agents.Messages)
     keys.Char("3") -> select_agent_detail(model, inspector, agents.Notes)
+    keys.Char("4") ->
+      select_agent_detail(model, inspector, agents.Collaboration)
     keys.Char("[") if inspector.detail == agents.Messages ->
       select_agent_message(model, inspector, -1)
     keys.Char("]") if inspector.detail == agents.Messages ->
@@ -699,7 +701,7 @@ fn select_agent_detail(
       agent_messages.for_strand(model.agent_messages, inspector.selected)
       |> agent_message_panel.selected(inspector.message)
       |> option.map(agent_message_panel.identity)
-    agents.Overview | agents.Notes -> inspector.message
+    agents.Overview | agents.Notes | agents.Collaboration -> inspector.message
   }
   let owner_changed = case model.note_board {
     Some(board) -> board.strand != inspector.selected
@@ -722,7 +724,7 @@ fn select_agent_detail(
     )
   case detail {
     agents.Notes -> surfaces.refresh_notes(selected)
-    agents.Overview | agents.Messages -> selected
+    agents.Overview | agents.Messages | agents.Collaboration -> selected
   }
 }
 
@@ -935,6 +937,8 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
     keys.Char("r"), False, True -> surfaces.refresh_notes(model)
+    keys.Up, False, True -> surfaces.select_note(model, -1)
+    keys.Down, False, True -> surfaces.select_note(model, 1)
     keys.Char("["), False, True -> surfaces.select_note(model, -1)
     keys.Char("]"), False, True -> surfaces.select_note(model, 1)
     keys.Ctrl("g"), False, True -> toggle_note_mode(model)

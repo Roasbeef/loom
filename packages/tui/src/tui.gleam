@@ -49,6 +49,7 @@ import host/bootstrap as host_bootstrap
 import host/build_identity
 import host/endpoint
 import simplifile
+import tui/advisor_history
 import tui/agents
 import tui/appearance
 import tui/attachment
@@ -493,6 +494,7 @@ pub fn new_model_with_clock(
     reviewer_rows: [],
     agent_rows: [],
     agent_messages: [],
+    advisor_history: advisor_history.Board(items: [], unloaded: None),
     todo_boards: dict.new(),
     todo_seed: None,
     todo_asked: set.new(),

@@ -340,35 +340,24 @@ pub type NudgeAction {
 /// ```
 @internal
 pub fn advisor_nudges_action(before: Model, after: Model) -> NudgeAction {
-  case layout.strand_running(after, advisor_pending.primary_strand) {
-    // A run on the primary folds the whole queue into its first message, so
-    // what the panel was showing has been delivered rather than discarded.
-    // The local submit flag counts: it is the edge the operator sees, and
-    // waiting for the server's phase would leave delivered advice on screen.
-    True -> DropNudges
-
-    False -> idle_boundary(before, after)
-  }
-}
-
-// The primary is idle in `after`, so a primary that was running in `before`
-// is one that just settled. The advisor needs both halves of its own edge,
-// because it can still be mid-review and only a review's end adds to the
-// queue.
-fn idle_boundary(before: Model, after: Model) -> NudgeAction {
-  let primary_settled =
-    layout.strand_running(before, advisor_pending.primary_strand)
+  let primary_started =
+    !layout.strand_running(before, advisor_pending.primary_strand)
+    && layout.strand_running(after, advisor_pending.primary_strand)
   let review_settled =
     layout.strand_running(before, advisor_pending.advisor_strand)
     && !layout.strand_running(after, advisor_pending.advisor_strand)
-  let newly_listed =
-    !layout.strand_listed(before, advisor_pending.primary_strand)
-    && layout.strand_listed(after, advisor_pending.primary_strand)
+  case review_settled, primary_started {
+    // When both edges share one snapshot, the new review may have queued
+    // advice after the primary drained its older queue. Read the current
+    // board instead of losing that edge behind the run start.
+    True, _ -> ReadNudges
 
-  let session_changed = before.session != after.session
-  case primary_settled || review_settled || newly_listed || session_changed {
-    True -> ReadNudges
-    False -> HoldNudges
+    // A new run drains the old queue. An already-running primary can still
+    // receive a new nudge when the advisor settles, so its running phase
+    // alone must not erase or suppress that observation.
+    False, True -> DropNudges
+
+    False, False -> nudge_boundary(before, after)
   }
 }
 
@@ -387,7 +376,19 @@ pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
         nudges_request: None,
       )
 
-    ReadNudges -> Model(..after, nudges_refresh: worktree_view.Requested)
+    ReadNudges -> {
+      let started =
+        !layout.strand_running(before, advisor_pending.primary_strand)
+        && layout.strand_running(after, advisor_pending.primary_strand)
+      Model(
+        ..after,
+        nudges: case started {
+          True -> None
+          False -> after.nudges
+        },
+        nudges_refresh: worktree_view.Requested,
+      )
+    }
   }
 }
 
@@ -874,5 +875,22 @@ fn context_in_flight(state: context_view.State) -> Bool {
     context_view.Awaiting(_) | context_view.RefreshAfter(_) -> True
     context_view.Idle | context_view.Requested | context_view.Unavailable ->
       False
+  }
+}
+
+// A review can add advice while the primary is still running. Its end is the
+// read edge; the primary's end and a fresh attachment are recovery edges.
+fn nudge_boundary(before: Model, after: Model) -> NudgeAction {
+  let primary_settled =
+    layout.strand_running(before, advisor_pending.primary_strand)
+    && !layout.strand_running(after, advisor_pending.primary_strand)
+  let newly_listed =
+    !layout.strand_listed(before, advisor_pending.primary_strand)
+    && layout.strand_listed(after, advisor_pending.primary_strand)
+
+  let session_changed = before.session != after.session
+  case primary_settled || newly_listed || session_changed {
+    True -> ReadNudges
+    False -> HoldNudges
   }
 }
