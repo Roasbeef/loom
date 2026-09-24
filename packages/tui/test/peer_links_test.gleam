@@ -32,6 +32,7 @@ pub fn session_link_keeps_target_across_catalogue_refresh_test() {
     )
   let state = peer_links.from_session("source-id", "builder", selector, target)
   let state = peer_links.loaded(state, [], peer_links.Inspection([], []), None)
+  assert state.notice == ""
   let assert Some(selected) = state.selected_target
   assert selected == target
   assert state.return_to == peer_links.Sessions(selector)

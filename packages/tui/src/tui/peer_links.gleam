@@ -267,9 +267,10 @@ pub fn loaded(
   inspection: Inspection,
   next_cursor: Option(String),
 ) -> State {
-  let notice = case next_cursor {
-    Some(_) -> "more grants available · press n to continue"
-    None -> "peer inspection current · saved targets stay closed"
+  let notice = case state.prompt, next_cursor {
+    Browsing, Some(_) -> "more grants available · press n to continue"
+    Browsing, None -> "peer inspection current · saved targets stay closed"
+    _, _ -> ""
   }
   State(
     ..state,
@@ -473,6 +474,8 @@ fn update_session_choice(key: keys.Key, state: State) -> Action {
                   selected_target: Some(row),
                   target_entry: PeerChooser,
                   target_strand: "",
+                  notice: "",
+                  operation_result: None,
                 ),
               )
             False ->
@@ -650,11 +653,13 @@ fn render_lines(state: State, width: Int, height: Int) {
     Some(message) -> [quiet(text.truncate(message, width, "…"))]
     None -> []
   }
-  let footers =
-    list.append(result, [
-      quiet(text.truncate(text_hygiene.single_line(state.notice), width, "…")),
-      footer,
-    ])
+  let notice = case state.notice {
+    "" -> []
+    message -> [
+      quiet(text.truncate(text_hygiene.single_line(message), width, "…")),
+    ]
+  }
+  let footers = list.append(list.append(result, notice), [footer])
   let room = int.max(0, height - list.length(footers))
   let visible = case state.prompt {
     Browsing -> grant_viewport(content, state.selected_grant, room)
@@ -986,6 +991,8 @@ fn reverse_proposal(state: State, rows: List(Grant)) -> Action {
         State(
           ..state,
           wake: BusyOnly,
+          notice: "",
+          operation_result: None,
           prompt: Confirming(Proposal(
             source_session: grant.target_session,
             source_strand: grant.target_strand,
