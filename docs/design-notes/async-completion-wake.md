@@ -1,7 +1,7 @@
 # Design note: completion wake, auto-background bash, and the idle heartbeat
 
-Status: **in progress** on `runtime/async-completion-wake`, written against
-`main` at `77269e50` (the merged #484 collaboration stack).
+Status: **in review** as #498 on `runtime/async-completion-wake`, rebased
+onto `main` at `7b351914`.
 
 ## The problem
 
