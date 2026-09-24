@@ -355,7 +355,7 @@ model copies it before storing it. Keeping the slice kept the whole frame
 alive, and a long answer kept one frame per token.
 
 Second, the accumulated live region collapses to its newest 24 KiB
-(`tui.live_stream_limit`, the same clip `stream_preview` takes) whenever
+(`tui/transcript_lines.live_stream_limit`, the same clip `stream_preview` takes) whenever
 it would exceed twice that. Without this bound every paint reflowed the
 whole answer. A terminal on a long turn then drained its socket more
 slowly the longer the turn ran, until it stopped draining the socket at
