@@ -1,14 +1,34 @@
-# Collaboration handoff
+# Current handoff
 
-This file records the current collaboration implementation, its verification
-boundary and the next scoped work. Rewrite it after the next body of work;
-use the architecture and protocol documents for enduring contracts.
+This file records the latest scoped work and retains the prior collaboration
+handoff below it. Use the architecture and protocol documents for enduring
+contracts.
 
-The collaboration implementation is in PR #484, rebased onto `main` after
-#482, #490, #278 and #491. This edition records the current behavior and the follow-ups
-that remain after the platform gate and merge.
+PR #484 merged on 2026-09-23 at `77269e50`. The collaboration sections below
+describe its pre-merge validation and planned follow-ups at that time; they
+are a historical record, not a current PR status report.
 
-## Where the tree is
+## Shell approval recovery
+
+A running shell can hit a kernel permission error after earlier effects. It
+still settles in band: stderr cannot supply a trusted canonical grant, and
+replaying a `Never` command could repeat those effects. A failed `bash` call
+now tells the agent to make a fresh invocation with `permissions` declaring
+the needed roots. For a quoted Git lock path, it names the reported `.git`
+directory as a possible writable root. The declared request goes through
+canonicalization, protected-path checks and the ordinary operator dialog
+before the new command starts.
+
+The real-jail Git worktree regression exercises the denied write and the
+approved retry. The client regression checks the durable question, displayed
+command and exact grants through production wiring. `make check` and
+`make doc-check` passed on the isolated branch. A trusted helper-side denial
+report would be needed before an automatic prompt could safely identify a
+resource from an already-running command; stderr remains diagnostic only.
+
+## Prior collaboration handoff
+
+### Where the tree was
 
 | Body of work | Current state |
 |---|---|
@@ -17,7 +37,7 @@ that remain after the platform gate and merge.
 | Named workflows | Named steps reconcile original child operations and durable results; version, input and assignment remain immutable. |
 | Presentation and examples | TUI linking is #485, CLI conveniences are #488, and a complete collaboration workflow example is #489. |
 | Code-mode surface | The default server admits the full capability set from either program mode. Omitted `seam` selects workspace. An explicit workspace-only host remains effect-only; extensions and resident hooks keep their own policies. |
-| Integration | PR #484 carries the implementation for #107 and #382. GitHub closes both issues on merge. |
+| Integration | PR #484 carried the implementation for #107 and #382 and has merged. |
 
 The [architecture](architecture/async-collaboration.md) explains host and
 satellite ownership. The [API guide](async-collaboration.md) gives callable
@@ -26,7 +46,7 @@ owns the wire and custody decisions, and the
 [follow-up review](review/async-collaboration-followups.md) records the adversarial
 finding and its validation.
 
-### Corrections to the previous edition
+#### Corrections to the previous edition
 
 The previous edition listed typed endpoints, intermediate progress, readiness,
 idle limits, the exclusive invocation contract and structured entry provenance
@@ -43,7 +63,7 @@ After the previous rebase, hosted CI passed both Linux and macOS gates at
 a new hosted result on the final PR head. The earlier macOS bootstrap timeout
 did not recur on `fb1eff2a`.
 
-## Integration with current main
+### Integration with current main
 
 The branch also includes the code-mode notes and utilities work merged in #483.
 Both workspace and orchestration are offered by default; an omitted seam still
@@ -63,7 +83,7 @@ fixtures cover these utilities alongside the collaboration fixtures. See
 records for the enduring contracts. The validation below covers their resolved
 integration with collaboration, including the regenerated prelude and seed.
 
-## What to do next
+### What to do next
 
 1. Add operator convenience surfaces in **#488** and **#485**. Scripts and
    terminal users need to inspect and administer directional links through
@@ -76,7 +96,7 @@ integration with collaboration, including the regenerated prelude and seed.
    both equivalent mode names still earn their cached-prefix cost. Any narrower
    deployment must advertise only capabilities its router services.
 
-## Rulings already made
+### Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
@@ -112,7 +132,7 @@ Saved targets stay saved; an unavailable target does not prevent outgoing-link
 removal or discovery of healthy peers. The messaging architecture describes
 these residency and revocation boundaries.
 
-## Deliberately open
+### Deliberately open
 
 None of these is unfinished work somebody forgot.
 
@@ -124,7 +144,7 @@ None of these is unfinished work somebody forgot.
 - General effect replay and an automatic workflow retry language are undesigned.
   The current primitive reconciles named child operations.
 
-## Validation evidence
+### Validation evidence
 
 The complete `make check` passed with exit zero on rebased source head
 `5c264b0f`, based on `main` at `db7e0969`. It passed 2,079 client and 722 TUI
@@ -158,7 +178,7 @@ no confirmed production correctness or authority defect. Documentation received
 technical-writing and package-graph passes, including legacy origin encoding
 and the distinction between admission, dispatch and application completion.
 
-## How to verify
+### How to verify
 
 ```sh
 make sandbox codemode-seed

@@ -525,6 +525,74 @@ pub fn an_approval_resumes_the_parked_call_test() {
   assert record.status == escalation.Consumed
 }
 
+pub fn an_outside_git_worktree_requests_both_write_roots_before_launch_test() {
+  let harness =
+    start(
+      Setup(..setup(), interactive: fn() { True }, base: fn(root) {
+        let base = policy.workspace_default(root)
+        policy.SandboxPolicy(..base, env_allow: ["PATH"])
+      }),
+    )
+  let repository = workspace() <> "-repository"
+  let git_directory = repository <> "/.git"
+  let destination_parent = workspace() <> "-linked-parent"
+  let destination = destination_parent <> "/linked"
+  let assert Ok(Nil) = simplifile.create_directory_all(git_directory)
+    as "the source repository metadata must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(destination_parent)
+    as "the writable destination parent must exist"
+  let command =
+    "cd '"
+    <> repository
+    <> "' && git worktree add '"
+    <> destination
+    <> "' -b sqlite-update"
+  let arguments =
+    json.Object([
+      #("command", json.String(command)),
+      #(
+        "permissions",
+        json.Object([
+          #("readable_roots", json.Array([json.String(repository)])),
+          #(
+            "writable_roots",
+            json.Array([
+              json.String(git_directory),
+              json.String(destination_parent),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+
+  // A request naming both places Git writes parks before it reaches
+  // the helper. The displayed action and all three grants must be the
+  // ones this invocation declared; the operator decides this call only.
+  approve_when_pending(harness.runtime, fn(id) {
+    let assert Ok([record]) = api.escalations(harness.runtime)
+      as "the worktree call must raise one question"
+    assert record.id == id
+    let assert Some(preview) = record.preview
+      as "the worktree command must be displayed"
+    assert string.contains(preview, "git worktree add")
+    let assert Ok(denial) = grants.decode_denial(record.denial)
+      as "the worktree denial must decode"
+    assert list.contains(denial.wanted, policy.GrantReadableRoot(repository))
+    assert list.contains(denial.wanted, policy.GrantWritableRoot(git_directory))
+    assert list.contains(
+      denial.wanted,
+      policy.GrantWritableRoot(destination_parent),
+    )
+    approve_with_the_wanted_diff(harness.runtime)(id)
+  })
+  let run = with_arguments(bash_run("worktree"), arguments)
+  let text = result_text(wiring.run_tool(harness.config, run))
+  assert string.contains(text, "no sandbox helper")
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "the worktree approval must remain auditable"
+  assert record.status == escalation.Consumed
+}
+
 // A denial un-parks the call just as an approval does, and the model
 // gets the in-band refusal it would have got without any of this.
 pub fn a_denial_settles_the_parked_call_in_band_test() {

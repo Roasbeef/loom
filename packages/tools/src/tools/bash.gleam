@@ -111,6 +111,9 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
       <> "command runs as `bash -o pipefail -c` in the workspace using "
       <> "the session's PATH and network policy. Declare extra paths or full "
       <> "network access in permissions to request approval before execution. "
+      <> "For a Git worktree outside the workspace, request writable_roots "
+      <> "for the repository's .git directory and an existing destination "
+      <> "directory or its parent if the new worktree path does not exist. "
       <> "A failed command before "
       <> "a pipe remains a failed pipeline; inspect its output before "
       <> "claiming tests passed. For scratch files use "
@@ -133,7 +136,9 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     // into (`client/serve_test`), and a quote is escaped there.
     prompt_snippet: option.Some(
       "`bash` runs a shell command under the session jail policy; "
-      <> "`mode: background` starts it as a job instead. Use "
+      <> "`mode: background` starts it as a job instead. Declare "
+      <> "`permissions.writable_roots` for outside writes before running; "
+      <> "a denied command needs a fresh call with those roots. Use "
       <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}` for scratch, not literal `/tmp`. "
       <> "A pipeline that "
       <> "exists to find, filter, or count across files belongs in "
@@ -426,6 +431,7 @@ fn exited(
         code, 0 -> ["exit code " <> int.to_string(code)]
         _, signal -> ["killed by signal " <> int.to_string(signal)]
       },
+      permission_guidance(result, stderr),
     ]
     |> list.flatten
     |> string.join(with: "\n")
@@ -471,6 +477,64 @@ fn exited(
         terminate: tool.ContinueRun,
       )
       |> blob.with_blob_details(bounded)
+  }
+}
+
+// A kernel error is only a clue: stderr is program output, not an
+// enforcement report, and a shell may already have changed state. The
+// next invocation can declare authority before it starts, but this one
+// must never be replayed automatically.
+fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
+  case
+    result.code != 0
+    && {
+      string.contains(stderr, "Operation not permitted")
+      || string.contains(stderr, "Permission denied")
+      || string.contains(stderr, "Read-only file system")
+    }
+  {
+    True -> {
+      let git_hint = case denied_git_directory(stderr) {
+        Some(path) ->
+          " Git reported a blocked path under `"
+          <> path
+          <> "`; include that directory in permissions.writable_roots "
+          <> "if the write is intended."
+        None -> ""
+      }
+      [
+        "If this failure came from the sandbox, do not repeat the same "
+        <> "call. Start a new bash call with permissions.readable_roots "
+        <> "and permissions.writable_roots naming the exact paths needed; "
+        <> "Loom will request approval before "
+        <> "that call runs. For git worktree add, include the "
+        <> "repository's .git directory and an existing destination "
+        <> "directory or its parent if the worktree path does not exist. "
+        <> "Protected paths cannot be approved."
+        <> git_hint,
+      ]
+    }
+    False -> []
+  }
+}
+
+// Git reports a full lock path, but its worktree operation needs more
+// than one file under the common metadata directory. This is only a
+// hint from untrusted stderr; `permissions` still canonicalizes the
+// model's next request and the operator still sees the exact grant.
+fn denied_git_directory(stderr: String) -> Option(String) {
+  let quoted = string.split(stderr, on: "'")
+  case
+    list.find(quoted, fn(part) {
+      string.starts_with(part, "/") && string.contains(part, "/.git/")
+    })
+  {
+    Error(Nil) -> None
+    Ok(path) ->
+      case string.split(path, on: "/.git/") {
+        [repository, ..] -> Some(repository <> "/.git")
+        [] -> None
+      }
   }
 }
 
