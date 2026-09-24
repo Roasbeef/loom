@@ -693,8 +693,10 @@ boundaries and the split's measurements under Invariants.
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
 - `tui/peer_links` owns the peer-grant inspector, exact target-strand draft,
-  and review step. `tui.gleam` routes each inspected, linked, or revoked grant
-  through a separate owner-authenticated daemon control request.
+  and review step. `tui/interaction` routes the selected key to
+  `tui/session_control`, which sends each inspection, link, or revocation over
+  the owner-authenticated daemon control socket. `tui/model` holds the modal
+  and its pending control outcome; `tui/render` paints the resulting state.
 - `tui/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local

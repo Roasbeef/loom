@@ -406,6 +406,19 @@ already have.
 | Model selector | `/model` | The model catalogue; selection sends `set_config` | `model_selector` |
 | Session picker | `/sessions`, and at a `Local` launch | One authorized catalogue page; Enter opens a session, while `l` links the attached strand to the selected resident session | `session_selector`, `daemon/selection`, `peer_links` |
 
+The peer-link path starts in `tui/interaction`: `l` on a resident `/sessions`
+row passes that row to `tui/session_control` without attaching its session.
+`/peers` starts from the active strand; `p` in `/agents` starts from the
+inspected strand. `tui/model` stores the modal and the pending control request,
+while `tui/peer_links` holds the target strand, grant selection, and catalogue
+revision. `tui/session_control` reads the session catalogue and peer grants
+through the owner control socket, then sends link or unlink requests only after
+the operator confirms the exact direction. The daemon checks ownership, epoch,
+residency, and grant authority. A saved session cannot become a target through
+selection alone. `tui/render` paints the confirmation and acknowledged result;
+closing the modal returns to the session picker, agent inspector, or composer
+without changing the attached session or its draft.
+
 A few rules apply to every surface. An open overlay owns focus, so ordinary
 prompt editing is inert while it is up, and `Ctrl+C` stays global. Overlay
 rows are cut to width rather than wrapped, so a long entry cannot push the
