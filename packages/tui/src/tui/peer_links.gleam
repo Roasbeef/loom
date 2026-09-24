@@ -316,12 +316,14 @@ pub fn failed(state: State, reason: String) -> State {
 /// let updated = peer_links.completed(state, document)
 /// ```
 pub fn completed(state: State, document: json.JsonValue) -> State {
+  let result = case document {
+    json.Null -> "peer link updated"
+    _ -> "server result: " <> text_hygiene.single_line(json.to_string(document))
+  }
   State(
     ..state,
     prompt: Browsing,
-    operation_result: Some(
-      "server result: " <> text_hygiene.single_line(json.to_string(document)),
-    ),
+    operation_result: Some(result),
     notice: "refreshing peer grants",
   )
 }
@@ -558,7 +560,7 @@ fn render_lines(state: State, width: Int, height: Int) {
       plain("Target strand: " <> state.target_strand <> "▏"),
       quiet("Type the exact strand name · Enter continues · Esc returns"),
     ]
-    Confirming(proposal) -> confirmation_lines(state, proposal, width)
+    Confirming(proposal) -> confirmation_lines(state, proposal)
   }
   let footer = case state.prompt {
     Browsing -> {
@@ -716,7 +718,7 @@ fn session_lines(state: State, width: Int) {
   }
 }
 
-fn confirmation_lines(state: State, pending: Proposal, width: Int) {
+fn confirmation_lines(state: State, pending: Proposal) {
   [
     plain(
       "Grant "
@@ -731,7 +733,6 @@ fn confirmation_lines(state: State, pending: Proposal, width: Int) {
     plain("Wake permission: " <> wake_choice_label(state.wake)),
     quiet("busy_only means during an active run"),
     quiet("may_wake also starts an idle strand"),
-    quiet(text_hygiene.single_line(text.truncate(state.notice, width, "…"))),
   ]
 }
 

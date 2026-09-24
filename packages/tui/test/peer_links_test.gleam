@@ -279,6 +279,10 @@ pub fn mutation_acknowledgement_survives_refresh_and_enter_cannot_repeat_test() 
   assert refreshed.operation_result
     == Some("server result: {\"status\":\"partial\"}")
   assert string.contains(view_text(refreshed), "server result:")
+
+  let succeeded = peer_links.completed(state, json.Null)
+  assert succeeded.operation_result == Some("peer link updated")
+  assert !string.contains(view_text(succeeded), "server result: null")
 }
 
 pub fn chooser_pages_past_the_first_hundred_authorized_sessions_test() {
