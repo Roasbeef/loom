@@ -20,6 +20,7 @@ import host/endpoint as daemon_endpoint
 import tui/connection
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/protocol
+import tui/workspace
 import weft/poll
 
 const endpoint_version = 2
@@ -718,6 +719,36 @@ fn acquire_lock(path: String) -> Result(host.LaunchLock, String) {
     poll.Answered(lock) -> Ok(lock)
     poll.Failed(reason) -> Error("acquire launch lock: " <> reason)
     poll.Expired -> Error("timed out waiting for the local server launch lock")
+  }
+}
+
+/// Chooses the workspace a local launch creates its sessions in.
+///
+/// An explicit `--workspace` is authoritative: it is canonicalized the way
+/// `resolve` canonicalizes it, so the path on the wire is absolute rather than
+/// relative to the daemon's working directory, and it is kept as named rather
+/// than widened to its enclosing repository. Only an empty flag falls back to
+/// the context discovered from the launch directory. A flag naming no
+/// directory is an error, because every fallback would jail the agent
+/// somewhere the operator did not ask for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.launch_workspace(
+///   bootstrap.Options("scratch", "", "", "", ""),
+///   workspace.discover(),
+/// )
+/// // -> Ok(workspace.Context("/abs/scratch", Some("main")))
+/// ```
+@internal
+pub fn launch_workspace(
+  options: Options,
+  discovered: workspace.Context,
+) -> Result(workspace.Context, String) {
+  case options.workspace {
+    "" -> Ok(discovered)
+    path -> canonical_workspace(path) |> result.map(workspace.explicit)
   }
 }
 

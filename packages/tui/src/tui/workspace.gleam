@@ -88,6 +88,25 @@ pub fn discover_from(path: String) -> Context {
   }
 }
 
+/// Anchors a context at a directory that was named rather than discovered.
+///
+/// A `--workspace` flag, or the workspace a catalogue row records, is the root
+/// a session is jailed in, so the path is kept exactly as given. Only the
+/// branch is borrowed from the nearest enclosing repository, as a label.
+/// `discover_from` would instead replace the path with that repository's
+/// root, and a scratch directory inside a checkout would then create its
+/// sessions over the whole checkout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.explicit("/work/loom/scratch").path == "/work/loom/scratch"
+/// ```
+@internal
+pub fn explicit(path: String) -> Context {
+  Context(..discover_from(path), path:)
+}
+
 fn repository_marker(path: String) -> Result(#(String, String), Nil) {
   let marker = filepath.join(path, ".git")
   case simplifile.exists(marker, follow_links: False) {

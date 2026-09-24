@@ -1310,6 +1310,31 @@ pub fn new_model_with_clock(
   )
 }
 
+// Reaches the per-user daemon for a local launch whose workspace is already
+// settled on `local`; the daemon itself is shared across workspaces, so
+// nothing here may re-derive the workspace from the process directory.
+fn launch_local(
+  local: Model,
+  options: bootstrap.Options,
+  selected: String,
+) -> Model {
+  case bootstrap.resolve_daemon(options, process.self(), 90_000) {
+    Error(reason) ->
+      append_error(
+        Model(..local, peer: Disconnected, notice: "daemon startup failed"),
+        reason,
+      )
+    Ok(connected) ->
+      attach_daemon(
+        local,
+        connected.control,
+        endpoint.address(connected.record),
+        connected.paths.token,
+        selected,
+      )
+  }
+}
+
 fn interactive(launch: Launch, record: String) -> Nil {
   let inbox = connection.new_inbox()
   let base = new_model(inbox, workspace.discover())
@@ -1324,35 +1349,21 @@ fn interactive(launch: Launch, record: String) -> Nil {
     // Unreachable: `main` answers these before it builds a model.
     Version | Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo ->
       base
-    Local(options, selected) -> {
-      // The footer names the workspace the session was launched for, which
-      // is only the current directory when no `--workspace` was given; a
-      // later `/sessions` switch derives it the same way from its choice.
-      let local =
-        Model(
-          ..base,
-          local_options: Some(options),
-          workspace: case options.workspace {
-            "" -> base.workspace
-            path -> workspace.discover_from(path)
-          },
-        )
-      case bootstrap.resolve_daemon(options, process.self(), 90_000) {
+    // The model's workspace is what the picker's `n` sends as the new
+    // session's jail root, so an explicit `--workspace` is settled before
+    // any daemon is reached. A flag that names no directory stops the launch
+    // rather than quietly creating sessions in the launch directory's repo.
+    Local(options, selected) ->
+      case bootstrap.launch_workspace(options, base.workspace) {
         Error(reason) ->
-          append_error(
-            Model(..local, peer: Disconnected, notice: "daemon startup failed"),
-            reason,
-          )
-        Ok(connected) ->
-          attach_daemon(
-            local,
-            connected.control,
-            endpoint.address(connected.record),
-            connected.paths.token,
+          append_error(Model(..base, notice: "invalid launch"), reason)
+        Ok(project) ->
+          launch_local(
+            Model(..base, local_options: Some(options), workspace: project),
+            options,
             selected,
           )
       }
-    }
     Invalid(reason) ->
       append_error(Model(..base, notice: "invalid launch"), reason)
     Remote(address, session, token) ->
@@ -2692,9 +2703,9 @@ fn create_session_configured(model: Model, config: String) -> Model {
       // Bound outside the closure for the same reason the catalogue job binds
       // its two: a reference to `model.workspace` would put the whole
       // presentation state, cached frame included, in the worker's copied
-      // environment.
-      let workspace = model.workspace.path
-      let name = workspace.session_name(model.workspace)
+      // environment. The context is the launch's settled workspace, so an
+      // explicit `--workspace` reaches the create request unchanged.
+      let project = model.workspace
       Model(
         ..model,
         creation_key: Some(key),
@@ -2704,7 +2715,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
         candidate: attachment.start_recorded(
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            daemon_selection.create_named(host, key, workspace, name, config)
+            daemon_selection.create_named(host, key, project, config)
           },
           90_000,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
@@ -7081,7 +7092,7 @@ fn adopt_session(
     queued: [],
     awaiting_outcome: None,
     current_model: "loading…",
-    workspace: workspace.discover_from(choice.workspace),
+    workspace: workspace.explicit(choice.workspace),
     strands: [],
     agent_summary: agents.summary([]),
     reviewer_rows: [],
