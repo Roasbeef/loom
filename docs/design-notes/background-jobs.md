@@ -10,7 +10,11 @@ this documentation (WP5), and **#269** the step-scoped abort that settles
 the contradiction the fixture found.
 Resolves issue #183 and settles the first cut of #186 and #71 on the way.
 Converting an overrunning foreground call into a job, the second half of
-#183, was deliberately deferred; see "The tool surface".
+#183, was deliberately deferred; see "The tool surface". It has since
+landed as `bash`'s default auto mode, together with completion notices
+that end this note's poll-only posture;
+[async-completion-wake.md](async-completion-wake.md) answers the objection
+recorded below.
 
 Two sections near the end are the ones to read before treating any
 paragraph above as current. "What changed on contact with the code"
@@ -24,7 +28,7 @@ and the reason each was deferred.
 A model working in Loom cannot start something and come back to it. Every
 `bash` call is foreground: the tool's `run` blocks its effect process for
 the whole execution (`runtime/effects.gleam:252-253`), and past its budget
-the call returns the literal `[command timed out]` (`tools/bash.gleam:420`)
+the call returns the literal `[command timed out]` (`tools/bash.gleam:777`)
 with the process reaped. The motivating case is small and exact: start
 `tail -f build.log`, keep working, every so often ask "what has it printed
 since I last looked", and eventually stop it. Today the only way to watch
@@ -159,7 +163,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:120-127`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:366`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:723`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong

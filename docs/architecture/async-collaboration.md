@@ -138,6 +138,25 @@ executions can overlap, and programs must coordinate conflicting workspace
 changes through the available capability policy and their own application
 protocol.
 
+## Telling the launcher
+
+When an execution's terminal phase is saved, the service sends the
+launching strand a completion notice: harness text naming the handle, the
+end, and the first two kilobytes of a finished program's result. The notice
+is an ordinary queue admission (`client/notice.deliver`), a steer into an
+open run or a fresh run on an idle strand, and it spends a reserved mark
+under `client/notice/execution/` in the same transaction, so a replacement
+service cannot deliver it twice. An owner's `cancel`, an abort of the
+launching operation and a session stop are ends somebody chose and send
+nothing. An execution recovery marks lost is announced once, by the
+recovery that ended it.
+
+The service also samples its launchers once a minute for the idle
+heartbeat: a strand with no open run for `[jobs].heartbeat_s` while one of
+its executions is still `Starting` or `Running` is woken with a listing.
+[The design note](../design-notes/async-completion-wake.md) has the
+reasoning shared with background jobs.
+
 ## Closing custody and recovering identity
 
 An execution moves through `Starting → Running → Draining → Finished(result) |

@@ -128,6 +128,14 @@ pub type Expectation {
     text: String,
   )
 
+  /// A user prompt the harness wrote, matched on its opening words
+  /// because the rest carries a runtime-minted handle: a completion
+  /// notice names the job it is about.
+  AwaitPromptPrefix(
+    /// Exact opening of the latest user text.
+    prefix: String,
+  )
+
   /// A successful tool result, matched on the provider-minted identity
   /// alone because its text carries a runtime-minted handle.
   AwaitToolResult(
@@ -419,6 +427,9 @@ fn awaited(expect: Expectation, latest: Latest) -> Bool {
   case expect, latest {
     AwaitPrompt(text:), UserPrompt(prompt) -> prompt == text
     AwaitPrompt(..), SuccessfulToolResult(..) -> False
+    AwaitPromptPrefix(prefix:), UserPrompt(prompt) ->
+      string.starts_with(prompt, prefix)
+    AwaitPromptPrefix(..), SuccessfulToolResult(..) -> False
     AwaitToolResult(call_id:), SuccessfulToolResult(id, _text) -> id == call_id
     AwaitToolResult(..), UserPrompt(..) -> False
   }
@@ -427,6 +438,7 @@ fn awaited(expect: Expectation, latest: Latest) -> Bool {
 fn awaited_bounded(expect: Expectation) -> Bool {
   case expect {
     AwaitPrompt(text:) -> bounded(text)
+    AwaitPromptPrefix(prefix:) -> prefix != "" && bounded(prefix)
     AwaitToolResult(call_id:) -> call_id != "" && bounded(call_id)
   }
 }

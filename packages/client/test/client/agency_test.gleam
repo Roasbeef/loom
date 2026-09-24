@@ -2120,6 +2120,7 @@ pub fn async_inputs_survive_repeated_reads_and_enforce_handle_ownership_test() {
         runtime: harness.runtime,
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
       ),
     )
     as "the execution service must start"
@@ -2187,6 +2188,7 @@ pub fn async_cancellation_fences_new_children_before_reporting_terminal_test() {
         runtime: harness.runtime,
         clock: harness.config.clock,
         abort: fn(operation, step) { process.send(aborted, #(operation, step)) },
+        heartbeat_ms: 0,
       ),
     )
     as "the execution service must start"
@@ -2245,6 +2247,7 @@ pub fn async_service_restart_records_loss_without_replaying_a_program_test() {
         runtime: harness.runtime,
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
       ),
     )
     as "the replacement must start"
@@ -2275,6 +2278,7 @@ pub fn async_operation_abort_also_refuses_a_delayed_launch_test() {
         runtime: harness.runtime,
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
+        heartbeat_ms: 0,
       ),
     )
     as "the execution service must start"
@@ -2364,6 +2368,7 @@ fn async_satellite(
         runtime: harness.runtime,
         clock: wall,
         abort: async_codemode.abort(plane.broker),
+        heartbeat_ms: 0,
       ),
     )
     as "the execution service must start"
@@ -3132,7 +3137,12 @@ fn nested_background_cancellation(parent_custody: ParentCustody) {
   let assert Ok(service) =
     async_runs.start(
       name,
-      async_runs.Wiring(harness.runtime, harness.config.clock, fn(_, _) { Nil }),
+      async_runs.Wiring(
+        harness.runtime,
+        harness.config.clock,
+        fn(_, _) { Nil },
+        0,
+      ),
     )
     as "background execution service starts"
   let outer =
@@ -3220,7 +3230,12 @@ pub fn async_completed_value_cannot_override_a_lost_scope_proof_test() {
   let assert Ok(service) =
     async_runs.start(
       name,
-      async_runs.Wiring(harness.runtime, harness.config.clock, fn(_, _) { Nil }),
+      async_runs.Wiring(
+        harness.runtime,
+        harness.config.clock,
+        fn(_, _) { Nil },
+        0,
+      ),
     )
     as "the execution service starts"
   let record = async_record("abba", harness.config.clock)

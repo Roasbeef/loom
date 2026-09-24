@@ -25,7 +25,7 @@
 ////
 //// ## The mutation checks
 ////
-//// Five removals, each run against the whole suite, recorded here so the
+//// Ten removals, each run against a suite, recorded here so the
 //// next reader can repeat them rather than trust this paragraph.
 ////
 //// | Removed | Fails |
@@ -35,6 +35,14 @@
 //// | `cancel`'s `control.cancel()` | `a_kill_climbs_the_ladder_test`, `a_session_stop_kills_every_live_job_test` |
 //// | `sweep`'s `reap_one` | `a_restart_declares_a_running_job_lost_test` |
 //// | `expired`'s `DeadlinePassed` send and its `stopped_by` | `a_deadline_kills_with_its_own_cause_test` |
+//// | `settled`'s call to `announce` | `an_unwatched_jobs_end_is_sent_to_its_owner_test`, `a_released_job_is_announced_when_it_ends_test`, `a_waiting_caller_that_dies_hands_the_job_to_its_owner_test`, `an_auto_bash_that_outlives_its_window_notifies_the_owner_later_test` |
+//// | `watching`'s caller monitor | `a_waiting_caller_that_dies_hands_the_job_to_its_owner_test` |
+//// | `released`'s `AlreadyEnded` arm | `a_waited_on_job_is_silent_and_answers_already_ended_test` |
+//// | `client/notice`'s steer-only door for a subagent | `an_idle_subagents_job_never_wakes_it_test` |
+//// | `announce`'s `stopped_on_purpose` check | `a_killed_job_that_ends_lost_stays_silent_test`, `a_stop_that_outlived_its_grace_is_not_announced_on_reopen_test` |
+////
+//// The last five rows were added with the completion notice and ran
+//// against this file alone; the first five predate it.
 ////
 //// The fifth is the deadline's whole mechanism: without the notice and
 //// the cause the runner carries in its report, a job the relay cancelled
@@ -77,7 +85,10 @@ import broker/token
 import client/gateway
 import client/internal/ffi_os
 import client/jobs
+import client/jobseam
 import client/jobstate.{type JobId}
+import client/jobtools
+import client/notice
 import client/protocol
 import client/serve
 import core/clock.{type Clock}
@@ -100,7 +111,9 @@ import runtime/api.{type Runtime}
 import runtime/effects
 import session/session
 import support/addresses
+import tools/bash
 import tools/blob
+import tools/directory_access
 import tools/tool
 import weft/actor
 import weft/poll
@@ -747,7 +760,13 @@ fn started_or_refused(
     harness.name,
     strand:,
     operation: harness.operation,
-    request: jobs.Request(command:, wall_ms:, captured_policy: None),
+    request: jobs.Request(
+      command:,
+      wall_ms:,
+      captured_policy: None,
+      audience: jobs.ProgramWatches,
+      stdin: jobs.KeepStdinOpen,
+    ),
     waiting: 10_000,
   )
 }
@@ -767,7 +786,13 @@ fn start_job_under(
       harness.name,
       strand:,
       operation:,
-      request: jobs.Request(command:, wall_ms: None, captured_policy: None),
+      request: jobs.Request(
+        command:,
+        wall_ms: None,
+        captured_policy: None,
+        audience: jobs.ProgramWatches,
+        stdin: jobs.KeepStdinOpen,
+      ),
       waiting: 10_000,
     )
     as "this job must be admitted"
@@ -1114,6 +1139,8 @@ fn start_over(
       command: "tail -f build.log",
       wall_ms:,
       captured_policy: None,
+      audience: jobs.ProgramWatches,
+      stdin: jobs.KeepStdinOpen,
     ),
     waiting: 10_000,
   )
@@ -1218,6 +1245,8 @@ pub fn a_starter_whose_runner_died_first_is_answered_test() {
         command: "sleep 999",
         wall_ms: None,
         captured_policy: None,
+        audience: jobs.ProgramWatches,
+        stdin: jobs.KeepStdinOpen,
       ),
       waiting: 5000,
     )
@@ -1740,7 +1769,7 @@ fn await_cancel(harness: Harness, started: jobs.Started, attempts: Int) -> Int {
 pub fn the_jobs_table_raises_the_wall_ceiling_test() {
   assert jobs.parse_policy("") == Ok(jobs.default_policy)
   assert jobs.parse_policy("[jobs]\nmax_wall = 86400\n")
-    == Ok(jobs.JobsPolicy(max_wall_ms: 86_400_000))
+    == Ok(jobs.JobsPolicy(max_wall_ms: 86_400_000, heartbeat_ms: 600_000))
 
   // The clamp only ever goes up: a shorter ceiling is what the session's
   // own sandbox policy already expresses, and two of them could disagree.
@@ -1839,6 +1868,8 @@ pub fn invocation_policy_reaches_background_job_without_changing_later_jobs_test
         command: "write /shared/result",
         wall_ms: None,
         captured_policy: Some(captured),
+        audience: jobs.ProgramWatches,
+        stdin: jobs.KeepStdinOpen,
       ),
       waiting: 10_000,
     )
@@ -1858,4 +1889,586 @@ pub fn invocation_policy_reaches_background_job_without_changing_later_jobs_test
   let assert [later] = later as "the later job has its own policy capture"
   assert !list.contains(later.base_policy.writable_roots, "/shared")
   assert later.base_policy.network == policy.NetworkOff
+}
+
+// --- telling the owner ----------------------------------------------------
+//
+// A job's end is news to exactly one party, chosen by how the job was
+// started (`jobs.Audience`). These tests read the delivered notice two
+// ways: the reserved mark `client/notice` spends in the same transaction
+// as the admission, which is the durable proof that a notice was sent, and
+// the owner's projected context, which is what the model reads.
+
+// A job started for a given audience, with stdin left open so the fake
+// broker sees no close it did not ask for.
+fn start_heard(
+  harness: Harness,
+  strand: String,
+  command: String,
+  audience: jobs.Audience,
+) -> jobs.Started {
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand:,
+      operation: harness.operation,
+      request: jobs.Request(
+        command:,
+        wall_ms: None,
+        captured_policy: None,
+        audience:,
+        stdin: jobs.KeepStdinOpen,
+      ),
+      waiting: 10_000,
+    )
+    as "this job must be admitted"
+  started
+}
+
+// Whether the completion notice for this job was delivered. The mark is
+// written in the same commit as the admission, so its presence is the
+// delivery and its absence is no delivery.
+fn notified(harness: Harness, started: jobs.Started) -> Bool {
+  let key = notice.key(notice.Job(id: jobstate.job_id_to_string(started.id)))
+  case api.fact(harness.runtime, key) {
+    Ok(Some(_mark)) -> True
+    Ok(None) | Error(_) -> False
+  }
+}
+
+// The owner's projected context, which is where a delivered notice or a
+// heartbeat lands and what the model would read.
+fn context_text(harness: Harness, strand: String) -> String {
+  let leaf = case session.strand_leaf(harness.runtime.session, strand) {
+    Ok(Some(session.Cell(value: leaf, ..))) -> leaf
+    Ok(None) | Error(_reason) -> None
+  }
+  case session.project_context(harness.runtime.session, leaf) {
+    Ok(messages) -> messages |> list.map(user_text) |> string.join("\n")
+    Error(_reason) -> ""
+  }
+}
+
+fn user_text(item: message.AgentMessage) -> String {
+  case item {
+    message.UserMessage(content:, ..) ->
+      content
+      |> list.filter_map(fn(block) {
+        case block {
+          message.UserText(text:, ..) -> Ok(text)
+          message.UserImage(..) -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    _other -> ""
+  }
+}
+
+pub fn an_unwatched_jobs_end_is_sent_to_its_owner_test() {
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "make check", jobs.NotifyOwner)
+  emit(harness, started, "all green\n")
+  let _polled = await_output(harness, "main", started, 10, 200)
+  settle_with(harness, started, exited(2))
+  let _state = settled_state(harness, "main", started)
+
+  // The poll that saw the terminal state was answered after the handler
+  // that committed it, and that handler sent the notice before it
+  // resumed, so the mark is already there.
+  assert notified(harness, started)
+  let text = context_text(harness, "main")
+  assert string.contains(text, "[loom] background job")
+  assert string.contains(text, "exited with code 2")
+  assert string.contains(text, "all green")
+}
+
+pub fn an_owners_own_kill_is_not_announced_test() {
+  // The owner asked for the stop, so its end is nothing the owner does
+  // not already know.
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "sleep 999", jobs.NotifyOwner)
+  let assert Ok(Nil) =
+    jobs.kill_job(harness.name, strand: "main", id: started.id, waiting: 5000)
+    as "the owner may always stop what it started"
+  settle_with(harness, started, cancelled_result())
+  let _state = settled_state(harness, "main", started)
+  assert !notified(harness, started)
+}
+
+pub fn a_programs_job_is_never_announced_test() {
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "make", jobs.ProgramWatches)
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, "main", started)
+  assert !notified(harness, started)
+}
+
+pub fn a_waited_on_job_is_silent_and_answers_already_ended_test() {
+  // The caller watching the job renders its end itself, so the actor
+  // says nothing, and a release that arrives after the end tells the
+  // caller so rather than promising a notice that will never come.
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "make", jobs.CallerWaiting)
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, "main", started)
+  assert !notified(harness, started)
+  assert jobs.release_job(
+      harness.name,
+      strand: "main",
+      id: started.id,
+      waiting: 5000,
+    )
+    == Ok(jobs.AlreadyEnded)
+  assert !notified(harness, started)
+}
+
+pub fn a_released_job_is_announced_when_it_ends_test() {
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "make", jobs.CallerWaiting)
+  assert jobs.release_job(
+      harness.name,
+      strand: "main",
+      id: started.id,
+      waiting: 5000,
+    )
+    == Ok(jobs.Released)
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, "main", started)
+  assert notified(harness, started)
+}
+
+pub fn another_strand_cannot_release_a_job_test() {
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "make", jobs.CallerWaiting)
+  let assert Error(jobs.NotFound(..)) =
+    jobs.release_job(
+      harness.name,
+      strand: "sub:x",
+      id: started.id,
+      waiting: 5000,
+    )
+    as "a job is released only by its owner's strand"
+}
+
+pub fn a_waiting_caller_that_dies_hands_the_job_to_its_owner_test() {
+  // A caller can die without releasing: a driver restart, or an abort
+  // that stopped the tool call and not the job. The actor watches the
+  // caller from admission, so the job goes back to its owner exactly as a
+  // release would send it.
+  let harness = start_harness()
+  let admitted = process.new_subject()
+  let caller =
+    process.spawn(fn() {
+      process.send(
+        admitted,
+        start_heard(harness, "main", "make", jobs.CallerWaiting),
+      )
+    })
+  let assert Ok(started) = process.receive(admitted, within: 10_000)
+    as "the caller's job must be admitted"
+
+  // The caller has exited once its send is done. Waiting for this test's
+  // own `Down` of it proves the exit happened; the actor's `Down` is the
+  // same exit seen by a second monitor, so a short grace is what orders it
+  // ahead of the settlement below.
+  let monitor = process.monitor(caller)
+  let assert Ok(_down) =
+    process.selector_receive(
+      process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down }),
+      5000,
+    )
+    as "the caller must exit"
+  process.sleep(200)
+
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, "main", started)
+  assert notified(harness, started)
+}
+
+pub fn a_restart_announces_the_jobs_it_declares_lost_test() {
+  // A job the sweep marks lost ended without anybody hearing about it, so
+  // its owner is told. A second restart finds it already terminal and
+  // says nothing more.
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "sleep 999", jobs.NotifyOwner)
+  let clock = counting_clock(1_756_000_100_000, 1)
+  let assert Ok(_replacement) =
+    jobs.start(
+      addresses.new(),
+      fake_wiring(
+        harness.runtime,
+        start_fake_broker(),
+        start_fake_spill(),
+        clock,
+      ),
+    )
+    as "a replacement jobs actor must start"
+  let _settled = await_notified(harness, started, 200)
+  assert notified(harness, started)
+  assert string.contains(
+    context_text(harness, "main"),
+    "was lost when the server restarted",
+  )
+}
+
+// The replacement's sweep runs on its own process, so the test waits on
+// the mark it writes rather than guessing how long a sweep takes.
+fn await_notified(
+  harness: Harness,
+  started: jobs.Started,
+  attempts: Int,
+) -> Nil {
+  case notified(harness, started) || attempts <= 0 {
+    True -> Nil
+    False -> {
+      process.sleep(5)
+      await_notified(harness, started, attempts - 1)
+    }
+  }
+}
+
+// --- the idle heartbeat ---------------------------------------------------
+
+// A harness whose heartbeat interval is one millisecond, over the counting
+// clock that steps a millisecond per read, so the second sample of an
+// idle owner is always a whole interval after the first.
+fn start_heartbeat_harness(interval_ms: Int) -> Harness {
+  let clock = counting_clock(1_756_000_000_000, 1)
+  let runtime = open_runtime(clock)
+  let fake = start_fake_broker()
+  let spill = start_fake_spill()
+  let name = addresses.new()
+  let wiring =
+    jobs.Wiring(
+      ..fake_wiring(runtime, fake, spill, clock),
+      policy: jobs.JobsPolicy(
+        max_wall_ms: jobs.default_wall_ms,
+        heartbeat_ms: interval_ms,
+      ),
+    )
+  let assert Ok(started) = jobs.start(name, wiring)
+    as "the jobs actor must start"
+  Harness(name:, fake:, spill:, runtime:, operation: an_op(), pid: started.pid)
+}
+
+// One sample, and a poll behind it from the same sender, so the sample has
+// been handled by the time this returns.
+fn sample(harness: Harness, started: jobs.Started) -> Nil {
+  jobs.sample_heartbeat(harness.name)
+  let _polled = poll(harness, "main", started)
+  Nil
+}
+
+pub fn an_idle_owner_of_live_work_is_woken_with_a_listing_test() {
+  let harness = start_heartbeat_harness(1)
+  let started = start_heard(harness, "main", "make soak", jobs.NotifyOwner)
+
+  // The first sample starts the owner's idle stretch; the second finds
+  // it a whole interval old.
+  sample(harness, started)
+  assert !string.contains(context_text(harness, "main"), "idle heartbeat")
+  sample(harness, started)
+  let text = context_text(harness, "main")
+  assert string.contains(text, "[loom] idle heartbeat")
+  assert string.contains(text, jobstate.job_id_to_string(started.id))
+  assert string.contains(text, "make soak")
+}
+
+pub fn a_zero_interval_turns_the_heartbeat_off_test() {
+  let harness = start_heartbeat_harness(0)
+  let started = start_heard(harness, "main", "make soak", jobs.NotifyOwner)
+  sample(harness, started)
+  sample(harness, started)
+  assert !string.contains(context_text(harness, "main"), "idle heartbeat")
+}
+
+pub fn the_jobs_table_sets_the_heartbeat_test() {
+  assert jobs.parse_policy("[jobs]\nheartbeat_s = 30\n")
+    == Ok(jobs.JobsPolicy(
+      max_wall_ms: jobs.default_wall_ms,
+      heartbeat_ms: 30_000,
+    ))
+  assert jobs.parse_policy("[jobs]\nheartbeat_s = 0\n")
+    == Ok(jobs.JobsPolicy(max_wall_ms: jobs.default_wall_ms, heartbeat_ms: 0))
+  let assert Error(reason) = jobs.parse_policy("[jobs]\nheartbeat_s = -1\n")
+    as "a negative interval is refused"
+  assert string.contains(reason, "heartbeat_s")
+}
+
+// --- auto-mode bash, end to end over the real door ------------------------
+//
+// `tools/job_test` proves the auto path against a scripted seam; these
+// prove it against the real one: `bash` over `client/jobtools.seam` over
+// `client/jobseam.door` over this actor, with only the broker scripted.
+// The call runs on a process of its own, because it blocks for its window
+// while this test plays the helper's part.
+
+fn auto_bash(harness: Harness) -> tool.Tool {
+  bash.tool(
+    jobtools.seam(
+      jobseam.door(jobseam.Wiring(
+        name: harness.name,
+        clock: wall_clock(),
+        rest: jobseam.real_rest(),
+        clearance_ms: 5000,
+      )),
+    ),
+  )
+}
+
+fn bash_ctx(harness: Harness) -> tool.Ctx {
+  let workspace = "/workspace"
+  tool.Ctx(
+    directory_access: directory_access.none(),
+    workspace:,
+    strand: "main",
+    op_id: harness.operation,
+    step_id: "step-1",
+    source_index: 0,
+    base_policy: policy.workspace_default(workspace),
+    grants: [],
+    demand: exec.BestEffort,
+    env: [],
+    clock: wall_clock(),
+    filesystem: tool.FileSystem(
+      read: fn(path) { Error(tool.FsNotFound(path:)) },
+      write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+      create_directory_all: fn(_path) { Ok(Nil) },
+      is_file: fn(_path) { Ok(False) },
+      read_link: fn(_path) { Ok(tool.LinkMissing) },
+      rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+    ),
+    blob_root: "/blobs",
+    clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
+    raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
+  )
+}
+
+// Runs one `bash` call on its own process and hands back where its
+// outcome will arrive.
+fn run_bash(
+  harness: Harness,
+  args: json.JsonValue,
+) -> Subject(tool.ToolOutcome) {
+  let outcome = process.new_subject()
+  let tool = auto_bash(harness)
+  let ctx = bash_ctx(harness)
+  let _caller =
+    process.spawn(fn() { process.send(outcome, tool.run(ctx, args)) })
+  outcome
+}
+
+// The job the call started, once its clearance has reached the fake.
+fn the_attended_job(harness: Harness, attempts: Int) -> jobs.Started {
+  case cleared_steps(harness), attempts <= 0 {
+    [step, ..], _ -> {
+      let assert Ok(id) = jobstate.parse_job_id(string.drop_start(step, 4))
+        as "a cleared step is a job key"
+      jobs.Started(id:, deadline_ms: 0, wall_ms: 0)
+    }
+    [], True -> panic as "the auto call never started its job"
+    [], False -> {
+      process.sleep(5)
+      the_attended_job(harness, attempts - 1)
+    }
+  }
+}
+
+fn detail_of(outcome: tool.ToolOutcome, key: String) -> json.JsonValue {
+  let assert Some(json.Object(fields)) = outcome.details
+    as "expected an object of details"
+  let assert Ok(found) = list.key_find(fields, key)
+    as { "expected a detail named " <> key }
+  found
+}
+
+fn text_of_outcome(outcome: tool.ToolOutcome) -> String {
+  outcome.content
+  |> list.filter_map(fn(block) {
+    case block {
+      message.ToolResultText(text:, ..) -> Ok(text)
+      message.ToolResultImage(..) -> Error(Nil)
+    }
+  })
+  |> string.join("\n")
+}
+
+pub fn an_auto_bash_that_ends_in_its_window_reads_as_foreground_test() {
+  let harness = start_harness_on(wall_clock())
+  let outcome =
+    run_bash(
+      harness,
+      json.Object([
+        #("command", json.String("make check")),
+        #("timeout_ms", json.Int(10_000)),
+      ]),
+    )
+  let started = the_attended_job(harness, 400)
+
+  // Stdin is closed at clearance, as a foreground call closes it.
+  assert stdins(harness, started) == [#(<<>>, True)]
+  emit(harness, started, "all green\n")
+  settle_with(harness, started, exited(0))
+  let assert Ok(outcome) = process.receive(outcome, within: 10_000)
+    as "the call must answer once the job ends"
+  assert !outcome.is_error
+  assert string.contains(text_of_outcome(outcome), "all green")
+  assert detail_of(outcome, "exit_code") == json.Int(0)
+
+  // The call reported the end, so nobody else is told about it.
+  assert !notified(harness, started)
+}
+
+pub fn an_auto_bash_that_outlives_its_window_notifies_the_owner_later_test() {
+  let harness = start_harness_on(wall_clock())
+  let outcome =
+    run_bash(
+      harness,
+      json.Object([
+        #("command", json.String("make soak")),
+        #("timeout_ms", json.Int(300)),
+      ]),
+    )
+  let started = the_attended_job(harness, 400)
+  emit(harness, started, "warming up\n")
+  let assert Ok(outcome) = process.receive(outcome, within: 10_000)
+    as "the call must answer when its window ends"
+  assert !outcome.is_error
+  assert detail_of(outcome, "backgrounded") == json.Bool(True)
+  assert string.contains(text_of_outcome(outcome), "still running")
+  assert !notified(harness, started)
+
+  // The job keeps running after the call, and its end reaches the owner.
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, "main", started)
+  assert notified(harness, started)
+  assert string.contains(context_text(harness, "main"), "exited cleanly")
+}
+
+pub fn an_idle_subagents_job_never_wakes_it_test() {
+  // A subagent has one run. Its job ending after that run must not open a
+  // second one, which would extend the child outside its parent's spawn
+  // budget; the notice is withheld and the record stays for a poll.
+  let harness = start_harness()
+  let child = "sub:main/probe-0a1b"
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      harness.runtime,
+      named: child,
+      configuration: configuration(),
+      at: None,
+    )
+    as "an idle subagent strand must be created"
+  let started = start_heard(harness, child, "make", jobs.NotifyOwner)
+  settle_with(harness, started, exited(0))
+  let _state = settled_state(harness, child, started)
+  assert !notified(harness, started)
+  assert !string.contains(context_text(harness, child), "[loom] background job")
+
+  // And for the right reason: asked directly, the door withholds rather
+  // than failing, which is what leaves the mark unspent above.
+  let work = notice.Job(id: jobstate.job_id_to_string(started.id))
+  assert notice.deliver(harness.runtime, child, work, "probe")
+    == Ok(notice.Withheld)
+}
+
+pub fn a_killed_job_that_ends_lost_stays_silent_test() {
+  // The owner asked for the stop, and the helper then went away without
+  // an exit report. The record ends `Lost`, which carries no cause, so the
+  // silence has to come from the stop that was asked for.
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "sleep 999", jobs.NotifyOwner)
+  let assert Ok(Nil) =
+    jobs.kill_job(harness.name, strand: "main", id: started.id, waiting: 5000)
+    as "the owner may always stop what it started"
+  process.send(
+    harness.fake.subject,
+    Settle(
+      step: step_of(started),
+      outcome: broker.CallFailed(failure: exec.HelperUnresponsive),
+    ),
+  )
+  let assert jobstate.Lost(..) = settled_state(harness, "main", started)
+    as "a settlement with no exit report is a loss"
+  assert !notified(harness, started)
+}
+
+pub fn a_stop_that_outlived_its_grace_is_not_announced_on_reopen_test() {
+  // A stop somebody asked for leaves the record draining, and the next
+  // incarnation's sweep turns it lost. The reopen must not wake the owner
+  // about an end it chose.
+  let harness = start_harness()
+  let started = start_heard(harness, "main", "sleep 999", jobs.NotifyOwner)
+  let assert Ok(Nil) =
+    jobs.kill_job(harness.name, strand: "main", id: started.id, waiting: 5000)
+    as "the owner may always stop what it started"
+  let clock = counting_clock(1_756_000_100_000, 1)
+  let assert Ok(_replacement) =
+    jobs.start(
+      addresses.new(),
+      fake_wiring(
+        harness.runtime,
+        start_fake_broker(),
+        start_fake_spill(),
+        clock,
+      ),
+    )
+    as "a replacement jobs actor must start"
+  let assert jobstate.Lost(..) = await_record(harness, started.id, 200).state
+    as "the sweep declares the drained job lost"
+  assert !notified(harness, started)
+}
+
+// The store's copy of a job once a sweep on another process has moved it
+// to a terminal state.
+fn await_record(
+  harness: Harness,
+  id: JobId,
+  attempts: Int,
+) -> jobstate.JobRecord {
+  let record = record_in_store(harness, id)
+  case jobstate.is_terminal(record.state) || attempts <= 0 {
+    True -> record
+    False -> {
+      process.sleep(5)
+      await_record(harness, id, attempts - 1)
+    }
+  }
+}
+
+pub fn a_default_wall_honours_the_captured_grant_test() {
+  // An operator approved a thirty-second wall for a call on a session
+  // whose base allows one. The job that call starts runs under the
+  // captured policy, so its default wall is the approved one, not the
+  // base's.
+  let base = policy.workspace_default("/workspace")
+  let narrow =
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, wall_s: 1),
+    )
+  let granted =
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, wall_s: 30),
+    )
+  let harness = start_harness_over(narrow)
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "make",
+        wall_ms: None,
+        captured_policy: Some(granted),
+        audience: jobs.CallerWaiting,
+        stdin: jobs.CloseStdin,
+      ),
+      waiting: 10_000,
+    )
+    as "the job must be admitted under its captured policy"
+  assert started.wall_ms == 30_000
 }

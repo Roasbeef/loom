@@ -529,7 +529,7 @@ Structured logs (Erlang `logger`, JSON handler) with `{session, strand, op, step
 
 ### 3.5 Tool timeout ceiling (WP-I + WP-G)
 
-The ceiling on a tool call's wall clock is the tool's own clamp, not session policy: each tool declares its default and maximum timeout, clamps any caller-supplied value to that maximum, and derives the sandbox `wall_s` requirement from the clamped result. Session policy narrows further — composition meets the limits — but cannot widen past the clamp, so an approved `wall_s` grant raises the jail's limit while the tool still stops waiting at its own deadline. As built: `bash` clamps to 600 s over a 120 s default; `grep` runs a fixed 60 s and takes no timeout argument.
+The ceiling on a tool call's wall clock is the tool's own clamp, not session policy: each tool declares its default and maximum timeout, clamps any caller-supplied value to that maximum, and derives the sandbox `wall_s` requirement from the clamped result. Session policy narrows further — composition meets the limits — but cannot widen past the clamp, so an approved `wall_s` grant raises the jail's limit while the tool still stops waiting at its own deadline. As built: `bash` clamps to 600 s over a 120 s default; `grep` runs a fixed 60 s and takes no timeout argument. In `bash`'s default auto mode the clamped value bounds the call's wait rather than the command: a command still running at it continues as a background job under the jobs plane's wall (the default hour met with the session policy's `limits.wall_s`), and `mode: "foreground"` keeps the kill at the clamp. See [the design note](design-notes/async-completion-wake.md).
 
 ---
 

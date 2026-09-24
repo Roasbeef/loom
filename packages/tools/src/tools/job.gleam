@@ -270,6 +270,24 @@ pub type Refusal {
   /// Nothing was decided: this session runs no jobs plane, or the plane
   /// could not answer.
   Unavailable(reason: String)
+
+  /// This host runs no jobs plane at all, so nothing could have started.
+  /// Distinct from `Unavailable` for one reader: an auto-mode `bash` may
+  /// fall back to the foreground only when it knows no job exists, and an
+  /// `Unavailable` from a plane that did not answer in time can mean one
+  /// was already clearing.
+  NoJobsPlane
+}
+
+/// What releasing an attended job found.
+pub type Release {
+  /// The job is still running, and its owner will be sent a completion
+  /// notice when it ends.
+  Released
+
+  /// The job ended before the release reached it. Nobody will be told,
+  /// so the caller renders the end itself.
+  AlreadyEnded
 }
 
 /// The jobs seam: everything `bash` and the three tools here may ask of
@@ -284,8 +302,19 @@ pub type Jobs {
   Jobs(
     /// The command and the wall it asked for in milliseconds, `None` for
     /// the host's default. Returns once the clearance has answered, so a
-    /// policy refusal reaches the caller rather than the next poll.
+    /// policy refusal reaches the caller rather than the next poll. The
+    /// owner is sent a completion notice when the job ends.
     start: fn(Ctx, String, Option(Int)) -> Result(Started, Refusal),
+    /// The command, started for a caller that will wait on it: the job
+    /// gets the host's default wall met with the session policy, its
+    /// stdin is closed as a foreground call's is, and nobody is notified
+    /// of its end until the caller `release`s it. This is what an
+    /// auto-mode `bash` call runs through.
+    attend: fn(Ctx, String) -> Result(Started, Refusal),
+    /// Gives up waiting on a job `attend` started. `Released` means the
+    /// owner will be told when it ends; `AlreadyEnded` means it ended
+    /// first and the caller renders it. Never both, never neither.
+    release: fn(Ctx, String) -> Result(Release, Refusal),
     /// The job's id, how long to wait for it to finish, and where the
     /// last poll left off. A job still running when the wait expires is
     /// a successful answer carrying its live state.
@@ -323,6 +352,8 @@ pub fn unavailable() -> Jobs {
   let absent = Unavailable(reason: "this session runs no background jobs")
   Jobs(
     start: fn(_ctx, _command, _wall) { Error(absent) },
+    attend: fn(_ctx, _command) { Error(NoJobsPlane) },
+    release: fn(_ctx, _id) { Error(absent) },
     poll: fn(_ctx, _id, _wait, _cursors) { Error(absent) },
     list: fn(_ctx) { Error(absent) },
     kill: fn(_ctx, _id) { Error(absent) },
@@ -1024,7 +1055,7 @@ pub fn refusal_code(refusal: Refusal) -> String {
     NotFound(..) -> "job_not_found"
     Invalid(..) -> "invalid_job_request"
     ClearanceRefused(..) -> "job_clearance_refused"
-    Unavailable(..) -> "jobs_unavailable"
+    Unavailable(..) | NoJobsPlane -> "jobs_unavailable"
   }
 }
 
@@ -1060,6 +1091,8 @@ pub fn refusal_reason(refusal: Refusal) -> String {
 
     Unavailable(reason:) ->
       "the background jobs plane could not be reached (" <> reason <> ")."
+
+    NoJobsPlane -> "this session runs no background jobs."
   }
 }
 

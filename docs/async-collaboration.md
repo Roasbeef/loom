@@ -34,6 +34,14 @@ Subsequent calls use `"handle": "<id>"` and one of these modes:
 | `join` | optional `within_ms` | Wait up to 30 seconds for a terminal record |
 | `cancel` | none | Close admission and request cancellation |
 
+A launching strand does not have to `join` to learn how an execution
+ended. When one finishes or is lost, the harness sends the strand a
+notice with the handle and the start of the result, waking it if it is
+idle. A `cancel`, an abort and a session stop send nothing, because the
+owner or an operator chose them. While an execution is still running and
+its strand sits idle, a heartbeat every `[jobs].heartbeat_s` (ten minutes
+by default) lists it.
+
 Only the owning strand can interact with a handle. Sending data cannot replace
 the source, add grants, change the seam, or renew the original deadline. Each
 session admits at most eight live executions. One initiating operation can

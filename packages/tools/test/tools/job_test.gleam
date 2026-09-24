@@ -8,6 +8,7 @@
 //// The door's own behaviour is `client`'s and is tested there.
 
 import broker/exec
+import broker/policy
 import core/json
 import core/message
 import gleam/erlang/process.{type Subject}
@@ -32,6 +33,8 @@ const job_id = "01JQ8XZ"
 // the tool read it rather than only that a call happened.
 type Asked {
   StartAsked(command: String, wall_ms: option.Option(Int))
+  AttendAsked(command: String)
+  ReleaseAsked(id: String)
   PollAsked(id: String, wait_ms: Int, cursors: job.Cursors)
   ListAsked
   KillAsked(id: String)
@@ -57,6 +60,14 @@ fn answering(asked: Subject(Asked), state: job.JobState) -> job.Jobs {
     start: fn(_ctx, command, wall_ms) {
       process.send(asked, StartAsked(command, wall_ms))
       Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
+    },
+    attend: fn(_ctx, command) {
+      process.send(asked, AttendAsked(command))
+      Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
+    },
+    release: fn(_ctx, id) {
+      process.send(asked, ReleaseAsked(id))
+      Ok(job.Released)
     },
     poll: fn(_ctx, id, wait_ms, cursors) {
       process.send(asked, PollAsked(id, wait_ms, cursors))
@@ -101,6 +112,8 @@ fn polled(state: job.JobState) -> job.Polled {
 fn refusing(refusal: job.Refusal) -> job.Jobs {
   job.Jobs(
     start: fn(_ctx, _command, _wall) { Error(refusal) },
+    attend: fn(_ctx, _command) { Error(refusal) },
+    release: fn(_ctx, _id) { Error(refusal) },
     poll: fn(_ctx, _id, _wait, _cursors) { Error(refusal) },
     list: fn(_ctx) { Error(refusal) },
     kill: fn(_ctx, _id) { Error(refusal) },
@@ -489,16 +502,17 @@ pub fn a_refused_listing_is_in_band_too_test() {
   assert detail(outcome, "error") == json.String("jobs_unavailable")
 }
 
-// --- bash's two modes -------------------------------------------------------
+// --- bash's three modes -----------------------------------------------------
 
 fn bash_run(jobs: job.Jobs, args: json.JsonValue) -> tool.ToolOutcome {
   bash.tool(jobs).run(ctx(), args)
 }
 
-pub fn the_bash_schema_defaults_to_the_foreground_test() {
-  // The default is what keeps every `bash` call written before this
-  // argument existed meaning exactly what it meant: `mode` is optional,
-  // and only `command` is required.
+pub fn the_bash_schema_offers_three_modes_test() {
+  // `mode` stays optional and only `command` is required, so a call
+  // written before the argument existed is still a valid call. It now
+  // means auto, which answers exactly as the foreground call did for any
+  // command that finishes inside its window.
   let asked = recorder()
   let assert json.Object(fields) =
     bash.tool(answering(asked, job.Running)).schema
@@ -510,10 +524,16 @@ pub fn the_bash_schema_defaults_to_the_foreground_test() {
   let assert Ok(json.Object(mode)) = list.key_find(props, "mode")
     as "the bash schema declares mode"
   assert list.key_find(mode, "enum")
-    == Ok(json.Array([json.String("foreground"), json.String("background")]))
+    == Ok(
+      json.Array([
+        json.String("auto"),
+        json.String("foreground"),
+        json.String("background"),
+      ]),
+    )
 }
 
-pub fn a_bash_call_with_no_mode_never_reaches_the_jobs_door_test() {
+pub fn a_foreground_call_never_reaches_the_jobs_door_test() {
   // The foreground path is what it was: the door is present, the command
   // clears through the broker, and the jobs seam is never asked. That
   // the broker path itself is unchanged is `bash_test`'s subject.
@@ -529,10 +549,114 @@ pub fn a_bash_call_with_no_mode_never_reaches_the_jobs_door_test() {
   let outcome =
     bash.tool(answering(asked, job.Running)).run(
       ctx,
-      json.Object([#("command", json.String("true"))]),
+      json.Object([
+        #("command", json.String("true")),
+        #("mode", json.String("foreground")),
+      ]),
     )
   assert !outcome.is_error
   assert drain(asked) == []
+}
+
+pub fn an_auto_call_that_finishes_answers_as_a_foreground_call_test() {
+  // A command that ends inside its window renders through the same
+  // `exited` a foreground call does: the output, the exit code line, and
+  // the foreground's `details`. The job is never released, because the
+  // call that watched it end is the one reporting it.
+  let asked = recorder()
+  let outcome =
+    bash_run(
+      answering(asked, finished),
+      json.Object([#("command", json.String("make check"))]),
+    )
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "building")
+  assert string.contains(first_text(outcome), "exit code 3")
+  assert detail(outcome, "exit_code") == json.Int(3)
+  let calls = drain(asked)
+  assert list.first(calls) == Ok(AttendAsked("make check"))
+  assert !list.contains(calls, ReleaseAsked(job_id))
+}
+
+pub fn an_auto_call_that_outlives_its_window_returns_the_handle_test() {
+  // The window runs out with the job still running, so the call releases
+  // it and answers with the handle and the output so far. The release is
+  // what hands the job's end to the owner's notice.
+  let asked = recorder()
+  let outcome =
+    bash_run(
+      answering(asked, job.Running),
+      json.Object([
+        #("command", json.String("make check")),
+        #("timeout_ms", json.Int(1)),
+      ]),
+    )
+  assert !outcome.is_error
+  assert detail(outcome, "job_id") == json.String(job_id)
+  assert detail(outcome, "backgrounded") == json.Bool(True)
+  assert string.contains(first_text(outcome), "building")
+  let calls = drain(asked)
+  assert list.first(calls) == Ok(AttendAsked("make check"))
+  assert list.last(calls) == Ok(ReleaseAsked(job_id))
+}
+
+pub fn an_auto_call_that_loses_the_release_race_renders_the_end_test() {
+  // The job ends between the last look and the release. The actor
+  // answers `AlreadyEnded`, nobody will be notified, and so this call has
+  // to render the end itself rather than hand back a handle to a job
+  // whose result would then reach nobody.
+  let ended = process.new_subject()
+  let jobs =
+    job.Jobs(
+      ..job.unavailable(),
+      attend: fn(_ctx, _command) {
+        Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
+      },
+      release: fn(_ctx, _id) {
+        process.send(ended, Nil)
+        Ok(job.AlreadyEnded)
+      },
+      poll: fn(_ctx, _id, _wait, _cursors) {
+        case process.receive(ended, within: 0) {
+          Ok(Nil) -> {
+            process.send(ended, Nil)
+            Ok(polled(finished))
+          }
+          Error(Nil) -> Ok(polled(job.Running))
+        }
+      },
+    )
+  let outcome =
+    bash_run(
+      jobs,
+      json.Object([
+        #("command", json.String("make check")),
+        #("timeout_ms", json.Int(1)),
+      ]),
+    )
+  assert detail(outcome, "exit_code") == json.Int(3)
+  assert string.contains(first_text(outcome), "exit code 3")
+}
+
+pub fn an_auto_call_at_the_job_ceiling_runs_in_the_foreground_test() {
+  // Background work already running must not make an ordinary command
+  // fail: at the ceiling the call falls back to the foreground path and
+  // clears through the broker as it always did.
+  let ctx =
+    fake_broker.ctx(
+      workspace:,
+      filesystem: memory_fs.filesystem(memory_fs.start()),
+      now:,
+      script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      recorded: process.new_subject(),
+    )
+  let outcome =
+    bash.tool(refusing(job.CeilingReached(limit: 4))).run(
+      ctx,
+      json.Object([#("command", json.String("true"))]),
+    )
+  assert !outcome.is_error
+  assert detail(outcome, "exit_code") == json.Int(0)
 }
 
 pub fn a_background_call_starts_a_job_and_returns_its_handle_test() {
@@ -614,4 +738,68 @@ pub fn a_mode_outside_the_vocabulary_is_refused_test() {
 
 fn poll_args(id: String) -> json.JsonValue {
   json.Object([#("job_id", json.String(id))])
+}
+
+pub fn an_auto_call_the_plane_did_not_answer_is_not_rerun_test() {
+  // A plane that did not answer in time may already be clearing the job,
+  // so the call reports the refusal rather than running the command a
+  // second time in the foreground.
+  let outcome =
+    bash_run(
+      refusing(job.Unavailable(reason: "the jobs actor did not answer in time")),
+      json.Object([#("command", json.String("make"))]),
+    )
+  assert outcome.is_error
+  assert detail(outcome, "error") == json.String("jobs_unavailable")
+}
+
+pub fn a_host_with_no_jobs_plane_runs_auto_calls_in_the_foreground_test() {
+  let ctx =
+    fake_broker.ctx(
+      workspace:,
+      filesystem: memory_fs.filesystem(memory_fs.start()),
+      now:,
+      script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      recorded: process.new_subject(),
+    )
+  let outcome =
+    bash.tool(job.unavailable()).run(
+      ctx,
+      json.Object([#("command", json.String("true"))]),
+    )
+  assert !outcome.is_error
+  assert detail(outcome, "exit_code") == json.Int(0)
+}
+
+pub fn an_auto_call_longer_than_the_session_wall_keeps_the_foreground_test() {
+  // Under a one-second session wall a thirty-second wait is a question for
+  // the operator, which only the foreground clearance asks. The jobs door
+  // is never reached, so no job runs under a wall nobody approved.
+  let asked = recorder()
+  let base = narrow_wall()
+  let ctx =
+    tool.Ctx(
+      ..fake_broker.ctx(
+        workspace:,
+        filesystem: memory_fs.filesystem(memory_fs.start()),
+        now:,
+        script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+        recorded: process.new_subject(),
+      ),
+      base_policy: base,
+    )
+  let _outcome =
+    bash.tool(answering(asked, job.Running)).run(
+      ctx,
+      json.Object([
+        #("command", json.String("make")),
+        #("timeout_ms", json.Int(30_000)),
+      ]),
+    )
+  assert drain(asked) == []
+}
+
+fn narrow_wall() -> policy.SandboxPolicy {
+  let base = policy.workspace_default(workspace)
+  policy.SandboxPolicy(..base, limits: policy.Limits(..base.limits, wall_s: 1))
 }

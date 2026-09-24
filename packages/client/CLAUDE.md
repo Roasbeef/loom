@@ -1620,12 +1620,27 @@ catalogue without opening runtimes. Explicit admission invokes
   runtime default. That default never gives up, so the table is mostly
   for the operator who wants a bounded ladder that fails the run instead
   of long-polling a provider that is refusing.
-- `client/jobs.{JobsPolicy, Request, Started, Cursors, Polled,
-  Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
+- `client/notice.{Work, Delivered, Activity, Due, IdleClock, key_prefix,
+  heartbeat_tick_ms, default_heartbeat_ms, key, deliver, activity, beat,
+  idle_clock, observe, retain, heartbeat_text, minutes}` — harness
+  notices about work that outlives its tool call. `deliver` is the
+  completion notice a finished job or async execution sends its owner:
+  `runtime/api.send_to_strand_marking` with a mark under
+  `client/notice/job/<id>` or `client/notice/execution/<id>`, so a steer
+  into an open run or a fresh run on an idle strand, spent at most once.
+  `beat` is the idle heartbeat's wake, an `api.prompt` that treats
+  `StrandBusy` as success. `IdleClock` is the pure, volatile record of
+  when each sampled owner went idle: a busy sample forgets the strand and
+  a due beat restarts its stretch. Both owning services sample every
+  `heartbeat_tick_ms` (a minute, slower than the hibernation interval).
+  `docs/design-notes/async-completion-wake.md` has the design.
+- `client/jobs.{JobsPolicy, Request, Audience, Released, Started, Cursors,
+  Polled, Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
   stop_grace_ms, runner_ask_ms, default_policy, parse_policy, blob_spill,
-  staging_path, start, supervised, start_job, poll_job, list_jobs,
-  kill_job, write_stdin, await_job}` — the session's background
+  staging_path, start, supervised, start_job, release_job,
+  sample_heartbeat, poll_job, list_jobs, kill_job, write_stdin,
+  await_job}` — the session's background
   jobs: one `weft/actor` in the **restartable** services tier beside
   `client/extension/hosts`, and one weft runner per job. The actor owns
   the durable `job/<id>` record, the per-strand ceiling of four, and the
@@ -1657,10 +1672,20 @@ catalogue without opening runtimes. Explicit admission invokes
   restart cases, because telling this session's first start from a
   supervisor restart needs state that outlives the actor and dies with
   the VM, which is machinery bought for a word nobody branches on.
+  **Each job's `Audience` decides who hears about its end.** `NotifyOwner`
+  (a background `bash`) sends the owner a completion notice after the
+  terminal commit; `CallerWaiting` (an auto `bash`) is silent until
+  `release_job`, or until the caller the actor monitors from admission
+  dies; `ProgramWatches` (`cap/job`) never notifies. The notice goes out
+  from the actor's own settlement handlers and from the restart sweep for
+  the jobs it just declared lost, never from the session-stop drain. An
+  owner's kill, an operation abort and a session stop are silent. A
+  `Beat` tick every minute samples owners of live jobs for the idle
+  heartbeat under `JobsPolicy.heartbeat_ms` (`[jobs].heartbeat_s`).
 - `client/jobseam.{Wiring, Door, max_wait_ms, ask_timeout_ms,
   start_margin_ms, first_slice_ms, max_slice_ms, door, none, real_rest}`
   — the host side of the model-facing jobs door, mirroring
-  `client/scheduleseam`: five closures keyed on the caller's strand,
+  `client/scheduleseam`: six closures keyed on the caller's strand,
   which `client/jobtools` turns into `tools/job` and `cap/job` surfaces.
   Ids are text here
   and typed behind it, and this is the one place a string becomes a
@@ -4061,6 +4086,11 @@ volatile scopes. `async_codemode` captures source, policy, grants, a fixed
 deadline and a distinct broker step. `execution.receive` reads the bounded
 durable input journal. `Finished` requires scope and owned-child drain proof;
 restart records `Lost` and retries child cleanup without replaying a program.
+Once a terminal phase is saved, the service sends the launching strand a
+`client/notice` completion notice, except for an owner's cancel, an
+operation abort and a session stop. `Wiring.heartbeat_ms` (the jobs
+policy's) drives the same minute-sampled idle heartbeat the jobs actor
+runs, over `Starting` and `Running` executions.
 
 Agency serializes `SpawnChild`, `WorkflowChild` and `PeerRequest`; `Borrow`
 keeps blocking waits outside that mailbox. `workflow_ledger` fixes a named

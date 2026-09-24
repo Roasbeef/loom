@@ -68,6 +68,7 @@ pub fn seam(door: jobseam.Door) -> job.Jobs {
   // which is the over-capture `daemon-memory.md` measures for `Agency`
   // one level down.
   let start = door.start
+  let release = door.release
   let poll = door.poll
   let list_jobs = door.list
   let kill = door.kill
@@ -79,10 +80,23 @@ pub fn seam(door: jobseam.Door) -> job.Jobs {
         ctx.op_id,
         command,
         wall_ms,
-        Some(policy.compose(ctx.base_policy, ctx.base_policy, ctx.grants).0),
+        Some(captured(ctx)),
+        jobs.NotifyOwner,
       )
       |> translate(started)
     },
+    attend: fn(ctx: Ctx, command) {
+      start(
+        ctx.strand,
+        ctx.op_id,
+        command,
+        None,
+        Some(captured(ctx)),
+        jobs.CallerWaiting,
+      )
+      |> translate(started)
+    },
+    release: fn(ctx: Ctx, id) { release(ctx.strand, id) |> translate(released) },
     poll: fn(ctx: Ctx, id, wait_ms, cursors) {
       poll(ctx.strand, id, wait_ms, seam_cursors(cursors))
       |> translate(polled)
@@ -137,7 +151,14 @@ pub fn capability_door_with_policy(
 ) -> workspace.JobDoor {
   workspace.JobDoor(
     start: fn(command, wall_ms) {
-      door.start(strand, operation, command, wall_ms, captured_policy)
+      door.start(
+        strand,
+        operation,
+        command,
+        wall_ms,
+        captured_policy,
+        jobs.ProgramWatches,
+      )
       |> translate(started)
     },
     poll: fn(id, wait_ms, cursors) {
@@ -173,6 +194,19 @@ fn translate(
 
 fn nothing(_answer: Nil) -> Nil {
   Nil
+}
+
+// The invocation's policy, captured once at start so a running job keeps
+// the authority its call had rather than whatever later calls are granted.
+fn captured(ctx: Ctx) -> policy.SandboxPolicy {
+  policy.compose(ctx.base_policy, ctx.base_policy, ctx.grants).0
+}
+
+fn released(answer: jobs.Released) -> job.Release {
+  case answer {
+    jobs.Released -> job.Released
+    jobs.AlreadyEnded -> job.AlreadyEnded
+  }
 }
 
 /// The model-facing refusal one door refusal becomes.

@@ -3395,6 +3395,7 @@ fn assemble_in(
             runtime:,
             clock:,
             abort: async_codemode.abort(broker_actor),
+            heartbeat_ms: settings.jobs_policy.heartbeat_ms,
           ),
         )
       }),

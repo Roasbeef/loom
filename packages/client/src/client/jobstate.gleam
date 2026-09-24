@@ -50,9 +50,17 @@
 //// A job is a live process, not a conversation event: navigating the
 //// conversation tree must neither kill one nor resurrect one.
 ////
-//// A register is also state, not a channel. Nothing here wakes anybody.
-//// A model learns that its job exited by polling, which is what keeps the
-//// jobs actor out of the strand's turn machinery entirely.
+//// A register is also state, not a channel, and nothing in this module
+//// wakes anybody. The actor that owns the record does: when a job nobody
+//// is waiting on ends, `client/jobs` sends its owner a completion notice
+//// through `client/notice`, an ordinary queue admission that leaves the
+//// strand's turn machinery exactly as it found it. This module doc used
+//// to say a model learns of a job's end only by polling; that ruling cost
+//// a model that ended its run while its job was still going any way of
+//// hearing about it, and `docs/design-notes/async-completion-wake.md`
+//// records why it was reversed. The transition relation is unchanged by
+//// it: a notice is sent after a terminal state is committed, and never
+//// decides one.
 
 import broker/exec.{type ExecResult, ExecResult}
 import core/corruption.{type CorruptionReport}
