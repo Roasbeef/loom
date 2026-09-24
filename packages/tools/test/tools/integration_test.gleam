@@ -124,9 +124,7 @@ pub fn real_jail_git_worktree_asks_before_outside_writes_test() {
             exec.StatusReady(features) ->
               case
                 list.any(features, fn(feature) {
-                  string.starts_with(feature, "landlock:")
-                  || feature == "seatbelt"
-                  || string.starts_with(feature, "seatbelt-fs:")
+                  feature == "bwrap" || feature == "seatbelt"
                 })
               {
                 True -> exercise_git_worktree(helper, workspace)
@@ -152,19 +150,22 @@ pub fn real_jail_git_worktree_asks_before_outside_writes_test() {
 fn exercise_git_worktree(helper: exec.Helper, workspace: String) -> Nil {
   let repository = workspace <> "-git-repository"
   let git_directory = repository <> "/.git"
-  let destination = workspace <> "-git-linked"
+  let destination_parent = workspace <> "-git-destinations"
+  let destination = destination_parent <> "/linked"
   let prepared =
     shell.os_cmd(
       "rm -rf '"
       <> repository
       <> "' '"
-      <> destination
+      <> destination_parent
       <> "' && git init -q '"
       <> repository
       <> "' && git -C '"
       <> repository
       <> "' -c user.name=Test -c user.email=test@example.invalid "
-      <> "commit --allow-empty -qm base && echo LOOM_GIT_READY",
+      <> "commit --allow-empty -qm base && mkdir -p '"
+      <> destination_parent
+      <> "' && echo LOOM_GIT_READY",
     )
   assert string.contains(prepared, "LOOM_GIT_READY") as prepared
   let assert Ok(broker_actor) =
@@ -193,6 +194,7 @@ fn exercise_git_worktree(helper: exec.Helper, workspace: String) -> Nil {
     denied.content
   assert string.contains(denied_text, "Operation not permitted")
     || string.contains(denied_text, "Permission denied")
+    || string.contains(denied_text, "Read-only file system")
   let assert Error(_) = simplifile.read(destination <> "/.git")
     as "the denied Git worktree must leave no destination"
 
@@ -219,7 +221,7 @@ fn exercise_git_worktree(helper: exec.Helper, workspace: String) -> Nil {
               "writable_roots",
               json.Array([
                 json.String(git_directory),
-                json.String(destination),
+                json.String(destination_parent),
               ]),
             ),
           ]),
@@ -229,7 +231,7 @@ fn exercise_git_worktree(helper: exec.Helper, workspace: String) -> Nil {
   let assert Ok(wanted) = process.receive(asked, 1000)
     as "the outside writes must ask before Git runs"
   assert list.contains(wanted, policy.GrantWritableRoot(git_directory))
-  assert list.contains(wanted, policy.GrantWritableRoot(destination))
+  assert list.contains(wanted, policy.GrantWritableRoot(destination_parent))
   assert approved.is_error == False as string.inspect(approved)
   let assert Ok(_git_file) = simplifile.read(destination <> "/.git")
     as "approved Git worktree must exist"

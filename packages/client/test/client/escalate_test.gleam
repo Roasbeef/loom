@@ -535,9 +535,12 @@ pub fn an_outside_git_worktree_requests_both_write_roots_before_launch_test() {
     )
   let repository = workspace() <> "-repository"
   let git_directory = repository <> "/.git"
-  let destination = workspace() <> "-linked"
+  let destination_parent = workspace() <> "-linked-parent"
+  let destination = destination_parent <> "/linked"
   let assert Ok(Nil) = simplifile.create_directory_all(git_directory)
     as "the source repository metadata must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(destination_parent)
+    as "the writable destination parent must exist"
   let command =
     "cd '"
     <> repository
@@ -555,7 +558,7 @@ pub fn an_outside_git_worktree_requests_both_write_roots_before_launch_test() {
             "writable_roots",
             json.Array([
               json.String(git_directory),
-              json.String(destination),
+              json.String(destination_parent),
             ]),
           ),
         ]),
@@ -576,7 +579,10 @@ pub fn an_outside_git_worktree_requests_both_write_roots_before_launch_test() {
       as "the worktree denial must decode"
     assert list.contains(denial.wanted, policy.GrantReadableRoot(repository))
     assert list.contains(denial.wanted, policy.GrantWritableRoot(git_directory))
-    assert list.contains(denial.wanted, policy.GrantWritableRoot(destination))
+    assert list.contains(
+      denial.wanted,
+      policy.GrantWritableRoot(destination_parent),
+    )
     approve_with_the_wanted_diff(harness.runtime)(id)
   })
   let run = with_arguments(bash_run("worktree"), arguments)

@@ -655,7 +655,7 @@ pub fn kernel_denial_after_start_does_not_ask_or_replay_test() {
       command_args("write marker; access denied path"),
     )
   assert outcome.is_error == True
-  assert string.contains(first_text(outcome), "permissions:")
+  assert string.contains(first_text(outcome), "permissions.writable_roots")
   assert string.contains(first_text(outcome), "before that call runs")
   let _spec = recorded_spec(recorded)
   assert remaining_specs(recorded) == 0
@@ -671,7 +671,19 @@ pub fn a_successful_command_does_not_get_permission_guidance_test() {
       ],
       command_args("echo diagnostic 1>&2"),
     )
-  assert !string.contains(first_text(outcome), "permissions:")
+  assert !string.contains(first_text(outcome), "permissions.writable_roots")
+}
+
+pub fn a_read_only_mount_denial_gets_permission_guidance_test() {
+  let #(outcome, _recorded) =
+    run_with_script(
+      [
+        fake_broker.stderr("fatal: cannot lock ref: Read-only file system"),
+        fake_broker.exited(code: 128, stdout_bytes: 0),
+      ],
+      command_args("git worktree add /linked"),
+    )
+  assert string.contains(first_text(outcome), "permissions.writable_roots")
 }
 
 pub fn a_git_lock_denial_names_the_reported_metadata_directory_test() {
@@ -687,7 +699,7 @@ pub fn a_git_lock_denial_names_the_reported_metadata_directory_test() {
       command_args("cd /repo && git worktree add /linked"),
     )
   assert string.contains(first_text(outcome), "`/repo/.git`")
-  assert string.contains(first_text(outcome), "destination worktree")
+  assert string.contains(first_text(outcome), "destination directory")
 }
 
 fn remaining_specs(recorded: process.Subject(fake_broker.Recorded)) -> Int {

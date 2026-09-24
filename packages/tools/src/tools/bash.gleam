@@ -112,7 +112,8 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
       <> "the session's PATH and network policy. Declare extra paths or full "
       <> "network access in permissions to request approval before execution. "
       <> "For a Git worktree outside the workspace, request writable_roots "
-      <> "for both the repository's .git directory and the new worktree path. "
+      <> "for the repository's .git directory and an existing destination "
+      <> "directory or its parent if the new worktree path does not exist. "
       <> "A failed command before "
       <> "a pipe remains a failed pipeline; inspect its output before "
       <> "claiming tests passed. For scratch files use "
@@ -489,6 +490,7 @@ fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
     && {
       string.contains(stderr, "Operation not permitted")
       || string.contains(stderr, "Permission denied")
+      || string.contains(stderr, "Read-only file system")
     }
   {
     True -> {
@@ -502,11 +504,12 @@ fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
       }
       [
         "If this failure came from the sandbox, do not repeat the same "
-        <> "call. Start a new bash call with `permissions: "
-        <> "{\"readable_roots\":[...],\"writable_roots\":[...]}` naming "
-        <> "the exact paths needed; Loom will request approval before "
+        <> "call. Start a new bash call with permissions.readable_roots "
+        <> "and permissions.writable_roots naming the exact paths needed; "
+        <> "Loom will request approval before "
         <> "that call runs. For git worktree add, include the "
-        <> "repository's .git directory and the destination worktree. "
+        <> "repository's .git directory and an existing destination "
+        <> "directory or its parent if the worktree path does not exist. "
         <> "Protected paths cannot be approved."
         <> git_hint,
       ]
