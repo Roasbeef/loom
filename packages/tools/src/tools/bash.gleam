@@ -314,7 +314,7 @@ fn attended(
   case jobs.attend(ctx, command) {
     Ok(started) -> {
       let #(now, _clock) = clock.read(ctx.clock)
-      look(jobs, ctx, started, Watch(..fresh_watch(), until: now + window))
+      look(jobs, ctx, started, fresh_watch(until: now + window))
     }
 
     Error(job.CeilingReached(..))
@@ -371,7 +371,7 @@ type Gaps {
   MissedSome
 }
 
-fn fresh_watch() -> Watch {
+fn fresh_watch(until until: Int) -> Watch {
   Watch(
     cursors: job.Cursors(stdout: 0, stderr: 0),
     stdout: [],
@@ -379,7 +379,7 @@ fn fresh_watch() -> Watch {
     gaps: SawEverything,
     stdout_tail: tail.new(capacity: tool.tail_bytes),
     stderr_tail: tail.new(capacity: tool.tail_bytes),
-    until: 0,
+    until:,
   )
 }
 

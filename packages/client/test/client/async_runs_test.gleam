@@ -714,12 +714,16 @@ pub fn an_idle_launcher_of_a_live_execution_is_woken_test() {
   close_harness(harness)
 }
 
+// Each retry moves the clock another sample interval on, so the next
+// sweep samples again and a first sample that landed late costs one more
+// retry rather than a missed heartbeat.
 fn await_context(harness: Harness, needle: String, attempts: Int) -> String {
   let text = context_text(harness, "main")
   case string.contains(text, needle) || attempts <= 0 {
     True -> text
     False -> {
-      process.sleep(20)
+      advance(harness.time, notice.heartbeat_tick_ms + 1)
+      process.sleep(150)
       await_context(harness, needle, attempts - 1)
     }
   }
