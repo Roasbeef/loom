@@ -367,10 +367,13 @@ fn browsing(key: keys.Key, state: State) -> Action {
 /// // session_selector.render(buffer, screen, selector)
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
+  // Small catalogues need no empty scroll area; full pages retain seven rows.
+  let row_count = int.min(7, list.length(state.page.sessions))
+  let desired_height = int.max(7, row_count * 2 + 7)
   let area =
     geometry.centered_rect(
       int.max(1, int.min(144, screen.size.width - 4)),
-      int.max(1, int.min(22, screen.size.height - 4)),
+      int.max(1, int.min(desired_height, screen.size.height - 4)),
       screen,
     )
   let frame =
@@ -494,9 +497,9 @@ fn help_line(state: State, width: Int) {
           text.truncate(
             case state.collection {
               Active ->
-                "↑↓ select · Enter open · l link · n new · r rename · d archive · a archived · → next · ← first · Esc close"
+                "↑↓ select · Enter open · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close"
               Archived ->
-                "↑↓ select · Enter restore · r rename · d permanently delete · a active · → next · ← first · Esc close"
+                "↑↓ select · Enter restore · r rename · d delete · a active · ←→ pages · Esc close"
             },
             width,
             "…",

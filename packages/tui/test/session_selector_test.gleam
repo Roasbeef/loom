@@ -124,6 +124,16 @@ pub fn session_selector_preserves_markers_labels_and_distinct_ids_test() {
   })
 }
 
+pub fn two_session_picker_fits_its_content_test() {
+  let screen = geometry.rect_new(0, 0, 116, 38)
+  let painted =
+    session_selector.render(buffer.buffer_new(screen), screen, selector(1))
+  let title = row_with(painted, "SESSIONS · active")
+  let help = row_with(painted, "Enter open · l link")
+  assert help - title < 10
+  assert row_with(painted, "▸") == title + 4
+}
+
 pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
   let rows =
     list.repeat(Nil, 12)
