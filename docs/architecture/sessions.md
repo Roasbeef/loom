@@ -734,7 +734,7 @@ again.
 | `client/gateway` | Owner-only `worktree_diff` requests and the pending-then-push reply. |
 | `tui/worktree_view` | One attachment's board, selection, and refresh correlation. |
 | `tui/diff_panel` | The diff panel's layout. |
-| `tui/workspace` | The terminal's repository root and branch for the footer and default session name. |
+| `tui/workspace` | The terminal's workspace, kept as named, and its branch for the footer and default session name. |
 
 ## Containment and bounds
 
