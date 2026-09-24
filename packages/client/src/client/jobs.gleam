@@ -1325,7 +1325,9 @@ fn admitted(
   use runtime <- result.try(borrow(state))
   use Nil <- result.try(room_for_one_more(state, strand))
   let #(now, _clock) = clock.read(state.wiring.clock)
-  let wall_ms = granted_wall(state.wiring, request.wall_ms)
+  let running_under =
+    option.unwrap(request.captured_policy, state.wiring.base_policy)
+  let wall_ms = granted_wall(state.wiring, running_under, request.wall_ms)
   use #(id, generator) <- result.try(mint(state.generator))
   let record =
     jobstate.JobRecord(
@@ -1425,11 +1427,21 @@ fn room_for_one_more(state: State, strand: String) -> Result(Nil, Refusal) {
 // outage dressed as a verdict about one command. So the default is the
 // meet of the hour and what the policy grants, admitted as the policy
 // stands, and `Started.wall_ms` says which of the two it was.
-fn granted_wall(wiring: Wiring, requested: Option(Int)) -> Int {
+//
+// "The policy" is the one the job will run under: the invocation's
+// captured policy, grants included, and the session base only when no
+// capture was made. Meeting the base instead dropped a wall grant the
+// approval flow had just minted: an operator approves thirty seconds for
+// an auto-mode `bash` call, and the job was still given the base's one.
+fn granted_wall(
+  wiring: Wiring,
+  running_under: SandboxPolicy,
+  requested: Option(Int),
+) -> Int {
   case requested {
     Some(asked) -> int.clamp(asked, min: 1, max: wiring.policy.max_wall_ms)
 
-    None -> meet_wall(default_wall_ms, wiring.base_policy.limits.wall_s * 1000)
+    None -> meet_wall(default_wall_ms, running_under.limits.wall_s * 1000)
   }
 }
 
@@ -1797,8 +1809,8 @@ fn promote_stream(
 // The wall is the job's rather than `bash`'s ten-minute clamp, and the
 // same number reaches the token, the relay, the helper's timer and the
 // ledger because all four read this one record. That is also why
-// `granted_wall` meets a *default* against the base policy before it ever
-// becomes a deadline: `response` below is `RefuseNarrowed`, so a wall the
+// `granted_wall` meets a *default* against the policy the job runs under
+// before it ever becomes a deadline: `response` below is `RefuseNarrowed`, so a wall the
 // base does not grant is refused here rather than quietly clamped.
 //
 // And no escalation grants are carried: the approval that admitted the
@@ -2717,8 +2729,8 @@ fn released(
     Error(refusal) -> #(state, Error(refusal))
     Ok(held) ->
       case jobstate.is_terminal(held.record.state) {
-        True -> #(forget_caller(state, held), Ok(AlreadyEnded))
-        False -> #(hand_to_owner(state, held), Ok(Released))
+        True -> #(relisten(state, held, to: Program), Ok(AlreadyEnded))
+        False -> #(relisten(state, held, to: Owner), Ok(Released))
       }
   }
 }
@@ -2733,46 +2745,25 @@ fn caller_left(state: State, id: JobId) -> State {
     Error(Nil) -> state
     Ok(held) ->
       case jobstate.is_terminal(held.record.state) {
-        True -> forget_caller(state, held)
-        False -> hand_to_owner(state, held)
+        True -> relisten(state, held, to: Program)
+        False -> relisten(state, held, to: Owner)
       }
   }
 }
 
-// A waiting caller's job, handed to its owner. A program's job stays the
-// program's: only a caller's claim is released.
-fn hand_to_owner(state: State, held: Held) -> State {
+// A waiting caller's claim on a job, released: its monitor dropped so the
+// selector stops carrying it, and the job given to `to`. A live job goes
+// to its `Owner`, who is then told when it ends. A job already over goes
+// to `Program`, the listener that announces nothing, because whether its
+// end is announced was decided when it ended. A job with no caller claim
+// is left alone, so a program's job stays the program's.
+fn relisten(state: State, held: Held, to listener: Listener) -> State {
   case held.listener {
     Caller(monitor:) -> {
       process.demonitor_process(monitor)
       State(
         ..state,
-        jobs: dict.insert(
-          state.jobs,
-          held.record.id,
-          Held(..held, listener: Owner),
-        ),
-      )
-    }
-    Owner | Program -> state
-  }
-}
-
-// A terminal job's caller monitor, dropped so the selector stops
-// carrying it. The listener becomes `Program` rather than `Owner`: the
-// job is over, and the one thing the listener still decides is whether
-// the job's end is announced, which has already been decided.
-fn forget_caller(state: State, held: Held) -> State {
-  case held.listener {
-    Caller(monitor:) -> {
-      process.demonitor_process(monitor)
-      State(
-        ..state,
-        jobs: dict.insert(
-          state.jobs,
-          held.record.id,
-          Held(..held, listener: Program),
-        ),
+        jobs: dict.insert(state.jobs, held.record.id, Held(..held, listener:)),
       )
     }
     Owner | Program -> state

@@ -2437,3 +2437,38 @@ fn await_record(
     }
   }
 }
+
+pub fn a_default_wall_honours_the_captured_grant_test() {
+  // An operator approved a thirty-second wall for a call on a session
+  // whose base allows one. The job that call starts runs under the
+  // captured policy, so its default wall is the approved one, not the
+  // base's.
+  let base = policy.workspace_default("/workspace")
+  let narrow =
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, wall_s: 1),
+    )
+  let granted =
+    policy.SandboxPolicy(
+      ..base,
+      limits: policy.Limits(..base.limits, wall_s: 30),
+    )
+  let harness = start_harness_over(narrow)
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "make",
+        wall_ms: None,
+        captured_policy: Some(granted),
+        audience: jobs.CallerWaiting,
+        stdin: jobs.CloseStdin,
+      ),
+      waiting: 10_000,
+    )
+    as "the job must be admitted under its captured policy"
+  assert started.wall_ms == 30_000
+}
