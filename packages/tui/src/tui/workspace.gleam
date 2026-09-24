@@ -1,4 +1,4 @@
-//// Repository context for the terminal footer.
+//// Workspace context for the terminal header and new sessions.
 ////
 //// Discovery runs once before the event loop starts. The immutable result is
 //// then safe to reuse across frames without polling Git or the filesystem.
@@ -12,7 +12,12 @@ import simplifile
 import tui/internal/workspace_file
 import tui/text_hygiene
 
-/// The repository root and branch visible to the terminal process.
+/// The directory a session is jailed in, and the branch labelling it.
+///
+/// The path is always a directory somebody chose: the launch directory, an
+/// explicit `--workspace`, or the workspace a catalogue row records. It is
+/// never widened to the repository around it; the repository contributes
+/// only the branch.
 pub type Context {
   Context(path: String, branch: Option(String))
 }
@@ -64,38 +69,27 @@ fn name_prefix(graphemes: List(String), remaining: Int) -> String {
   }
 }
 
-/// Discovers the nearest repository surrounding the current directory.
+/// Anchors a context at the terminal's current directory.
+///
+/// This is the workspace of a launch with no `--workspace`, and it is the same
+/// directory `bootstrap` keys the launcher's per-workspace state on. Taking the
+/// enclosing repository root instead would jail a session launched from a
+/// subdirectory over the whole checkout while `/sessions` looked for it at
+/// the subdirectory.
 pub fn discover() -> Context {
   case simplifile.current_directory() {
-    Ok(path) -> discover_from(path)
+    Ok(path) -> explicit(path)
     Error(_) -> Context(path: "workspace unavailable", branch: None)
   }
 }
 
-/// Discovers the nearest repository surrounding an explicit directory.
-///
-/// ## Examples
-///
-/// ```gleam
-/// workspace.discover_from("/home/me/work/project/src")
-/// ```
-@internal
-pub fn discover_from(path: String) -> Context {
-  case repository_marker(path) {
-    Ok(#(root, marker)) ->
-      Context(path: root, branch: read_branch(root, marker))
-    Error(Nil) -> Context(path:, branch: None)
-  }
-}
-
-/// Anchors a context at a directory that was named rather than discovered.
+/// Anchors a context at a directory that was chosen rather than searched for.
 ///
 /// A `--workspace` flag, or the workspace a catalogue row records, is the root
 /// a session is jailed in, so the path is kept exactly as given. Only the
 /// branch is borrowed from the nearest enclosing repository, as a label.
-/// `discover_from` would instead replace the path with that repository's
-/// root, and a scratch directory inside a checkout would then create its
-/// sessions over the whole checkout.
+/// Nothing here returns that repository's root: a scratch directory inside a
+/// checkout once created its sessions over the whole checkout that way.
 ///
 /// ## Examples
 ///
@@ -104,7 +98,11 @@ pub fn discover_from(path: String) -> Context {
 /// ```
 @internal
 pub fn explicit(path: String) -> Context {
-  Context(..discover_from(path), path:)
+  let branch = case repository_marker(path) {
+    Ok(#(root, marker)) -> read_branch(root, marker)
+    Error(Nil) -> None
+  }
+  Context(path:, branch:)
 }
 
 fn repository_marker(path: String) -> Result(#(String, String), Nil) {

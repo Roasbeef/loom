@@ -1043,15 +1043,18 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   loads a workspace `loom.toml` nor uses the workspace as its working
   directory. Implicit daemon lookup accepts only a sibling install or absolute
   `PATH` entries, and it pins an executable sibling `loom-exec` when available.
-- **An explicit workspace is the jail root, as named.** A `--workspace` is
-  canonicalized by `bootstrap.launch_workspace` and kept verbatim through
-  `workspace.explicit`; only its branch label comes from an enclosing
-  repository. `selection.creation` sends that path in the picker's
-  `CreateSession`, and a `/sessions` adoption keeps a row's recorded
-  workspace the same way. `workspace.discover_from` walks up to a repository
-  root and is only for the no-flag launch directory: applied to the flag, it
-  once created sessions over whatever checkout enclosed the named directory.
-  A flag naming no directory stops the launch rather than falling back.
+- **The workspace is the jail root, as named.** `bootstrap.launch_workspace`
+  canonicalizes the `--workspace` flag, or the launch directory without one,
+  exactly as `resolve` does, so the picker's `CreateSession` and the
+  launcher's per-workspace state name the same directory. `workspace.explicit`
+  keeps that path verbatim and borrows only the branch label from an
+  enclosing repository; nothing in `tui/workspace` returns a repository root.
+  `selection.creation` sends the path, and a `/sessions` adoption keeps a
+  row's recorded workspace the same way. Widening to the repository root once
+  created flag sessions over whatever checkout enclosed the named directory,
+  and jailed a subdirectory launch over the checkout while `/sessions`
+  looked for it at the subdirectory. A flag naming no directory stops the
+  launch rather than falling back.
 - **Launcher secrets stay under launcher authority.** Session and state paths
   are canonical before their endpoint key and kernel lock are chosen. The
   bearer token always lives under the private state root, even when an explicit

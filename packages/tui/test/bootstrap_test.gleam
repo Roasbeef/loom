@@ -23,7 +23,6 @@ import tui/daemon/selection
 import tui/session_channel
 import tui/session_selector
 import tui/sessions
-import tui/workspace
 import weft
 import weft/poll
 
@@ -486,8 +485,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   // The fixture workspace sits under `build/`, inside this checkout, so the
   // model takes it the way an interactive `--workspace` launch does rather
   // than by the repository walk that would widen it to the checkout root.
-  let assert Ok(project) =
-    bootstrap.launch_workspace(options, workspace.discover())
+  let assert Ok(project) = bootstrap.launch_workspace(options)
   assert project.path == workspace
   let model = tui.new_model(connection.new_inbox(), project)
   let model =

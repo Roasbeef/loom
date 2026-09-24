@@ -1,8 +1,8 @@
-//// An explicit `--workspace` is the jail root a picker-created session runs
-//// in. These tests pin the chain from the launch flag to the `CreateSession`
-//// the picker's `n` sends: the flag is canonicalized and kept as named, never
-//// widened to the repository that happens to enclose it, and never replaced
-//// by the repository the terminal was launched from.
+//// The launch workspace is the jail root a picker-created session runs in.
+//// These tests pin the chain from the launch to the `CreateSession` the
+//// picker's `n` sends: an explicit `--workspace`, or the launch directory
+//// without one, is canonicalized and kept as named, never widened to the
+//// repository that happens to enclose it.
 
 import filepath
 import gleam/option.{Some}
@@ -41,20 +41,13 @@ fn fixture(name: String) -> #(String, String) {
 pub fn explicit_workspace_survives_into_the_create_request_test() {
   let #(root, scratch) = fixture("explicit")
   let assert Ok(canonical) = host_bootstrap.canonical_directory(scratch)
-  let launched_from = workspace.discover()
 
   // The flag is given relative, as an operator types it; the wire carries the
   // absolute path, because the daemon does not share the launcher's cwd.
   let options = bootstrap.Options(scratch, "", "", "", "")
-  let assert Ok(project) = bootstrap.launch_workspace(options, launched_from)
+  let assert Ok(project) = bootstrap.launch_workspace(options)
     as "an existing directory is a valid workspace"
   assert project == workspace.Context(canonical, Some("topic"))
-
-  // The repository walk is what the launch used to apply to the flag, and
-  // it would have created the session over the whole enclosing repository.
-  assert workspace.discover_from(canonical).path
-    == filepath.directory_name(canonical)
-
   assert selection.creation("key", project, "/state/loom.toml")
     == protocol.CreateSession(
       "key",
@@ -65,20 +58,24 @@ pub fn explicit_workspace_survives_into_the_create_request_test() {
   let _ = simplifile.delete(root)
 }
 
-pub fn an_absent_flag_keeps_the_launch_directory_context_test() {
-  let launched_from = workspace.Context("/work/loom", Some("main"))
-  assert bootstrap.launch_workspace(
-      bootstrap.Options("", "", "", "", ""),
-      launched_from,
-    )
-    == Ok(launched_from)
+// The test runs in the package directory, which has no `.git` of its own
+// but sits inside the checkout that does. That is the subdirectory launch:
+// the workspace is the directory itself, the same one `bootstrap.resolve`
+// keys the launcher's state on, and not the checkout root around it.
+pub fn an_absent_flag_takes_the_launch_directory_itself_test() {
+  let assert Ok(False) = simplifile.exists(".git", follow_links: False)
+    as "the fixture needs a launch directory below its repository root"
+  let assert Ok(launch_directory) = host_bootstrap.canonical_directory("")
+  let assert Ok(project) =
+    bootstrap.launch_workspace(bootstrap.Options("", "", "", "", ""))
+  assert project.path == launch_directory
+  assert filepath.base_name(project.path) == "tui"
 }
 
 pub fn a_flag_naming_no_directory_stops_the_launch_test() {
   let options =
     bootstrap.Options("build/launch-workspace-test-missing", "", "", "", "")
-  let assert Error(reason) =
-    bootstrap.launch_workspace(options, workspace.discover())
+  let assert Error(reason) = bootstrap.launch_workspace(options)
     as "no fallback may choose a jail root the operator did not name"
   assert string.starts_with(reason, "resolve workspace: ")
 }

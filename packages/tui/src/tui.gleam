@@ -1350,11 +1350,12 @@ fn interactive(launch: Launch, record: String) -> Nil {
     Version | Forward(..) | Update(..) | Replay(..) | Sessions(..) | Demo ->
       base
     // The model's workspace is what the picker's `n` sends as the new
-    // session's jail root, so an explicit `--workspace` is settled before
-    // any daemon is reached. A flag that names no directory stops the launch
-    // rather than quietly creating sessions in the launch directory's repo.
+    // session's jail root, so it is settled before any daemon is reached,
+    // and settled the way the launcher keys its own state: the flag, or the
+    // launch directory without it. A flag that names no directory stops the
+    // launch rather than quietly creating sessions somewhere else.
     Local(options, selected) ->
-      case bootstrap.launch_workspace(options, base.workspace) {
+      case bootstrap.launch_workspace(options) {
         Error(reason) ->
           append_error(Model(..base, notice: "invalid launch"), reason)
         Ok(project) ->
