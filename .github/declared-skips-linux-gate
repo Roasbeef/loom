@@ -32,3 +32,7 @@ declared|linux|SKIP shipped confinement: platform enforcement unavailable|The or
 # with enforced helpers and an empty skip declaration set on both platforms.
 declared|linux|SKIP joined terminal observations: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail and hard macOS terminal-observation steps run the joined queue, worktree, and completion scenario without this waiver.
 declared|linux|SKIP worktree observation: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail and hard macOS terminal-observation steps run every worktree fixture without this waiver.
+
+# The ordinary fast bucket does not install bwrap. The jailed Linux lane
+# installs it and runs this exact tools test without a skip declaration.
+declared|linux|SKIP git worktree: helper has no filesystem enforcement|The ordinary tools bucket cannot enforce the outside write; the jailed Linux lane runs the real Git worktree approval fixture with bubblewrap.

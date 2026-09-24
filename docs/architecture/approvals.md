@@ -93,13 +93,16 @@ effects have happened, and approving it would require a replay that
 submit a new call that declares the permissions it needs, and that call asks
 before anything runs.
 
-For a failed `bash` command whose stderr says `Operation not permitted` or
-`Permission denied`, the result now explains that fresh-call path. If Git
+For a failed `bash` command whose stderr says `Operation not permitted`,
+`Permission denied`, or `Read-only file system`, the result now explains
+that fresh-call path. If Git
 reports a quoted lock under an absolute `.git` path, the result also names
 the reported metadata directory as a possible writable root. This is
 diagnostic text from untrusted command output, not a grant or an automatic
 replay. The next call's `permissions` value is still canonicalized and
 checked against protected paths before an operator sees the exact request.
+On Linux, a writable root must already exist for the bind mount. For a new
+worktree destination, the call therefore requests its existing parent.
 
 ## From refusal to grant
 

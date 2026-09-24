@@ -1266,6 +1266,21 @@ jobs:
       - name: Skip census (go jail tests)
         run: .github/scripts/skip_census.sh "jail (linux, go tests)" go-jail.log
 
+      # The ordinary tools bucket has no bubblewrap, so its Git worktree
+      # fixture records a declared skip. Run that exact fixture here with
+      # the jail prerequisites, then reject every skip.
+      - name: Git worktree approval with delegated enforcement
+        env:
+          LOOM_TEST_TIMEOUT_SECONDS: 180
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          .github/scripts/hex_retry.sh bash scripts/test.sh tools \
+            --match tools@integration_test:real_jail_git_worktree_asks_before_outside_writes_test \
+            2>&1 | tee git-worktree-approval.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, git worktree approval)" git-worktree-approval.log
+
       - name: Prepare the code-mode build seed
         run: .github/scripts/hex_retry.sh make codemode-seed
 
