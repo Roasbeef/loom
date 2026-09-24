@@ -655,9 +655,39 @@ pub fn kernel_denial_after_start_does_not_ask_or_replay_test() {
       command_args("write marker; access denied path"),
     )
   assert outcome.is_error == True
+  assert string.contains(first_text(outcome), "permissions:")
+  assert string.contains(first_text(outcome), "before that call runs")
   let _spec = recorded_spec(recorded)
   assert remaining_specs(recorded) == 0
   assert process.receive(asked, 0) == Error(Nil)
+}
+
+pub fn a_successful_command_does_not_get_permission_guidance_test() {
+  let #(outcome, _recorded) =
+    run_with_script(
+      [
+        fake_broker.stderr("Operation not permitted"),
+        fake_broker.exited(code: 0, stdout_bytes: 0),
+      ],
+      command_args("echo diagnostic 1>&2"),
+    )
+  assert !string.contains(first_text(outcome), "permissions:")
+}
+
+pub fn a_git_lock_denial_names_the_reported_metadata_directory_test() {
+  let stderr =
+    "fatal: cannot lock ref 'refs/heads/sqlite-update': Unable to create "
+    <> "'/repo/.git/refs/heads/sqlite-update.lock': Operation not permitted"
+  let #(outcome, _recorded) =
+    run_with_script(
+      [
+        fake_broker.stderr(stderr),
+        fake_broker.exited(code: 255, stdout_bytes: 0),
+      ],
+      command_args("cd /repo && git worktree add /linked"),
+    )
+  assert string.contains(first_text(outcome), "`/repo/.git`")
+  assert string.contains(first_text(outcome), "destination worktree")
 }
 
 fn remaining_specs(recorded: process.Subject(fake_broker.Recorded)) -> Int {
