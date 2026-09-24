@@ -279,6 +279,7 @@ fn submit_text(model: Model) -> Model {
       tui_model.append_system(switched, "active model changed to " <> name)
     }
     command.Strands | command.Agents -> open_agents(cleared)
+    command.PeerLinks -> session_control.begin_peer_workspace(cleared)
     command.Schedules ->
       outbound.send_frame(cleared, protocol.schedules(cleared.next_id))
     command.Unschedule(name:, target:) -> {
@@ -488,6 +489,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.Model(_)
     | command.Strands
     | command.Schedules
+    | command.PeerLinks
     | command.Unschedule(..)
     | command.Agents
     | command.Sessions

@@ -301,19 +301,7 @@ fn browsing(key: keys.Key, state: State) -> Action {
           }
         Error(Nil) -> Continue(state)
       }
-    keys.Char("l") ->
-      case list.first(list.drop(state.page.sessions, state.selected)) {
-        Ok(row) ->
-          case state.collection {
-            Active ->
-              case row.status {
-                protocol.Resident(_) -> Link(row)
-                _ -> Continue(State(..state, prompt: LinkUnavailable))
-              }
-            Archived -> Continue(state)
-          }
-        Error(Nil) -> Continue(state)
-      }
+    keys.Char("l") -> link_selected(state)
     keys.Up ->
       Continue(State(..state, selected: int.max(0, state.selected - 1)))
     keys.Down ->
@@ -356,6 +344,22 @@ fn browsing(key: keys.Key, state: State) -> Action {
       }
     keys.Left -> FirstPage
     _ -> Continue(state)
+  }
+}
+
+// A saved or archived row cannot become a peer target through selection.
+fn link_selected(state: State) -> Action {
+  case list.first(list.drop(state.page.sessions, state.selected)) {
+    Ok(row) ->
+      case state.collection {
+        Active ->
+          case row.status {
+            protocol.Resident(_) -> Link(row)
+            _ -> Continue(State(..state, prompt: LinkUnavailable))
+          }
+        Archived -> Continue(state)
+      }
+    Error(Nil) -> Continue(state)
   }
 }
 

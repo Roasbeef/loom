@@ -1581,7 +1581,7 @@ fn exercise_peer_link_overlay(
   let loaded =
     tui_v2_test.await(driver.data, fn(sample) {
       case sample.model.overlay {
-        tui.PeerLinkManager(peer_links.State(
+        tui_model.PeerLinkManager(peer_links.State(
           prompt: peer_links.Browsing,
           inspection: Some(_),
           ..,
@@ -1593,7 +1593,7 @@ fn exercise_peer_link_overlay(
     as "opening the modal leaves unrelated composer text intact"
 
   let chooser = tui_driver.play(driver.data, [backend.KeyPress("l")])
-  let assert tui.PeerLinkManager(state) = chooser.model.overlay
+  let assert tui_model.PeerLinkManager(state) = chooser.model.overlay
     as "link opens a resident-session chooser"
   let assert peer_links.ChoosingSession = state.prompt
     as "the chooser owns arrow-key navigation"
@@ -1615,7 +1615,7 @@ fn exercise_peer_link_overlay(
       driver.data,
       list.repeat(backend.KeyPress(direction), distance),
     )
-  let assert tui.PeerLinkManager(selected) = highlighted.model.overlay
+  let assert tui_model.PeerLinkManager(selected) = highlighted.model.overlay
   assert selected.selected_session == target_index
     as "navigation selects the intended resident target"
   let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
@@ -1625,7 +1625,7 @@ fn exercise_peer_link_overlay(
   let linked =
     tui_v2_test.await(driver.data, fn(sample) {
       case sample.model.overlay {
-        tui.PeerLinkManager(peer_links.State(
+        tui_model.PeerLinkManager(peer_links.State(
           inspection: Some(peer_links.Inspection(outgoing:, ..)),
           ..,
         )) ->
@@ -1674,7 +1674,7 @@ fn exercise_peer_link_overlay(
     == Error("no operator-authorized outgoing link")
     as "a forward grant creates no reverse authority"
   let proposed = tui_driver.play(driver.data, [backend.KeyPress("v")])
-  let assert tui.PeerLinkManager(peer_links.State(
+  let assert tui_model.PeerLinkManager(peer_links.State(
     prompt: peer_links.Confirming(peer_links.Proposal(
       source_session: reverse_source,
       target_session: reverse_target,
@@ -1691,7 +1691,7 @@ fn exercise_peer_link_overlay(
   let reversed =
     tui_v2_test.await(driver.data, fn(sample) {
       case sample.model.overlay {
-        tui.PeerLinkManager(peer_links.State(
+        tui_model.PeerLinkManager(peer_links.State(
           inspection: Some(peer_links.Inspection(incoming:, ..)),
           ..,
         )) ->
@@ -1717,7 +1717,7 @@ fn exercise_peer_link_overlay(
   let revoked =
     tui_v2_test.await(driver.data, fn(sample) {
       case sample.model.overlay {
-        tui.PeerLinkManager(peer_links.State(
+        tui_model.PeerLinkManager(peer_links.State(
           inspection: Some(peer_links.Inspection(outgoing: [], incoming:)),
           ..,
         )) ->

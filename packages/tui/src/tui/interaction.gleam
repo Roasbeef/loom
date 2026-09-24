@@ -34,6 +34,7 @@ import tui/composer
 import tui/connection
 import tui/context_panel
 import tui/context_view
+import tui/daemon/protocol as control_protocol
 import tui/focused_goal_panel
 import tui/frame
 import tui/history_view
@@ -44,12 +45,13 @@ import tui/model.{
   type Clipboard, type Model, type ScrollDirection, AgentInspector,
   ApprovalInspector, Attached, DaemonSelector, DiffHidden, DiffVisible,
   Disconnected, FrameCache, GoalInspector, Model, ModelSelector, Newer,
-  NoClipboard, NoOverlay, Older, OverlaySubmission, Preview, ReconnectIdle,
-  Replaying, SessionSelector, TerminalClipboard,
+  NoClipboard, NoOverlay, Older, OverlaySubmission, PeerLinkManager, Preview,
+  ReconnectIdle, Replaying, SessionSelector, TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/outbound
+import tui/peer_links
 import tui/projection
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
@@ -81,12 +83,16 @@ pub fn handle_paste(model: Model, text: String) -> Model {
       }
     AgentInspector(agents.Inspector(focus: agents.Composing, ..)) ->
       handle_underlay_paste(model, text)
+    PeerLinkManager(
+      peer_links.State(prompt: peer_links.EditingTargetStrand, ..) as state,
+    ) -> session_control.update_peer_link_manager(keys.Char(text), model, state)
     AgentInspector(_)
     | ModelSelector(_)
     | GoalInspector(_)
     | SessionSelector(_)
     | DaemonSelector(_)
-    | ApprovalInspector(_) -> model
+    | ApprovalInspector(_)
+    | PeerLinkManager(_) -> model
   }
 }
 
@@ -362,6 +368,8 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         SessionSelector(selector) ->
           update_session_selector(key, model, selector)
         DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
+        PeerLinkManager(state) ->
+          session_control.update_peer_link_manager(key, model, state)
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
             approval_panel.Close -> Model(..model, overlay: NoOverlay)
@@ -435,6 +443,12 @@ fn update_daemon_selector(
       Model(..model, overlay: NoOverlay, notice: "session selection cancelled")
     session_selector.Choose(row) ->
       session_control.begin_open(model, row.session_id)
+    session_selector.Link(row) ->
+      case row.status {
+        control_protocol.Resident(_) ->
+          session_control.begin_peer_workspace_for_session(model, selector, row)
+        _ -> Model(..model, notice: "open the saved session before linking it")
+      }
     session_selector.NewSession -> session_control.create_session(model)
     session_selector.Delete(session_id) ->
       session_control.begin_delete(model, session_id)
@@ -568,6 +582,7 @@ fn update_agent_inspector(
           |> inbound.select_inspector_message(model.agent_messages),
         ),
       )
+    keys.Char("p") -> session_control.begin_peer_workspace_for(model, inspector)
     keys.PageUp if inspector.detail == agents.Messages -> {
       let maximum = message_max_scroll(model, inspector)
       Model(

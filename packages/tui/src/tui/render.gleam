@@ -52,14 +52,15 @@ import tui/markdown
 import tui/model.{
   type Line, type Model, AgentInspector, ApprovalInspector, Assistant, Attached,
   DaemonSelector, Disconnected, Failure, FrameCache, GoalInspector, Line, Model,
-  ModelSelector, NoOverlay, Preview, PromptNext, Reasoning, ReasoningDigest,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionSelector,
-  Spacer, SteerNow, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
-  ToolResult, User,
+  ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext, Reasoning,
+  ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying,
+  SessionSelector, Spacer, SteerNow, System, ToolCall, ToolDetail, ToolFailure,
+  ToolPatch, ToolResult, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
 import tui/notes_view
+import tui/peer_links
 import tui/protocol
 import tui/queue_editor
 import tui/queue_panel
@@ -198,6 +199,7 @@ pub fn render_frame(
       )
     SessionSelector(selector) -> sessions.render(base, screen, selector)
     DaemonSelector(selector) -> session_selector.render(base, screen, selector)
+    PeerLinkManager(state) -> peer_links.render(base, screen, state)
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
   }
 
@@ -252,6 +254,7 @@ pub fn render_frame(
     | GoalInspector(_), _
     | SessionSelector(_), _
     | DaemonSelector(_), _
+    | PeerLinkManager(_), _
     | ApprovalInspector(_), _
     -> Error(Nil)
   }
@@ -1026,6 +1029,7 @@ fn note_context(model: Model, target: String) -> List(String) {
             | GoalInspector(_)
             | SessionSelector(_)
             | DaemonSelector(_)
+            | PeerLinkManager(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
           }
       }
@@ -1042,6 +1046,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     | GoalInspector(_)
     | SessionSelector(_)
     | DaemonSelector(_)
+    | PeerLinkManager(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
   }
 }
@@ -1546,6 +1551,7 @@ fn render_command_palette(
     | _, GoalInspector(_)
     | _, SessionSelector(_)
     | _, DaemonSelector(_)
+    | _, PeerLinkManager(_)
     | _, ApprovalInspector(_)
     -> buf
     _, NoOverlay -> {

@@ -59,9 +59,9 @@ import tui/model.{
   type UnconfirmedSubmission, AgentInspector, ApprovalInspector, Assistant,
   Attached, CacheNotice, CacheObservation, DaemonSelector, Disconnected,
   GoalInspector, HeldPrompt, HoldGoalReport, Interjection, Interrupt, Line,
-  Model, ModelSelector, NoOverlay, Preview, PromptNext, ReconnectAttempting,
-  ReconnectIdle, ReconnectSpent, Replaying, SessionSelector, StrandWorkspace,
-  Stream, System, ToolTail, UnconfirmedSubmission, User,
+  Model, ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionSelector,
+  StrandWorkspace, Stream, System, ToolTail, UnconfirmedSubmission, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -1220,6 +1220,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         GoalInspector(state) -> GoalInspector(state)
         SessionSelector(selector) -> SessionSelector(selector)
         DaemonSelector(selector) -> DaemonSelector(selector)
+        PeerLinkManager(state) -> PeerLinkManager(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
       Model(

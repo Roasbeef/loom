@@ -60,6 +60,7 @@ import tui/model_selector
 import tui/note_panel
 import tui/notes_view
 import tui/pacing
+import tui/peer_links
 import tui/protocol.{Strand}
 import tui/queue_editor
 import tui/recording
@@ -200,6 +201,7 @@ pub type Overlay {
   GoalInspector(state: focused_goal_panel.State)
   SessionSelector(sessions.State)
   DaemonSelector(session_selector.State)
+  PeerLinkManager(peer_links.State)
   ApprovalInspector(approval_panel.State)
 }
 
@@ -332,11 +334,11 @@ pub type Interrupt {
   )
 }
 
-/// What a finished picker control job produced.
+/// What a finished daemon control job produced.
 ///
-/// The picker can page or delete, never both at once, so the two share one
-/// job slot and are told apart here rather than by a second set of fields
-/// that could both be occupied.
+/// Catalogue and peer requests share one job slot. The outcome identifies
+/// which requested operation completed without adding overlapping pending
+/// fields to the model.
 @internal
 pub type ControlOutcome {
   /// One authorized page and the identity to highlight in it.
@@ -357,6 +359,18 @@ pub type ControlOutcome {
 
   /// The daemon acknowledged a rename with its canonical catalogue row.
   SessionRenamed(row: control_protocol.Session)
+
+  /// One session catalogue and exact peer inspection for the modal.
+  PeerWorkspaceLoaded(page: control_protocol.Page, document: json.JsonValue)
+
+  /// One more revision-fenced target-session catalogue page.
+  PeerSessionsLoaded(page: control_protocol.Page)
+
+  /// One refreshed grant document after a request or mutation.
+  PeerInspectionLoaded(document: json.JsonValue, after: Option(String))
+
+  /// A link or unlink acknowledgement whose body preserves partial results.
+  PeerOperationCompleted(document: json.JsonValue)
 }
 
 /// One relayed control job, selected by the terminal and its actor-backed driver.
