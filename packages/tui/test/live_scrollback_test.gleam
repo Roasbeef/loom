@@ -10,11 +10,13 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/workspace
 import tui_test/gateway
 
-fn deliver(model: tui.Model, text: String) -> tui.Model {
+fn deliver(model: tui_model.Model, text: String) -> tui_model.Model {
   process.send(
     model.inbox,
     connection.Incoming(gateway.stream_delta("main", "text", text)),
@@ -22,7 +24,7 @@ fn deliver(model: tui.Model, text: String) -> tui.Model {
   tui.update(backend.Tick, model)
 }
 
-fn streaming() -> tui.Model {
+fn streaming() -> tui_model.Model {
   tui.new_model_with_clock(
     connection.new_inbox(),
     workspace.Context("/work", None),
@@ -99,8 +101,8 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
   let arrived = deliver(reading, "\n\nNew output below.")
   let drafting = tui.update(backend.KeyPress("x"), arrived)
   let shown =
-    tui.view(
-      tui.Model(..drafting, frame_cache: None),
+    render.view(
+      tui_model.Model(..drafting, frame_cache: None),
       geometry.rect_new(0, 0, drafting.width, drafting.height),
     ).0
   let assert Ok(#(_, y)) =
@@ -120,9 +122,9 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
 // The frame cache is keyed on the screen rectangle alone, so a model edited
 // by record update has to be driven through an event before its own frame is
 // the one drawn.
-fn border_text(model: tui.Model) -> String {
+fn border_text(model: tui_model.Model) -> String {
   let drawn = tui.update(backend.Resize(90, 24), model)
-  let #(buffer, _) = tui.view(drawn, geometry.rect_new(0, 0, 90, 24))
+  let #(buffer, _) = render.view(drawn, geometry.rect_new(0, 0, 90, 24))
   frame.buffer_to_text(buffer)
 }
 
@@ -137,16 +139,16 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-  let offline = tui.Model(..base, peer: tui.Disconnected)
+  let offline = tui_model.Model(..base, peer: tui_model.Disconnected)
   assert string.contains(
     border_text(offline),
     "Disconnected · /sessions to reconnect · draft retained",
   )
 
   let interrupting =
-    tui.Model(
+    tui_model.Model(
       ..offline,
-      interrupt: Some(tui.Interrupt(base.active_strand, None, None)),
+      interrupt: Some(tui_model.Interrupt(base.active_strand, None, None)),
     )
   assert string.contains(
     border_text(interrupting),
@@ -160,14 +162,14 @@ pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
 
   // The same pending interrupt on a live terminal still names itself, so the
   // guard rather than the fixture produced the two assertions above.
-  let live = tui.Model(..interrupting, peer: tui.Preview)
+  let live = tui_model.Model(..interrupting, peer: tui_model.Preview)
   assert string.contains(border_text(live), "stopped · enter sends held input")
 }
 
 pub fn switching_agents_restores_the_frozen_reader_without_crossing_streams_test() {
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming())
   let reading =
-    tui.Model(..reading, strands: [
+    tui_model.Model(..reading, strands: [
       protocol.Strand("main", Some("main"), Some("assistant")),
       protocol.Strand("worker", Some("worker"), Some("assistant")),
     ])

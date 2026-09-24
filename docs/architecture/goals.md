@@ -285,7 +285,7 @@ operator-or-better authority. `goal_check` refuses when no goal is pinned.
 The TUI maps those commands to `/goal [--budget TOKENS] OBJECTIVE`, bare `/goal`,
 `/goal check <command>`, bare `/goal check`, and `/goal clear|pause|resume`.
 [`tui/goal_view`](../../packages/tui/src/tui/goal_view.gleam) renders the snapshot
-and the compact composer row. [`tui.gleam`](../../packages/tui/src/tui.gleam)
+and the compact composer row. [`tui/surfaces`](../../packages/tui/src/tui/surfaces.gleam)
 automatically issues the read-only `goal_get` when a session attaches and when a
 primary or advisor transition can change the board.
 

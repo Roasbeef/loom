@@ -27,18 +27,26 @@ import tui/composer
 import tui/connection
 import tui/frame
 import tui/image_drop
+import tui/inbound
+import tui/interaction
 import tui/internal/ffi_file
 import tui/internal/workspace_file
+import tui/layout
 import tui/markdown
+import tui/model as tui_model
 import tui/model_selector
 import tui/pacing
+import tui/projection
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
+import tui/render
 import tui/selection
 import tui/session_channel
 import tui/sessions
+import tui/submit
 import tui/text_hygiene
 import tui/theme
+import tui/transcript_lines
 import tui/virtual_backend
 import tui/workspace
 import tui_test/ffi_term
@@ -107,54 +115,58 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
       cost: message.UsageCost(0.01, 0.02, 0.003, 0.004, 0.037),
     )
 
-  assert tui.usage_summary(usage)
+  assert transcript_lines.usage_summary(usage)
     == "Total est $0.04 · in 12k · out 678 · cache 90k/123"
   let measured =
     message.Usage(
       ..usage,
       cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 5.674667835999998),
     )
-  assert string.contains(tui.usage_summary(measured), "est $5.67")
+  assert string.contains(transcript_lines.usage_summary(measured), "est $5.67")
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {
-  assert tui.elapsed_label(0) == ""
-  assert tui.elapsed_label(1) == " (1s)"
-  assert tui.elapsed_label(59) == " (59s)"
-  assert tui.elapsed_label(60) == " (1m 00s)"
-  assert tui.elapsed_label(65) == " (1m 05s)"
-  assert tui.elapsed_label(754) == " (12m 34s)"
+  assert layout.elapsed_label(0) == ""
+  assert layout.elapsed_label(1) == " (1s)"
+  assert layout.elapsed_label(59) == " (59s)"
+  assert layout.elapsed_label(60) == " (1m 00s)"
+  assert layout.elapsed_label(65) == " (1m 05s)"
+  assert layout.elapsed_label(754) == " (12m 34s)"
 }
 
 pub fn output_rate_is_tokens_over_streamed_seconds_test() {
-  assert tui.output_rate(300, 2000) == Some(150)
-  assert tui.output_rate(7, 1000) == Some(7)
+  assert transcript_lines.output_rate(300, 2000) == Some(150)
+  assert transcript_lines.output_rate(7, 1000) == Some(7)
   // A window under a second is no rate: a whole-part provider can land
   // a short reply as one burst, and 126 tokens over one millisecond
   // once showed as 126000 tok/s.
-  assert tui.output_rate(126, 1) == None
-  assert tui.output_rate(300, tui.output_rate_min_ms - 1) == None
-  assert tui.output_rate(300, 0) == None
-  assert tui.output_rate_label(Some(87)) == " · 87 tok/s"
-  assert tui.output_rate_label(None) == ""
+  assert transcript_lines.output_rate(126, 1) == None
+  assert transcript_lines.output_rate(
+      300,
+      transcript_lines.output_rate_min_ms - 1,
+    )
+    == None
+  assert transcript_lines.output_rate(300, 0) == None
+  assert transcript_lines.output_rate_label(Some(87)) == " · 87 tok/s"
+  assert transcript_lines.output_rate_label(None) == ""
 }
 
 pub fn footer_rows_depend_on_the_width_alone_test() {
   // The thresholds are the sections' fixed caps summed, so the row count
   // is a property of the window and cannot move while a turn runs. A
   // 133-column pane is always two rows; a 213-column one is always one.
-  assert tui.footer_rows(213) == 1
-  assert tui.footer_rows(212) == 2
-  assert tui.footer_rows(133) == 2
-  assert tui.footer_rows(112) == 2
-  assert tui.footer_rows(111) == 3
-  assert tui.footer_rows(40) == 3
-  assert tui.transcript_height(40, 3, 2) == 32
-  assert tui.transcript_height(40, 3, 3) == 31
-  assert tui.transcript_height(40, 3, 1) == 33
-  assert tui.viewport_height_changed(
-    tui.transcript_height(40, 3, 2),
-    tui.transcript_height(40, 3, 1),
+  assert layout.footer_rows(213) == 1
+  assert layout.footer_rows(212) == 2
+  assert layout.footer_rows(133) == 2
+  assert layout.footer_rows(112) == 2
+  assert layout.footer_rows(111) == 3
+  assert layout.footer_rows(40) == 3
+  assert layout.transcript_height(40, 3, 2) == 32
+  assert layout.transcript_height(40, 3, 3) == 31
+  assert layout.transcript_height(40, 3, 1) == 33
+  assert projection.viewport_height_changed(
+    layout.transcript_height(40, 3, 2),
+    layout.transcript_height(40, 3, 1),
   )
 }
 
@@ -192,22 +204,22 @@ pub fn workspace_metadata_read_is_descriptor_bounded_test() {
 }
 
 pub fn footer_status_preserves_transient_operator_feedback_test() {
-  assert tui.footer_status("0 live / 3 agents", "queued after main", 40)
+  assert render.footer_status("0 live / 3 agents", "queued after main", 40)
     == "0 live / 3 agents · queued after main"
 }
 
 pub fn footer_project_label_grows_on_stacked_footers_test() {
   // One row: the label shares its row with usage and the model, so the cap
   // holds however wide the screen is.
-  assert tui.footer_project_limit(213) == 68
-  assert tui.footer_project_limit(300) == 68
+  assert render.footer_project_limit(213) == 68
+  assert render.footer_project_limit(300) == 68
 
   // Two or three rows: the primary row holds only the label and the model,
   // so the label takes every column the model's cap leaves, never less
   // than its own cap.
-  assert tui.footer_project_limit(150) == 118
-  assert tui.footer_project_limit(100) == 68
-  assert tui.footer_project_limit(60) == 68
+  assert render.footer_project_limit(150) == 118
+  assert render.footer_project_limit(100) == 68
+  assert render.footer_project_limit(60) == 68
 }
 
 pub fn footer_status_grows_with_a_wide_terminal_test() {
@@ -215,36 +227,36 @@ pub fn footer_status_grows_with_a_wide_terminal_test() {
 
   // At the single-row threshold the fixed cap holds and the notice is cut;
   // every column past it goes to the status, so a wide screen shows it all.
-  assert tui.footer_status_limit(213) == 40
-  assert tui.footer_status("2 live / 3 agents", notice, 40)
+  assert render.footer_status_limit(213) == 40
+  assert render.footer_status("2 live / 3 agents", notice, 40)
     == "2 live / 3 agents · steer captured; wai…"
-  assert tui.footer_status_limit(246) == 73
-  assert tui.footer_status("2 live / 3 agents", notice, 73)
+  assert render.footer_status_limit(246) == 73
+  assert render.footer_status("2 live / 3 agents", notice, 73)
     == "2 live / 3 agents · steer captured; waiting for stop"
 
   // Stacked layouts give the status its shared or whole row, never less
   // than the floor.
-  assert tui.footer_status_limit(150) == 78
-  assert tui.footer_status_limit(60) == 58
-  assert tui.footer_status_limit(30) == 40
+  assert render.footer_status_limit(150) == 78
+  assert render.footer_status_limit(60) == 58
+  assert render.footer_status_limit(30) == 40
 }
 
 pub fn footer_status_sanitizes_untrusted_server_text_test() {
-  assert tui.footer_status("0 live", "\u{1b}[31mhostile\nnotice", 40)
+  assert render.footer_status("0 live", "\u{1b}[31mhostile\nnotice", 40)
     == "0 live · hostile notice"
 }
 
 pub fn footer_status_omits_the_dedicated_model_label_test() {
-  assert tui.footer_status("0 live / 3 agents", "model: baseten-kimi-k3", 40)
+  assert render.footer_status("0 live / 3 agents", "model: baseten-kimi-k3", 40)
     == "0 live / 3 agents"
 }
 
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
-  assert tui.activity_glyph(0) == "◐"
-  assert tui.activity_glyph(3) == "◓"
-  assert tui.activity_glyph(6) == "◑"
-  assert tui.activity_glyph(9) == "◒"
-  assert tui.activity_glyph(12) == "◐"
+  assert layout.activity_glyph(0) == "◐"
+  assert layout.activity_glyph(3) == "◓"
+  assert layout.activity_glyph(6) == "◑"
+  assert layout.activity_glyph(9) == "◒"
+  assert layout.activity_glyph(12) == "◐"
 }
 
 pub fn cached_frame_reuses_the_exact_buffer_term_test() {
@@ -252,7 +264,7 @@ pub fn cached_frame_reuses_the_exact_buffer_term_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Ok(Position(2, 1)))
   let #(reused, cursor) =
-    tui.cached_frame(cached, screen, screen, fn() {
+    render.cached_frame(cached, screen, screen, fn() {
       panic as "a matching frame cache must not rebuild"
     })
 
@@ -269,7 +281,7 @@ pub fn cached_frame_keeps_a_deferred_frame_on_screen_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Error(Nil))
   let #(shown, _) =
-    tui.cached_frame(cached, screen, screen, fn() {
+    render.cached_frame(cached, screen, screen, fn() {
       panic as "a deferred frame must not be rebuilt by the view"
     })
   assert ffi_term.same_term(cached_buffer, shown)
@@ -313,9 +325,9 @@ pub fn paced_poll_timeout_shortens_the_wait_for_a_deferred_frame_test() {
 }
 
 pub fn panel_inner_trims_the_border_test() {
-  assert tui.panel_inner(geometry.rect_new(0, 1, 10, 5))
+  assert layout.panel_inner(geometry.rect_new(0, 1, 10, 5))
     == geometry.rect_new(1, 2, 8, 3)
-  assert tui.panel_inner(geometry.rect_new(0, 0, 1, 1))
+  assert layout.panel_inner(geometry.rect_new(0, 0, 1, 1))
     == geometry.rect_new(1, 1, 0, 0)
 }
 
@@ -339,7 +351,7 @@ pub fn panel_border_matches_the_block_it_replaces_test() {
       |> block.render(buffer.buffer_new(screen), area, _)
     let actual =
       buffer.buffer_new(screen)
-      |> tui.render_panel_border(area, title, theme.quiet)
+      |> render.render_panel_border(area, title, theme.quiet)
     assert buffer.to_ansi(actual) == buffer.to_ansi(expected)
   })
 }
@@ -351,7 +363,7 @@ pub fn panel_border_preserves_prepainted_interior_test() {
     buffer.buffer_new(screen)
     |> buffer.set_string(inside, "kept", theme.current_bold())
   let drawn =
-    tui.render_panel_border(painted, screen, " transcript ", theme.quiet)
+    render.render_panel_border(painted, screen, " transcript ", theme.quiet)
 
   // The border renderer must leave both the content and style untouched.
   assert buffer.get_cell(drawn, inside) == buffer.get_cell(painted, inside)
@@ -361,7 +373,7 @@ pub fn panel_border_draws_nothing_when_too_small_test() {
   let screen = geometry.rect_new(0, 0, 4, 4)
   let blank = buffer.buffer_new(screen)
   let drawn =
-    tui.render_panel_border(
+    render.render_panel_border(
       blank,
       geometry.rect_new(0, 0, 1, 3),
       "t",
@@ -376,9 +388,12 @@ pub fn cached_frame_rebuilds_for_resize_test() {
   let cached_buffer = buffer.buffer_new(before)
   let replacement = buffer.buffer_new(after)
   let #(rebuilt, cursor) =
-    tui.cached_frame(#(cached_buffer, Ok(Position(1, 1))), before, after, fn() {
-      #(replacement, Ok(Position(1, 1)))
-    })
+    render.cached_frame(
+      #(cached_buffer, Ok(Position(1, 1))),
+      before,
+      after,
+      fn() { #(replacement, Ok(Position(1, 1))) },
+    )
 
   assert ffi_term.same_term(replacement, rebuilt)
   assert cursor == Ok(Position(1, 1))
@@ -426,8 +441,8 @@ pub fn slash_command_palette_filters_and_completes_test() {
   assert list.map(command.suggestions("/effort hi"), fn(s) { s.command })
     == ["/effort high"]
   assert command.suggestions("/effort nope") == []
-  assert tui.command_palette_escape(keys.Escape)
-  assert !tui.command_palette_escape(keys.Char("x"))
+  assert interaction.command_palette_escape(keys.Escape)
+  assert !interaction.command_palette_escape(keys.Char("x"))
 }
 
 pub fn models_test() {
@@ -860,22 +875,22 @@ fn symbol_row(
 }
 
 pub fn transcript_scroll_clamps_at_the_live_tail_test() {
-  assert tui.scroll_offset(12, True, 3) == 15
-  assert tui.scroll_offset(12, False, 3) == 9
-  assert tui.scroll_offset(2, False, 3) == 0
+  assert interaction.scroll_offset(12, True, 3) == 15
+  assert interaction.scroll_offset(12, False, 3) == 9
+  assert interaction.scroll_offset(2, False, 3) == 0
 }
 
 pub fn transcript_scroll_clamps_at_the_oldest_viewport_test() {
-  assert tui.bounded_scroll_offset(80, 50, 20) == 30
-  assert tui.bounded_scroll_offset(3, 10, 20) == 0
-  assert tui.viewport_height_changed(18, 21)
-  assert !tui.viewport_height_changed(21, 21)
+  assert projection.bounded_scroll_offset(80, 50, 20) == 30
+  assert projection.bounded_scroll_offset(3, 10, 20) == 0
+  assert projection.viewport_height_changed(18, 21)
+  assert !projection.viewport_height_changed(21, 21)
 }
 
 pub fn streaming_output_preserves_the_scrollback_anchor_test() {
-  assert tui.anchored_scroll_offset(0, 20, 23) == 0
+  assert projection.anchored_scroll_offset(0, 20, 23) == 0
     as "a reader at the tail keeps following it"
-  assert tui.anchored_scroll_offset(8, 20, 23) == 11
+  assert projection.anchored_scroll_offset(8, 20, 23) == 11
     as "rows arriving below the reader move the tail-relative offset"
 }
 
@@ -887,9 +902,9 @@ pub fn streaming_output_preserves_the_scrollback_anchor_test() {
 /// it; the second case is the one that made scrollback unusable during a
 /// running turn.
 pub fn shrinking_the_live_tail_holds_the_scrollback_anchor_test() {
-  assert tui.anchored_scroll_offset(8, 20, 17) == 8
+  assert projection.anchored_scroll_offset(8, 20, 17) == 8
     as "a deep offset is unmoved by rows retiring below it"
-  assert tui.anchored_scroll_offset(2, 20, 17) == 2
+  assert projection.anchored_scroll_offset(2, 20, 17) == 2
     as "a shallow offset is held rather than snapped to the live tail"
 }
 
@@ -905,17 +920,17 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
   let queued = tui.update(backend.KeyPress("enter"), live)
   assert string.contains(queued.notice, "prompt sent")
     as "enter sends a prompt, which the daemon holds until the run settles"
-  assert queued.queued == [tui.HeldPrompt("look at this too")]
+  assert queued.queued == [tui_model.HeldPrompt("look at this too")]
     as "the operator's line is echoed the moment it is submitted"
 
   let steered =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(..live, submission_mode: tui.SteerNow),
+      tui_model.Model(..live, submission_mode: tui_model.SteerNow),
     )
   assert string.contains(steered.notice, "steered")
     as "tab mode folds the draft into the run that is already going"
-  assert steered.queued == [tui.Interjection]
+  assert steered.queued == [tui_model.Interjection]
     as "a steer draws nothing but is still owed an entry of its own"
 }
 
@@ -929,15 +944,15 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
     tui.update(backend.KeyPress("enter"), live_model("look at this too"))
 
   let after_assistant =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       submitted,
       connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
     )
-  assert after_assistant.queued == [tui.HeldPrompt("look at this too")]
+  assert after_assistant.queued == [tui_model.HeldPrompt("look at this too")]
     as "the run's own output does not retire a prompt the daemon still holds"
 
   let after_user =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       after_assistant,
       connection.Incoming(gateway.user_entry("main", "look at this too", 5)),
     )
@@ -960,18 +975,18 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
   let steered =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(
+      tui_model.Model(
         ..submitted,
-        submission_mode: tui.SteerNow,
+        submission_mode: tui_model.SteerNow,
         input: text_area.state_from_string("actually try the other file"),
       ),
     )
   assert steered.queued
-    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    == [tui_model.Interjection, tui_model.HeldPrompt("look at this too")]
     as "premise: the steer commits before the prompt the daemon still holds"
 
   let after_steer_entry =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       steered,
       connection.Incoming(gateway.user_entry(
         "main",
@@ -979,11 +994,11 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
         5,
       )),
     )
-  assert after_steer_entry.queued == [tui.HeldPrompt("look at this too")]
+  assert after_steer_entry.queued == [tui_model.HeldPrompt("look at this too")]
     as "the steer's own entry retires the steer, not the prompt behind it"
 
   let after_prompt_entry =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       after_steer_entry,
       connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
     )
@@ -1006,26 +1021,26 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
   let steered =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(
+      tui_model.Model(
         ..submitted,
-        submission_mode: tui.SteerNow,
+        submission_mode: tui_model.SteerNow,
         input: text_area.state_from_string("actually try the other file"),
       ),
     )
   assert steered.queued
-    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    == [tui_model.Interjection, tui_model.HeldPrompt("look at this too")]
     as "premise: the steer is recorded ahead of the prompt still being held"
 
   let aborted =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       steered,
       session_channel.Acknowledged("abort", "accepted"),
     )
-  assert aborted.queued == [tui.HeldPrompt("look at this too")]
+  assert aborted.queued == [tui_model.HeldPrompt("look at this too")]
     as "the aborted steer commits no entry, so its record goes with the run"
 
   let drained =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       aborted,
       connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
     )
@@ -1042,13 +1057,13 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
 /// retirement rule exists to avoid.
 pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
   let stale =
-    tui.Model(
+    tui_model.Model(
       ..live_model(""),
-      queued: [tui.HeldPrompt("look at this too")],
-      awaiting_outcome: Some(tui.HeldPrompt("and one more thing")),
+      queued: [tui_model.HeldPrompt("look at this too")],
+      awaiting_outcome: Some(tui_model.HeldPrompt("and one more thing")),
     )
   let synchronized =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       stale,
       connection.Incoming(gateway.full_snapshot("demo")),
     )
@@ -1068,12 +1083,12 @@ pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
 /// conversation channel carries one mutation at a time.
 pub fn a_refused_prompt_retires_its_own_echo_test() {
   let submitted =
-    tui.Model(
+    tui_model.Model(
       ..live_model(""),
-      awaiting_outcome: Some(tui.HeldPrompt("a fifth one")),
+      awaiting_outcome: Some(tui_model.HeldPrompt("a fifth one")),
     )
   let refused =
-    tui.accept_connection_message(
+    inbound.accept_connection_message(
       submitted,
       connection.Incoming(gateway.server_error(
         "conflict",
@@ -1129,12 +1144,15 @@ pub fn a_queued_echo_renders_below_the_live_transcript_test() {
       inbox,
     )
   let assert Ok(run) =
-    tui.run_script(tui.Model(..quiet_model(inbox), peer: tui.Replaying), script)
+    tui.run_script(
+      tui_model.Model(..quiet_model(inbox), peer: tui_model.Replaying),
+      script,
+    )
     as "the scripted backend cannot refuse to start"
   let assert Ok(last) = list.last(run.frames)
     as "every run draws at least its initial frame"
 
-  assert run.final.queued == [tui.HeldPrompt("and one more thing")]
+  assert run.final.queued == [tui_model.HeldPrompt("and one more thing")]
     as "premise: the submission produced an echo to look for"
   let rows = string.split(frame.buffer_to_text(last), "\n")
   let assert Ok(answer_row) = row_containing(rows, "earlier answer")
@@ -1167,10 +1185,10 @@ fn row_containing(rows: List(String), needle: String) -> Result(Int, Nil) {
 // One attached-looking client whose active strand is mid-answer, with a
 // draft in the editor. `Replaying` performs the whole local half of a
 // submission and writes to no socket, which is the half these checks read.
-fn live_model(draft: String) -> tui.Model {
-  tui.Model(
+fn live_model(draft: String) -> tui_model.Model {
+  tui_model.Model(
     ..quiet_model(connection.new_inbox()),
-    peer: tui.Replaying,
+    peer: tui_model.Replaying,
     active_strand: "main",
     strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
     input: text_area.state_from_string(draft),
@@ -1180,18 +1198,18 @@ fn live_model(draft: String) -> tui.Model {
 pub fn prompt_history_restores_the_unsent_draft_test() {
   let history = ["newest", "older"]
   let #(index, draft, value) =
-    tui.history_selection(history, 0, "", "unsent draft", True)
+    submit.history_selection(history, 0, "", "unsent draft", True)
   assert #(index, draft, value) == #(1, "unsent draft", "newest")
 
   let #(index, draft, value) =
-    tui.history_selection(history, index, draft, value, True)
+    submit.history_selection(history, index, draft, value, True)
   assert #(index, draft, value) == #(2, "unsent draft", "older")
 
   let #(index, draft, value) =
-    tui.history_selection(history, index, draft, value, False)
+    submit.history_selection(history, index, draft, value, False)
   assert #(index, draft, value) == #(1, "unsent draft", "newest")
 
-  assert tui.history_selection(history, index, draft, value, False)
+  assert submit.history_selection(history, index, draft, value, False)
     == #(0, "unsent draft", "unsent draft")
 }
 
@@ -1332,7 +1350,7 @@ pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
   assert filename == "tui-golden-drop.png"
   assert mime_type == "image/png"
   assert byte_size == bit_array.byte_size(bytes)
-  let content = tui.image_prompt_content("inspect this", [image])
+  let content = submit.image_prompt_content("inspect this", [image])
   assert content
     == [
       message.UserText("inspect this", None),
@@ -1394,7 +1412,7 @@ pub fn image_attachment_summary_sanitizes_the_filename_test() {
 pub fn attachment_chips_stack_above_a_full_width_editor_test() {
   let area = geometry.rect_new(1, 10, 80, 4)
 
-  let #(no_chips, whole_area) = tui.input_layout(area, [])
+  let #(no_chips, whole_area) = layout.input_layout(area, [])
   assert no_chips == geometry.rect_zero()
     as "an unattached prompt draws no chip row"
   assert whole_area == area
@@ -1402,7 +1420,7 @@ pub fn attachment_chips_stack_above_a_full_width_editor_test() {
 
   let image = test_image("screenshot.png", 1000)
   let #(chips, editor) =
-    tui.input_layout(area, [composer.ImageAttachment(image)])
+    layout.input_layout(area, [composer.ImageAttachment(image)])
 
   assert chips == geometry.rect_new(1, 10, 80, 2)
     as "the image has a count row and a filename row"
@@ -1468,7 +1486,7 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   assert composer.drop_last(attachments) == [composer.ImageAttachment(first)]
   assert composer.summary(attachments)
     == Some("2 images · a.png image/png 1 B · b.jpg image/jpeg 1 B")
-  assert tui.image_prompt_content("", composer.images(attachments))
+  assert submit.image_prompt_content("", composer.images(attachments))
     == [
       message.UserImage("YQ==", "image/png"),
       message.UserImage("Yg==", "image/jpeg"),
@@ -1494,9 +1512,9 @@ fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
 /// writes nothing to a socket, which is exactly the half under test.
 pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
   let live =
-    tui.Model(
+    tui_model.Model(
       ..quiet_model(connection.new_inbox()),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       active_strand: "main",
       strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
       attachments: [composer.ImageAttachment(test_image("shot.png", 12))],
@@ -1510,7 +1528,7 @@ pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
   assert submitted.attachments == []
     as "a submitted image prompt clears the composer"
   assert !list.any(submitted.transcript, fn(line) {
-    line.speaker == tui.Failure
+    line.speaker == tui_model.Failure
   })
     as "no local refusal was written"
 }
@@ -1526,7 +1544,7 @@ pub fn code_mode_program_renders_as_gleam_test() {
       ),
     ])
 
-  assert tui.code_mode_program("code_mode", arguments, False)
+  assert transcript_lines.code_mode_program("code_mode", arguments, False)
     == Some(
       "```gleam\nimport cap/report\n\npub fn main() {\n  report.text(\"live\")\n}\n```",
     )
@@ -1536,10 +1554,10 @@ pub fn code_mode_program_preview_is_bounded_test() {
   let source = string.repeat("// preview row\n", 5) <> "// LINE_6\n// LINE_7"
   let arguments = json.Object([#("program", json.String(source))])
   let assert Some(collapsed) =
-    tui.code_mode_program("code_mode", arguments, False)
+    transcript_lines.code_mode_program("code_mode", arguments, False)
     as "A valid source field has a compact preview"
   let assert Some(expanded) =
-    tui.code_mode_program("code_mode", arguments, True)
+    transcript_lines.code_mode_program("code_mode", arguments, True)
     as "A valid source field can be expanded"
 
   assert string.contains(collapsed, "LINE_6")
@@ -1552,9 +1570,9 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
   let arguments =
     json.Object([#("command", json.String("gleam test --target erlang"))])
 
-  assert tui.tool_call_summary("bash", arguments, False)
+  assert transcript_lines.tool_call_summary("bash", arguments, False)
     == "Bash(gleam test --target erlang)"
-  assert tui.tool_call_summary("bash", arguments, True)
+  assert transcript_lines.tool_call_summary("bash", arguments, True)
     == "Bash($ gleam test --target erlang)"
 }
 
@@ -1563,7 +1581,7 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
 // `offset` has to be visible as an absence.
 pub fn fs_read_tool_call_shows_the_window_it_asked_for_test() {
   let window = fn(fields) {
-    tui.tool_call_summary("fs_read", json.Object(fields), False)
+    transcript_lines.tool_call_summary("fs_read", json.Object(fields), False)
   }
   let path = #("path", json.String("a/b.gleam"))
 
@@ -1578,7 +1596,7 @@ pub fn fs_read_tool_call_shows_the_window_it_asked_for_test() {
 
 // A write and an edit take no window, so their rows are unchanged.
 pub fn fs_edit_tool_call_shows_only_its_path_test() {
-  assert tui.tool_call_summary(
+  assert transcript_lines.tool_call_summary(
       "fs_edit",
       json.Object([
         #("path", json.String("a/b.gleam")),
@@ -1590,7 +1608,8 @@ pub fn fs_edit_tool_call_shows_only_its_path_test() {
 }
 
 pub fn live_tool_call_hides_partial_json_arguments_test() {
-  assert tui.live_tool_call_summary("bash") == "bash · preparing arguments…"
+  assert transcript_lines.live_tool_call_summary("bash")
+    == "bash · preparing arguments…"
 }
 
 pub fn markdown_diff_lines_have_distinct_styles_test() {
@@ -1624,7 +1643,8 @@ pub fn injected_agent_notes_are_recognized_as_machine_context_test() {
       origin: None,
     )
 
-  assert tui.agent_notes_payload(value) == Some("perf/cache = true")
+  assert transcript_lines.agent_notes_payload(value)
+    == Some("perf/cache = true")
 }
 
 pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
@@ -1635,13 +1655,13 @@ pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
       origin: None,
     )
 
-  assert tui.agent_notes_payload(value) == None
+  assert transcript_lines.agent_notes_payload(value) == None
 }
 
 pub fn long_prompt_wraps_without_changing_its_source_test() {
   let source = "check out the current diff and explain the remaining work"
   let state = text_area.state_from_string(source)
-  let view = tui.input_view_state(state, 12)
+  let view = layout.input_view_state(state, 12)
 
   assert text_area.value(state) == source
   assert view.lines
@@ -1658,7 +1678,7 @@ pub fn long_prompt_wraps_without_changing_its_source_test() {
 
 pub fn prompt_cursor_moves_to_the_next_visual_row_at_a_wrap_boundary_test() {
   let state = text_area.state_from_string("abcdefghijkl")
-  let view = tui.input_view_state(state, 12)
+  let view = layout.input_view_state(state, 12)
 
   assert view.lines == ["abcdefghijkl", ""]
   assert view.cursor_y == 1
@@ -1667,7 +1687,7 @@ pub fn prompt_cursor_moves_to_the_next_visual_row_at_a_wrap_boundary_test() {
 
 pub fn prompt_wrap_uses_terminal_cells_for_wide_graphemes_test() {
   let state = text_area.state_from_string("ab界cd")
-  let view = tui.input_view_state(state, 4)
+  let view = layout.input_view_state(state, 4)
 
   assert view.lines == ["ab界", "cd"]
   assert view.cursor_y == 1
@@ -1742,8 +1762,8 @@ pub fn a_delivered_message_reaches_the_model_test() {
 // A model with the demo scaffolding removed, so a frame shows only what the
 // script put there. The workspace is fixed rather than discovered: the footer
 // prints it, and the checkout path is not a property of the client.
-fn quiet_model(inbox: process.Subject(connection.Message)) -> tui.Model {
-  tui.Model(
+fn quiet_model(inbox: process.Subject(connection.Message)) -> tui_model.Model {
+  tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
     strands: [],
@@ -1844,9 +1864,9 @@ const transcript_origin = Position(1, 2)
 pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
-      tui.Line(tui.System, "gamma delta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
+      tui_model.Line(tui_model.System, "gamma delta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -1899,7 +1919,7 @@ pub fn assistant_rows_use_the_subtle_background_test() {
   let assert Ok(last) = list.last(run.frames)
   let rows = frame.buffer_to_lines(last)
   let assert Ok(answer_y) = row_containing(rows, "◆ opening paragraph")
-  let area = tui.hit_area(run.final, Position(2, 2))
+  let area = layout.hit_area(run.final, Position(2, 2))
 
   assert buffer.get_cell(last, Position(area.position.x, answer_y)).style.bg
     == theme.assistant_background
@@ -1921,7 +1941,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
   let rows = frame.buffer_to_lines(drawn)
   let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
-  let area = tui.hit_area(previewed.final, Position(2, 2))
+  let area = layout.hit_area(previewed.final, Position(2, 2))
   let last_x = area.position.x + 22
   let script =
     virtual_backend.script(
@@ -1944,7 +1964,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
   let assert Some(selected) = run.final.selection
   let assert Some(original) = run.final.selection_frame
   let copied =
-    tui.transcript_selection_text(
+    interaction.transcript_selection_text(
       original,
       selected,
       run.final.selection_gutters,
@@ -1968,8 +1988,8 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let rows = frame.buffer_to_lines(drawn)
   let assert Ok(first_y) = row_containing(rows, "◆ opening paragraph")
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
-  let area = tui.hit_area(previewed.final, Position(2, 2))
-  let assert Some(tui.FrameCache(selection_gutters:, ..)) =
+  let area = layout.hit_area(previewed.final, Position(2, 2))
+  let assert Some(tui_model.FrameCache(selection_gutters:, ..)) =
     previewed.final.frame_cache
     as "the painted frame owns its copy layout"
   let partial =
@@ -1978,7 +1998,11 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
 
   // This range begins after the speaker gutter, inside the code's authored
   // indentation. Its actual cached prefix must not trim any selected text.
-  assert tui.transcript_selection_text(drawn, partial, selection_gutters)
+  assert interaction.transcript_selection_text(
+      drawn,
+      partial,
+      selection_gutters,
+    )
     == selection.text(drawn, partial)
 
   let backwards =
@@ -2001,7 +2025,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let assert Ok(run) = tui.run_script(model, backwards)
   let assert Some(selected) = run.final.selection
   let assert Some(original) = run.final.selection_frame
-  assert tui.transcript_selection_text(
+  assert interaction.transcript_selection_text(
       original,
       selected,
       run.final.selection_gutters,
@@ -2011,10 +2035,10 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
 
 fn assistant_copy_model(
   inbox: process.Subject(connection.Message),
-) -> tui.Model {
-  tui.Model(..quiet_model(inbox), transcript: [
-    tui.Line(
-      tui.Assistant,
+) -> tui_model.Model {
+  tui_model.Model(..quiet_model(inbox), transcript: [
+    tui_model.Line(
+      tui_model.Assistant,
       "opening paragraph\n\nsecond paragraph\n\n```gleam\n  let answer = 1\n```",
     ),
   ])
@@ -2023,8 +2047,8 @@ fn assistant_copy_model(
 pub fn a_resize_drops_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2044,8 +2068,8 @@ pub fn a_resize_drops_a_settled_selection_test() {
 pub fn escape_clears_a_selection_without_interrupting_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2071,8 +2095,8 @@ pub fn escape_clears_a_selection_without_interrupting_test() {
 pub fn a_click_dismisses_a_settled_selection_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2092,13 +2116,13 @@ pub fn a_click_dismisses_a_settled_selection_test() {
 
 pub fn a_press_outside_every_panel_selects_across_the_screen_test() {
   let inbox = connection.new_inbox()
-  let model = tui.Model(..quiet_model(inbox), width: 60, height: 12)
+  let model = tui_model.Model(..quiet_model(inbox), width: 60, height: 12)
   let screen = geometry.rect_new(0, 0, 60, 12)
 
   // The header row belongs to no panel; a transcript cell belongs to the
   // transcript's inner area, which excludes its border.
-  assert tui.hit_area(model, Position(5, 0)) == screen
-  let inner = tui.hit_area(model, transcript_origin)
+  assert layout.hit_area(model, Position(5, 0)) == screen
+  let inner = layout.hit_area(model, transcript_origin)
   assert inner != screen
   assert geometry.contains(inner, transcript_origin)
   assert !geometry.contains(inner, Position(0, 1))
@@ -2174,7 +2198,7 @@ pub fn usage_footer_snapshot_with_a_rate_test() {
   // The rate is the one footer field a clock produces, so it is set on the
   // model rather than raced for over the wire.
   let inbox = connection.new_inbox()
-  let timed = tui.Model(..quiet_model(inbox), output_rate_tps: Some(87))
+  let timed = tui_model.Model(..quiet_model(inbox), output_rate_tps: Some(87))
   snapshot_test.assert_snapshot(
     "usage-footer-with-rate",
     last_frame(timed, 96, 12, [
@@ -2369,7 +2393,7 @@ fn key(name: String) -> virtual_backend.Step {
 // Every snapshot ends the same way: run the script on a fixed screen and
 // take the frame the settling ticks flushed.
 fn last_frame(
-  model: tui.Model,
+  model: tui_model.Model,
   width: Int,
   height: Int,
   steps: List(virtual_backend.Step),
@@ -2388,9 +2412,9 @@ fn last_frame(
 pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(..quiet_model(inbox), transcript: [
-      tui.Line(tui.System, "alpha beta"),
-      tui.Line(tui.System, "gamma delta"),
+    tui_model.Model(..quiet_model(inbox), transcript: [
+      tui_model.Line(tui_model.System, "alpha beta"),
+      tui_model.Line(tui_model.System, "gamma delta"),
     ])
   let Position(x, y) = transcript_origin
   let script =
@@ -2451,14 +2475,14 @@ pub fn image_preview_lists_all_four_images_test() {
       "4. four-long-name.png image/png 10 B",
     ]
   let #(images, editor) =
-    tui.input_layout(geometry.rect_new(0, 0, 30, 8), attachments)
+    layout.input_layout(geometry.rect_new(0, 0, 30, 8), attachments)
   assert images.size.height == 5
   assert editor.size.height == 3
   assert editor.size.width == 30
 
   // A short terminal must still leave a row for editing the prompt.
   let #(short_images, short_editor) =
-    tui.input_layout(geometry.rect_new(0, 0, 30, 2), attachments)
+    layout.input_layout(geometry.rect_new(0, 0, 30, 2), attachments)
   assert short_images.size.height == 1
   assert short_editor.size.height == 1
 }
@@ -2466,7 +2490,7 @@ pub fn image_preview_lists_all_four_images_test() {
 /// The complete frame, not only the summary helper, must show the fourth drop.
 pub fn image_preview_renders_fourth_image_and_keeps_prompt_visible_test() {
   let model =
-    tui.Model(
+    tui_model.Model(
       ..quiet_model(connection.new_inbox()),
       attachments: list.map(
         ["one.png", "two.png", "three.png", "four.png"],
@@ -2474,7 +2498,7 @@ pub fn image_preview_renders_fourth_image_and_keeps_prompt_visible_test() {
       ),
       input: text_area.state_from_string("review these screenshots"),
     )
-  let #(drawn, _) = tui.view(model, geometry.rect_new(0, 0, 50, 24))
+  let #(drawn, _) = render.view(model, geometry.rect_new(0, 0, 50, 24))
   let shown = frame.buffer_to_text(drawn)
   assert string.contains(shown, "4/4 images attached")
   assert string.contains(shown, "1. one.png")

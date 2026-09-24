@@ -21,6 +21,7 @@ import tui/workspace
 
 import gleam/bit_array
 import gleam/string
+import tui/model as tui_model
 
 /// The one metadata fragment a minimal transfer carries.
 ///
@@ -249,7 +250,7 @@ pub fn transfer_with_metadata(
 /// ```gleam
 /// let model = pushed.attached()
 /// ```
-pub fn attached() -> tui.Model {
+pub fn attached() -> tui_model.Model {
   // The trace sink discards: a subject here would deliver the lane's own
   // events into the holder's mailbox, and a fixture that measures a mailbox
   // must not be the thing filling it.
@@ -265,9 +266,9 @@ pub fn attached() -> tui.Model {
       let #(channel, updates) = session_channel.receive(acc.0, frame)
       #(channel, list.append(acc.1, updates))
     })
-  tui.Model(
+  tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
-    peer: tui.Replaying,
+    peer: tui_model.Replaying,
     channel: Some(ready),
   )
 }

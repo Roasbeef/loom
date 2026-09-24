@@ -5,6 +5,8 @@ import gleam/option.{None, Some}
 import tui
 import tui/connection
 import tui/daemon/protocol
+import tui/model as tui_model
+import tui/session_control
 import tui/session_selector
 import tui/workspace
 import weft
@@ -13,7 +15,7 @@ pub fn rename_without_attachment_reports_no_session_test() {
   let model =
     tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
   let model =
-    tui.Model(
+    tui_model.Model(
       ..model,
       session: "",
       input: textarea.state_from_string("/rename review auth"),
@@ -31,32 +33,32 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
     protocol.Session("selected", "/work/loom", "review auth", 1, protocol.Saved)
   let page = protocol.Page(9, [row], None)
   let pending =
-    tui.Model(
+    tui_model.Model(
       ..model,
       session: row.session_id,
-      control_request: Some(tui.ControlRequest(
+      control_request: Some(tui_model.ControlRequest(
         weft.cancel_signal(),
         replies,
         None,
       )),
     )
   let received =
-    tui.accept_control_event(
+    session_control.accept_control_event(
       pending,
-      tui.ControlEvent(
+      tui_model.ControlEvent(
         replies,
         weft.PulledOutcome(weft.Completed(
           0,
-          tui.PageLoaded(page, row.session_id, session_selector.Active),
+          tui_model.PageLoaded(page, row.session_id, session_selector.Active),
         )),
       ),
     )
   let after =
-    tui.accept_control_event(
+    session_control.accept_control_event(
       received,
-      tui.ControlEvent(replies, weft.AllDelivered),
+      tui_model.ControlEvent(replies, weft.AllDelivered),
     )
-  let assert tui.DaemonSelector(selector) = after.overlay
+  let assert tui_model.DaemonSelector(selector) = after.overlay
     as "the refreshed page is rendered only after the worker drains"
   assert selector.page == page
   assert selector.current == row.session_id

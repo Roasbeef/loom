@@ -1146,6 +1146,7 @@ fn none_agency() -> agent.Agency {
     send: fn(_caller, _to, _text, _within_ms) { Error(agent.AgencyUnavailable) },
     note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
     notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 30_000,
     model_names: [],

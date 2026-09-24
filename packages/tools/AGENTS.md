@@ -147,8 +147,9 @@ was asked.
   for `code_mode`, whose clearances happen inside the code-mode pipeline
   and so never pass `clear_call` (#97).
 - `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
-  `note`, `notes`, `roster`, plus the published `max_wait_ms` the wait
-  tool's schema states and `model_names` advertised by the spawn schema.
+  `note`, `notes`, `todos`, `roster`, plus the published `max_wait_ms`
+  the wait tool's schema states and `model_names` advertised by the spawn
+  schema.
   Every closure takes a `Caller` first and is judged against it.
 - `tools/agent.{Caller, Handle, SpawnRequest, Provenance, Spawned,
   Waited, Outcome, Peer, Relation, Delivery, Refusal}` — the vocabulary
@@ -180,6 +181,21 @@ was asked.
   source_index}` has nowhere to put. `minting_step` is the step a spawn
   is *recorded* under and reconciled against, and `call_site_digest` is
   the constant-width, model-proof half of a minted child's name.
+- `tools/todos.{Op, Target, tool, step, apply, settle, resolve, parse,
+  render, tool_name, note_key}` — the `todo` tool, registered by
+  `agent.tools` beside the `agent_*` family because its board is the
+  caller's own blackboard cell, `agent/{strand}/todo`. One op per call:
+  `init`, `start`, `done`, `drop`, `block`, `unblock`, `append`,
+  `remove`, `view`. `apply` is the whole semantics, pure: the op, then
+  `settle` (one active task; the first pending task is promoted when none
+  is active; a blocked task never is), then `todo_list.validate`. Tasks are
+  named by their text, matched exactly and then by a unique case- and
+  spacing-insensitive match. The shell hands `step` to `Agency.todos`,
+  which runs it under a compare-and-set on the cell's sequence and retries
+  on a conflict, so the tool is `Concurrent` without losing a sibling's
+  update, and `Safe` because every op is written to its postcondition
+  (`append` skips present items, `remove` of an absent task succeeds).
+  `details` carries `{op, todo}` with the landed board.
 - `tools/codemode.CodeMode` — the code-mode seam: `execute`, plus the
   published `seams`, `default_within_ms` and `max_within_ms` the tool's
   description and schema state, so the sentence the model is charged for

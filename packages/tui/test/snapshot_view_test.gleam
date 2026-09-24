@@ -13,9 +13,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
-import tui
 import tui/approval
 import tui/approval_panel
+import tui/inbound
+import tui/model as tui_model
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -318,7 +319,7 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
   // Reconciliation must retire the inactive strand and only the completed
   // call on main, leaving a live peer in the same operation untouched.
   let tail = fn(strand, call_id, source_index) {
-    tui.ToolTail(
+    tui_model.ToolTail(
       strand:,
       operation: "shared-operation",
       step: "step-1",
@@ -330,12 +331,12 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
     )
   }
   let model =
-    tui.Model(..pushed.attached(), tool_tails: [
+    tui_model.Model(..pushed.attached(), tool_tails: [
       tail("main", "call-main", 0),
       tail("main", "call-running", 1),
       tail("sub:1", "call-peer", 0),
     ])
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       cut(metadata(cells), window),
       view,
       session_channel.Refreshed,
@@ -380,12 +381,12 @@ fn pending_permission_cut(seq: Int) -> snapshot.Captured {
 }
 
 fn capture_permission(
-  model: tui.Model,
+  model: tui_model.Model,
   captured: snapshot.Captured,
-) -> tui.Model {
+) -> tui_model.Model {
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the approval metadata must decode"
-  tui.apply_channel_update(
+  inbound.apply_channel_update(
     model,
     session_channel.Captured(captured, view, session_channel.Refreshed),
   )
@@ -394,13 +395,13 @@ fn capture_permission(
 pub fn pending_permission_automatically_opens_a_dialog_with_captured_consent_test() {
   let first = pending_permission_cut(11)
   let opened = capture_permission(pushed.attached(), first)
-  let assert tui.ApprovalInspector(panel) = opened.overlay
+  let assert tui_model.ApprovalInspector(panel) = opened.overlay
     as "a new pending request must present decision options automatically"
   let assert approval_panel.Continue(_) =
     approval_panel.update(keys.Enter, panel)
     as "an Enter queued before the dialog appeared cannot approve anything"
   let refreshed = capture_permission(opened, pending_permission_cut(12))
-  let assert tui.ApprovalInspector(still_captured) = refreshed.overlay
+  let assert tui_model.ApprovalInspector(still_captured) = refreshed.overlay
     as "a metadata refresh must not replace the visible question"
   let assert approval_panel.Continue(selected) =
     approval_panel.update(keys.Right, still_captured)
@@ -421,11 +422,11 @@ pub fn pending_permission_automatically_opens_a_dialog_with_captured_consent_tes
 pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {
   let first = pending_permission_cut(21)
   let opened = capture_permission(pushed.attached(), first)
-  let deferred = tui.Model(..opened, overlay: tui.NoOverlay)
+  let deferred = tui_model.Model(..opened, overlay: tui_model.NoOverlay)
   let same = capture_permission(deferred, first)
-  assert same.overlay == tui.NoOverlay
+  assert same.overlay == tui_model.NoOverlay
   let reopened = capture_permission(same, pending_permission_cut(22))
-  let assert tui.ApprovalInspector(_) = reopened.overlay
+  let assert tui_model.ApprovalInspector(_) = reopened.overlay
     as "the same request ID at a new sequence is a new question"
   let observer_cut =
     snapshot.Captured(
@@ -436,32 +437,32 @@ pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {
       ),
     )
   assert capture_permission(pushed.attached(), observer_cut).overlay
-    == tui.NoOverlay
+    == tui_model.NoOverlay
     as "read-only observers do not receive decision controls automatically"
 }
 
 pub fn late_lookup_preserves_the_open_question_and_selection_test() {
   let opened = capture_permission(pushed.attached(), pending_permission_cut(31))
-  let assert tui.ApprovalInspector(panel) = opened.overlay
+  let assert tui_model.ApprovalInspector(panel) = opened.overlay
     as "the captured question must be visible"
   let assert approval_panel.Continue(selected) =
     approval_panel.update(keys.Right, panel)
     as "the operator selects allow once before the lookup finishes"
   let looking_up =
-    tui.Model(
+    tui_model.Model(
       ..opened,
-      overlay: tui.ApprovalInspector(selected),
+      overlay: tui_model.ApprovalInspector(selected),
       inspecting_approval: Some("permission"),
     )
   let newer = capture_permission(pushed.attached(), pending_permission_cut(32))
   let updated =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       looking_up,
       session_channel.LookedUp(newer.approvals, []),
     )
   assert updated.overlay == looking_up.overlay
   assert updated.inspecting_approval == None
-  let assert tui.ApprovalInspector(preserved) = updated.overlay
+  let assert tui_model.ApprovalInspector(preserved) = updated.overlay
     as "the lookup cannot replace the question under review"
   let assert approval_panel.Decide(review, approval_panel.AllowOnce) =
     approval_panel.update(keys.Enter, preserved)
@@ -475,13 +476,13 @@ pub fn metadata_refresh_preserves_the_footer_notice_test() {
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the empty observation must decode"
   let initial =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       pushed.attached(),
       session_channel.Captured(captured, view, session_channel.Refreshed),
     )
-  let prior = tui.Model(..initial, notice: "streaming thinking")
+  let prior = tui_model.Model(..initial, notice: "streaming thinking")
   let refreshed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       prior,
       session_channel.Captured(captured, view, session_channel.Refreshed),
     )

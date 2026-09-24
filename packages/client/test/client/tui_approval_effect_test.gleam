@@ -46,8 +46,8 @@ import support/internal/ffi_ws
 import support/provider as provider_test
 import support/tui_driver
 import telemetry/log
-import tui
 import tui/approval
+import tui/model as tui_model
 import weft
 import weft/poll
 
@@ -469,7 +469,7 @@ fn exercise(
   let inspected =
     tui_v2_test.await(terminal.data, fn(sample) {
       case sample.model.overlay {
-        tui.ApprovalInspector(_) ->
+        tui_model.ApprovalInspector(_) ->
           list.any(sample.model.approvals, fn(record) {
             record.id == pending.id && record.origin == Some(author)
           })
@@ -483,7 +483,7 @@ fn exercise(
   // Exact-action inspection is modal and covers the transcript summaries.
   // Close that panel before asking whether the winning author is painted.
   let closed = tui_driver.play(terminal.data, [backend.KeyPress("esc")])
-  assert closed.model.overlay == tui.NoOverlay
+  assert closed.model.overlay == tui_model.NoOverlay
     as "Esc dismissed the inspector rather than being dropped before it opened"
 
   // Completion and live-job observations can change the layout after a scroll

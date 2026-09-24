@@ -1,0 +1,314 @@
+//// The todo list in the whole frame. A settled `todo` call pins its board
+//// between the conversation and the composer and stays one compact row in
+//// the transcript; a failed call leaves the pinned board alone; another
+//// session does not inherit it.
+
+import core/codec
+import core/entry
+import core/json
+import core/message
+import core/todo_list.{Active, Board, Done, Pending, Phase, Task}
+import etui/backend
+import etui/geometry
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
+import tui
+import tui/connection
+import tui/frame
+import tui/inbound
+import tui/model as tui_model
+import tui/notes_view
+import tui/protocol
+import tui/render
+import tui/session_channel
+import tui/surfaces
+import tui/workspace
+import tui_test/gateway
+
+fn board() -> todo_list.Board {
+  Board([
+    Phase("Extract", [Task("Extract test units", Done)]),
+    Phase("Judge", [
+      Task("Pilot the questions", Done),
+      Task("Judge every unit", Active),
+      Task("Calibrate on the slow model", Pending),
+    ]),
+  ])
+}
+
+fn arguments() -> json.JsonValue {
+  json.Object([
+    #("op", json.String("done")),
+    #("task", json.String("Pilot the questions")),
+  ])
+}
+
+fn call(id: String, seq: Int) {
+  let assert Ok(protocol.EntryAdded(record)) =
+    protocol.decode_event(gateway.tool_call_entry("main", "todo", id, seq))
+    as "the fixture is a valid tool-call entry"
+  let assert entry.MessageEntry(message: body, ..) as placed = record.entry
+    as "the fixture carries a message"
+  let assert message.AssistantMessage(..) = body
+    as "the fixture carries an assistant message"
+  entry.MessageEntry(
+    ..placed,
+    message: message.AssistantMessage(..body, content: [
+      message.AssistantToolCall(message.ToolCall(
+        id,
+        "todo",
+        arguments(),
+        None,
+        None,
+      )),
+    ]),
+  )
+}
+
+fn outcome(id: String, seq: Int, is_error: Bool, carried: todo_list.Board) {
+  let assert Ok(protocol.EntryAdded(record)) =
+    protocol.decode_event(gateway.tool_call_entry("main", "bash", "other", seq))
+    as "the fixture supplies an entry envelope"
+  let assert entry.MessageEntry(..) as placed = record.entry
+    as "the fixture carries a message"
+  entry.MessageEntry(
+    ..placed,
+    message: message.ToolResultMessage(
+      tool_call_id: id,
+      tool_name: "todo",
+      content: [message.ToolResultText("2/4 closed", None)],
+      details: Some(
+        json.Object([
+          #("op", json.String("done")),
+          #("todo", todo_list.encode(carried)),
+        ]),
+      ),
+      usage: None,
+      added_tool_names: None,
+      is_error:,
+      timestamp: 0,
+    ),
+  )
+}
+
+fn received(model, value) {
+  inbound.accept_connection_message(
+    model,
+    connection.Incoming(
+      json.to_string(
+        json.Object([
+          #("v", json.Int(1)),
+          #("event", json.String("entry")),
+          #(
+            "body",
+            json.Object([
+              #("strand", json.String("main")),
+              #("entry", codec.encode_entry(value)),
+            ]),
+          ),
+        ]),
+      ),
+    ),
+  )
+}
+
+fn text(model) {
+  let model = tui.update(backend.Resize(100, 30), model)
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 100, 30))
+  #(model, frame.buffer_to_text(buffer))
+}
+
+fn rows(text: String) -> List(String) {
+  string.split(text, "\n")
+}
+
+fn index_of(rows: List(String), needle: String) -> Int {
+  let assert Ok(#(index, _)) =
+    rows
+    |> list.index_map(fn(row, index) { #(index, row) })
+    |> list.find(fn(entry) { string.contains(entry.1, needle) })
+    as "the frame holds the row"
+  index
+}
+
+fn base() {
+  tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+}
+
+pub fn a_settled_call_pins_its_board_above_the_composer_test() {
+  let #(_, frame) =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+    |> text
+  let lines = rows(frame)
+
+  // The panel carries the focused phase, its tasks, and the folded phase,
+  // and it sits below the transcript row for the call that produced it.
+  let header = index_of(lines, "TODO  Judge 1/3")
+  assert index_of(lines, "✓ todo · done \"Pilot the questions\" · 2/4 done")
+    < header
+  assert index_of(lines, "▸ Judge every unit") == header + 2
+  assert index_of(lines, "○ Calibrate on the slow model") == header + 3
+  assert index_of(lines, "Extract ✓") == header + 4
+  assert string.contains(frame, "2/4 done")
+}
+
+// The pending row is one row, and so is the settled one: the call sits on
+// the same row before and after it settles, and nothing but blank space
+// lies between it and the panel, so the full board never enters the
+// transcript.
+pub fn the_transcript_row_stays_one_row_test() {
+  let #(_, pending) = base() |> received(call("t1", 1)) |> text
+  let #(_, settled) =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+    |> text
+  let pending = rows(pending)
+  let settled = rows(settled)
+  let row = index_of(settled, "✓ todo · done")
+  assert index_of(pending, "todo · done") == row
+  let header = index_of(settled, "TODO  Judge 1/3")
+  assert header > row
+  assert settled
+    |> list.drop(row + 1)
+    |> list.take(header - row - 1)
+    |> list.all(fn(line) { string.trim(line) == "" })
+}
+
+pub fn a_failed_call_leaves_the_pinned_board_test() {
+  let later =
+    Board([Phase("Other", [Task("A board the failure must not show", Active)])])
+  let #(_, frame) =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+    |> received(call("t2", 3))
+    |> received(outcome("t2", 4, True, later))
+    |> text
+  assert string.contains(frame, "TODO  Judge 1/3")
+  assert !string.contains(frame, "A board the failure must not show")
+}
+
+pub fn no_board_draws_no_panel_test() {
+  let #(_, frame) = base() |> text
+  assert !string.contains(frame, "TODO ")
+}
+
+fn seed_reply(model, strand: String, carried: todo_list.Board) {
+  inbound.apply_channel_update(
+    model,
+    session_channel.Auxiliary(
+      protocol.NotesSnapshot(
+        notes_view.Board(strand:, as_of: 40, total: 1, notes: [
+          notes_view.Note(
+            key: "todo",
+            seq: 40,
+            text: json.to_string(todo_list.encode(carried)),
+            extent: notes_view.Complete,
+          ),
+        ]),
+      ),
+    ),
+  )
+}
+
+// After reattaching to a long session the capture may not reach the last
+// todo call; the notes read the terminal sends then fills the panel, and
+// says nothing in the footer since no notes surface is open.
+pub fn a_notes_read_seeds_the_panel_quietly_test() {
+  let before = base()
+  let seeded = seed_reply(before, "main", board())
+  let #(_, frame) = seeded |> text
+  assert string.contains(frame, "TODO  Judge 1/3")
+  assert seeded.notice == before.notice
+}
+
+pub fn a_seed_never_replaces_the_transcript_board_test() {
+  let stale = Board([Phase("Stale", [Task("An older stored board", Active)])])
+  let #(_, frame) =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+    |> seed_reply("main", stale)
+    |> text
+  assert string.contains(frame, "TODO  Judge 1/3")
+  assert !string.contains(frame, "An older stored board")
+}
+
+// The operator's own notes read owns the lane first; its reply seeds the
+// panel just as well, so the terminal's read waits rather than racing it.
+// A board that arrived some other way leaves the seed nothing to find, so
+// it is dropped rather than sent.
+pub fn a_seed_for_a_known_board_is_dropped_test() {
+  let known =
+    base()
+    |> received(call("t1", 1))
+    |> received(outcome("t1", 2, False, board()))
+  let waiting = tui_model.Model(..known, todo_seed: Some("main"))
+  assert surfaces.service_todo_seed(waiting).todo_seed == None
+}
+
+pub fn the_seed_waits_behind_an_operator_notes_read_test() {
+  let waiting =
+    tui_model.Model(
+      ..base(),
+      todo_seed: Some("main"),
+      notes_requested: Some("main"),
+    )
+  assert surfaces.service_todo_seed(waiting) == waiting
+}
+
+// A response carrying prose beside the call is a narrative, drawn message
+// by message; its todo result is one progress row there too, not the
+// checklist text flattened onto one line.
+pub fn a_narrated_call_shows_progress_not_the_checklist_test() {
+  let assert entry.MessageEntry(message: body, ..) as placed = call("t1", 1)
+    as "the call has an entry envelope"
+  let assert message.AssistantMessage(content:, ..) = body
+    as "the call is an assistant message"
+  let narrated =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(..body, content: [
+        message.AssistantText("Tests pass; marking the pilot done.", None),
+        ..content
+      ]),
+    )
+  let assert entry.MessageEntry(..) as settled =
+    outcome("t1", 2, False, board())
+    as "the result has an entry envelope"
+  let checklist =
+    entry.MessageEntry(
+      ..settled,
+      message: message.ToolResultMessage(
+        tool_call_id: "t1",
+        tool_name: "todo",
+        content: [
+          message.ToolResultText(
+            "2/4 closed; active: Judge every unit (Judge)\n## Extract 1/1\n[x] Extract test units",
+            None,
+          ),
+        ],
+        details: Some(
+          json.Object([
+            #("op", json.String("done")),
+            #("todo", todo_list.encode(board())),
+          ]),
+        ),
+        usage: None,
+        added_tool_names: None,
+        is_error: False,
+        timestamp: 0,
+      ),
+    )
+  let #(compact, frame) =
+    base() |> received(narrated) |> received(checklist) |> text
+  assert string.contains(frame, "todo · 2/4 done")
+  assert !string.contains(frame, "## Extract")
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> text
+  assert string.contains(expanded, "[x] Extract test units")
+}

@@ -32,10 +32,15 @@ import tui/connection
 import tui/focused_goal_panel
 import tui/frame
 import tui/goal_view
+import tui/inbound
+import tui/model as tui_model
 import tui/notes_view
 import tui/protocol.{type Strand, Strand}
+import tui/render
 import tui/reviewer_status
 import tui/session_channel
+import tui/surfaces
+import tui/transcript_lines
 import tui/workspace
 import tui_test/pushed
 
@@ -45,7 +50,7 @@ fn model() {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 
@@ -56,8 +61,8 @@ fn roster(main: Option(String), advisor: Option(String)) -> List(Strand) {
   ]
 }
 
-fn with_roster(strands: List(Strand)) -> tui.Model {
-  tui.Model(..model(), strands:)
+fn with_roster(strands: List(Strand)) -> tui_model.Model {
+  tui_model.Model(..model(), strands:)
 }
 
 // One `goal_get` board, as `client/goal_pending` renders a pinned goal.
@@ -356,14 +361,14 @@ pub fn the_palette_offers_goal_and_its_words_test() {
 /// typed space keeps the subcommand palette and its argument completion.
 pub fn the_palette_enter_path_opens_bare_goal_and_keeps_subcommands_test() {
   let board = pinned(goal_view.Paused(by: goal_view.ByOperator))
-  let base = tui.Model(..model(), goal: Some(board))
+  let base = tui_model.Model(..model(), goal: Some(board))
   let typed =
     ["/", "g", "o", "a", "l"]
     |> list.fold(base, fn(model, key) {
       tui.update(backend.KeyPress(key), model)
     })
   let opened = tui.update(backend.KeyPress("enter"), typed)
-  let assert tui.GoalInspector(panel) = opened.overlay
+  let assert tui_model.GoalInspector(panel) = opened.overlay
   assert focused_goal_panel.board(panel) == Some(board)
   assert text_area.value(opened.input) == ""
 
@@ -374,7 +379,7 @@ pub fn the_palette_enter_path_opens_bare_goal_and_keeps_subcommands_test() {
     })
     |> tui.update(backend.KeyPress("enter"), _)
   assert text_area.value(actions.input) == "/goal check "
-  assert actions.overlay == tui.NoOverlay
+  assert actions.overlay == tui_model.NoOverlay
 }
 
 /// `/help` documents the grammar it parses, including where the budget goes.
@@ -742,7 +747,7 @@ pub fn the_reviewer_note_is_drawn_when_present_and_sanitized_test() {
 /// it is context for the prompt about to be written.
 pub fn a_pinned_goal_is_drawn_beside_the_composer_test() {
   let observed =
-    tui.Model(
+    tui_model.Model(
       ..with_roster(roster(None, None)),
       goal: Some(pinned(goal_view.Active)),
     )
@@ -889,16 +894,16 @@ pub fn the_small_goal_card_pages_through_the_actual_viewport_test() {
 pub fn the_real_small_layout_starts_with_status_and_objective_test() {
   let board = pinned(goal_view.Active)
   let opened =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       goal: Some(board),
-      overlay: tui.GoalInspector(focused_goal_panel.new(
+      overlay: tui_model.GoalInspector(focused_goal_panel.new(
         Some(board),
         "Illustrative observation",
       )),
     )
   let resized = tui.update(backend.Resize(40, 12), opened)
-  let #(rendered, _) = tui.view(resized, geometry.rect_new(0, 0, 40, 12))
+  let #(rendered, _) = render.view(resized, geometry.rect_new(0, 0, 40, 12))
   let text = frame.buffer_to_text(rendered)
   assert string.contains(text, "active")
   assert string.contains(text, "get the branch green")
@@ -913,18 +918,18 @@ pub fn the_busy_small_layout_keeps_goal_content_and_editor_test() {
     reviewer_status.Row("sub:second", "op-2", "Review paging", "running", ""),
   ]
   let opened =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       input: text_area.state_from_string("draft remains editable"),
       goal: Some(board),
       reviewer_rows: reviewers,
-      overlay: tui.GoalInspector(focused_goal_panel.new(
+      overlay: tui_model.GoalInspector(focused_goal_panel.new(
         Some(board),
         "Illustrative observation",
       )),
     )
   let resized = tui.update(backend.Resize(40, 12), opened)
-  let #(rendered, _) = tui.view(resized, geometry.rect_new(0, 0, 40, 12))
+  let #(rendered, _) = render.view(resized, geometry.rect_new(0, 0, 40, 12))
   let text = frame.buffer_to_text(rendered)
   assert string.contains(text, "active")
   assert string.contains(text, "get the branch green")
@@ -945,15 +950,15 @@ pub fn pausing_from_the_goal_card_retains_the_composer_draft_test() {
       "Last server observation",
     )
   let opened =
-    tui.Model(
+    tui_model.Model(
       ..drafted,
       goal: Some(pinned(goal_view.Active)),
-      overlay: tui.GoalInspector(panel),
+      overlay: tui_model.GoalInspector(panel),
     )
   let sent = tui.update(backend.KeyPress("p"), opened)
   assert text_area.value(sent.input) == "draft"
   assert sent.goal_request != None
-  let assert tui.GoalInspector(_) = sent.overlay
+  let assert tui_model.GoalInspector(_) = sent.overlay
 }
 
 // --- the read edges ---------------------------------------------------------
@@ -965,19 +970,19 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
   let running = with_roster(roster(Some("assistant"), None))
   let reviewing = with_roster(roster(None, Some("assistant")))
 
-  assert tui.goal_action(running, idle) == tui.ReadGoal
-  assert tui.goal_action(reviewing, idle) == tui.ReadGoal
-  assert tui.goal_action(with_roster([]), idle) == tui.ReadGoal
-  assert tui.goal_action(idle, running) == tui.ReadGoal
+  assert surfaces.goal_action(running, idle) == surfaces.ReadGoal
+  assert surfaces.goal_action(reviewing, idle) == surfaces.ReadGoal
+  assert surfaces.goal_action(with_roster([]), idle) == surfaces.ReadGoal
+  assert surfaces.goal_action(idle, running) == surfaces.ReadGoal
 
   // A goal is pinned until the operator unpins it, so an unrelated
   // transition asks for nothing and nothing clears the board.
-  assert tui.goal_action(idle, idle) == tui.HoldGoal
-  assert tui.goal_action(running, running) == tui.HoldGoal
+  assert surfaces.goal_action(idle, idle) == surfaces.HoldGoal
+  assert surfaces.goal_action(running, running) == surfaces.HoldGoal
 
   // A different session owns a different goal even when both primaries run.
-  let other = tui.Model(..running, session: "other session")
-  assert tui.goal_action(running, other) == tui.ReadGoal
+  let other = tui_model.Model(..running, session: "other session")
+  assert surfaces.goal_action(running, other) == surfaces.ReadGoal
 }
 
 /// A lifecycle-driven goal read is background observation. Sending it must
@@ -985,17 +990,17 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
 /// an explicit `/goal` still reports its own send while awaiting the board.
 pub fn an_automatic_goal_read_preserves_the_footer_notice_test() {
   let base = pushed.attached()
-  let prior = tui.Model(..base, notice: "copied 2 lines")
+  let prior = tui_model.Model(..base, notice: "copied 2 lines")
   let automatic =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       prior,
       session_channel.Submission(session_channel.Sent("goal_get", 500)),
     )
   assert automatic.notice == prior.notice
 
   let explicit =
-    tui.apply_channel_update(
-      tui.Model(..prior, goal_report: tui.ReportGoal),
+    inbound.apply_channel_update(
+      tui_model.Model(..prior, goal_report: tui_model.ReportGoal),
       session_channel.Submission(session_channel.Sent("goal_get", 501)),
     )
   assert explicit.notice == "goal_get sent"
@@ -1063,7 +1068,7 @@ fn snapshot() -> json.JsonValue {
 // with the terminal's own bookkeeping pointing at it. `queue_owner` is the
 // empty string for a fixture that never adopted a cut, which is what
 // `goal_awaiting` has to match for a board to be accepted.
-fn outstanding(frame: String, name: String) -> #(tui.Model, Int) {
+fn outstanding(frame: String, name: String) -> #(tui_model.Model, Int) {
   let model = pushed.attached()
   let assert Some(channel) = model.channel as "fixture has a channel"
   let #(channel, disposition) = session_channel.submit(channel, frame)
@@ -1072,18 +1077,21 @@ fn outstanding(frame: String, name: String) -> #(tui.Model, Int) {
   assert sent == name
 
   #(
-    tui.Model(
+    tui_model.Model(
       ..model,
       channel: Some(channel),
       goal_awaiting: Some(""),
       goal_request: Some(id),
-      goal_report: tui.ReportGoal,
+      goal_report: tui_model.ReportGoal,
     ),
     id,
   )
 }
 
-fn deliver(model: tui.Model, message: connection.Message) -> tui.Model {
+fn deliver(
+  model: tui_model.Model,
+  message: connection.Message,
+) -> tui_model.Model {
   process.send(model.inbox, message)
   tui.update(backend.Tick, model)
 }
@@ -1095,9 +1103,9 @@ fn deliver(model: tui.Model, message: connection.Message) -> tui.Model {
 pub fn the_operators_question_is_answered_in_the_transcript_test() {
   let #(model, id) = outstanding(protocol.goal_get(99), "goal_get")
   let model =
-    tui.Model(
+    tui_model.Model(
       ..model,
-      overlay: tui.GoalInspector(focused_goal_panel.new(
+      overlay: tui_model.GoalInspector(focused_goal_panel.new(
         None,
         "Reading current goal",
       )),
@@ -1110,9 +1118,9 @@ pub fn the_operators_question_is_answered_in_the_transcript_test() {
   assert string.contains(text, "active")
   assert string.contains(text, "51200 of 400000 tokens")
   assert string.contains(text, "goal active")
-  let assert tui.GoalInspector(panel) = answered.overlay
+  let assert tui_model.GoalInspector(panel) = answered.overlay
   assert focused_goal_panel.board(panel) == answered.goal
-  assert answered.goal_report == tui.HoldGoalReport
+  assert answered.goal_report == tui_model.HoldGoalReport
     as "one question is answered once"
 }
 
@@ -1149,9 +1157,9 @@ pub fn an_older_daemon_refusing_the_read_is_worded_in_the_transcript_test() {
 pub fn a_mutation_is_confirmed_only_once_it_commits_test() {
   let #(sent, id) = outstanding(protocol.goal_clear(99), "goal_clear")
   let waiting =
-    tui.Model(
+    tui_model.Model(
       ..sent,
-      goal_report: tui.ConfirmGoal(line: "the session goal is cleared"),
+      goal_report: tui_model.ConfirmGoal(line: "the session goal is cleared"),
     )
 
   assert !string.contains(painted(waiting), "the session goal is cleared")
@@ -1159,7 +1167,7 @@ pub fn a_mutation_is_confirmed_only_once_it_commits_test() {
 
   let committed = deliver(waiting, pushed.reply(id, "snapshot", snapshot()))
   assert string.contains(painted(committed), "the session goal is cleared")
-  assert committed.goal_report == tui.HoldGoalReport
+  assert committed.goal_report == tui_model.HoldGoalReport
     as "one mutation is confirmed once"
 }
 
@@ -1167,9 +1175,9 @@ pub fn a_mutation_is_confirmed_only_once_it_commits_test() {
 pub fn a_refused_mutation_is_not_confirmed_test() {
   let #(sent, id) = outstanding(protocol.goal_pause(99), "goal_pause")
   let waiting =
-    tui.Model(
+    tui_model.Model(
       ..sent,
-      goal_report: tui.ConfirmGoal(line: "the session goal is held"),
+      goal_report: tui_model.ConfirmGoal(line: "the session goal is held"),
     )
 
   let refused =
@@ -1197,10 +1205,10 @@ pub fn a_refused_mutation_is_not_confirmed_test() {
 pub fn an_automatic_refresh_refused_draws_nothing_test() {
   let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
   let automatic =
-    tui.Model(
+    tui_model.Model(
       ..asked,
       goal: Some(pinned(goal_view.Active)),
-      goal_report: tui.HoldGoalReport,
+      goal_report: tui_model.HoldGoalReport,
     )
   let refused =
     deliver(
@@ -1245,18 +1253,20 @@ pub fn an_unsupported_goal_command_is_worded_test() {
 /// without recognition it would be drawn as though the operator had typed
 /// it. Recognized, it is the system voice.
 pub fn a_goal_continuation_draws_in_the_system_voice_test() {
-  let assert Some(payload) = tui.advisor_payload(continuation("keep going"))
+  let assert Some(payload) =
+    transcript_lines.advisor_payload(continuation("keep going"))
     as "both frame tokens are present"
-  assert payload == tui.Continuation("keep going")
+  assert payload == transcript_lines.Continuation("keep going")
 
-  let assert [line] = tui.advisor_lines(payload, notes_view.Excerpt)
-  assert line.speaker == tui.System
+  let assert [line] =
+    transcript_lines.advisor_lines(payload, notes_view.Excerpt)
+  assert line.speaker == tui_model.System
   assert string.contains(line.text, "goal continuation")
 
-  assert tui.advisor_lines(payload, notes_view.Complete)
+  assert transcript_lines.advisor_lines(payload, notes_view.Complete)
     == [
-      tui.Line(tui.System, "goal continuation"),
-      tui.Line(tui.ToolDetail, "keep going"),
+      tui_model.Line(tui_model.System, "goal continuation"),
+      tui_model.Line(tui_model.ToolDetail, "keep going"),
     ]
 }
 
@@ -1264,16 +1274,16 @@ pub fn a_goal_continuation_draws_in_the_system_voice_test() {
 /// header must not be able to promote its output into the system voice, and
 /// an operator pasting one back to ask about it keeps their own voice.
 pub fn a_quoted_continuation_header_is_not_a_frame_test() {
-  assert tui.advisor_payload(user_message(
-      tui.continuation_header <> "\nwhy did this fire?",
+  assert transcript_lines.advisor_payload(user_message(
+      transcript_lines.continuation_header <> "\nwhy did this fire?",
     ))
     == None
-  assert tui.advisor_payload(user_message(
-      "what does this mean\n" <> tui.continuation_header,
+  assert transcript_lines.advisor_payload(user_message(
+      "what does this mean\n" <> transcript_lines.continuation_header,
     ))
     == None
-  assert tui.advisor_payload(user_message(
-      "keep going\n" <> tui.continuation_footer,
+  assert transcript_lines.advisor_payload(user_message(
+      "keep going\n" <> transcript_lines.continuation_footer,
     ))
     == None
 }
@@ -1284,33 +1294,35 @@ pub fn a_quoted_continuation_header_is_not_a_frame_test() {
 pub fn the_goal_feed_and_the_wrap_up_are_recognized_test() {
   let feed =
     user_message(
-      tui.goal_feed_header
+      transcript_lines.goal_feed_header
       <> "\nObjective: get the branch green\n"
-      <> tui.goal_feed_footer,
+      <> transcript_lines.goal_feed_footer,
     )
-  let assert Some(tui.GoalFeed(body)) = tui.advisor_payload(feed)
+  let assert Some(transcript_lines.GoalFeed(body)) =
+    transcript_lines.advisor_payload(feed)
     as "a goal feed is advisor traffic, not an operator turn"
   assert string.contains(body, "get the branch green")
 
   let wrap_up =
     user_message(
-      tui.advice_header
+      transcript_lines.advice_header
       <> "\nthe goal's token budget is exhausted; wrap up\n"
-      <> tui.advice_footer,
+      <> transcript_lines.advice_footer,
     )
-  let assert Some(tui.Advice(_)) = tui.advisor_payload(wrap_up)
+  let assert Some(transcript_lines.Advice(_)) =
+    transcript_lines.advisor_payload(wrap_up)
     as "the budget wrap-up rides the advice frame already recognized"
 }
 
 /// The frame literals, spelled as `client/advisorslice` writes them. A drift
 /// silently stops the terminal recognizing the server's own messages.
 pub fn the_goal_frame_literals_match_the_servers_test() {
-  assert tui.continuation_header == "[goal continuation]"
-  assert tui.continuation_footer
+  assert transcript_lines.continuation_header == "[goal continuation]"
+  assert transcript_lines.continuation_footer
     == "[end goal continuation. Continue the work; do not reply about the frame.]"
-  assert tui.goal_feed_header
+  assert transcript_lines.goal_feed_header
     == "[advisor goal feed: the primary stopped with the session's goal still open]"
-  assert tui.goal_feed_footer
+  assert transcript_lines.goal_feed_footer
     == "[end goal feed. Judge the objective against the evidence above and answer with exactly one advise call: continue, or complete when the objective is actually achieved.]"
   assert advisor_pending.primary_strand == "main"
 }
@@ -1318,7 +1330,11 @@ pub fn the_goal_frame_literals_match_the_servers_test() {
 // The continuation frame exactly as `advisorslice` writes it.
 fn continuation(body: String) -> message.AgentMessage {
   user_message(
-    tui.continuation_header <> "\n" <> body <> "\n" <> tui.continuation_footer,
+    transcript_lines.continuation_header
+    <> "\n"
+    <> body
+    <> "\n"
+    <> transcript_lines.continuation_footer,
   )
 }
 

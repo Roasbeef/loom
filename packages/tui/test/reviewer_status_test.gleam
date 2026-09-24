@@ -19,7 +19,9 @@ import machine/operation
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/reviewer_status
 import tui/snapshot
 import tui/snapshot_view
@@ -126,18 +128,18 @@ pub fn reviewer_task_survives_eviction_without_inventing_delivery_test() {
 pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   let #(window, view) = fixture()
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       reviewer_rows: reviewer_status.observe([], window, view),
       input: textarea.state_from_string("follow-up draft"),
     )
   let painted = tui.update(backend.Resize(160, 35), initial)
-  let #(buffer, _) = tui.view(painted, geometry.rect_new(0, 0, 160, 35))
+  let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 160, 35))
   let text = frame.buffer_to_text(buffer)
   assert string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "Task: Review queue delivery")
   assert string.contains(text, "1 received, awaiting delivery")
-  assert painted.diff_view == tui.DiffAutomatic
+  assert painted.diff_view == tui_model.DiffAutomatic
   assert string.contains(text, "follow-up draft")
 }
 
@@ -150,7 +152,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     reviewer_status.observe([], window, view)
     |> list.map(fn(row) { reviewer_status.Row(..row, strand: "advisor") })
   let live =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: [protocol.Strand("advisor", Some("advisor"), Some("assistant"))],
       reviewer_rows: live_rows,
@@ -158,7 +160,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     )
     |> tui.update(backend.Resize(80, 24), _)
   let idle =
-    tui.Model(
+    tui_model.Model(
       ..live,
       strands: [protocol.Strand("advisor", Some("advisor"), None)],
       reviewer_rows: [],
@@ -166,9 +168,9 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
     )
     |> tui.update(backend.Resize(80, 24), _)
   let #(live_buffer, live_cursor) =
-    tui.view(live, geometry.rect_new(0, 0, 80, 24))
+    render.view(live, geometry.rect_new(0, 0, 80, 24))
   let #(idle_buffer, idle_cursor) =
-    tui.view(idle, geometry.rect_new(0, 0, 80, 24))
+    render.view(idle, geometry.rect_new(0, 0, 80, 24))
   let live_text = frame.buffer_to_text(live_buffer)
   let idle_text = frame.buffer_to_text(idle_buffer)
   let title_row = fn(text) {
@@ -191,6 +193,6 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
 
 pub fn no_advisor_does_not_reserve_an_idle_reviewer_slot_test() {
   let without = model() |> tui.update(backend.Resize(80, 24), _)
-  let #(rendered, _) = tui.view(without, geometry.rect_new(0, 0, 80, 24))
+  let #(rendered, _) = render.view(without, geometry.rect_new(0, 0, 80, 24))
   assert !string.contains(frame.buffer_to_text(rendered), "Advisor · idle")
 }

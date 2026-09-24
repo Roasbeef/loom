@@ -338,7 +338,7 @@ before any cut exists, which the initial transfer will deliver anyway. A
 
 Because a notice may correctly do nothing, the lane reports every one it
 reads as `Noticed` (`tui/session_channel.gleam:121`) before deciding what
-to do with it, and the model counts those arrivals (`tui.gleam:6317`).
+to do with it, and the model counts those arrivals (`tui/inbound.gleam:286`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer.
 
@@ -355,7 +355,7 @@ model copies it before storing it. Keeping the slice kept the whole frame
 alive, and a long answer kept one frame per token.
 
 Second, the accumulated live region collapses to its newest 24 KiB
-(`tui.live_stream_limit`, the same clip `stream_preview` takes) whenever
+(`tui/transcript_lines.live_stream_limit`, the same clip `stream_preview` takes) whenever
 it would exceed twice that. Without this bound every paint reflowed the
 whole answer. A terminal on a long turn then drained its socket more
 slowly the longer the turn ran, until it stopped draining the socket at

@@ -28,6 +28,7 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/model as tui_model
 import tui/session_selector
 import tui/workspace
 import weft
@@ -42,14 +43,14 @@ fn address(port) {
 fn retired_control_model(control, port) {
   let assert Ok(host) = selection.host(control, address(port), "token")
     as "retired control retains the replacement route"
-  tui.Model(
+  tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
     daemon_host: Some(host),
     // Creation now canonicalizes explicit configuration before it retains the
     // durable key. The package manifest is a real, stable file; this controlled
     // peer never parses it, but the local boundary can prove the path exists.
     local_options: Some(bootstrap.Options("/work", "", "", "", "gleam.toml")),
-    overlay: tui.DaemonSelector(session_selector.new(
+    overlay: tui_model.DaemonSelector(session_selector.new(
       protocol.Page(1, [], None),
       "",
     )),
@@ -128,7 +129,7 @@ pub fn tui_daemon_creation_recovery_keeps_unknown_key_without_replay_test() {
       let retry =
         tui.update(
           backend.KeyPress("n"),
-          tui.Model(..settled, overlay: model.overlay),
+          tui_model.Model(..settled, overlay: model.overlay),
         )
       assert retry.creation_key == Some(key)
       assert retry.next_attempt == creating.next_attempt

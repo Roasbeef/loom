@@ -18,6 +18,8 @@ import tui/attempt
 import tui/connection
 import tui/daemon
 import tui/daemon/selection
+import tui/inbound
+import tui/model as tui_model
 import tui/session_channel
 import weft/poll
 
@@ -46,14 +48,14 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let channel =
       session_channel.start_recorded(socket, target.expected, Some(trace))
     let model =
-      tui.Model(
+      tui_model.Model(
         ..tui.new_model(inbox, target.workspace),
-        peer: tui.Attached(socket),
+        peer: tui_model.Attached(socket),
         channel: Some(channel),
         session: session,
       )
     let #(initial, ending) = hold_snapshot_end(model, 32)
-    let initial = tui.accept_connection_message(initial, ending)
+    let initial = inbound.accept_connection_message(initial, ending)
     let assert Some(channel) = initial.channel
       as "initial cut keeps its channel"
     assert session_channel.mutation_available(channel)
@@ -70,13 +72,13 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       })
       as "one catch-up becomes due under a finite deadline"
     let #(waiting, ending) =
-      hold_snapshot_end(tui.Model(..initial, channel: Some(channel)), 32)
+      hold_snapshot_end(tui_model.Model(..initial, channel: Some(channel)), 32)
     let waiting = tui.update(backend.Paste("queued reply prompt"), waiting)
     let refused = tui.update(backend.KeyPress("enter"), waiting)
     assert textarea.value(refused.input) == "queued reply prompt"
       as "a genuinely incomplete cut retains the draft"
     assert refused.next_id == waiting.next_id
-    assert refused.pending_submission == Some(tui.ComposerSubmission)
+    assert refused.pending_submission == Some(tui_model.ComposerSubmission)
     assert process.receive(issued, 0) == Error(Nil)
     let refused = tui.update(backend.KeyPress("enter"), refused)
     let refused =
@@ -101,7 +103,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
   })
 }
 
-fn hold_snapshot_end(model: tui.Model, remaining: Int) {
+fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
   assert remaining > 0 as "fixture transfers have a finite frame budget"
   let assert Ok(incoming) = process.receive(model.inbox, 1000)
     as "each credited response arrives within its deadline"
@@ -119,7 +121,7 @@ fn hold_snapshot_end(model: tui.Model, remaining: Int) {
     True -> #(model, incoming)
     False ->
       hold_snapshot_end(
-        tui.accept_connection_message(model, incoming),
+        inbound.accept_connection_message(model, incoming),
         remaining - 1,
       )
   }
@@ -206,7 +208,7 @@ pub fn assert_history_answers(driver, answers: List(String)) -> Nil {
 
 fn synchronized(sample: tui_driver.Sample) {
   case sample.model.peer, sample.model.captured {
-    tui.Attached(_), Some(_) -> True
+    tui_model.Attached(_), Some(_) -> True
     _, _ -> False
   }
 }

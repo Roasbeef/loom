@@ -707,8 +707,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui.gleam:9142`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:9247`) renders
+`advisor_payload` (`tui/transcript_lines.gleam:1207`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1312`) renders
 them. Delivered advice and nudges show their complete bodies even in
 compact mode, with a delivery label. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.
@@ -753,7 +753,7 @@ the model.
 The terminal requests an observation when the primary's run settles,
 when a review settles while the primary is idle, when the primary first
 appears in the roster, or when the session changes.
-`tui.advisor_nudges_action` (`packages/tui/src/tui.gleam`) owns those
+`surfaces.advisor_nudges_action` (`packages/tui/src/tui/surfaces.gleam`) owns those
 edges. A phase change on an unrelated strand keeps the current
 observation. Session replacement first clears the old board and request
 identity, so two idle primaries in different sessions cannot share advice

@@ -33,6 +33,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import core/todo_list
 import core/tx
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
@@ -59,6 +60,7 @@ import support/tool_registry
 import tools/agent.{type Caller, type Handle, Caller}
 import tools/codemode as codemode_tool
 import tools/directory_access
+import tools/todos
 import tools/tool
 import weft
 import weft/actor
@@ -475,6 +477,8 @@ pub fn an_unwired_plane_refuses_in_band_test() {
   assert seam.roster(caller) == Error(agent.AgencyUnavailable)
   assert seam.notes(caller, None) == Error(agent.AgencyUnavailable)
   assert seam.note(caller, "k", json.Int(1)) == Error(agent.AgencyUnavailable)
+  assert seam.todos(caller, fn(_) { Ok(json.Null) })
+    == Error(agent.AgencyUnavailable)
   assert seam.spawn(caller, a_spawn("review")) == Error(agent.AgencyUnavailable)
 }
 
@@ -1174,6 +1178,95 @@ pub fn a_note_key_is_bounded_and_checked_test() {
   close(harness)
 }
 
+// --- the todo board --------------------------------------------------------
+
+fn init_step(
+  items: List(String),
+) -> fn(Option(json.JsonValue)) -> Result(json.JsonValue, String) {
+  fn(stored) { todos.step(stored, todos.Init([#("Work", items)])) }
+}
+
+pub fn the_todo_board_lives_in_the_callers_own_cell_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(landed) = harness.seam.todos(caller, init_step(["a", "b"]))
+    as "the board must write"
+  assert api.fact(harness.runtime, "agent/main/todo") == Ok(Some(landed))
+
+  // The board is an ordinary note to every reader, so a parent or a
+  // peer reads it through `agent_notes` with no door of its own.
+  let assert Ok(cells) = harness.seam.notes(caller, Some("main/"))
+    as "the notes read must answer"
+  assert list.key_find(cells, "agent/main/todo") == Ok(landed)
+  close(harness)
+}
+
+pub fn agent_note_cannot_write_the_todo_cell_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.note(caller, todos.note_key, json.String("forged"))
+    as "the todo key belongs to the todo tool"
+  assert string.contains(reason, "call `todo`")
+  assert api.fact(harness.runtime, "agent/main/todo") == Ok(None)
+  close(harness)
+}
+
+// A sibling `todo` call in the same batch is the only writer that can race
+// this one. The step below plays that sibling on its first run by writing
+// the cell itself, so the compare-and-set it then attempts must lose, and
+// the retry must see the sibling's board and build on it.
+pub fn a_lost_compare_and_set_is_retried_on_the_new_board_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(sibling) = init_step(["from the sibling"])(None)
+    as "the sibling's board builds"
+  let step = fn(stored) {
+    case stored {
+      None -> {
+        let assert Ok(Nil) =
+          api.put_fact(harness.runtime, "agent/main/todo", sibling)
+          as "the sibling's write lands first"
+        todos.step(stored, todos.Append("Work", ["mine"]))
+      }
+      Some(_) -> todos.step(stored, todos.Append("Work", ["mine"]))
+    }
+  }
+  let assert Ok(landed) = harness.seam.todos(caller, step)
+    as "the retried update must land"
+  let assert Ok(board) = todo_list.decode(landed) as "the board decodes"
+  assert list.flat_map(board.phases, fn(phase) {
+      list.map(phase.tasks, fn(task) { task.text })
+    })
+    == ["from the sibling", "mine"]
+  close(harness)
+}
+
+pub fn an_unchanged_board_is_not_rewritten_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_) = harness.seam.todos(caller, init_step(["a"]))
+    as "the board must write"
+  let assert Ok(Some(before)) =
+    api.fact_cell(harness.runtime, "agent/main/todo")
+    as "the cell exists"
+  let assert Ok(_) =
+    harness.seam.todos(caller, fn(stored) { todos.step(stored, todos.View) })
+    as "a view must answer"
+  assert api.fact_cell(harness.runtime, "agent/main/todo") == Ok(Some(before))
+  close(harness)
+}
+
+pub fn a_view_of_no_board_creates_no_cell_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_) =
+    harness.seam.todos(caller, fn(stored) { todos.step(stored, todos.View) })
+    as "a view of nothing must answer"
+  assert api.fact(harness.runtime, "agent/main/todo") == Ok(None)
+  close(harness)
+}
+
 // --- the roster ------------------------------------------------------------
 
 pub fn the_roster_reads_durable_state_test() {
@@ -1490,16 +1583,16 @@ pub fn a_program_after_an_agent_spawn_gets_its_own_child_test() {
 pub fn agent_tools_are_registered_only_where_a_plane_exists_test() {
   // The wire tool array is built from the registry, renders ahead of the
   // system prompt, and is the byte prefix of the provider's cached
-  // region — so six permanently-refusing definitions would be paid for on
+  // region — so seven permanently-refusing definitions would be paid for on
   // every request of every strand for the life of the session. An
-  // unwired host has five tools, not eleven that mostly refuse.
+  // unwired host has five tools, not twelve that mostly refuse.
   assert tool.names(tool_registry.built_in(None, None, None, None, None))
     == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
   let name = addresses.new()
   let seam = agency.seam(agency.default_config(name, clock.fixed(at: 0)))
   let wired =
     tool.names(tool_registry.built_in(Some(seam), None, None, None, None))
-  assert list.length(wired) == 11
+  assert list.length(wired) == 12
   list.each(agent.tool_names, fn(each) {
     assert list.contains(wired, each)
   })

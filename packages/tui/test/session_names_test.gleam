@@ -12,6 +12,8 @@ import tui
 import tui/connection
 import tui/daemon/protocol
 import tui/frame
+import tui/model as tui_model
+import tui/session_control
 import tui/session_selector
 import tui/virtual_backend
 import tui/workspace
@@ -64,53 +66,60 @@ pub fn rename_respects_utf8_byte_limit_and_grapheme_backspace_test() {
     == session_selector.Renaming("a", string.repeat("é", 127))
 }
 
-fn blank() -> tui.Model {
+fn blank() -> tui_model.Model {
   tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
 }
 
-fn acknowledge(model: tui.Model, renamed: protocol.Session) -> tui.Model {
+fn acknowledge(
+  model: tui_model.Model,
+  renamed: protocol.Session,
+) -> tui_model.Model {
   let replies = process.new_subject()
   let waiting =
-    tui.Model(
+    tui_model.Model(
       ..model,
-      control_request: Some(tui.ControlRequest(
+      control_request: Some(tui_model.ControlRequest(
         weft.cancel_signal(),
         replies,
-        Some(Ok(tui.SessionRenamed(renamed))),
+        Some(Ok(tui_model.SessionRenamed(renamed))),
       )),
     )
-  tui.accept_control_event(
+  session_control.accept_control_event(
     waiting,
-    tui.ControlEvent(replies, weft.AllDelivered),
+    tui_model.ControlEvent(replies, weft.AllDelivered),
   )
 }
 
 pub fn acknowledged_rename_updates_header_and_picker_without_switching_test() {
   let model =
-    tui.Model(
+    tui_model.Model(
       ..blank(),
       session: "a",
       session_label: Some(#("a", "Original")),
-      overlay: tui.DaemonSelector(picker()),
+      overlay: tui_model.DaemonSelector(picker()),
     )
   let renamed = acknowledge(model, row("a", "Readable title"))
   assert renamed.session == "a"
   assert renamed.session_label == Some(#("a", "Readable title"))
-  let assert tui.DaemonSelector(selector) = renamed.overlay
+  let assert tui_model.DaemonSelector(selector) = renamed.overlay
     as "acknowledgement preserves the picker"
   assert selector.selected == 0
   assert selector.page.sessions
     == [row("a", "Readable title"), row("b", "Second")]
   assert selector.prompt == session_selector.Browsing
   assert string.contains(
-    header(tui.Model(..renamed, overlay: tui.NoOverlay)),
+    header(tui_model.Model(..renamed, overlay: tui_model.NoOverlay)),
     "Readable title",
   )
 }
 
 pub fn renaming_another_session_keeps_the_attached_title_test() {
   let model =
-    tui.Model(..blank(), session: "a", session_label: Some(#("a", "Current")))
+    tui_model.Model(
+      ..blank(),
+      session: "a",
+      session_label: Some(#("a", "Current")),
+    )
   let renamed = acknowledge(model, row("b", "Other"))
   assert renamed.session_label == model.session_label
   assert renamed.session == "a"
@@ -120,7 +129,7 @@ pub fn renaming_another_session_keeps_the_attached_title_test() {
 
 pub fn a_title_cannot_follow_a_legacy_identity_switch_test() {
   let model =
-    tui.Model(
+    tui_model.Model(
       ..blank(),
       session: "new-identity",
       session_label: Some(#("old-identity", "Old title")),
@@ -129,7 +138,7 @@ pub fn a_title_cannot_follow_a_legacy_identity_switch_test() {
   assert !string.contains(header(model), "Old title")
 }
 
-fn header(model: tui.Model) -> String {
+fn header(model: tui_model.Model) -> String {
   let script =
     virtual_backend.script(
       backend.TerminalSize(width: 100, height: 12),
@@ -137,7 +146,7 @@ fn header(model: tui.Model) -> String {
       model.inbox,
     )
   let assert Ok(run) =
-    tui.run_script(tui.Model(..model, peer: tui.Replaying), script)
+    tui.run_script(tui_model.Model(..model, peer: tui_model.Replaying), script)
     as "the virtual terminal starts"
   let assert Ok(last) = list.last(run.frames)
     as "the terminal renders the header"
@@ -153,16 +162,17 @@ pub fn paste_is_owned_by_the_rename_editor_not_the_chat_draft_test() {
       ..picker(),
       prompt: session_selector.Renaming("a", ""),
     )
-  let model = tui.Model(..blank(), overlay: tui.DaemonSelector(editing))
+  let model =
+    tui_model.Model(..blank(), overlay: tui_model.DaemonSelector(editing))
   let pasted = tui.update(backend.Paste("Pasted title"), model)
-  let assert tui.DaemonSelector(selector) = pasted.overlay
+  let assert tui_model.DaemonSelector(selector) = pasted.overlay
     as "paste stays in the rename editor"
   assert selector.prompt == session_selector.Renaming("a", "Pasted title")
   assert text_area.value(pasted.input) == text_area.value(model.input)
   assert pasted.control_request == None
 
   let oversized = tui.update(backend.Paste(string.repeat("x", 257)), pasted)
-  let assert tui.DaemonSelector(unchanged) = oversized.overlay
+  let assert tui_model.DaemonSelector(unchanged) = oversized.overlay
     as "oversized paste preserves the draft"
   assert unchanged.prompt == selector.prompt
   assert text_area.value(oversized.input) == text_area.value(model.input)

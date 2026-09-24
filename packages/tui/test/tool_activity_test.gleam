@@ -21,7 +21,11 @@ import machine/strand
 import tui
 import tui/connection
 import tui/frame
+import tui/inbound
+import tui/layout
+import tui/model as tui_model
 import tui/protocol
+import tui/render
 import tui/snapshot_view
 import tui/tool_activity
 import tui/workspace
@@ -174,7 +178,7 @@ pub fn current_action_comes_from_the_captured_batch_not_an_old_unmatched_call_te
 }
 
 fn received(model, value) {
-  tui.accept_connection_message(
+  inbound.accept_connection_message(
     model,
     connection.Incoming(
       json.to_string(
@@ -196,14 +200,14 @@ fn received(model, value) {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 40), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 40))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 40))
   #(model, frame.buffer_to_text(buffer))
 }
 
 fn model() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui.Model(..base, transcript: [], records: [], notice: "fixture")
+  tui_model.Model(..base, transcript: [], records: [], notice: "fixture")
 }
 
 pub fn a_result_replaces_the_cached_pending_group_row_test() {
@@ -234,16 +238,16 @@ pub fn the_diff_panel_shows_only_successful_captured_edits_test() {
   let opened =
     tui.update(
       backend.KeyPress("enter"),
-      tui.Model(..model, input: textarea.state_from_string("/diff")),
+      tui_model.Model(..model, input: textarea.state_from_string("/diff")),
     )
   let #(opened, text) = painted(opened)
-  assert opened.diff_view == tui.DiffVisible
+  assert opened.diff_view == tui_model.DiffVisible
   assert string.contains(text, "captured changes")
   assert string.contains(text, "-old")
   assert string.contains(text, "+new")
   assert !string.contains(text, "awaiting result")
   let closed = tui.update(backend.KeyPress("esc"), opened)
-  assert closed.diff_view == tui.DiffHidden
+  assert closed.diff_view == tui_model.DiffHidden
   assert closed.interrupt == None
 }
 
@@ -254,7 +258,7 @@ fn changes_model(diff) {
       #("diff", json.String(diff)),
     ])
   model()
-  |> tui.accept_connection_message(
+  |> inbound.accept_connection_message(
     connection.Incoming(gateway.user_entry("main", "CONVERSATION_MARKER", 1)),
   )
   |> received(call(2, "edit", "fs_edit", args()))
@@ -264,13 +268,13 @@ fn changes_model(diff) {
 fn toggle_diff(model) {
   tui.update(
     backend.KeyPress("enter"),
-    tui.Model(..model, input: textarea.state_from_string("/diff")),
+    tui_model.Model(..model, input: textarea.state_from_string("/diff")),
   )
 }
 
 fn painted_buffer(model, width) {
   let updated = tui.update(backend.Resize(width, 40), model)
-  let #(drawn, _) = tui.view(updated, geometry.rect_new(0, 0, width, 40))
+  let #(drawn, _) = render.view(updated, geometry.rect_new(0, 0, width, 40))
   #(updated, drawn)
 }
 
@@ -297,7 +301,7 @@ pub fn wide_diff_keeps_the_conversation_visible_on_the_left_test() {
 
   // Copy selection is clipped to the pane, rather than spanning the live
   // conversation and unrelated diff cells on the same terminal row.
-  let right_area = tui.hit_area(opened, geometry.Position(100, 10))
+  let right_area = layout.hit_area(opened, geometry.Position(100, 10))
   assert right_area.position.x == 89
   assert right_area.size.width == 70
 }
@@ -312,7 +316,7 @@ pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
   let #(restored, split) = painted_buffer(narrow, 160)
   assert string.contains(columns(split, 0, 88), "CONVERSATION_MARKER")
   assert string.contains(columns(split, 88, 72), "+new")
-  assert restored.diff_view == tui.DiffVisible
+  assert restored.diff_view == tui_model.DiffVisible
 }
 
 pub fn diff_and_conversation_scroll_independently_test() {
@@ -324,7 +328,7 @@ pub fn diff_and_conversation_scroll_independently_test() {
     |> string.join("\n")
   let #(opened, _) =
     int.range(4, 64, changes_model(long_diff), fn(current, seq) {
-      tui.accept_connection_message(
+      inbound.accept_connection_message(
         current,
         connection.Incoming(gateway.user_entry(
           "main",
@@ -351,7 +355,7 @@ pub fn diff_and_conversation_scroll_independently_test() {
   assert patch_paged.diff_scroll_offset > focused.diff_scroll_offset
   assert patch_paged.scroll_offset == paged.scroll_offset
   let closed = tui.update(backend.KeyPress("esc"), patch_paged)
-  assert closed.diff_view == tui.DiffHidden
+  assert closed.diff_view == tui_model.DiffHidden
   assert closed.scroll_offset == paged.scroll_offset
   assert closed.diff_rows == []
   assert dict.is_empty(closed.diff_line_cache)
@@ -364,7 +368,7 @@ pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
     |> painted_buffer(160)
   let #(replaced, drawn) =
     opened
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       connection.Incoming(gateway.full_snapshot("new")),
     )
     |> painted_buffer(160)
@@ -388,20 +392,21 @@ pub fn an_open_diff_keeps_up_with_new_captured_edits_test() {
     |> received(call(4, "second", "fs_edit", args()))
     |> received(outcome(5, "second", False, Some(details)))
     |> painted_buffer(160)
-  assert updated.diff_view == tui.DiffVisible
+  assert updated.diff_view == tui_model.DiffVisible
   assert string.contains(columns(drawn, 88, 72), "SECOND_EDIT_MARKER")
   assert string.contains(columns(drawn, 0, 88), "CONVERSATION_MARKER")
 }
 
 pub fn diff_toggle_restores_the_agent_rail_preference_test() {
-  let base = tui.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
+  let base =
+    tui_model.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
   assert opened.agent_rail_visible
-  assert tui.hit_area(opened, geometry.Position(100, 10)).position.x == 89
+  assert layout.hit_area(opened, geometry.Position(100, 10)).position.x == 89
   let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
-  assert closed.diff_view == tui.DiffHidden
+  assert closed.diff_view == tui_model.DiffHidden
   assert closed.agent_rail_visible
-  assert tui.hit_area(closed, geometry.Position(140, 10)).position.x == 127
+  assert layout.hit_area(closed, geometry.Position(140, 10)).position.x == 127
 }
 
 pub fn compact_history_keeps_reasoning_between_tool_batches_test() {
@@ -462,7 +467,7 @@ pub fn calls_in_one_response_keep_distinct_anchors_in_both_detail_modes_test() {
   let compact = tui.update(backend.KeyPress("pageup"), live)
   assert compact.scroll_offset > 0
     as "The first history gesture captures the source anchors."
-  let keys = fn(model: tui.Model) {
+  let keys = fn(model: tui_model.Model) {
     model.rendered_anchors
     |> list.filter_map(fn(row) {
       case row {
@@ -495,7 +500,7 @@ pub fn replacement_history_releases_compact_presentation_caches_test() {
   // keep their tool output reachable after the authoritative replacement.
   let #(replaced, _) =
     loaded
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       connection.Incoming(gateway.full_snapshot("replacement")),
     )
     |> painted
@@ -515,7 +520,7 @@ pub fn successful_edits_show_inline_patches_in_compact_history_test() {
     |> received(outcome(2, "edit", False, details))
     |> painted
   assert !completed.details_expanded
-  assert completed.diff_view == tui.DiffAutomatic
+  assert completed.diff_view == tui_model.DiffAutomatic
   assert string.contains(visible, "✓ fs_edit · src/file.gleam")
   assert string.contains(visible, "-    old")
   assert string.contains(visible, "+    new")
@@ -555,7 +560,7 @@ pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
     "Please review:\n\n\tif peer == nil {\n\t\treturn\n\t}\n\n\tcontinueWork()"
   let original =
     model()
-    |> tui.accept_connection_message(
+    |> inbound.accept_connection_message(
       connection.Incoming(gateway.user_entry("main", source, 1)),
     )
   let #(_, visible) = painted(original)
@@ -634,7 +639,7 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     |> tui.update(backend.Resize(170, 104), _)
     |> tui.update(backend.KeyPress("ctrl+g"), _)
     |> tui.update(backend.MouseScroll(5, 5, True), _)
-  let height = tui.hit_area(expanded, geometry.Position(5, 5)).size.height
+  let height = layout.hit_area(expanded, geometry.Position(5, 5)).size.height
   let prefix =
     expanded.rendered_row_count - list.length(expanded.rendered_anchors)
   let assert Ok(#(_, index)) =
@@ -649,7 +654,7 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     })
     as "expanded output shares the compact invocation's durable identity"
   let reading =
-    tui.Model(..expanded, scroll_offset: prefix + index - height + 1)
+    tui_model.Model(..expanded, scroll_offset: prefix + index - height + 1)
   let compact = tui.update(backend.KeyPress("ctrl+g"), reading)
   let offset =
     compact.rendered_row_count - list.length(compact.rendered_anchors)

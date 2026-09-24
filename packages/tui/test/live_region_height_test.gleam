@@ -31,6 +31,9 @@ import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/inbound
+import tui/model as tui_model
+import tui/transcript_lines
 import tui/workspace
 import tui_test/gateway
 
@@ -43,32 +46,32 @@ const width = 90
 // expand hint, which together cost thirty-four cells.
 const narrow_width = 40
 
-fn model() -> tui.Model {
+fn model() -> tui_model.Model {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui.Model(..base, transcript: [], records: [], notice: "fixture")
+  tui_model.Model(..base, transcript: [], records: [], notice: "fixture")
 }
 
-fn received(model: tui.Model, wire: String) -> tui.Model {
-  tui.accept_connection_message(model, connection.Incoming(wire))
+fn received(model: tui_model.Model, wire: String) -> tui_model.Model {
+  inbound.accept_connection_message(model, connection.Incoming(wire))
 }
 
 // Laying the rows out is what fills `rendered_rows`; a model that has only
 // consumed wire frames has not been asked for a frame yet.
-fn laid_out(model: tui.Model) -> tui.Model {
+fn laid_out(model: tui_model.Model) -> tui_model.Model {
   tui.update(backend.Resize(width, 40), model)
 }
 
-fn rows(model: tui.Model) -> Int {
+fn rows(model: tui_model.Model) -> Int {
   laid_out(model).rendered_row_count
 }
 
-fn rows_at(model: tui.Model, columns: Int) -> Int {
+fn rows_at(model: tui_model.Model, columns: Int) -> Int {
   tui.update(backend.Resize(columns, 40), model).rendered_row_count
 }
 
-fn expanded(model: tui.Model) -> tui.Model {
-  tui.Model(..model, details_expanded: True, rendered_revision: -1)
+fn expanded(model: tui_model.Model) -> tui_model.Model {
+  tui_model.Model(..model, details_expanded: True, rendered_revision: -1)
 }
 
 // One frame of a running command's output window. The v1 envelope is what
@@ -105,7 +108,7 @@ fn nine_lines() -> String {
 // A strand with one committed tool call whose command is still running and
 // has printed nine lines: more than the window shows, so an expanded view
 // has to clip and a collapsed one has something real to leave out.
-fn running() -> tui.Model {
+fn running() -> tui_model.Model {
   model()
   |> received(gateway.full_snapshot("demo"))
   |> received(gateway.user_entry("main", "build it", 1))
@@ -113,23 +116,23 @@ fn running() -> tui.Model {
   |> received(tool_output(nine_lines() <> "\n", 2048))
 }
 
-fn settled(model: tui.Model) -> tui.Model {
+fn settled(model: tui_model.Model) -> tui_model.Model {
   received(model, gateway.tool_result_ok_entry("main", "build finished", 3))
 }
 
 pub fn a_running_tools_output_costs_no_rows_until_details_open_test() {
   let live = running()
-  assert tui.tool_tail_lines(live) == []
+  assert transcript_lines.tool_tail_lines(live) == []
     as "a collapsed transcript draws none of the running command's window"
 
-  let assert [tui.Line(tui.ToolResult, window)] =
-    tui.tool_tail_lines(expanded(live))
+  let assert [tui_model.Line(tui_model.ToolResult, window)] =
+    transcript_lines.tool_tail_lines(expanded(live))
     as "an expanded transcript still draws the window it collected"
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(window, "\n")
   assert first == "compiling package 2"
     as "the window keeps its last lines, not its first"
-  assert list.length(rest) == tui.tail_lines_shown - 1
+  assert list.length(rest) == transcript_lines.tail_lines_shown - 1
 }
 
 pub fn settling_a_tool_call_leaves_the_transcript_the_same_height_test() {
@@ -151,7 +154,7 @@ pub fn settling_a_tool_call_leaves_the_transcript_the_same_height_test() {
 // Reasoning is the other live region, and it settles the same way: the
 // stream the provider is writing is replaced by the record the daemon
 // commits, a few hundred milliseconds later.
-fn thinking() -> tui.Model {
+fn thinking() -> tui_model.Model {
   model()
   |> received(gateway.full_snapshot("demo"))
   |> received(gateway.user_entry("main", "explain it", 1))
@@ -162,7 +165,7 @@ fn thinking() -> tui.Model {
   ))
 }
 
-fn thinking_settled(model: tui.Model) -> tui.Model {
+fn thinking_settled(model: tui_model.Model) -> tui_model.Model {
   received(
     model,
     gateway.thinking_entry(
@@ -202,16 +205,18 @@ pub fn collapsed_reasoning_is_one_row_and_expanded_reasoning_is_the_block_test()
 }
 
 pub fn a_live_digest_counts_lines_and_a_settled_one_quotes_its_opening_test() {
-  assert tui.live_reasoning_digest("one thought") == "1 line so far"
-  assert tui.live_reasoning_digest("one\ntwo\nthree") == "3 lines so far"
-  assert tui.settled_reasoning_digest("\n\nFirst.\nSecond.")
-    == "First." <> tui.expand_hint
+  assert transcript_lines.live_reasoning_digest("one thought")
+    == "1 line so far"
+  assert transcript_lines.live_reasoning_digest("one\ntwo\nthree")
+    == "3 lines so far"
+  assert transcript_lines.settled_reasoning_digest("\n\nFirst.\nSecond.")
+    == "First." <> transcript_lines.expand_hint
     as "the opening line is the first one with text in it"
 }
 
 // The transcript before either live region has anything in it, which is what
 // a row count is measured against.
-fn quiet() -> tui.Model {
+fn quiet() -> tui_model.Model {
   model()
   |> received(gateway.full_snapshot("demo"))
   |> received(gateway.user_entry("main", "explain it", 1))
@@ -271,16 +276,18 @@ pub fn a_failing_tool_settles_by_exactly_its_failure_rows_test() {
 // construct would reach the reader as punctuation standing in for a whole
 // block of reasoning. Both shapes are common openers in model output.
 pub fn a_settled_digest_skips_a_fence_and_sheds_its_markers_test() {
-  assert tui.settled_reasoning_digest("```gleam\nlet value = 1\n```")
-    == "let value = 1" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest(
+      "```gleam\nlet value = 1\n```",
+    )
+    == "let value = 1" <> transcript_lines.expand_hint
     as "a fence delimiter is not an opening line"
-  assert tui.settled_reasoning_digest("## Plan\n\nthen the work")
-    == "Plan" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest("## Plan\n\nthen the work")
+    == "Plan" <> transcript_lines.expand_hint
     as "a heading's marker is shed, not quoted"
-  assert tui.settled_reasoning_digest("> quoted\n")
-    == "quoted" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest("> quoted\n")
+    == "quoted" <> transcript_lines.expand_hint
     as "a quotation marker is shed too"
-  assert tui.settled_reasoning_digest("###\nthe real opening")
-    == "the real opening" <> tui.expand_hint
+  assert transcript_lines.settled_reasoning_digest("###\nthe real opening")
+    == "the real opening" <> transcript_lines.expand_hint
     as "a line of markers alone falls through to the next candidate"
 }

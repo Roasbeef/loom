@@ -11,6 +11,7 @@ import tui
 import tui/agent_message_panel
 import tui/agent_messages
 import tui/connection
+import tui/layout
 import tui/theme
 import tui/workspace
 
@@ -180,7 +181,7 @@ pub fn supported_viewports_bound_rows_and_page_without_gaps_test() {
         fn() { 0 },
       )
       |> tui.update(backend.Resize(size.0, size.1), _)
-    let area = tui.message_detail_area(model)
+    let area = layout.message_detail_area(model)
     let step = agent_message_panel.page_step(area)
     let pages = { list.length(numbered) + step - 1 } / step
     let visible =

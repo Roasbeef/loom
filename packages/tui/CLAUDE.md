@@ -86,6 +86,32 @@ dividers have their own color. Status labels and selection marks carry meaning
 without color. `gleam dev agents dark|light|ansi|plain` runs an illustrative,
 provider-free native fixture through the capture decoder and the shipped loop.
 
+## Todo panel
+
+`todo_panel` draws the active strand's todo board between the conversation
+and the composer. The board is the `details.todo` of the newest successful
+`todo` result, decoded with `core/todo_list.decode`, so the panel and the tool
+cannot disagree about a stored board. `Model.todo_boards` keeps each strand's
+newest board across cuts, because a capture window that has moved past the
+last `todo` call would otherwise blank the panel; session replacement releases
+it. A strand whose capture reaches no board gets one ordinary `notes` read per
+session (`Model.todo_seed`, `todo_asked`, sent by `surfaces.service_todo_seed`
+from the tick once the read lane is free). Any `notes` reply seeds a missing
+board from its complete `todo` row, and never replaces a transcript board or
+parses an excerpt. The "notes refreshed" notice appears only while a notes
+surface is open.
+
+The panel's rows come out of the body inside `layout.queue_body_layout`, between
+the conversation and the queue card, so every hit-test and scroll path sees the
+smaller conversation without knowing about the panel; `layout.todo_area`
+recomputes the same split for painting. It may take a third of the body and
+always leaves the conversation four rows. Only the phase holding the active
+task is expanded, other phases fold into one row, a long phase is windowed
+around its active task with counts above and below, and a finished board is
+one row. Each status has a glyph as well as a color (`✓ ▸ ○ ⊘ –`). A settled
+`todo` call is one compact transcript row naming what it changed and the
+progress it left, which keeps the compact height rule.
+
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
@@ -177,6 +203,50 @@ local daemon or entering terminal mode. Help, replay, session commands, and
 extension passthrough retain their noninteractive paths. The etui backend owns
 later input closure and terminates its reader and cleanup drain on EOF/error.
 
+## Module layout
+
+`tui.gleam` holds the entry points (`main` and the launch parsing,
+`new_model`, `loop`, `run_script`, `replay_steps`, `connect_remote`) and the
+event dispatch (`update`, `apply_input`, `settle_update`). Everything else
+that used to share its 15,500 lines (issue #374) lives in modules under
+`tui/`, listed here in import order. Gleam forbids import cycles and none of
+them may import `tui`, so a module may import only those above it in the
+list:
+
+- `tui/model`: the `Model` record, the types it names, and the helpers every
+  reducer shares (`append_system`, `append_error`, `invalidate_frame`,
+  `invalidate_transcript`, `mark_activity`, `queue_owner`,
+  `active_strand_phase`). Importers alias it as `tui_model`, because `model`
+  is the local variable in nearly every function and would shadow the module
+  name. Constructors stay unqualified.
+- `tui/transcript_lines`: `Line`s from durable entries, streams and tool
+  calls. A new kind of transcript row starts in `entry_lines`,
+  `message_lines`, `assistant_block_lines`, `record_lines`,
+  `activity_call_lines`, `tool_call_summary`, `tool_result_lines` or
+  `stream_lines`.
+- `tui/layout`: screen rectangles for painting and hit-testing, and the
+  transcript width and height.
+- `tui/render`: `view`, `cached_frame` and `render_frame`; a pure function of
+  the model.
+- `tui/outbound`: `send_frame`, `apply_submission` and `mutation_refusal`.
+- `tui/surfaces`: the `service_*_read` functions, their reply handlers and the
+  `sync_*` edge detectors for notes, the queue, the worktree diff, live jobs,
+  context, advisor nudges and the goal.
+- `tui/inbound`: `drain_connection`, `accept_connection_message`,
+  `apply_channel_update`, `apply_event` and `render_cut`, with stream, tail,
+  usage and cache accounting.
+- `tui/session_control`: daemon control requests and reconnection.
+- `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
+  record row cache.
+- `tui/submit`: composer submission, input history, interrupts and target
+  switches.
+- `tui/interaction`: key, paste, mouse and candidate-event handling.
+- `tui/tick`: `update_tick`, `settle_tick`, the frame cache, viewport pacing
+  and the Herdr reporter.
+
+The module boundaries also bound compile time; see the two parameter
+boundaries and the split's measurements under Invariants.
+
 ## Key Types
 
 - `session_selector.Collection` distinguishes active and archived pages. Active
@@ -220,10 +290,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   Raw inspection pretty-prints complete JSON; excerpts remain literal.
   `session_selector.prioritize` sorts exact workspace matches first, related
   directories next, and preserves order within each group and selection by ID.
-- `tui.AdvisorMessage` names the advisor frames the transcript
+- `tui/transcript_lines.AdvisorMessage` names the advisor frames the transcript
   recognizes — `Advice`, `Nudges`, `Feed`, `GoalFeed`, and `Continuation` — each carrying the body left
-  after its frame lines are stripped. `tui.advisor_payload` extracts one from
-  a durable message and `tui.advisor_lines` renders delivered advice and nudges
+  after its frame lines are stripped. `tui/transcript_lines.advisor_payload` extracts one from
+  a durable message and `tui/transcript_lines.advisor_lines` renders delivered advice and nudges
   in full in both modes; feeds and continuations use `notes_view.Extent`.
   `composer.expand_hint` is the suffix every collapsed row ends with, shared with the `[loom] ` injection collapse so
   the two spellings cannot drift.
@@ -345,7 +415,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   [Protocol 019](../../protocol-change/019-session-display-names.md) describes
   the durable rename contract.
 
-- `tui.Model` is the immutable presentation state. Durable entries,
+- `tui/model.Model` is the immutable presentation state. Durable entries,
   transient stream fragments, local notices, overlays, and scroll position
   remain distinct so a settled entry cannot duplicate its streamed answer.
   Wrapped durable rows are cached by strand, width, and detail mode. Expanded
@@ -388,7 +458,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   outcome, and exits with a status. `rm` asks at the terminal before it
   sends and refuses outright when standard input is not a terminal, unless
   `--yes` was given.
-- `tui.Peer` says where this client's commands go, and replaces the
+- `tui/model.Peer` says where this client's commands go, and replaces the
   optional socket the model used to carry. An absent socket meant two
   opposite things — a `--demo` `Preview`, which answers a submitted prompt
   itself so the layout can be seen, and a `Replaying` run, which must
@@ -448,11 +518,11 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `PacePolicy` with `pace`, `policy`, `viewport_pacing`, `tick_traffic` and
   `viewport_address` for the viewport walk; and `poll_timeout_for`,
   `paced_poll_timeout` and `next_quiet_for` for the poll cadence. The
-  functions in `tui` that read and write the model call these and stay
-  thin.
+  functions in `tui/tick` and `tui/projection` that read and write the
+  model call these and stay thin.
 - `tui/selection.Selection` is a left-button drag in progress or settled:
   an anchor and a head in screen cells, clipped to the panel interior the
-  press landed in (`tui.hit_area`), so the transcript's border glyphs and
+  press landed in (`tui/layout.hit_area`), so the transcript's border glyphs and
   the rail beside it are never part of a copy. `text` reads the covered
   rows back from the frame on display through `frame.row_text`, `highlight`
   adds the reverse modifier to those cells, and `clipboard_sequence` is the
@@ -462,7 +532,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   gutter map alongside its cells, so a paced scroll cannot pair old text with
   new metadata at mouse-down. Durable gutters follow the record-row cache;
   live fragments do not re-project retained history. Plain assistant spans
-  share one shaded style per block to keep the live-stream memory bound. `tui.Clipboard` says whether that
+  share one shaded style per block to keep the live-stream memory bound. `tui/model.Clipboard` says whether that
   write reaches a terminal:
   only the interactive launch sets `TerminalClipboard`; a replay or a
   scripted test keeps `NoClipboard`, because their stdout is not one.
@@ -473,9 +543,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   total_bytes)` is the
   pushed rolling tail of a running tool call (`protocol-change/031`);
   `session_channel.ToolStreamed` carries it through the adopted lane and
-  `tui.ToolTail` is what the model keeps — one per `{strand, operation,
+  `tui/model.ToolTail` is what the model keeps — one per `{strand, operation,
   step, source_index, call_id, stream}`, replaced whole on every frame, drawn by
-  `tui.tool_tail_lines` as one `ToolResult` line under the live region:
+  `tui/transcript_lines.tool_tail_lines` as one `ToolResult` line under the live region:
   the stream's name and byte count so far, then the last
   `tail_lines_shown` lines of the window. That drawing happens only with
   details expanded; a compact transcript draws no window, because the row
@@ -536,7 +606,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `ConfirmingDelete` for the highlighted identity, and only `y` answers it,
   so no single keystroke can destroy a conversation. The answer names the
   identity the question was asked about rather than whatever is highlighted
-  when it arrives. `tui.ControlRequest` is the one job slot the picker's
+  when it arrives. `tui/model.ControlRequest` is the one job slot the picker's
   paging, renames, and deletes share. `r` opens a bounded `Renaming` draft for
   the selected identity; Enter saves, Escape cancels, and Ctrl+U clears it.
   Pasted text belongs to that editor and leaves the hidden composer unchanged.
@@ -667,7 +737,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   grammar; `command.goal_words` is
   what the palette completes past `/goal `, and
   `command.default_goal_budget` (200,000 tokens) is what a `/goal` with no
-  `--budget` pins. `tui.GoalReport` says whether the next board is the
+  `--budget` pins. `tui/model.GoalReport` says whether the next board is the
   operator's own question — printed — or an automatic refresh, which
   updates the row silently.
 
@@ -867,7 +937,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   clamped to the current geometry. Preview refuses a live observation rather
   than presenting illustrative data as fetched state. Compact help retains the
   Escape control at 40 columns. Escape returns without discarding the composer.
-- **Advisor pending-nudge panel**: `tui.sync_advisor_nudges` issues an
+- **Advisor pending-nudge panel**: `tui/surfaces.sync_advisor_nudges` issues an
   `advisor_pending` read itself, with no operator keystroke, when the
   primary settles, a review settles even while the primary is running,
   or the primary first appears in the roster. A session switch also
@@ -894,7 +964,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   "check" as the subcommand — and `--budget` is the escape, since it puts the
   objective past the first position. A `/goal` with
   no flag pins `command.default_goal_budget`, named in the row that confirms
-  it. `tui.goal_action` reads the board on the three edges
+  it. `tui/surfaces.goal_action` reads the board on the three edges
   `advisor_nudges_action` reads on plus one the queue does not have — the
   primary *starting* a run, which is what a goal continuation is, and the
   transition that moves `continuations`, the accounting and the bounds.
@@ -1000,7 +1070,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   their own rows. What the rule removes is growth that carried no
   information.
 - **A harness-authored user turn is drawn in the system voice, and only on
-  both of its tokens.** `tui.advisor_payload` recognizes advice, nudges, the
+  both of its tokens.** `tui/transcript_lines.advisor_payload` recognizes advice, nudges, the
   feed, the goal feed (`goal_feed_header`/`goal_feed_footer`) and the goal
   continuation (`continuation_header`/`continuation_footer`) — copies of
   `client/advisorslice`'s literals, pinned against them by
@@ -1138,7 +1208,10 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   hiding the dispatch behind a call while the steps stay in `update`
   measures worse than the original; `erlc +time` on the generated `tui.erl`
   shows it as `core_inline_module`, and `docs/execution.md` has the
-  measurement.
+  measurement. Since the module split (#374) most settling steps are calls
+  into `tui/surfaces`, `tui/inbound`, `tui/projection`, `tui/interaction`
+  and `tui/tick`, which the inliner never attempts, but `snap_viewport_for`
+  is still local and the boundary stays.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
   replay, control, reconnect and connection events before passing the result
   to `settle_tick`. The helper applies the existing read-service chain to its
@@ -1147,6 +1220,21 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   inliner blow-up: `core_inline_module` took 51.445 seconds. The boundary reduced
   that phase to 1.632 seconds in the generated-code experiment; the actual Gleam
   package build took 7.80 seconds. Keep the service order and this boundary.
+  Both functions now live in `tui/tick`; the services are cross-module calls
+  into `tui/surfaces` and `tui/inbound`, but the drains and
+  `advance_cache_outlook` are local.
+- **Compile-time measurements for the split (#374).** On Gleam 1.18.1 and OTP
+  29 on macOS, before the split a rebuild after a comment change to
+  `tui.gleam` took 9.57 s and 9.83 s, and `erlc +time` on the generated `tui`
+  module took 11.64 s (`beam_ssa_opt` 4.18 s, `core_inline_module` 2.66 s).
+  After it, the same change to `tui.gleam` rebuilds in 1.4–1.7 s. A comment
+  change to one of the large modules (`inbound`, `render`, `transcript_lines`,
+  `interaction`) rebuilds in 2.3–3.6 s, and an interface change to
+  `tui/model`, which recompiles every module and test that imports it, in
+  2.7–3.6 s. `erlc +time` wall time per module is 0.54 s for `tui`, 2.49 s
+  for `tui/inbound`, 0.87 s for `tui/render`, 0.44 s for
+  `tui/transcript_lines` and 2.39 s for `tui/interaction`. These are
+  measurements, not budgets.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read
@@ -1234,9 +1322,9 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   historical fallback of `/notes`. Do not broaden this into heuristic filtering.
 - **Advisor traffic is not operator speech either.** Advice, queued nudges and
   the feed a review is made from are all stored as user messages.
-  `tui.advisor_payload` recognizes each by its whole frame — a header line
+  `tui/transcript_lines.advisor_payload` recognizes each by its whole frame — a header line
   with its footer, or the header with the `advisor-nudges` fence — and
-  `tui.advisor_lines` draws the row as `System` under the advisor's name:
+  `tui/transcript_lines.advisor_lines` draws the row as `System` under the advisor's name:
   delivered advice and nudges retain their full body in both modes, with
   explicit delivery labels. Feeds and continuations collapse until expanded.
   Expanded bodies drop their frame lines,
@@ -1395,7 +1483,7 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
   `call_id` has a durable tool result in its strand. A global 128-tail cap
   bounds missed or evicted captures. Another strand's tail is kept but not drawn.
 - **A live stream is bounded, and its text is owned.** `Stream` carries the
-  bytes its fragments weigh, and past twice `tui.live_stream_limit` — 24 KiB,
+  bytes its fragments weigh, and past twice `tui/transcript_lines.live_stream_limit` — 24 KiB,
   the same clip the snapshot preview takes — the fragments collapse into one
   holding the newest limit's worth. The headroom is what makes the collapse
   amortised: coming back to exactly the limit would put the next token over it

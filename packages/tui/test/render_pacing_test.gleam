@@ -23,8 +23,11 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/pacing
 import tui/protocol
+import tui/render
+import tui/tick
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -138,7 +141,7 @@ fn streamed_shifts() -> List(Int) {
   // The demo transcript is cleared so the run starts from an empty
   // viewport; its live strand is kept, because a strand that has stopped
   // producing holds no rows back and there would be nothing to measure.
-  let model = tui.Model(..base, transcript: [], records: [])
+  let model = tui_model.Model(..base, transcript: [], records: [])
   let script =
     virtual_backend.Script(
       size: backend.TerminalSize(width: 84, height: 24),
@@ -254,30 +257,30 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-  assert tui.viewport_pacing(settled) == pacing.ViewportSettled
+  assert tick.viewport_pacing(settled) == pacing.ViewportSettled
 
   // The quiet timeout would strand the walk for a whole quiet poll a step,
   // with no socket traffic left to wake the loop.
   let catching_up =
-    tui.Model(..settled, rendered_row_count: 40, revealed_rows: 10)
-  assert tui.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
-  assert tui.terminal_poll_timeout(catching_up) == 16
-  assert tui.terminal_poll_timeout(settled) > 16
+    tui_model.Model(..settled, rendered_row_count: 40, revealed_rows: 10)
+  assert tick.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
+  assert tick.terminal_poll_timeout(catching_up) == 16
+  assert tick.terminal_poll_timeout(settled) > 16
 }
 
-fn at(model: tui.Model, now: Int) -> tui.Model {
-  tui.Model(..model, monotonic_time_ms: fn() { now })
+fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
+  tui_model.Model(..model, monotonic_time_ms: fn() { now })
 }
 
 // A backlog long enough to survive a few frames, built the same way the
 // shipped loop builds one: an anchor delivery (exempt from pacing, since
 // nothing has been revealed yet) followed by a second delivery that lands
 // on a viewport that already has a position to hold.
-fn build_backlog() -> tui.Model {
+fn build_backlog() -> tui_model.Model {
   let inbox = connection.new_inbox()
   let base =
     tui.new_model_with_clock(inbox, workspace.Context("/work", None), fn() { 0 })
-    |> fn(model) { tui.Model(..model, transcript: [], records: []) }
+    |> fn(model) { tui_model.Model(..model, transcript: [], records: []) }
     |> fn(model) { tui.update(backend.Resize(84, 24), model) }
   process.send(
     inbox,
@@ -317,14 +320,14 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     as "the fixture must actually carry a backlog, or the scroll below tests nothing"
 
   let before =
-    tui.view(
-      tui.Model(..backlogged, frame_cache: None),
+    render.view(
+      tui_model.Model(..backlogged, frame_cache: None),
       geometry.rect_new(0, 0, 84, 24),
     ).0
   let scrolled = tui.update(backend.MouseScroll(5, 5, True), backlogged)
   let after =
-    tui.view(
-      tui.Model(..scrolled, frame_cache: None),
+    render.view(
+      tui_model.Model(..scrolled, frame_cache: None),
       geometry.rect_new(0, 0, 84, 24),
     ).0
 
@@ -377,14 +380,15 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
         False -> strand
       }
     })
-  let idled = tui.Model(..backlogged, strands: ended_strands, submitting: None)
+  let idled =
+    tui_model.Model(..backlogged, strands: ended_strands, submitting: None)
   let settled = tui.update(backend.Tick, idled)
   assert settled.revealed_rows == settled.rendered_row_count
     as "an idle strand has no tail to walk toward, so the trailing frame must be the complete one"
 
   let #(buffer, _) =
-    tui.view(
-      tui.Model(..settled, frame_cache: None),
+    render.view(
+      tui_model.Model(..settled, frame_cache: None),
       geometry.rect_new(0, 0, 84, 24),
     )
   let assert Ok(_) =
@@ -397,7 +401,7 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
   let inbox = connection.new_inbox()
   let clocked =
     tui.new_model_with_clock(inbox, workspace.Context("/work", None), fn() { 0 })
-    |> fn(model) { tui.Model(..model, transcript: [], records: []) }
+    |> fn(model) { tui_model.Model(..model, transcript: [], records: []) }
     |> fn(model) { tui.update(backend.Resize(84, 60), at(model, 0)) }
 
   process.send(
@@ -440,14 +444,14 @@ pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
       fn() { 0 },
     )
   let behind_diff =
-    tui.Model(
+    tui_model.Model(
       ..base,
       rendered_row_count: 40,
       revealed_rows: 10,
-      diff_view: tui.DiffVisible,
+      diff_view: tui_model.DiffVisible,
       width: 90,
     )
-  assert tui.viewport_pacing(behind_diff) == pacing.ViewportSettled
+  assert tick.viewport_pacing(behind_diff) == pacing.ViewportSettled
     as "a backlog behind a full-width diff view is not on its way to any screen the loop is painting"
 }
 

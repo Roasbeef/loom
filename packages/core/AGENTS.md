@@ -31,6 +31,15 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   `project` adds an explicit human or peer-agent label at the provider boundary
   while preserving stored content. `display_label` gives existing client views
   an explicit peer label instead of treating a strand name as a human name.
+- `core/todo_list.{Board, Phase, Task, Status}` — a strand's todo board,
+  kept here because three readers on two sides of a wire need one shape:
+  the `todo` tool writes it, the blackboard cell `agent/{strand}/todo`
+  stores it, and the TUI decodes it from the tool result's `details` to
+  draw the pinned panel. `decode` is total and answers a
+  `CorruptionReport`; `validate` is the writer's check (bounds, blank text,
+  unique phase names and unique task text across the board), and every
+  stored board has passed it because the tool is the cell's only writer.
+  `active`, `focus` and `count` answer the questions a renderer asks.
 - `core/register.{RegisterNs, RegisterValue}` — the closed namespace enum
   and the thin tagged JSON wrapper storage persists. The rich payload types
   each namespace forces live in `machine`; `core` understands only

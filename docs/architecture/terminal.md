@@ -11,10 +11,11 @@ the daemon; [the client plane](client.md) describes that side, and the
 beneath it. The terminal sits outside all three planes, on the far side of the
 gateway.
 
-The package has about 75 modules, but most of the behaviour runs through one
-of them. `tui.gleam` holds the immutable `Model`, the `update` and `view`
-functions that etui (the terminal UI library) drives, and the glue between
-them. The other modules are the parts that glue calls into: the launcher and
+The package has about 90 modules. `tui.gleam` holds the entry points and the
+`update` dispatch that etui (the terminal UI library) drives; the immutable
+`Model` lives in `tui/model`, `view` in `tui/render`, and the rest of what
+used to share that one file is split by responsibility into the modules the
+table at the end names. The other modules are the parts that glue calls into: the launcher and
 daemon bootstrap, two connections (a daemon control connection and a
 per-session conversation channel), pure projections that turn a captured
 snapshot into rows, one module per panel, Markdown rendering, Herdr
@@ -54,7 +55,7 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` (`tui.gleam:4799`) is three steps:
+`update` (`tui.gleam:1311`) is three steps:
 
 1. `recording.note_input` writes the raw event to the `--record` file, if one
    is open, before anything interprets it.
@@ -67,7 +68,7 @@ and `view` draws a frame from it.
    determines whether to paint a fresh frame.
 
 `Tick` is the event etui delivers when a poll times out with no input, so it
-is where socket traffic enters the model. `update_tick` (`tui.gleam:5015`)
+is where socket traffic enters the model. `update_tick` (`tui/tick.gleam:142`)
 drains, in order, the replay inbox, the session-switch and candidate
 attachment results, control replies, the reconnect outcome, and up to 64
 messages from the conversation socket. `settle_tick` then services the
@@ -141,7 +142,7 @@ therefore cannot force the settled transcript to be re-parsed, and a settled
 entry cannot be drawn twice. Each stream is owned by one provider request
 generation; the durable entry that answers it, a newer generation, or the
 operation's terminal result retires it (`tui/stream_identity`). A live stream
-is also bounded: past twice `tui.live_stream_limit` (24 KiB) its fragments
+is also bounded: past twice `tui/transcript_lines.live_stream_limit` (24 KiB) its fragments
 collapse to the newest 24 KiB. [Multiplayer](multiplayer.md#what-the-terminal-does-with-a-pushed-frame)
 explains the memory failure behind that bound.
 
@@ -244,7 +245,7 @@ the phase diagram and the push rules; this document does not repeat them.
 
 The channel reports to the model as `session_channel.Update` values, and
 `apply_channel_update` folds each one in. `Captured` carries a new cut to
-`reconcile_cut` and then `render_cut` (`tui.gleam:6628`). `Streamed` and
+`reconcile_cut` and then `render_cut` (`tui/inbound.gleam:536`). `Streamed` and
 `ToolStreamed` feed the transient region. `HistoryPage` feeds scrollback.
 `LookedUp` answers exact approval lookups. `RequestRefused` carries the command
 name and request ID, so a refusal settles only the request it answers.
@@ -533,7 +534,7 @@ the module named.
 
 - **The server is authoritative.** Strands, operations, entries, usage and
   configuration come from captured cuts. The terminal persists nothing
-  (`tui.gleam`, `snapshot_view`).
+  (`tui/inbound`, `snapshot_view`).
 - **No mutation is resent.** A lost reply becomes `UnknownOutcome` on both
   connections, and switching sessions never moves an unsent command to the new
   connection (`daemon`, `session_channel`).
@@ -543,7 +544,7 @@ the module named.
 - **Replacement preserves the old view until the new one validates**
   (`attachment`).
 - **Durable and transient rows do not alias**, so an answer is not drawn twice
-  at the moment it commits (`tui.gleam`).
+  at the moment it commits (`tui/inbound`, `tui/projection`).
 - **Every inbox the terminal reads, the terminal created** (`attachment`,
   `daemon`, `sessions`).
 - **A decision echoes exactly what was displayed** (`approval`,
@@ -585,7 +586,19 @@ Paths are relative to `packages/tui/src`.
 
 | Module | What it owns |
 |---|---|
-| `tui.gleam` | `Model`, `main` and launch parsing, `update`/`apply_input`/`settle_update`, `update_tick`/`settle_tick`, `view` and the frame cache, `render_cut`, the row projection, command dispatch, and the `Reconnect` state. |
+| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`apply_input`/`settle_update` dispatch. |
+| `tui/model` | `Model`, the frame cache, the `Reconnect` state and the other types every reducer shares. |
+| `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
+| `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
+| `tui/render` | `view`, `cached_frame` and `render_frame`. |
+| `tui/outbound`, `tui/inbound` | Sending frames, and applying channel traffic, captured cuts (`render_cut`) and events. |
+| `tui/surfaces` | The auxiliary reads (notes, queue, worktree, jobs, context, advisor nudges, goal, todo seed) and their edge detectors. |
+| `tui/session_control` | Daemon control requests and reconnection. |
+| `tui/projection` | The record row cache and render cache. |
+| `tui/submit`, `tui/interaction` | Composer submission and keyboard and mouse handling. |
+| `tui/tick` | `update_tick`/`settle_tick`: the drain chain and the read services. |
+| `tui/todo_panel` | The pinned todo panel and the one-line transcript summary of a `todo` call. |
+| `tui/advisor_history`, `tui/collaboration_view` | Advisor-only commentary in the main transcript, and the inspector's Collaboration tab. |
 | `tui/pacing` | Frame and viewport pacing and the poll cadence, as pure arithmetic. |
 | `tui/connection` | The terminal's event names over the shared `host/websocket` transport. |
 | `tui/session_wire` | v2 command encoding and single-frame decoding: correlated replies versus pushes. |

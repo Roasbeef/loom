@@ -88,6 +88,7 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
       process.send(into, SawNotes(caller:, prefix:))
       Ok([#("agent/main/note", json.String("kept"))])
     },
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(caller) {
       process.send(into, SawRoster(caller:))
       Ok([
@@ -115,6 +116,7 @@ pub fn refusing(refusal: Refusal) -> Agency {
     send: fn(_caller, _to, _text, _within_ms) { Error(refusal) },
     note: fn(_caller, _key, _value) { Error(refusal) },
     notes: fn(_caller, _prefix) { Error(refusal) },
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],

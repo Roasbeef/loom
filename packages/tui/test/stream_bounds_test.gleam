@@ -45,6 +45,9 @@ import gleam/string
 import host/bootstrap
 import tui
 import tui/connection
+import tui/inbound
+import tui/model as tui_model
+import tui/transcript_lines
 import tui_test/pushed
 import weft/actor
 
@@ -88,7 +91,7 @@ const render_every = 64
 const min_drain_rate = 2000
 
 // The refc bytes the whole holder is allowed to reference once collected. The
-// live region itself is held to `tui.live_stream_limit` doubled — the exact
+// live region itself is held to `transcript_lines.live_stream_limit` doubled — the exact
 // bound the second fixture asserts on the model — and this coarser number has
 // room above it for the wrapped rows a paint leaves cached beside it. What it
 // rules out is the shape the leak had: bytes rising with the token count.
@@ -104,7 +107,7 @@ type Command {
 }
 
 type Holder {
-  Holder(model: tui.Model, seen: Int)
+  Holder(model: tui_model.Model, seen: Int)
 }
 
 fn holder() -> actor.StartResult(Subject(Command)) {
@@ -116,7 +119,7 @@ fn holder() -> actor.StartResult(Subject(Command)) {
         actor.continue(holder)
       }
       Frame(message) -> {
-        let model = tui.accept_connection_message(holder.model, message)
+        let model = inbound.accept_connection_message(holder.model, message)
         let seen = holder.seen + 1
 
         // The paint the shipped loop would have done after this batch. A
@@ -327,17 +330,18 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
         pushed.delta("main", "op-1", token(i))
       }),
       pushed.attached(),
-      tui.accept_connection_message,
+      inbound.accept_connection_message,
     )
-  let assert [tui.Stream(bytes:, fragments:, ..)] = model.streams
+  let assert [tui_model.Stream(bytes:, fragments:, ..)] = model.streams
     as "the live answer is on screen as one stream"
 
   // The exact invariant, on the model rather than on the process: the region
   // is collapsed back to `live_stream_limit` whenever it would pass twice it,
   // so no answer length can make it grow.
-  assert bytes <= tui.live_stream_limit * 2
+  assert bytes <= transcript_lines.live_stream_limit * 2
     as "a live stream never retains more than twice the preview bound"
-  assert list.length(fragments) <= 2 * tui.live_stream_limit / delta_bytes
+  assert list.length(fragments)
+    <= 2 * transcript_lines.live_stream_limit / delta_bytes
     as "collapsing keeps the fragment list bounded too"
 
   // The next operation is a different answer, so the previous one's fragments
@@ -346,8 +350,12 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
   // lane drops a pushed `op_transition` and a pushed `entry_added` rather
   // than forwarding them, so neither path is reachable from a frame here.
   let next =
-    tui.accept_connection_message(model, pushed.delta("main", "op-2", "New"))
-  assert next.streams == [tui.Stream("main", "op-2", "", "text", ["New"], 3)]
+    inbound.accept_connection_message(
+      model,
+      pushed.delta("main", "op-2", "New"),
+    )
+  assert next.streams
+    == [tui_model.Stream("main", "op-2", "", "text", ["New"], 3)]
     as "the previous operation's fragments are dropped, not carried forward"
   let assert Some(_) = next.channel as "the lane survives the whole answer"
   assert next.notices == 0 as "no notice was pushed in this fixture"

@@ -1,7 +1,9 @@
 //// The `agent_*` tools: how a model starts, addresses, and joins other
 //// agents.
 ////
-//// Six tools, one family, each a thin shell over one **Agency** call.
+//// Six tools, one family, each a thin shell over one **Agency** call, and
+//// a seventh, `todo` (`tools/todos`), registered beside them because it
+//// keeps its board in the caller's own blackboard cell through the same seam.
 //// The Agency is the messaging plane's single door, the way
 //// `Ctx.clear_call` is the outside world's: a record of closures declared
 //// here in plain data and filled in by whoever can see a live runtime
@@ -128,12 +130,13 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/todos
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 /// The tool names this family registers, in registry order.
 pub const tool_names = [
   "agent_note", "agent_notes", "agent_roster", "agent_send", "agent_spawn",
-  "agent_wait",
+  "agent_wait", "todo",
 ]
 
 /// The name of the tool that starts a child. Named as a constant because
@@ -586,6 +589,12 @@ pub type Agency {
     /// Reads blackboard cells under an `agent/`-relative key prefix.
     notes: fn(Caller, Option(String)) ->
       Result(List(#(String, JsonValue)), Refusal),
+    /// Runs one pure step over the caller's own todo cell under a
+    /// compare-and-set, answering the value that landed. The step sees the
+    /// stored value, or `None` when there is none, and its `Error` is the
+    /// model's mistake, returned as `InvalidArgument`.
+    todos: fn(Caller, fn(Option(JsonValue)) -> Result(JsonValue, String)) ->
+      Result(JsonValue, Refusal),
     /// The caller's parent and live descendants, from durable state.
     roster: fn(Caller) -> Result(List(Peer), Refusal),
     /// The ceiling a wait's budget is clamped to, in milliseconds.
@@ -1323,14 +1332,15 @@ pub fn describe(refusal: Refusal) -> String {
 
 // --- the tools -------------------------------------------------------------
 
-/// The six agent tools over one Agency.
+/// The agent tools over one Agency: the six `agent_*` tools and `todo`,
+/// which keeps its board in a blackboard cell and so needs the same seam.
 ///
 /// Registration is gated on an Agency existing at all, rather than on an
 /// `Option` inside `Ctx`, and the reason is arithmetic: the wire tool
 /// array is built from the *registry*, sits at the very front of the
 /// provider's cached byte prefix, and is paid for on every request of
 /// every strand forever. A host with no messaging plane would otherwise
-/// ship six tool definitions the model can only ever be refused on.
+/// ship seven tool definitions the model can only ever be refused on.
 ///
 /// ## Examples
 ///
@@ -1346,7 +1356,19 @@ pub fn tools(agency: Agency) -> List(Tool) {
     send_tool(agency.send),
     spawn_tool(agency.spawn, agency.model_names),
     wait_tool(agency.wait, agency.max_wait_ms),
+    todos.tool(todo_door(agency.todos)),
   ]
+}
+
+// Binds the one slot before building the closure, for the reason
+// `agent_size_test` pins: a closure over the whole Agency would copy every
+// other slot into the tool as well.
+fn todo_door(
+  slot: fn(Caller, fn(Option(JsonValue)) -> Result(JsonValue, String)) ->
+    Result(JsonValue, Refusal),
+) -> fn(Ctx, fn(Option(JsonValue)) -> Result(JsonValue, String)) ->
+  Result(JsonValue, String) {
+  fn(ctx, step) { slot(caller(ctx), step) |> result.map_error(describe) }
 }
 
 /// The `agent_spawn` tool: start a child strand on a brief.

@@ -42,6 +42,7 @@ import tui/approval
 import tui/approval_panel
 import tui/connection
 import tui/frame
+import tui/model as tui_model
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -85,7 +86,10 @@ pub fn hostile_tool_calls_render_inert_test() {
   assert_no_residue(collapsed)
 
   let detailed =
-    tui.Model(..quiet_model(connection.new_inbox()), details_expanded: True)
+    tui_model.Model(
+      ..quiet_model(connection.new_inbox()),
+      details_expanded: True,
+    )
   let expanded = last_rows(detailed, 96, 30, calls())
   assert_shows(expanded, ["argument-sentinel", "result-sentinel"])
   assert_inert(expanded)
@@ -122,7 +126,8 @@ pub fn hostile_agent_names_render_inert_test() {
       #("sub:one", hostile_tail("child-sentinel"), "idle"),
     ])
   let rail_inbox = connection.new_inbox()
-  let railed = tui.Model(..quiet_model(rail_inbox), agent_rail_visible: True)
+  let railed =
+    tui_model.Model(..quiet_model(rail_inbox), agent_rail_visible: True)
   let rail = last_rows(railed, 120, 24, [deliver(names)])
   assert_shows(rail, ["active-sentinel", "child-sentinel", "phase-sentinel"])
   assert_inert(rail)
@@ -130,9 +135,9 @@ pub fn hostile_agent_names_render_inert_test() {
 
   let overlay_inbox = connection.new_inbox()
   let opened =
-    tui.Model(
+    tui_model.Model(
       ..quiet_model(overlay_inbox),
-      overlay: tui.AgentInspector(agents.inspect("main")),
+      overlay: tui_model.AgentInspector(agents.inspect("main")),
     )
   let inspector = last_rows(opened, 120, 30, [deliver(names)])
   assert_shows(inspector, [
@@ -160,10 +165,10 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
   let review = hostile_review()
   let panel = approval_panel.new(review)
   let model =
-    tui.Model(
+    tui_model.Model(
       ..quiet_model(connection.new_inbox()),
       approvals: [review],
-      overlay: tui.ApprovalInspector(panel),
+      overlay: tui_model.ApprovalInspector(panel),
     )
   let rows = last_rows(model, 110, 30, [])
 
@@ -182,7 +187,7 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
     approval_panel.update(keys.Ctrl("g"), panel)
   let raw_rows =
     last_rows(
-      tui.Model(..model, overlay: tui.ApprovalInspector(raw)),
+      tui_model.Model(..model, overlay: tui_model.ApprovalInspector(raw)),
       110,
       30,
       [],
@@ -304,7 +309,7 @@ fn deliver(payload: String) -> virtual_backend.Step {
 // frame the client deferred to pace a burst, so the last frame is the one
 // an operator would be looking at when the run stopped.
 fn last_rows(
-  model: tui.Model,
+  model: tui_model.Model,
   width: Int,
   height: Int,
   steps: List(virtual_backend.Step),
@@ -324,8 +329,8 @@ fn last_rows(
 
 // The demo scaffolding removed, so a frame shows only what this module put
 // there and a stray control character can only have come from the payload.
-fn quiet_model(inbox: Subject(connection.Message)) -> tui.Model {
-  tui.Model(
+fn quiet_model(inbox: Subject(connection.Message)) -> tui_model.Model {
+  tui_model.Model(
     ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
     transcript: [],
     strands: [],

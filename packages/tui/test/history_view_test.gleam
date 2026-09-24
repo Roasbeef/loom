@@ -16,6 +16,9 @@ import gleam/string
 import tui
 import tui/connection
 import tui/history_view
+import tui/inbound
+import tui/layout
+import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
 import tui/snapshot
@@ -345,9 +348,9 @@ pub fn history_sparse_strand_keeps_endpoint_across_unrelated_pages_test() {
   assert branch.unloaded == None
 }
 
-fn top_identity(model: tui.Model) {
+fn top_identity(model: tui_model.Model) {
   let prefix = model.rendered_row_count - list.length(model.rendered_anchors)
-  let height = tui.hit_area(model, geometry.Position(5, 5)).size.height
+  let height = layout.hit_area(model, geometry.Position(5, 5)).size.height
   model.rendered_anchors
   |> list.index_map(fn(row, index) { #(row, prefix + index) })
   |> list.filter(fn(pair) {
@@ -385,7 +388,7 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
       workspace.Context("/work", None),
       fn() { 0 },
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       cut,
       current,
       session_channel.Requested,
@@ -398,7 +401,10 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
   let anchor = top_identity(reading)
   let assert Ok(_) = anchor as "the fixture scrolls into a durable message"
   let pending =
-    tui.Model(..reading, scrollback: history_view.sent(reading.scrollback, 131))
+    tui_model.Model(
+      ..reading,
+      scrollback: history_view.sent(reading.scrollback, 131),
+    )
   let page =
     window(
       list.filter(all, fn(item) {
@@ -406,7 +412,7 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
       }),
     )
   let expanded =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       pending,
       session_channel.HistoryPage(page, 131, 30),
     )
@@ -416,7 +422,7 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
   let latest =
     snapshot.Captured(..cut, next_seq: 251, window: window(list.take(all, 100)))
   let arrived =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       expanded,
       session_channel.Captured(latest, view(250), session_channel.Notified),
     )
@@ -532,7 +538,7 @@ fn frozen_history() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       cut,
       current,
       session_channel.Requested,
@@ -552,7 +558,7 @@ pub fn metadata_refresh_reuses_frozen_history_anchors_test() {
   // same scroll anchors; equal text alone would miss that repeated work.
   let refreshed =
     reading
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       snapshot.Captured(
         ..cut,
         metadata: json.Object([#("revision", json.Int(1))]),
@@ -576,7 +582,7 @@ pub fn streamed_output_reuses_frozen_history_anchors_test() {
   let #(_, _, reading) = frozen_history()
   let streamed =
     reading
-    |> tui.apply_channel_update(session_channel.Streamed(
+    |> inbound.apply_channel_update(session_channel.Streamed(
       "main",
       "operation",
       "generation",
@@ -629,7 +635,7 @@ pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
         // identities as well as rows catches an old anchor retained after a
         // reflow, a detail toggle, or a surface with no durable provenance.
         let fresh =
-          tui.Model(
+          tui_model.Model(
             ..changed,
             record_cache_valid: False,
             rendered_revision: -1,
@@ -651,7 +657,7 @@ pub fn short_frozen_history_keeps_return_to_live_available_at_zero_offset_test()
       workspace.Context("/work", None),
       fn() { 0 },
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       first,
       view(10),
       session_channel.Requested,
@@ -665,7 +671,7 @@ pub fn short_frozen_history_keeps_return_to_live_available_at_zero_offset_test()
     as "zero offset cannot silently unfreeze the live preview"
   let later = captured_window(list.take(entries(11), 5), 7, 12)
   let waiting =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       reading,
       session_channel.Captured(later, view(11), session_channel.Refreshed),
     )
@@ -694,7 +700,7 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       cut,
       view(1200),
       session_channel.Requested,
@@ -706,7 +712,7 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
       let assert Some(#(after, before)) = history_view.range(model.scrollback)
         as "one wheel gesture keeps demand alive across unrelated sequence pages"
       let pending =
-        tui.Model(
+        tui_model.Model(
           ..model,
           scrollback: history_view.sent(model.scrollback, before),
         )
@@ -716,7 +722,7 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
             snapshot.sequence(item) > after && snapshot.sequence(item) < before
           }),
         )
-      tui.apply_channel_update(
+      inbound.apply_channel_update(
         pending,
         session_channel.HistoryPage(page, before, after),
       )
@@ -795,7 +801,7 @@ fn two_strand_view(main_leaf: Int, sub_leaf: Int) {
 }
 
 /// Drives one bounded older page for whatever the model currently demands.
-fn deliver_page(model: tui.Model, all) {
+fn deliver_page(model: tui_model.Model, all) {
   let assert Some(#(after, before)) = history_view.range(model.scrollback)
     as "a strand missing its parent keeps one bounded demand alive"
   let page =
@@ -804,8 +810,15 @@ fn deliver_page(model: tui.Model, all) {
         snapshot.sequence(item) > after && snapshot.sequence(item) < before
       }),
     )
-  tui.Model(..model, scrollback: history_view.sent(model.scrollback, before))
-  |> tui.apply_channel_update(session_channel.HistoryPage(page, before, after))
+  tui_model.Model(
+    ..model,
+    scrollback: history_view.sent(model.scrollback, before),
+  )
+  |> inbound.apply_channel_update(session_channel.HistoryPage(
+    page,
+    before,
+    after,
+  ))
   |> tui.update(backend.Tick, _)
 }
 
@@ -814,14 +827,14 @@ fn deliver_page(model: tui.Model, all) {
 /// An accepted page adds older rows above the reading position, which leaves
 /// the reader well short of the top; the next demand is only raised once the
 /// reader has scrolled back to it.
-fn scroll_to_top(model: tui.Model) {
+fn scroll_to_top(model: tui_model.Model) {
   list.fold(list.repeat(Nil, 200), model, fn(model, _) {
     tui.update(backend.MouseScroll(5, 5, True), model)
   })
 }
 
 /// Types a slash command into the composer and submits it.
-fn run_command(model: tui.Model, text: String) {
+fn run_command(model: tui_model.Model, text: String) {
   string.to_graphemes(text)
   |> list.fold(model, fn(model, key) {
     tui.update(backend.KeyPress(key), model)
@@ -836,7 +849,7 @@ fn two_strand_model(all, current) {
     workspace.Context("/work", None),
     fn() { 0 },
   )
-  |> tui.apply_channel_update(session_channel.Captured(
+  |> inbound.apply_channel_update(session_channel.Captured(
     captured_window(list.take(all, 100), 301, 401),
     current,
     session_channel.Requested,
@@ -870,7 +883,7 @@ pub fn switching_strands_and_back_preserves_loaded_history_test() {
   assert list.length(returned.records) == full
   assert history_view.branch(returned.scrollback, current).unloaded == None
   assert list.first(returned.transcript)
-    == Ok(tui.Line(tui.System, "Beginning of this conversation."))
+    == Ok(tui_model.Line(tui_model.System, "Beginning of this conversation."))
   assert returned.scrollback.request == history_view.Quiet
 }
 
@@ -916,7 +929,7 @@ pub fn a_retired_strand_releases_its_parked_scrollback_test() {
       protocol.Strand("main", Some("main"), None),
     ])
   let retired =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       visited,
       session_channel.Captured(
         captured_window(list.take(all, 100), 301, 402),
@@ -941,7 +954,7 @@ pub fn history_prefetch_starts_before_the_last_ten_rows_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       captured_window(list.take(entries(400), 100), 301, 401),
       view(400),
       session_channel.Requested,

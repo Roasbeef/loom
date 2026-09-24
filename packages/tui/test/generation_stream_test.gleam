@@ -17,7 +17,9 @@ import machine/operation
 import machine/strand
 import tui
 import tui/frame
+import tui/inbound
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -47,13 +49,21 @@ fn delta_for(operation, generation, kind, text) {
 pub fn a_new_request_replaces_every_kind_of_the_previous_answer_test() {
   let first =
     pushed.attached()
-    |> tui.accept_connection_message(delta(
+    |> inbound.accept_connection_message(delta(
       "request-1",
       "thinking",
       "old thought",
     ))
-    |> tui.accept_connection_message(delta("request-1", "text", "old answer"))
-    |> tui.accept_connection_message(delta("request-2", "text", "new answer"))
+    |> inbound.accept_connection_message(delta(
+      "request-1",
+      "text",
+      "old answer",
+    ))
+    |> inbound.accept_connection_message(delta(
+      "request-2",
+      "text",
+      "new answer",
+    ))
   assert list.map(first.streams, fn(stream) { stream.fragments })
     == [["new answer"]]
     as "a tool round or retry starts a new answer within the same operation"
@@ -62,14 +72,22 @@ pub fn a_new_request_replaces_every_kind_of_the_previous_answer_test() {
 pub fn a_late_terminal_cannot_remove_a_newer_answer_test() {
   let first =
     pushed.attached()
-    |> tui.accept_connection_message(delta("request-1", "text", "old answer"))
-    |> tui.accept_connection_message(delta("request-2", "text", "new answer"))
-    |> tui.accept_connection_message(delta("request-1", "end", ""))
+    |> inbound.accept_connection_message(delta(
+      "request-1",
+      "text",
+      "old answer",
+    ))
+    |> inbound.accept_connection_message(delta(
+      "request-2",
+      "text",
+      "new answer",
+    ))
+    |> inbound.accept_connection_message(delta("request-1", "end", ""))
   assert list.map(first.streams, fn(stream) { stream.fragments })
     == [["new answer"]]
     as "completion owns only its original request"
   let ended =
-    first |> tui.accept_connection_message(delta("request-2", "end", ""))
+    first |> inbound.accept_connection_message(delta("request-2", "end", ""))
   assert list.map(ended.streams, fn(stream) { stream.fragments }) == [[]]
     as "completion retains only an empty identity marker against late previews"
 }
@@ -79,7 +97,11 @@ pub fn a_late_terminal_cannot_remove_a_newer_answer_test() {
 pub fn a_late_credited_idle_cut_preserves_a_new_request_test() {
   let first =
     pushed.attached()
-    |> tui.accept_connection_message(delta("request-2", "text", "new answer"))
+    |> inbound.accept_connection_message(delta(
+      "request-2",
+      "text",
+      "new answer",
+    ))
   let channel =
     session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
   let #(_, after) =
@@ -88,7 +110,7 @@ pub fn a_late_credited_idle_cut_preserves_a_new_request_test() {
       #(channel, first),
       fn(acc, incoming) {
         let #(channel, changes) = session_channel.receive(acc.0, incoming)
-        #(channel, list.fold(changes, acc.1, tui.apply_channel_update))
+        #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
   assert list.map(after.streams, fn(stream) { stream.fragments })
@@ -177,7 +199,7 @@ fn captured(model, metadata) {
       #(channel, model),
       fn(acc, incoming) {
         let #(channel, changes) = session_channel.receive(acc.0, incoming)
-        #(channel, list.fold(changes, acc.1, tui.apply_channel_update))
+        #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
   model
@@ -185,7 +207,7 @@ fn captured(model, metadata) {
 
 fn rendered(model) {
   let painted = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(painted, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 
@@ -206,13 +228,13 @@ pub fn a_newer_request_end_never_resurrects_an_older_captured_preview_test() {
   assert string.contains(rendered(first), "obsolete-preview") as rendered(first)
   let ended =
     first
-    |> tui.accept_connection_message(delta_for(
+    |> inbound.accept_connection_message(delta_for(
       id,
       "request-B",
       "text",
       "new-answer",
     ))
-    |> tui.accept_connection_message(delta_for(id, "request-B", "end", ""))
+    |> inbound.accept_connection_message(delta_for(id, "request-B", "end", ""))
   assert !string.contains(rendered(ended), "obsolete-preview")
     as "ending B cannot reveal A from the prior cut"
   assert !string.contains(rendered(captured(ended, data)), "obsolete-preview")
@@ -224,7 +246,7 @@ pub fn exact_durable_retirement_clears_a_request_without_an_end_push_test() {
   let #(other, _) = ids.mint_op(generator)
   let first =
     pushed.attached()
-    |> tui.accept_connection_message(delta_for(
+    |> inbound.accept_connection_message(delta_for(
       ids.op_id_to_string(op),
       "request",
       "text",
@@ -248,7 +270,7 @@ pub fn completed_answer_stays_visible_until_its_record_arrives_test() {
   let generation = named_generation()
   let streaming =
     pushed.attached()
-    |> tui.accept_connection_message(delta(
+    |> inbound.accept_connection_message(delta(
       generation,
       "text",
       "completed-answer",
@@ -256,7 +278,7 @@ pub fn completed_answer_stays_visible_until_its_record_arrives_test() {
   assert string.contains(rendered(streaming), "completed-answer")
     as "the answer is visible before the terminal observation"
   let ended =
-    streaming |> tui.accept_connection_message(delta(generation, "end", ""))
+    streaming |> inbound.accept_connection_message(delta(generation, "end", ""))
   assert string.contains(rendered(ended), "completed-answer")
     as "provider completion cannot erase the answer before durable handoff"
 }
@@ -279,12 +301,12 @@ pub fn exact_response_record_replaces_ended_stream_once_test() {
   let generation = named_generation()
   let started =
     pushed.attached()
-    |> tui.accept_connection_message(delta(
+    |> inbound.accept_connection_message(delta(
       generation,
       "text",
       "completed-answer",
     ))
-    |> tui.accept_connection_message(delta(generation, "end", ""))
+    |> inbound.accept_connection_message(delta(generation, "end", ""))
   let unrelated = capture_answer(started, 992)
   assert list.length(unrelated.streams) == 2
     as "equal text in a different entry cannot retire the response"
@@ -299,15 +321,15 @@ pub fn ended_response_rejects_late_fragments_and_preserves_idle_cut_test() {
   let generation = named_generation()
   let ended =
     pushed.attached()
-    |> tui.accept_connection_message(delta(
+    |> inbound.accept_connection_message(delta(
       generation,
       "text",
       "completed-answer",
     ))
-    |> tui.accept_connection_message(delta(generation, "end", ""))
+    |> inbound.accept_connection_message(delta(generation, "end", ""))
   let late =
     ended
-    |> tui.accept_connection_message(delta(
+    |> inbound.accept_connection_message(delta(
       generation,
       "text",
       "obsolete-fragment",
@@ -368,7 +390,7 @@ fn capture_answer(model, seed) {
     )
   let assert Ok(view) = snapshot_view.decode(cut)
     as "the captured response and strand leaf form a valid cut"
-  tui.apply_channel_update(
+  inbound.apply_channel_update(
     model,
     session_channel.Captured(cut, view, session_channel.Refreshed),
   )
@@ -379,13 +401,13 @@ pub fn provider_end_does_not_replay_a_screenful_of_completed_text_test() {
   let text = string.repeat("visible answer paragraph.\n\n", 80)
   let painted =
     pushed.attached()
-    |> tui.accept_connection_message(delta(generation, "text", text))
+    |> inbound.accept_connection_message(delta(generation, "text", text))
     |> tui.update(backend.Resize(84, 24), _)
   assert painted.rendered_row_count > 24
     as "the completed answer actually exceeds one viewport"
   let ended =
     painted
-    |> tui.accept_connection_message(delta(generation, "end", ""))
+    |> inbound.accept_connection_message(delta(generation, "end", ""))
     |> tui.update(backend.Tick, _)
   assert ended.rendered_rows == painted.rendered_rows
     as "the terminal marker cannot replace the answer with older history"
@@ -411,7 +433,7 @@ pub fn preview_only_answer_survives_its_matching_end_test() {
     as "an attachment can display only the captured preview"
   let ended =
     attached
-    |> tui.accept_connection_message(delta_for(id, generation, "end", ""))
+    |> inbound.accept_connection_message(delta_for(id, generation, "end", ""))
   assert string.contains(rendered(ended), "sampled-answer")
     as "end cannot erase a preview without a subsequent text delta"
   assert list.length(ended.streams) == 2

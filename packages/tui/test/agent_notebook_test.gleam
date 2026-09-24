@@ -13,8 +13,11 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/inbound
+import tui/model as tui_model
 import tui/notes_view
 import tui/protocol
+import tui/render
 import tui/session_channel
 import tui/workspace
 import tui_test/gateway
@@ -45,7 +48,7 @@ fn press(model, key) {
 fn shown(model, width, height) {
   let model = tui.update(backend.Resize(width, height), model)
   let model = tui.update(backend.Tick, model)
-  tui.view(model, geometry.rect_new(0, 0, width, height)).0
+  render.view(model, geometry.rect_new(0, 0, width, height)).0
   |> frame.buffer_to_text
 }
 
@@ -58,14 +61,14 @@ fn inspect_worker_notes(initial) {
 
 pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("draft for main"),
     )
   let inspected = inspect_worker_notes(initial)
   let loaded =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -82,9 +85,10 @@ pub fn inspected_worker_notes_keep_the_main_draft_and_target_test() {
 }
 
 pub fn late_reply_for_another_inspected_strand_cannot_replace_notes_test() {
-  let inspected = inspect_worker_notes(tui.Model(..model(), strands: roster()))
+  let inspected =
+    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
   let worker =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -93,7 +97,7 @@ pub fn late_reply_for_another_inspected_strand_cannot_replace_notes_test() {
       ),
     )
   let main =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       worker,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(board("main", [note("main-plan", "main value")])),
@@ -106,9 +110,10 @@ pub fn late_reply_for_another_inspected_strand_cannot_replace_notes_test() {
 }
 
 pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
-  let inspected = inspect_worker_notes(tui.Model(..model(), strands: roster()))
+  let inspected =
+    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
   let first =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -121,7 +126,7 @@ pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
     )
   let selected = press(first, "]")
   let reordered =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       selected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -136,7 +141,7 @@ pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
   assert reordered.note_selected == Some("status")
   assert string.contains(shown(reordered, 100, 30), "status value")
   let deleted =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       reordered,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(board("worker", [note("plan", "plan value")])),
@@ -148,15 +153,15 @@ pub fn notebook_selection_follows_key_when_rows_reorder_or_disappear_test() {
 
 pub fn notes_own_the_surface_after_diff_at_wide_and_narrow_sizes_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
-      diff_view: tui.DiffVisible,
+      diff_view: tui_model.DiffVisible,
       input: textarea.state_from_string("/notes"),
     )
   let opened = press(initial, "enter")
   let loaded =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       opened,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -180,9 +185,10 @@ pub fn raw_note_expansion_preserves_the_original_json_document_test() {
         #("evidence", json.Array([json.String("one"), json.String("two")])),
       ]),
     )
-  let inspected = inspect_worker_notes(tui.Model(..model(), strands: roster()))
+  let inspected =
+    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
   let loaded =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(board("worker", [note("report", raw)])),
@@ -198,13 +204,13 @@ pub fn raw_note_expansion_preserves_the_original_json_document_test() {
 
 pub fn changing_detail_or_closing_inspection_never_retargets_the_composer_test() {
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..model(),
       strands: roster(),
       input: textarea.state_from_string("keep main draft"),
     )
   let notes =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspect_worker_notes(initial),
       session_channel.Auxiliary(
         protocol.NotesSnapshot(board("worker", [note("plan", "worker plan")])),
@@ -217,11 +223,12 @@ pub fn changing_detail_or_closing_inspection_never_retargets_the_composer_test()
   assert messages.active_strand == "main"
   assert closed.active_strand == "main"
   assert textarea.value(closed.input) == "keep main draft"
-  assert closed.overlay == tui.NoOverlay
+  assert closed.overlay == tui_model.NoOverlay
 }
 
 pub fn missing_notes_board_reports_unavailability_for_the_inspected_target_test() {
-  let inspected = inspect_worker_notes(tui.Model(..model(), strands: roster()))
+  let inspected =
+    inspect_worker_notes(tui_model.Model(..model(), strands: roster()))
   let rendered = shown(inspected, 80, 24)
   assert string.contains(rendered, "no agent notes are available for worker")
   assert !string.contains(rendered, "notes for main")
@@ -240,9 +247,10 @@ pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
   let streaming = tui.update(backend.Tick, initial)
   let reading = tui.update(backend.MouseScroll(5, 5, True), streaming)
   assert reading.scroll_offset > 0
-  let inspected = inspect_worker_notes(tui.Model(..reading, strands: roster()))
+  let inspected =
+    inspect_worker_notes(tui_model.Model(..reading, strands: roster()))
   let loaded =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -264,11 +272,11 @@ pub fn changing_inspected_note_preserves_underlying_transcript_position_test() {
 
 pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
   let initial =
-    tui.Model(..model(), strands: roster(), notes_open: True)
+    tui_model.Model(..model(), strands: roster(), notes_open: True)
     |> tui.update(backend.Resize(100, 30), _)
   let inspected = inspect_worker_notes(initial)
   let loaded =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       inspected,
       session_channel.Auxiliary(
         protocol.NotesSnapshot(
@@ -278,13 +286,13 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
     )
   let settled = tui.update(backend.Tick, loaded)
   let inspected_frame =
-    tui.view(settled, geometry.rect_new(0, 0, 100, 30)).0
+    render.view(settled, geometry.rect_new(0, 0, 100, 30)).0
     |> frame.buffer_to_text
   assert string.contains(inspected_frame, "WORKER ONLY BODY")
   let closed = press(settled, "esc")
   let rendered =
-    tui.view(
-      tui.Model(..closed, frame_cache: None),
+    render.view(
+      tui_model.Model(..closed, frame_cache: None),
       geometry.rect_new(0, 0, 100, 30),
     ).0
     |> frame.buffer_to_text

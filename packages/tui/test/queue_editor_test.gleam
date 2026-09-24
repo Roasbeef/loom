@@ -19,11 +19,15 @@ import tui/command
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/inbound
+import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/submit
 import tui/workspace
 import tui_test/pushed
 
@@ -86,13 +90,16 @@ fn metadata(rows) {
   )
 }
 
-fn receive(model: tui.Model, incoming: connection.Message) -> tui.Model {
+fn receive(
+  model: tui_model.Model,
+  incoming: connection.Message,
+) -> tui_model.Model {
   let assert Some(channel) = model.channel as "the fixture has an attached lane"
   let #(channel, updates) = session_channel.receive(channel, incoming)
   list.fold(
     updates,
-    tui.Model(..model, channel: Some(channel)),
-    tui.apply_channel_update,
+    tui_model.Model(..model, channel: Some(channel)),
+    inbound.apply_channel_update,
   )
 }
 
@@ -106,9 +113,9 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
     attempt.Trace(attempt.Id(1), fn(event) { process.send(events, event) })
   let channel = session_channel.replay_traced(expected, fn() { 0 }, trace)
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       channel: Some(channel),
       input: textarea.state_from_string("ordinary composer draft"),
       attachments: [composer.Attachment("retained pasted context", 10)],
@@ -182,7 +189,7 @@ fn painted(model) {
 
 fn painted_at(model, width, height) {
   let model = tui.update(backend.Resize(width, height), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, width, height))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, width, height))
   frame.buffer_to_text(buffer)
 }
 
@@ -211,7 +218,7 @@ fn full_reply(model, request, id, revision, text) {
   )
 }
 
-fn draft(model: tui.Model) -> queue_editor.Draft {
+fn draft(model: tui_model.Model) -> queue_editor.Draft {
   let assert Some(draft) = model.queue_editor.draft
     as "a credited complete fetch has opened the queue draft"
   draft
@@ -219,7 +226,7 @@ fn draft(model: tui.Model) -> queue_editor.Draft {
 
 fn opened(text) {
   let #(model, events) = ready([pending("A")])
-  let waiting = model |> tui.open_queue |> key("enter")
+  let waiting = model |> submit.open_queue |> key("enter")
   let request = issued(events, "queued_input")
   #(full_reply(waiting, request, "A", 3, text), events)
 }
@@ -243,7 +250,7 @@ fn refused(model, request, code) {
 
 pub fn queue_inspector_preserves_composer_and_attachments_test() {
   let #(model, _) = ready([pending("A"), pending("B")])
-  let opened = tui.open_queue(model)
+  let opened = submit.open_queue(model)
   assert opened.queue_editor.surface == queue_editor.Inspector
   assert opened.input == model.input
   assert opened.attachments == model.attachments
@@ -259,7 +266,7 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
   assert command.parse("/queue") == command.QueueInspect
   let slash =
     key(
-      tui.Model(..model, input: textarea.state_from_string("/queue")),
+      tui_model.Model(..model, input: textarea.state_from_string("/queue")),
       "enter",
     )
   assert slash.queue_editor.surface == queue_editor.Inspector
@@ -299,7 +306,7 @@ pub fn queue_inspector_labels_priority_access_and_excerpt_provenance_test() {
     ),
   ]
   let #(model, events) = ready(rows)
-  let opened = tui.open_queue(model)
+  let opened = submit.open_queue(model)
   let wide = painted(opened)
   assert string.contains(wide, "▸ urgent captured")
   assert string.contains(wide, "[STEER] [EDIT]")
@@ -323,7 +330,7 @@ pub fn compact_excerpt_paging_reaches_tail_and_resize_clamps_render_test() {
   let compact =
     model
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let first = painted_at(compact, 40, 12)
   assert string.contains(first, "line-01")
   assert !string.contains(first, "line-12-tail")
@@ -356,7 +363,7 @@ pub fn compact_single_line_paging_reaches_a_twenty_cell_suffix_test() {
   let compact =
     model
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
     |> key("pagedown")
   assert string.contains(painted_at(compact, 40, 12), "ABCDEFGHIJKLMNOPQRST")
 }
@@ -367,12 +374,12 @@ pub fn two_row_queue_title_pages_beside_a_multiline_composer_test() {
   let #(model, _) =
     ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
   let compact =
-    tui.Model(
+    tui_model.Model(
       ..model,
       input: textarea.state_from_string("ordinary draft\nsecond draft line"),
     )
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let first = painted_at(compact, 40, 12)
   assert string.contains(first, "line-01")
   assert string.contains(first, "ordinary draft")
@@ -395,9 +402,9 @@ pub fn two_row_queue_title_pages_beside_an_active_status_test() {
   let #(model, _) =
     ready([pending_as("A", "queue", excerpt, 3, snapshot_view.Editable)])
   let compact =
-    tui.Model(..model, submitting: Some("main"))
+    tui_model.Model(..model, submitting: Some("main"))
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let first = painted_at(compact, 40, 12)
   assert string.contains(first, "line-01")
   assert string.contains(first, "submitting")
@@ -422,7 +429,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
   let compact =
     model
     |> tui.update(backend.Resize(40, 12), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let paged =
     list.fold(list.repeat(Nil, 20), compact, fn(current, _) {
       key(current, "pagedown")
@@ -433,7 +440,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
   let cut = snapshot.Captured(..previous, metadata: data, next_seq: 11)
   let assert Ok(view) = snapshot_view.decode(cut)
   let refreshed =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       paged,
       session_channel.Captured(cut, view, session_channel.Notified),
     )
@@ -443,7 +450,7 @@ pub fn compact_capture_refresh_uses_the_reserved_queue_viewport_test() {
 
 pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let selected = model |> tui.open_queue |> key("down")
+  let selected = model |> submit.open_queue |> key("down")
   assert string.contains(
     painted(selected),
     "▸ same instruction · [QUEUE] [EDIT]",
@@ -465,7 +472,7 @@ pub fn duplicate_excerpts_fetch_the_selected_identity_test() {
 
 pub fn clean_retained_draft_allows_editing_another_item_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let waiting = model |> tui.open_queue |> key("enter")
+  let waiting = model |> submit.open_queue |> key("enter")
   let request = issued(events, "queued_input")
   let clean = full_reply(waiting, request, "A", 3, "same instruction")
   let selected = clean |> key("esc") |> key("down") |> key("enter")
@@ -477,7 +484,7 @@ pub fn clean_retained_draft_allows_editing_another_item_test() {
 
 pub fn resuming_a_draft_cancels_another_items_late_fetch_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let waiting_a = model |> tui.open_queue |> key("enter")
+  let waiting_a = model |> submit.open_queue |> key("enter")
   let request_a = issued(events, "queued_input")
   let clean_a = full_reply(waiting_a, request_a, "A", 3, "same instruction")
   let waiting_b = clean_a |> key("esc") |> key("down") |> key("enter")
@@ -500,7 +507,7 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
   let opened =
     model
     |> tui.update(backend.Resize(120, 30), _)
-    |> tui.open_queue
+    |> submit.open_queue
   let selected =
     list.fold(list.repeat(Nil, 11), opened, fn(current, _) {
       key(current, "down")
@@ -521,7 +528,7 @@ pub fn queue_mouse_hit_excludes_controls_and_scrolled_heading_test() {
 pub fn reopening_queue_browses_before_resuming_a_retained_draft_test() {
   let #(editor, _) = opened("original complete text")
   let closed = editor |> key("esc") |> key("esc")
-  let browsing = tui.open_queue(closed)
+  let browsing = submit.open_queue(closed)
   assert browsing.queue_editor.surface == queue_editor.Inspector
   assert textarea.value(browsing.input) == "ordinary composer draft"
   assert string.contains(painted(browsing), "e resumes editing")
@@ -613,11 +620,11 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
       "new-connection",
     )
   let retry =
-    tui.Model(
+    tui_model.Model(
       ..locked,
       channel: reconnected.channel,
       captured: reconnected.captured,
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
   let fetching = key(retry, "ctrl+r")
   let read = issued(reads, "queued_input")
@@ -637,7 +644,7 @@ pub fn attachment_change_cannot_save_an_old_editor_test() {
   let attachment =
     snapshot.Attachment(..cut.attachment, connection_id: "replacement")
   let changed =
-    tui.Model(
+    tui_model.Model(
       ..model,
       captured: Some(#(snapshot.Captured(..cut, attachment:), view)),
     )
@@ -656,11 +663,11 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let uncertain = receive(saving, connection.NetworkFault("reply lost"))
   let #(reconnected, reads) = ready([pending("A"), pending("B")])
   let switched =
-    tui.Model(
+    tui_model.Model(
       ..uncertain,
       channel: reconnected.channel,
       captured: reconnected.captured,
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
     )
     |> key("esc")
     |> key("down")
@@ -710,7 +717,7 @@ pub fn full_document_decoder_bounds_encoded_bytes_and_image_counts_test() {
 
 pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test() {
   let #(model, events) = ready([pending("A"), pending("B")])
-  let selected = model |> tui.open_queue |> key("down")
+  let selected = model |> submit.open_queue |> key("down")
   let assert Some(#(previous, _)) = selected.captured
     as "selection is tied to a completed metadata cut"
   let assert Ok(data) = json.parse(metadata([pending("B"), pending("A")]))
@@ -719,7 +726,7 @@ pub fn selected_identity_survives_a_fresh_cut_reordering_duplicate_excerpts_test
   let assert Ok(view) = snapshot_view.decode(cut)
     as "the next capture retains both distinct queue identities"
   let reordered =
-    tui.apply_channel_update(
+    inbound.apply_channel_update(
       selected,
       session_channel.Captured(cut, view, session_channel.Notified),
     )
@@ -746,11 +753,11 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let retained = draft(edited)
     let #(other, events) = ready_as([pending("A")], expected, "new-connection")
     let switched =
-      tui.Model(
+      tui_model.Model(
         ..edited,
         channel: other.channel,
         captured: other.captured,
-        peer: tui.Replaying,
+        peer: tui_model.Replaying,
       )
     let refreshed = key(switched, "ctrl+r")
     assert requests(events, []) == []

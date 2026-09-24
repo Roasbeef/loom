@@ -18,7 +18,11 @@ import tui
 import tui/attachment
 import tui/connection
 import tui/frame
+import tui/inbound
+import tui/interaction
+import tui/model as tui_model
 import tui/session_channel
+import tui/session_control
 import tui/virtual_backend
 import tui/workspace
 import weft/actor
@@ -28,19 +32,19 @@ pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
   Inbound(message: connection.Message)
   Candidate(message: attachment.Event)
-  Catalogue(message: tui.ControlEvent)
+  Catalogue(message: tui_model.ControlEvent)
   Stop
 }
 
 type Driver {
-  Driver(model: tui.Model, commands: Subject(Message))
+  Driver(model: tui_model.Model, commands: Subject(Message))
 }
 
 /// The last model and complete frame from a bounded input script.
 pub type Sample {
   Sample(
     /// The real client model after the script's settling ticks.
-    model: tui.Model,
+    model: tui_model.Model,
     /// The last rendered terminal grid, for assertions and diagnostics.
     frame: String,
   )
@@ -87,14 +91,14 @@ pub fn start_recorded(
 
     // Refuse a failed handshake instead of exercising preview-mode echoes.
     case attachment.busy(model.candidate), model.peer, model.control_request {
-      True, _, _ | False, tui.Attached(_), _ | _, _, Some(_) ->
+      True, _, _ | False, tui_model.Attached(_), _ | _, _, Some(_) ->
         actor.initialised(Driver(model, subject))
         |> actor.selecting(selector(Driver(model, subject)))
         |> actor.returning(subject)
         |> Ok
-      False, tui.Preview, None
-      | False, tui.Replaying, None
-      | False, tui.Disconnected, None
+      False, tui_model.Preview, None
+      | False, tui_model.Replaying, None
+      | False, tui_model.Disconnected, None
       -> Error(model.notice)
     }
   })
@@ -140,15 +144,15 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
     // Re-deliver the selected message through the virtual loop so decoding
     // and recording still happen at the shipped client's normal boundary.
     Inbound(message) -> {
-      let run = run(tui.accept_connection_message(model, message), [])
+      let run = run(inbound.accept_connection_message(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Candidate(message) -> {
-      let run = run(tui.accept_candidate_event(model, message), [])
+      let run = run(interaction.accept_candidate_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Catalogue(message) -> {
-      let run = run(tui.accept_control_event(model, message), [])
+      let run = run(session_control.accept_control_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
 
@@ -176,7 +180,7 @@ fn selector(driver: Driver) {
     None -> selector
     Some(run) ->
       process.select_map(selector, run.replies, fn(reply) {
-        Catalogue(tui.ControlEvent(run.replies, reply))
+        Catalogue(tui_model.ControlEvent(run.replies, reply))
       })
   }
 }
@@ -186,9 +190,9 @@ fn continue(driver: Driver) {
 }
 
 fn run(
-  model: tui.Model,
+  model: tui_model.Model,
   steps: List(virtual_backend.Step),
-) -> virtual_backend.Run(tui.Model) {
+) -> virtual_backend.Run(tui_model.Model) {
   let script =
     virtual_backend.script(
       backend.TerminalSize(width: model.width, height: model.height),
@@ -200,14 +204,14 @@ fn run(
   run
 }
 
-fn disconnect(model: tui.Model) -> Nil {
+fn disconnect(model: tui_model.Model) -> Nil {
   attachment.cancel(model.candidate)
   case model.channel {
     Some(channel) -> session_channel.close(channel)
     None ->
       case model.peer {
-        tui.Attached(socket) -> connection.close(socket)
-        tui.Preview | tui.Replaying | tui.Disconnected -> Nil
+        tui_model.Attached(socket) -> connection.close(socket)
+        tui_model.Preview | tui_model.Replaying | tui_model.Disconnected -> Nil
       }
   }
 }

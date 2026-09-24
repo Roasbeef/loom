@@ -120,6 +120,7 @@ import core/entry
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import core/todo_list
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -143,6 +144,7 @@ import tools/agent.{
   type Refusal, type ResultSchema, type Spawned, type TerminalResult,
   type Waited, Aborted, Completed, Failed, Handle, Pending, Ready, Spawned,
 }
+import tools/todos
 import weft/actor
 import weft/poll
 import weft/registry as address
@@ -407,6 +409,7 @@ fn seam_with_custody(
     },
     note: fn(caller, key, value) { note(config, caller, key, value) },
     notes: fn(caller, prefix) { notes(config, caller, prefix) },
+    todos: fn(caller, step) { update_todos(config, caller, step) },
     roster: fn(caller) { roster(config, caller) },
     max_wait_ms: config.max_wait_ms,
     model_names: list.map(config.models, fn(entry) { entry.0.provider }),
@@ -1674,6 +1677,7 @@ fn note(
 ) -> Result(Nil, Refusal) {
   use runtime <- result.try(borrow(config))
   use key <- result.try(validate_key(key, within: 128))
+  use Nil <- result.try(refuse_todo_key(key))
   use Nil <- result.try(check_result_contract(runtime, caller, key, value))
 
   // The prefix is built here and the key is only ever appended to it, so
@@ -1685,6 +1689,75 @@ fn note(
   |> result.map_error(fn(error) {
     agent.PlaneFailed(reason: describe_api(error))
   })
+}
+
+// The todo cell has one writer, the `todo` tool, so that every stored board
+// has passed `todo_list.validate` and the TUI's panel never has to explain
+// a board it cannot read. `cap/notes.put` reaches this same closure, so the
+// refusal covers code mode as well as `agent_note`.
+fn refuse_todo_key(key: String) -> Result(Nil, Refusal) {
+  case key == todos.note_key {
+    True ->
+      Error(agent.InvalidArgument(
+        reason: "`"
+        <> todos.note_key
+        <> "` is kept by the todo tool; call `todo` to change the list",
+      ))
+    False -> Ok(Nil)
+  }
+}
+
+// The todo tool's read-modify-write. The step is pure, so running it again
+// after a lost compare-and-set costs nothing but the read; a conflict can
+// only come from a sibling `todo` call in the same batch, so a handful of
+// attempts is far more than a real batch needs.
+fn update_todos(
+  config: Config,
+  caller: Caller,
+  step: fn(Option(JsonValue)) -> Result(JsonValue, String),
+) -> Result(JsonValue, Refusal) {
+  use runtime <- result.try(borrow(config))
+  let key = agent.blackboard_prefix <> caller.strand <> "/" <> todos.note_key
+  update_todo_cell(runtime, key, step, todo_attempts)
+}
+
+const todo_attempts = 4
+
+fn update_todo_cell(
+  runtime: api.Runtime,
+  key: String,
+  step: fn(Option(JsonValue)) -> Result(JsonValue, String),
+  attempts: Int,
+) -> Result(JsonValue, Refusal) {
+  use cell <- result.try(
+    api.fact_cell(runtime, key) |> result.map_error(plane_failed),
+  )
+  let #(stored, expected) = case cell {
+    None -> #(None, None)
+    Some(api.FactCell(value:, seq:)) -> #(Some(value), Some(seq))
+  }
+  use next <- result.try(
+    step(stored)
+    |> result.map_error(fn(reason) { agent.InvalidArgument(reason:) }),
+  )
+
+  // An unchanged board is not written, so `view` and a replayed no-op
+  // leave the cell's sequence, and the register history, alone. An absent
+  // cell means the empty board, so a `view` on a strand that never made a
+  // list does not create a cell for the notes digest to carry.
+  let before =
+    option.lazy_unwrap(stored, fn() { todo_list.encode(todo_list.empty()) })
+  use <- bool.guard(when: before == next, return: Ok(next))
+  case api.put_fact_expecting(runtime, key, next, expected:) {
+    Ok(_) -> Ok(next)
+    Error(api.FactConflict(..)) if attempts > 1 ->
+      update_todo_cell(runtime, key, step, attempts - 1)
+    Error(error) -> Error(plane_failed(error))
+  }
+}
+
+fn plane_failed(error: api.ApiError) -> Refusal {
+  agent.PlaneFailed(reason: describe_api(error))
 }
 
 // The enforcement point for a result contract — see the module doc for

@@ -13,6 +13,7 @@ import gleam/option.{None}
 import tui
 import tui/agents
 import tui/connection
+import tui/model as tui_model
 import tui/recording
 import tui/virtual_backend
 import tui/workspace
@@ -41,9 +42,9 @@ pub fn run(path: String, expected_records: Int) -> Nil {
     as "the private recording must decode"
   let inbox = connection.new_inbox()
   let model =
-    tui.Model(
+    tui_model.Model(
       ..tui.new_model(inbox, workspace.Context("replay", None)),
-      peer: tui.Replaying,
+      peer: tui_model.Replaying,
       transcript: [],
       models: [],
       session: "replay",
@@ -69,7 +70,9 @@ pub fn run(path: String, expected_records: Int) -> Nil {
   assert final.replay_error == None as "the replay must not report an error"
   assert list.length(final.records) == expected_records
     as "the reducer must retain the expected durable history"
-  assert !list.any(final.transcript, fn(line) { line.speaker == tui.Failure })
+  assert !list.any(final.transcript, fn(line) {
+    line.speaker == tui_model.Failure
+  })
     as "the replay must not render protocol failures"
   io.println(
     "replay records="

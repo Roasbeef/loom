@@ -114,7 +114,7 @@ pub fn every_built_in_tool_carries_a_snippet_test() {
   // while still being on the wire, which is the one inconsistency the
   // omission rule must not be used to create by accident. Every
   // constructor in the package is listed, not just the five a bare host
-  // registers, because the twelve behind a plane are the ones nothing
+  // registers, because the thirteen behind a plane are the ones nothing
   // else here would notice losing their line.
   let every =
     list.flatten([
@@ -131,7 +131,7 @@ pub fn every_built_in_tool_carries_a_snippet_test() {
       agent.tools(unused_agency()),
       schedule.tools(unused_schedules(), unused_limits()),
     ])
-  assert list.length(every) == 17
+  assert list.length(every) == 18
   list.each(every, fn(each) {
     assert each.prompt_snippet != None
   })
@@ -281,6 +281,7 @@ fn unused_agency() -> agent.Agency {
     wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
     note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
     notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    todos: fn(_caller, _step) { Error(agent.AgencyUnavailable) },
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 1000,
     model_names: [],

@@ -14,6 +14,8 @@ import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/inbound
+import tui/model as tui_model
 import tui/protocol
 import tui/session_channel
 import tui/snapshot
@@ -26,16 +28,16 @@ import tui_test/pushed
 fn model() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui.Model(..base, transcript: [], records: [], notice: "fixture")
+  tui_model.Model(..base, transcript: [], records: [], notice: "fixture")
 }
 
 fn received(model, wire) {
-  tui.accept_connection_message(model, connection.Incoming(wire))
+  inbound.accept_connection_message(model, connection.Incoming(wire))
 }
 
 fn checked_layout(model, width) {
   let cold =
-    tui.Model(
+    tui_model.Model(
       ..model,
       record_cache_valid: False,
       record_line_cache: dict.new(),
@@ -74,15 +76,15 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
   assert list.length(populated.records) == 8
     as "the fixture must admit every durable event before comparing layout"
   assert !list.any(populated.transcript, fn(line) {
-    line.speaker == tui.Failure
+    line.speaker == tui_model.Failure
   })
     as "protocol errors are not a history-rendering workload"
   let narrow = checked_layout(populated, 32)
   let expanded =
-    checked_layout(tui.Model(..narrow, details_expanded: True), 120)
+    checked_layout(tui_model.Model(..narrow, details_expanded: True), 120)
   let other =
     checked_layout(
-      tui.Model(..expanded, active_strand: "other", rendered_revision: -1),
+      tui_model.Model(..expanded, active_strand: "other", rendered_revision: -1),
       120,
     )
   assert !list.any(dict.keys(other.record_line_cache), fn(line) {
@@ -92,7 +94,7 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
     as "changing the active branch must release its previous layout hints"
   let _ =
     checked_layout(
-      tui.Model(..other, active_strand: "main", rendered_revision: -1),
+      tui_model.Model(..other, active_strand: "main", rendered_revision: -1),
       120,
     )
 }
@@ -169,7 +171,7 @@ pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
   assert before == 204_143
 
   let expanded =
-    checked_layout(tui.Model(..loaded, details_expanded: True), 120)
+    checked_layout(tui_model.Model(..loaded, details_expanded: True), 120)
   assert !list.any(dict.keys(expanded.record_line_cache), fn(line) {
     string.contains(line.text, private_note)
   })
@@ -180,7 +182,7 @@ pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
 // named by `seq`, which is what makes a second one a new cut rather than a
 // repeat the lane discards; a fresh replay channel per capture is what lets
 // both reuse one set of frame numbers.
-fn captured(model: tui.Model, data: String, seq: Int) -> tui.Model {
+fn captured(model: tui_model.Model, data: String, seq: Int) -> tui_model.Model {
   let channel =
     session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
   let #(_, applied) =
@@ -195,7 +197,7 @@ fn captured(model: tui.Model, data: String, seq: Int) -> tui.Model {
       #(channel, model),
       fn(acc, incoming) {
         let #(channel, changes) = session_channel.receive(acc.0, incoming)
-        #(channel, list.fold(changes, acc.1, tui.apply_channel_update))
+        #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
   applied

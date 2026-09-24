@@ -478,7 +478,13 @@ tree and that it must not write anything.
   reduced `core_inline_module` from 51.445 s to 1.632 s in generated Erlang;
   the actual Gleam rebuild took 7.80 s and all 654 TUI tests passed. Preserve
   both the original model and drained model as parameters so quiet-time
-  accounting keeps the same before/after comparison.
+  accounting keeps the same before/after comparison. Issue #374 then split
+  the client into modules: `settle_update` stays in
+  `packages/tui/src/tui.gleam`, `update_tick` and `settle_tick` are in
+  `packages/tui/src/tui/tick.gleam`, and most steps on both chains are now
+  cross-module calls, which the inliner never attempts. A rebuild after a
+  change to `tui.gleam` fell from 9.6–9.8 s to 1.4–1.7 s. The boundaries stay
+  for the local steps that remain.
 
 ---
 

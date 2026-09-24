@@ -14,15 +14,19 @@ import tui
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/live_jobs
+import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
+import tui/render
 import tui/session_channel
 import tui/summary_panel
+import tui/surfaces
 import tui/workspace
 
 fn model() {
-  tui.Model(
+  tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
     input: textarea.state_from_string("continue my unfinished draft"),
     attachments: [composer.Attachment("retained context", 4)],
@@ -31,7 +35,7 @@ fn model() {
 
 fn painted(model) {
   let model = tui.update(backend.Resize(120, 30), model)
-  let #(buffer, _) = tui.view(model, geometry.rect_new(0, 0, 120, 30))
+  let #(buffer, _) = render.view(model, geometry.rect_new(0, 0, 120, 30))
   frame.buffer_to_text(buffer)
 }
 
@@ -41,7 +45,7 @@ fn key(model, value) {
 
 pub fn summary_without_captured_evidence_keeps_composer_and_reports_absence_test() {
   let initial = model()
-  let opened = tui.open_summary(initial)
+  let opened = surfaces.open_summary(initial)
   assert opened.summary_surface == queue_editor.Inspector
   assert opened.input == initial.input
   assert opened.attachments == initial.attachments
@@ -81,8 +85,8 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
       1,
       0,
     )
-  let initial = tui.Model(..model(), jobs: Some(board))
-  let opened = tui.open_summary(initial) |> key("3")
+  let initial = tui_model.Model(..model(), jobs: Some(board))
+  let opened = surfaces.open_summary(initial) |> key("3")
   let text = painted(opened)
   assert string.contains(text, "3 Jobs")
   assert string.contains(text, "Observed roster: 1 total · 0 omitted")
@@ -97,11 +101,11 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
 
   // A strand switch cannot present the last strand's job roster as current
   // work for the newly selected strand.
-  let other = tui.Model(..opened, active_strand: "other")
+  let other = tui_model.Model(..opened, active_strand: "other")
   assert !string.contains(painted(other), "job-7")
   assert string.contains(
     painted(
-      tui.Model(
+      tui_model.Model(
         ..other,
         jobs_notice: "Live jobs observed separately from completion",
       ),
@@ -150,12 +154,12 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
       False,
     )
   let updated =
-    tui.Model(
+    tui_model.Model(
       ..initial,
       records: [protocol.EntryRecord("main", measured)],
       usage: cumulative,
     )
-  let text = painted(tui.open_summary(updated) |> key("2"))
+  let text = painted(surfaces.open_summary(updated) |> key("2"))
   assert string.contains(text, "Input 9000")
   assert string.contains(text, "cache read 20000")
   assert string.contains(text, "610 input tokens (including cache)")
@@ -168,10 +172,10 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let second = live_jobs.Job("b", "draining", "op-b", "second", 2, 90)
   let board = live_jobs.Board("main", 50, [first, second], 3, 1)
   let opened =
-    tui.Model(..model(), jobs: Some(board))
-    |> tui.open_summary
+    tui_model.Model(..model(), jobs: Some(board))
+    |> surfaces.open_summary
     |> fn(model) {
-      tui.Model(
+      tui_model.Model(
         ..model,
         jobs_notice: "Refreshing live jobs; previous observation may be stale",
       )
@@ -186,8 +190,8 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
 
   let reordered = live_jobs.Board("main", 60, [second, first], 2, 0)
   let refreshed =
-    tui.apply_channel_update(
-      tui.Model(..opened, jobs_awaiting: Some(#("", "main"))),
+    inbound.apply_channel_update(
+      tui_model.Model(..opened, jobs_awaiting: Some(#("", "main"))),
       session_channel.Auxiliary(protocol.LiveJobsSnapshot(reordered)),
     )
   assert refreshed.summary_job_selected == 0

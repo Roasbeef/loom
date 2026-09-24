@@ -101,6 +101,11 @@ requirements and verify recalled facts. Mutable notes remain user-context
 data. Existing pinned prompts are not migrated; this rollout starts fresh
 sessions.
 
+The `conduct` section carries one short sentence pointing multi-step work at
+the `todo` tool when it is offered. The tool's own description carries the
+mechanics and the three-step threshold, and the sentence is kept short because
+the rendered prompt has a byte budget (`system_prompt_test`).
+
 The default system pack carries the canonical sections — `identity`,
 `tool_discipline`, `available_tools`, `delegation`, `conduct`,
 `environment`, `sandbox`, `repository_guidance` — plus the fragments

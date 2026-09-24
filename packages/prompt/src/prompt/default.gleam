@@ -177,6 +177,8 @@ act rather than asking for permission; when it is ambiguous in a way
 that changes the outcome, ask one specific question instead of guessing
 at length.
 
+Track multi-step work with todo when offered.
+
 Verify before you claim. Saying that something works needs a run behind
 it; if you did not run it, say what you did instead.
 

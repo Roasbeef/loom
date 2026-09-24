@@ -28,14 +28,18 @@ import tui/appearance
 import tui/connection
 import tui/context_view
 import tui/goal_view
+import tui/inbound
 import tui/internal/ffi_terminal
 import tui/live_jobs
+import tui/model as tui_model
 import tui/notes_view
 import tui/protocol
 import tui/queue_editor
+import tui/render
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/tick
 import tui/workspace
 import tui/worktree_view
 
@@ -80,10 +84,10 @@ pub fn run_context(palette: String) -> Nil {
   ffi_terminal.silence_logger()
   let initial = fixture_model(palette)
   run_model(
-    tui.Model(
+    tui_model.Model(
       ..initial,
-      overlay: tui.NoOverlay,
-      peer: tui.Replaying,
+      overlay: tui_model.NoOverlay,
+      peer: tui_model.Replaying,
       context: context_view.State(
         ..initial.context,
         surface: context_view.Overview,
@@ -94,7 +98,7 @@ pub fn run_context(palette: String) -> Nil {
   )
 }
 
-fn fixture_model(palette: String) -> tui.Model {
+fn fixture_model(palette: String) -> tui_model.Model {
   let base =
     tui.new_model(
       connection.new_inbox(),
@@ -180,7 +184,7 @@ fn fixture_model(palette: String) -> tui.Model {
   let assert Ok(view) = snapshot_view.decode(captured)
     as "the native fixture must pass the shipped capture decoder"
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..base,
       session: "native-fixture",
       strands: [],
@@ -189,17 +193,17 @@ fn fixture_model(palette: String) -> tui.Model {
       current_model: "fixture-model",
       palette: selected_palette(palette),
     )
-    |> tui.apply_channel_update(session_channel.Captured(
+    |> inbound.apply_channel_update(session_channel.Captured(
       captured,
       view,
       session_channel.Requested,
     ))
   let initial =
-    tui.Model(
+    tui_model.Model(
       ..initial,
-      overlay: tui.AgentInspector(agents.inspect("main")),
+      overlay: tui_model.AgentInspector(agents.inspect("main")),
       notice: "illustrative fixture · no provider calls",
-      diff_view: tui.DiffVisible,
+      diff_view: tui_model.DiffVisible,
       worktree: fixture_worktree(),
       note_board: Some(fixture_notes()),
       note_selected: Some("plan"),
@@ -221,15 +225,15 @@ fn fixture_model(palette: String) -> tui.Model {
   initial
 }
 
-fn run_model(initial: tui.Model) -> Nil {
+fn run_model(initial: tui_model.Model) -> Nil {
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
       initial,
-      tui.view,
+      render.view,
       fixture_update,
       fn(model) { model.quit },
-      tui.terminal_poll_timeout,
+      tick.terminal_poll_timeout,
     )
   Nil
 }
@@ -402,10 +406,18 @@ fn fixture_goal() -> goal_view.Board {
 
 // These boards are illustrative observations, not replies from a daemon.
 // The production reducer still owns all navigation and recipient changes.
-fn fixture_update(event: backend.InputEvent, model: tui.Model) -> tui.Model {
+fn fixture_update(
+  event: backend.InputEvent,
+  model: tui_model.Model,
+) -> tui_model.Model {
   let changed = tui.update(event, model)
   let target = case changed.overlay, changed.notes_open {
-    tui.AgentInspector(agents.Inspector(detail: agents.Notes, selected:, ..)), _
+    tui_model.AgentInspector(agents.Inspector(
+      detail: agents.Notes,
+      selected:,
+      ..,
+    )),
+      _
     -> Some(selected)
     _, True -> Some(changed.active_strand)
     _, False -> None
@@ -435,7 +447,7 @@ fn fixture_update(event: backend.InputEvent, model: tui.Model) -> tui.Model {
         True -> changed
         False ->
           changed
-          |> tui.apply_channel_update(
+          |> inbound.apply_channel_update(
             session_channel.Auxiliary(protocol.NotesSnapshot(board)),
           )
           |> tui.update(backend.Tick, _)
