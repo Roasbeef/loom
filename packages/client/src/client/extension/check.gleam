@@ -9,7 +9,7 @@
 //// and asks it the profile's own `[[check]]` questions:
 ////
 //// ```
-//// installed.one → copy the fixture → helper pool + broker → probe
+//// installed.verified → write the fixture → helper pool + broker → probe
 ////   → manager over [server] → profile_check through the door → stop → rm
 //// ```
 ////
@@ -25,16 +25,28 @@
 ////
 //// # Where the fixture runs, and why not in `/tmp`
 ////
-//// The fixture is copied into a fresh scratch workspace under the
+//// The fixture is written into a fresh scratch workspace under the
 //// extensions root's staging area, `<root>/.staging/check-<token>/work`.
 //// Three things decide that place. The jail replaces `/tmp` with a tmpfs
-//// of its own, so a workspace there would be empty to the server. A
-//// profile's project may be writable (`gleam lsp` writes `build/`), and
+//// of its own, so a workspace there would be empty to the server; the
+//// scratch's real path is what is judged, so a root reached through a
+//// link into `/tmp`, or macOS's `/private/tmp`, is refused as `/tmp` is.
+//// A profile's project may be writable (`gleam lsp` writes `build/`), and
 //// the installed tree must stay byte-for-byte what its digest says, or the
 //// next load refuses it; so the server gets a copy. And the staging area
 //// is already where the extension CLI keeps scratch state, which an
 //// install cleans up the same way this does: the whole directory goes on
 //// every path out.
+////
+//// # The fixture comes from the verified tree, not the disk
+////
+//// The copy is written from the bytes `installed.verified` read and
+//// digested, never copied from the installed directory again. The walk
+//// that computed the digest refuses links and skips `.git`; a copy from
+//// disk follows both. So a link planted in a fixture after install — a
+//// `.git` pointing anywhere on the host — would have put files no digest
+//// covered in front of the server, and the check would have proved the
+//// profile against something the operator never approved.
 ////
 //// # What is printed
 ////
@@ -45,6 +57,7 @@
 
 import broker/broker
 import broker/exec.{type EnforcementDemand}
+import client/extension/archive
 import client/extension/installed
 import client/extension/manifest.{type Check, type Manifest}
 import client/extension/record.{type Record, type Root}
@@ -62,6 +75,7 @@ import gleam/list
 import gleam/option.{type Option, None}
 import gleam/result
 import gleam/string
+import host/bootstrap
 import simplifile
 import tools/tool
 import weft/poll
@@ -134,13 +148,13 @@ pub const release_wait_ms = 15_000
 /// ```
 ///
 pub fn run(root: Root, name: String, setup: Setup) -> Result(Report, String) {
-  use #(written, decoded) <- result.try(checkable(root, name))
+  use #(written, decoded, tree) <- result.try(checkable(root, name))
   use runs <- result.try(
     groups(decoded.checks)
     |> list.try_map(fn(group) {
       let #(#(server_name, fixture), checks) = group
       use server <- result.try(approved(written, server_name))
-      run_group(root, name, server, fixture, checks, setup)
+      run_group(root, tree, server, fixture, checks, setup)
     }),
   )
   Ok(Report(name: written.name, version: written.version, runs:))
@@ -249,12 +263,21 @@ pub fn enforcement_line(report: enforcement.Report) -> String {
 
 // The three refusals, each by name and each before anything runs. The
 // record's own profiles are what is proved, because they are what the
-// operator approved; `installed.one` has already refused a manifest whose
-// profiles differ from them.
-fn checkable(root: Root, name: String) -> Result(#(Record, Manifest), String) {
-  case installed.one(root, name) {
-    installed.Refused(name:, reason:) -> Error(name <> ": " <> reason)
-    installed.Ready(record: written, manifest: decoded, artifact: _) ->
+// operator approved; `installed.verified` has already refused a manifest
+// whose profiles differ from them. The tree comes back with them, and it
+// is the only source a fixture is written from.
+fn checkable(
+  root: Root,
+  name: String,
+) -> Result(#(Record, Manifest, archive.Tree), String) {
+  case installed.verified(root, name) {
+    Error(reason) -> Error(name <> ": " <> reason)
+    Ok(installed.Verified(
+      record: written,
+      manifest: decoded,
+      artifact: _,
+      tree:,
+    )) ->
       case written.tier, decoded.checks {
         manifest.Jailed, _ ->
           Error(
@@ -269,7 +292,7 @@ fn checkable(root: Root, name: String) -> Result(#(Record, Manifest), String) {
             <> "profile proves itself with checks against a fixture "
             <> "(ADR-014 §5)",
           )
-        manifest.Profile, [_, ..] -> Ok(#(written, decoded))
+        manifest.Profile, [_, ..] -> Ok(#(written, decoded, tree))
       }
   }
 }
@@ -303,7 +326,7 @@ fn groups(checks: List(Check)) -> List(#(#(String, String), List(Check))) {
 // fixture and a helper's temporary files under the operator's root.
 fn run_group(
   root: Root,
-  name: String,
+  tree: archive.Tree,
   server: LspServer,
   fixture: String,
   checks: List(Check),
@@ -318,16 +341,16 @@ fn run_group(
       "check-" <> int.to_string(now) <> "-" <> int.to_string(setup.entropy()),
     )
   let ran = {
-    use workspace <- result.try(prepared(root, name, fixture, scratch))
+    use real <- result.try(prepared(tree, fixture, scratch))
     use expanded <- result.try(serve.lsp_server_roots(server, setup.places))
     use plane <- result.try(serve.start_check_plane(
       helper: setup.helper,
-      workspace:,
+      workspace: real <> "/work",
       state_root: filepath.directory_name(record.path(root)),
-      tmp_dir: scratch <> "/tmp",
+      tmp_dir: real <> "/tmp",
       clock: setup.clock,
     ))
-    let ran = on_plane(plane, workspace, expanded, fixture, checks, setup)
+    let ran = on_plane(plane, real <> "/work", expanded, fixture, checks, setup)
     serve.stop_check_plane(plane)
     ran
   }
@@ -339,24 +362,20 @@ fn run_group(
 // at its root so a server's workspace-relative paths are the fixture's own
 // and meet `expect` unchanged; `tmp` is the helper's temporary directory,
 // outside the workspace so nothing the helper leaves there is in the
-// server's project.
+// server's project. Answers the scratch directory's real path, which is
+// what the jail is given, so the path the guard judged is the path bound.
+//
+// The `/tmp` guard is judged on that real path, after the directory is
+// made, because the text of the root says nothing about where it leads: a
+// `--home` that is a link into `/tmp`, or macOS's `/tmp`, which is a link
+// to `/private/tmp`, lands the workspace in the tmpfs the jail replaces,
+// and the server would find an empty project. The one real-path reader the
+// tree has is `host/bootstrap.canonical_directory`.
 fn prepared(
-  root: Root,
-  name: String,
+  tree: archive.Tree,
   fixture: String,
   scratch: String,
 ) -> Result(String, String) {
-  let workspace = scratch <> "/work"
-  use Nil <- result.try(case string.starts_with(scratch, "/tmp/") {
-    False -> Ok(Nil)
-    True ->
-      Error(
-        "the check's scratch workspace would be "
-        <> workspace
-        <> ", under /tmp, which the jail replaces with its own; put the "
-        <> "extensions root outside /tmp (--home)",
-      )
-  })
   let made = fn(outcome, what) {
     result.map_error(outcome, fn(error) {
       "could not " <> what <> ": " <> simplifile.describe_error(error)
@@ -366,14 +385,75 @@ fn prepared(
     simplifile.create_directory_all(scratch <> "/tmp"),
     "make " <> scratch <> "/tmp",
   ))
-  use Nil <- result.try(made(
-    simplifile.copy_directory(
-      at: record.sources(root, name) <> "/" <> fixture,
-      to: workspace,
-    ),
-    "copy the fixture " <> fixture <> " into " <> workspace,
-  ))
-  Ok(workspace)
+  use real <- result.try(
+    bootstrap.canonical_directory(scratch)
+    |> result.map_error(fn(reason) {
+      "could not resolve " <> scratch <> ": " <> reason
+    }),
+  )
+  use Nil <- result.try(outside_tmp(real))
+  use Nil <- result.try(written_fixture(tree, fixture, real <> "/work"))
+  Ok(real)
+}
+
+fn outside_tmp(real: String) -> Result(Nil, String) {
+  let under = fn(directory) {
+    real == directory || string.starts_with(real, directory <> "/")
+  }
+  case under("/tmp") || under("/private/tmp") {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        "the check's scratch workspace would be "
+        <> real
+        <> "/work, under /tmp, which the jail replaces with its own; put the "
+        <> "extensions root outside /tmp (--home)",
+      )
+  }
+}
+
+// Every file of the tree beneath `fixture/`, written at its path below
+// the fixture, from the bytes that were digested. The tree's paths already
+// passed `archive`'s component rules (no `..`, no empty or `.` component),
+// so each lands under `workspace` and nowhere else, and the workspace is
+// a directory this check just made, so nothing in it is a link to follow.
+fn written_fixture(
+  tree: archive.Tree,
+  fixture: String,
+  workspace: String,
+) -> Result(Nil, String) {
+  let prefix = fixture <> "/"
+  let failed = fn(what, error) {
+    "could not write the fixture "
+    <> fixture
+    <> " into "
+    <> workspace
+    <> " ("
+    <> what
+    <> "): "
+    <> simplifile.describe_error(error)
+  }
+  use Nil <- result.try(
+    simplifile.create_directory_all(workspace)
+    |> result.map_error(failed(workspace, _)),
+  )
+  list.try_each(tree.files, fn(file) {
+    case string.starts_with(file.path, prefix) {
+      False -> Ok(Nil)
+      True -> {
+        let target =
+          workspace
+          <> "/"
+          <> string.drop_start(file.path, string.length(prefix))
+        use Nil <- result.try(
+          simplifile.create_directory_all(filepath.directory_name(target))
+          |> result.map_error(failed(file.path, _)),
+        )
+        simplifile.write_bits(to: target, bits: file.bytes)
+        |> result.map_error(failed(file.path, _))
+      }
+    }
+  })
 }
 
 // The plane is up: count its leases, build the session's jailed backend

@@ -9,6 +9,7 @@
 //// property worth proving is not that the fakes were well behaved but that
 //// the pipeline never reached for them.
 
+import broker/exec
 import client/extension/archive
 import client/extension/check
 import client/extension/cli
@@ -17,15 +18,18 @@ import client/extension/installed
 import client/extension/manifest
 import client/extension/record
 import client/extension/source
+import client/internal/ffi_os
 import client/lsp/profile
 import client/lsp/profile_check
 import codemode/compile
 import codemode/enforcement
 import core/clock
+import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
+import host/bootstrap
 import simplifile
 import support/extensions
 import tom
@@ -329,20 +333,91 @@ pub fn a_profile_installs_without_vetting_or_building_test() {
   assert archive.digest(tree) == done.record.tree_digest
 }
 
+/// The README and licence rule keeps root-level files only. A prefix match
+/// kept `README-assets/` and `LICENSES/` whole, which are directories of
+/// anything; the mutation this pins is that match coming back.
+pub fn only_root_level_readme_and_licence_files_are_kept_test() {
+  let root = record.root_for(extensions.scratch("profile-prune"))
+  let tree =
+    extensions.materialise(
+      list.append(extensions.profile_go(), [
+        #("README-assets/notes.md", "# kept by a prefix match\n"),
+        #("LICENSES/extra.txt", "kept by a prefix match\n"),
+        #("docs/README.md", "# a README below the root\n"),
+        #("README.txt", "a second root-level README\n"),
+      ]),
+      extensions.scratch("profile-prune-src"),
+    )
+  let assert Ok(done) =
+    install.run(config(root), source.LocalPath(path: tree), rev: None)
+    as "the profile installs"
+  let assert Ok(installed_tree) =
+    archive.from_directory(
+      record.sources(root, "lsp_go"),
+      archive.default_caps(),
+    )
+    as "the installed tree must be readable"
+  assert list.map(installed_tree.files, fn(file) { file.path })
+    == list.sort(["README.txt", ..extensions.profile_paths()], string.compare)
+  assert archive.digest(installed_tree) == done.record.tree_digest
+}
+
 pub fn the_install_prints_what_was_approved_test() {
   let #(_root, done) = installed_profile("profile-lines")
   let lines = cli.installed_lines(done)
   let printed = string.join(lines, "\n")
   assert list.first(lines) == Ok("installed lsp_go 0.1.0 at local")
   assert string.contains(printed, "lsp.go")
-  assert string.contains(printed, "command:    \"gopls\"")
-  assert string.contains(printed, "extensions: .go")
-  assert string.contains(printed, "project:    read-only")
-  assert string.contains(printed, "readable:   ~/go/pkg/mod")
-  assert string.contains(printed, "writable:   <cache>/go-build, <cache>/gopls")
-  assert string.contains(printed, "env:        GOFLAGS")
-  assert string.contains(printed, "hint:       \"Qualify as package.Name\"")
+  assert string.contains(printed, "command:      \"gopls\"")
+  assert string.contains(printed, "extensions:   .go")
+  assert string.contains(printed, "root_markers: go.mod")
+  assert string.contains(printed, "project:      read-only")
+  assert string.contains(printed, "readable:     ~/go/pkg/mod")
+  assert string.contains(
+    printed,
+    "writable:     <cache>/go-build, <cache>/gopls",
+  )
+  assert string.contains(printed, "env:          GOFLAGS")
+  assert string.contains(printed, "cache_env:    (none)")
+  assert string.contains(printed, "hint:         \"Qualify as package.Name\"")
   assert !string.contains(printed, "jail:")
+}
+
+/// Every grant the jail makes, printed, including the two it derives
+/// rather than reads from a key: the executable's region and the private
+/// caches. An operator approving a profile is approving these too.
+pub fn the_approval_names_every_grant_the_jail_makes_test() {
+  let go =
+    profile.LspServer(
+      name: "go",
+      command: ["gopls", "serve"],
+      extensions: [".go"],
+      root_markers: ["go.mod", "go.work"],
+      project: profile.ProjectReadOnly,
+      readable: [profile.HomePath("go/pkg/mod")],
+      writable: [],
+      env: ["GOFLAGS"],
+      cache_env: [#("GOCACHE", "go-build"), #("XDG_CACHE_HOME", "xdg")],
+      language_id: "go",
+      qualifier_separators: ["."],
+      module_case: profile.AsWritten,
+      hint: None,
+    )
+  assert profile.approval_lines(go)
+    == [
+      "lsp.go",
+      "    command:      \"gopls\", \"serve\"",
+      "    executable:   the directory holding gopls, read-only; for a link,"
+        <> " its target's directory too, never an install prefix",
+      "    extensions:   .go",
+      "    root_markers: go.mod, go.work",
+      "    project:      read-only",
+      "    readable:     ~/go/pkg/mod",
+      "    writable:     (none)",
+      "    env:          GOFLAGS",
+      "    cache_env:    GOCACHE=<cache>/loom/lsp/go/go-build,"
+        <> " XDG_CACHE_HOME=<cache>/loom/lsp/go/xdg",
+    ]
 }
 
 /// The CLI's own proof that a profile needs no toolchain: the helper and
@@ -582,6 +657,97 @@ pub fn a_check_report_prints_the_jail_and_one_line_per_check_test() {
     ]
 }
 
+// --- loom ext check: the fixture and its workspace ---------------------------
+
+/// A link planted in a fixture after install is never followed: the
+/// fixture is written from the tree the digest was verified over, not
+/// copied from disk. `.git` is the one name the digest's walk skips rather
+/// than refuses, so a `.git` link planted later leaves the install
+/// verifying, and a copy from disk would carry whatever it points at into
+/// the workspace. The observation point is the helper flag: it names a
+/// file under that `.git` in the workspace, and the helper is the first
+/// thing looked for after the fixture is written, so finding it would mean
+/// the link was followed. The mutation this pins is the disk copy coming
+/// back.
+pub fn a_link_planted_in_a_fixture_is_never_followed_test() {
+  let home = real(extensions.scratch("check-planted"))
+  let root = record.root_for(home)
+  let assert Ok(_done) =
+    install.run(
+      config(root),
+      source.LocalPath(path: extensions.materialise(
+        extensions.profile_go(),
+        extensions.scratch("check-planted-src"),
+      )),
+      rev: None,
+    )
+    as "the profile installs"
+
+  // The link goes in after the install, pointing outside the tree, at a
+  // directory holding a file named where the helper flag will look.
+  let outside = extensions.scratch("check-planted-outside")
+  let assert Ok(Nil) =
+    simplifile.write(to: outside <> "/helper", contents: "not a helper\n")
+    as "the planted target must be written"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: outside,
+      from: record.sources(root, "lsp_go") <> "/fixture/.git",
+    )
+    as "the link must be planted"
+  let assert installed.Ready(..) = installed.one(root, "lsp_go")
+    as "a planted .git leaves the digest, and so the install, intact"
+
+  let scratch = record.staging(root, "check-" <> int.to_string(at_ms) <> "-7")
+  let planted = scratch <> "/work/.git/helper"
+  let assert Error(reason) =
+    check.run(root, "lsp_go", check_setup(home, Some(planted)))
+    as "no helper exists, so the check cannot start a plane"
+  assert reason == "the helper binary does not exist: " <> planted
+  let _ = simplifile.delete_all([home, outside])
+  Nil
+}
+
+/// The `/tmp` guard is judged on the scratch directory's real path. An
+/// extensions root reached through a link into `/tmp` is refused by name,
+/// before a helper is looked for; the text of the root alone would have
+/// passed, and the jail would then have replaced the workspace with an
+/// empty tmpfs.
+pub fn a_root_linked_into_tmp_is_refused_test() {
+  // A unique integer is unique within one VM only, so the clock joins it,
+  // and anything a failed earlier run left at the path is cleared first.
+  let tmp =
+    "/tmp/loom-check-link-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let _cleared = simplifile.delete_all([tmp])
+  let assert Ok(Nil) = simplifile.create_directory_all(tmp)
+    as "a directory under /tmp must be makeable"
+  let home = extensions.scratch("check-tmp-link") <> "/home"
+  let assert Ok(Nil) = simplifile.create_symlink(to: tmp, from: home)
+    as "the home link must be made"
+  let tree =
+    extensions.materialise(
+      extensions.profile_go(),
+      extensions.scratch("check-tmp-link-src"),
+    )
+  let assert Ok(_installed) = cli.dispatch(["install", tree, "--home", home])
+    as "a profile installs through the link"
+  let assert Error(reason) =
+    cli.dispatch([
+      "check", "lsp_go", "--home", home, "--helper", "/nonexistent/helper",
+    ])
+    as "a scratch workspace under /tmp is refused"
+  assert string.starts_with(
+    reason,
+    "check refused: the check's scratch workspace would be /tmp/",
+  )
+  assert string.contains(reason, "under /tmp, which the jail replaces")
+  let _ = simplifile.delete_all([tmp, home])
+  Nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
 const digest_refusal = "the installed source no longer matches the install record; reinstall it to approve what is there now"
@@ -651,6 +817,28 @@ fn installed_profile(name: String) -> #(record.Root, install.Installed) {
     install.run(config(root), source.LocalPath(path: tree), rev: None)
     as "the profile fixture must install"
   #(root, done)
+}
+
+// A check's host, fixed: the clock and entropy make the scratch token
+// `check-<at_ms>-7`, so a test can name the workspace before the check
+// makes it, and the places resolve every root the fixture profile names.
+fn check_setup(home: String, helper: Option(String)) -> check.Setup {
+  check.Setup(
+    helper:,
+    demand: exec.BestEffort,
+    places: profile.Places(home: Some(home), cache: Some(home <> "/cache")),
+    reading: fn(_name) { Error(Nil) },
+    clock: clock.fixed(at: at_ms),
+    entropy: fn() { 7 },
+  )
+}
+
+// A directory's real path, so a workspace path the check derives from it
+// is the one it will report.
+fn real(directory: String) -> String {
+  let assert Ok(real) = bootstrap.canonical_directory(directory)
+    as "a scratch directory must resolve"
+  real
 }
 
 fn config(root: record.Root) -> install.Config {
