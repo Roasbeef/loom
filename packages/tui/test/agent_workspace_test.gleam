@@ -361,14 +361,14 @@ pub fn selection_survives_insertion_and_removal_cannot_retarget_a_draft_test() {
   assert selection.selected == "main"
 }
 
-pub fn compact_pending_nudges_keep_all_lines_in_the_scrollable_tail_test() {
+pub fn expanded_pending_nudges_keep_all_lines_in_the_scrollable_tail_test() {
   let body = "first line\nsecond line\nlast visible instruction"
   let initial =
     tui_model.Model(
       ..model(),
       strands: [],
       nudges: Some(advisor_pending.Board("main", 1, [body], 1)),
-      details_expanded: False,
+      details_expanded: True,
     )
   let rendered = tui.update(backend.Resize(100, 30), initial)
   let text =
