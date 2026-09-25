@@ -35,8 +35,27 @@ the compiler's package-interface export, the `glance` walker behind
 language server is the one channel every language already ships, and for
 most languages it is the only oracle for types. Loom therefore speaks the
 Language Server Protocol (LSP) and brings no language knowledge of its
-own. Nothing in the path from the model to the server knows which
-language is on the other end.
+own. `gleam lsp` and `gopls` appear throughout this document because
+they are the two servers the design was measured against, not because
+Loom knows them: Loom ships no server table, and a server exists only
+because an operator configured one.
+
+Three defaults still carry an assumption about how a language spells
+things, and a server whose language breaks one is served less well
+rather than refused:
+
+- **The `languageId` a document is opened with** is its server's first
+  extension without the dot (`gleam`, `go`). That is the right id for
+  most languages and the wrong one for some (`.ts` is `typescript`).
+- **A qualified symbol** is split on `.`, and its qualifier must end the
+  definition's file path without its extension, or its directory. That
+  fits Gleam modules, Go packages, Python, Java and TypeScript; it misses
+  Rust's and C++'s `::`, and Elixir's `MyApp.Accounts` in
+  `my_app/accounts.ex`.
+- **The bare command `gleam`** resolves to the toolchain code mode
+  located rather than to `PATH`, so the compiler analysing a project is
+  the one that builds its programs. That is about the release Loom
+  ships, not about the Gleam language.
 
 ## One door, every surface
 
@@ -539,16 +558,20 @@ extensions = [".gleam"]
 root_markers = ["gleam.toml"]
 project = "writable"
 
-# gopls reads the module cache and writes the build cache, both outside
-# the project, so both are named here.
+# gopls reads the module cache and writes the build cache and its own
+# cache, all outside the project, so all are named here (on macOS the
+# two caches live under ~/Library/Caches; `go env` says where).
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["~/.cache/go-build"]
+writable = ["~/.cache/go-build", "~/.cache/gopls"]
 env = ["GOFLAGS"]
 ```
+
+Both tables are examples. Neither is built in, and a workspace that
+wants neither configures neither.
 
 `command` is an argv, never a shell string. Its head is resolved once:
 an absolute path is taken as written; the bare name `gleam` is the
