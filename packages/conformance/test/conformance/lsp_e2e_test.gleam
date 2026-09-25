@@ -568,8 +568,15 @@ fn run_gopls(helper_path: String, gopls: String, goroot: String) -> Nil {
   )
 
   // `gopls` shells out to `go`, whose toolchain it must read, and writes
-  // its build and file caches under the daemon's `HOME`. Each is a root the
-  // operator lists; `~/` is resolved against the daemon's `HOME` at boot.
+  // its build and file caches under the user cache directory. Each is a
+  // root the operator lists, and the paths come from `go env` rather than
+  // being spelled: the cache directory is `~/.cache` on Linux but
+  // `~/Library/Caches` on macOS, and a jail that grants the wrong one leaves
+  // `go list` unable to write, so `gopls` loads no packages and every
+  // definition comes back empty.
+  let gocache = string.trim(ffi_shell.os_cmd("go env GOCACHE"))
+  let gomodcache = string.trim(ffi_shell.os_cmd("go env GOMODCACHE"))
+  let gopls_cache = parent_directory(gocache) <> "/gopls"
   let toml = "
 [models.acme]
 dialect = \"anthropic\"
@@ -586,8 +593,8 @@ main = [\"acme\"]
 command = [\"" <> gopls <> "\", \"serve\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
-readable = [\"" <> goroot <> "\", \"~/go/pkg/mod\"]
-writable = [\"~/.cache/go-build\", \"~/.cache/gopls\"]
+readable = [\"" <> goroot <> "\", \"" <> gomodcache <> "\"]
+writable = [\"" <> gocache <> "\", \"" <> gopls_cache <> "\"]
 env = [\"GOFLAGS\", \"GOTOOLCHAIN\"]
 "
   let messages =
