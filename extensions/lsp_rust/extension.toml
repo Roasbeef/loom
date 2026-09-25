@@ -1,0 +1,61 @@
+# rust-analyzer as a Loom language profile (ADR-014). The [lsp.rust]
+# table is exactly what `loom.toml` would carry; installing this
+# extension approves it, and `loom ext check lsp_rust` proves it against
+# the crate in fixture/. README.md says what the host must hold first.
+[extension]
+name = "lsp_rust"
+version = "0.1.0"
+description = "rust-analyzer for Loom's language-server tools"
+license = "Apache-2.0"
+tier = "profile"
+
+# rustup's `rust-analyzer` in ~/.cargo/bin, found on the daemon's PATH.
+# It is a link to rustup, so the jail mounts its install prefix, ~/.cargo,
+# read-only. The project stays read-only: nothing here is writable, and
+# measurement found nothing needed to be. With a committed Cargo.lock,
+# `cargo metadata` writes nothing; `cargo check` for build scripts cannot
+# write target/ and says so, which leaves a crate without build scripts
+# or proc macros fully analysed.
+[lsp.rust]
+command = ["rust-analyzer"]
+extensions = [".rs"]
+root_markers = ["Cargo.toml"]
+
+# rust-analyzer opens documents as "rust", not the extension's "rs".
+language_id = "rust"
+
+# Rust qualifies with ::, which the default "." cannot split.
+qualifier_separators = ["::"]
+
+# The resolver matches a qualifier against the module's path, and
+# `crate::` names no directory, so the model is told to leave it out.
+hint = "Qualify as module::name the way the code spells it, without a leading crate:: (util::greet)"
+
+# ~/.rustup holds the toolchains every rustup proxy dispatches to
+# (measured without it: "could not create home directory: '~/.rustup':
+# Read-only file system"). ~/.cargo/registry holds the standard library's
+# own dependencies, which rust-analyzer resolves to load std; without
+# them, offline, the call inside println! is never found (measured: the
+# references check loses src/main.rs:4). Both are read-only; nothing
+# under ~/.cargo is ever writable, since a build script that could write
+# there could plant cargo configuration or crate sources that later run
+# on the host.
+readable = ["~/.rustup", "~/.cargo/registry"]
+
+# The definition of a qualified name, found by searching the crate and
+# narrowed by the module the qualifier names.
+[[check]]
+server = "rust"
+query = "definition"
+symbol = "util::greet"
+expect = ["src/util.rs:1"]
+
+# Every reference, the call inside println! included: it needs the
+# standard library's macros, which is what the registry grant is for.
+[[check]]
+server = "rust"
+query = "references"
+symbol = "greet"
+path = "src/util.rs"
+line = 1
+expect = ["src/util.rs:1", "src/main.rs:4", "src/main.rs:5"]

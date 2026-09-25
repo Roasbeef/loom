@@ -1,0 +1,45 @@
+# The Gleam language server as a Loom language profile (ADR-014). The
+# [lsp.gleam] table is exactly what `loom.toml` would carry; installing
+# this extension approves it, and `loom ext check lsp_gleam` proves it
+# against the project in fixture/.
+[extension]
+name = "lsp_gleam"
+version = "0.1.0"
+description = "gleam lsp for Loom's language-server tools"
+license = "Apache-2.0"
+tier = "profile"
+
+# `gleam` is the compiler's own binary: a bare name, so it is the
+# toolchain code mode located, or the daemon's PATH lookup where code mode
+# located none. The server compiles the project it serves and writes
+# manifest.toml and build/ into it, hence a writable project. It needs no
+# extra roots: a project with no dependencies reads nothing outside
+# itself, and one with dependencies has them under build/packages.
+[lsp.gleam]
+command = ["gleam", "lsp"]
+extensions = [".gleam"]
+root_markers = ["gleam.toml"]
+project = "writable"
+
+# Appended once to lsp_definition's description, in sessions that
+# configure this server, so the model qualifies a name as the resolver
+# splits it.
+hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
+
+# The definition of a qualified name, found by searching the project and
+# narrowed by the module the qualifier names.
+[[check]]
+server = "gleam"
+query = "definition"
+symbol = "util.greet"
+expect = ["src/util.gleam:1"]
+
+# Every reference, asked from the definition: the declaration, the two
+# calls on one line of the other module, and the two in its own module.
+[[check]]
+server = "gleam"
+query = "references"
+symbol = "greet"
+path = "src/util.gleam"
+line = 1
+expect = ["src/util.gleam:1", "src/util.gleam:6", "src/fixture.gleam:4"]
