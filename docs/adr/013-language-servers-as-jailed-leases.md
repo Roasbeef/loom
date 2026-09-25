@@ -263,10 +263,29 @@ a **symbol name**, plus optionally a `path` and a 1-based `line` as
   and fall out. `workspace/symbol` is not used. Neither measured server
   needs it, and one never answers it.
 
+The symbol may be qualified the way code reads it (`probe.greet`,
+`util.Greet`): the last segment is the identifier, and the qualifier
+narrows candidates to definitions whose module path or directory ends
+with it.
+
 An ambiguous name (more than one distinct definition) answers with the
 candidates, never a guess. Results print as `path:line` plus the line's
 text, in the same 1-based form `fs_read` and `grep` use, so a result feeds
 straight back into an edit.
+
+Answers are shaped to be the agent's next step rather than a report
+to read:
+
+- **Anchors.** Every rendered site carries its hashline anchor, so a
+  result feeds `fs_edit` directly without an `fs_read` round trip.
+- **Containers.** References carry the symbol that contains them
+  (`other.twice`). That answers "who depends on this?", and it gives a
+  one-level caller view on servers with no call hierarchy.
+- **Preview first.** Rename takes an explicit `preview` or `apply` mode.
+  Preview writes nothing and shows every changed line.
+- **Counts first.** Lists count before they list ("37 references in 9
+  files; showing 20"), so the model knows when to narrow a query or move
+  it into code mode.
 
 ### 6. Tools, code mode and post-edit diagnostics share one door
 

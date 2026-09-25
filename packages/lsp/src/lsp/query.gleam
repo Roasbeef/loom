@@ -43,9 +43,18 @@ import gleam/option.{type Option}
 /// the server's project root and asks the server where each hit is
 /// defined; more than one distinct definition is `Ambiguous`, never a
 /// guess.
+///
+/// `symbol` may be qualified the way code reads: `probe.greet`,
+/// `util.Greet`, `pkg/mod.name`. The last dot-separated segment is the
+/// identifier searched for, and everything before it narrows the
+/// candidates to definitions whose file's module path (its path without
+/// extension) or directory ends with that qualifier. An agent reads
+/// `util.Greet` in the code it is editing; it should be able to ask for
+/// exactly that.
 pub type SymbolQuery {
   SymbolQuery(
-    /// The identifier as written in source, e.g. `greet` or `Greet`.
+    /// The identifier as written in source, e.g. `greet`, `Greet`, or
+    /// qualified as `probe.greet`.
     symbol: String,
     /// A workspace path, as `fs_read` accepts it.
     path: Option(String),
@@ -68,6 +77,22 @@ pub type Site {
     /// The text of that line with its terminator removed, so a result
     /// reads like a `grep` hit.
     text: String,
+  )
+}
+
+/// One reference, with the symbol whose body contains it.
+///
+/// The container is what turns a list of positions into an answer to the
+/// question an agent is actually asking — "who depends on this?" — and
+/// it gives a one-level caller view on servers that advertise no call
+/// hierarchy, computed from the outline every server does offer.
+pub type Reference {
+  Reference(
+    site: Site,
+    /// The innermost outline entry whose range holds the reference,
+    /// qualified by its parents (`Server.handle`), or `None` at top
+    /// level (an import line, a module attribute).
+    container: Option(String),
   )
 }
 
@@ -231,8 +256,9 @@ pub type Door {
   Door(
     /// Where the queried symbol is defined.
     definition: fn(SymbolQuery) -> Result(Served(List(Site)), QueryError),
-    /// Every reference to the queried symbol, its declaration included.
-    references: fn(SymbolQuery) -> Result(Served(List(Site)), QueryError),
+    /// Every reference to the queried symbol, its declaration included,
+    /// each with its containing symbol.
+    references: fn(SymbolQuery) -> Result(Served(List(Reference)), QueryError),
     /// Type information and documentation for the queried symbol.
     hover: fn(SymbolQuery) -> Result(Served(Hover), QueryError),
     /// A file's outline, by workspace path.
