@@ -198,7 +198,16 @@ pub fn the_schema_supports_search_and_read_arguments_test() {
     field(definition.schema, "properties")
     as "the schema names its properties"
   assert list.map(properties, fn(property) { property.0 })
-    == ["action", "session", "entry", "query", "limit", "scope"]
+    == ["action", "query", "session", "entry", "limit", "scope"]
+
+  // The requirement lives in the property, next to `action`, because a
+  // flat schema cannot make `query` conditionally required and a model
+  // filling fields from the schema never reads the tool description.
+  let assert Ok(query) = list.key_find(properties, "query")
+    as "the schema carries a query property"
+  let assert Ok(json.String(description)) = field(query, "description")
+    as "the query property is described"
+  assert string.starts_with(description, "REQUIRED for action=search")
 }
 
 fn field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
