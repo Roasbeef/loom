@@ -38,9 +38,23 @@
 //// as written (`~/rest`, `<cache>/rest`) so that decoding is a function of
 //// the text alone; `expand_path` resolves them against `Places` once the
 //// daemon knows where it is.
+////
+//// # The approved form
+////
+//// A profile that arrives in an extension is approved at install, and the
+//// install record keeps it in full (ADR-014 §3), so this module also owns
+//// the profile's JSON form: `encode_server` writes it and `server_decoder`
+//// reads it back totally. The record is read by a later server run, so the
+//// decoder refuses a malformed value rather than crashing on it; it does
+//// not re-judge the table's rules, because a load compares the record's
+//// profiles with the manifest's freshly decoded ones and refuses any
+//// difference, and the manifest's have met every rule. `approval_lines`
+//// renders the same grant for the operator who is approving it.
 
 import codemode/vet/policy as vet_policy
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode.{type Decoder}
+import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -1052,6 +1066,187 @@ pub fn cache_place(
     _other, Some("/" <> below) -> Some("/" <> below)
     _other, Some(_relative) | _other, None ->
       option.map(home, fn(home) { strip_trailing_slash(home) <> "/.cache" })
+  }
+}
+
+// --- the approved form ------------------------------------------------------
+
+/// Renders one profile as the JSON an extension's install record keeps.
+///
+/// Every field is written, the defaulted ones included, because the
+/// record keeps what was approved rather than what was typed: a default
+/// that changed in a later release must not silently change a profile an
+/// operator already said yes to. A root is written as the operator wrote
+/// it (`~/go/pkg/mod`, `<cache>/gopls`), since expansion happens at boot
+/// against the daemon's own places.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(back) =
+///   json.parse(
+///     json.to_string(profile.encode_server(go)),
+///     profile.server_decoder(),
+///   )
+/// assert back == go
+/// ```
+///
+pub fn encode_server(server: LspServer) -> Json {
+  json.object([
+    #("name", json.string(server.name)),
+    #("command", json.array(server.command, json.string)),
+    #("extensions", json.array(server.extensions, json.string)),
+    #("root_markers", json.array(server.root_markers, json.string)),
+    #("project", json.string(project_text(server.project))),
+    #("readable", json.array(server.readable, encode_path)),
+    #("writable", json.array(server.writable, encode_path)),
+    #("env", json.array(server.env, json.string)),
+    #("language_id", json.string(server.language_id)),
+    #(
+      "qualifier_separators",
+      json.array(server.qualifier_separators, json.string),
+    ),
+    #("module_case", json.string(module_case_text(server.module_case))),
+    #("hint", json.nullable(server.hint, json.string)),
+  ])
+}
+
+/// Reads back one profile `encode_server` wrote, totally.
+///
+/// A missing field, a wrong type, an unknown `project` or `module_case`
+/// word, or a root that is neither absolute nor `~/` nor `<cache>/` is a
+/// decode failure naming where it was found, never a crash. The table's
+/// other rules are not re-judged here; see the module documentation for
+/// why the comparison at load is what holds them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = json.parse("{}", profile.server_decoder())
+/// ```
+///
+pub fn server_decoder() -> Decoder(LspServer) {
+  use name <- decode.field("name", decode.string)
+  use command <- decode.field("command", decode.list(decode.string))
+  use extensions <- decode.field("extensions", decode.list(decode.string))
+  use root_markers <- decode.field("root_markers", decode.list(decode.string))
+  use project <- decode.field("project", project_decoder())
+  use readable <- decode.field("readable", decode.list(path_decoder()))
+  use writable <- decode.field("writable", decode.list(path_decoder()))
+  use env <- decode.field("env", decode.list(decode.string))
+  use language_id <- decode.field("language_id", decode.string)
+  use qualifier_separators <- decode.field(
+    "qualifier_separators",
+    decode.list(decode.string),
+  )
+  use module_case <- decode.field("module_case", module_case_decoder())
+  use hint <- decode.field("hint", decode.optional(decode.string))
+  decode.success(LspServer(
+    name:,
+    command:,
+    extensions:,
+    root_markers:,
+    project:,
+    readable:,
+    writable:,
+    env:,
+    language_id:,
+    qualifier_separators:,
+    module_case:,
+    hint:,
+  ))
+}
+
+/// The lines an install prints for one profile it is approving: the
+/// command the jail will run, the extensions it claims, what it may do to
+/// the project, the extra roots, the environment names it passes and, when
+/// there is one, the hint the model will read.
+///
+/// That is the whole of the grant ADR-014 §3 says an approval covers, so
+/// an operator reading the install sees exactly what they said yes to. The
+/// argv is quoted element by element, because a command is never a shell
+/// string and printing it as one would hide where one argument ends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// profile.approval_lines(go)
+/// // -> ["lsp.go", "    command:    [\"gopls\"]", ...]
+/// ```
+///
+pub fn approval_lines(server: LspServer) -> List(String) {
+  let paths = fn(listed) { list.map(listed, path_text) }
+  let lines = [
+    "lsp." <> server.name,
+    approval_line("command", list.map(server.command, quoted)),
+    approval_line("extensions", server.extensions),
+    approval_line("project", [project_text(server.project)]),
+    approval_line("readable", paths(server.readable)),
+    approval_line("writable", paths(server.writable)),
+    approval_line("env", server.env),
+  ]
+  case server.hint {
+    None -> lines
+    Some(hint) -> list.append(lines, [approval_line("hint", [quoted(hint)])])
+  }
+}
+
+fn approval_line(label: String, values: List(String)) -> String {
+  let shown = case values {
+    [] -> "(none)"
+    [_, ..] -> string.join(values, ", ")
+  }
+  "    " <> string.pad_end(label <> ":", to: 12, with: " ") <> shown
+}
+
+fn quoted(text: String) -> String {
+  "\"" <> text <> "\""
+}
+
+fn encode_path(path: LspPath) -> Json {
+  json.string(path_text(path))
+}
+
+// The written form, re-read with the decoder's own path rule so that a
+// record can hold exactly the roots a table could.
+fn path_decoder() -> Decoder(LspPath) {
+  use written <- decode.then(decode.string)
+  case one_path("the recorded profile", written) {
+    Ok(path) -> decode.success(path)
+    Error(_reason) ->
+      decode.failure(AbsolutePath(written), "an absolute, ~/ or <cache>/ path")
+  }
+}
+
+fn project_text(project: ProjectAccess) -> String {
+  case project {
+    ProjectReadOnly -> "read-only"
+    ProjectWritable -> "writable"
+  }
+}
+
+fn project_decoder() -> Decoder(ProjectAccess) {
+  use written <- decode.then(decode.string)
+  case written {
+    "read-only" -> decode.success(ProjectReadOnly)
+    "writable" -> decode.success(ProjectWritable)
+    _other -> decode.failure(ProjectReadOnly, "read-only or writable")
+  }
+}
+
+fn module_case_text(module_case: ModuleCase) -> String {
+  case module_case {
+    AsWritten -> "as-written"
+    Snake -> "snake"
+  }
+}
+
+fn module_case_decoder() -> Decoder(ModuleCase) {
+  use written <- decode.then(decode.string)
+  case written {
+    "as-written" -> decode.success(AsWritten)
+    "snake" -> decode.success(Snake)
+    _other -> decode.failure(AsWritten, "as-written or snake")
   }
 }
 

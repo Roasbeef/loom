@@ -33,12 +33,15 @@ import broker/exec.{type EnforcementDemand}
 import client/extension/archive
 import client/extension/install
 import client/extension/installed
+import client/extension/manifest
 import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
+import client/lsp/profile
 import client/serve
 import codemode/build
 import codemode/compile
+import codemode/enforcement
 import codemode/identity
 import core/clock.{type Clock}
 import core/ids
@@ -268,22 +271,56 @@ fn install_command(arguments: List(String)) -> Result(List(String), String) {
   use root <- result.try(root_of(flags))
   use workspace <- result.try(working_directory())
   use Nil <- result.try(staging_root(root))
+  let build = on_demand_build(flags, root, workspace)
+  reported(install.run(config(build, root), from, rev: flags.rev))
+}
 
-  // The build plane is the boot's own, started here and torn down on
-  // every path out: an install that failed must not leave a pool of
-  // jails running under an operator's shell.
-  use plane <- result.try(serve.start_build_plane(
-    helper: flags.helper,
-    seed: flags.seed,
-    workspace:,
-    writable: record.path(root),
-    state_root: state_root_of(root),
-    tmp_dir: staging_path(root),
-    clock: wall_clock(),
-  ))
-  let outcome = install.run(config(plane, flags, root), from, rev: flags.rev)
-  serve.stop_build_plane(plane)
-  reported(outcome)
+// The build plane is started inside the build seam, on the one call a
+// jailed install makes to it, rather than here before the install runs.
+// The tier is only known once the source has been fetched and its
+// manifest read, and a profile extension compiles nothing: starting the
+// plane up front would refuse a profile on a host with no code-mode
+// toolchain or sandbox helper, for lacking what it never uses. Deciding
+// the tier here instead would mean fetching here, outside the pipeline
+// whose layers name every failure. So the seam owns the plane's whole
+// life: it starts the plane, builds once, and tears the plane down on
+// every path out, because an install that failed must not leave a pool
+// of jails running under an operator's shell. A plane that will not
+// start is the build being unavailable, and the install says so under
+// its `compile:` layer.
+fn on_demand_build(
+  flags: Flags,
+  root: record.Root,
+  workspace: String,
+) -> install.Build {
+  fn(build_root) {
+    case
+      serve.start_build_plane(
+        helper: flags.helper,
+        seed: flags.seed,
+        workspace:,
+        writable: record.path(root),
+        state_root: state_root_of(root),
+        tmp_dir: staging_path(root),
+        clock: wall_clock(),
+      )
+    {
+      Error(reason) ->
+        compile.Built(
+          result: Error(compile.BuildUnavailable(
+            "the build plane would not start: " <> reason,
+          )),
+          enforcement: enforcement.Unreported(
+            "the build plane would not start: " <> reason,
+          ),
+        )
+      Ok(plane) -> {
+        let built = jailed_build(plane, flags)(build_root)
+        serve.stop_build_plane(plane)
+        built
+      }
+    }
+  }
 }
 
 fn reported(
@@ -291,35 +328,65 @@ fn reported(
 ) -> Result(List(String), String) {
   case outcome {
     Error(failure) -> Error("install refused: " <> install.describe(failure))
-    Ok(done) ->
-      Ok([
-        "installed "
-          <> done.record.name
-          <> " "
-          <> done.record.version
-          <> " at "
-          <> done.record.revision,
-        "  tools:  " <> string.join(done.record.tools, ", "),
-        "  digest: " <> done.record.tree_digest,
-        "  where:  " <> done.directory,
-        // An operator installing third-party code is entitled to know
-        // whether the compile was actually jailed, and to be told in the
-        // same breath as they are told it worked.
-        "  jail:   " <> install.enforcement_line(done.enforcement),
+    Ok(done) -> Ok(installed_lines(done))
+  }
+}
+
+/// What a successful install prints: the extension, what was approved,
+/// the digest and where it landed.
+///
+/// A jailed extension's approval is its tools, and the last line says
+/// what the kernel enforced on the jail it was compiled in, because an
+/// operator installing third-party code is entitled to know whether the
+/// compile was actually jailed in the same breath as they are told it
+/// worked. A profile extension's approval is its profiles, so each is
+/// printed in full (`profile.approval_lines`): the command the jail will
+/// run, the extensions it claims, its project access, its extra roots and
+/// the environment names it passes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert [first, ..] = cli.installed_lines(done)
+/// assert first == "installed lsp_go 0.1.0 at local"
+/// ```
+///
+pub fn installed_lines(done: install.Installed) -> List(String) {
+  let heading =
+    "installed "
+    <> done.record.name
+    <> " "
+    <> done.record.version
+    <> " at "
+    <> done.record.revision
+  let placed = [
+    "  digest: " <> done.record.tree_digest,
+    "  where:  " <> done.directory,
+  ]
+  case done.record.tier {
+    manifest.Jailed ->
+      list.flatten([
+        [heading, "  tools:  " <> string.join(done.record.tools, ", ")],
+        placed,
+        ["  jail:   " <> install.enforcement_line(done.enforcement)],
+      ])
+    manifest.Profile ->
+      list.flatten([
+        [heading, "  approved language profiles:"],
+        list.flat_map(done.record.lsp, fn(server) {
+          list.map(profile.approval_lines(server), fn(line) { "  " <> line })
+        }),
+        placed,
       ])
   }
 }
 
-fn config(
-  plane: serve.BuildPlane,
-  flags: Flags,
-  root: record.Root,
-) -> install.Config {
+fn config(build: install.Build, root: record.Root) -> install.Config {
   install.Config(
     root:,
     caps: archive.default_caps(),
     fetch:,
-    build: jailed_build(plane, flags),
+    build:,
     clock: wall_clock(),
     entropy: ffi_os.unique_positive_integer,
     approved_by: result.unwrap(secret.lookup(secret.env(), "USER"), "unknown"),
