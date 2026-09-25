@@ -117,9 +117,21 @@ fn rig(
   search: fn(manager.Search) -> Result(List(manager.Hit), String),
   script: fn(String, option.Option(json.JsonValue)) -> fake_lsp.Answer,
 ) -> Rig {
+  rig_with(workspace, search, script, fn(_method, _params) { [] })
+}
+
+// A rig whose fakes also publish what `notifier` names. The session's
+// protected list holds the `app` project's `.git`, as a session base
+// policy's does for the workspace's own.
+fn rig_with(
+  workspace: String,
+  search: fn(manager.Search) -> Result(List(manager.Hit), String),
+  script: fn(String, option.Option(json.JsonValue)) -> fake_lsp.Answer,
+  notifier: fake_lsp.Notifier,
+) -> Rig {
   let starts = process.new_subject()
   let connect = fn(identity: resolve.Identity) {
-    let fake = fake_lsp.start(fake_lsp.everything(), script)
+    let fake = fake_lsp.start_with(fake_lsp.everything(), script, notifier)
     process.send(starts, #(identity.root, fake))
     Ok(fake_lsp.seam(fake))
   }
@@ -127,7 +139,9 @@ fn rig(
     manager.start(manager.Config(
       workspace:,
       servers: [fake_server()],
-      backend: manager.Backend(connect:, search:),
+      backend: manager.Backend(connect:, search:, protected: [
+        workspace <> "/app/.git",
+      ]),
       timing: quick_timing(),
     ))
     as "the manager must start"
@@ -655,6 +669,316 @@ pub fn after_write_pushes_only_to_a_running_owner_test() {
   Nil
 }
 
+// --- (c') the gate on what a server names ---------------------------------------
+//
+// The jail bounds what a server reads, never which paths it names, and the
+// door reads in the harness. Each test below plants a file whose text is a
+// unique marker where the gate must keep the harness out of it, has the
+// fake server name it, and asserts the marker appears nowhere: not in any
+// door answer, and not in anything the client sent back into the jail.
+
+const marker = "SECRET-MARKER-7f3a9c"
+
+// A file the server's jail cannot see: outside the `app` root, inside the
+// workspace, so its path is shown relative and still never read.
+fn plant_secret(workspace: String) -> String {
+  let secret = workspace <> "/secret/owner.token"
+  write(secret, marker <> "\n")
+  secret
+}
+
+// Whether the marker reached anything the fake was sent.
+fn leaked_into(fake: fake_lsp.Fake) -> Bool {
+  list.any(fake_lsp.seen(fake), fn(entry) {
+    case entry {
+      fake_lsp.Sent(_method, Some(params)) ->
+        string.contains(json.to_string(params), marker)
+      fake_lsp.Sent(_method, None) | fake_lsp.Closed -> False
+    }
+  })
+}
+
+// Whether the fake was sent any notification or request naming `path`.
+fn named_to(fake: fake_lsp.Fake, method: String, path: String) -> Bool {
+  list.any(fake_lsp.seen(fake), fn(entry) {
+    case entry {
+      fake_lsp.Sent(sent, Some(params)) if sent == method ->
+        string.contains(json.to_string(params), uri(path))
+      fake_lsp.Sent(..) | fake_lsp.Closed -> False
+    }
+  })
+}
+
+// A script answering `method` with `answer` and everything else as
+// `outline_script` does.
+fn answering(
+  method: String,
+  answer: json.JsonValue,
+) -> fn(String, option.Option(json.JsonValue)) -> fake_lsp.Answer {
+  fn(asked, params) {
+    case asked == method {
+      True -> fake_lsp.Answer(answer)
+      False -> outline_script(asked, params)
+    }
+  }
+}
+
+pub fn a_definition_outside_the_root_is_shown_but_never_read_test() {
+  let workspace = scratch("gate-definition")
+  let root = project(workspace, "app")
+  let secret = plant_secret(workspace)
+
+  // Two ways out: the path itself, and a link inside the root whose real
+  // location is the same file.
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: secret, from: root <> "/src/link.gleam")
+    as "the fixture link must be made"
+  let rig =
+    rig(
+      workspace,
+      no_search,
+      answering(
+        "textDocument/definition",
+        json.Array([
+          fake_lsp.location(uri(secret), 0, 3),
+          fake_lsp.location(uri(root <> "/src/link.gleam"), 0, 3),
+        ]),
+      ),
+    )
+  let answer =
+    rig.door.definition(query.SymbolQuery(
+      "greet",
+      Some("app/src/a.gleam"),
+      Some(1),
+    ))
+  let assert Ok(served) = answer as "the definition must still answer"
+  assert served.value
+    == [
+      query.Site("secret/owner.token", 1, 4, ""),
+      query.Site("app/src/link.gleam", 1, 4, ""),
+    ]
+  assert !string.contains(string.inspect(answer), marker)
+
+  // Nothing of the file travelled into the jail either.
+  let assert [#(_, fake)] = started(rig) as "one start"
+  assert !leaked_into(fake)
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn diagnostics_for_a_protected_path_echo_no_text_test() {
+  let workspace = scratch("gate-diagnostics")
+  let root = project(workspace, "app")
+  let config = root <> "/.git/config"
+  write(config, marker <> "\n")
+
+  // Every open or change is answered with a publication about the
+  // protected file, which lies inside the server's root.
+  let notifier = fn(method, _params) {
+    case method {
+      "textDocument/didOpen" | "textDocument/didChange" -> [
+        #(
+          "textDocument/publishDiagnostics",
+          json.Object([
+            #("uri", json.String(uri(config))),
+            #(
+              "diagnostics",
+              json.Array([
+                json.Object([
+                  #(
+                    "range",
+                    json.Object([
+                      #(
+                        "start",
+                        json.Object([
+                          #("line", json.Int(0)),
+                          #("character", json.Int(2)),
+                        ]),
+                      ),
+                      #(
+                        "end",
+                        json.Object([
+                          #("line", json.Int(0)),
+                          #("character", json.Int(4)),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                  #("severity", json.Int(1)),
+                  #("message", json.String("broken")),
+                ]),
+              ]),
+            ),
+          ]),
+        ),
+      ]
+      _ -> []
+    }
+  }
+  let rig = rig_with(workspace, no_search, outline_script, notifier)
+  let answer = rig.door.diagnostics(Some("app/src/a.gleam"))
+  let assert Ok(served) = answer as "diagnostics must answer"
+  let found = case served.value {
+    query.Settled(diagnostics:) -> diagnostics
+    query.Unsettled(seen:) -> seen
+  }
+  let assert [diagnostic] = found as "the protected file's diagnostic is kept"
+  assert diagnostic.site == query.Site("app/.git/config", 1, 3, "")
+  assert diagnostic.message == "broken"
+  assert !string.contains(string.inspect(answer), marker)
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn references_into_an_outside_file_never_open_it_test() {
+  let workspace = scratch("gate-references")
+  let root = project(workspace, "app")
+  let secret = plant_secret(workspace)
+  let rig =
+    rig(
+      workspace,
+      no_search,
+      answering(
+        "textDocument/references",
+        json.Array([
+          fake_lsp.location(uri(root <> "/src/a.gleam"), 0, 7),
+          fake_lsp.location(uri(secret), 0, 0),
+        ]),
+      ),
+    )
+  let answer =
+    rig.door.references(query.SymbolQuery(
+      "greet",
+      Some("app/src/a.gleam"),
+      Some(1),
+    ))
+  let assert Ok(served) = answer as "references must answer"
+  assert list.map(served.value, fn(reference) { reference.site })
+    == [
+      query.Site("app/src/a.gleam", 1, 8, "pub fn greet() -> String {"),
+      query.Site("secret/owner.token", 1, 1, ""),
+    ]
+  assert !string.contains(string.inspect(answer), marker)
+
+  // The admitted file was opened and outlined; the withheld one was
+  // neither opened nor asked about.
+  let assert [#(_, fake)] = started(rig) as "one start"
+  assert named_to(fake, "textDocument/didOpen", root <> "/src/a.gleam")
+  assert !named_to(fake, "textDocument/didOpen", secret)
+  assert !named_to(fake, "textDocument/documentSymbol", secret)
+  assert !leaked_into(fake)
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn a_rename_naming_an_outside_file_is_refused_whole_test() {
+  let workspace = scratch("gate-rename")
+  let root = project(workspace, "app")
+  let secret = plant_secret(workspace)
+  let edit = fn(line, from, to) {
+    let at = fn(character) {
+      json.Object([
+        #("line", json.Int(line)),
+        #("character", json.Int(character)),
+      ])
+    }
+    json.Object([
+      #("range", json.Object([#("start", at(from)), #("end", at(to))])),
+      #("newText", json.String("salute")),
+    ])
+  }
+  let rig =
+    rig(
+      workspace,
+      no_search,
+      answering(
+        "textDocument/rename",
+        json.Object([
+          #(
+            "changes",
+            json.Object([
+              #(uri(root <> "/src/a.gleam"), json.Array([edit(0, 7, 12)])),
+              #(uri(secret), json.Array([edit(0, 0, 5)])),
+            ]),
+          ),
+        ]),
+      ),
+    )
+  let answer =
+    rig.door.prepare_rename(
+      query.SymbolQuery("greet", Some("app/src/a.gleam"), Some(1)),
+      "salute",
+    )
+  let assert Error(query.ServerRefused(message)) = answer
+    as "a rename reaching outside the root must be refused"
+  assert string.contains(message, "secret/owner.token")
+  assert string.contains(message, "nothing was read or changed")
+  assert !string.contains(string.inspect(answer), marker)
+  let assert Ok(on_disk) = simplifile.read(secret) as "the secret still reads"
+  assert on_disk == marker <> "\n"
+  let assert [#(_, fake)] = started(rig) as "one start"
+  assert !leaked_into(fake)
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+// The fs tools hand the write observer the real path they wrote. Under a
+// workspace reached through a symlink that path never starts with the
+// workspace as written, and the observer must still find its owner.
+pub fn after_write_finds_its_owner_under_a_symlinked_workspace_test() {
+  let real = scratch("symlinked-real")
+  let link = real <> "-link"
+  let assert Ok(Nil) = simplifile.create_symlink(to: real, from: link)
+    as "the workspace link must be made"
+  let _root = project(link, "app")
+  let rig = rig(link, no_search, outline_script)
+  let assert Ok(_) = rig.door.outline("app/src/a.gleam") as "start"
+  let assert Some(query.Settled([])) =
+    rig.door.after_write(real <> "/app/src/a.gleam")
+    as "the real path of a write must reach the running owner"
+  manager.stop(rig.manager)
+  let _ = simplifile.delete(link)
+  let _ = simplifile.delete_all([real])
+  Nil
+}
+
+// A server gone silent on `definition` must cost a bare-name question one
+// request deadline, not one per hit.
+pub fn a_silent_server_cuts_a_bare_name_search_short_test() {
+  let workspace = scratch("silent")
+  let root = project(workspace, "app")
+  let calls = "pub fn twice() {\n" <> string.repeat("  greet()\n", 8) <> "}\n"
+  write(root <> "/src/calls.gleam", calls)
+  let hits =
+    list.map([2, 3, 4, 5, 6, 7, 8, 9], fn(line) {
+      manager.Hit(root <> "/src/calls.gleam", line)
+    })
+  let script = fn(method, params) {
+    case method {
+      "textDocument/definition" -> fake_lsp.Silent
+      _ -> outline_script(method, params)
+    }
+  }
+  let rig = rig(workspace, fn(_search) { Ok(hits) }, script)
+  let assert Ok(_) = rig.door.outline("app/src/a.gleam") as "start"
+  let began = ffi_os.system_time_ms()
+  let answer = rig.door.definition(query.SymbolQuery("greet", None, None))
+  let took = ffi_os.system_time_ms() - began
+  let assert Error(query.Unavailable(reason)) = answer
+    as "a server that stops answering must be reported, not taken for none"
+  assert string.contains(reason, "stopped there")
+
+  // One request deadline (2 s here) and some margin; eight would be 16 s.
+  assert took < quick_timing().request_ms * 2
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 // The session's arrangement: the manager is a transient child of a
 // supervisor, bound to an address, and every door is built over the
 // address. A crashed manager is replaced and the same door reaches the
@@ -681,7 +1005,7 @@ pub fn a_supervised_manager_is_replaced_under_its_address_test() {
     manager.Config(
       workspace:,
       servers: [fake_server()],
-      backend: manager.Backend(connect:, search: no_search),
+      backend: manager.Backend(connect:, search: no_search, protected: []),
       timing: quick_timing(),
     )
   let assert Ok(names) = address.start() as "the registry must start"

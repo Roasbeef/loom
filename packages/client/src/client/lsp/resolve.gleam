@@ -11,10 +11,10 @@
 //// symbol, finding a name in an outline, naming the symbol that contains a
 //// reference, and turning the server's absolute paths into the
 //// workspace-relative ones `fs_read` prints. Almost all of it is pure over
-//// its arguments, so the rules are tested without a server; the three
-//// functions that read the disk (`owner`, `read_text`, `workspace_real`)
-//// say so, and read through `tools/fs`, the same resolution the fs tools
-//// trust.
+//// its arguments, so the rules are tested without a server; the four
+//// functions that read the disk (`owner`, `admit`, `read_text`,
+//// `workspace_real`) say so, and read through `tools/fs`, the same
+//// resolution the fs tools trust.
 ////
 //// # Ownership and containment, in the order they are decided
 ////
@@ -29,10 +29,19 @@
 //// produce an answer about nothing (ADR-013 §3, "Containment"). The server
 //// is then addressed only by real paths: the real root is its `rootUri`,
 //// and the real file is what every request names.
+////
+//// # The same rule, turned around
+////
+//// `owner` keeps the model from asking about a file the jail hides;
+//// `admit` keeps a server from making the harness read one. A server names
+//// paths in every answer, and the harness reads outside every jail, so a
+//// server-named path is read only once `admit` has placed its real
+//// location under the server's root and under no protected path.
 
 import broker/policy
 import client/catalog.{type LspServer}
 import filepath
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -103,7 +112,9 @@ pub fn same(a: Identity, b: Identity) -> Bool {
 ///
 /// `path` may be absolute or workspace-relative; the tools' write observer
 /// passes resolved absolute paths and a rename passes the workspace path
-/// it wrote, and both land here. Reads the disk: the marker search stats
+/// it wrote, and both land here. An absolute path is accepted under the
+/// workspace as written or under its real location, since the observer's
+/// path is the real one. Reads the disk: the marker search stats
 /// ancestors, and containment resolves symlinks.
 ///
 /// ## Examples
@@ -127,14 +138,26 @@ pub fn owner(
       NoOwner(reason: "no configured language server owns " <> path)
     }),
   )
-  use lexical <- result.try(
-    fs.resolve_path(workspace:, path:)
-    |> result.map_error(fn(_escapes) {
+
+  // The fs tools' write observer hands over the path they resolved, every
+  // symlink followed, so under a workspace reached through a symlink the
+  // written spelling never prefixes it. A path is placed under whichever
+  // spelling of the workspace holds it — as written, or real — and the
+  // walk to a marker then stays inside that spelling.
+  use #(spelling, lexical) <- result.try(
+    list.unique([workspace, workspace_real(workspace)])
+    |> list.find_map(fn(spelling) {
+      fs.resolve_path(workspace: spelling, path:)
+      |> result.map(fn(lexical) { #(spelling, lexical) })
+      |> result.replace_error(Nil)
+    })
+    |> result.map_error(fn(_nil) {
       Refused(reason: path <> " is outside the workspace")
     }),
   )
-  let workspace = fs.resolve_path(workspace:, path: workspace)
-  let top = result.unwrap(workspace, lexical)
+  let top =
+    fs.resolve_path(workspace: spelling, path: spelling)
+    |> result.unwrap(lexical)
   use root <- result.try(
     marked_root(filepath.directory_name(lexical), top, server.root_markers)
     |> result.map_error(fn(_nil) {
@@ -264,9 +287,14 @@ pub fn display(workspaces: List(String), path: String) -> String {
   result.unwrap(inside, path)
 }
 
-/// Reads a file the server holds or names, under the fs tools' large-file
-/// guard. The path must already be resolved (`owner`, or a server's own
-/// answer, which the jail bounds).
+/// Reads a file under the fs tools' large-file guard, with no path
+/// discipline of its own.
+///
+/// **Precondition: `path` came out of `owner` or `admit`.** The jail bounds
+/// what a server can read, never which paths it can name, and this read
+/// runs in the harness, unjailed. A path a server named goes through
+/// `admit` first, or a hostile project's server could name a credential
+/// file and have the harness read it into a tool result.
 ///
 /// ## Examples
 ///
@@ -282,6 +310,69 @@ pub fn read_text(path: String) -> Result(String, String) {
       fs.TooLarge(size:, limit: _) ->
         path <> " is too large to read (" <> int.to_string(size) <> " bytes)"
       fs.NotText -> path <> " is not UTF-8 text"
+    }
+  })
+}
+
+/// Whether the harness may read a path a language server named: its real
+/// location must lie under `root`, the server's real project root, and at
+/// or under no entry of `protected`, the session base policy's list.
+/// Answers the real path, which is the one to read, or why not.
+///
+/// This is the gate of ADR-013 §3's containment turned around. `owner`
+/// keeps the model from asking a server about a file the jail hides; this
+/// keeps a server from making the harness read one. Everything a server
+/// answers — a definition, a reference, a call edge, a diagnostic, a
+/// rename's `WorkspaceEdit` — names paths, and the harness reads outside
+/// every jail. The bound is the root alone, never the server's configured
+/// `readable` roots: an operator grants those so the server can resolve a
+/// dependency, which is not a grant for the harness to print it. A jump
+/// into the standard library is therefore shown at its coordinates, with
+/// no line text.
+///
+/// The check is `tools/fs.resolve_writable`: containment by real path and
+/// the protected list, both judged on where the path really leads, and a
+/// relative protected entry refusing everything. It is the write
+/// boundary's check, reused because it is the same question — may the
+/// harness touch this file on the model's behalf — and a second copy is
+/// how two enforcement points drift.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // resolve.admit(root: "/w/app", protected: ["/w/app/.git"], path: "/w/app/src/a.gleam")
+/// //   == Ok("/w/app/src/a.gleam")
+/// // resolve.admit(root: "/w/app", protected: [], path: "/home/me/.ssh/id")
+/// //   -> Error("/home/me/.ssh/id resolves outside the server's root")
+/// ```
+///
+pub fn admit(
+  root root: String,
+  protected protected: List(String),
+  path path: String,
+) -> Result(String, String) {
+  // A relative path would be joined under the root and pass; a server that
+  // names one has named nothing the harness can place.
+  use <- bool.lazy_guard(!string.starts_with(path, "/"), fn() {
+    Error(path <> " is not an absolute path")
+  })
+  fs.resolve_writable(
+    filesystem: fs.real_filesystem(),
+    workspace: root,
+    protected:,
+    path:,
+  )
+  |> result.map_error(fn(error) {
+    case error {
+      fs.EscapesWorkspace(path: _) ->
+        path <> " resolves outside the server's root"
+      fs.Unresolvable(path: _, reason:) ->
+        path <> " does not resolve: " <> reason
+      fs.EmptyPath -> "an empty path names no file"
+      fs.ProtectedPath(path: _, protected:) ->
+        path <> " lies under the protected path " <> protected
+      fs.ProtectionMisconfigured(path: _, protected:) ->
+        "the session's protected list holds the relative entry " <> protected
     }
   })
 }
@@ -515,8 +606,9 @@ fn entry(
 }
 
 /// One server position as a `Site` in `content`, or at its raw coordinates
-/// with no line text when the text does not hold it (a file changed since
-/// the server answered, or one that could not be read).
+/// with no line text when there is no text (a file the gate withheld, or
+/// one that could not be read) or the text does not hold the position (a
+/// file changed since the server answered).
 ///
 /// ## Examples
 ///
@@ -526,13 +618,20 @@ fn entry(
 /// ```
 ///
 pub fn site(content: String, display_path: String, at: Position) -> Site {
-  text.to_site(content, display_path, at)
-  |> result.lazy_unwrap(fn() {
+  let raw = fn() {
     Site(
       path: display_path,
       line: at.line + 1,
       column: at.character + 1,
       text: "",
     )
-  })
+  }
+
+  // No text is the gate's withheld file or an unreadable one, and
+  // `to_site` would clamp the server's column into an empty line; the
+  // coordinates are the one thing the server said, so they stand as said.
+  case content {
+    "" -> raw()
+    _ -> text.to_site(content, display_path, at) |> result.lazy_unwrap(raw)
+  }
 }

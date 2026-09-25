@@ -45,6 +45,29 @@
 //// at most 64 open. After a write, `after_write` pushes the new text and
 //// waits, bounded, for settled diagnostics.
 ////
+//// # What a server names is gated before the harness reads it
+////
+//// The jail bounds what a server can read, never which paths it can put in
+//// an answer, and the door's reads run in the caller, unjailed. So every
+//// path out of an answer — a definition, a reference, a call edge, a
+//// published diagnostic, a rename's `WorkspaceEdit` — becomes a `Named`
+//// through one gate (`resolve.admit`): `Admitted` when its real location
+//// lies under the server's root and under no protected path, `Withheld`
+//// otherwise. A withheld file is shown at the server's coordinates with no
+//// line text, is never opened on the server (`resync` gates again, being
+//// the one place a document is opened), and refuses a rename whole. Without
+//// it a hostile project's server could name `~/.loom/owner.token` and have
+//// the harness print its first line, or have `references` send any
+//// harness-readable file into the jail.
+////
+//// # A silent server costs one deadline, not one per request
+////
+//// Resolving a bare name asks `definition` once per search hit, and
+//// `references` asks `documentSymbol` once per referenced file. The first
+//// request of such a batch that times out, or finds the server gone, ends
+//// it: the bare name answers `Unavailable`, and the remaining references
+//// keep no container.
+////
 //// # Enforcement is proven before a server starts
 ////
 //// The production backend (`jailed`) clears a trivial probe under exactly
@@ -166,10 +189,12 @@ pub const max_search_hits = 200
 /// See `max_search_hits`.
 pub const max_search_files = 50
 
-/// The effects the manager cannot perform itself: starting a server's
-/// transport and searching a tree. Closures, so a test drives the manager
-/// with a fake language server and an in-process search, and production
-/// supplies `jailed`.
+/// The effects the manager cannot perform itself — starting a server's
+/// transport and searching a tree — and the session's protected paths,
+/// which travel with them because they are the session base policy's, and
+/// that policy is what the production backend is built from. Closures, so
+/// a test drives the manager with a fake language server and an
+/// in-process search, and production supplies `jailed`.
 pub type Backend {
   Backend(
     /// Builds the transport one server is started over. Runs in the
@@ -178,6 +203,9 @@ pub type Backend {
     connect: fn(Identity) -> Result(Transport, String),
     /// Runs one bounded word search, answering the matched lines.
     search: fn(Search) -> Result(List(Hit), String),
+    /// The session base policy's `protected` list, absolute. No path a
+    /// server names is read under one of these (`resolve.admit`).
+    protected: List(String),
   )
 }
 
@@ -249,7 +277,11 @@ pub type Jailed {
 /// ```
 ///
 pub fn jailed(jailed: Jailed) -> Backend {
-  Backend(connect: connect_jailed(jailed, _), search: search_jailed(jailed, _))
+  Backend(
+    connect: connect_jailed(jailed, _),
+    search: search_jailed(jailed, _),
+    protected: jailed.session_base.protected,
+  )
 }
 
 /// The command the enforcement probe runs: the jail's own shell, exiting
@@ -1276,7 +1308,7 @@ fn definition(
     lsp.definition(session.client, target.path, target.at, request_ms(session))
     |> result.map_error(request_error(session, _)),
   )
-  Ok(Served(value: sites(manager, locations), warmth: session.warmth))
+  Ok(Served(value: sites(session, locations), warmth: session.warmth))
 }
 
 fn references(
@@ -1290,38 +1322,36 @@ fn references(
     |> result.map_error(request_error(session, _)),
   )
 
+  let named =
+    list.map(locations, fn(location) {
+      #(location, named_uri(session, location.uri))
+    })
+
   // A container comes from the referenced file's outline, and `gleam lsp`
   // outlines only documents it holds open, so the referencing files are
   // opened first — at most half the client's open bound, so one wide
   // answer cannot evict everything else the server holds. A file past
   // that, or one the server cannot outline, keeps its references with no
-  // container rather than losing them.
+  // container rather than losing them. Only admitted files are opened: a
+  // file the gate withheld is never read, so never sent into the jail.
   let referencing =
-    list.map(locations, fn(location) { uri_path(location.uri) })
+    list.filter_map(named, fn(entry) { admitted(entry.1) })
     |> list.unique
     |> list.take(lsp.max_open_documents / 2)
   use Nil <- result.try(resync(session, referencing))
-
-  // Each referenced file is read and outlined once, however many
-  // references it holds.
   let files =
-    list.fold(locations, dict.new(), fn(files, location) {
-      use <- when_known(files, location.uri)
-      let path = uri_path(location.uri)
-      let content = result.unwrap(resolve.read_text(path), "")
-      let symbols =
-        lsp.document_symbol(session.client, path, request_ms(session))
-        |> option.from_result
-      dict.insert(files, location.uri, #(path, content, symbols))
-    })
+    outlines(session, list.unique(list.map(named, fn(entry) { entry.1 })))
   let found =
-    list.map(locations, fn(location) {
-      let #(path, content, symbols) = case dict.get(files, location.uri) {
-        Ok(file) -> file
-        Error(Nil) -> #(uri_path(location.uri), "", None)
-      }
+    list.map(named, fn(entry) {
+      let #(location, named) = entry
+      let #(content, symbols) =
+        dict.get(files, named.path) |> result.unwrap(#("", None))
       query.Reference(
-        site: resolve.site(content, shown(manager, path), location.range.start),
+        site: resolve.site(
+          content,
+          shown(manager, named.path),
+          location.range.start,
+        ),
         container: option.then(symbols, resolve.container(
           _,
           location.range.start,
@@ -1331,15 +1361,57 @@ fn references(
   Ok(Served(value: found, warmth: session.warmth))
 }
 
-// Adds a file to the per-query table only the first time it is named.
-fn when_known(
-  files: Dict(String, a),
-  uri: String,
-  otherwise: fn() -> Dict(String, a),
-) -> Dict(String, a) {
-  case dict.has_key(files, uri) {
-    True -> files
-    False -> otherwise()
+// Whether a failed request leaves the server worth asking the next one of
+// a batch. A deadline that lapsed, or a server that went away, will lapse
+// again for every request after it: a batch that went on asking would
+// hold its caller for the batch's length times the deadline.
+type Onward {
+  KeepAsking
+  StopAsking
+}
+
+fn onward(error: lsp.RequestError) -> Onward {
+  case error {
+    lsp.TimedOut(..) | lsp.Unavailable(..) | lsp.Unsupported(..) -> StopAsking
+    lsp.ServerError(..)
+    | lsp.Malformed(..)
+    | lsp.InvalidPath(..)
+    | lsp.EditRefused(..) -> KeepAsking
+  }
+}
+
+// Each referenced file read and outlined once, however many references it
+// holds, keyed by its gated path. A withheld file has no text and is not
+// outlined. The first request that times out stops the outlining, and
+// every file after it keeps its references with no container: references
+// are worth answering without containers, and a slow server must not cost
+// the caller one deadline per file.
+fn outlines(
+  session: Session,
+  files: List(Named),
+) -> Dict(String, #(String, Option(protocol.DocumentSymbols))) {
+  let #(outlined, _onward) =
+    list.fold(files, #(dict.new(), KeepAsking), fn(acc, named) {
+      let #(outlined, onward) = acc
+      let #(symbols, onward) = case named, onward {
+        Admitted(path:), KeepAsking -> outline_of(session, path)
+        Admitted(_), StopAsking | Withheld(_), _ -> #(None, onward)
+      }
+      #(
+        dict.insert(outlined, named.path, #(named_text(named), symbols)),
+        onward,
+      )
+    })
+  outlined
+}
+
+fn outline_of(
+  session: Session,
+  path: String,
+) -> #(Option(protocol.DocumentSymbols), Onward) {
+  case lsp.document_symbol(session.client, path, request_ms(session)) {
+    Ok(symbols) -> #(Some(symbols), KeepAsking)
+    Error(error) -> #(None, onward(error))
   }
 }
 
@@ -1360,8 +1432,11 @@ fn hover(
         Some(span) -> span.start
         None -> target.at
       }
-      let content = result.unwrap(resolve.read_text(target.path), "")
-      let site = resolve.site(content, shown(manager, target.path), at)
+
+      // A bare name may have resolved to a definition the gate withholds,
+      // so the target's text is read through it like any server answer.
+      let named = named_path(session, target.path)
+      let site = resolve.site(named_text(named), shown(manager, named.path), at)
       Ok(Served(
         value: query.Hover(site:, contents: found.contents),
         warmth: session.warmth,
@@ -1401,49 +1476,81 @@ fn calls(
   use item <- result.try(
     list.first(items) |> result.replace_error(query.NotFound(query: asked)),
   )
-  let asked_calls = case direction {
+
+  // Each edge is the other end and the file its call sites lie in, which
+  // for an outgoing call is the asked symbol's own.
+  let asked_edges = case direction {
     query.Incoming ->
       lsp.incoming_calls(session.client, item, deadline)
       |> result.map(
         list.map(_, fn(edge) {
-          call_edge(manager, edge.from, edge.from.uri, edge.from_ranges)
+          Edge(
+            other: edge.from,
+            other_file: named_uri(session, edge.from.uri),
+            calls_in: named_uri(session, edge.from.uri),
+            ranges: edge.from_ranges,
+          )
         }),
       )
     query.Outgoing ->
       lsp.outgoing_calls(session.client, item, deadline)
       |> result.map(
         list.map(_, fn(edge) {
-          call_edge(manager, edge.to, item.uri, edge.from_ranges)
+          Edge(
+            other: edge.to,
+            other_file: named_uri(session, edge.to.uri),
+            calls_in: named_uri(session, item.uri),
+            ranges: edge.from_ranges,
+          )
         }),
       )
   }
-  use found <- result.try(
-    asked_calls |> result.map_error(request_error(session, _)),
+  use edges <- result.try(
+    asked_edges |> result.map_error(request_error(session, _)),
   )
-  Ok(Served(value: found, warmth: session.warmth))
+  let texts =
+    texts_for(
+      list.flat_map(edges, fn(edge) { [edge.other_file, edge.calls_in] }),
+    )
+  Ok(Served(
+    value: list.map(edges, call_edge(manager, texts, _)),
+    warmth: session.warmth,
+  ))
 }
 
-// One call-hierarchy edge: the other end's name and definition, and the
-// call sites, which for an outgoing call lie in the asked symbol's file.
+// One call-hierarchy edge with both of its files through the gate.
+type Edge {
+  Edge(
+    other: protocol.CallHierarchyItem,
+    other_file: Named,
+    calls_in: Named,
+    ranges: List(range.Range),
+  )
+}
+
+// One edge in the door's form: the other end's name and definition, and
+// the call sites, each against the text `texts` holds for its file.
 fn call_edge(
   manager: Manager,
-  other: protocol.CallHierarchyItem,
-  calls_in: String,
-  ranges: List(range.Range),
+  texts: Dict(String, String),
+  edge: Edge,
 ) -> query.Call {
-  let other_path = uri_path(other.uri)
-  let other_text = result.unwrap(resolve.read_text(other_path), "")
-  let at_path = uri_path(calls_in)
-  let at_text = result.unwrap(resolve.read_text(at_path), "")
+  let text_of = fn(named: Named) {
+    dict.get(texts, named.path) |> result.unwrap("")
+  }
   query.Call(
-    name: other.name,
+    name: edge.other.name,
     site: resolve.site(
-      other_text,
-      shown(manager, other_path),
-      other.selection_range.start,
+      text_of(edge.other_file),
+      shown(manager, edge.other_file.path),
+      edge.other.selection_range.start,
     ),
-    at: list.map(ranges, fn(span) {
-      resolve.site(at_text, shown(manager, at_path), span.start)
+    at: list.map(edge.ranges, fn(span) {
+      resolve.site(
+        text_of(edge.calls_in),
+        shown(manager, edge.calls_in.path),
+        span.start,
+      )
     }),
   )
 }
@@ -1494,7 +1601,11 @@ fn settled(
         |> result.map_error(request_error(session, _)),
       )
       Ok(Served(
-        value: query.Unsettled(seen: converted(manager, stored)),
+        value: query.Unsettled(seen: converted(
+          manager,
+          session.identity,
+          stored,
+        )),
         warmth: session.warmth,
       ))
     }
@@ -1504,7 +1615,7 @@ fn settled(
         |> result.map_error(request_error(session, _)),
       )
       Ok(Served(
-        value: from_settlement(manager, settlement),
+        value: from_settlement(manager, session.identity, settlement),
         warmth: session.warmth,
       ))
     }
@@ -1513,23 +1624,30 @@ fn settled(
 
 fn from_settlement(
   manager: Manager,
+  identity: Identity,
   settlement: lsp.Settlement,
 ) -> Diagnostics {
-  let found = converted(manager, settlement.published)
+  let found = converted(manager, identity, settlement.published)
   case settlement.outcome {
     lsp.Settled -> query.Settled(diagnostics: found)
     lsp.DeadlineExpired -> query.Unsettled(seen: found)
   }
 }
 
+// A server publishes about whatever paths it likes, so each goes through
+// the gate: a withheld file's diagnostics keep their coordinates and the
+// server's message, and lose only the line text the harness would have
+// read for them.
 fn converted(
   manager: Manager,
+  identity: Identity,
   published: List(#(String, List(protocol.ServerDiagnostic))),
 ) -> List(query.Diagnostic) {
   list.flat_map(published, fn(entry) {
     let #(path, found) = entry
-    let content = result.unwrap(resolve.read_text(path), "")
-    let path_shown = shown(manager, path)
+    let named = gate(manager, identity, path)
+    let content = named_text(named)
+    let path_shown = shown(manager, named.path)
     list.map(found, fn(diagnostic) {
       query.Diagnostic(
         site: resolve.site(content, path_shown, diagnostic.range.start),
@@ -1634,6 +1752,8 @@ fn renamed_identifier(
 // an open document — which the pull just made the disk's — and the disk
 // otherwise. Every edit must select exactly the old identifier in it, or
 // the answer was computed against some other text and is refused whole.
+// A file the gate withholds refuses the whole rename before anything is
+// read: a rename the model cannot see all of is not one it can land.
 fn file_edit(
   manager: Manager,
   session: Session,
@@ -1641,7 +1761,19 @@ fn file_edit(
   edits: List(TextEdit),
   old: String,
 ) -> Result(query.FileEdit, QueryError) {
-  let path = uri_path(uri)
+  use path <- result.try(case named_uri(session, uri) {
+    Admitted(path:) -> Ok(path)
+    Withheld(path:) ->
+      Error(query.ServerRefused(
+        message: "the rename would edit "
+        <> shown(manager, path)
+        <> ", which is outside lsp."
+        <> session.identity.server.name
+        <> "'s project root "
+        <> shown(manager, session.identity.root)
+        <> " or protected; nothing was read or changed",
+      ))
+  })
   let held = case lsp.synced_text(session.client, path) {
     Ok(Some(held)) -> Ok(held)
     Ok(None) | Error(_) -> resolve.read_text(path)
@@ -1707,7 +1839,7 @@ fn pushed(
     |> result.replace_error(Nil)
   }
   case settlement {
-    Ok(settlement) -> from_settlement(manager, settlement)
+    Ok(settlement) -> from_settlement(manager, identity, settlement)
     Error(Nil) -> query.Unsettled(seen: [])
   }
 }
@@ -1847,10 +1979,10 @@ fn anywhere(
       Error(
         query.Ambiguous(
           candidates: list.map(many, fn(definition) {
-            let content = result.unwrap(resolve.read_text(definition.path), "")
+            let named = named_path(session, definition.path)
             resolve.site(
-              content,
-              shown(manager, definition.path),
+              named_text(named),
+              shown(manager, named.path),
               definition.at,
             )
           }),
@@ -1957,47 +2089,84 @@ fn by_project(
 
 // Asks the server where each hit's occurrence is defined, and keeps the
 // distinct definitions. A hit inside a string or a comment resolves to
-// nothing and falls out; a server that does not offer `definition` at
-// all is answered as such rather than as "not found".
+// nothing and falls out, as does one the server refuses; a server that
+// does not offer `definition` at all is answered as such rather than as
+// "not found".
+//
+// A server that stops answering stops the search, and the question is
+// answered `Unavailable` rather than with the definitions found so far:
+// up to `max_search_hits` requests each waiting out its own deadline
+// would hold the caller for many minutes, and a partial answer to a bare
+// name would read as the whole of it — a `NotFound`, or a single
+// definition taken for the only one.
 fn definitions(
   session: Session,
   hits: List(Hit),
   identifier: String,
 ) -> Result(List(Definition), QueryError) {
-  let texts =
-    list.fold(hits, dict.new(), fn(texts, hit) {
-      use <- when_known(texts, hit.path)
-      dict.insert(
-        texts,
-        hit.path,
-        result.unwrap(resolve.read_text(hit.path), ""),
-      )
-    })
+  let hits =
+    list.map(hits, fn(hit) { #(named_path(session, hit.path), hit.line) })
+  let texts = texts_for(list.map(hits, fn(hit) { hit.0 }))
   use found <- result.try(
     list.try_fold(hits, [], fn(found, hit) {
-      let content = result.unwrap(dict.get(texts, hit.path), "")
-      case text.symbol_position(content, hit.line, identifier) {
+      let #(named, line) = hit
+      let content = dict.get(texts, named.path) |> result.unwrap("")
+
+      // A withheld hit has no text, so no position, and is never asked
+      // about: the fold passes it by here.
+      case text.symbol_position(content, line, identifier) {
         Error(_absent) -> Ok(found)
-        Ok(at) ->
-          case
-            lsp.definition(session.client, hit.path, at, request_ms(session))
-          {
-            Ok(locations) -> Ok(list.append(locations, found))
-            Error(lsp.Unsupported(feature:)) ->
-              Error(request_error(session, lsp.Unsupported(feature:)))
-            Error(_other) -> Ok(found)
-          }
+        Ok(at) -> defined_at(session, named.path, at, found)
       }
     }),
   )
-  list.reverse(found)
-  |> list.map(fn(location) {
-    let path = uri_path(location.uri)
-    let content = result.unwrap(resolve.read_text(path), "")
-    Definition(path:, at: refine(content, location.range.start, identifier))
+  let found = list.reverse(found)
+  let files = list.map(found, fn(location) { named_uri(session, location.uri) })
+  let texts = texts_for(files)
+  list.zip(found, files)
+  |> list.map(fn(entry) {
+    let #(location, named) = entry
+    let content = dict.get(texts, named.path) |> result.unwrap("")
+    Definition(
+      path: named.path,
+      at: refine(content, location.range.start, identifier),
+    )
   })
   |> list.unique
   |> Ok
+}
+
+// One hit's `definition` request, its locations joining `found`.
+fn defined_at(
+  session: Session,
+  path: String,
+  at: Position,
+  found: List(Location),
+) -> Result(List(Location), QueryError) {
+  case lsp.definition(session.client, path, at, request_ms(session)) {
+    Ok(locations) -> Ok(list.append(locations, found))
+    Error(error) ->
+      case onward(error) {
+        KeepAsking -> Ok(found)
+        StopAsking -> Error(search_cut(session, error))
+      }
+  }
+}
+
+// A bare-name search the server stopped answering, in the door's words.
+// An unsupported request keeps its own answer; anything else says the
+// search was cut, so the model knows a path-scoped question may still
+// get through.
+fn search_cut(session: Session, error: lsp.RequestError) -> QueryError {
+  case request_error(session, error) {
+    query.Unavailable(reason:) ->
+      query.Unavailable(
+        reason: reason
+        <> "; resolving the bare name stopped there, and a question "
+        <> "naming the file and line asks the server once",
+      )
+    other -> other
+  }
 }
 
 // A server may report a definition at the start of its declaration
@@ -2068,6 +2237,13 @@ fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
     |> result.map_error(request_error(session, _)),
   )
   let pulled = list.filter_map(open, pulled(session.client, _))
+
+  // The one place a document is opened on the server, so the gate stands
+  // here too: whatever a caller passes, a file the gate withholds is
+  // never read, never sent into the jail, and never recorded for a
+  // restart to re-open.
+  let also =
+    list.filter_map(also, fn(path) { admitted(named_path(session, path)) })
   let opening =
     list.filter_map(also, fn(path) {
       case list.contains(open, path) {
@@ -2109,19 +2285,89 @@ fn pulled(client: lsp.Client, path: String) -> Result(lsp.DocOp, Nil) {
 
 // --- conversions -----------------------------------------------------------------
 
-fn sites(manager: Manager, locations: List(Location)) -> List(Site) {
-  list.map(locations, fn(location) {
-    let path = uri_path(location.uri)
-    let content = result.unwrap(resolve.read_text(path), "")
-    resolve.site(content, shown(manager, path), location.range.start)
+fn sites(session: Session, locations: List(Location)) -> List(Site) {
+  let files =
+    list.map(locations, fn(location) { named_uri(session, location.uri) })
+  let texts = texts_for(files)
+  list.zip(locations, files)
+  |> list.map(fn(entry) {
+    let #(location, named) = entry
+    resolve.site(
+      dict.get(texts, named.path) |> result.unwrap(""),
+      shown(session.manager, named.path),
+      location.range.start,
+    )
   })
 }
 
-// A server URI as a path. Decoding is strict (`protocol.uri_to_path`); a
-// URI that does not decode is shown as the server wrote it, which names
-// the file better than dropping the answer would.
-fn uri_path(uri: String) -> String {
-  protocol.uri_to_path(uri) |> result.unwrap(uri)
+// --- the gate on what a server names ------------------------------------------
+
+// A path a language server named, judged once, before anything reads it.
+// The jail bounds what the server can read, never which paths it can
+// emit, and every read below runs in the harness, unjailed; so a path
+// out of a server's answer reaches `resolve.read_text` only as
+// `Admitted`.
+type Named {
+  // Its real location is under the server's root and under no protected
+  // path. `path` is that real location: the one to read, open and show.
+  Admitted(path: String)
+
+  // Anything else: outside the root, protected, unresolvable, or a URI
+  // that does not decode. `path` is as the server named it, which is
+  // shown with the answer's raw coordinates and never read.
+  Withheld(path: String)
+}
+
+fn gate(manager: Manager, identity: Identity, path: String) -> Named {
+  case
+    resolve.admit(
+      root: identity.root,
+      protected: manager.config.backend.protected,
+      path:,
+    )
+  {
+    Ok(real) -> Admitted(path: real)
+    Error(_reason) -> Withheld(path:)
+  }
+}
+
+fn named_path(session: Session, path: String) -> Named {
+  gate(session.manager, session.identity, path)
+}
+
+// A server URI through the gate. Decoding is strict
+// (`protocol.uri_to_path`); a URI that does not decode names no file the
+// harness can place, and is shown as the server wrote it, which names the
+// file better than dropping the answer would.
+fn named_uri(session: Session, uri: String) -> Named {
+  case protocol.uri_to_path(uri) {
+    Ok(path) -> named_path(session, path)
+    Error(_undecodable) -> Withheld(path: uri)
+  }
+}
+
+fn admitted(named: Named) -> Result(String, Nil) {
+  case named {
+    Admitted(path:) -> Ok(path)
+    Withheld(path: _) -> Error(Nil)
+  }
+}
+
+// The text the door may show for a named file: the file's own when it is
+// admitted and readable, and none otherwise.
+fn named_text(named: Named) -> String {
+  case named {
+    Admitted(path:) -> resolve.read_text(path) |> result.unwrap("")
+    Withheld(path: _) -> ""
+  }
+}
+
+// Every named file's text, read once however many sites fall in it, keyed
+// by the gated path.
+fn texts_for(files: List(Named)) -> Dict(String, String) {
+  list.unique(files)
+  |> list.map(fn(named) { #(named.path, named_text(named)) })
+  |> dict.from_list
 }
 
 fn shown(manager: Manager, path: String) -> String {
