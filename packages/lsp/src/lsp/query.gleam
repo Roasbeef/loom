@@ -74,8 +74,10 @@ pub type Site {
     line: Int,
     /// 1-based column counted in Unicode codepoints, never UTF-16 units.
     column: Int,
-    /// The text of that line with its terminator removed, so a result
-    /// reads like a `grep` hit.
+    /// The text of that line as the hashline tools see it: its
+    /// terminator removed, except that a CRLF line keeps its `\r`. The
+    /// hashline anchor of this text is therefore the anchor `fs_read`
+    /// prints for the line, so a result feeds `fs_edit` directly.
     text: String,
   )
 }

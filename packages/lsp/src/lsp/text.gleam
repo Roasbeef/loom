@@ -352,7 +352,9 @@ fn resolve(document: Document, at: Position) -> Result(Point, TextFault) {
 
 /// Convert a server position in `text` into the harness's `Site` for
 /// `path`: a 1-based line, a 1-based codepoint column, and the line's
-/// text without its terminator. The end-of-file position (line equal to
+/// text as the hashline tools see it — without its terminator, except
+/// that a CRLF line keeps its `\r`, so the site's anchor matches the one
+/// `fs_read` prints. The end-of-file position (line equal to
 /// the line count, character zero) becomes column 1 of an empty line
 /// after the last.
 ///
@@ -395,12 +397,26 @@ fn site_in(
   at: Position,
 ) -> Result(Site, TextFault) {
   use point <- result.map(resolve(document, at))
+  let line = line_at(document, point.line)
+
   Site(
     path:,
     line: point.line + 1,
     column: point.column + 1,
-    text: line_at(document, point.line).text,
+    text: hashline_text(line),
   )
+}
+
+// A site's text is the line as the hashline tools see it, because its
+// anchor is computed from it and must equal the one `fs_read` prints for
+// the same line. Hashline splits on `\n` alone, so a CRLF line's `\r` is
+// part of its content there; dropping it here would give every CRLF line
+// an anchor `fs_edit` rejects as stale.
+fn hashline_text(line: Line) -> String {
+  case line.terminator {
+    "\r\n" -> line.text <> "\r"
+    _ -> line.text
+  }
 }
 
 // --- Symbols -----------------------------------------------------------
