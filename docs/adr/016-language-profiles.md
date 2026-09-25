@@ -153,7 +153,20 @@ profile, so reading it that way loses nothing and forces no reinstall.
 - the directory's name;
 - the tree digest;
 - the manifest, decoded again;
+- that the manifest's tier equals the record's;
 - that the manifest's profiles equal the record's.
+
+The tier check is not redundant. Without it, a jailed record edited to
+say `profile`, with no profiles, would pass the profile comparison
+(`[] == []`) and skip re-vetting and the artifact check a jailed
+extension owes.
+
+**An install keeps the fixtures.** A profile install keeps the
+manifest, the tree's README and licence, and every file under each
+check's fixture, and prunes the rest. The jailed tier's prune keeps
+only what vetting admits, which would delete the fixtures `loom ext
+check` runs against. Kept files must be UTF-8, as the load's own
+reading requires.
 
 A mismatch refuses the extension, and `loom ext list` says why. That is
 the jailed tier's rule without the two steps a profile has no subject
@@ -214,6 +227,44 @@ because it is the language the old defaults could not serve: it needs
 `docs/examples/loom.toml` keeps its two example tables, pointing at the
 extensions as the maintained versions.
 
+### 7. A freshly started server is not queried until it is ready
+
+Measuring `rust-analyzer` for its profile found a behaviour neither
+ADR-013 server has. It answers requests while it is still loading the
+Cargo workspace, and answers them with **empty results rather than
+errors**:
+
+- a definition came back empty;
+- references held only the declaration;
+- a rename edited one of the two files it had to.
+
+`gopls` and `gleam lsp` hold a request until they can answer it, so the
+problem never showed on them.
+
+The answer is standard LSP, not a profile key:
+
+- **The client declares `window.workDoneProgress`** and tracks the
+  server's active work-done tokens (`$/progress` begin and end).
+- **After a fresh start, the manager waits for quiet.** It waits until
+  no token has been active for a continuous 300 ms, bounded at 60 s.
+  The window exists because a server may not have begun its progress
+  when `initialized` is sent. Measured: the manager asked 37 ms after
+  the handshake and `rust-analyzer`'s first progress began 4 ms later.
+  Without the window, the same definition answered empty in 114 ms.
+- **A server still loading at the bound is answered, not guessed.** The
+  answer is `Unavailable`, naming the progress titles ("still loading
+  (Indexing); ask again in a moment"), never an empty list.
+- **Warm queries do not wait.** A server that begins a token and never
+  ends it would otherwise stall every later query for the whole bound.
+  Waiting only after a start heals itself: one "still loading" answer,
+  then warm queries proceed. Stale answers during a re-index after an
+  edit are the server's own behaviour, as they are for any client.
+
+Measured through the jail on a two-file crate, `rust-analyzer` was quiet
+3.75 s after the handshake. Every site then answered correctly,
+including a call inside `println!`, which needs the standard library's
+macros.
+
 ## What it costs
 
 - **A new tier.** The extension trust model gains one, which is strictly
@@ -225,7 +276,9 @@ extensions as the maintained versions.
 - **The hint** adds up to 200 bytes per configured server to the cached
   tool descriptions.
 - **Per-language CI.** One toolchain per first-party profile in the jail
-  lane: `gleam`, `go` with `gopls`, and `rust-analyzer`.
+  lane: `gleam`, `go` with `gopls`, and `rust-analyzer` with `rust-src`.
+- **Up to 60 s on a cold start** for a server that reports long work
+  done, answered as "still loading" rather than as an empty result.
 
 ## What would prove this wrong
 
