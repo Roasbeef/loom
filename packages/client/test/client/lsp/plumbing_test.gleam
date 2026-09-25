@@ -208,16 +208,9 @@ fn ctx_in(workspace: String) -> tool.Ctx {
 
 fn registry(lsp: Option(query.Door)) -> tool.Registry {
   let assert Ok(registry) =
-    contributions.registry(contributions.built_in(
-      None,
-      None,
-      None,
-      None,
-      None,
-      None,
-      None,
-      lsp,
-    ))
+    contributions.registry(
+      contributions.built_in(None, None, None, None, None, None, None, lsp, []),
+    )
     as "the built-in contributions never collide"
   registry
 }

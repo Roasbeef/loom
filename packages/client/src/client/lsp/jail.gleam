@@ -61,10 +61,10 @@ import broker/budget
 import broker/exec
 import broker/framing
 import broker/policy.{type Mount, type Narrowing, type SandboxPolicy}
-import client/catalog.{type LspServer}
 import client/codemode.{type Toolchain}
 import client/internal/ffi_os
 import client/lsp/leases
+import client/lsp/profile.{type LspServer, type Places}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import filepath
@@ -521,7 +521,7 @@ pub fn regions(executable: Executable) -> List(String) {
 
 /// Where one server runs: the table it was configured by, the project root
 /// it serves, the workspace whose scratch it borrows, its executable, and
-/// the daemon's own `HOME`.
+/// the daemon's own `HOME` and cache directory.
 pub type Placement {
   Placement(
     /// The `[lsp.<name>]` table.
@@ -533,11 +533,12 @@ pub type Placement {
     workspace: String,
     /// The located executable (`locate`).
     executable: Executable,
-    /// The daemon's own `HOME` (`client/serve.home_directory`), never a
-    /// jailed session's. It expands the table's `~/` roots and is the
-    /// server's `HOME`, so `gopls` finds its default caches where the
-    /// operator's configuration says they are.
-    home: Option(String),
+    /// The daemon's own `HOME` and cache directory (`client/serve`
+    /// reads both), never a jailed session's. They expand the table's
+    /// `~/` and `<cache>/` roots, and the home is the server's `HOME`, so
+    /// `gopls` finds its default caches where the operator's
+    /// configuration says they are.
+    places: Places,
   )
 }
 
@@ -572,11 +573,11 @@ pub type Jail {
 /// `reading` is the daemon's environment (`provider/secret.lookup` over the
 /// session's store in production), read for `PATH` and for each configured
 /// `env` name. The `Error` is a worded refusal naming what does not fit:
-/// a relative root, an unresolvable `~/`, an executable whose read-only
-/// region would cover a path the server must write, an executable reached
-/// through a link the server could rewrite, or a narrowing — most
-/// usefully a project root outside what the session may reach, which this
-/// refuses rather than grants.
+/// a relative root, an unresolvable `~/` or `<cache>/`, an executable
+/// whose read-only region would cover a path the server must write, an
+/// executable reached through a link the server could rewrite, or a
+/// narrowing — most usefully a project root outside what the session may
+/// reach, which this refuses rather than grants.
 ///
 /// ## Examples
 ///
@@ -593,8 +594,8 @@ pub fn policy_for(
   let server = placement.server
   let root = placement.root
   use Nil <- result.try(absolute_root(server.name, root))
-  use readable <- result.try(expanded(server.readable, placement.home))
-  use writable <- result.try(expanded(server.writable, placement.home))
+  use readable <- result.try(expanded(server.readable, placement.places))
+  use writable <- result.try(expanded(server.writable, placement.places))
   let scratch = scratch_directory(placement.workspace, server.name, root)
   let #(env, unset) = environment(placement, scratch, reading)
   let names = list.map(env, fn(pair) { pair.0 })
@@ -675,8 +676,8 @@ pub fn policy_for(
 // The one question the project's access decides.
 fn project_writes(server: LspServer, root: String) -> List(String) {
   case server.project {
-    catalog.ProjectWritable -> [root]
-    catalog.ProjectReadOnly -> []
+    profile.ProjectWritable -> [root]
+    profile.ProjectReadOnly -> []
   }
 }
 
@@ -804,10 +805,10 @@ fn absolute_root(name: String, root: String) -> Result(Nil, String) {
 }
 
 fn expanded(
-  paths: List(catalog.LspPath),
-  home: Option(String),
+  paths: List(profile.LspPath),
+  places: Places,
 ) -> Result(List(String), String) {
-  list.try_map(paths, catalog.expand_lsp_path(_, home))
+  list.try_map(paths, profile.expand_path(_, places))
 }
 
 // Mounts are met by exact path, so a region the lease base already binds —
@@ -865,7 +866,7 @@ fn environment(
     |> list.filter(fn(entry) { entry != "" })
     |> list.unique
     |> string.join(":")
-  let home = case placement.home {
+  let home = case placement.places.home {
     Some(home) -> [#("HOME", home)]
     None -> []
   }

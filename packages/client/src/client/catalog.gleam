@@ -52,9 +52,14 @@
 //// extensions = [".go"]               # this server owns these, alone
 //// root_markers = ["go.mod"]          # nearest ancestor holding one
 //// project = "read-only"              # read-only (default) | writable
-//// readable = ["~/go/pkg/mod"]        # optional extra roots; absolute
-//// writable = ["~/.cache/go-build"]   #   or ~/-relative to HOME
+//// readable = ["~/go/pkg/mod"]        # optional extra roots: absolute,
+//// writable = ["<cache>/go-build"]    #   ~/-relative or <cache>/-relative
 //// env = ["GOFLAGS"]                  # optional; env var *names*
+//// language_id = "go"                 # optional; default: the first
+////                                    #   extension without its dot
+//// qualifier_separators = ["."]       # optional; default ["."]
+//// module_case = "as-written"         # as-written (default) | snake
+//// hint = "Qualify as pkg.Name"       # optional; one line, <= 200 bytes
 ////
 //// [[rule]]                           # optional; see `client/rules`
 //// name = "schema-gate"
@@ -96,17 +101,19 @@
 //// auto-discovery, and no live reload: an operator editing this file
 //// and restarting the server *is* the trust decision.
 ////
-//// An `[lsp.<name>]` key follows the same grammar, so one server name
-//// reads the same wherever the harness prints it. The table is the
-//// language server's whole authority: its `readable` and `writable`
-//// roots are what the jail adds beyond the project, which is why they
-//// are operator-written here and never model-supplied, why a relative
-//// path or a `..` component is refused, and why each extension has
-//// exactly one owning server — two owners would make which server
-//// answers a file a question of dict order. A `~/` root stays
-//// unexpanded in the parsed value, keeping `parse` a pure function of
-//// the text; `expand_lsp_path` resolves it against the harness's own
-//// `HOME` when the servers are loaded.
+//// An `[lsp.<name>]` table is a language profile, and it is not decoded
+//// here: `client/lsp/profile` owns the one decoder, which an extension
+//// manifest's profiles will go through too (ADR-014 §1). Its key follows
+//// the `[mcp.<name>]` grammar, so one server name reads the same
+//// wherever the harness prints it. The table is the language server's
+//// whole authority: its `readable` and `writable` roots are what the
+//// jail adds beyond the project, which is why they are operator-written
+//// and never model-supplied, why a relative path or a `..` component is
+//// refused, and why each extension has exactly one owning server. A
+//// `~/` or `<cache>/` root stays unexpanded in the parsed value, keeping
+//// `parse` a pure function of the text; `profile.expand_path` resolves
+//// it against the daemon's own `HOME` and cache directory when the
+//// servers are loaded.
 ////
 //// Parsing is total and strict: any malformed document, unknown key,
 //// unknown dialect/role, or dangling chain name is a worded `Error`
@@ -118,6 +125,7 @@
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
+import client/lsp/profile.{type LspServer}
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -228,81 +236,6 @@ pub type McpServer {
     command: List(String),
     /// The environment variable holding the server's API key, if any.
     api_key_env: Option(String),
-  )
-}
-
-/// Whether a language server may write into the project it serves.
-///
-/// Two variants rather than a `Bool` because the question has a domain
-/// answer an operator states in words (`project = "read-only"` or
-/// `"writable"`), and the jail built from it later reads the variant at
-/// its case arm. The distinction is measured, not assumed: `gleam lsp`
-/// writes `manifest.toml` and `build/` into the project it analyses,
-/// while `gopls` writes nothing there.
-pub type ProjectAccess {
-  /// The server reads the project and writes nothing into it. The
-  /// default, because a server that needs more has to be named as such.
-  ProjectReadOnly
-
-  /// The server writes into the project, as `gleam lsp` does when it
-  /// builds the dependency manifest and the `build/` tree.
-  ProjectWritable
-}
-
-/// One operator-supplied extra root a jailed language server needs, as
-/// the file wrote it.
-///
-/// A `~/` path is kept unexpanded here so that `parse` stays a pure
-/// function of the file's text. `expand_lsp_path` turns it into a host
-/// path once the caller supplies the harness's own `HOME`.
-pub type LspPath {
-  /// An absolute host path, starting with `/`.
-  AbsolutePath(path: String)
-
-  /// A path under the operator's home directory, written `~/<rest>`;
-  /// `rest` is non-empty and carries no leading slash.
-  HomePath(rest: String)
-}
-
-/// One configured language server: an `[lsp.<name>]` table.
-///
-/// Servers are configured, never discovered (ADR-013 §6). Each is the
-/// only owner of the file extensions it lists, and is jailed with the
-/// project it serves plus exactly the extra roots written here.
-///
-/// Constructor invariants (guaranteed by `parse`, owed by any direct
-/// construction): `name` follows the `[mcp.<name>]` key grammar
-/// (`[a-z][a-z0-9_]*`, no keyword, no doubled or trailing underscore,
-/// at most 32 characters) and is unique; `command` is a non-empty argv
-/// of non-empty strings; `extensions` is non-empty, each entry
-/// lowercase, starting with `.`, listed once, and owned by no other
-/// server in the catalogue; `root_markers` is non-empty, each a bare
-/// file name listed once; no path in `readable` or `writable` holds a
-/// `..` component, none is listed twice, and none appears in both;
-/// every `env` name matches `[A-Z_][A-Z0-9_]*`, is listed once, and is
-/// none of the names the server owns (`PATH`, `HOME`, `TMPDIR`, ...).
-pub type LspServer {
-  LspServer(
-    /// The table key, which names the server in tool output and errors.
-    name: String,
-    /// The server's argv, executable first. Never a shell string.
-    command: List(String),
-    /// The file extensions this server answers for, lowercase, each with
-    /// its leading dot, in file order.
-    extensions: List(String),
-    /// File names marking a project root: the nearest ancestor of a file
-    /// holding one of these is the root the server is started in.
-    root_markers: List(String),
-    /// Whether the server may write into that project root.
-    project: ProjectAccess,
-    /// Extra roots the jailed server may read, in file order.
-    readable: List(LspPath),
-    /// Extra roots the jailed server may write, in file order.
-    writable: List(LspPath),
-    /// Host environment variable *names* passed through to the server.
-    /// The values are read from the harness's environment when it
-    /// spawns, never from this file, the discipline `api_key_env` keeps.
-    env: List(String),
   )
 }
 
@@ -884,25 +817,15 @@ fn mcp_server_name(name: String) -> Result(Nil, String) {
   }
 }
 
-// The Gleam keywords a module segment may not be. The generator's name
-// mangler digests any name it has to change, so a key it would change
-// becomes cap/mcp/<name>_<8hex> — not the cap/mcp/<name> this module's
-// doc promises. Refusing every mangle-altered shape here keeps that
-// contract provable: on every config-legal name, mangling is the
-// identity.
-const gleam_keywords = [
-  "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
-  "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
-  "test", "todo", "type", "use",
-]
-
-// The mangler's own bound (`mcp/name`'s `max_length`), past which a name
-// is truncated and digested. Restated rather than imported because this
-// package does not depend on `mcp`; the tests hold both ends to 32.
-const max_mangled_length = 32
-
+// The generator's name mangler digests any name it has to change, so a
+// key it would change becomes cap/mcp/<name>_<8hex> — not the
+// cap/mcp/<name> this module's doc promises. Refusing every
+// mangle-altered shape keeps that contract provable: on every
+// config-legal name, mangling is the identity. The shapes are
+// `client/lsp/profile.mangling_fault`'s, so an `[mcp.<name>]` key and an
+// `[lsp.<name>]` key meet one grammar.
 fn mcp_name_survives_mangling(name: String) -> Result(Nil, String) {
-  use what <- or_mangled(mangling_fault(name))
+  use what <- or_mangled(profile.mangling_fault(name))
   Error(
     "mcp."
     <> name
@@ -911,26 +834,6 @@ fn mcp_name_survives_mangling(name: String) -> Result(Nil, String) {
     <> ", which module-name mangling would rewrite — the key must name"
     <> " the cap/mcp/<name> module unchanged",
   )
-}
-
-// The shapes the generator's mangler would rewrite, each as the phrase
-// a refusal completes. Shared by both server tables, so an
-// `[lsp.<name>]` key and an `[mcp.<name>]` key meet one grammar.
-fn mangling_fault(name: String) -> Result(Nil, String) {
-  case
-    list.contains(gleam_keywords, name),
-    string.contains(name, "__"),
-    string.ends_with(name, "_"),
-    // Asks whether the name is longer than the bound without walking a
-    // pathological key to its end (lint R5).
-    string.drop_start(name, max_mangled_length) != ""
-  {
-    True, _, _, _ -> Error("is a Gleam keyword")
-    _, True, _, _ -> Error("contains a doubled underscore")
-    _, _, True, _ -> Error("ends with an underscore")
-    _, _, _, True -> Error("is longer than 32 characters")
-    False, False, False, False -> Ok(Nil)
-  }
 }
 
 // A clean name passes as `Ok(Nil)`; a fault is handed to the caller,
@@ -977,493 +880,19 @@ fn mcp_command(
 // --- the [lsp.<name>] tables -----------------------------------------------
 
 // The optional [lsp] table: absent parses to no servers, which is the
-// workspace that registers no `lsp_*` tools and pays nothing. Sorted by
-// name for the reason models and MCP servers are. Each server is parsed
-// alone first; extension ownership is a property of the whole set, so
-// it is judged once every server has been read, in name order, which
-// makes the refusal name the same pair of servers on every boot.
+// workspace that registers no `lsp_*` tools and pays nothing. Present, it
+// must be a table of [lsp.<name>] tables, and they are decoded by
+// `client/lsp/profile`, the one decoder an extension manifest's profiles
+// will go through as well, so the two can never accept different things
+// (ADR-014 §1).
 fn parse_lsp_servers(
   document: Dict(String, tom.Toml),
 ) -> Result(List(LspServer), String) {
-  use tables <- result.try(case dict.get(document, "lsp") {
+  case dict.get(document, "lsp") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
-      Ok(dict.to_list(entries))
+      profile.decode_servers(entries)
     Ok(_other) -> Error("lsp must be a table of [lsp.<name>] entries")
     Error(Nil) -> Ok([])
-  })
-  use servers <- result.try(
-    tables
-    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-    |> list.try_map(fn(entry) { parse_lsp_server(entry.0, entry.1) }),
-  )
-  use _owners <- result.try(list.try_fold(servers, [], claim_extensions))
-  Ok(servers)
-}
-
-// One extension, one owner. Two servers answering `.go` would leave
-// which one a file reaches to dict order, and a model reading
-// diagnostics from the wrong one has no way to tell. `owners` maps each
-// extension already claimed to the server that claimed it; a server's
-// own list is already free of repeats, so a hit here is always another
-// server.
-fn claim_extensions(
-  owners: List(#(String, String)),
-  server: LspServer,
-) -> Result(List(#(String, String)), String) {
-  list.try_fold(server.extensions, owners, fn(owners, extension) {
-    case list.key_find(owners, extension) {
-      Error(Nil) -> Ok([#(extension, server.name), ..owners])
-      Ok(owner) ->
-        Error(
-          "lsp."
-          <> owner
-          <> " and lsp."
-          <> server.name
-          <> " both claim "
-          <> extension
-          <> "; one extension has exactly one owning server, so drop it"
-          <> " from one of them",
-        )
-    }
-  })
-}
-
-fn parse_lsp_server(
-  name: String,
-  value: tom.Toml,
-) -> Result(LspServer, String) {
-  let place = "lsp." <> name
-  use Nil <- result.try(lsp_server_name(name))
-  use fields <- result.try(case value {
-    tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
-    _ -> Error(place <> " must be a table")
-  })
-
-  // Unknown keys are refused as `[mcp.<name>]` refuses them. Here it
-  // matters more: a typoed `writeable` silently ignored would start a
-  // server whose cache writes fail in the jail, and the operator would
-  // be told nothing about why.
-  use Nil <- result.try(known_keys(
-    dict.keys(fields),
-    [
-      "command", "extensions", "root_markers", "project", "readable", "writable",
-      "env",
-    ],
-    place,
-  ))
-  use command <- result.try(lsp_command(fields, place))
-  use extensions <- result.try(lsp_extensions(fields, place))
-  use root_markers <- result.try(lsp_root_markers(fields, place))
-  use project <- result.try(lsp_project(fields, place))
-
-  // The extra roots are the whole of what the jail grants beyond the
-  // project. A root in both lists is two answers to "may the server
-  // write here", so it is refused rather than resolved in either
-  // direction.
-  use readable <- result.try(lsp_paths(fields, place, "readable"))
-  use writable <- result.try(lsp_paths(fields, place, "writable"))
-  use Nil <- result.try(disjoint_roots(place, readable, writable))
-  use env <- result.try(lsp_env(fields, place))
-  Ok(LspServer(
-    name:,
-    command:,
-    extensions:,
-    root_markers:,
-    project:,
-    readable:,
-    writable:,
-    env:,
-  ))
-}
-
-// The `[mcp.<name>]` grammar, held for one reason rather than two: an
-// LSP server's name becomes no module, but it is the name the harness
-// prints in every tool result and refusal, and one grammar for both
-// server tables keeps any key an operator writes valid in either.
-// `internal` is not reserved here; that reservation is about the
-// `cap/internal` module tree, which an LSP name never enters.
-fn lsp_server_name(name: String) -> Result(Nil, String) {
-  let legal =
-    !string.contains(name, "/") && vet_policy.is_legal_module_name(name)
-  use Nil <- result.try(case legal {
-    True -> Ok(Nil)
-    False ->
-      Error(
-        "lsp."
-        <> name
-        <> " is not a legal server name: [lsp.<name>] keys follow the"
-        <> " [mcp.<name>] grammar, a single lowercase-ASCII identifier"
-        <> " segment ([a-z][a-z0-9_]*)",
-      )
-  })
-  use what <- or_mangled(mangling_fault(name))
-  Error(
-    "lsp."
-    <> name
-    <> " "
-    <> what
-    <> ", which the [mcp.<name>] key grammar refuses too; pick another"
-    <> " server name",
-  )
-}
-
-// A string `command` is refused by name rather than as a mistyped
-// value, because it is the mistake an operator copying a shell line
-// makes, and the harness never runs a string through a shell: the argv
-// is exec'd as written, element by element.
-fn lsp_command(
-  fields: Dict(String, tom.Toml),
-  place: String,
-) -> Result(List(String), String) {
-  case dict.get(fields, "command") {
-    Ok(tom.String(_shell)) ->
-      Error(
-        place
-        <> ".command is a string; write the argv as an array of strings"
-        <> " (command = [\"gopls\"]) — a shell string is never run",
-      )
-    Ok(_other) | Error(Nil) -> mcp_command(fields, place)
-  }
-}
-
-// Extensions are compared lowercased, so `.GO` and `.go` are one
-// extension and one owner. Each must carry its leading dot and name
-// something after it; a `/` would make it a path rather than a suffix.
-fn lsp_extensions(
-  fields: Dict(String, tom.Toml),
-  place: String,
-) -> Result(List(String), String) {
-  let at = place <> ".extensions"
-  use written <- result.try(required_strings(
-    fields,
-    place,
-    "extensions",
-    "an array of file extensions such as \".go\"",
-  ))
-  use extensions <- result.try(
-    list.try_map(written, fn(extension) { lsp_extension(at, extension) }),
-  )
-  use Nil <- result.try(listed_once(at, extensions))
-  Ok(extensions)
-}
-
-fn lsp_extension(at: String, written: String) -> Result(String, String) {
-  let lowered = string.lowercase(written)
-  case lowered, string.contains(lowered, "/") {
-    ".", _ -> Error(at <> " entry \".\" names no extension")
-    "." <> _suffix, False -> Ok(lowered)
-    "." <> _suffix, True ->
-      Error(at <> " entry \"" <> written <> "\" must be a suffix, not a path")
-    _other, _ ->
-      Error(
-        at
-        <> " entry \""
-        <> written
-        <> "\" must begin with a dot, as \".go\" does",
-      )
-  }
-}
-
-// A root marker is looked for by name in each ancestor directory, so it
-// is a bare file name: a path, `.` or `..` would be looked for somewhere
-// other than the ancestor being asked about.
-fn lsp_root_markers(
-  fields: Dict(String, tom.Toml),
-  place: String,
-) -> Result(List(String), String) {
-  let at = place <> ".root_markers"
-  use markers <- result.try(required_strings(
-    fields,
-    place,
-    "root_markers",
-    "an array of file names such as \"go.mod\"",
-  ))
-  use Nil <- result.try(
-    list.try_each(markers, fn(marker) {
-      case marker, string.contains(marker, "/") {
-        ".", _ | "..", _ ->
-          Error(at <> " entry \"" <> marker <> "\" is not a file name")
-        _name, True ->
-          Error(
-            at
-            <> " entry \""
-            <> marker
-            <> "\" must be a bare file name, not a path",
-          )
-        _name, False -> Ok(Nil)
-      }
-    }),
-  )
-  use Nil <- result.try(listed_once(at, markers))
-  Ok(markers)
-}
-
-// Read-only is the default because a server that writes into the
-// project has to be named as one: it is the operator saying the
-// project's `build/` may change under the model's feet.
-fn lsp_project(
-  fields: Dict(String, tom.Toml),
-  place: String,
-) -> Result(ProjectAccess, String) {
-  case optional_string(fields, place, "project") {
-    Ok(Ok("read-only")) | Ok(Error(Nil)) -> Ok(ProjectReadOnly)
-    Ok(Ok("writable")) -> Ok(ProjectWritable)
-    Ok(Ok(other)) ->
-      Error(
-        place
-        <> ".project must be \"read-only\" or \"writable\", got \""
-        <> other
-        <> "\"",
-      )
-    Error(message) -> Error(message)
-  }
-}
-
-// One `readable` or `writable` list, in file order. Duplicates are
-// judged on the text as written, before any `~/` is expanded, so the
-// refusal quotes the line the operator would edit.
-fn lsp_paths(
-  fields: Dict(String, tom.Toml),
-  place: String,
-  key: String,
-) -> Result(List(LspPath), String) {
-  let at = place <> "." <> key
-  use written <- result.try(optional_strings(
-    fields,
-    place,
-    key,
-    "an array of absolute or ~/ paths",
-  ))
-  use Nil <- result.try(listed_once(at, written))
-  list.try_map(written, fn(path) { lsp_path(at, path) })
-}
-
-// A root is absolute or under the operator's home, and never relative:
-// a relative root would be judged against whatever directory the server
-// happened to start in, which is the project the model writes to. A `..`
-// component is refused in either form, because the jail compares roots
-// by component and never resolves them, so `..` would grant a directory
-// the line does not name.
-fn lsp_path(at: String, written: String) -> Result(LspPath, String) {
-  use Nil <- result.try(case list.contains(string.split(written, "/"), "..") {
-    True ->
-      Error(
-        at
-        <> " entry \""
-        <> written
-        <> "\" has a .. component; name the directory itself",
-      )
-    False -> Ok(Nil)
-  })
-  case written {
-    "/" <> _beneath -> Ok(AbsolutePath(written))
-    "~/" <> rest -> home_path(at, written, rest)
-    _relative ->
-      Error(
-        at
-        <> " entry \""
-        <> written
-        <> "\" must be an absolute path or begin with ~/",
-      )
-  }
-}
-
-// `~/` alone would grant the whole home directory — credentials, shell
-// history, every other project — which no language server needs, so it
-// is refused and the operator names the directory the server does need.
-fn home_path(
-  at: String,
-  written: String,
-  rest: String,
-) -> Result(LspPath, String) {
-  case rest {
-    "" ->
-      Error(
-        at
-        <> " entry \"~/\" names the whole home directory; name the"
-        <> " directory the server needs",
-      )
-    "/" <> _doubled ->
-      Error(at <> " entry \"" <> written <> "\" has a doubled slash after ~")
-    _beneath -> Ok(HomePath(rest))
-  }
-}
-
-fn disjoint_roots(
-  place: String,
-  readable: List(LspPath),
-  writable: List(LspPath),
-) -> Result(Nil, String) {
-  list.try_each(writable, fn(path) {
-    case list.contains(readable, path) {
-      False -> Ok(Nil)
-      True ->
-        Error(
-          place
-          <> " lists "
-          <> lsp_path_text(path)
-          <> " as both readable and writable; list it under one of them",
-        )
-    }
-  })
-}
-
-// The path as the operator wrote it, for a refusal to quote.
-fn lsp_path_text(path: LspPath) -> String {
-  case path {
-    AbsolutePath(path) -> path
-    HomePath(rest) -> "~/" <> rest
-  }
-}
-
-// Names only, validated to the portable shell grammar; the values are
-// read from the harness's environment when the server spawns, never
-// from this file. The names the server owns are refused for the reason
-// `[tools] env` refuses them: a language server whose `PATH` came from
-// the host would resolve a different toolchain than the one the jail
-// was built around.
-fn lsp_env(
-  fields: Dict(String, tom.Toml),
-  place: String,
-) -> Result(List(String), String) {
-  let at = place <> ".env"
-  use names <- result.try(optional_strings(
-    fields,
-    place,
-    "env",
-    "an array of environment variable names",
-  ))
-  use Nil <- result.try(list.try_each(names, fn(name) { env_name(at, name) }))
-  use Nil <- result.try(
-    list.try_each(names, fn(name) { not_server_owned(at, name) }),
-  )
-  use Nil <- result.try(listed_once(at, names))
-  Ok(names)
-}
-
-const env_name_head = "ABCDEFGHIJKLMNOPQRSTUVWXYZ_"
-
-const env_name_tail = "ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
-
-// `[A-Z_][A-Z0-9_]*`, checked a grapheme at a time against the two
-// alphabets. A multi-codepoint grapheme is in neither, so a lookalike
-// letter is refused rather than normalised into a different name.
-fn env_name(at: String, name: String) -> Result(Nil, String) {
-  let legal = case string.to_graphemes(name) {
-    [] -> False
-    [head, ..tail] ->
-      string.contains(env_name_head, head)
-      && list.all(tail, fn(grapheme) {
-        string.contains(env_name_tail, grapheme)
-      })
-  }
-  case legal {
-    True -> Ok(Nil)
-    False ->
-      Error(
-        at
-        <> " entry \""
-        <> name
-        <> "\" is not an environment variable name ([A-Z_][A-Z0-9_]*)",
-      )
-  }
-}
-
-// A TOML array of non-empty strings, `[]` when the key is absent.
-// `shape` completes "must be ..." for a value of the wrong type.
-fn optional_strings(
-  fields: Dict(String, tom.Toml),
-  place: String,
-  key: String,
-  shape: String,
-) -> Result(List(String), String) {
-  let at = place <> "." <> key
-  use items <- result.try(case dict.get(fields, key) {
-    Ok(tom.Array(items)) -> Ok(items)
-    Ok(_other) -> Error(at <> " must be " <> shape)
-    Error(Nil) -> Ok([])
-  })
-  list.try_map(items, fn(item) {
-    case item {
-      tom.String("") -> Error(at <> " entries must be non-empty")
-      tom.String(text) -> Ok(text)
-      _other -> Error(at <> " must be " <> shape)
-    }
-  })
-}
-
-// `optional_strings` for a key that must be present and list at least
-// one entry: a server with no extensions answers for no file, and one
-// with no root markers has no project to start in.
-fn required_strings(
-  fields: Dict(String, tom.Toml),
-  place: String,
-  key: String,
-  shape: String,
-) -> Result(List(String), String) {
-  let at = place <> "." <> key
-  use Nil <- result.try(case dict.has_key(fields, key) {
-    True -> Ok(Nil)
-    False -> Error(at <> " is required")
-  })
-  use values <- result.try(optional_strings(fields, place, key, shape))
-  case values {
-    [] -> Error(at <> " must list at least one entry")
-    _some -> Ok(values)
-  }
-}
-
-// Each value once, naming the first repeat.
-fn listed_once(at: String, values: List(String)) -> Result(Nil, String) {
-  list.try_fold(values, [], fn(seen, value) {
-    case list.contains(seen, value) {
-      True -> Error(at <> " lists " <> value <> " more than once")
-      False -> Ok([value, ..seen])
-    }
-  })
-  |> result.replace(Nil)
-}
-
-/// Resolves one configured extra root to the host path a language
-/// server's jail binds.
-///
-/// `home` is the harness's own `HOME`, as `client/serve.home_directory`
-/// reads it from the daemon's process environment. It is never a jailed
-/// session's `HOME` (that one is under the workspace) and never anything
-/// a model supplies. An `AbsolutePath` ignores it. A `HomePath` with no
-/// home, or with a home that is not absolute, is refused rather than
-/// resolved against the working directory.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert catalog.expand_lsp_path(catalog.HomePath("go/pkg/mod"), Some("/home/o"))
-///   == Ok("/home/o/go/pkg/mod")
-/// ```
-///
-/// ```gleam
-/// assert catalog.expand_lsp_path(catalog.AbsolutePath("/opt/go"), None)
-///   == Ok("/opt/go")
-/// ```
-///
-pub fn expand_lsp_path(
-  path: LspPath,
-  home: Option(String),
-) -> Result(String, String) {
-  case path, home {
-    AbsolutePath(path), _home -> Ok(path)
-    HomePath(rest), Some("/" <> beneath) ->
-      Ok(strip_trailing_slash("/" <> beneath) <> "/" <> rest)
-    HomePath(rest), Some(relative) ->
-      Error(
-        "~/"
-        <> rest
-        <> " cannot be resolved: the harness's HOME ("
-        <> relative
-        <> ") is not an absolute path",
-      )
-    HomePath(rest), None ->
-      Error("~/" <> rest <> " cannot be resolved: the harness's HOME is unset")
   }
 }
 
@@ -1975,7 +1404,9 @@ fn tool_env_names(
     }),
   )
   use Nil <- result.try(
-    list.try_each(names, fn(name) { not_server_owned("tools.env", name) }),
+    list.try_each(names, fn(name) {
+      profile.not_server_owned("tools.env", name)
+    }),
   )
   case list.length(list.unique(names)) == list.length(names) {
     True -> Ok(names)
@@ -2043,40 +1474,11 @@ fn tool_set_pairs(
     }),
   )
   use Nil <- result.try(
-    list.try_each(pairs, fn(pair) { not_server_owned("tools.set", pair.0) }),
+    list.try_each(pairs, fn(pair) {
+      profile.not_server_owned("tools.set", pair.0)
+    }),
   )
   Ok(pairs)
-}
-
-// The names `client/serve.session_environment` builds from the
-// workspace and the toolchain code mode discovered. They are refused
-// here rather than silently ignored downstream: a shell whose `PATH`
-// came from this file would resolve a different `gleam` than the one the
-// compiler uses, and one whose `HOME` did would source the operator's
-// own dotfiles from inside the jail. LOOM_SCRATCH_DIR is filled by the
-// helper only after the execution's scratch has been prepared. The Git
-// global path selects the identity-only defaults prepared before model work.
-const server_owned_names = [
-  "PATH",
-  "HOME",
-  "TMPDIR",
-  "LOOM_SCRATCH_DIR",
-  "GIT_CONFIG_GLOBAL",
-]
-
-fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
-  case list.contains(server_owned_names, name) {
-    False -> Ok(Nil)
-    True ->
-      Error(
-        place
-        <> " may not name "
-        <> name
-        <> ": PATH, HOME, TMPDIR, LOOM_SCRATCH_DIR and GIT_CONFIG_GLOBAL are owned by the"
-        <> " server and jail helper so tools use the selected toolchain,"
-        <> " workspace and scratch directory",
-      )
-  }
 }
 
 // --- the [advisor] table ---------------------------------------------------
