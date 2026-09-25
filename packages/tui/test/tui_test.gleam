@@ -116,7 +116,7 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
     )
 
   assert transcript_lines.usage_summary(usage)
-    == "Total est $0.04 · in 12k · out 678 · cache 90k/123"
+    == "est $0.04 · in 12k · out 678 · cache 90k/123"
   let measured =
     message.Usage(
       ..usage,
@@ -147,8 +147,8 @@ pub fn output_rate_is_tokens_over_streamed_seconds_test() {
     )
     == None
   assert transcript_lines.output_rate(300, 0) == None
-  assert transcript_lines.output_rate_label(Some(87)) == " · 87 tok/s"
-  assert transcript_lines.output_rate_label(None) == ""
+  assert transcript_lines.output_rate_label(Some(87)) == ["87 tok/s"]
+  assert transcript_lines.output_rate_label(None) == []
 }
 
 pub fn footer_rows_depend_on_the_width_alone_test() {
@@ -244,6 +244,19 @@ pub fn footer_status_grows_with_a_wide_terminal_test() {
 pub fn footer_status_sanitizes_untrusted_server_text_test() {
   assert render.footer_status("0 live", "\u{1b}[31mhostile\nnotice", 40)
     == "0 live · hostile notice"
+}
+
+// With no notice there is nothing to separate, so no trailing ` ·`.
+pub fn footer_status_without_a_notice_has_no_separator_test() {
+  assert render.footer_status("3 agents · 2 working", "", 40)
+    == "3 agents · 2 working"
+}
+
+// Millions keep a decimal, so a footer does not understate 1.9m as 1m.
+pub fn token_counts_keep_a_decimal_in_millions_test() {
+  assert transcript_lines.tokens(1_950_000) == "1.9m"
+  assert transcript_lines.tokens(12_000_000) == "12.0m"
+  assert transcript_lines.tokens(812_000) == "812k"
 }
 
 pub fn footer_status_omits_the_dedicated_model_label_test() {

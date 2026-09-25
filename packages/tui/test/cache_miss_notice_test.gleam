@@ -183,8 +183,8 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   assert string.contains(render_text(idle, 40, 12), "cache idle 10m")
     as "a narrow terminal retains the warning before lower-priority figures"
   let expanded = tui_model.Model(..idle, details_expanded: True)
-  assert string.contains(text(expanded), "cache idle 10m")
-    as "the detailed footer also displays the warning"
+  assert string.contains(text(expanded), ", idle 10m ·")
+    as "the detailed footer also displays the warning, on the cache figure"
 
   // Under the idle floor there is nothing to warn about, so the label
   // stays empty rather than counting toward an expiry nothing

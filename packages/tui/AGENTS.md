@@ -1111,6 +1111,11 @@ untouched.
   estimated session cost, notices and an attention summary in one row, or two
   below 100 columns. The attention summary reserves its own space. Ctrl+G exposes
   the complete input/output/cache/rate accounting in the existing adaptive footer.
+  Both footers fit whole pieces (`render.fit_pieces`): a piece that does not
+  fit is dropped from the right, never cut through a figure. The detailed row
+  leads with the cache read/write pair carrying the outlook (`cache 1.2m/40k,
+  idle 3m`), so a narrow row keeps the warning, then context, cost, input,
+  output and rate. Millions keep one decimal.
   Coherent cuts supply usage and cost; model names never imply prices. Workspace
   and branch discovery still runs once before the event loop, through bounded
   regular-file reads, and the header shows the resulting workspace label.

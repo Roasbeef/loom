@@ -2061,7 +2061,12 @@ fn option_json(value: Option(json.JsonValue)) -> String {
 @internal
 pub fn tokens(value: Int) -> String {
   case value >= 1_000_000, value >= 1000 {
-    True, _ -> int.to_string(value / 1_000_000) <> "m"
+    // Millions keep one decimal: a footer reading `1m` for 1.9 million
+    // tokens understates the figure by nearly half.
+    True, _ -> {
+      let tenths = value / 100_000
+      int.to_string(tenths / 10) <> "." <> int.to_string(tenths % 10) <> "m"
+    }
     False, True -> int.to_string(value / 1000) <> "k"
     False, False -> int.to_string(value)
   }
@@ -2096,46 +2101,72 @@ pub fn output_rate(output_tokens: Int, elapsed_ms: Int) -> Option(Int) {
   }
 }
 
-/// The footer's rate suffix: empty until a generation has been timed.
+/// The footer's rate piece: none until a generation has been timed.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.output_rate_label(option.Some(87)) == " · 87 tok/s"
+/// assert tui.output_rate_label(option.Some(87)) == ["87 tok/s"]
 /// ```
 ///
 /// ```gleam
-/// assert tui.output_rate_label(option.None) == ""
+/// assert tui.output_rate_label(option.None) == []
 /// ```
 ///
 @internal
-pub fn output_rate_label(rate: Option(Int)) -> String {
+pub fn output_rate_label(rate: Option(Int)) -> List(String) {
   case rate {
-    Some(rate) -> " · " <> int.to_string(rate) <> " tok/s"
-    None -> ""
+    Some(rate) -> [int.to_string(rate) <> " tok/s"]
+    None -> []
   }
 }
 
-// The outlook leads a bounded footer section so right-side truncation cannot
-// erase it. Nothing to say costs no cells.
-pub fn cache_section_label(label: String) -> String {
-  case label {
-    "" -> ""
-    text -> text <> " · "
+/// The cumulative usage a session has spent, as the pieces the detailed
+/// footer fits: the cache read/write pair, then the estimated cost,
+/// uncached input and output. The cache piece carries the cache outlook
+/// when there is one, so what the cache holds and how long it will keep it
+/// read as one figure and the word "cache" is not spent twice. It comes
+/// first because the outlook is the footer's one forward-looking warning,
+/// and the row drops pieces from the right when it runs out of room.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // usage_pieces(usage, "cache idle 3m")
+/// //   == #("cache 90k/123, idle 3m", ["est $0.04", "in 12k", "out 678"])
+/// ```
+@internal
+pub fn usage_pieces(
+  usage: message.Usage,
+  outlook: String,
+) -> #(String, List(String)) {
+  let pair =
+    "cache " <> tokens(usage.cache_read) <> "/" <> tokens(usage.cache_write)
+  let reading = case string.split_once(outlook, "cache ") {
+    Ok(#("", rest)) -> rest
+    Ok(_) | Error(Nil) -> outlook
   }
+  let cache = case reading {
+    "" -> pair
+    reading -> pair <> ", " <> reading
+  }
+  #(cache, [
+    "est $" <> money(usage.cost.total),
+    "in " <> tokens(usage.input),
+    "out " <> tokens(usage.output),
+  ])
 }
 
+/// The cumulative usage as one line, with no cache outlook.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // usage_summary(usage) == "est $0.04 · in 12k · out 678 · cache 90k/123"
+/// ```
 pub fn usage_summary(usage: message.Usage) -> String {
-  "Total est $"
-  <> money(usage.cost.total)
-  <> " · in "
-  <> tokens(usage.input)
-  <> " · out "
-  <> tokens(usage.output)
-  <> " · cache "
-  <> tokens(usage.cache_read)
-  <> "/"
-  <> tokens(usage.cache_write)
+  let #(cache, spend) = usage_pieces(usage, "")
+  string.join(list.append(spend, [cache]), " · ")
 }
 
 /// Currency is display data. Round once to cents before splitting the whole

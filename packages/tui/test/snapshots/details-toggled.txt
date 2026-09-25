@@ -10,5 +10,5 @@
 
 ────────────────────────────────────────────────────────────────────────────────────────────────
  /w/demo                                                                        baseten-kimi-k3
- ctx — · Total est $0.00 · in 0 · out 0 · cache 0/0
- 0 live / 0 agents · details expanded
+ cache 0/0 · ctx — · est $0.00 · in 0 · out 0
+ 0 agents · 0 working · 0 attention · details expanded

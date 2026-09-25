@@ -1190,26 +1190,22 @@ fn render_compact_footer(
   // The outlook leads the line when present. The footer truncates from the
   // right, so placing it after cost hid the only forward-looking reading at
   // ordinary terminal widths.
-  let info =
-    text_hygiene.single_line(model.current_model)
-    <> " · "
-    <> context_view.footer(model.context)
-    <> " · est $"
-    <> transcript_lines.money(model.usage.cost.total)
+  let pieces =
+    [
+      model.cache_outlook,
+      text_hygiene.single_line(model.notice),
+      text_hygiene.single_line(model.current_model),
+      context_view.footer(model.context),
+      "est $" <> transcript_lines.money(model.usage.cost.total),
+    ]
+    |> list.filter(fn(piece) { piece != "" })
   let status = agents.summary_rows(layout.displayed_agents(model))
-  let context = case model.cache_outlook, model.notice {
-    "", "" -> info
-    "", notice -> text_hygiene.single_line(notice) <> " · " <> info
-    cache, "" -> cache <> " · " <> info
-    cache, notice ->
-      cache <> " · " <> text_hygiene.single_line(notice) <> " · " <> info
-  }
   case area.size.height > 1 {
     True ->
       paragraph.render_styled(
         buf,
         area,
-        list.map([context, status], fn(row) {
+        list.map([fit_pieces(pieces, area.size.width - 1), status], fn(row) {
           span.line_new([
             span.span_styled(
               text.truncate(" " <> row, area.size.width, "…"),
@@ -1222,12 +1218,49 @@ fn render_compact_footer(
       let left_width = int.max(0, area.size.width - text.cell_width(status) - 3)
       let row =
         " "
-        <> text.pad_right(text.truncate(context, left_width, "…"), left_width)
+        <> text.pad_right(fit_pieces(pieces, left_width), left_width)
         <> "  "
         <> status
       paragraph.render_styled(buf, area, [
         span.line_new([span.span_styled(row, theme.footer_text())]),
       ])
+    }
+  }
+}
+
+/// Joins footer pieces with ` · ` while they fit, in order, and stops at the
+/// first that does not. A piece is either shown whole or not at all, so a
+/// figure is never cut through the middle; only a first piece too long for
+/// the whole width is truncated, since an empty section says less.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert render.fit_pieces(["ctx ~5%", "est $0.00", "in 812k"], 20)
+///   == "ctx ~5% · est $0.00"
+/// assert render.fit_pieces(["a long first piece"], 8) == "a long …"
+/// ```
+@internal
+pub fn fit_pieces(pieces: List(String), limit: Int) -> String {
+  case pieces {
+    [] -> ""
+    [first, ..rest] ->
+      case text.cell_width(first) <= limit {
+        False -> text.truncate(first, int.max(0, limit), "…")
+        True -> fit_rest(rest, limit, first)
+      }
+  }
+}
+
+fn fit_rest(pieces: List(String), limit: Int, taken: String) -> String {
+  case pieces {
+    [] -> taken
+    [next, ..rest] -> {
+      let longer = taken <> " · " <> next
+      case text.cell_width(longer) <= limit {
+        True -> fit_rest(rest, limit, longer)
+        False -> taken
+      }
     }
   }
 }
@@ -1258,16 +1291,24 @@ fn footer_sections(
         theme.footer_text(),
       ),
     ])
+
+  // The detailed usage row is whole pieces in priority order. One that does
+  // not fit is dropped from the right rather than cut, because an ellipsis
+  // through the middle of `cache 1.2m/40k` hid the very figures the
+  // expanded footer exists to show.
+  let rate = transcript_lines.output_rate_label(model.output_rate_tps)
+  let #(cache, spend) =
+    transcript_lines.usage_pieces(model.usage, model.cache_outlook)
   let usage =
     span.line_new([
       span.span_styled(
         " "
-          <> transcript_lines.compact(
-          transcript_lines.cache_section_label(model.cache_outlook)
-            <> context_view.footer(model.context)
-            <> " · "
-            <> transcript_lines.usage_summary(model.usage)
-            <> transcript_lines.output_rate_label(model.output_rate_tps),
+          <> fit_pieces(
+          [
+            cache,
+            context_view.footer(model.context),
+            ..list.append(spend, rate)
+          ],
           footer_usage_limit(model.width),
         )
           <> " ",
@@ -1292,9 +1333,11 @@ fn footer_sections(
   #(project, model_name, usage, status, combined)
 }
 
+// The same roster summary the compact footer shows, so expanding details
+// does not change how the agents are counted.
 fn model_footer_status(model: Model) -> String {
   footer_status(
-    model.agent_summary,
+    agents.summary_rows(layout.displayed_agents(model)),
     model.notice,
     footer_status_limit(model.width),
   )
@@ -1317,7 +1360,9 @@ pub fn footer_status(
 ) -> String {
   let safe_summary = text_hygiene.single_line(agent_summary)
   let safe_notice = text_hygiene.single_line(notice)
-  case string.starts_with(safe_notice, "model: ") {
+
+  // An empty notice adds nothing, not a dangling separator.
+  case safe_notice == "" || string.starts_with(safe_notice, "model: ") {
     True -> transcript_lines.compact(safe_summary, limit)
     False ->
       transcript_lines.compact(safe_summary <> " · " <> safe_notice, limit)
