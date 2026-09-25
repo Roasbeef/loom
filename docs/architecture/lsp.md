@@ -642,17 +642,19 @@ root_markers = ["gleam.toml"]
 project = "writable"
 hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
-# gopls reads the module cache and writes the build cache, both outside
-# the project, so both are named here. The build cache is in the per-user
-# cache directory, which <cache>/ names on every platform, and
-# XDG_CACHE_HOME is passed so go in the jail finds the same one.
+# gopls reads the module cache, outside the project, so it is named
+# here. Its caches are private: cache_env points GOCACHE, GOPLSCACHE and
+# XDG_CACHE_HOME under <cache>/loom/lsp/go/, which Loom creates and
+# grants writable, never the ~/.cache/go-build the host's own go build
+# trusts. The first two are named because on macOS go and gopls ignore
+# XDG_CACHE_HOME.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build"]
-env = ["GOFLAGS", "XDG_CACHE_HOME"]
+cache_env = { XDG_CACHE_HOME = "xdg", GOCACHE = "go-build", GOPLSCACHE = "gopls" }
+env = ["GOFLAGS"]
 hint = "Qualify a name with its package name as imported: util.Greet"
 ```
 
@@ -682,12 +684,24 @@ the daemon's environment; the values never live in the file, and `PATH`,
 against the daemon's own environment, never the jailed session's: `~/`
 is its `HOME`, and `<cache>/` is its per-user cache directory, which is
 `$HOME/Library/Caches` on macOS and, elsewhere, `$XDG_CACHE_HOME` when
-the daemon was started with an absolute one, else `$HOME/.cache`. That
-is the one fact a `gopls` table used to need per platform, and granting
-the wrong cache leaves `go` unable to write, so `gopls` loads no
-packages. A form whose place is unknown (no `HOME`) refuses that server
-at boot, as does a relative path, a `..` component, or a bare `~/` or
-`<cache>/`.
+the daemon was started with an absolute one, else `$HOME/.cache`. A
+form whose place is unknown (no `HOME`) refuses that server at boot, as
+does a relative path, a `..` component, or a bare `~/` or `<cache>/`.
+
+`cache_env` is the one key that sets an environment *value*, and the
+value can only be a directory Loom owns: `cache_env = { XDG_CACHE_HOME
+= "xdg" }` sets the variable to `<cache>/loom/lsp/<server>/xdg`. The
+manager creates the directory just before a jail binds it
+(`client/lsp/manager.jail_for`, beside the scratch directory), the jail
+grants it writable (`client/lsp/jail.policy_for`), and the install
+approval prints it. It exists because a writable host cache is a way
+out of the jail when the host's own tools trust it: `go build` reads
+`GOCACHE` unverified, and `go list` in the jail runs cgo with flags the
+project can write. A name also in `env`, a name the harness owns, and a
+directory that is absolute, has an empty, `.` or `..` component, or lies
+inside another entry's (which the server could swap for a link before
+the next start binds it) are each refused as
+`lsp.<name>.cache_env.<VAR>`.
 
 Four optional keys carry what a language spells differently. They make
 the table a **language profile** (ADR-014), and each default is what
@@ -742,7 +756,7 @@ steps, and the third is the one that makes it trustworthy.
    Qualify a symbol the way the language does, since that is what
    `qualifier_separators` and `module_case` exist for.
 3. **Run `loom ext check`.** `loom ext install ./my-profile`, then
-   `loom ext check my_profile`, which copies the fixture into a scratch
+   `loom ext check my_profile`, which writes the fixture into a scratch
    workspace, starts the server in the ordinary jail under your demand,
    prints what the jail enforced, and asks every check through the door
    the tools use. A `FAIL` line names both sets. An empty answer usually

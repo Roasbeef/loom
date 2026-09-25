@@ -2342,7 +2342,8 @@ The rest of the path is phase 1's own, and each module is one question:
   (`manifest.declared_tier`) and takes one of two paths. **A profile
   install never calls the build seam and never vets**: it decodes the
   manifest against the fetched tree's text, prunes to `extension.toml`,
-  root `README*`/`LICENSE*` and each check's fixture directory, refuses a
+  root-level `README*`/`LICENSE*` files (a path with a `/` never matches,
+  so `README-assets/` is pruned) and each check's fixture directory, refuses a
   kept non-UTF-8 file, and stages and records exactly as the jailed path
   does, with no artifact directory. The rest of this entry is the jailed
   path.
@@ -2368,7 +2369,10 @@ The rest of the path is phase 1's own, and each module is one question:
   module, because two tools may share an entry module, a tool and a hook
   may too, and importing one twice is a compile error in generated code.
 - `client/extension/installed` — `discover(root)` and `one(root, name)`,
-  each returning `Ready` or `Refused`. Five things are re-derived from
+  each returning `Ready` or `Refused`; `verified(root, name)` makes the
+  same checks and answers `Verified(record, manifest, artifact, tree)`,
+  the `archive.Tree` the digest was computed over, for a caller that uses
+  the installed files (`check` writes its fixture from it). Five things are re-derived from
   disk and compared with the record: the tree digest, the artifact's
   content address (with `build.fingerprint_directory`, the function the
   build itself used), the manifest, the vetting, and the allowlist. After
@@ -2404,10 +2408,13 @@ The rest of the path is phase 1's own, and each module is one question:
 - `client/extension/check.{Setup, Run, Report, run, lines, failed, total,
   enforcement_line, release_wait_ms}` — `loom ext check` (ADR-014 §5).
   `run(root, name, setup)` refuses, before starting anything, an
-  extension `installed.one` refuses, a jailed one, and a profile with no
-  `[[check]]`; then per `(server, fixture)` group it copies the installed
-  fixture to `<root>/.staging/check-<token>/work` (never under `/tmp`,
-  refused by name), starts `serve.start_check_plane` over it, prints the
+  extension `installed.verified` refuses, a jailed one, and a profile
+  with no `[[check]]`; then per `(server, fixture)` group it writes the
+  fixture from the verified tree's bytes (never copied from disk, which
+  would follow a link planted after install) to
+  `<root>/.staging/check-<token>/work`, judges the scratch's real path
+  (`host/bootstrap.canonical_directory`) against `/tmp` and
+  `/private/tmp` and refuses either by name, starts `serve.start_check_plane` over it, prints the
   probe's `enforcement.Report` (`manager.probe_server`), starts a
   `manager` over the one approved server (roots via
   `serve.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
@@ -4317,7 +4324,7 @@ language profile; these are the pieces that carry both in this package.
 
 - `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
   Places, decode_servers, decode_server, claim_extensions, expand_path,
-  cache_place, mangling_fault, not_server_owned}` — the one
+  cache_place, cache_env_paths, mangling_fault, not_server_owned}` — the one
   `[lsp.<name>]` decoder, pure (no I/O, no external). `client/catalog`
   hands `decode_servers` the `[lsp]` table's entries, and so does
   `client/extension/manifest` for a profile extension, so the two can
@@ -4325,9 +4332,16 @@ language profile; these are the pieces that carry both in this package.
   the profile's JSON form in an install record (every field written,
   roots as written, the decoder total and structural: the load's
   comparison with the re-decoded manifest is what holds the table's
-  rules), and `approval_lines` is what an install prints for one. `LspServer` carries the ADR-013
-  keys plus four profile keys, each defaulting to the behaviour it
-  replaced: `language_id: String` (always filled; default the first
+  rules), and `approval_lines` is what an install prints for one: every
+  key, plus the two grants the jail derives (the executable's directory,
+  read-only, and each private cache). `LspServer` carries the ADR-013
+  keys, `cache_env: List(#(String, String))` (variable to a relative
+  directory, sorted by name; `cache_env_paths` places each at
+  `<cache>/loom/lsp/<server>/<dir>`, the one value-carrying environment a
+  profile may set; a name follows the `env` rules and is not also in
+  `env`, a directory has no empty, `.` or `..` component and no leading
+  `/` and lies inside no other entry's, and the record decoder re-reads it under the same rule), plus four
+  profile keys, each defaulting to the behaviour it replaced: `language_id: String` (always filled; default the first
   extension without its dot; written, `[a-z0-9][a-z0-9+._-]*` in at most
   40 characters), `qualifier_separators: List(String)` (default `["."]`;
   each non-empty, no whitespace, not `/`, listed once; `[]` refused),
@@ -4432,8 +4446,14 @@ language profile; these are the pieces that carry both in this package.
   call_spec, launch, transport}` — one server's jail and its transport.
   `Placement.places` (and `manager.Jailed.places`) is the daemon's
   `profile.Places`: it expands `~/` and `<cache>/` roots, and its `home`
-  is the server's `HOME`. `call_spec(jail, op, now_ms:, demand:)` takes
-  the demand from its caller: the session's, which the probe proved.
+  is the server's `HOME`.
+  `policy_for` adds each `cache_env` directory to the writable roots on
+  both sides and sets its variable last in the environment; `Jail.caches`
+  lists them, and `manager.jail_for` makes them (`mkdir -p`) beside the
+  scratch's `tmp` before any probe, search or server clears under the
+  policy, since bwrap refuses a writable bind whose source is missing.
+  `call_spec(jail, op, now_ms:, demand:)` takes the demand from its
+  caller: the session's, which the probe proved.
 - **Invariant: a server's executable region is directories, never an
   install prefix.** `locate` reads the executable without following it
   (`tools/fs.real_filesystem().read_link`, the existing
