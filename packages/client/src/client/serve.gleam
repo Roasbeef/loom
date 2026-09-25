@@ -763,6 +763,89 @@ pub fn start_build_plane(
   Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
 }
 
+/// A helper pool and broker for proving one language profile, and the
+/// base policy both were started under.
+pub type CheckPlane {
+  CheckPlane(
+    /// The broker every clearance goes through: the probe, the server's
+    /// lease and every bare-name search.
+    broker: Broker,
+    /// The pool behind it, held so the plane can be stopped.
+    pool: Pool,
+    /// The base a server's lease is composed from, as a session's is.
+    base_policy: policy.SandboxPolicy,
+    /// How many helpers the pool holds, which the lease counter's cap is
+    /// derived from (`client/lsp/leases.cap_for`).
+    size: Int,
+  )
+}
+
+/// Starts the effect plane `loom ext check` runs a profile's server on:
+/// the helper ladder a boot runs, then a pool and broker over a base that
+/// covers the check's scratch workspace and masks the daemon's state
+/// root.
+///
+/// The base is the build plane's (`build_plane_policy`) for the reason
+/// that function gives: the scratch workspace sits under the extensions
+/// root, one directory below the state root whose credentials no jail
+/// may read, and it has no blob store to mask. What differs from a build
+/// plane is only what is *not* needed: no code-mode toolchain is
+/// discovered, because a profile's server is located on the daemon's
+/// `PATH` and a check must run on a host with no build seed, as a profile
+/// install does. The pool is the smallest a session may have, which
+/// leaves one lease for the one server a check starts at a time.
+///
+/// The caller owns the plane and must `stop_check_plane` it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.start_check_plane(helper: None, workspace: scratch <> "/work",
+/// //   state_root: home <> "/.loom", tmp_dir: scratch <> "/tmp", clock:)
+/// ```
+///
+pub fn start_check_plane(
+  helper helper: Option(String),
+  workspace workspace: String,
+  state_root state_root: String,
+  tmp_dir tmp_dir: String,
+  clock clock: Clock,
+) -> Result(CheckPlane, String) {
+  use helper_path <- result.try(find_helper(helper))
+  let base = build_plane_policy(workspace, state_root) |> merging_mounts
+
+  // Refused before anything is spawned, as a boot refuses: a base the
+  // sandbox cannot enforce is a failure of the check's setup, not a
+  // server that later fails to start for reasons nobody can read.
+  use Nil <- result.try(base_policy_fault(base))
+  use #(pool, broker_actor) <- result.try(start_effect_plane(
+    helper: helper_path,
+    base_policy: base,
+    tmp_dir:,
+    size: exec.min_pool_size,
+    clock:,
+  ))
+  Ok(CheckPlane(
+    broker: broker_actor,
+    pool:,
+    base_policy: base,
+    size: exec.min_pool_size,
+  ))
+}
+
+/// Tears a check plane down.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.stop_check_plane(plane)
+/// ```
+///
+pub fn stop_check_plane(plane: CheckPlane) -> Nil {
+  broker.stop(plane.broker)
+  exec.stop_pool(plane.pool)
+}
+
 /// The `PATH` a build plane's jailed compiler runs with: exactly the two
 /// toolchain directories plus the system ones.
 ///
@@ -2209,12 +2292,24 @@ fn lsp_plane_wiring(
   )
 }
 
-// One server with its `readable` and `writable` roots resolved to
-// absolute paths, once, at load. The jail resolves them again at every
-// start and would refuse the same way; refusing here instead is what makes
-// the refusal an operator-visible boot line rather than a `no_server`
-// answer the model meets on its first query.
-fn lsp_server_roots(
+/// One server with its `readable` and `writable` roots resolved to
+/// absolute paths, once, at load. The jail resolves them again at every
+/// start and would refuse the same way; refusing here instead is what
+/// makes the refusal an operator-visible boot line rather than a
+/// `no_server` answer the model meets on its first query.
+///
+/// Public because `loom ext check` starts a server exactly as a session
+/// would, and a second expansion there would be a second answer to where
+/// a profile's `~/` and `<cache>/` roots are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.lsp_server_roots(go, serve.lsp_places())
+/// // -> Ok(LspServer(..go, readable: [AbsolutePath("/home/o/go/pkg/mod")], ..))
+/// ```
+///
+pub fn lsp_server_roots(
   server: profile.LspServer,
   places: profile.Places,
 ) -> Result(profile.LspServer, String) {
@@ -2228,12 +2323,23 @@ fn lsp_server_roots(
   Ok(profile.LspServer(..server, readable:, writable:))
 }
 
-// The two places a language profile's roots are written against, read
-// from the daemon's own environment once per boot: `HOME` for `~/`, and
-// the per-user cache directory for `<cache>/`. Which directory that is
-// depends on the platform, and `profile.cache_place` decides it purely
-// from what is read here.
-fn lsp_places() -> profile.Places {
+/// The two places a language profile's roots are written against, read
+/// from the daemon's own environment once per boot: `HOME` for `~/`, and
+/// the per-user cache directory for `<cache>/`. Which directory that is
+/// depends on the platform, and `profile.cache_place` decides it purely
+/// from what is read here.
+///
+/// Public for `loom ext check`, which expands a profile's roots the way a
+/// session does, from the same environment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.lsp_places()
+/// // -> profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+/// ```
+///
+pub fn lsp_places() -> profile.Places {
   let home = home_directory()
   let #(os, _architecture) = ffi_os.platform()
   profile.Places(

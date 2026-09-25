@@ -1044,6 +1044,26 @@ fn home_of(root: record.Root) -> String {
   string.replace(record.path(root), "/.loom/extensions", "")
 }
 
+/// A jailed extension has tools, not profiles, so `loom ext check` has
+/// nothing to prove about it and says which tier it would need, before
+/// anything is started: the helper here does not exist.
+pub fn check_refuses_a_jailed_extension_test() {
+  let #(root, _done) = installed_hello("check-jailed")
+  let assert Error(reason) =
+    cli.dispatch([
+      "check",
+      "hello",
+      "--home",
+      home_of(root),
+      "--helper",
+      "/nonexistent/helper",
+    ])
+    as "a jailed extension has no profiles to check"
+  assert reason
+    == "check refused: hello is a jailed extension; only a profile extension "
+    <> "(tier = \"profile\") has language profiles to check"
+}
+
 fn installed_hello(name: String) -> #(record.Root, install.Installed) {
   let root = fresh_root(name)
   let tree =

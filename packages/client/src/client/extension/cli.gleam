@@ -1,7 +1,7 @@
 //// `loom ext` — the operator's whole surface for extensions.
 ////
-//// Four verbs, no daemon, no hot install: `install`, `list`, `remove`,
-//// `verify`. The session server reads the records at boot and nothing
+//// Five verbs, no daemon, no hot install: `install`, `list`, `remove`,
+//// `verify` and `check`. The session server reads the records at boot and nothing
 //// re-reads them while it runs, which is the same restart-to-change
 //// posture `client/catalog` takes toward `loom.toml` — with the one
 //// difference the ruling names, that here the approval is *recorded*
@@ -25,12 +25,15 @@
 ////
 //// 0 when the verb did what it says, 1 otherwise, and nothing else. A
 //// `verify` that finds a refused extension exits 1, because the verb's
-//// question is "is this loadable" and the answer was no.
+//// question is "is this loadable" and the answer was no. A `check` with
+//// any failed check exits 1 for the same reason, and its report is the
+//// error text, so every check's line is still printed.
 
 import broker/budget
 import broker/egress
 import broker/exec.{type EnforcementDemand}
 import client/extension/archive
+import client/extension/check
 import client/extension/install
 import client/extension/installed
 import client/extension/manifest
@@ -63,6 +66,7 @@ pub const usage = "usage: loom ext <command>
   list
   remove <name>
   verify <name>
+  check <name> [--home <dir>] [--helper <path>] [--best-effort]
 
 A source is a local path, an https:// .tar.gz, or an
 https://github.com/<owner>/<repo> URL. Extensions install under
@@ -114,6 +118,7 @@ pub fn dispatch(arguments: List(String)) -> Result(List(String), String) {
     ["list", ..rest] -> list_command(rest)
     ["remove", ..rest] -> remove_command(rest)
     ["verify", ..rest] -> verify_command(rest)
+    ["check", ..rest] -> check_command(rest)
     [] -> Error("a command is required\n" <> usage)
     [unknown, ..] -> Error("unknown command `" <> unknown <> "`\n" <> usage)
   }
@@ -534,6 +539,53 @@ fn verify_command(arguments: List(String)) -> Result(List(String), String) {
     // question is whether this one would load and the answer was no.
     installed.Refused(name:, reason:) -> Error(name <> ": " <> reason)
   }
+}
+
+// --- check -------------------------------------------------------------------
+
+// A profile proving itself (ADR-014 §5). The refusals — an extension that
+// does not load, a jailed one, a profile with no checks — come back from
+// `check.run` before anything is started, so they cost nothing and read
+// like `verify`'s. A run with a failed check is an exit-1 answer whose
+// text is the whole report: the operator needs every line, the passing
+// ones included, to see what the profile got wrong.
+fn check_command(arguments: List(String)) -> Result(List(String), String) {
+  use flags <- result.try(parse(arguments, no_flags()))
+  use name <- result.try(named(flags))
+  use root <- result.try(root_of(flags))
+  use report <- result.try(
+    check.run(root, name, check_setup(flags))
+    |> result.map_error(fn(reason) { "check refused: " <> reason }),
+  )
+  case check.failed(report) {
+    0 -> Ok(check.lines(report))
+    failed ->
+      Error(
+        "check failed: "
+        <> int.to_string(failed)
+        <> " of "
+        <> int.to_string(check.total(report))
+        <> " checks of "
+        <> name
+        <> " failed\n"
+        <> string.join(check.lines(report), "\n"),
+      )
+  }
+}
+
+// The host a check runs on is the daemon's, as a session reads it: the
+// process environment for `PATH` and a profile's `env` names, and the
+// daemon's own places for its `~/` and `<cache>/` roots. The demand is
+// the operator's, spelled as `install` spells it.
+fn check_setup(flags: Flags) -> check.Setup {
+  check.Setup(
+    helper: flags.helper,
+    demand: demand(flags),
+    places: serve.lsp_places(),
+    reading: fn(name) { secret.lookup(secret.env(), name) },
+    clock: wall_clock(),
+    entropy: ffi_os.unique_positive_integer,
+  )
 }
 
 // --- the host --------------------------------------------------------------
