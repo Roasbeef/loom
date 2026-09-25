@@ -4381,6 +4381,17 @@ language profile; these are the pieces that carry both in this package.
   `Unavailable` or `Unsupported`; the references `documentSymbol` fold stops
   outlining there and keeps the rest with no container. Neither holds a
   caller for one deadline per hit.
+- **Invariant: the query that starts a server waits for its load, and
+  no other query waits.** When a query's `Warmth` is `Started`, after the
+  pull and before its first request it calls `lsp/client.ready` with
+  `Timing.quiet_ms` (300 ms), bounded by `Timing.ready_ms` (60 s).
+  `StillBusy(titles)` is `query.Unavailable("the language server is still
+  loading (<titles>); ask again in a moment")`, never an empty answer
+  (`rust-analyzer` answers mid-load with `[]`), and the server is left
+  running. A `Warm` query never calls `ready`, and neither do diagnostics
+  or `after_write`: a server that leaks a token costs one "still loading"
+  at start, not a deadline per query, and a warm server re-indexing
+  answers from its previous state as it does for any editor.
 - `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
   max_link_hops, operation, step_id, locate, regions, policy_for,
   call_spec, launch, transport}` — one server's jail and its transport.

@@ -7,9 +7,10 @@
 //// manager's process story over an in-process fake server
 //// (`support/fake_lsp`): one start however many callers, eviction, a lazy
 //// restart that re-opens what the dead server held, the pull-resync, the
-//// containment refusal and the ambiguous answer. And the real thing: a
-//// `gleam lsp` jailed through the broker on a two-module project, and a
-//// `gopls` on a two-package module when one is installed, both under
+//// containment refusal, the ambiguous answer and the wait for a server
+//// still loading. And the real thing: a `gleam lsp` jailed through the
+//// broker on a two-module project, a `gopls` on a two-package module and
+//// a `rust-analyzer` on a two-file crate when they are installed, all under
 //// `BestEffort` so they run on a host with no delegated cgroup. Their
 //// projects live under this package's `build/`, never `/tmp`, which the
 //// jail replaces with a tmpfs of its own.
@@ -133,6 +134,17 @@ fn rig_with(
   script: fn(String, option.Option(json.JsonValue)) -> fake_lsp.Answer,
   notifier: fake_lsp.Notifier,
 ) -> Rig {
+  rig_timed(workspace, search, script, notifier, quick_timing())
+}
+
+// `rig_with` under bounds of the test's choosing.
+fn rig_timed(
+  workspace: String,
+  search: fn(manager.Search) -> Result(List(manager.Hit), String),
+  script: fn(String, option.Option(json.JsonValue)) -> fake_lsp.Answer,
+  notifier: fake_lsp.Notifier,
+  timing: manager.Timing,
+) -> Rig {
   let starts = process.new_subject()
   let connect = fn(identity: resolve.Identity) {
     let fake = fake_lsp.start_with(fake_lsp.everything(), script, notifier)
@@ -146,7 +158,7 @@ fn rig_with(
       backend: manager.Backend(connect:, search:, protected: [
         workspace <> "/app/.git",
       ]),
-      timing: quick_timing(),
+      timing:,
     ))
     as "the manager must start"
   Rig(manager: started, door: manager.door(started), starts:)
@@ -1123,6 +1135,161 @@ pub fn a_silent_server_cuts_a_bare_name_search_short_test() {
   Nil
 }
 
+// `$/progress` params for one work-done token.
+fn progress(token: String, kind: String) -> json.JsonValue {
+  json.Object([
+    #("token", json.String(token)),
+    #(
+      "value",
+      json.Object([
+        #("kind", json.String(kind)),
+        #("title", json.String("Loading workspace")),
+      ]),
+    ),
+  ])
+}
+
+// A server that begins loading as soon as it is initialized, and reports
+// the end only when the test says so.
+fn loads_after_initialized(
+  method: String,
+  _params: option.Option(json.JsonValue),
+) -> List(#(String, json.JsonValue)) {
+  case method {
+    "initialized" -> [#("$/progress", progress("load", "begin"))]
+    _ -> []
+  }
+}
+
+// The one fake the rig has started, once it has been.
+fn first_start(rig: Rig) -> fake_lsp.Fake {
+  let assert Ok(#(_root, fake)) = process.receive(rig.starts, 5000)
+    as "the server must be started"
+  fake
+}
+
+// A server still loading at the readiness deadline is reported as loading,
+// in words that tell the model to ask again, and is never asked the
+// question it would answer wrongly. It is left running, and the next
+// question, warm, is asked without waiting: a token the server never ends
+// costs one refusal, not one per query.
+pub fn a_server_still_loading_at_the_deadline_is_unavailable_test() {
+  let workspace = scratch("still-loading")
+  let _root = project(workspace, "app")
+  let timing = manager.Timing(..quick_timing(), ready_ms: 200)
+  let rig =
+    rig_timed(
+      workspace,
+      no_search,
+      outline_script,
+      loads_after_initialized,
+      timing,
+    )
+
+  let assert Error(query.Unavailable(reason)) =
+    rig.door.outline("app/src/a.gleam")
+    as "a loading server must not be asked"
+  assert reason
+    == "the language server is still loading (Loading workspace); ask again in a moment"
+  let fake = first_start(rig)
+  assert !list.contains(fake_lsp.methods(fake), "textDocument/documentSymbol")
+
+  let assert Ok(served) = rig.door.outline("app/src/a.gleam")
+    as "the warm server must be asked, its token still open"
+  assert served.warmth == query.Warm
+  assert started(rig) == []
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+// A warm query never waits, even while the server reports work: a
+// re-index answers from the server's previous state, as it does for any
+// editor, and a leaked token must not stall every question.
+pub fn a_warm_query_does_not_wait_on_active_progress_test() {
+  let workspace = scratch("warm-busy")
+  let _root = project(workspace, "app")
+  let timing = manager.Timing(..quick_timing(), ready_ms: 10_000)
+  let rig =
+    rig_timed(
+      workspace,
+      no_search,
+      outline_script,
+      fn(_method, _params) { [] },
+      timing,
+    )
+  let assert Ok(served) = rig.door.outline("app/src/a.gleam") as "start"
+  assert served.warmth == query.Started("fake")
+  let fake = first_start(rig)
+
+  // The server begins work it never ends. Diagnostics, which do not wait,
+  // settle on a barrier the server answers behind the `begin`, so once
+  // they return the client holds the token.
+  fake_lsp.notify(fake, "$/progress", progress("reindex", "begin"))
+  let assert Ok(_) = rig.door.diagnostics(Some("app/src/a.gleam"))
+    as "diagnostics must settle"
+
+  let began = ffi_os.system_time_ms()
+  let assert Ok(served) = rig.door.outline("app/src/a.gleam")
+    as "a warm query must be asked while progress is open"
+  assert ffi_os.system_time_ms() - began < 1000
+  assert served.warmth == query.Warm
+  let assert [entry] = served.value as "the outline has one entry"
+  assert entry.name == "greet"
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+// The first query after a start waits for the load it started: nothing is
+// asked until the progress ends, and then only after the quiet window.
+// Diagnostics do not wait.
+pub fn a_fresh_start_waits_for_the_server_to_be_ready_test() {
+  let workspace = scratch("fresh-start")
+  let _root = project(workspace, "app")
+  let timing = manager.Timing(..quick_timing(), ready_ms: 10_000, quiet_ms: 200)
+  let rig =
+    rig_timed(
+      workspace,
+      no_search,
+      outline_script,
+      loads_after_initialized,
+      timing,
+    )
+  let answers = process.new_subject()
+  process.spawn(fn() {
+    process.send(answers, rig.door.outline("app/src/a.gleam"))
+  })
+  let fake = first_start(rig)
+
+  // The document is opened, and then the question waits.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case list.contains(fake_lsp.methods(fake), "textDocument/didOpen") {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the query's document must be opened"
+  assert process.receive(answers, 300) == Error(Nil)
+  assert !list.contains(fake_lsp.methods(fake), "textDocument/documentSymbol")
+
+  // Diagnostics are settled by their own rules, loading or not.
+  let assert Ok(_) = rig.door.diagnostics(Some("app/src/a.gleam"))
+    as "diagnostics must not wait for readiness"
+
+  let ended = ffi_os.system_time_ms()
+  fake_lsp.notify(fake, "$/progress", progress("load", "end"))
+  let assert Ok(Ok(served)) = process.receive(answers, 5000)
+    as "the query must be answered once the server is ready"
+  assert ffi_os.system_time_ms() - ended >= timing.quiet_ms
+  assert served.warmth == query.Started("fake")
+  assert list.contains(fake_lsp.methods(fake), "textDocument/documentSymbol")
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 // The session's arrangement: the manager is a transient child of a
 // supervisor, bound to an address, and every door is built over the
 // address. A crashed manager is replaced and the same door reaches the
@@ -1636,6 +1803,169 @@ fn run_gopls(live: Live, gopls: String, go: String) -> Nil {
   assert util_edited == util_path
   assert string.contains(main_text, "util.Hello()")
   assert string.contains(util_text, "func Hello() string")
+  stop_live(live, running)
+}
+
+// `rust-analyzer` answers while it loads the Cargo workspace, and answers
+// with empty results rather than errors, so this is the server the
+// readiness wait exists for. It is rustup's link in `~/.cargo/bin`, which
+// makes `~/.cargo` its read-only region; the toolchain it dispatches to
+// lives under `~/.rustup`. Cargo's target directory and home are writable
+// roots outside the workspace, since the project root is read-only.
+pub fn rust_analyzer_answers_the_door_once_ready_test() {
+  let home =
+    secret.lookup(secret.env(), "HOME") |> result.unwrap("/nonexistent")
+  let analyzer = home <> "/.cargo/bin/rust-analyzer"
+  let cargo = home <> "/.cargo/bin/cargo"
+  case
+    live_prerequisites("lsp manager rust-analyzer"),
+    simplifile.is_file(analyzer),
+    simplifile.is_file(cargo),
+    ffi_os.find_executable("rg")
+  {
+    Error(Nil), _, _, _ -> Nil
+    Ok(helper), Ok(True), Ok(True), Ok(_) ->
+      run_rust_analyzer(live_rig(helper, "rust-analyzer"), home)
+    Ok(_), Ok(True), Ok(True), Error(_) ->
+      io.println_error(
+        "SKIP lsp manager rust-analyzer: ripgrep (rg) is not on PATH",
+      )
+    Ok(_), _, _, _ ->
+      io.println_error(
+        "SKIP lsp manager rust-analyzer: rust-analyzer or cargo is not installed in ~/.cargo/bin",
+      )
+  }
+}
+
+const util_rs = "pub fn greet() -> &'static str {\n    \"hi\"\n}\n"
+
+const main_rs = "mod util;\n\nfn main() {\n    println!(\"{}\", util::greet());\n    let again = util::greet();\n    println!(\"{}\", again);\n}\n"
+
+fn run_rust_analyzer(live: Live, home: String) -> Nil {
+  let crate = live.workspace <> "/probe"
+  write(
+    crate <> "/Cargo.toml",
+    "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+  )
+
+  // The project root is read-only in the jail, and `cargo metadata`
+  // writes a missing lockfile before it answers: without one the crate
+  // never loads, and every answer is empty however long the wait.
+  write(
+    crate <> "/Cargo.lock",
+    "# This file is automatically @generated by Cargo.\n# It is not intended for manual editing.\nversion = 4\n\n[[package]]\nname = \"probe\"\nversion = \"0.1.0\"\n",
+  )
+  write(crate <> "/src/util.rs", util_rs)
+  write(crate <> "/src/main.rs", main_rs)
+
+  let target = live.root <> "/cargo-target"
+  let cargo_home = live.root <> "/cargo-home"
+  let assert Ok(Nil) = simplifile.create_directory_all(target) as "target dir"
+  let assert Ok(Nil) = simplifile.create_directory_all(cargo_home)
+    as "cargo home"
+
+  // `rust-analyzer` loads the standard library as a Cargo workspace of its
+  // own, and resolving it needs std's dependencies from the registry. An
+  // empty Cargo home, offline, cannot resolve them (measured: "no matching
+  // package named `hashbrown`"), std loads without them, and the call
+  // inside `println!` — a std macro — is then never found. The home's
+  // registry is the host's own, read through `~/.cargo`'s read-only
+  // region; only the home itself is writable.
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: home <> "/.cargo/registry",
+      from: cargo_home <> "/registry",
+    )
+    as "the cargo home's registry must be linked"
+  let server =
+    profile.LspServer(
+      name: "rust-analyzer",
+      command: [home <> "/.cargo/bin/rust-analyzer"],
+      extensions: [".rs"],
+      root_markers: ["Cargo.toml"],
+      project: profile.ProjectReadOnly,
+      readable: [profile.AbsolutePath(home <> "/.rustup")],
+      writable: [profile.AbsolutePath(target), profile.AbsolutePath(cargo_home)],
+      env: [
+        "RUSTUP_HOME",
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "CARGO_NET_OFFLINE",
+      ],
+      language_id: "rust",
+      qualifier_separators: ["::"],
+      module_case: profile.AsWritten,
+      hint: None,
+    )
+  let running =
+    live_manager(live, [server], fn(name) {
+      case name {
+        "PATH" -> Ok(home <> "/.cargo/bin:/usr/local/bin:/usr/bin:/bin")
+        "RUSTUP_HOME" -> Ok(home <> "/.rustup")
+        "CARGO_HOME" -> Ok(cargo_home)
+        "CARGO_TARGET_DIR" -> Ok(target)
+        "CARGO_NET_OFFLINE" -> Ok("true")
+        _ -> Error(Nil)
+      }
+    })
+  let door = manager.door(running)
+  let main_path = "probe/src/main.rs"
+  let util_path = "probe/src/util.rs"
+
+  // The first question starts the server and waits for its load. Asked
+  // before readiness existed, this answered `[]`.
+  let began = ffi_os.system_time_ms()
+  let assert Ok(served) =
+    door.definition(query.SymbolQuery("util::greet", Some(main_path), Some(4)))
+    as "the definition must answer"
+  io.println_error(
+    "lsp manager rust-analyzer: definition after "
+    <> int.to_string(ffi_os.system_time_ms() - began)
+    <> " ms "
+    <> string.inspect(served),
+  )
+  assert served.warmth == query.Started("rust-analyzer")
+  assert sites(served) == [#(util_path, 1)]
+
+  // Every site, the one inside `println!` included, and the declaration:
+  // while the workspace loads, the answer held the declaration alone.
+  let assert Ok(served) =
+    door.references(query.SymbolQuery("greet", Some(util_path), Some(1)))
+    as "references must answer"
+  io.println_error(
+    "lsp manager rust-analyzer: references " <> string.inspect(served),
+  )
+  let found =
+    list.map(served.value, fn(reference) {
+      #(reference.site.path, reference.site.line)
+    })
+    |> list.sort(fn(a, b) {
+      case string.compare(a.0, b.0) {
+        order.Eq -> int.compare(a.1, b.1)
+        other -> other
+      }
+    })
+  assert found == [#(main_path, 4), #(main_path, 5), #(util_path, 1)]
+
+  // Both files change, and `main.rs` at both of its calls: loading, the
+  // rename edited `util.rs` alone.
+  let assert Ok(served) =
+    door.prepare_rename(
+      query.SymbolQuery("greet", Some(util_path), Some(1)),
+      "salute",
+    )
+    as "a rename must be prepared"
+  let edited =
+    list.map(served.value, fn(edit) { #(edit.path, edit.edited) })
+    |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  io.println_error(
+    "lsp manager rust-analyzer: rename " <> string.inspect(edited),
+  )
+  assert edited
+    == [
+      #(main_path, string.replace(main_rs, "greet", "salute")),
+      #(util_path, string.replace(util_rs, "greet", "salute")),
+    ]
   stop_live(live, running)
 }
 

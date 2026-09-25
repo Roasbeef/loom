@@ -11,7 +11,9 @@
 //// search bound: a script may leave a request unanswered, as a server that
 //// has gone silent does, and a fake may publish notifications of its own
 //// in reply to what the client tells it, as a server publishes
-//// diagnostics after a `didOpen`.
+//// diagnostics after a `didOpen`. And a test may `notify` on the fake's
+//// behalf at a moment of its choosing, as a server reports that its
+//// project load has ended.
 
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -59,6 +61,7 @@ type Msg {
   FromClient(frame: String)
   ClientClosed
   Die(reason: String)
+  Notify(method: String, params: JsonValue)
   Log(reply: Subject(List(Seen)))
 }
 
@@ -140,6 +143,12 @@ pub fn die(fake: Fake, reason: String) -> Nil {
   process.send(fake.subject, Die(reason:))
 }
 
+/// The server sends one notification now, outside any script: the test
+/// decides when its work ends.
+pub fn notify(fake: Fake, method: String, params: JsonValue) -> Nil {
+  process.send(fake.subject, Notify(method:, params:))
+}
+
 /// Capabilities advertising every request the manager sends, with
 /// full-text sync.
 pub fn everything() -> JsonValue {
@@ -179,6 +188,10 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
       deliver(state, transport.TransportClosed(reason:))
       actor.continue(state)
     }
+    Notify(method:, params:) -> {
+      deliver(state, notification_event(method, params))
+      actor.continue(state)
+    }
     Log(reply:) -> {
       process.send(reply, list.reverse(state.log))
       actor.continue(state)
@@ -201,14 +214,7 @@ fn from_client(state: State, frame: String) -> State {
       jsonrpc.Notification(method:, params:) -> {
         list.each(state.notifier(method, params), fn(notification) {
           let #(method, params) = notification
-          deliver(
-            state,
-            transport.TransportData(
-              bytes: bit_array.from_string(
-                framing.frame(jsonrpc.notification(method, Some(params))),
-              ),
-            ),
-          )
+          deliver(state, notification_event(method, params))
         })
         State(..state, log: [Sent(method:, params:), ..state.log])
       }
@@ -251,6 +257,17 @@ fn answer(
       )
     None -> Nil
   }
+}
+
+fn notification_event(
+  method: String,
+  params: JsonValue,
+) -> transport.TransportEvent {
+  transport.TransportData(
+    bytes: bit_array.from_string(
+      framing.frame(jsonrpc.notification(method, Some(params))),
+    ),
+  )
 }
 
 fn deliver(state: State, event: transport.TransportEvent) -> Nil {

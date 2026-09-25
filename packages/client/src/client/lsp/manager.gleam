@@ -60,6 +60,26 @@
 //// the harness print its first line, or have `references` send any
 //// harness-readable file into the jail.
 ////
+//// # The query that starts a server waits for its load
+////
+//// A server may answer while it loads its project, and `rust-analyzer`
+//// does, with empty results rather than errors: a `definition` of `[]`, a
+//// rename that edits one file of two. So the query that paid for a start
+//// asks the client whether the server is `ready` — whether its work-done
+//// progress has gone quiet for `Timing.quiet_ms`, a window that exists
+//// because a server may not have begun reporting yet when `initialized`
+//// is sent. A server still busy at `Timing.ready_ms` is answered
+//// `Unavailable`, worded as a server still loading, and left running.
+////
+//// A warm query never waits. The measured empty answers were a load-time
+//// problem; a warm server re-indexing after an edit answers from its
+//// previous state, which is what every editor's client sees too. And a
+//// server that begins a token and never ends it would otherwise stall
+//// every query for the whole deadline: this way it costs the one "still
+//// loading" answer at start, and the next query, warm, proceeds.
+//// Diagnostics never wait either: settlement has its own rules and bound,
+//// and reports an unsettled block honestly.
+////
 //// # A silent server costs one deadline, not one per request
 ////
 //// Resolving a bare name asks `definition` once per search hit, and
@@ -134,12 +154,23 @@ pub type Timing {
     /// The bound on the enforcement probe and on one symbol search, each
     /// from clearance to settlement.
     exec_ms: Int,
+    /// The longest the query that started a server waits for its
+    /// work-done progress to go quiet (`lsp/client.ready`) before it is
+    /// answered `Unavailable`. A cold `rust-analyzer` went quiet 3.75 s
+    /// after its handshake on a two-file crate, jailed; a real workspace
+    /// loads for far longer. Warm queries never wait.
+    ready_ms: Int,
+    /// The quiet window that query waits, with no progress active, before
+    /// it asks: a server may begin reporting its load only after
+    /// `initialized` is sent.
+    quiet_ms: Int,
   )
 }
 
 /// The production bounds: a minute to start, five seconds a request, the
-/// ADR's 1.5 s settlement, two seconds of shutdown grace, and ten seconds
-/// for the probe and for a search.
+/// ADR's 1.5 s settlement, two seconds of shutdown grace, ten seconds for
+/// the probe and for a search, a minute for a server to finish loading,
+/// and a 300 ms quiet window after a start.
 ///
 /// ## Examples
 ///
@@ -155,6 +186,8 @@ pub fn default_timing() -> Timing {
     stop_grace_ms: 2000,
     previous_ms: 2000 + lsp.retire_ms + 2000,
     exec_ms: 10_000,
+    ready_ms: 60_000,
+    quiet_ms: 300,
   )
 }
 
@@ -1563,7 +1596,7 @@ fn diagnostics(
 ) -> Result(Served(Diagnostics), QueryError) {
   case path {
     Some(path) -> {
-      use #(session, owned) <- result.try(session_for(manager, path))
+      use #(session, owned) <- result.try(synced_for(manager, path))
       settled(manager, session, [owned.path])
     }
 
@@ -1855,10 +1888,60 @@ fn session_for(
   manager: Manager,
   path: String,
 ) -> Result(#(Session, Owned), QueryError) {
+  use #(session, owned) <- result.try(synced_for(manager, path))
+  use Nil <- result.try(readied(session))
+  Ok(#(session, owned))
+}
+
+// `session_for` without the readiness wait, for diagnostics: settlement
+// is bounded by its own rules and deadline, and an unsettled block is an
+// honest answer where an empty query result is not.
+fn synced_for(
+  manager: Manager,
+  path: String,
+) -> Result(#(Session, Owned), QueryError) {
   use owned <- result.try(owned(manager, path))
   use session <- result.try(acquire(manager, owned.identity))
   use Nil <- result.try(resync(session, [owned.path]))
   Ok(#(session, owned))
+}
+
+// The query that paid for a start waits for the load it started: a quiet
+// window, since the server may begin reporting only after `initialized`,
+// then the end of every token it reported. It follows the pull, so the
+// documents the query opened are part of that load. A warm query passes
+// at once without asking, so a token a server never ends costs one
+// "still loading" answer at start rather than a deadline on every query.
+fn readied(session: Session) -> Result(Nil, QueryError) {
+  case session.warmth {
+    query.Warm -> Ok(Nil)
+    query.Started(..) -> {
+      let timing = session.manager.config.timing
+      let readiness =
+        lsp.ready(
+          session.client,
+          quiet_ms: timing.quiet_ms,
+          deadline_ms: timing.ready_ms,
+        )
+      case readiness {
+        Ok(lsp.Quiet) -> Ok(Nil)
+        Ok(lsp.StillBusy(titles:)) ->
+          Error(query.Unavailable(reason: still_loading(titles)))
+        Error(error) -> Error(request_error(session, error))
+      }
+    }
+  }
+}
+
+// A server still loading at the deadline, worded for the model: what it
+// is doing, when there is a title to say, and that asking again is the
+// remedy.
+fn still_loading(titles: List(String)) -> String {
+  let doing = case titles {
+    [] -> ""
+    _ -> " (" <> string.join(titles, ", ") <> ")"
+  }
+  "the language server is still loading" <> doing <> "; ask again in a moment"
 }
 
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
@@ -1973,6 +2056,7 @@ fn anywhere(
     session,
     list.unique(list.map(hits, fn(hit) { hit.path })),
   ))
+  use Nil <- result.try(readied(session))
   use found <- result.try(definitions(session, hits, symbol.identifier))
 
   // The qualifier narrows definitions, never hits: `probe.greet` is

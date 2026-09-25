@@ -427,6 +427,51 @@ answer about nothing. Such a path is refused as `NoServer` before any
 request is sent, and the server is thereafter addressed only by real
 paths.
 
+### Readiness
+
+A server may answer while it is still loading its project, and
+`rust-analyzer` does, with empty results rather than errors: measured,
+`definition` came back `[]`, `references` held only the declaration,
+`hover` found nothing, and a rename edited one file of the two that
+needed it. `gopls` and `gleam lsp` hold a request until they can answer
+it, so they never showed this.
+
+Readiness is a mechanism rule over standard work-done progress, not a
+per-server key. The `initialize` request declares
+`window.workDoneProgress`, and the client actor tracks the set of active
+`$/progress` tokens: `begin` adds one, `end` removes it, a `report` for
+a token it never saw begin adds it, a malformed notification is dropped,
+and at most 64 are held. `lsp/client.ready(quiet_ms:, deadline_ms:)`
+answers `Quiet` once no token has been active for a continuous
+`quiet_ms`, measured from the later of the call and the last token's
+end, or `StillBusy` with the active titles at the deadline. Like
+settlement, it is a waiter and timers in actor state.
+
+Only the query that starts a server asks, after the pull. It waits a
+300 ms window (`Timing.quiet_ms`), because the server may not have begun
+reporting when `initialized` is sent, and then for every token to end. A
+server still busy at `Timing.ready_ms` (a minute) is answered
+`Unavailable`: "the language server is still loading (Indexing); ask
+again in a moment", never an empty answer, and is left running.
+
+A warm query never waits, for two reasons. The measured empty answers
+were a load-time problem: a warm server re-indexing after an edit
+answers from its previous state, which is its normal behaviour and what
+every editor's client sees. And a server that begins a token and never
+ends it would otherwise stall every later query for the whole minute;
+as it is, the leak costs one "still loading" answer at start, and the
+next query, being warm, proceeds. Diagnostics, `after_write` included,
+do not wait either: settlement has its own two rules and bound. A server
+that reports no progress costs one 300 ms window after its start and
+nothing after.
+
+Measured through the jailed manager on a two-file crate,
+`rust-analyzer`'s first progress began 4 ms after the manager asked, well
+inside the window; the longest gap between one token's end and the next
+one's begin was about 100 ms; and the load went quiet 3.45 s after the
+handshake began, the first answer following 300 ms later. Asked with no
+window after the start, the same question answered `[]`.
+
 ## Settled diagnostics
 
 After a write, the model should learn whether the code still compiles,
@@ -713,7 +758,7 @@ window; none is a change to the mechanism.
 | `lsp/framing.gleam` | The `Content-Length` framer over bytes, bounded before it buffers. |
 | `lsp/protocol.gleam` | Total codecs, the advertised-capability gate, answers to server requests, `file://` conversion. |
 | `lsp/text.gleam` | UTF-16 ↔ codepoint conversion, identifier-boundary lookup, and pure edit application. |
-| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, sync, diagnostics store, settlement, stop. |
+| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, sync, diagnostics store, settlement, readiness, stop. |
 | `client/lsp/manager.gleam` | One server per session, keepers, eviction, restart, the probe, the bare-symbol search, and `door`. |
 | `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols (per-server separators and module case), outline lookup, containers, display paths. |
 | `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder: `LspServer`, `LspPath`, `ModuleCase`, `Places`, the extension-ownership check, `expand_path` and `cache_place`. Pure. |
