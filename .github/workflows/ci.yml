@@ -1145,7 +1145,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          # ripgrep beside bwrap: the grep tool and the language-server
+          # manager's bare-name search both run `rg` inside the jail, and
+          # the LSP end-to-end names a bare symbol.
+          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then
             echo "apparmor_restrict_unprivileged_userns was: $(cat "$knob")"

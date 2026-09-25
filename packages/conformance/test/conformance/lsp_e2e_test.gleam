@@ -681,8 +681,8 @@ fn run_session(
 
 // Every language-server tool result, printed whole to stderr before any
 // assertion reads the transcript. The assertions below print their value
-// truncated, which cut the one line that names why a server failed ("the
-// language server did not answer: …") on the jailed CI lane, where the
+// truncated, which cut the one line that named why a question failed on
+// the jailed CI lane (ripgrep was missing there), where the
 // enforced jail differs from a developer's container. Stderr survives
 // EUnit's capture, so a failure there names its own cause.
 fn echo_language_server_results(
@@ -841,10 +841,14 @@ fn settings(
 // --- prerequisites -------------------------------------------------------------
 
 // The helper, and a `gleam` the manager can locate.
+// The acceptance names a bare symbol, which the manager finds with
+// ripgrep before asking the server, so ripgrep is as much a prerequisite
+// here as `gleam` is.
 fn gleam_prerequisites() -> Result(String, String) {
-  case ffi_shell.find_executable("gleam") {
-    Error(Nil) -> Error("gleam is not on PATH")
-    Ok(_gleam) -> jail.build_helper()
+  case ffi_shell.find_executable("gleam"), ffi_shell.find_executable("rg") {
+    Error(Nil), _ -> Error("gleam is not on PATH")
+    Ok(_gleam), Error(Nil) -> Error("ripgrep (rg) is not on PATH")
+    Ok(_gleam), Ok(_rg) -> jail.build_helper()
   }
 }
 
