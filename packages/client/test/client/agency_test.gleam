@@ -2921,6 +2921,7 @@ fn specialist_mode(
         runtime: harness.runtime,
         clock: wall,
         abort: async_codemode.abort(plane.broker),
+        heartbeat_ms: 0,
       ),
     )
   let config =
