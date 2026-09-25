@@ -7,7 +7,10 @@
 //// that run start is what drains the queue, and advice folded into a prompt
 //// is delivered rather than pending.
 
+import core/entry
+import core/ids
 import core/json
+import core/message
 import etui/backend
 import etui/geometry
 import gleam/option.{type Option, None, Some}
@@ -21,7 +24,9 @@ import tui/protocol.{type Strand, Strand}
 import tui/render
 import tui/session_channel
 import tui/surfaces
+import tui/transcript_lines
 import tui/workspace
+import tui/worktree_view
 import tui_test/pushed
 
 fn model() {
@@ -264,4 +269,71 @@ pub fn the_observation_takes_the_read_lane_and_its_reply_settles_it_test() {
     as "a successful read never becomes an answer to no command"
   assert board.pending == ["no down step"]
   assert session_channel.ready_for_read(channel)
+}
+
+// --- a drain the roster cannot see ------------------------------------------
+
+/// The daemon drains the queue inside a long run as well as at its start: a
+/// checkpoint, a follow-up on an ending run, a steer. None of those moves a
+/// phase, so the delivered frame is what retires the board. Without this the
+/// panel showed the same advice as pending beside the entry delivering it.
+pub fn a_delivered_nudges_entry_retires_the_board_test() {
+  let observed =
+    tui_model.Model(
+      ..with_roster(roster(Some("assistant"), None)),
+      nudges: Some(board(["no down step"], 1)),
+    )
+  let delivered = nudges_record("main", "no down step")
+  let retired = surfaces.retire_delivered_nudges(observed, delivered)
+  assert retired.nudges == None
+
+  // The fresh read is what keeps advice queued after the drain visible.
+  assert retired.nudges_refresh == worktree_view.Requested
+
+  // The same frame on another strand, or an ordinary turn on the primary,
+  // is not the primary's queue draining.
+  let elsewhere =
+    surfaces.retire_delivered_nudges(
+      observed,
+      nudges_record("advisor", "no down step"),
+    )
+  assert elsewhere.nudges == observed.nudges
+  let ordinary =
+    surfaces.retire_delivered_nudges(
+      observed,
+      record("main", "please look at the migration"),
+    )
+  assert ordinary.nudges == observed.nudges
+}
+
+fn nudges_record(strand: String, text: String) -> protocol.EntryRecord {
+  record(
+    strand,
+    transcript_lines.nudges_header
+      <> "\n```"
+      <> transcript_lines.nudges_fence
+      <> "\n- "
+      <> text
+      <> "\n```",
+  )
+}
+
+fn record(strand: String, text: String) -> protocol.EntryRecord {
+  let assert Ok(id) = ids.parse_entry_id("00000000-0000-7000-8000-000000000000")
+    as "a fixed entry id parses"
+  protocol.EntryRecord(
+    strand:,
+    entry: entry.MessageEntry(
+      id:,
+      parent: None,
+      seq: 1,
+      ts: 1,
+      message: message.UserMessage(
+        content: [message.UserText(text:, text_signature: None)],
+        timestamp: 1,
+        origin: None,
+      ),
+      terminate: False,
+    ),
+  )
 }

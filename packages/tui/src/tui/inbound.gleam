@@ -1351,6 +1351,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             False -> model.queued
           },
         )
+      let updated = surfaces.retire_delivered_nudges(updated, record)
+
       case strand == model.active_strand {
         True -> tui_model.invalidate_transcript(updated)
         False -> updated
