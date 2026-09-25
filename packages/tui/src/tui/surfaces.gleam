@@ -16,6 +16,7 @@
 //// The `sync_*` functions compare the model before and after an event and
 //// decide whether that event makes a surface's data stale.
 
+import core/entry
 import gleam/bool
 import gleam/dict
 import gleam/int
@@ -42,6 +43,7 @@ import tui/queue_editor
 import tui/render
 import tui/session_channel
 import tui/summary_panel
+import tui/transcript_lines
 import tui/worktree_view
 
 /// Inspection has its own target. Reading a worker's notes never changes the
@@ -418,6 +420,51 @@ pub fn service_advisor_nudges_read(model: Model) -> Model {
       Model(..model, nudges_refresh: worktree_view.Settled)
 
     _, worktree_view.Settled, _ -> model
+  }
+}
+
+/// Retires the board when a committed entry shows the queue was drained.
+///
+/// The daemon drains the queue at more doors than the run start the roster
+/// can see: a checkpoint inside a long run, a follow-up placed on an ending
+/// run, a steer into an open one. None of those moves a phase, so a board
+/// read while the primary worked would otherwise stay on screen as
+/// "pending, not delivered" beside the very entry that delivered it. The
+/// delivered nudges frame on the primary's branch is the one observable
+/// every door shares, so it clears the board and asks for a fresh read:
+/// advice queued after the drain is still waiting and must stay visible.
+/// An earlier read still in flight is disowned, as `DropNudges` disowns
+/// one, so its reply cannot land after the fresh read and hide it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surfaces.retire_delivered_nudges(model, record)
+/// ```
+@internal
+pub fn retire_delivered_nudges(
+  model: Model,
+  record: protocol.EntryRecord,
+) -> Model {
+  case record {
+    protocol.EntryRecord(strand:, entry: entry.MessageEntry(message: value, ..))
+      if strand == advisor_pending.primary_strand
+    ->
+      case transcript_lines.advisor_payload(value) {
+        Some(transcript_lines.Nudges(..)) ->
+          Model(
+            ..model,
+            nudges: None,
+            nudges_refresh: worktree_view.Requested,
+            nudges_awaiting: None,
+          )
+          |> tui_model.invalidate_transcript
+          |> tui_model.invalidate_frame
+
+        Some(_) | None -> model
+      }
+
+    protocol.EntryRecord(..) -> model
   }
 }
 
