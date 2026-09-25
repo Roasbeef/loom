@@ -33,18 +33,34 @@
 ////
 //// # Tiers and hooks
 ////
-//// `tier` decodes only `"jailed"`. A harness-resident body is phase 4 and
-//// there is no loader for one, so a manifest naming the tier is refused
-//// saying that rather than installed and ignored. `[[hook]]` is accepted
-//// from phase 3 on: the event must be one of the nine the ruling fixes
-//// and the entry must name a module the package ships, both checked here
-//// so that the hook bus never has to re-check either.
+//// `tier` decodes `"jailed"` and `"profile"`. A harness-resident body is
+//// phase 4 and there is no loader for one, so a manifest naming that tier
+//// is refused saying so rather than installed and ignored. `[[hook]]` is
+//// accepted from phase 3 on: the event must be one of the nine the ruling
+//// fixes and the entry must name a module the package ships, both checked
+//// here so that the hook bus never has to re-check either.
+////
+//// # The two tiers declare disjoint things
+////
+//// A jailed extension is code: at least one `[[tool]]`, any `[[hook]]`s,
+//// and a `[net]` policy. A profile extension (ADR-014 §3) is data: at
+//// least one `[lsp.<name>]` language profile and any `[[check]]`s that
+//// prove one against a fixture. Each tier refuses the other's tables by
+//// name rather than ignoring them, because a table ignored is a promise
+//// the author believes was kept: a `[[tool]]` in a profile would install
+//// and never run, and an `[lsp]` in a jailed extension would install and
+//// never start a server. A profile's tables are decoded by
+//// `client/lsp/profile.decode_servers`, the decoder `loom.toml` uses, so a
+//// profile means the same thing in either file and is refused with the
+//// same words.
 
+import client/lsp/profile.{type LspServer}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tom
@@ -52,8 +68,14 @@ import tom
 /// The directory a tool's JSON schema must live under.
 pub const schema_directory = "schema/"
 
-/// The only tier phase 1 installs.
+/// The tier whose body runs in a jailed satellite.
 pub const jailed_tier = "jailed"
+
+/// The tier that ships language profiles and runs nothing (ADR-014 §3).
+pub const profile_tier = "profile"
+
+/// The directory a `[[check]]` runs against when it names none.
+pub const default_fixture = "fixture"
 
 /// The HTTP methods `[net].methods` may name.
 ///
@@ -105,18 +127,72 @@ pub const hook_events = [
   usage_event,
 ]
 
-/// Where an extension's body runs.
+/// Where an extension's body runs, or that it has none.
 ///
-/// One variant, though the ruling names two. Tier H — a harness-resident
-/// body — is phase 4 and there is no loader for one, so it is not a
-/// variant here: a type with a constructor nothing can produce would let
-/// a `case` arm be written for a state that cannot exist. The *word* is
-/// still refused by name, in `tier_field`, so a manifest asking for it
-/// reads "not yet installable" rather than "unknown value".
+/// Tier H, a harness-resident body, is phase 4 and there is no loader for
+/// one, so it is not a variant here: a type with a constructor nothing can
+/// produce would let a `case` arm be written for a state that cannot
+/// exist. The *word* is still refused by name, in `tier_field`, so a
+/// manifest asking for it reads "not yet installable" rather than "unknown
+/// value".
 pub type Tier {
   /// Tier J: the body runs in a jailed satellite under the extension
-  /// seam. The only value phase 1 accepts.
+  /// seam. It registers tools and hooks and is vetted and compiled at
+  /// install.
   Jailed
+
+  /// A profile extension: language-server profiles and the checks that
+  /// prove them, and nothing that runs. Its install neither vets nor
+  /// compiles, so it needs no code-mode toolchain (ADR-014 §3).
+  Profile
+}
+
+/// What a `[[check]]` asks the language server.
+pub type CheckQuery {
+  /// `lsp_definition`: where the symbol is defined.
+  Definition
+
+  /// `lsp_references`: where the symbol is used.
+  References
+}
+
+/// One place a check expects an answer at, written `"path:line"` in the
+/// manifest.
+pub type Site {
+  Site(
+    /// Relative to the fixture, `/`-separated, with no empty, `.` or `..`
+    /// component, so it compares with the path a server answers.
+    path: String,
+    /// One-based, as an editor and the `lsp_*` tools count lines.
+    line: Int,
+  )
+}
+
+/// One `[[check]]`: a query the profile's server must answer with exactly
+/// the expected sites, as a set, against a fixture the extension ships
+/// (ADR-014 §5).
+///
+/// Decoded and kept at install; nothing runs one at install or at boot.
+pub type Check {
+  Check(
+    /// The `[lsp.<name>]` server the check queries, one of this
+    /// manifest's own.
+    server: String,
+    /// The directory in the extension's tree the check runs against,
+    /// holding at least one file; `fixture` when omitted.
+    fixture: String,
+    /// What is asked.
+    query: CheckQuery,
+    /// The symbol the query names, spelled as the tools take it.
+    symbol: String,
+    /// The fixture-relative file the symbol is looked up from, when the
+    /// symbol alone does not place it.
+    path: Option(String),
+    /// A one-based line in `path`; never present without `path`.
+    line: Option(Int),
+    /// The sites the answer must equal, as a set. Never empty.
+    expect: List(Site),
+  )
 }
 
 /// One tool the extension registers.
@@ -181,6 +257,10 @@ pub type Net {
 }
 
 /// A decoded `extension.toml`.
+///
+/// The two tiers fill disjoint halves: a `Jailed` manifest has at least
+/// one tool, and no profiles or checks; a `Profile` manifest has at least
+/// one profile, and no tools or hooks and the empty net policy.
 pub type Manifest {
   Manifest(
     name: String,
@@ -191,6 +271,11 @@ pub type Manifest {
     tools: List(Tool),
     hooks: List(Hook),
     net: Net,
+    /// The `[lsp.<name>]` profiles, sorted by name as
+    /// `profile.decode_servers` returns them.
+    lsp: List(LspServer),
+    /// The `[[check]]`s, in file order.
+    checks: List(Check),
   )
 }
 
@@ -247,7 +332,7 @@ pub fn decode(
   use document <- result.try(tom.parse(text) |> result.map_error(parse_reason))
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["extension", "tool", "hook", "net"],
+    ["extension", "tool", "hook", "net", "lsp", "check"],
     "the top level",
   ))
   use extension <- result.try(table(document, "extension"))
@@ -265,19 +350,363 @@ pub fn decode(
   ))
   use license <- result.try(required(extension, "[extension]", "license"))
   use tier <- result.try(tier_field(extension))
-  use tools <- result.try(tools_of(document, surroundings))
-  use hooks <- result.try(hooks_of(document, surroundings))
-  use net <- result.try(net_of(document))
+
+  // The tier decides which tables the rest of the document may hold, so
+  // it is read before any of them.
+  use body <- result.try(case tier {
+    Jailed -> jailed_body(document, surroundings)
+    Profile -> profile_body(document, surroundings)
+  })
   Ok(Manifest(
     name:,
     version:,
     description:,
     license:,
     tier:,
-    tools:,
-    hooks:,
-    net:,
+    tools: body.tools,
+    hooks: body.hooks,
+    net: body.net,
+    lsp: body.lsp,
+    checks: body.checks,
   ))
+}
+
+/// The tier an `extension.toml` names, read without decoding the rest.
+///
+/// The install asks this first, because the tier decides which pipeline
+/// the tree takes: a jailed tree is pruned and vetted before its manifest
+/// is decoded, and a profile tree is pruned by what its manifest says it
+/// needs. An `Error` is the text that stopped the answer, and the caller
+/// takes the jailed pipeline, whose own steps then refuse the manifest
+/// with the message they always gave.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert manifest.declared_tier("[extension]\ntier = \"profile\"\n")
+///   == Ok(manifest.Profile)
+/// ```
+///
+pub fn declared_tier(text: String) -> Result(Tier, String) {
+  use document <- result.try(tom.parse(text) |> result.map_error(parse_reason))
+  use extension <- result.try(table(document, "extension"))
+  tier_field(extension)
+}
+
+// What the tables after `[extension]` decoded to. The two tiers fill
+// disjoint halves of it; see `Manifest`.
+type Body {
+  Body(
+    tools: List(Tool),
+    hooks: List(Hook),
+    net: Net,
+    lsp: List(LspServer),
+    checks: List(Check),
+  )
+}
+
+// A jailed extension keeps every rule it had, and refuses the two tables
+// a profile carries by name: an `[lsp]` here would install and never
+// start a server, since the jailed tier's approval covers no profile.
+fn jailed_body(
+  document: Dict(String, tom.Toml),
+  surroundings: Surroundings,
+) -> Result(Body, String) {
+  use Nil <- result.try(absent(
+    document,
+    "lsp",
+    "a jailed extension declares no language profile; [lsp] belongs in a"
+      <> " tier = \"profile\" extension",
+  ))
+  use Nil <- result.try(absent(
+    document,
+    "check",
+    "a jailed extension declares no language profile to check; [[check]]"
+      <> " belongs in a tier = \"profile\" extension",
+  ))
+  use tools <- result.try(tools_of(document, surroundings))
+  use hooks <- result.try(hooks_of(document, surroundings))
+  use net <- result.try(net_of(document))
+  Ok(Body(tools:, hooks:, net:, lsp: [], checks: []))
+}
+
+// A profile extension runs no code, so the three tables that would make
+// it run some are refused by name before anything else is read. Nothing
+// here vets or compiles, and a table the install ignored would be a tool
+// the model is never offered or a host nothing ever reaches.
+fn profile_body(
+  document: Dict(String, tom.Toml),
+  surroundings: Surroundings,
+) -> Result(Body, String) {
+  use Nil <- result.try(absent(document, "tool", runs_no_code("[[tool]]")))
+  use Nil <- result.try(absent(document, "hook", runs_no_code("[[hook]]")))
+  use Nil <- result.try(absent(document, "net", runs_no_code("[net]")))
+  use lsp <- result.try(profiles_of(document))
+  use checks <- result.try(checks_of(document, lsp, surroundings))
+  Ok(Body(tools: [], hooks: [], net: no_net(), lsp:, checks:))
+}
+
+fn runs_no_code(table: String) -> String {
+  "a profile extension runs no code; " <> table <> " is not allowed"
+}
+
+fn absent(
+  document: Dict(String, tom.Toml),
+  key: String,
+  refusal: String,
+) -> Result(Nil, String) {
+  case dict.has_key(document, key) {
+    False -> Ok(Nil)
+    True -> Error(refusal)
+  }
+}
+
+// --- [lsp] -----------------------------------------------------------------
+
+// Handed to the one profile decoder `loom.toml` uses, with the refusal
+// `client/catalog` gives for an `[lsp]` that is not a table, so a profile
+// copied between the two files is judged by the same rules in the same
+// words.
+fn profiles_of(
+  document: Dict(String, tom.Toml),
+) -> Result(List(LspServer), String) {
+  use tables <- result.try(case dict.get(document, "lsp") {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) -> Ok(entries)
+    Ok(_other) -> Error("lsp must be a table of [lsp.<name>] entries")
+    Error(Nil) -> Ok(dict.new())
+  })
+  use servers <- result.try(profile.decode_servers(tables))
+  case servers {
+    [] -> Error("a profile extension declares at least one [lsp.<name>]")
+    [_, ..] -> Ok(servers)
+  }
+}
+
+// --- [[check]] -------------------------------------------------------------
+
+// Checks are numbered from one in the refusals, since a check has no name
+// of its own and an author counts tables from the top of the file.
+fn checks_of(
+  document: Dict(String, tom.Toml),
+  servers: List(LspServer),
+  surroundings: Surroundings,
+) -> Result(List(Check), String) {
+  use entries <- result.try(array_of_tables(document, "check"))
+  let names = list.map(servers, fn(server) { server.name })
+  entries
+  |> list.index_map(fn(fields, index) { #(index + 1, fields) })
+  |> list.try_map(fn(entry) {
+    check_of(
+      entry.1,
+      "[[check]] " <> int.to_string(entry.0),
+      names,
+      surroundings,
+    )
+  })
+}
+
+fn check_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  servers: List(String),
+  surroundings: Surroundings,
+) -> Result(Check, String) {
+  use Nil <- result.try(known_keys(
+    dict.keys(fields),
+    ["server", "fixture", "query", "symbol", "path", "line", "expect"],
+    place,
+  ))
+  use server <- result.try(required(fields, place, "server"))
+
+  // A check against a server this manifest does not declare could only
+  // ever run against whatever `loom.toml` happens to call that name,
+  // which is not the profile the check claims to prove.
+  use Nil <- result.try(case list.contains(servers, server) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        place
+        <> ".server names "
+        <> server
+        <> ", which is not one of this manifest's [lsp] servers ("
+        <> string.join(servers, ", ")
+        <> ")",
+      )
+  })
+  use fixture <- result.try(fixture_field(fields, place, surroundings))
+  use query <- result.try(query_field(fields, place))
+  use symbol <- result.try(required(fields, place, "symbol"))
+  use path <- result.try(optional_path(fields, place))
+  use line <- result.try(optional_line(fields, place))
+
+  // A line is a position in one file, so a line with no file names no
+  // position at all.
+  use Nil <- result.try(case path, line {
+    None, Some(_line) ->
+      Error(place <> ".line needs a path: a line is a position in one file")
+    None, None | Some(_path), _ -> Ok(Nil)
+  })
+  use expect <- result.try(sites_of(fields, place))
+  Ok(Check(server:, fixture:, query:, symbol:, path:, line:, expect:))
+}
+
+// The fixture is a directory of the extension's own tree, and the next
+// step copies it into a scratch workspace, so it must hold something: a
+// fixture that names nothing is a check that proves nothing.
+fn fixture_field(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  surroundings: Surroundings,
+) -> Result(String, String) {
+  let at = place <> ".fixture"
+  use written <- result.try(case dict.get(fields, "fixture") {
+    Error(Nil) -> Ok(default_fixture)
+    Ok(_present) -> required(fields, place, "fixture")
+  })
+  use fixture <- result.try(relative_path(at, written, "the extension's tree"))
+  let beneath = fixture <> "/"
+  case
+    list.any(surroundings.files, fn(file) {
+      string.starts_with(file.0, beneath)
+    })
+  {
+    True -> Ok(fixture)
+    False ->
+      Error(
+        at
+        <> " names "
+        <> fixture
+        <> ", which holds no file in the extension's tree",
+      )
+  }
+}
+
+fn query_field(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(CheckQuery, String) {
+  use query <- result.try(required(fields, place, "query"))
+  case query {
+    "definition" -> Ok(Definition)
+    "references" -> Ok(References)
+    other ->
+      Error(
+        place
+        <> ".query is \""
+        <> other
+        <> "\"; a check asks \"definition\" or \"references\"",
+      )
+  }
+}
+
+fn optional_path(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(String), String) {
+  case dict.get(fields, "path") {
+    Error(Nil) -> Ok(None)
+    Ok(_present) -> {
+      use written <- result.try(required(fields, place, "path"))
+      relative_path(place <> ".path", written, "the fixture")
+      |> result.map(Some)
+    }
+  }
+}
+
+fn optional_line(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(Int), String) {
+  case dict.get(fields, "line") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.Int(line)) if line >= 1 -> Ok(Some(line))
+    Ok(tom.Int(line)) ->
+      Error(
+        place <> ".line is " <> int.to_string(line) <> "; lines count from 1",
+      )
+    Ok(_other) -> Error(place <> ".line must be a whole number")
+  }
+}
+
+// The answer is compared with `expect` as a set, and an empty set is what
+// a server that answers nothing produces, so an empty `expect` would pass
+// against a server that is not running.
+fn sites_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(List(Site), String) {
+  use written <- result.try(string_list(fields, place, "expect"))
+  use Nil <- result.try(case written {
+    [] -> Error(place <> ".expect must list at least one path:line site")
+    [_, ..] -> Ok(Nil)
+  })
+  list.try_map(written, fn(site) { site_of(place <> ".expect", site) })
+}
+
+// `path:line`, split at the last colon so that the line is always the
+// final field. The path meets the same rule a check's `path` does.
+fn site_of(at: String, written: String) -> Result(Site, String) {
+  let malformed =
+    at
+    <> " entry \""
+    <> written
+    <> "\" is not a path:line site, such as \"util/util.go:3\""
+  use #(path, line_text) <- result.try(
+    last_colon(written) |> result.replace_error(malformed),
+  )
+  use line <- result.try(
+    int.parse(line_text) |> result.replace_error(malformed),
+  )
+  use Nil <- result.try(case line >= 1 {
+    True -> Ok(Nil)
+    False -> Error(at <> " entry \"" <> written <> "\" has a line below 1")
+  })
+  use path <- result.try(relative_path(at <> " path", path, "the fixture"))
+  Ok(Site(path:, line:))
+}
+
+fn last_colon(written: String) -> Result(#(String, String), Nil) {
+  case list.reverse(string.split(written, ":")) {
+    [line, first, ..rest] ->
+      Ok(#(string.join(list.reverse([first, ..rest]), ":"), line))
+    [_whole] | [] -> Error(Nil)
+  }
+}
+
+// A path inside the extension's tree or its fixture: relative, and with
+// no empty, `.` or `..` component. `..` would reach outside the directory
+// the path is judged against; the other two are spellings a server never
+// answers with, so a site written that way could never match.
+fn relative_path(
+  at: String,
+  written: String,
+  within: String,
+) -> Result(String, String) {
+  let odd = fn(component) {
+    component == "" || component == "." || component == ".."
+  }
+  case
+    string.starts_with(written, "/"),
+    list.any(string.split(written, "/"), odd)
+  {
+    True, _ ->
+      Error(
+        at
+        <> " is \""
+        <> written
+        <> "\", which is absolute; name a path relative to "
+        <> within,
+      )
+    False, True ->
+      Error(
+        at
+        <> " is \""
+        <> written
+        <> "\", which has an empty, . or .. component; name a path inside "
+        <> within,
+      )
+    False, False -> Ok(written)
+  }
 }
 
 /// Whether `name` is a legal extension, tool or module-segment name:
@@ -564,13 +993,16 @@ fn tier_field(fields: Dict(String, tom.Toml)) -> Result(Tier, String) {
   use tier <- result.try(required(fields, "[extension]", "tier"))
   case tier {
     "jailed" -> Ok(Jailed)
+    "profile" -> Ok(Profile)
     other ->
       Error(
         "[extension].tier is \""
         <> other
-        <> "\", which is not yet installable; phase 1 installs \""
+        <> "\", which is not yet installable; this server installs \""
         <> jailed_tier
-        <> "\" only",
+        <> "\" and \""
+        <> profile_tier
+        <> "\"",
       )
   }
 }

@@ -541,6 +541,27 @@ pub fn a_tampered_source_is_refused_test() {
   assert string.contains(reason, "no longer matches")
 }
 
+/// A jailed record edited to claim the profile tier would skip the
+/// vetting and the artifact check, so the load refuses a record whose
+/// tier is not the one the manifest declares.
+pub fn a_jailed_record_claiming_the_profile_tier_is_refused_test() {
+  let #(root, _done) = installed_hello("tier-flip")
+  let assert Ok(text) = simplifile.read(from: record.file(root, "hello"))
+    as "the record must exist"
+  let flipped =
+    string.replace(text, "\"tier\":\"jailed\"", "\"tier\":\"profile\"")
+  assert flipped != text
+  let assert Ok(Nil) =
+    simplifile.write(to: record.file(root, "hello"), contents: flipped)
+    as "the record must be writable"
+  let assert installed.Refused(name: "hello", reason:) =
+    installed.one(root, "hello")
+    as "a record naming another tier is refused"
+  assert reason
+    == "the manifest's tier no longer matches the install record; "
+    <> "reinstall it to approve what is there now"
+}
+
 pub fn a_record_naming_another_extension_is_refused_test() {
   let #(root, _done) = installed_hello("misnamed")
   let path = record.file(root, "hello")
@@ -991,6 +1012,7 @@ fn tool(name: String, entry: String) -> manifest.Tool {
 fn sample_record() -> record.Record {
   record.Record(
     format: record.format_version,
+    tier: manifest.Jailed,
     name: "hello",
     version: "0.1.0",
     source: "./hello",
@@ -1001,6 +1023,7 @@ fn sample_record() -> record.Record {
     net: record.terms(manifest.no_net()),
     tools: ["hello"],
     hooks: [],
+    lsp: [],
     approved_at: record.instant(at_ms),
     approved_by: "operator",
     artifact: record.artifact_directory,

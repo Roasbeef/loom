@@ -282,6 +282,70 @@ pub fn hostile_secret_host() -> List(#(String, String)) {
   )
 }
 
+/// A profile extension (ADR-014 §3): one `gopls` profile, one check, the
+/// fixture the check runs against, and the clutter a repository carries
+/// beside them. A stray `.gleam` file under `src/` and a `docs/` note are
+/// there to be pruned, never vetted or kept: a profile's installed tree is
+/// its manifest, its `README*` and `LICENSE*`, and its fixtures.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let dir = extensions.materialise(extensions.profile_go(), scratch)
+/// ```
+///
+pub fn profile_go() -> List(#(String, String)) {
+  [
+    #("extension.toml", profile_manifest()),
+    #("README.md", "# lsp_go\n\ngopls for Loom.\n"),
+    #("LICENSE", "Apache-2.0\n"),
+    #("fixture/go.mod", "module example.com/fixture\n\ngo 1.22\n"),
+    #(
+      "fixture/util/util.go",
+      "package util\n\nfunc Greet() string { return \"hi\" }\n",
+    ),
+    #("fixture/main.go", "package main\n\nfunc main() {}\n"),
+    #("src/stray.gleam", "pub fn main() { Nil }\n"),
+    #("docs/notes.md", "# notes\n"),
+  ]
+}
+
+/// The paths of `profile_go` an install keeps, sorted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(extensions.profile_paths(), "fixture/main.go")
+/// ```
+///
+pub fn profile_paths() -> List(String) {
+  [
+    "LICENSE", "README.md", "extension.toml", "fixture/go.mod",
+    "fixture/main.go", "fixture/util/util.go",
+  ]
+}
+
+/// The `extension.toml` of `profile_go`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(extensions.profile_manifest(), "tier = \"profile\"")
+/// ```
+///
+pub fn profile_manifest() -> String {
+  "[extension]\nname = \"lsp_go\"\nversion = \"0.1.0\"\n"
+  <> "description = \"gopls for Loom's language-server tools\"\n"
+  <> "license = \"Apache-2.0\"\ntier = \"profile\"\n\n"
+  <> "[lsp.go]\ncommand = [\"gopls\"]\nextensions = [\".go\"]\n"
+  <> "root_markers = [\"go.mod\"]\nreadable = [\"~/go/pkg/mod\"]\n"
+  <> "writable = [\"<cache>/go-build\", \"<cache>/gopls\"]\n"
+  <> "env = [\"GOFLAGS\"]\n"
+  <> "hint = \"Qualify as package.Name\"\n\n"
+  <> "[[check]]\nserver = \"go\"\nquery = \"definition\"\n"
+  <> "symbol = \"util.Greet\"\nexpect = [\"util/util.go:3\"]\n"
+}
+
 /// The working extension as a real repository carries it: tests, a
 /// `.gitignore`, a CI workflow, Gleam's own resolved `manifest.toml`,
 /// documentation with a binary in it, and a `build/` directory.
