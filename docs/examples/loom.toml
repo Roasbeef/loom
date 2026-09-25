@@ -221,6 +221,13 @@ api_key_env = "GITHUB_TOKEN"
 #                 lsp_definition tool's description, so it is text the
 #                 model reads on every request: write it as you would a
 #                 tool description.
+#
+# The two tables below are copies of the first-party profiles
+# extensions/lsp_gleam and extensions/lsp_go, which are the maintained
+# versions: `loom ext install ./extensions/lsp_go` approves the same
+# table, and `loom ext check lsp_go` proves it against a fixture on this
+# host. extensions/lsp_rust is the Rust one. A table here with the same
+# name replaces an installed profile whole.
 [lsp.gleam]
 command = ["gleam", "lsp"]
 extensions = [".gleam"]
@@ -228,20 +235,22 @@ root_markers = ["gleam.toml"]
 project = "writable"
 hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
-# gopls reads the module cache and writes the build cache and its own
-# cache, all outside the project, so all are named here. The two caches
-# live in the per-user cache directory, which <cache>/ names on every
-# platform; a jail that grants the wrong directory leaves go unable to
-# write, so gopls loads no packages and every definition comes back
-# empty. If `go env GOMODCACHE` or `go env GOCACHE` has been moved, name
-# the directories it prints instead.
+# gopls reads the module cache and writes the build cache, both outside
+# the project, so both are named here. The build cache lives in the
+# per-user cache directory, which <cache>/ names on every platform; a
+# jail that grants the wrong directory leaves go unable to write, so
+# gopls loads no packages and every definition comes back empty. A
+# writable root must already exist, and any `go build` makes this one.
+# XDG_CACHE_HOME is passed so that go inside the jail finds the same
+# directory <cache>/ expanded to. If `go env GOMODCACHE` or `go env
+# GOCACHE` has been moved, name the directories it prints instead.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build", "<cache>/gopls"]
-env = ["GOFLAGS"]
+writable = ["<cache>/go-build"]
+env = ["GOFLAGS", "XDG_CACHE_HOME"]
 hint = "Qualify a name with its package name as imported: util.Greet"
 
 # Triggered project rules, one [[rule]] table per rule. A rule is a

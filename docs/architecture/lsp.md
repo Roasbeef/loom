@@ -642,22 +642,29 @@ root_markers = ["gleam.toml"]
 project = "writable"
 hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
-# gopls reads the module cache and writes the build cache and its own
-# cache, all outside the project, so all are named here. Both caches are
-# in the per-user cache directory, which <cache>/ names on every
-# platform.
+# gopls reads the module cache and writes the build cache, both outside
+# the project, so both are named here. The build cache is in the per-user
+# cache directory, which <cache>/ names on every platform, and
+# XDG_CACHE_HOME is passed so go in the jail finds the same one.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build", "<cache>/gopls"]
-env = ["GOFLAGS"]
+writable = ["<cache>/go-build"]
+env = ["GOFLAGS", "XDG_CACHE_HOME"]
 hint = "Qualify a name with its package name as imported: util.Greet"
 ```
 
 Both tables are examples. Neither is built in, and a workspace that
-wants neither configures neither.
+wants neither configures neither. **The maintained versions are the
+first-party profiles** (ADR-014 §6): `extensions/lsp_gleam` and
+`extensions/lsp_go` carry exactly these tables, and `extensions/lsp_rust`
+the Rust one, each with a fixture and the checks that prove it.
+`loom ext install ./extensions/lsp_go` approves the table without
+editing `loom.toml`; a `loom.toml` table of the same name replaces an
+installed profile whole. `conformance/lsp_profiles_test` holds the
+examples here and in `docs/examples/loom.toml` equal to the profiles.
 
 `command` is an argv, never a shell string. Its head is resolved once:
 an absolute path is taken as written; the bare name `gleam` is the
@@ -715,6 +722,37 @@ supervised with the session's other services. Nothing is spawned then.
 The first query starts a server, after the probe, so a session that never
 asks a semantic question never pays for a server.
 
+## Adding a language
+
+A language is a profile, not a change to Loom. Adding one is three
+steps, and the third is the one that makes it trustworthy.
+
+1. **Write the profile.** A `tier = "profile"` extension whose
+   `extension.toml` holds one `[lsp.<name>]` table (the keys above). Grant
+   only what the server is measured to need, and give every root and
+   environment name a comment saying why. A root a build script could
+   write that later runs on the host, such as anything under `~/.cargo`,
+   is never writable, and a writable root must already exist on the host,
+   because the jail refuses one that does not.
+2. **Write a fixture and checks.** A `fixture/` directory holding a small
+   project the server can load offline and read-only (a Rust crate needs
+   its `Cargo.lock`), and `[[check]]`s: a `definition` or `references`
+   query, a symbol spelled as the model would spell it, and the
+   `path:line` sites the answer must equal as a set (ADR-014 §5).
+   Qualify a symbol the way the language does, since that is what
+   `qualifier_separators` and `module_case` exist for.
+3. **Run `loom ext check`.** `loom ext install ./my-profile`, then
+   `loom ext check my_profile`, which copies the fixture into a scratch
+   workspace, starts the server in the ordinary jail under your demand,
+   prints what the jail enforced, and asks every check through the door
+   the tools use. A `FAIL` line names both sets. An empty answer usually
+   means the server could not load the project: a root it needs is not
+   granted, or a cache it writes is not writable.
+
+`extensions/lsp_rust` is the worked example: its `README.md` records what
+`cargo` and `rust-analyzer` needed in the jail and why each grant is
+there.
+
 ## What is not built, and the known hazards
 
 Each absence below is deliberate.
@@ -763,6 +801,8 @@ window; none is a change to the mechanism.
 | `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols (per-server separators and module case), outline lookup, containers, display paths. |
 | `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder: `LspServer`, `LspPath`, `ModuleCase`, `Places`, the extension-ownership check, `expand_path` and `cache_place`. Pure. |
 | `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, and the jailed `ChannelTransport`. |
+| `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-014 §5). |
+| `client/extension/check.gleam` | `loom ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. |
 | `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. |
 | `client/lsp/codemode_rename.gleam` | A program's applied rename, over the tools' landing and the program's write boundary. |
 | `client/catalog.gleam` | Hands the `[lsp]` table's entries to `client/lsp/profile`. |

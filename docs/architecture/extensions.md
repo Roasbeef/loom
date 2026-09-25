@@ -60,7 +60,7 @@ repository,
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots, and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
 | 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven (#204); loader deferred (#32). #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`. The loader is deferred because no surveyed extension needs in-VM residency |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
-| P | The profile tier: language-server profiles shipped as data (ADR-014 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, and the session's precedence over `loom.toml`. The `[[check]]` runner, `loom ext check`, and the first-party profiles (ADR-014 §§5–6) are next; checks are decoded and kept but nothing runs them |
+| P | The profile tier: language-server profiles shipped as data (ADR-014 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, the session's precedence over `loom.toml`, the `[[check]]` runner and `loom ext check` (ADR-014 §5), and the first-party profiles `extensions/lsp_gleam`, `lsp_go` and `lsp_rust` (§6) |
 
 A section that describes phase 3 or later says so in its first sentence,
 so a reader who wants only the tree as it stands can skip it on sight.
@@ -269,9 +269,13 @@ command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build", "<cache>/gopls"]
-env = ["GOFLAGS"]
+writable = ["<cache>/go-build"]
+env = ["GOFLAGS", "XDG_CACHE_HOME"]
 ```
+
+That is `extensions/lsp_go/extension.toml` without its comments and
+checks; the repository ships it, `lsp_gleam` and `lsp_rust` as the
+first-party profiles (ADR-014 §6), each with a fixture and checks.
 
 The two tiers declare disjoint tables, and each refuses the other's **by
 name** rather than ignoring them. A profile manifest refuses `[[tool]]`,
@@ -288,7 +292,7 @@ thing in either file and is refused in the same words. Extension
 ownership is judged within the manifest exactly as within `loom.toml`.
 
 A `[[check]]` (ADR-014 §5 has an example) is decoded and kept, and
-nothing runs it yet; the runner is the next slice. Its keys are `server`, which must name one of the
+`loom ext check` runs it; nothing runs one at install or at boot. Its keys are `server`, which must name one of the
 manifest's own `[lsp]` servers; `fixture`, a directory of the tree that
 holds at least one file, `fixture` by default; `query`, `definition` or
 `references`; `symbol`; an optional `path`, and an optional `line` (at
@@ -587,14 +591,15 @@ plane, the same hints.
 
 ### `loom ext`
 
-**Built.** Four verbs, with no daemon and no hot install
-(`extension/cli.gleam:106`):
+**Built.** Five verbs, with no daemon and no hot install
+(`extension/cli.gleam:115`):
 
 ```
 loom ext install <source> [--rev REV] [--home DIR] [--best-effort]
 loom ext list
 loom ext remove <name>
 loom ext verify <name>
+loom ext check <name> [--home DIR] [--helper PATH] [--best-effort]
 ```
 
 `install` prints five lines for a jailed extension: what was installed and
@@ -605,6 +610,59 @@ prints its approved profiles in place of the tools and the jail line, and
 report code mode prints, for the same reason: a green build on a kernel
 missing a layer must say so rather than let the absence read as success.
 `verify` exits non-zero on a `Refused`, so scripts can use it.
+
+### `loom ext check`
+
+**Built** (ADR-014 §5). A profile is a claim about how a server behaves
+in a jail, and `check` measures it. `client/extension/check.run` loads
+the extension with `installed.one` and refuses, before anything starts,
+one that does not load, a jailed extension (it has no profiles), and a
+profile with no `[[check]]`. Then, for each server and fixture the checks
+name:
+
+1. **The fixture is copied** into a fresh scratch workspace,
+   `<root>/.staging/check-<token>/work`, so the fixture's root is the
+   workspace's root and a server's workspace-relative answer is the
+   fixture-relative path `expect` names. A copy, because a writable
+   project (`gleam lsp` writes `build/`) would otherwise change the
+   installed tree its digest guards. Not under `/tmp`, which the jail
+   replaces; a root that would put it there is refused by name.
+2. **A helper pool and broker start** over the build plane's base for that
+   workspace (`serve.start_check_plane`), which masks the daemon's state
+   root one directory up. No code-mode toolchain is located: a bare
+   `gleam` is the daemon's `PATH` lookup, and a check needs no build seed,
+   as a profile install needs none.
+3. **The server's jail is probed**, and what the helper enforced is
+   printed as the jail line, in the shape an install prints its build's
+   (`manager.probe_server`, `check.enforcement_line`). The demand is the
+   operator's: platform enforcement unless `--best-effort`.
+4. **A manager starts with just that server**, its roots expanded by
+   `serve.lsp_server_roots` against `serve.lsp_places`, the daemon's
+   environment as a session reads it, over `manager.jailed`, the session's
+   own backend.
+5. **Each check asks the door**, through `client/lsp/profile_check`: one
+   `definition` or `references` call with the check's symbol, path and
+   line, and the answer's sites compared with `expect` as a set of
+   `path:line`. A check is `Passed`, a `Mismatch` naming both sets, or
+   `Errored` naming the query error.
+6. **Everything stops**: the manager, then a wait for its lease to come
+   back, the operation's abort, the plane, and the scratch directory, on
+   every path out.
+
+It prints a heading, then per server its jail line and one `ok` or `FAIL`
+line per check, and exits 1 when any check failed, with the report as the
+error so every line is still printed:
+
+```
+checked lsp_rust 0.1.0: 2 of 2 checks passed
+  lsp.rust against fixture
+    jail:  the language server's probe enforced [bwrap, mounts:..., landlock:abi=7, ...]
+    ok    definition util::greet
+    ok    references greet at src/util.rs:1
+```
+
+`conformance/lsp_profiles_test` installs each first-party profile from
+`extensions/` and runs it through the same `check.run`.
 
 The terminal client forwards `loom ext …` rather than reimplementing it.
 Typed at `loom`, it locates `loomd` by the same ladder an implicit local
@@ -704,7 +762,7 @@ value the previous step produced.
 
 1. **At boot, discovery feeds the registry.** `serve.assemble` reads
    `installed.discover` for the extensions root before it builds the
-   registry (`extension_registrations` at `client/serve.gleam:2361`). A
+   registry (`extension_registrations` at `client/serve.gleam:2467`). A
    `Refused` is logged and registers nothing. A `Ready` on a host with no
    code-mode toolchain is also logged and registers nothing: with no
    `erl` there is no satellite to boot, and a tool definition that can
@@ -846,7 +904,7 @@ actor is alive, so a breach fails the next boot outright instead of
 silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:3537`).
+per session (`extension_hosts.supervised` at `client/serve.gleam:3643`).
 It holds at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first. That is
 sound because every extension call in a session runs under one workspace
@@ -1471,19 +1529,23 @@ whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-013,
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
 | `packages/ext/src/ext/hook.gleam` | The extension's side: the typed `Hook` behaviours, `Verdict`, `rendered`, and the JSON marshalling of every event's payload. |
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:234`), `artifact_matches`, `summarise`. |
-| `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify`: `dispatch` (`extension/cli.gleam:106`), the one-host fetch, and `build_for` over a started build plane. |
+| `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify\|check`: `dispatch` (`extension/cli.gleam:115`), the one-host fetch, and `build_for` over a started build plane. |
+| `client/extension/check.gleam` | `loom ext check`: `run` over an installed profile, the scratch workspace, the manager over one server, `lines` and `enforcement_line`. |
+| `client/lsp/profile_check.gleam` | The `[[check]]` runner over a `query.Door`: `CheckOutcome`, `run`, the set comparison and `describe`. No I/O beyond the door. |
 | `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:142`), the per-invocation `ceilings` (`extension/policy.gleam:184`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
 | `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` (the one composition of `ext/<name>/<key>`), `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:656`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:853`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2361`), the two refusals it logs, and the contribution it appends. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2467`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:280`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:208`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
-| `client/test/client/extension/profile_test.gleam` | The profile tier: both tiers' manifest refusals, `[[check]]` decoding, an install that never fetches or builds, record format 3, and the load's profile comparison. |
+| `client/test/client/extension/profile_test.gleam` | The profile tier: both tiers' manifest refusals, `[[check]]` decoding, an install that never fetches or builds, record format 3, the load's profile comparison, and `loom ext check`'s refusals and report. |
+| `client/test/client/lsp/profile_check_test.gleam` | The check runner over a fake door: a pass, the set comparison, both directions of a mismatch, and an error. |
+| `conformance/test/conformance/lsp_profiles_test.gleam` | The first-party profiles installed and checked against their real servers in the jail, and the examples held equal to them. |
 | `codemode/test/codemode/host_test.gleam` | The host's contract over a faked satellite: two invocations on one node, `busy`, the revoked token, and the two endings that destroy it. |
 | `client/test/client/extension_e2e_test.gleam` | The dispatch acceptance: a real build, a real satellite, a real TLS origin, and the two absence claims about the credential. |
 | `broker/test/broker/egress_test.gleam` | The credential canary, the header-injection refusals, and the live TLS origin. |

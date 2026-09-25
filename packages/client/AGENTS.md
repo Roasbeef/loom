@@ -2387,8 +2387,8 @@ The rest of the path is phase 1's own, and each module is one question:
   refusal is a *value* rather than a shorter list, because an operator
   who installed something and sees nothing cannot tell "it is broken"
   from "I imagined it".
-- `client/extension/cli` — `install`, `list`, `remove`, `verify`, the
-  first subcommand surface in the tree. The verb is the first argument
+- `client/extension/cli` — `install`, `list`, `remove`, `verify`,
+  `check`, the first subcommand surface in the tree. The verb is the first argument
   and the rest is the flat-recursion flag parse `client/serve` uses.
   `build_for` is the install's build seam over a started `BuildPlane`.
   `install` starts that plane **inside** the build seam, on the one call a
@@ -2396,7 +2396,26 @@ The rest of the path is phase 1's own, and each module is one question:
   profile installs on a host with no code-mode toolchain or helper; a
   plane that will not start is a `compile:` refusal. `installed_lines`
   renders a success: tools and the jail's enforcement line for a jailed
-  extension, `profile.approval_lines` per server for a profile.
+  extension, `profile.approval_lines` per server for a profile. `check`
+  is `client/extension/check.run` with the operator's demand
+  (`--best-effort` as `install` spells it) and the daemon's places and
+  environment; a failed check is an exit-1 error whose text is the whole
+  report.
+- `client/extension/check.{Setup, Run, Report, run, lines, failed, total,
+  enforcement_line, release_wait_ms}` — `loom ext check` (ADR-014 §5).
+  `run(root, name, setup)` refuses, before starting anything, an
+  extension `installed.one` refuses, a jailed one, and a profile with no
+  `[[check]]`; then per `(server, fixture)` group it copies the installed
+  fixture to `<root>/.staging/check-<token>/work` (never under `/tmp`,
+  refused by name), starts `serve.start_check_plane` over it, prints the
+  probe's `enforcement.Report` (`manager.probe_server`), starts a
+  `manager` over the one approved server (roots via
+  `serve.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
+  `profile_check.run_all` through `manager.door`, and stops the manager,
+  waits for its lease, aborts the operation, stops the plane and deletes
+  the scratch on every path out. **Invariant: the profile proved is the
+  install record's**, the one the operator approved, and the fixture is a
+  copy, so a writable project never edits the digest-guarded tree.
 
 Phase 3 added the hook bus, and it hangs off the same satellites the
 tools reach:
@@ -2647,6 +2666,11 @@ checkout, and the jail may write only where the build root is, which for
 an install is under the extensions root. `state_root` is the third: the
 daemon's credentials sit one directory above the extensions root and the
 build plane masks them where the jail can build the mask.
+`serve.start_check_plane` is the third caller's shape: the same helper
+ladder and effect plane over `build_plane_policy(workspace, state_root)`,
+with no toolchain discovered, for `loom ext check`; `lsp_places` and
+`lsp_server_roots` are public so the check expands a profile's roots
+exactly as a session does.
 
 ## Imported hooks
 
@@ -4334,9 +4358,20 @@ language profile; these are the pieces that carry both in this package.
   `catalog_lsp_test` pins it, and the resolve tests pass with `["."]` and
   `AsWritten` as they did before the parameters existed.
 
+- `client/lsp/profile_check.{CheckOutcome, run, run_all, passed,
+  describe}` — a profile's `[[check]]`s through a `query.Door`, and no
+  other effect. `run(door, check)` asks `definition` or `references` with
+  `SymbolQuery(symbol, path, line)` and answers `Passed`,
+  `Mismatch(expected, got)` (both sorted, unique `path:line` lists) or
+  `Errored(reason)`. **Invariant: sites compare as sets**, since a server
+  answers in no fixed order and two references on one line share a
+  `path:line`; `profile_check_test` pins it.
 - `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
   Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,
-  probe, search_jailed}` — the session's one-server manager. The door's
+  probe, probe_server, search_jailed}` — the session's one-server manager.
+  `probe_server(jailed, server, root)` clears the same probe over the
+  same jail and answers its `CallOutcome` unjudged, for `loom ext check`'s
+  jail line. The door's
   closures run in the caller: they ask the manager for the live client,
   then do the pull-resync, the requests and the conversion to `Site`s
   themselves, so a slow query holds up only its caller. The probe

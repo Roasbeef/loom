@@ -121,8 +121,8 @@ command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build", "<cache>/gopls"]
-env = ["GOFLAGS"]
+writable = ["<cache>/go-build"]
+env = ["GOFLAGS", "XDG_CACHE_HOME"]
 ```
 
 A profile extension holds data and nothing that runs:
@@ -223,6 +223,18 @@ checks, installable with `loom ext install ./extensions/lsp_go`. CI
 installs all three and runs their checks in the jail lane. Rust is there
 because it is the language the old defaults could not serve: it needs
 `qualifier_separators = ["::"]`.
+
+A profile names only roots a normal install has already created, because
+a missing writable root refuses the whole jail: bwrap needs a read-write
+bind's source to exist. That is why `lsp_go` grants `<cache>/go-build`,
+which any `go build` makes, and not `<cache>/gopls`, which `gopls` answers
+without and which does not exist until it has run. It passes
+`XDG_CACHE_HOME`, so that `go` in the jail finds the cache directory
+`<cache>/` was expanded to. And `env` passes names only, never values, so
+a profile cannot point a tool somewhere of its own choosing: `lsp_rust`
+carries no `CARGO_TARGET_DIR`, and grants `~/.rustup` and
+`~/.cargo/registry` read-only and nothing writable, which measurement
+showed is enough for a crate with a committed `Cargo.lock`.
 
 `docs/examples/loom.toml` keeps its two example tables, pointing at the
 extensions as the maintained versions.
