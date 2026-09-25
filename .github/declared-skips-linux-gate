@@ -62,3 +62,14 @@ declared|linux|SKIP lsp manager gopls: gopls or go is not installed|The ordinary
 # acceptance itself — need only the toolchain every runner has and run
 # without this waiver.
 declared|linux|SKIP lsp e2e gopls: gopls or go is not installed|The ordinary runner installs no gopls; the Gleam rename and stale-apply sessions in the same file run the acceptance against a real jailed gleam lsp, and a host with gopls on PATH or at ~/go/bin runs this one.
+
+# The first-party language profiles (`conformance/lsp_profiles_test`,
+# ADR-014 §6) each run their server's checks through the jailed manager,
+# feature-detected per server. The ordinary conformance bucket installs
+# ripgrep but no gopls and no rust-analyzer, so those two profiles print
+# these lines and pass. lsp_gleam needs only the toolchain every runner
+# has and runs here without a waiver. The marker for Rust stops at the
+# server's name because rustup's link may be present without the
+# component ("does not run") or absent ("is not on PATH").
+declared|linux|SKIP lsp profile lsp_go: gopls is not on PATH|The ordinary runner installs no gopls; the jailed Linux lane installs a pinned one and runs lsp_go's checks for real, with no waiver.
+declared|linux|SKIP lsp profile lsp_rust: rust-analyzer|The ordinary runner installs no rust-analyzer component; the jailed Linux lane installs it with rust-src and the standard library's dependencies and runs lsp_rust's checks for real, with no waiver.
