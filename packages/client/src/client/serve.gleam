@@ -52,6 +52,8 @@ import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/git_identity
+import client/glance
+import client/glancepace
 import client/goalcheck
 import client/goalcommand
 import client/goalloop
@@ -3019,6 +3021,16 @@ fn assemble_in(
       )
     })
 
+  // The glance loop, on the advisor's two-name pattern: the hook below
+  // casts to this address, and the machine that answers it starts under
+  // the service supervisor. Its summarizer falls back from `summarize` to
+  // `subagent` to `main`, so a catalogue that routes any model at all gets
+  // a working glance with no configuration; only a catalogue that routes
+  // nothing produces no wiring, and then no hook and no machine exist.
+  let glance_name = address.new_address(namespace)
+  let glance_wiring =
+    glance_wiring(settings, opened, agency_config, clock, logger, glance_name)
+
   let skills = skill.discover(skill.directories(settings.home))
   list.each(skill.warnings(skills), fn(warning) {
     log.warn(logger, "skill.warning", [
@@ -3246,7 +3258,11 @@ fn assemble_in(
         // the actor reads the branch itself, and a follow-up appended by
         // a later layer is picked up by the next feed, one run boundary
         // behind.
-        |> with_advisor(advisor_wiring),
+        |> with_advisor(advisor_wiring)
+        // The glance cast rides the same usage slot as the advisor's step
+        // counter and composes the same way: it casts and then calls the
+        // inner slot, and it captures only the loop's name.
+        |> with_glance(glance_wiring),
     )
 
   // The extension hook bus goes on last, over the composed record, so an
@@ -3443,6 +3459,10 @@ fn assemble_in(
     // costs at most one skipped review, which the next run end offers
     // again.
     |> with_advisor_actor(advisor_wiring)
+    // The glance loop is in this tier because everything it would lose is
+    // either durable or offered again: titles live in their cells, and the
+    // next step on each strand books it afresh.
+    |> with_glance_loop(glance_wiring)
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -5956,6 +5976,62 @@ fn with_goal_control(
   case wiring {
     None -> options
     Some(wiring) -> hub.with_goal_control(options, goalcommand.seam(wiring))
+  }
+}
+
+// The glance loop's wiring, or `None` when the catalogue routes no model
+// the summarizer could fall back to. That case is logged once here rather
+// than failing the boot: a session with no glance runs exactly as it did
+// before glances existed.
+fn glance_wiring(
+  settings: Settings,
+  opened: session.Session,
+  agency_config: agency.Config,
+  clock: Clock,
+  logger: Logger,
+  name: address.Address(glance.Message),
+) -> Option(glance.Wiring) {
+  case glance.summarizer(settings.gateway) {
+    Error(reason) -> {
+      log.warn(logger, "glance.unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
+      None
+    }
+
+    // Borrowed through the Agency's holder rather than held, for the
+    // reason the advisor's wiring borrows: the runtime contains the hook
+    // this loop is composed into.
+    Ok(summarizer) ->
+      Some(glance.Wiring(
+        session: opened,
+        runtime: fn() { agency.borrow_runtime(agency_config) },
+        summarizer:,
+        clock:,
+        pace: glancepace.default_pace,
+        logger:,
+        name:,
+      ))
+  }
+}
+
+fn with_glance(
+  hooks: effects.Hooks,
+  wiring: Option(glance.Wiring),
+) -> effects.Hooks {
+  case wiring {
+    None -> hooks
+    Some(wiring) -> glance.hooks(hooks, wiring.name)
+  }
+}
+
+fn with_glance_loop(
+  builder: sup.Builder,
+  wiring: Option(glance.Wiring),
+) -> sup.Builder {
+  case wiring {
+    None -> builder
+    Some(wiring) -> sup.add(builder, glance.supervised(wiring))
   }
 }
 

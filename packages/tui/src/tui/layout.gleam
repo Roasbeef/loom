@@ -23,15 +23,17 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tui/advisor_pending
+import tui/agent_strip
+import tui/agent_view
 import tui/agents
 import tui/composer
 import tui/context_view
 import tui/diff_panel
 import tui/goal_view
 import tui/model.{
-  type Model, AgentInspector, ApprovalInspector, DaemonSelector, DiffHidden,
-  DiffVisible, GoalInspector, ModelSelector, NoOverlay, PeerLinkManager,
-  SessionSelector, Stream,
+  type Model, AgentInspector, ApprovalInspector, Attached, DaemonSelector,
+  DiffHidden, DiffVisible, Disconnected, GoalInspector, ModelSelector, NoOverlay,
+  PeerLinkManager, Preview, Replaying, SessionSelector, Stream,
 } as tui_model
 import tui/protocol.{Strand}
 import tui/queue_editor
@@ -63,6 +65,11 @@ pub fn panel_inner(area: Rect) -> Rect {
 }
 
 /// Splits the screen into the header, body, composer and footer rows.
+///
+/// The footer rectangle includes the agent strip beneath the footer proper;
+/// `footer_split` divides the two. Keeping them one rectangle here means
+/// every hit-test and scroll path that reads the other three is unchanged
+/// by the strip growing and shrinking.
 @internal
 pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
   case
@@ -70,7 +77,7 @@ pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
       Length(1),
       Fill,
       Length(input_height(model)),
-      Length(footer_height(model)),
+      Length(footer_height(model) + strip_height(model)),
     ])
   {
     [header, body, input, footer] -> #(header, body, input, footer)
@@ -197,6 +204,28 @@ pub fn diff_shown(model: Model) -> Bool {
 @internal
 pub fn main_shows_diff(model: Model) -> Bool {
   model.diff_view == DiffVisible && diff_pane_width(model) == 0
+}
+
+/// Divides the footer rectangle from `layout` into the footer proper and the
+/// agent strip pinned beneath it.
+@internal
+pub fn footer_split(area: Rect, model: Model) -> #(Rect, Rect) {
+  case geometry.split_v(area, [Fill, Length(strip_height(model))]) {
+    [footer, strip] -> #(footer, strip)
+    _ -> #(area, geometry.rect_zero())
+  }
+}
+
+/// The rows the agent strip draws, from the same roster the workspace uses.
+@internal
+pub fn strip_lines(model: Model) -> List(agent_strip.Line) {
+  agent_strip.lines(model.strip, displayed_agents(model), model.active_strand)
+}
+
+/// The rows the agent strip takes on this screen.
+@internal
+pub fn strip_height(model: Model) -> Int {
+  agent_strip.height(strip_lines(model), model.height)
 }
 
 fn footer_height(model: Model) -> Int {
@@ -445,8 +474,9 @@ pub fn composer_status_lines(model: Model) -> List(String) {
     ]
   }
 
-  // The workspace and visible rail already own the roster. Repeating it
-  // above the editor would spend its typing space on the same observation.
+  // The workspace, the visible rail and the agent strip already own the
+  // roster. Repeating it above the editor would spend its typing space on
+  // the same observation.
   let reviewers = case model.overlay, queue_focused {
     _, True | AgentInspector(_), False -> []
     _, False ->
@@ -454,6 +484,7 @@ pub fn composer_status_lines(model: Model) -> List(String) {
         model.agent_rail_visible
         && model.width >= 100
         && diff_pane_width(model) == 0
+        || strip_height(model) > 0
       {
         True -> []
         False -> reviewer_band_lines(model)
@@ -1031,5 +1062,27 @@ pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
   {
     Ok(index) -> Some(index)
     Error(Nil) -> None
+  }
+}
+
+/// Legacy fixtures have no captured register cut. Their rows explicitly expose
+/// unavailable task and result evidence instead of inventing successful work.
+@internal
+pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
+  let rows = case model.captured {
+    Some(_) -> model.agent_rows
+    None -> agent_view.legacy(model.strands)
+  }
+  case model.peer {
+    Disconnected ->
+      list.map(rows, fn(row) {
+        agent_view.Row(
+          ..row,
+          status: agent_view.Unavailable,
+          activity: "Disconnected · last observation may be stale",
+          approvals: [],
+        )
+      })
+    Attached(_) | Preview | Replaying -> rows
   }
 }

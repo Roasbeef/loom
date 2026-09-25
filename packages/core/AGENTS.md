@@ -40,6 +40,15 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   unique phase names and unique task text across the board), and every
   stored board has passed it because the tool is the cell's only writer.
   `active`, `focus` and `count` answer the questions a renderer asks.
+- `core/glance.Glance` — a strand's operator-facing title and one-line
+  activity summary, written by the daemon's glance loop under the reserved
+  `client/glance/{strand}` fact and read by the TUI's agent strip from each
+  capture. It names the operation it describes, so a reader drops it once
+  that operation is no longer current. `tokens` is the operation's
+  current context size from its newest usage row, a replacement value and
+  never a sum, so a reader may swap in a newer live figure. `decode` is
+  total; `clip` is the writers' one-line, byte-bounded, grapheme-safe cut
+  for model text.
 - `core/register.{RegisterNs, RegisterValue}` — the closed namespace enum
   and the thin tagged JSON wrapper storage persists. The rich payload types
   each namespace forces live in `machine`; `core` understands only

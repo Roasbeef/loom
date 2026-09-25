@@ -155,7 +155,7 @@ pub fn render_rail(
     |> block.with_title_styled(
       [
         span.span_styled(" AGENTS ", theme.current_bold()),
-        span.span_styled("· F2 inspect ", theme.quiet_text()),
+        span.span_styled("· ^O inspect ", theme.quiet_text()),
       ],
       block.Top,
     )
@@ -716,7 +716,9 @@ fn identity_style(row: Row, background: style.Color) -> style.Style {
   style.new(color, background, style.bold())
 }
 
-fn status_style(
+/// The color a status is drawn in, on a given row background.
+@internal
+pub fn status_style(
   status: agent_view.Status,
   background: style.Color,
 ) -> style.Style {
@@ -731,7 +733,9 @@ fn status_style(
   style.new(color, background, style.none())
 }
 
-fn status_mark(status: agent_view.Status) -> String {
+/// The glyph that carries a status without color.
+@internal
+pub fn status_mark(status: agent_view.Status) -> String {
   case status {
     agent_view.Working -> "●"
     agent_view.Waiting -> "◷"

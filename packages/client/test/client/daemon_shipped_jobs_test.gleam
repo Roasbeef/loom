@@ -1102,11 +1102,14 @@ fn reopen(connected: Connected, id: String) -> Session {
   // and a fresh VM's assembly is refused (`storage_open_failed`) until it
   // can be stolen. That is the design working: a lease is what stops two
   // incarnations writing one conversation, and nothing observed the old
-  // one die. So the wait here is the lease TTL — thirty seconds
-  // (`storage/sqlite.Config.lease_ttl_ms`) — with room, and the deadline
-  // is what makes a refusal that is *not* the lease loud.
+  // one die. So the wait here is the lease TTL with room, and the deadline
+  // is what makes a refusal that is *not* the lease loud. The TTL is the
+  // served session's sixty seconds (`serve` opens the store with
+  // `lease_ttl_ms: 60_000`), not the storage default of thirty: a lease
+  // renewed just before the crash can hold for the whole minute after it,
+  // so a sixty-second wait lost that race under load.
   let waited =
-    poll.until(within: 60_000, every: 250, attempt: fn() {
+    poll.until(within: 90_000, every: 250, attempt: fn() {
       case selection.open(host, id) {
         Ok(target) -> poll.Done(target)
         Error(_lease_held) -> poll.Retry

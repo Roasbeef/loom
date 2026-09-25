@@ -130,6 +130,7 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   let initial =
     tui_model.Model(
       ..model(),
+      strands: [],
       reviewer_rows: reviewer_status.observe([], window, view),
       input: textarea.state_from_string("follow-up draft"),
     )
@@ -139,6 +140,27 @@ pub fn reviewer_rows_remain_visible_beside_the_automatic_diff_test() {
   assert string.contains(text, "Reviewer sub:queue")
   assert string.contains(text, "Task: Review queue delivery")
   assert string.contains(text, "1 received, awaiting delivery")
+  assert painted.diff_view == tui_model.DiffAutomatic
+  assert string.contains(text, "follow-up draft")
+}
+
+// Once a second agent is live the strip under the footer owns the roster, so
+// the band above the composer steps aside rather than repeat it; the reviewer
+// is still on screen beside the automatic diff, one row in the strip.
+pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
+  let #(window, view) = fixture()
+  let initial =
+    tui_model.Model(
+      ..model(),
+      strands: [protocol.Strand("main", Some("main"), None), ..view.strands],
+      reviewer_rows: reviewer_status.observe([], window, view),
+      input: textarea.state_from_string("follow-up draft"),
+    )
+  let painted = tui.update(backend.Resize(160, 35), initial)
+  let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 160, 35))
+  let text = frame.buffer_to_text(buffer)
+  assert !string.contains(text, "Reviewer sub:queue")
+  assert string.contains(text, "sub:queue")
   assert painted.diff_view == tui_model.DiffAutomatic
   assert string.contains(text, "follow-up draft")
 }

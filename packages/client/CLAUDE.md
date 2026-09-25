@@ -1075,7 +1075,7 @@ catalogue without opening runtimes. Explicit admission invokes
   default_timeout_ms, distill_owner, extractable, extraction_input,
   extraction_prompt, consolidation_prompt, parse_candidates, config_for,
   with_logger, run, cascade, no_distiller, source_files, target,
-  gateway_distiller, main}` — the
+  gateway_distiller, capped_gateway_distiller, main}` — the
   distillation pipeline, runnable as `gleam run -m client/distill --
   --config loom.toml [--session-dir <dir> | --session <path.db>]`. It
   walks the session directory's `*.db` files, skips every one whose
@@ -1139,6 +1139,74 @@ catalogue without opening runtimes. Explicit admission invokes
   kept because their provenance would not decode, which is the one place
   the command under-deletes. `docs/spec-gaps.md`'s M2
   item 9 carries the boundary and the over-deletion it implies.
+- `client/glance.{Wiring, Report, Message, request_timeout_ms,
+  max_answer_tokens, request_deadline_ms, branch_window, target,
+  summarizer, hooks, context_of, is_watched, start, supervised}` — the
+  glance loop, one **`weft/state_machine`** per session that writes a
+  `core/glance` cell under `client/glance/{strand}` for every running
+  strand but `main` and `advisor`. `hooks(built, name)` wraps the `usage`
+  slot with a cast of `Stepped(operation, context)` and captures only the
+  name and the inner slot, because the hooks are copied into every strand
+  driver. The machine resolves the strand through `notes.strand_of`, asks
+  `client/glancepace.step` what to launch, and arms one named timeout
+  (`glance-wake`) for the plan's `wake` or cancels it on `None`, so an
+  idle session holds no timer. It has one state, `Watching`, the
+  `schedulescan` arrangement. Each launch is a one-task `weft` run under
+  `request_deadline_ms`, relayed into a sink subject created for it. The
+  sink is selected (`sm.with_selector`, rebuilt on every plan) exactly
+  while its flight is booked, and a flight clears only on the run's last
+  word (`AllDelivered` or `RunLost`), never on the outcome alone, so a
+  strand is not launched again while its worker is alive and a relay's
+  trailing message never arrives unselected. The task does all the I/O.
+  It returns `Gone` when the operation is no longer the strand's live one.
+  Otherwise it reads `op.meta`, the prompt entries and at most
+  `branch_window` branch entries back to the source leaf straight off the
+  store, reuses the stored title when the cell names this operation, asks
+  the summarizer, and writes with `api.put_reserved_fact` through the
+  borrowed runtime. `target` is `summarize`, then `subagent`, then `main`,
+  as `ForRole(role, Some(ThinkingOff))`; `summarizer` caps the answer at
+  `max_answer_tokens` through `distill.capped_gateway_distiller`.
+  `context_of` is `input + cache_read + cache_write + output` and `None`
+  for an adjustment row. The glance's `tokens` is that figure from the
+  newest row, never a sum. A failure is logged as `glance.unusable`, at
+  warning level on the first failure of a streak and at debug level
+  after. Nothing is written on failure, and the cell is never deleted.
+  `client/serve` starts it in the restartable service tier only when
+  `summarizer` resolves (otherwise it logs `glance.unavailable`). There
+  is no config switch.
+- `client/glancepace.{Pace, default_pace, Activity, Phase, Track, Book,
+  Ending, Event, Launch, Plan, new, track, step}` — the glance loop's
+  schedule as one pure function, `step(book, event, now, pace) -> Plan`.
+  A strand's first `Stepped` in an operation is due at once. After
+  `Summarized`, the next request is due `every_ms` after the previous
+  request *started*. Only a `Fresh` strand, one that stepped since its
+  last request began, is ever launched. `Asking` strands are never
+  relaunched, and the launch pass fills at most `concurrency` slots, most
+  overdue first with ties broken by strand name. `Unusable` sets the
+  strand `Fresh` again and backs it off from `retry_ms`, doubling to
+  `retry_cap_ms`. `Ended` forgets it, and a `Resting` strand quiet for
+  `retire_after_ms` is forgotten lazily on the next step. A successor
+  operation inherits its predecessor's `Asking` phase, so the strand's
+  one slot stays held until the old answer settles. `Plan.wake` is the
+  soonest due instant of a resting, fresh strand. A due strand that found
+  no slot needs no wake, because a slot frees only on a settlement, which
+  is an event.
+- `client/glanceslice.{max_prompt_bytes, max_calls, max_call_bytes,
+  max_said_bytes, Title, Material, Reply, gather, request, parse}` — what
+  the glance summarizer is shown and how its answer is read, pure.
+  `gather` takes the prompt entries in acceptance order and the branch
+  newest first. It keeps the accepted user text (1500 B), the newest
+  eight tool calls oldest first (200 B each, `name <json args>`) and the
+  newest visible assistant text (500 B, never thinking), each through
+  `core/glance.clip`. `request` fences the material as data and asks for
+  `TITLE:` and `NOW:` when `Untitled`, `NOW:` alone when `Titled`.
+  `parse` is total: labels match case-insensitively through markdown
+  bullets, bold and quoting, and the first non-empty line per label
+  wins. Against `Titled` an answer without a `NOW:` label may stand on
+  its first unlabelled line, provided that line starts with a word ending
+  in "ing", since models asked for one line often drop the label. A
+  missing or empty line is `Error(Nil)`, and values are clipped to
+  `glance.max_title_bytes` and `max_summary_bytes`.
 - `client/distillpass.{Cadence, Options, Pass, Config, Message,
   default_wall_ms, default_options, no_pass, parse, start, supervised,
   settled,
@@ -2760,6 +2828,14 @@ these forks because they define the same modules.
   `Nudge`, `RequestAbort` and `PollTick` for the length of a review. A
   lost step cast costs a threshold reached one step later, never one not
   reached.
+- `glance.Message` (opaque) — `Stepped(operation, context)` (a cast, from
+  the wrapped `usage` slot on every strand driver's own process, one per
+  committed provider response), `Wake` (the machine's own named timeout)
+  and `Relayed(strand, pulled)` (a request's relay, on the per-request
+  sink the machine selects while that flight is booked: the task's
+  `PulledOutcome`, then `AllDelivered` or `RunLost`). The step is a cast
+  because a strand's run must never wait on a label. A lost cast costs one
+  refresh, which the strand's next step offers again.
 - `history.Message` — `Pull` (a cast: a commit landed, go sync),
   `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
   limit, scope, reply)` (a call, from the tool seam), and `Stop`.

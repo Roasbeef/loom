@@ -25,6 +25,7 @@ import gleam/result
 import gleam/string
 import tui/agent_message_panel
 import tui/agent_messages
+import tui/agent_strip
 import tui/agents
 import tui/approval
 import tui/approval_panel
@@ -264,6 +265,10 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
             True -> model.agent_rows
             False -> []
           },
+          strip: case model.session == cut.attachment.expected.session {
+            True -> model.strip
+            False -> agent_strip.new()
+          },
           session: cut.attachment.expected.session,
           session_label: Some(#(cut.attachment.expected.session, name)),
           records: [],
@@ -339,6 +344,14 @@ fn retire_previous(model: Model) -> Model {
 }
 
 fn update_key(key: keys.Key, model: Model) -> Model {
+  // The strip owns the keyboard only while nothing else is in front of it.
+  // An overlay, including an approval the daemon opened on its own, takes
+  // the cursor out of the strip, so closing it leaves the composer, not a
+  // cursor waiting to turn the next Enter into a strand switch.
+  let model = case strip_covered(model) {
+    True -> Model(..model, strip: agent_strip.leave(model.strip))
+    False -> model
+  }
   case model.context.surface {
     context_view.Overview | context_view.All -> update_context_key(key, model)
     context_view.Hidden -> update_key_without_context(key, model)
@@ -519,7 +532,7 @@ fn update_agent_inspector(
   use <- bool.lazy_guard(inspector.focus == agents.Composing, fn() {
     update_workspace_composer(key, model, inspector)
   })
-  let rows = render.displayed_agents(model)
+  let rows = layout.displayed_agents(model)
   let changed = case key {
     keys.Tab ->
       Model(
@@ -534,7 +547,7 @@ fn update_agent_inspector(
           agents.Inspector(..inspector, focus: agents.Composing),
         ),
       )
-    keys.Escape | keys.F(2) ->
+    keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
         ..model,
         overlay: NoOverlay,
@@ -792,7 +805,7 @@ fn update_workspace_composer(
   inspector: agents.Inspector,
 ) -> Model {
   case key {
-    keys.Escape | keys.F(2) ->
+    keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
         ..model,
         overlay: AgentInspector(
@@ -825,7 +838,7 @@ fn update_workspace_composer(
 // a decision, and a disappeared request cannot be replaced by a different one.
 fn inspect_agent_approval(model: Model, strand: String) -> Model {
   let found =
-    render.displayed_agents(model)
+    layout.displayed_agents(model)
     |> list.find(fn(row) { row.id == strand })
     |> result.try(fn(row) { list.first(row.approvals) })
     |> result.try(fn(id) {
@@ -847,9 +860,56 @@ fn inspect_agent_approval(model: Model, strand: String) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
+  case model.strip.focus, layout.strip_height(model) > 0 {
+    agent_strip.Browsing(_), True -> update_strip_key(key, model)
+
+    // Every agent settled while the cursor was in the strip, so the strip
+    // is gone. The keyboard returns to the composer with this key, rather
+    // than an invisible cursor taking an Enter the operator meant to send.
+    agent_strip.Browsing(_), False ->
+      update_main_key_composing(
+        key,
+        Model(..model, strip: agent_strip.leave(model.strip)),
+      )
+    agent_strip.Composing, _ -> update_main_key_composing(key, model)
+  }
+}
+
+// The strip owns the keyboard only between a Down from the idle composer and
+// the key that hands it back. Opening goes through the same switch the
+// workspace's Enter uses, so the draft is parked with its strand and the
+// transcript, the composer's recipient and its badge change together.
+fn update_strip_key(key: keys.Key, model: Model) -> Model {
+  let pressed = case key {
+    keys.Up -> agent_strip.Up
+    keys.Down -> agent_strip.Down
+    keys.Enter -> agent_strip.Select
+    keys.Char("x") -> agent_strip.Halt
+    keys.Escape -> agent_strip.Back
+    _ -> agent_strip.Other
+  }
+  case agent_strip.key(model.strip, pressed, layout.strip_lines(model)) {
+    agent_strip.Moved(strip) | agent_strip.Left(strip) -> Model(..model, strip:)
+    agent_strip.Open(strip, strand) ->
+      case strand == model.active_strand {
+        True -> Model(..model, strip:)
+        False -> submit.switch_active_strand(Model(..model, strip:), strand)
+      }
+    agent_strip.Stop(strip, strand) ->
+      submit.stop_strand(Model(..model, strip:), strand)
+    agent_strip.Pass(strip) ->
+      update_main_key_composing(key, Model(..model, strip:))
+  }
+}
+
+fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
   case layout.diff_shown(model), model.worktree.focus, key {
     _, _, keys.Alt("q") -> submit.open_queue(model)
-    _, _, keys.F(2) -> submit.open_agents(model)
+
+    // Ctrl+O ("open agents") is the chord a hand already on the keyboard
+    // reaches; F2 stays for anyone who learned it. Ctrl+A was the other
+    // candidate and is the composer's start-of-line.
+    _, _, keys.F(2) | _, _, keys.Ctrl("o") -> submit.open_agents(model)
     True, _, keys.Ctrl("d") ->
       Model(
         ..model,
@@ -930,6 +990,28 @@ fn update_palette_key(key: keys.Key, model: Model) -> Model {
   }
 }
 
+fn strip_covered(model: Model) -> Bool {
+  model.overlay != NoOverlay
+  || model.context.surface != context_view.Hidden
+  || model.queue_editor.surface != queue_editor.Closed
+  || model.summary_surface != queue_editor.Closed
+}
+
+// Down walks forward through prompt history while the operator is browsing
+// it. At the newest entry there is nothing further forward, so the same key
+// steps down into the agent strip, the next thing below the composer.
+fn down_from_composer(model: Model) -> Model {
+  let lines = layout.strip_lines(model)
+  case model.history_index, layout.strip_height(model) {
+    0, rows if rows > 0 ->
+      Model(
+        ..model,
+        strip: agent_strip.enter(model.strip, lines, model.active_strand),
+      )
+    _, _ -> submit.navigate_history(model, False)
+  }
+}
+
 /// Reports whether Escape belongs to an open slash-command palette.
 @internal
 pub fn command_palette_escape(key: keys.Key) -> Bool {
@@ -1004,7 +1086,7 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.Tab, False, False -> submit.toggle_submission_mode(model)
     keys.BackTab, False, False -> submit.toggle_agent_rail(model)
     keys.Up, False, False -> submit.navigate_history(model, True)
-    keys.Down, False, False -> submit.navigate_history(model, False)
+    keys.Down, False, False -> down_from_composer(model)
     keys.Enter, False, False -> submit.submit(model)
     keys.Backspace, False, False ->
       case text_area.value(model.input), model.attachments {

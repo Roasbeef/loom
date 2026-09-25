@@ -2,7 +2,7 @@
 
 ## Agent workspace
 
-`F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
+`Ctrl+O`, `F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
 Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
@@ -85,6 +85,50 @@ defaults. Content, links, wide-cell markers and modifiers survive adaptation.
 dividers have their own color. Status labels and selection marks carry meaning
 without color. `gleam dev agents dark|light|ansi|plain` runs an illustrative,
 provider-free native fixture through the capture decoder and the shipped loop.
+
+## Agent strip
+
+`agent_strip` pins one row per live agent beneath the footer, so an operator
+running several strands can see what each is doing without opening `/agents`.
+`main` always leads; after it come the active strand and every strand that is
+working, waiting, needs input or is halted. Settled strands leave the strip,
+and the advisor, which has its own band, is listed only while it is active.
+The strip appears once a second agent is listed and the terminal is at least
+`min_screen_height` rows. It grows a row per agent, up to a quarter of the
+screen and never more than `max_rows`; any further rows fold into a
+`+N more · ^O agents` row. `layout.layout` includes it in the footer
+rectangle and `layout.footer_split` divides the two, so no other hit-test
+or scroll path sees it. While it is drawn, the reviewer band above the
+composer steps aside.
+
+Each row joins the existing `agent_view.Row` with the daemon's glance
+(`core/glance`, `client/glance/{strand}`), decoded once per capture by
+`agent_strip.observe`. A glance is shown only while its `operation` is the
+strand's current one. An empty or absent summary falls back to the row's
+deterministic activity, and an absent title to the accepted task excerpt.
+Elapsed time never subtracts a server timestamp from the terminal clock. A
+`Clock` starts on the terminal's clock when an operation is first seen, and a
+new glance re-anchors it to the daemon's own `glance.at - started_at` plus
+local time since the terminal observed that glance. Context size is the newest
+generation's `input + cache_read + cache_write + output`: from a live
+`usage_observation` push when this terminal has one for the operation (behind
+the existing sequence guard), otherwise from the glance. `inbound.tick_strip`
+advances the clock on the tick and invalidates the frame only when a drawn
+second moves.
+
+Down from the composer, when prompt history is not being walked, moves the
+keyboard into the strip with the cursor on the row after the viewed strand.
+Up and Down move the cursor, Up from the top row or Escape hands the keyboard
+back, and any other key is returned to the composer, which handles it. Enter
+opens the selected strand through `submit.switch_active_strand`, the same path
+the workspace's Enter takes, so drafts are parked per strand and the
+transcript, recipient and badge change together. `x` sends `abort` for the
+selected strand (`submit.stop_strand`); on the active strand it is the
+ordinary interrupt. Moving the cursor never retargets the composer. The
+cursor is a strand ID, and a cursor whose strand has left the strip is
+re-seated on the first row. The composer's top rule carries the viewed
+sub-agent's title as a badge on the right; `main` has none. The cursor row
+is marked `❯` and the viewed row `›`, so both read without color.
 
 ## Todo panel
 
@@ -710,6 +754,10 @@ boundaries and the split's measurements under Invariants.
   `tui/session_control`, which sends each inspection, link, or revocation over
   the owner-authenticated daemon control socket. `tui/model` holds the modal
   and its pending control outcome; `tui/render` paints the resulting state.
+- `tui/agent_strip.{State, Focus, Clock, Line, Outcome, StripKey}` is the
+  pinned per-agent strip under the footer (see "Agent strip"). `State` holds
+  keyboard focus, decoded glances, per-operation clocks and pushed context
+  sizes; `Model.strip` owns it and session replacement resets it.
 - `tui/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local
@@ -1063,6 +1111,11 @@ untouched.
   estimated session cost, notices and an attention summary in one row, or two
   below 100 columns. The attention summary reserves its own space. Ctrl+G exposes
   the complete input/output/cache/rate accounting in the existing adaptive footer.
+  Both footers fit whole pieces (`render.fit_pieces`): a piece that does not
+  fit is dropped from the right, never cut through a figure. The detailed row
+  leads with the cache read/write pair carrying the outlook (`cache 1.2m/40k,
+  idle 3m`), so a narrow row keeps the warning, then context, cost, input,
+  output and rate. Millions keep one decimal.
   Coherent cuts supply usage and cost; model names never imply prices. Workspace
   and branch discovery still runs once before the event loop, through bounded
   regular-file reads, and the header shows the resulting workspace label.

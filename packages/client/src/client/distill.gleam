@@ -1593,7 +1593,37 @@ pub fn gateway_distiller(
   target: RequestTarget,
   timeout_ms timeout_ms: Int,
 ) -> Distiller {
-  bound_gateway_distiller(gateway, target, timeout_ms, fn(_handle) { Ok(Nil) })
+  bound_gateway_distiller(gateway, target, timeout_ms, None, fn(_handle) {
+    Ok(Nil)
+  })
+}
+
+/// `gateway_distiller` with the answer capped at `max_output_tokens`, for
+/// a caller whose answer is a line or two and who pays for the request on
+/// every refresh. The cap is sent as the request's own output ceiling, so
+/// it overrides the resolved model's default rather than truncating after
+/// the fact.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distill.capped_gateway_distiller(gateway, target, timeout_ms: 30_000,
+/// //   max_output_tokens: 160)
+/// ```
+///
+pub fn capped_gateway_distiller(
+  gateway: provider_gateway.Gateway,
+  target: RequestTarget,
+  timeout_ms timeout_ms: Int,
+  max_output_tokens max_output_tokens: Int,
+) -> Distiller {
+  bound_gateway_distiller(
+    gateway,
+    target,
+    timeout_ms,
+    Some(max_output_tokens),
+    fn(_handle) { Ok(Nil) },
+  )
 }
 
 // The scope monitors the original parked request owner before any HTTP begins.
@@ -1605,7 +1635,7 @@ fn owned_gateway_distiller(
   ledger: weft.Ledger,
   builder: process.Pid,
 ) -> Distiller {
-  bound_gateway_distiller(gateway, target, timeout_ms, fn(handle) {
+  bound_gateway_distiller(gateway, target, timeout_ms, None, fn(handle) {
     case handle.owner {
       None -> Ok(Nil)
       Some(owner) ->
@@ -1627,6 +1657,7 @@ fn bound_gateway_distiller(
   gateway: provider_gateway.Gateway,
   target: RequestTarget,
   timeout_ms: Int,
+  max_output_tokens: Option(Int),
   publish: fn(stream.StreamHandle) -> Result(Nil, String),
 ) -> Distiller {
   Distiller(ask: fn(prompt) {
@@ -1638,7 +1669,7 @@ fn bound_gateway_distiller(
           system: None,
           messages: [user(prompt)],
           tools: [],
-          max_output_tokens: None,
+          max_output_tokens:,
         ),
       )
 
