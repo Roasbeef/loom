@@ -1057,6 +1057,7 @@ fn scripted_catalog() -> catalog.Catalog {
     ],
     roles: [#(model.Main, ["acme"]), #(catalog.advisor_role, ["sage"])],
     mcp_servers: [],
+    lsp_servers: [],
   )
 }
 

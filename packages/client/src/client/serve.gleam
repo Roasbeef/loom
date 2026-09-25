@@ -1727,6 +1727,7 @@ fn env_catalog() -> catalog.Catalog {
     ],
     roles: [#(model.Main, ["anthropic"])],
     mcp_servers: [],
+    lsp_servers: [],
   )
 }
 
