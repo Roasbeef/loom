@@ -167,7 +167,8 @@ api_key_env = "GITHUB_TOKEN"
 
 # Language servers, one [lsp.<name>] table per server. They are
 # configured, never discovered: with no [lsp] table there are no lsp_*
-# tools and nothing is spawned. Each server runs jailed, rooted at the
+# tools and nothing is spawned. Loom has no built-in servers; the gleam
+# and go tables below are examples of the shape, nothing more. Each server runs jailed, rooted at the
 # nearest ancestor of a file that holds one of its `root_markers`, and
 # this table is the whole of what that jail grants beyond the project.
 # The table key follows the [mcp.<name>] rule ([a-z][a-z0-9_]*).
