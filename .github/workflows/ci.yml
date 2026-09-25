@@ -456,6 +456,16 @@ jobs:
           chmod +x bin/* packages/sandbox/loom-exec
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
+      # ripgrep alone, not bwrap: the LSP end-to-end names a bare symbol,
+      # which the language-server manager finds with rg before asking the
+      # server. Installing bwrap here would change what every other
+      # conformance fixture exercises; the jail job runs the enforced path.
+      - name: Install ripgrep for the language-server end-to-end
+        if: matrix.bucket == 'conformance'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+
       # The developer fixture checks both host and restricted read views.
       # Restricted reads need bwrap's mount namespace, as in the jail job.
       - name: Install developer fixture tools and jail
