@@ -477,7 +477,7 @@ pub fn every_query_error_says_what_to_do_next_test() {
     == "the language server refused: would make it unexported"
 
   let unavailable = failing(query.Unavailable("deadline passed"))
-  assert string.contains(unavailable, "did not answer: deadline passed")
+  assert string.contains(unavailable, "could not be answered: deadline passed")
 }
 
 // --- arguments refused in band -------------------------------------------

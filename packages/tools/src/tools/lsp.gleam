@@ -1509,10 +1509,10 @@ pub fn render_error(error: QueryError) -> String {
       <> "qualify the name (`module.name`)."
     query.ServerRefused(message:) -> "the language server refused: " <> message
     query.Unavailable(reason:) ->
-      "the language server did not answer: "
+      "the question could not be answered: "
       <> reason
-      <> ". It may be restarting or busy; ask again, or use grep and "
-      <> "fs_read meanwhile."
+      <> ". If the language server was restarting or busy, asking again "
+      <> "may work; grep and fs_read work meanwhile."
   }
 }
 
