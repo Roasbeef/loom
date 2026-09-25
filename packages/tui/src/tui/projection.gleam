@@ -20,6 +20,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import tui/advisor_history
+import tui/composer
 import tui/layout
 import tui/markdown
 import tui/model.{
@@ -27,6 +28,7 @@ import tui/model.{
   ReasoningDigest, Spacer, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
   ToolResult, User,
 } as tui_model
+import tui/notes_view
 import tui/render
 import tui/surfaces
 import tui/tool_activity
@@ -692,8 +694,10 @@ fn transient_lines(model: Model) -> List(Line) {
 
 // Pending advice is a labeled, disposable observation in the scrollable tail.
 // It is never appended to durable records, and inspecting it does not deliver
-// it. Keeping its complete body here prevents a long queue from taking the
-// composer offscreen while still making every received line readable.
+// it. Collapsed, each nudge is one preview row: a queue that grows through a
+// long run would otherwise print every body in full and push the run itself
+// out of view. Detail mode prints the complete bodies, the same toggle the
+// delivered nudges answer to, so every received line stays readable.
 fn pending_nudge_lines(model: Model) -> List(Line) {
   case model.nudges {
     Some(board) if board.strand == model.active_strand && board.pending != [] -> {
@@ -701,10 +705,22 @@ fn pending_nudge_lines(model: Model) -> List(Line) {
         "Advisor · pending, not delivered · "
         <> int.to_string(board.total)
         <> " nudges"
-      let rows =
-        list.flat_map(board.pending, fn(body) {
-          [Line(System, "Pending advisor nudge"), Line(ToolDetail, body)]
-        })
+      let rows = case transcript_lines.details_extent(model.details_expanded) {
+        notes_view.Excerpt ->
+          list.map(board.pending, fn(body) {
+            Line(
+              System,
+              "Pending advisor nudge: "
+                <> transcript_lines.advisor_body_preview(body)
+                <> composer.expand_hint,
+            )
+          })
+
+        notes_view.Complete ->
+          list.flat_map(board.pending, fn(body) {
+            [Line(System, "Pending advisor nudge"), Line(ToolDetail, body)]
+          })
+      }
       let omitted = case board.total > list.length(board.pending) {
         True -> [
           Line(

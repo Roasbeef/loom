@@ -265,3 +265,26 @@ pub fn the_observation_takes_the_read_lane_and_its_reply_settles_it_test() {
   assert board.pending == ["no down step"]
   assert session_channel.ready_for_read(channel)
 }
+
+// --- the tail collapses to previews -----------------------------------------
+
+/// A queue that grows through a long run would push the run out of view if
+/// every body printed in full, so the tail shows one preview row per nudge
+/// until detail mode asks for the complete text.
+pub fn pending_bodies_collapse_until_details_are_expanded_test() {
+  let tail = " and the ending that only detail mode shows"
+  let body = "check the dedup section " <> string.repeat("x", 150) <> tail
+  let observed =
+    tui_model.Model(
+      ..with_roster(roster(Some("assistant"), None)),
+      nudges: Some(board([body], 1)),
+    )
+
+  let collapsed = painted(observed)
+  assert string.contains(collapsed, "Pending advisor nudge: check the dedup")
+  assert string.contains(collapsed, "Ctrl+G to expand")
+  assert !string.contains(collapsed, "only detail mode shows")
+
+  let expanded = painted(tui_model.Model(..observed, details_expanded: True))
+  assert string.contains(expanded, "only detail mode shows")
+}
