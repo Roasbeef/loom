@@ -53,3 +53,12 @@ declared|linux|SKIP lsp jailed gleam lsp: platform enforcement unavailable|The o
 # the toolchain every runner has, so the manager's door, its jail and its
 # probe are still exercised against a real server without this waiver.
 declared|linux|SKIP lsp manager gopls: gopls or go is not installed|The ordinary runner installs no gopls; the gleam lsp fixture in the same file runs the whole door against a real jailed server, and a host with gopls on PATH or at ~/go/bin runs this one.
+
+# Issue #25's end-to-end acceptance (`conformance/lsp_e2e_test`) boots a
+# whole session from a `loom.toml` carrying a language server. Its Go
+# session drives `gopls` through the tool path and is feature-detected: a
+# runner without `gopls` (or `go`) prints this line and passes. The two
+# Gleam sessions beside it — the rename and the stale apply, which are the
+# acceptance itself — need only the toolchain every runner has and run
+# without this waiver.
+declared|linux|SKIP lsp e2e gopls: gopls or go is not installed|The ordinary runner installs no gopls; the Gleam rename and stale-apply sessions in the same file run the acceptance against a real jailed gleam lsp, and a host with gopls on PATH or at ~/go/bin runs this one.
