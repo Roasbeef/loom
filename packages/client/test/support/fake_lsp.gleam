@@ -7,7 +7,11 @@
 //// test support does not cross package boundaries, and the manager needs
 //// only this much: an `initialize` answered with chosen capabilities, every
 //// other request answered by a script over its method and params, a log of
-//// what the client sent, and a way to die.
+//// what the client sent, and a way to die. Two more serve the gate and the
+//// search bound: a script may leave a request unanswered, as a server that
+//// has gone silent does, and a fake may publish notifications of its own
+//// in reply to what the client tells it, as a server publishes
+//// diagnostics after a `didOpen`.
 
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -26,7 +30,15 @@ pub type Answer {
 
   /// A JSON-RPC error in the server's own words.
   Refuse(message: String)
+
+  /// No answer at all: the request waits out the client's deadline.
+  Silent
 }
+
+/// What a fake publishes in reply to one client notification: server
+/// notifications, each a method and its params.
+pub type Notifier =
+  fn(String, Option(JsonValue)) -> List(#(String, JsonValue))
 
 /// One thing the client sent, oldest first.
 pub type Seen {
@@ -54,6 +66,7 @@ type State {
   State(
     capabilities: JsonValue,
     script: fn(String, Option(JsonValue)) -> Answer,
+    notifier: Notifier,
     inbound: Option(Subject(transport.TransportEvent)),
     buffer: framing.Buffer,
     log: List(Seen),
@@ -66,11 +79,22 @@ pub fn start(
   capabilities: JsonValue,
   script: fn(String, Option(JsonValue)) -> Answer,
 ) -> Fake {
+  start_with(capabilities, script, fn(_method, _params) { [] })
+}
+
+/// `start`, with `notifier` answering each client notification with the
+/// server notifications it names.
+pub fn start_with(
+  capabilities: JsonValue,
+  script: fn(String, Option(JsonValue)) -> Answer,
+  notifier: Notifier,
+) -> Fake {
   let assert Ok(started) =
     actor.new(
       State(
         capabilities:,
         script:,
+        notifier:,
         inbound: None,
         buffer: framing.new(),
         log: [],
@@ -174,8 +198,20 @@ fn from_client(state: State, frame: String) -> State {
         answer(state, id, method, params)
         State(..state, log: [Sent(method:, params:), ..state.log])
       }
-      jsonrpc.Notification(method:, params:) ->
+      jsonrpc.Notification(method:, params:) -> {
+        list.each(state.notifier(method, params), fn(notification) {
+          let #(method, params) = notification
+          deliver(
+            state,
+            transport.TransportData(
+              bytes: bit_array.from_string(
+                framing.frame(jsonrpc.notification(method, Some(params))),
+              ),
+            ),
+          )
+        })
         State(..state, log: [Sent(method:, params:), ..state.log])
+      }
       jsonrpc.Response(..) -> state
     }
   })
@@ -189,22 +225,32 @@ fn answer(
 ) -> Nil {
   let reply = case method {
     "initialize" ->
-      jsonrpc.response(id, json.Object([#("capabilities", state.capabilities)]))
-    "shutdown" -> jsonrpc.response(id, json.Null)
+      Some(jsonrpc.response(
+        id,
+        json.Object([#("capabilities", state.capabilities)]),
+      ))
+    "shutdown" -> Some(jsonrpc.response(id, json.Null))
     _ ->
       case state.script(method, params) {
-        Answer(result:) -> jsonrpc.response(id, result)
+        Answer(result:) -> Some(jsonrpc.response(id, result))
         Refuse(message:) ->
-          jsonrpc.error_response(
+          Some(jsonrpc.error_response(
             id,
             jsonrpc.RpcError(code: -32_803, message:, data: None),
-          )
+          ))
+        Silent -> None
       }
   }
-  deliver(
-    state,
-    transport.TransportData(bytes: bit_array.from_string(framing.frame(reply))),
-  )
+  case reply {
+    Some(reply) ->
+      deliver(
+        state,
+        transport.TransportData(
+          bytes: bit_array.from_string(framing.frame(reply)),
+        ),
+      )
+    None -> Nil
+  }
 }
 
 fn deliver(state: State, event: transport.TransportEvent) -> Nil {

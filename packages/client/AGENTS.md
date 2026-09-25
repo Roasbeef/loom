@@ -4259,12 +4259,32 @@ ADR-013 is the ruling; these are the pieces that carry it in this package.
   the same manager to every door. `stop` asks the manager to shut down and
   waits, in the caller and bounded by `Timing.previous_ms`, for the
   server's keeper to finish its graceful stop.
-- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, same,
-  display, split_symbol, named, container, outline, site}` — the pure half:
-  which `{server, root}` owns a path (nearest root marker, real path under
-  the root), how a symbol splits into qualifier and identifier, which
-  definition a qualifier selects, and how a location renders as
-  `path:line:anchor|text`.
+- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
+  same, display, split_symbol, named, container, outline, site}` — the pure
+  half: which `{server, root}` owns a path (nearest root marker, real path
+  under the root; an absolute path is placed under the workspace as written
+  or its real location, since the write observer hands over real paths),
+  which server-named paths the harness may read (`admit`), how a symbol
+  splits into qualifier and identifier, which definition a qualifier
+  selects, and how a location renders as `path:line:anchor|text`.
+- **Invariant: no server-named path is read, opened or echoed ungated.**
+  The jail bounds what a server reads, never which paths it emits, and the
+  door reads in the caller, unjailed. Every path out of an answer
+  (definition, references, call edges, published diagnostics, a rename's
+  `WorkspaceEdit`, bare-name hits) passes `resolve.admit(root:, protected:,
+  path:)` — `tools/fs.resolve_writable` against the server's real root and
+  `Backend.protected` (the session base's list, filled by `jailed`) — and
+  becomes `Admitted`/`Withheld`. Withheld: shown at raw coordinates with
+  `text: ""`, never `didOpen`ed (`resync` gates again), and a rename naming
+  one answers `ServerRefused` whole. The bound is the root alone, not the
+  server's `readable` roots, so a stdlib jump shows no line text.
+  `resolve.read_text` has no discipline of its own; its callers pass
+  `owner` or `admit` output only.
+- **Invariant: one lapsed request ends a batch.** A bare-name search's
+  `definition` fold answers `Unavailable` at the first `TimedOut`,
+  `Unavailable` or `Unsupported`; the references `documentSymbol` fold stops
+  outlining there and keeps the rest with no container. Neither holds a
+  caller for one deadline per hit.
 - `client/lsp/jail.{Placement, Jail, Launch, operation, step_id, locate,
   policy_for, call_spec, launch, transport}` — one server's jail and its
   transport. `call_spec(jail, op, now_ms:, demand:)` takes the demand from
