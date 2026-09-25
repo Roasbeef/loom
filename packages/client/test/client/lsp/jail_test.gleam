@@ -22,10 +22,10 @@ import broker/exec
 import broker/framing
 import broker/policy
 import broker/token
-import client/catalog
 import client/internal/ffi_os
 import client/lsp/jail
 import client/lsp/leases
+import client/lsp/profile
 import core/clock
 import core/ids
 import core/json
@@ -50,8 +50,8 @@ const workspace = "/work"
 
 const root = "/work/probe"
 
-fn server(project: catalog.ProjectAccess) -> catalog.LspServer {
-  catalog.LspServer(
+fn server(project: profile.ProjectAccess) -> profile.LspServer {
+  profile.LspServer(
     name: "gleam",
     command: ["gleam", "lsp"],
     extensions: [".gleam"],
@@ -60,10 +60,14 @@ fn server(project: catalog.ProjectAccess) -> catalog.LspServer {
     readable: [],
     writable: [],
     env: [],
+    language_id: "gleam",
+    qualifier_separators: ["."],
+    module_case: profile.AsWritten,
+    hint: None,
   )
 }
 
-fn placement(server: catalog.LspServer) -> jail.Placement {
+fn placement(server: profile.LspServer) -> jail.Placement {
   jail.Placement(
     server:,
     root:,
@@ -72,7 +76,7 @@ fn placement(server: catalog.LspServer) -> jail.Placement {
       path: "/usr/local/bin/gleam",
       file: jail.PlainExecutable,
     ),
-    home: Some("/home/o"),
+    places: profile.Places(home: Some("/home/o"), cache: None),
   )
 }
 
@@ -96,7 +100,7 @@ fn host_env(name: String) -> Result(String, Nil) {
   }
 }
 
-fn built(server: catalog.LspServer) -> jail.Jail {
+fn built(server: profile.LspServer) -> jail.Jail {
   let assert Ok(built) =
     jail.policy_for(placement(server), session_base(), reading: host_env)
     as "the fixture's jail must be buildable"
@@ -117,13 +121,13 @@ fn composed(built: jail.Jail) -> policy.SandboxPolicy {
 // --- (a) the policy ----------------------------------------------------------
 
 pub fn a_writable_project_is_writable_in_the_jail_test() {
-  let final = composed(built(server(catalog.ProjectWritable)))
+  let final = composed(built(server(profile.ProjectWritable)))
   assert list.contains(final.writable_roots, root)
   assert list.contains(final.readable_roots, root)
 }
 
 pub fn a_read_only_project_is_read_but_never_written_test() {
-  let built = built(server(catalog.ProjectReadOnly))
+  let built = built(server(profile.ProjectReadOnly))
   let final = composed(built)
   assert !list.contains(built.requirements.writable_roots, root)
   assert list.contains(final.readable_roots, root)
@@ -135,11 +139,11 @@ pub fn a_read_only_project_is_read_but_never_written_test() {
 
 pub fn the_extra_roots_are_the_operators_expanded_against_home_test() {
   let gopls =
-    catalog.LspServer(
-      ..server(catalog.ProjectReadOnly),
+    profile.LspServer(
+      ..server(profile.ProjectReadOnly),
       name: "gopls",
-      readable: [catalog.HomePath("go/pkg/mod")],
-      writable: [catalog.HomePath(".cache/go-build")],
+      readable: [profile.HomePath("go/pkg/mod")],
+      writable: [profile.HomePath(".cache/go-build")],
     )
   let built = built(gopls)
   let final = composed(built)
@@ -155,12 +159,15 @@ pub fn the_extra_roots_are_the_operators_expanded_against_home_test() {
 
 pub fn a_home_root_without_a_home_is_refused_test() {
   let gopls =
-    catalog.LspServer(..server(catalog.ProjectReadOnly), readable: [
-      catalog.HomePath("go/pkg/mod"),
+    profile.LspServer(..server(profile.ProjectReadOnly), readable: [
+      profile.HomePath("go/pkg/mod"),
     ])
   let refused =
     jail.policy_for(
-      jail.Placement(..placement(gopls), home: None),
+      jail.Placement(
+        ..placement(gopls),
+        places: profile.Places(home: None, cache: None),
+      ),
       session_base(),
       reading: host_env,
     )
@@ -169,7 +176,7 @@ pub fn a_home_root_without_a_home_is_refused_test() {
 
 pub fn the_environment_is_constructed_and_the_names_pass_through_test() {
   let gopls =
-    catalog.LspServer(..server(catalog.ProjectReadOnly), env: [
+    profile.LspServer(..server(profile.ProjectReadOnly), env: [
       "GOFLAGS",
       "GOPROXY",
     ])
@@ -187,7 +194,7 @@ pub fn the_environment_is_constructed_and_the_names_pass_through_test() {
 }
 
 pub fn the_tmpdir_is_pinned_under_a_writable_root_test() {
-  let built = built(server(catalog.ProjectReadOnly))
+  let built = built(server(profile.ProjectReadOnly))
   let assert Ok(tmp) = list.key_find(built.env, "TMPDIR")
   let final = composed(built)
   assert list.any(final.writable_roots, fn(writable) {
@@ -197,7 +204,7 @@ pub fn the_tmpdir_is_pinned_under_a_writable_root_test() {
 }
 
 pub fn the_lease_limits_are_zero_and_survive_composition_test() {
-  let built = built(server(catalog.ProjectWritable))
+  let built = built(server(profile.ProjectWritable))
 
   // The session base carries a command's limits; the lease base does not.
   assert session_base().limits.output_bytes > 0
@@ -216,7 +223,7 @@ pub fn the_lease_limits_are_zero_and_survive_composition_test() {
 }
 
 pub fn the_network_is_off_whatever_the_base_allows_test() {
-  let built = built(server(catalog.ProjectWritable))
+  let built = built(server(profile.ProjectWritable))
   assert built.base.network == policy.NetworkFull
   assert built.requirements.network == policy.NetworkOff
   assert composed(built).network == policy.NetworkOff
@@ -228,7 +235,7 @@ pub fn a_root_the_session_cannot_reach_is_refused_not_granted_test() {
   let refused =
     jail.policy_for(
       jail.Placement(
-        ..placement(server(catalog.ProjectWritable)),
+        ..placement(server(profile.ProjectWritable)),
         root: "/elsewhere",
       ),
       session_base(),
@@ -239,7 +246,7 @@ pub fn a_root_the_session_cannot_reach_is_refused_not_granted_test() {
 }
 
 pub fn the_executable_region_is_mounted_read_only_test() {
-  let built = built(server(catalog.ProjectWritable))
+  let built = built(server(profile.ProjectWritable))
   let wanted =
     policy.Mount(
       path: "/usr/local/bin",
@@ -261,7 +268,7 @@ pub fn a_region_the_base_already_binds_is_asked_for_by_its_path_test() {
   let base = policy.SandboxPolicy(..session_base(), mounts: [prefix])
   let assert Ok(built) =
     jail.policy_for(
-      placement(server(catalog.ProjectWritable)),
+      placement(server(profile.ProjectWritable)),
       base,
       reading: host_env,
     )
@@ -318,7 +325,7 @@ pub fn a_region_over_the_servers_writes_is_refused_test() {
   let assert Ok(_admitted) =
     jail.policy_for(
       jail.Placement(
-        ..placement(server(catalog.ProjectWritable)),
+        ..placement(server(profile.ProjectWritable)),
         executable: shell,
       ),
       session_base(),
@@ -329,10 +336,10 @@ pub fn a_region_over_the_servers_writes_is_refused_test() {
   // The shadow check still judges a link's target: a link into a directory
   // holding a writable root is refused, and the remedy names the chain.
   let cached =
-    catalog.LspServer(
-      ..server(catalog.ProjectReadOnly),
+    profile.LspServer(
+      ..server(profile.ProjectReadOnly),
       name: "gopls",
-      writable: [catalog.HomePath(".cache/go-build")],
+      writable: [profile.HomePath(".cache/go-build")],
     )
   let refused =
     jail.policy_for(
@@ -376,7 +383,7 @@ pub fn a_region_over_the_servers_writes_is_refused_test() {
 // jail, so either could point `node_modules/.bin/server` beside a
 // credential; the lease is refused and the operator told to name the file.
 fn linked_at(
-  server: catalog.LspServer,
+  server: profile.LspServer,
   path: String,
   chain: List(String),
 ) -> Result(jail.Jail, String) {
@@ -393,7 +400,7 @@ fn linked_at(
 pub fn a_link_inside_a_writable_project_is_refused_test() {
   let link = root <> "/node_modules/.bin/server"
   let assert Error(reason) =
-    linked_at(server(catalog.ProjectWritable), link, [
+    linked_at(server(profile.ProjectWritable), link, [
       "/home/o/.cargo/credentials.toml",
     ])
     as "a link the server can rewrite must be refused"
@@ -411,8 +418,8 @@ pub fn a_link_inside_a_writable_project_is_refused_test() {
 // an operator's `writable` root.
 pub fn a_link_inside_a_writable_root_is_refused_test() {
   let tools =
-    catalog.LspServer(..server(catalog.ProjectReadOnly), writable: [
-      catalog.HomePath(".cache/tools"),
+    profile.LspServer(..server(profile.ProjectReadOnly), writable: [
+      profile.HomePath(".cache/tools"),
     ])
   let hop = "/home/o/.cache/tools/bin/server"
   let assert Error(reason) =
@@ -427,7 +434,7 @@ pub fn a_link_inside_a_writable_root_is_refused_test() {
 pub fn a_link_inside_a_read_only_project_is_admitted_test() {
   let assert Ok(built) =
     linked_at(
-      server(catalog.ProjectReadOnly),
+      server(profile.ProjectReadOnly),
       root <> "/node_modules/.bin/server",
       ["/opt/server/bin/server"],
     )
@@ -442,7 +449,7 @@ pub fn a_plain_executable_in_a_writable_project_is_admitted_test() {
   let assert Ok(_built) =
     jail.policy_for(
       jail.Placement(
-        ..placement(server(catalog.ProjectWritable)),
+        ..placement(server(profile.ProjectWritable)),
         executable: jail.Executable(
           path: root <> "/node_modules/.bin/server",
           file: jail.PlainExecutable,
@@ -496,7 +503,7 @@ fn link(at path: String, to target: String) -> Nil {
 
 fn located(path: String) -> Result(jail.Executable, String) {
   jail.locate(
-    catalog.LspServer(..server(catalog.ProjectReadOnly), command: [
+    profile.LspServer(..server(profile.ProjectReadOnly), command: [
       path,
       "lsp",
     ]),
@@ -621,7 +628,7 @@ pub fn a_chain_past_the_bound_is_refused_by_name_test() {
 pub fn a_region_that_shadows_no_write_is_admitted_test() {
   let in_root = fn(path) {
     jail.Placement(
-      ..placement(server(catalog.ProjectReadOnly)),
+      ..placement(server(profile.ProjectReadOnly)),
       executable: jail.Executable(path:, file: jail.PlainExecutable),
     )
   }
@@ -637,7 +644,7 @@ pub fn a_region_that_shadows_no_write_is_admitted_test() {
     jail.policy_for(
       jail.Placement(
         ..in_root(root <> "/node_modules/.bin/server"),
-        server: server(catalog.ProjectWritable),
+        server: server(profile.ProjectWritable),
       ),
       session_base(),
       reading: host_env,
@@ -654,7 +661,7 @@ pub fn the_step_names_the_server_and_its_root_test() {
 
   let spec =
     jail.call_spec(
-      built(server(catalog.ProjectWritable)),
+      built(server(profile.ProjectWritable)),
       op(),
       now_ms: 5,
       demand: exec.PlatformEnforcement,
@@ -667,7 +674,7 @@ pub fn the_step_names_the_server_and_its_root_test() {
   // what the probe proves, so the spec must not substitute its own.
   let relaxed =
     jail.call_spec(
-      built(server(catalog.ProjectWritable)),
+      built(server(profile.ProjectWritable)),
       op(),
       now_ms: 5,
       demand: exec.BestEffort,
@@ -773,7 +780,7 @@ fn scripted(
     abort: fn() { process.send(seen, Aborted) },
     leases: counter,
     spec: jail.call_spec(
-      built(server(catalog.ProjectWritable)),
+      built(server(profile.ProjectWritable)),
       op(),
       now_ms: 0,
       demand: exec.PlatformEnforcement,
@@ -1102,7 +1109,7 @@ fn wall_clock() -> clock.Clock {
 
 fn run_live(helper: String, here: String) -> Nil {
   let live = live_rig(helper, here)
-  let server = server(catalog.ProjectWritable)
+  let server = server(profile.ProjectWritable)
   let assert Ok(executable) = jail.locate(server, None)
     as "gleam must be located on PATH"
   let placement =
@@ -1111,7 +1118,7 @@ fn run_live(helper: String, here: String) -> Nil {
       root: live.project,
       workspace: live.workspace,
       executable:,
-      home: Some(live.workspace <> "/home"),
+      places: profile.Places(home: Some(live.workspace <> "/home"), cache: None),
     )
   let assert Ok(built) =
     jail.policy_for(placement, live_base(live.workspace), reading: fn(name) {

@@ -446,7 +446,9 @@ catalogue without opening runtimes. Explicit admission invokes
   cost the adapters write. The hub serves it as the `models`
   listing and resolves `set_config`'s `model_name` against it; `serve`
   loads it from `--config` or shapes a one-entry catalogue from the
-  `LOOM_*` environment.
+  `LOOM_*` environment. `Catalog.lsp_servers` is decoded by
+  `client/lsp/profile.decode_servers`, not here: `catalog` checks only
+  that `[lsp]` is a table and hands over its entries.
 - `client/secrets.{Source, Entry, Failure, Capture, Runner, parse,
   resolve, store, host_runner}` — the `[secrets]` table of the same
   `loom.toml`: how the daemon *obtains* a named credential the operator's
@@ -1974,7 +1976,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
   Option(History), Option(Memory), Option(Schedules), Option(Context),
-  Option(Jobs), Option(lsp/query.Door))`
+  Option(Jobs), Option(lsp/query.Door), List(#(String, String)))`
   — the host's own single contribution: five core tools, plus the six
   `agent_*` tools only when a messaging plane exists, plus `code_mode`
   only when this host wired a code-mode pipeline, plus `history_search`
@@ -1993,7 +1995,10 @@ catalogue without opening runtimes. Explicit admission invokes
   the plain ones and the definitions are byte-identical to a host that
   never heard of language servers. `serve` passes the session manager's
   door when the catalogue configures an `[lsp.<name>]` server that
-  survived its load, and `None` otherwise (see "Language servers").
+  survived its load, and `None` otherwise (see "Language servers"). The
+  last argument is the served profiles' hints as `#(server name, hint)`,
+  handed to `tools/lsp.tools`, which appends them to `lsp_definition`'s
+  description only; `[]` leaves every description byte-identical.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -4243,7 +4248,36 @@ retains its collection margin so a verdict at the proof cutoff can be observed.
 
 ## Language servers
 
-ADR-013 is the ruling; these are the pieces that carry it in this package.
+ADR-013 is the ruling, and ADR-014 §§1–2 makes a server's table a
+language profile; these are the pieces that carry both in this package.
+
+- `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
+  Places, decode_servers, decode_server, claim_extensions, expand_path,
+  cache_place, mangling_fault, not_server_owned}` — the one
+  `[lsp.<name>]` decoder, pure (no I/O, no external). `client/catalog`
+  hands `decode_servers` the `[lsp]` table's entries, and an extension
+  manifest's profiles are meant to go through the same functions, so the
+  two can never accept different things. `LspServer` carries the ADR-013
+  keys plus four profile keys, each defaulting to the behaviour it
+  replaced: `language_id: String` (always filled; default the first
+  extension without its dot; written, `[a-z0-9][a-z0-9+._-]*` in at most
+  40 characters), `qualifier_separators: List(String)` (default `["."]`;
+  each non-empty, no whitespace, not `/`, listed once; `[]` refused),
+  `module_case: ModuleCase` (`AsWritten` | `Snake`, from `"as-written"` or
+  `"snake"`), and `hint: Option(String)` (one line, no control character,
+  at most 200 bytes). `LspPath` is `AbsolutePath` | `HomePath(rest)` |
+  `CachePath(rest)`, the last written `<cache>/rest` under the `~/` rules.
+  `expand_path(path, Places(home:, cache:))` resolves both relative forms
+  and refuses a missing or relative place; `cache_place(os, home,
+  xdg_cache_home)` is the pure platform rule (`darwin`:
+  `home/Library/Caches`; else an absolute `XDG_CACHE_HOME`, else
+  `home/.cache`). `mangling_fault` and `not_server_owned` live here
+  because `catalog`, which imports this module, shares them for its
+  `[mcp.<name>]` and `[tools]` checks.
+- **Invariant: a profile key's default is the old behaviour.** A table
+  naming none of the four keys decodes to exactly what ADR-013 shipped;
+  `catalog_lsp_test` pins it, and the resolve tests pass with `["."]` and
+  `AsWritten` as they did before the parameters existed.
 
 - `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
   Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,
@@ -4260,13 +4294,20 @@ ADR-013 is the ruling; these are the pieces that carry it in this package.
   waits, in the caller and bounded by `Timing.previous_ms`, for the
   server's keeper to finish its graceful stop.
 - `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
-  same, display, split_symbol, named, container, outline, site}` — the pure
-  half: which `{server, root}` owns a path (nearest root marker, real path
-  under the root; an absolute path is placed under the workspace as written
-  or its real location, since the write observer hands over real paths),
-  which server-named paths the harness may read (`admit`), how a symbol
-  splits into qualifier and identifier, which definition a qualifier
-  selects, and how a location renders as `path:line:anchor|text`.
+  same, display, split_symbol, cased, satisfies, named, container,
+  outline, site}` — the pure half: which `{server, root}` owns a path
+  (nearest root marker, real path under the root; an absolute path is
+  placed under the workspace as written or its real location, since the
+  write observer hands over real paths), which server-named paths the
+  harness may read (`admit`), how a symbol splits into qualifier and
+  identifier (`split_symbol(symbol, separators)`, longest separator
+  first, segments joined with `/`), which definition a qualifier selects
+  (`satisfies(root, path, qualifier, module_case)`, the module-path match
+  `cased` to snake_case under `Snake`; `named` compares an outline parent
+  chain with the qualifier as written), and how a location renders as
+  `path:line:anchor|text`. The manager splits a symbol only once it knows
+  the owning server: after `owner` for a path, per server for a bare-name
+  search. A document's `languageId` is `LspServer.language_id`.
 - **Invariant: no server-named path is read, opened or echoed ungated.**
   The jail bounds what a server reads, never which paths it emits, and the
   door reads in the caller, unjailed. Every path out of an answer
@@ -4288,8 +4329,10 @@ ADR-013 is the ruling; these are the pieces that carry it in this package.
 - `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
   max_link_hops, operation, step_id, locate, regions, policy_for,
   call_spec, launch, transport}` — one server's jail and its transport.
-  `call_spec(jail, op, now_ms:, demand:)` takes the demand from its
-  caller: the session's, which the probe proved.
+  `Placement.places` (and `manager.Jailed.places`) is the daemon's
+  `profile.Places`: it expands `~/` and `<cache>/` roots, and its `home`
+  is the server's `HOME`. `call_spec(jail, op, now_ms:, demand:)` takes
+  the demand from its caller: the session's, which the probe proved.
 - **Invariant: a server's executable region is directories, never an
   install prefix.** `locate` reads the executable without following it
   (`tools/fs.real_filesystem().read_link`, the existing
@@ -4327,14 +4370,18 @@ ADR-013 is the ruling; these are the pieces that carry it in this package.
   whose manager died, stops its client gracefully (`lsp/client.stop`).
 - **Serve wiring.** `serve.assemble_in` builds the plane only when
   `Catalog.lsp_servers` is non-empty. Each server's `readable`/`writable`
-  `~/` roots are expanded once with `catalog.expand_lsp_path(_,
-  serve.home_directory())`; a server whose roots will not resolve, or every
+  `~/` and `<cache>/` roots are expanded once with
+  `profile.expand_path(_, places)`, where `places` is
+  `serve.home_directory()` and `profile.cache_place` over
+  `ffi_os.platform`'s OS name and the daemon's `XDG_CACHE_HOME`; a server
+  whose roots will not resolve, or every
   server when the lease counter will not start, is refused with one
   `lsp.unavailable` line and the boot goes on. The counter starts from
   `Settings.helper_pool_size`, `jail.operation` mints the attribution
   operation, and the manager runs as a service-tier child under a minted
   address, over `manager.jailed` with `Settings.demand`. The same door goes
-  to `contributions.built_in` and `codemode.over_lsp`. `close_instance`
+  to `contributions.built_in` and `codemode.over_lsp`, and the wired
+  servers' hints go to `contributions.built_in` beside it. `close_instance`
   stops the manager after `api.close` and before the service tree, then
   aborts the plane's operation (the backstop) and stops the counter. A
   daemon session retired through custody loses the manager with the

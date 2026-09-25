@@ -98,15 +98,28 @@ pub type RenameMode {
 /// because the tool array is the cached prefix and an unconfigured
 /// workspace should pay nothing for them (ADR-013 §6).
 ///
+/// `hints` are the configured servers' profile hints, as `#(server name,
+/// hint)` in the order they should be read (ADR-014 §2). Each tells the
+/// model how its language spells a qualified name, and they are appended
+/// once, as one "Language notes:" block, to `lsp_definition`'s description
+/// and nowhere else: every other symbol-taking tool addresses symbols the
+/// same way, so one statement reaches them all without paying for the
+/// text seven times in the cached prefix. With no hints every description
+/// is exactly what it was before hints existed.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.registry(list.append(core_tools, lsp.tools(door)))
+/// // tool.registry(list.append(core_tools, lsp.tools(door, [])))
 /// ```
 ///
-pub fn tools(door: query.Door) -> List(Tool) {
+/// ```gleam
+/// // lsp.tools(door, [#("rust", "Qualify as module::name, without crate::")])
+/// ```
+///
+pub fn tools(door: query.Door, hints: List(#(String, String))) -> List(Tool) {
   [
-    definition_tool(door),
+    definition_tool(door, hints),
     references_tool(door),
     hover_tool(door),
     symbols_tool(door),
@@ -118,6 +131,24 @@ pub fn tools(door: query.Door) -> List(Tool) {
 
 // --- the tool definitions -------------------------------------------------
 
+// The servers' hints as the block `lsp_definition`'s description ends
+// with, one `name: hint` line each, or nothing at all when no server
+// wrote one, so a session without hints carries the description
+// byte-for-byte as it was. The hints themselves are single printable
+// lines (`client/lsp/profile` refuses anything else), so each stays one
+// line of the block.
+fn language_notes(hints: List(#(String, String))) -> String {
+  case hints {
+    [] -> ""
+    [_, ..] ->
+      "\n\nLanguage notes:\n"
+      <> string.join(
+        list.map(hints, fn(hint) { hint.0 <> ": " <> hint.1 }),
+        "\n",
+      )
+  }
+}
+
 // The sentence every symbol-addressed description ends with, so the three
 // facts a model needs to call these well are stated once and identically.
 const addressing = " Address the symbol by name as the code spells it, "
@@ -127,12 +158,13 @@ const addressing = " Address the symbol by name as the code spells it, "
   <> "`path:line:anchor|text`, so it can be edited with fs_edit without "
   <> "reading the file first."
 
-fn definition_tool(door: query.Door) -> Tool {
+fn definition_tool(door: query.Door, hints: List(#(String, String))) -> Tool {
   read_tool(
     name: "lsp_definition",
     description: "Find where a symbol is defined, using the language "
       <> "server's semantic view rather than a text search."
-      <> addressing,
+      <> addressing
+      <> language_notes(hints),
     snippet: "`lsp_definition` finds where a symbol is defined, by name; "
       <> "results carry fs_edit anchors.",
     schema: symbol_schema([], []),

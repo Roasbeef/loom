@@ -18,11 +18,11 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
-import client/catalog
 import client/internal/ffi_os
 import client/lsp/jail
 import client/lsp/leases
 import client/lsp/manager
+import client/lsp/profile
 import client/lsp/resolve
 import core/clock
 import core/ids
@@ -78,16 +78,20 @@ fn write(path: String, text: String) -> Nil {
   Nil
 }
 
-fn fake_server() -> catalog.LspServer {
-  catalog.LspServer(
+fn fake_server() -> profile.LspServer {
+  profile.LspServer(
     name: "fake",
     command: ["/bin/false"],
     extensions: [".gleam"],
     root_markers: ["gleam.toml"],
-    project: catalog.ProjectReadOnly,
+    project: profile.ProjectReadOnly,
     readable: [],
     writable: [],
     env: [],
+    language_id: "gleam",
+    qualifier_separators: ["."],
+    module_case: profile.AsWritten,
+    hint: None,
   )
 }
 
@@ -212,21 +216,97 @@ fn uri(path: String) -> String {
 // --- (a) the pure rules --------------------------------------------------------
 
 pub fn a_qualified_symbol_splits_into_qualifier_and_identifier_test() {
-  assert resolve.split_symbol("greet") == resolve.Symbol("greet", None)
-  assert resolve.split_symbol("probe.greet")
+  assert resolve.split_symbol("greet", ["."]) == resolve.Symbol("greet", None)
+  assert resolve.split_symbol("probe.greet", ["."])
     == resolve.Symbol("greet", Some("probe"))
-  assert resolve.split_symbol("pkg/mod.name")
+  assert resolve.split_symbol("pkg/mod.name", ["."])
     == resolve.Symbol("name", Some("pkg/mod"))
-  assert resolve.split_symbol("a.b.c") == resolve.Symbol("c", Some("a/b"))
-  assert resolve.split_symbol("..") == resolve.Symbol("..", None)
+  assert resolve.split_symbol("a.b.c", ["."])
+    == resolve.Symbol("c", Some("a/b"))
+  assert resolve.split_symbol("..", ["."]) == resolve.Symbol("..", None)
 }
 
 pub fn a_qualifier_matches_a_module_path_or_a_directory_test() {
-  assert resolve.satisfies("/w", "/w/src/probe.gleam", "probe")
-  assert resolve.satisfies("/w", "/w/util/util.go", "util")
-  assert resolve.satisfies("/w", "/w/src/pkg/mod.gleam", "pkg/mod")
-  assert !resolve.satisfies("/w", "/w/src/probe.gleam", "robe")
-  assert !resolve.satisfies("/w", "/w/src/other.gleam", "probe")
+  assert resolve.satisfies(
+    "/w",
+    "/w/src/probe.gleam",
+    "probe",
+    profile.AsWritten,
+  )
+  assert resolve.satisfies("/w", "/w/util/util.go", "util", profile.AsWritten)
+  assert resolve.satisfies(
+    "/w",
+    "/w/src/pkg/mod.gleam",
+    "pkg/mod",
+    profile.AsWritten,
+  )
+  assert !resolve.satisfies(
+    "/w",
+    "/w/src/probe.gleam",
+    "robe",
+    profile.AsWritten,
+  )
+  assert !resolve.satisfies(
+    "/w",
+    "/w/src/other.gleam",
+    "probe",
+    profile.AsWritten,
+  )
+}
+
+// A server that qualifies with `::` splits there, and `.` is then an
+// ordinary character; with both listed, the longer wins at each position.
+pub fn a_symbol_splits_on_the_servers_separators_test() {
+  assert resolve.split_symbol("util::greet", ["::"])
+    == resolve.Symbol("greet", Some("util"))
+  assert resolve.split_symbol("a::b::c", ["::"])
+    == resolve.Symbol("c", Some("a/b"))
+  assert resolve.split_symbol("util.greet", ["::"])
+    == resolve.Symbol("util.greet", None)
+  assert resolve.split_symbol("util::greet", [":", "::"])
+    == resolve.Symbol("greet", Some("util"))
+  assert resolve.split_symbol("pkg/mod::name", ["::", "."])
+    == resolve.Symbol("name", Some("pkg/mod"))
+  assert resolve.split_symbol("a.b::c", [".", "::"])
+    == resolve.Symbol("c", Some("a/b"))
+  assert resolve.split_symbol("::", ["::"]) == resolve.Symbol("::", None)
+}
+
+pub fn a_segment_maps_to_snake_case_test() {
+  assert resolve.cased("MyApp", profile.Snake) == "my_app"
+  assert resolve.cased("HTTPServer", profile.Snake) == "http_server"
+  assert resolve.cased("already_snake", profile.Snake) == "already_snake"
+  assert resolve.cased("MyApp/Accounts", profile.Snake) == "my_app/accounts"
+  assert resolve.cased("V2Api", profile.Snake) == "v2_api"
+  assert resolve.cased("IO", profile.Snake) == "io"
+  assert resolve.cased("MyApp/HTTPServer", profile.AsWritten)
+    == "MyApp/HTTPServer"
+}
+
+// Elixir's `MyApp.Accounts.list` lives in `lib/my_app/accounts.ex`, which
+// only a snake-cased qualifier meets.
+pub fn a_snake_qualifier_matches_the_snake_path_test() {
+  let symbol = resolve.split_symbol("MyApp.Accounts.list", ["."])
+  assert symbol == resolve.Symbol("list", Some("MyApp/Accounts"))
+  let assert Some(qualifier) = symbol.qualifier
+  assert resolve.satisfies(
+    "/w",
+    "/w/lib/my_app/accounts.ex",
+    qualifier,
+    profile.Snake,
+  )
+  assert !resolve.satisfies(
+    "/w",
+    "/w/lib/my_app/accounts.ex",
+    qualifier,
+    profile.AsWritten,
+  )
+  assert !resolve.satisfies(
+    "/w",
+    "/w/lib/my_app/users.ex",
+    qualifier,
+    profile.Snake,
+  )
 }
 
 pub fn the_container_is_the_innermost_entry_qualified_by_its_parents_test() {
@@ -261,6 +341,7 @@ pub fn the_container_is_the_innermost_entry_qualified_by_its_parents_test() {
       symbols,
       "handle",
       Some("Server"),
+      profile.AsWritten,
       root: "/w",
       path: "/w/x.gleam",
     )
@@ -269,8 +350,68 @@ pub fn the_container_is_the_innermost_entry_qualified_by_its_parents_test() {
       symbols,
       "handle",
       Some("Other"),
+      profile.AsWritten,
       root: "/w",
       path: "/w/x.gleam",
+    )
+    == []
+}
+
+// Under `Snake` the parent-type match still compares the qualifier as
+// written: `Server.handle` names the type `Server`, which the outline
+// spells `Server`, and a snake-cased `server` would miss it.
+pub fn a_parent_type_matches_as_written_under_snake_test() {
+  let span = fn(a, b, c, d) {
+    range.Range(range.Position(a, b), range.Position(c, d))
+  }
+  let symbols =
+    protocol.Hierarchical([
+      protocol.DocumentSymbol(
+        name: "Server",
+        kind: 5,
+        detail: None,
+        range: span(0, 0, 10, 0),
+        selection_range: span(0, 5, 0, 11),
+        children: [
+          protocol.DocumentSymbol(
+            name: "handle",
+            kind: 6,
+            detail: None,
+            range: span(2, 2, 5, 3),
+            selection_range: span(2, 6, 2, 12),
+            children: [],
+          ),
+        ],
+      ),
+    ])
+  assert resolve.named(
+      symbols,
+      "handle",
+      Some("Server"),
+      profile.Snake,
+      root: "/w",
+      path: "/w/lib/web/endpoint.ex",
+    )
+    == [#("Server.handle", range.Position(2, 6))]
+
+  // The module match is the one that is cased: `Web/Endpoint` meets
+  // `web/endpoint.ex` only once snake-cased.
+  assert resolve.named(
+      symbols,
+      "handle",
+      Some("Web/Endpoint"),
+      profile.Snake,
+      root: "/w",
+      path: "/w/lib/web/endpoint.ex",
+    )
+    == [#("Server.handle", range.Position(2, 6))]
+  assert resolve.named(
+      symbols,
+      "handle",
+      Some("Web/Endpoint"),
+      profile.AsWritten,
+      root: "/w",
+      path: "/w/lib/web/endpoint.ex",
     )
     == []
 }
@@ -376,7 +517,7 @@ fn probe_jailed(
     session_base: probe_session_base(workspace),
     demand:,
     toolchain: None,
-    home: None,
+    places: profile.Places(home: None, cache: None),
     reading: fn(name) {
       case name {
         "PATH" -> Ok("/usr/bin:/bin")
@@ -395,8 +536,8 @@ fn probe_jailed(
 // Not `/bin/sh`: on most hosts that is a link, whose install prefix climbs
 // out of `/bin` to `/`, and `jail.policy_for` refuses a region covering
 // the server's writes before any probe could be cleared.
-fn shell_server() -> catalog.LspServer {
-  catalog.LspServer(..fake_server(), name: "shell", command: ["/bin/false"])
+fn shell_server() -> profile.LspServer {
+  profile.LspServer(..fake_server(), name: "shell", command: ["/bin/false"])
 }
 
 pub fn a_degraded_probe_refuses_the_server_naming_the_layer_test() {
@@ -1170,7 +1311,7 @@ fn live_rig(helper: String, tag: String) -> Live {
 
 fn live_manager(
   live: Live,
-  servers: List(catalog.LspServer),
+  servers: List(profile.LspServer),
   reading: fn(String) -> Result(String, Nil),
 ) -> manager.Manager {
   let lsp_op = op()
@@ -1180,7 +1321,7 @@ fn live_manager(
       session_base: live_base(live.workspace),
       demand: exec.BestEffort,
       toolchain: None,
-      home: Some(live.workspace <> "/home"),
+      places: profile.Places(home: Some(live.workspace <> "/home"), cache: None),
       reading:,
       run: tool.broker_runner(
         broker: live.broker,
@@ -1262,15 +1403,19 @@ fn run_gleam(live: Live) -> Nil {
   write(project <> "/src/probe.gleam", probe_source)
   write(project <> "/src/other.gleam", other_source)
   let server =
-    catalog.LspServer(
+    profile.LspServer(
       name: "gleam",
       command: ["gleam", "lsp"],
       extensions: [".gleam"],
       root_markers: ["gleam.toml"],
-      project: catalog.ProjectWritable,
+      project: profile.ProjectWritable,
       readable: [],
       writable: [],
       env: [],
+      language_id: "gleam",
+      qualifier_separators: ["."],
+      module_case: profile.AsWritten,
+      hint: None,
     )
   let running =
     live_manager(live, [server], fn(name) {
@@ -1428,15 +1573,19 @@ fn run_gopls(live: Live, gopls: String, go: String) -> Nil {
   let assert Ok(Nil) = simplifile.create_directory_all(gopath) as "gopath dir"
   let go_bin = dirname(go)
   let server =
-    catalog.LspServer(
+    profile.LspServer(
       name: "gopls",
       command: [gopls],
       extensions: [".go"],
       root_markers: ["go.mod"],
-      project: catalog.ProjectReadOnly,
+      project: profile.ProjectReadOnly,
       readable: [],
-      writable: [catalog.AbsolutePath(cache), catalog.AbsolutePath(gopath)],
+      writable: [profile.AbsolutePath(cache), profile.AbsolutePath(gopath)],
       env: ["GOCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY"],
+      language_id: "go",
+      qualifier_separators: ["."],
+      module_case: profile.AsWritten,
+      hint: None,
     )
   let running =
     live_manager(live, [server], fn(name) {

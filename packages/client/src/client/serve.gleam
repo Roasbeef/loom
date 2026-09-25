@@ -72,6 +72,7 @@ import client/jobtools
 import client/lsp/jail as lsp_jail
 import client/lsp/leases as lsp_leases
 import client/lsp/manager as lsp_manager
+import client/lsp/profile
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -2076,10 +2077,10 @@ fn lsp_wiring(
   seed: Int,
   name: address.Address(lsp_manager.Msg),
 ) -> Option(LspWiring) {
-  let home = home_directory()
+  let places = lsp_places()
   let servers =
     list.filter_map(settings.catalog.lsp_servers, fn(server) {
-      lsp_server_roots(server, home)
+      lsp_server_roots(server, places)
       |> result.map_error(fn(reason) {
         log.warn(logger, "lsp.unavailable", [
           field.text(key: "server", value: server.name),
@@ -2116,7 +2117,7 @@ fn lsp_wiring(
             clock,
             seed,
             name,
-            home,
+            places,
           ))
       }
   }
@@ -2127,7 +2128,7 @@ fn lsp_wiring(
 // under the session's demand and the plane's own operation.
 fn lsp_plane_wiring(
   settings: Settings,
-  servers: List(catalog.LspServer),
+  servers: List(profile.LspServer),
   leases: lsp_leases.Leases,
   base_policy: policy.SandboxPolicy,
   toolchain: Result(codemode_wiring.Toolchain, String),
@@ -2135,7 +2136,7 @@ fn lsp_plane_wiring(
   clock: Clock,
   seed: Int,
   name: address.Address(lsp_manager.Msg),
-  home: Option(String),
+  places: profile.Places,
 ) -> LspWiring {
   let op_id = lsp_jail.operation(clock, seed:)
   let timing = lsp_manager.default_timing()
@@ -2145,7 +2146,7 @@ fn lsp_plane_wiring(
       session_base: base_policy,
       demand: settings.demand,
       toolchain: option.from_result(toolchain),
-      home:,
+      places:,
       // The session's store, the same reader the jailed tool environment
       // is built from, so `PATH` and a server's `env` names mean what
       // they mean to `bash`.
@@ -2186,17 +2187,52 @@ fn lsp_plane_wiring(
 // the refusal an operator-visible boot line rather than a `no_server`
 // answer the model meets on its first query.
 fn lsp_server_roots(
-  server: catalog.LspServer,
-  home: Option(String),
-) -> Result(catalog.LspServer, String) {
+  server: profile.LspServer,
+  places: profile.Places,
+) -> Result(profile.LspServer, String) {
   let absolute = fn(paths) {
     list.try_map(paths, fn(path) {
-      catalog.expand_lsp_path(path, home) |> result.map(catalog.AbsolutePath)
+      profile.expand_path(path, places) |> result.map(profile.AbsolutePath)
     })
   }
   use readable <- result.try(absolute(server.readable))
   use writable <- result.try(absolute(server.writable))
-  Ok(catalog.LspServer(..server, readable:, writable:))
+  Ok(profile.LspServer(..server, readable:, writable:))
+}
+
+// The two places a language profile's roots are written against, read
+// from the daemon's own environment once per boot: `HOME` for `~/`, and
+// the per-user cache directory for `<cache>/`. Which directory that is
+// depends on the platform, and `profile.cache_place` decides it purely
+// from what is read here.
+fn lsp_places() -> profile.Places {
+  let home = home_directory()
+  let #(os, _architecture) = ffi_os.platform()
+  profile.Places(
+    home:,
+    cache: profile.cache_place(
+      os,
+      home,
+      option.from_result(env_text("XDG_CACHE_HOME")),
+    ),
+  )
+}
+
+// The profile hints of the servers the plane serves, as
+// `#(server name, hint)` in name order, for `lsp_definition`'s
+// description (ADR-014 §2). They are read from the wired servers rather
+// than the whole catalogue, so a server refused at boot for roots that
+// would not resolve does not describe a language the session cannot ask
+// about.
+fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
+  case wiring {
+    None -> []
+    Some(wiring) ->
+      list.filter_map(wiring.config.servers, fn(server) {
+        option.to_result(server.hint, Nil)
+        |> result.map(fn(hint) { #(server.name, hint) })
+      })
+  }
 }
 
 // The manager as a supervised child, when there is a plane to run.
@@ -3297,6 +3333,7 @@ fn assemble_in(
         // registers the `lsp_*` tools and gives `fs_write` and `fs_edit`
         // their settled-diagnostics block.
         lsp_door,
+        lsp_hints(lsp_wiring),
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is

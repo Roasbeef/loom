@@ -40,22 +40,28 @@ they are the two servers the design was measured against, not because
 Loom knows them: Loom ships no server table, and a server exists only
 because an operator configured one.
 
-Three defaults still carry an assumption about how a language spells
-things, and a server whose language breaks one is served less well
-rather than refused:
+What a language spells differently is data, not code. Two facts that
+used to be hard-wired defaults are now keys of a server's table, its
+**language profile** (`docs/adr/014-language-profiles.md`), and each
+key's default is exactly the behaviour it replaced, so a table written
+before the keys existed means what it meant:
 
-- **The `languageId` a document is opened with** is its server's first
-  extension without the dot (`gleam`, `go`). That is the right id for
-  most languages and the wrong one for some (`.ts` is `typescript`).
-- **A qualified symbol** is split on `.`, and its qualifier must end the
-  definition's file path without its extension, or its directory. That
-  fits Gleam modules, Go packages, Python, Java and TypeScript; it misses
-  Rust's and C++'s `::`, and Elixir's `MyApp.Accounts` in
-  `my_app/accounts.ex`.
-- **The bare command `gleam`** resolves to the toolchain code mode
-  located rather than to `PATH`, so the compiler analysing a project is
-  the one that builds its programs. That is about the release Loom
-  ships, not about the Gleam language.
+- **The `languageId` a document is opened with** is `language_id`,
+  defaulting to the server's first extension without the dot (`gleam`,
+  `go`). That is right for most languages and wrong for some (`.ts` is
+  `typescript`), and a profile now says so.
+- **A qualified symbol** is split on `qualifier_separators` (default
+  `.`), and its qualifier must end the definition's file path without
+  its extension, or its directory, once `module_case` has mapped it
+  (default: as written). That fits Gleam modules, Go packages, Python,
+  Java and TypeScript by default; Rust's and C++'s `::` is
+  `qualifier_separators = ["::"]`, and Elixir's `MyApp.Accounts` in
+  `my_app/accounts.ex` is `module_case = "snake"`.
+
+One assumption is still the harness's own, and it is about the release
+rather than any language: **the bare command `gleam`** resolves to the
+toolchain code mode located rather than to `PATH`, so the compiler
+analysing a project is the one that builds its programs.
 
 ## One door, every surface
 
@@ -338,11 +344,19 @@ position:
   resolve to nothing and fall out.
 
 A symbol may be **qualified** the way code reads it: `probe.greet`,
-`util.Greet`, `pkg/mod.name`. The last dot-separated segment is the
-identifier, and the qualifier keeps only definitions whose module path or
-directory ends with it on segment boundaries, or whose outline parent
-chain does. A name that still reaches more than one distinct definition
-is answered with the candidates, never a guess.
+`util.Greet`, `pkg/mod.name`, or `util::greet` for a server whose
+profile lists `::`. The symbol is split on the owning server's
+`qualifier_separators`, longest first, so it is split only once a server
+is known: the path's owner, or each server in turn for a bare name. The
+last segment is the identifier. The qualifier is the segments before it
+joined with `/`, keeping a `/` written inside one as a path, and it keeps
+only definitions whose module path or directory ends with it on segment
+boundaries, or whose outline parent chain does. Under `module_case =
+"snake"` the module-path comparison maps each segment to snake_case
+first (`MyApp` to `my_app`, `HTTPServer` to `http_server`); the parent
+chain is the server's own spelling of a type and is compared as written.
+A name that still reaches more than one distinct definition is answered
+with the candidates, never a guess.
 
 The answers are shaped to be the agent's next step rather than a report
 to read:
@@ -581,17 +595,20 @@ command = ["gleam", "lsp"]
 extensions = [".gleam"]
 root_markers = ["gleam.toml"]
 project = "writable"
+hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
 # gopls reads the module cache and writes the build cache and its own
-# cache, all outside the project, so all are named here (on macOS the
-# two caches live under ~/Library/Caches; `go env` says where).
+# cache, all outside the project, so all are named here. Both caches are
+# in the per-user cache directory, which <cache>/ names on every
+# platform.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["~/.cache/go-build", "~/.cache/gopls"]
+writable = ["<cache>/go-build", "<cache>/gopls"]
 env = ["GOFLAGS"]
+hint = "Qualify a name with its package name as imported: util.Greet"
 ```
 
 Both tables are examples. Neither is built in, and a workspace that
@@ -604,12 +621,48 @@ one that builds its programs; any other bare name is looked up on the
 daemon's `PATH`. `extensions` are matched case-insensitively, and an
 extension claimed by two servers is a configuration error naming both,
 because a file with two owners has no well-defined view. `project` is
-`"read-only"` by default. `readable` and `writable` are absolute or
-`~/`-relative, expanded against the daemon's own `HOME` at load time,
-never the jailed session's. `env` names variables passed through from
+`"read-only"` by default. `env` names variables passed through from
 the daemon's environment; the values never live in the file, and `PATH`,
-`HOME` and `TMPDIR` are the harness's own. `client/catalog` parses the
-tables and `docs/examples/loom.toml` carries the annotated version.
+`HOME` and `TMPDIR` are the harness's own.
+
+`readable` and `writable` are absolute, `~/`-relative or
+`<cache>/`-relative. Both relative forms are expanded at load time
+against the daemon's own environment, never the jailed session's: `~/`
+is its `HOME`, and `<cache>/` is its per-user cache directory, which is
+`$HOME/Library/Caches` on macOS and, elsewhere, `$XDG_CACHE_HOME` when
+the daemon was started with an absolute one, else `$HOME/.cache`. That
+is the one fact a `gopls` table used to need per platform, and granting
+the wrong cache leaves `go` unable to write, so `gopls` loads no
+packages. A form whose place is unknown (no `HOME`) refuses that server
+at boot, as does a relative path, a `..` component, or a bare `~/` or
+`<cache>/`.
+
+Four optional keys carry what a language spells differently. They make
+the table a **language profile** (ADR-014), and each default is what
+ADR-013 shipped before the key existed:
+
+| Key | Default | What it says |
+|---|---|---|
+| `language_id` | the first extension without its dot | The `languageId` documents are opened with, `[a-z0-9][a-z0-9+._-]*`, at most 40 characters: `typescript` for `.ts`. |
+| `qualifier_separators` | `["."]` | What a qualified symbol is split on, longest first: `["::"]` for Rust or C++. Each is non-empty, holds no whitespace, is not `/`, and is listed once. |
+| `module_case` | `"as-written"` | `"snake"` maps each qualifier segment from CamelCase before it meets a path, as Elixir and Ruby lay modules out. |
+| `hint` | none | One printable line, at most 200 bytes, telling the model how the language spells a qualified name. |
+
+A `hint` is appended once, as a "Language notes:" block of `name: hint`
+lines, to `lsp_definition`'s description, and nowhere else: every other
+symbol-taking tool addresses symbols the same way, so one statement
+reaches them all without paying for the text seven times in the cached
+prefix. It is operator-approved text in the model's context, exactly as
+an extension's tool description is. A session whose servers carry no
+hint sees the description byte for byte as it was; `tools/lsp` pins
+that with a test.
+
+`client/lsp/profile` decodes the tables, and `client/catalog` hands it
+the `[lsp]` table's entries. It is the one decoder, which an extension
+that ships a profile will go through too (ADR-014 §1), and it is pure:
+the daemon's `HOME` and cache directory reach it as `profile.Places`,
+read by `client/serve`. `docs/examples/loom.toml` carries the annotated
+version.
 
 At boot, `client/serve` builds a session's language-server plane only
 when a table exists: the leases actor and the manager, the latter
@@ -662,15 +715,16 @@ window; none is a change to the mechanism.
 | `lsp/text.gleam` | UTF-16 ↔ codepoint conversion, identifier-boundary lookup, and pure edit application. |
 | `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, sync, diagnostics store, settlement, stop. |
 | `client/lsp/manager.gleam` | One server per session, keepers, eviction, restart, the probe, the bare-symbol search, and `door`. |
-| `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols, outline lookup, containers, display paths. |
+| `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols (per-server separators and module case), outline lookup, containers, display paths. |
+| `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder: `LspServer`, `LspPath`, `ModuleCase`, `Places`, the extension-ownership check, `expand_path` and `cache_place`. Pure. |
 | `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, and the jailed `ChannelTransport`. |
 | `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. |
 | `client/lsp/codemode_rename.gleam` | A program's applied rename, over the tools' landing and the program's write boundary. |
-| `client/catalog.gleam` | `[lsp.<name>]` parsing: `LspServer`, `LspPath`, the extension-ownership check. |
+| `client/catalog.gleam` | Hands the `[lsp]` table's entries to `client/lsp/profile`. |
 | `client/contributions.gleam` | `built_in`'s `lsp` plane: the `lsp_*` tools and the observed write tools. |
 | `client/codemode.gleam` | `over_lsp` and the per-host admission of `cap/lsp`. |
 | `broker/policy.gleam` | `session_lease` and `LeaseOutput`, shared with extension hosts. |
-| `tools/lsp.gleam` | The seven tools, rendering, `land`, and `diagnostics_observer`. |
+| `tools/lsp.gleam` | The seven tools, the profile hints on `lsp_definition`, rendering, `land`, and `diagnostics_observer`. |
 | `tools/fs.gleam`, `tools/hashline.gleam` | `land_plan`, `WriteTarget`, the write observer, and `plan_between`. |
 | `codemode/lsp.gleam` | The `lsp.*` router arm, preview diffing, and the wire shapes. |
 | `cap/lsp.gleam` | The module a program imports: `Query`, `Site`, `Found`, `LspError`, and the seven functions. |

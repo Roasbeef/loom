@@ -6,10 +6,13 @@
 //// as to the exact records the documented examples parse to.
 
 import client/catalog
+import client/lsp/profile
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import simplifile
+import tom
 
 // The smallest catalogue `parse` accepts, so every test below exercises
 // exactly the `[lsp.<name>]` tables it appends.
@@ -34,14 +37,16 @@ command = [\"gleam\", \"lsp\"]
 extensions = [\".gleam\"]
 root_markers = [\"gleam.toml\"]
 project = \"writable\"
+hint = \"Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module\"
 
 [lsp.go]
 command = [\"gopls\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
 readable = [\"~/go/pkg/mod\"]
-writable = [\"~/.cache/go-build\", \"~/.cache/gopls\"]
+writable = [\"<cache>/go-build\", \"<cache>/gopls\"]
 env = [\"GOFLAGS\"]
+hint = \"Qualify a name with its package name as imported: util.Greet\"
 "
 
 fn with_lsp(tables: String) -> String {
@@ -74,28 +79,38 @@ pub fn documented_servers_parse_to_exact_records_test() {
   let assert Ok(parsed) = catalog.parse(with_lsp(documented))
   assert parsed.lsp_servers
     == [
-      catalog.LspServer(
+      profile.LspServer(
         name: "gleam",
         command: ["gleam", "lsp"],
         extensions: [".gleam"],
         root_markers: ["gleam.toml"],
-        project: catalog.ProjectWritable,
+        project: profile.ProjectWritable,
         readable: [],
         writable: [],
         env: [],
+        language_id: "gleam",
+        qualifier_separators: ["."],
+        module_case: profile.AsWritten,
+        hint: Some(
+          "Qualify a name with its module as imported: probe.greet, or"
+          <> " pkg/mod.name for a nested module",
+        ),
       ),
-      catalog.LspServer(
+      profile.LspServer(
         name: "go",
         command: ["gopls"],
         extensions: [".go"],
         root_markers: ["go.mod"],
-        project: catalog.ProjectReadOnly,
-        readable: [catalog.HomePath("go/pkg/mod")],
-        writable: [
-          catalog.HomePath(".cache/go-build"),
-          catalog.HomePath(".cache/gopls"),
-        ],
+        project: profile.ProjectReadOnly,
+        readable: [profile.HomePath("go/pkg/mod")],
+        writable: [profile.CachePath("go-build"), profile.CachePath("gopls")],
         env: ["GOFLAGS"],
+        language_id: "go",
+        qualifier_separators: ["."],
+        module_case: profile.AsWritten,
+        hint: Some(
+          "Qualify a name with its package name as imported: util.Greet",
+        ),
       ),
     ]
 }
@@ -248,7 +263,7 @@ pub fn a_root_marker_must_be_a_bare_file_name_test() {
 pub fn project_defaults_to_read_only_test() {
   let assert Ok(parsed) = catalog.parse(one_server(""))
   let assert [server] = parsed.lsp_servers
-  assert server.project == catalog.ProjectReadOnly
+  assert server.project == profile.ProjectReadOnly
   assert server.readable == []
   assert server.writable == []
   assert server.env == []
@@ -261,7 +276,7 @@ pub fn an_unknown_project_word_is_refused_test() {
 
 pub fn a_relative_root_is_refused_test() {
   assert refusal(one_server("readable = [\"go/pkg/mod\"]"))
-    == "lsp.x.readable entry \"go/pkg/mod\" must be an absolute path or begin with ~/"
+    == "lsp.x.readable entry \"go/pkg/mod\" must be an absolute path or begin with ~/ or <cache>/"
 }
 
 pub fn a_tilde_user_root_is_refused_test() {
@@ -287,9 +302,9 @@ pub fn absolute_roots_parse_in_file_order_test() {
   let assert [server] = parsed.lsp_servers
   assert server.readable
     == [
-      catalog.AbsolutePath("/opt/b"),
-      catalog.AbsolutePath("/opt/a"),
-      catalog.HomePath("c"),
+      profile.AbsolutePath("/opt/b"),
+      profile.AbsolutePath("/opt/a"),
+      profile.HomePath("c"),
     ]
 }
 
@@ -358,30 +373,271 @@ pub fn server_names_follow_the_mcp_grammar_test() {
   assert string.contains(rest, "is longer than 32 characters")
 }
 
-pub fn a_home_path_expands_against_the_given_home_test() {
-  assert catalog.expand_lsp_path(
-      catalog.HomePath("go/pkg/mod"),
-      Some("/home/o"),
-    )
-    == Ok("/home/o/go/pkg/mod")
-  assert catalog.expand_lsp_path(
-      catalog.HomePath(".cache/go-build"),
-      Some("/home/o/"),
-    )
-    == Ok("/home/o/.cache/go-build")
-  assert catalog.expand_lsp_path(catalog.HomePath("x"), Some("/")) == Ok("/x")
+// --- expanding a root --------------------------------------------------------
+
+fn home(path: String) -> profile.Places {
+  profile.Places(home: Some(path), cache: None)
 }
 
-pub fn an_absolute_path_ignores_home_test() {
-  assert catalog.expand_lsp_path(catalog.AbsolutePath("/opt/go"), None)
+pub fn a_home_path_expands_against_the_given_home_test() {
+  assert profile.expand_path(profile.HomePath("go/pkg/mod"), home("/home/o"))
+    == Ok("/home/o/go/pkg/mod")
+  assert profile.expand_path(
+      profile.HomePath(".cache/go-build"),
+      home("/home/o/"),
+    )
+    == Ok("/home/o/.cache/go-build")
+  assert profile.expand_path(profile.HomePath("x"), home("/")) == Ok("/x")
+}
+
+pub fn an_absolute_path_ignores_both_places_test() {
+  assert profile.expand_path(
+      profile.AbsolutePath("/opt/go"),
+      profile.Places(home: None, cache: None),
+    )
     == Ok("/opt/go")
 }
 
 pub fn a_home_path_without_a_usable_home_is_refused_test() {
-  assert catalog.expand_lsp_path(catalog.HomePath("go"), None)
+  assert profile.expand_path(
+      profile.HomePath("go"),
+      profile.Places(home: None, cache: Some("/c")),
+    )
     == Error("~/go cannot be resolved: the harness's HOME is unset")
-  assert catalog.expand_lsp_path(catalog.HomePath("go"), Some("relative"))
+  assert profile.expand_path(profile.HomePath("go"), home("relative"))
     == Error(
       "~/go cannot be resolved: the harness's HOME (relative) is not an absolute path",
     )
+}
+
+pub fn a_cache_path_expands_against_the_cache_place_test() {
+  let places = profile.Places(home: Some("/home/o"), cache: Some("/var/c/"))
+  assert profile.expand_path(profile.CachePath("gopls"), places)
+    == Ok("/var/c/gopls")
+}
+
+// `<cache>/` with no cache directory is refused as `~/` with no home is,
+// never resolved against the working directory.
+pub fn a_cache_path_without_a_usable_cache_is_refused_test() {
+  assert profile.expand_path(profile.CachePath("gopls"), home("/home/o"))
+    == Error(
+      "<cache>/gopls cannot be resolved: the harness's cache directory is"
+      <> " unknown, because HOME is unset",
+    )
+  assert profile.expand_path(
+      profile.CachePath("gopls"),
+      profile.Places(home: None, cache: Some("cache")),
+    )
+    == Error(
+      "<cache>/gopls cannot be resolved: the harness's cache directory"
+      <> " (cache) is not an absolute path",
+    )
+}
+
+// Both platform branches, with the environment passed in: macOS ignores
+// XDG_CACHE_HOME, which its Go tools do not read either.
+pub fn the_cache_place_on_macos_is_library_caches_test() {
+  assert profile.cache_place("darwin", Some("/Users/o"), None)
+    == Some("/Users/o/Library/Caches")
+  assert profile.cache_place("darwin", Some("/Users/o/"), Some("/xdg"))
+    == Some("/Users/o/Library/Caches")
+  assert profile.cache_place("darwin", None, Some("/xdg")) == None
+}
+
+// Elsewhere an absolute XDG_CACHE_HOME wins, a relative one is ignored as
+// the XDG specification says it must be, and ~/.cache is the fallback.
+pub fn the_cache_place_elsewhere_follows_xdg_test() {
+  assert profile.cache_place("linux", Some("/home/o"), Some("/srv/cache"))
+    == Some("/srv/cache")
+  assert profile.cache_place("linux", Some("/home/o"), Some("rel/cache"))
+    == Some("/home/o/.cache")
+  assert profile.cache_place("linux", Some("/home/o/"), None)
+    == Some("/home/o/.cache")
+  assert profile.cache_place("freebsd", None, Some("/srv/cache"))
+    == Some("/srv/cache")
+  assert profile.cache_place("linux", None, None) == None
+}
+
+// --- <cache>/ roots ------------------------------------------------------------
+
+pub fn a_cache_root_parses_unexpanded_test() {
+  let assert Ok(parsed) =
+    catalog.parse(one_server("writable = [\"<cache>/gopls\", \"~/gopls\"]"))
+  let assert [server] = parsed.lsp_servers
+  assert server.writable
+    == [profile.CachePath("gopls"), profile.HomePath("gopls")]
+}
+
+pub fn a_cache_root_meets_the_home_root_rules_test() {
+  let assert "lsp.x.writable entry \"<cache>/\" names the whole cache directory" <> _rest =
+    refusal(one_server("writable = [\"<cache>/\"]"))
+  assert refusal(one_server("writable = [\"<cache>//gopls\"]"))
+    == "lsp.x.writable entry \"<cache>//gopls\" has a doubled slash after <cache>"
+  let assert "lsp.x.readable entry \"<cache>/../x\" has a .. component" <> _rest =
+    refusal(one_server("readable = [\"<cache>/../x\"]"))
+  let assert "lsp.x.readable entry \"<cache>\" must be an absolute path" <> _rest =
+    refusal(one_server("readable = [\"<cache>\"]"))
+  assert refusal(one_server(
+      "readable = [\"<cache>/a\"]\nwritable = [\"<cache>/a\"]",
+    ))
+    == "lsp.x lists <cache>/a as both readable and writable; list it under one of them"
+}
+
+// --- the profile keys ----------------------------------------------------------
+
+// A table naming none of the four keys decodes to exactly what ADR-013
+// shipped: the first extension as the id, `.` as the one separator,
+// qualifiers compared as written, and no hint.
+pub fn the_profile_keys_default_to_the_old_behaviour_test() {
+  let text =
+    with_lsp(
+      "\n[lsp.x]\ncommand = [\"x\"]\nextensions = [\".ts\", \".tsx\"]\n"
+      <> "root_markers = [\"x.toml\"]\n",
+    )
+  let assert Ok(parsed) = catalog.parse(text)
+  let assert [server] = parsed.lsp_servers
+  assert server.language_id == "ts"
+  assert server.qualifier_separators == ["."]
+  assert server.module_case == profile.AsWritten
+  assert server.hint == None
+}
+
+pub fn every_profile_key_is_accepted_test() {
+  let assert Ok(parsed) =
+    catalog.parse(one_server(
+      "language_id = \"typescript\"\n"
+      <> "qualifier_separators = [\"::\", \".\"]\n"
+      <> "module_case = \"snake\"\n"
+      <> "hint = \"Qualify as module::name, without crate::\"",
+    ))
+  let assert [server] = parsed.lsp_servers
+  assert server.language_id == "typescript"
+  assert server.qualifier_separators == ["::", "."]
+  assert server.module_case == profile.Snake
+  assert server.hint == Some("Qualify as module::name, without crate::")
+
+  let assert Ok(parsed) =
+    catalog.parse(one_server("module_case = \"as-written\""))
+  let assert [server] = parsed.lsp_servers
+  assert server.module_case == profile.AsWritten
+}
+
+pub fn a_language_id_follows_its_grammar_test() {
+  list.each(["c++", "objective-c", "a.b_c", "9p"], fn(id) {
+    let assert Ok(parsed) =
+      catalog.parse(one_server("language_id = \"" <> id <> "\""))
+    let assert [server] = parsed.lsp_servers
+    assert server.language_id == id
+  })
+  list.each(["TypeScript", "-ts", "", "type script", "ｔｓ", "+x"], fn(id) {
+    assert refusal(one_server("language_id = \"" <> id <> "\""))
+      == "lsp.x.language_id \""
+      <> id
+      <> "\" is not a language id ([a-z0-9][a-z0-9+._-]*)"
+  })
+}
+
+pub fn a_language_id_is_at_most_forty_characters_test() {
+  let forty = string.repeat("a", 40)
+  let assert Ok(parsed) =
+    catalog.parse(one_server("language_id = \"" <> forty <> "\""))
+  let assert [server] = parsed.lsp_servers
+  assert server.language_id == forty
+  assert refusal(one_server("language_id = \"" <> forty <> "a\""))
+    == "lsp.x.language_id is longer than 40 characters"
+}
+
+pub fn a_language_id_must_be_a_string_test() {
+  assert refusal(one_server("language_id = 3"))
+    == "lsp.x.language_id must be a string"
+}
+
+pub fn qualifier_separators_are_checked_one_by_one_test() {
+  assert refusal(one_server("qualifier_separators = [\"/\"]"))
+    == "lsp.x.qualifier_separators may not list \"/\": a slash inside a"
+    <> " qualifier already names a path (pkg/mod.name)"
+  assert refusal(one_server("qualifier_separators = [\": :\"]"))
+    == "lsp.x.qualifier_separators entry \": :\" may not hold whitespace"
+  assert refusal(one_server("qualifier_separators = [\"\\t\"]"))
+    == "lsp.x.qualifier_separators entry \"\t\" may not hold whitespace"
+  assert refusal(one_server("qualifier_separators = [\"\"]"))
+    == "lsp.x.qualifier_separators entries must be non-empty"
+  assert refusal(one_server("qualifier_separators = [\"::\", \"::\"]"))
+    == "lsp.x.qualifier_separators lists :: more than once"
+  assert refusal(one_server("qualifier_separators = []"))
+    == "lsp.x.qualifier_separators must list at least one separator"
+  assert refusal(one_server("qualifier_separators = \"::\""))
+    == "lsp.x.qualifier_separators must be an array of separators such as \"::\""
+}
+
+pub fn an_unknown_module_case_is_refused_test() {
+  assert refusal(one_server("module_case = \"camel\""))
+    == "lsp.x.module_case must be \"as-written\" or \"snake\", got \"camel\""
+  assert refusal(one_server("module_case = true"))
+    == "lsp.x.module_case must be a string"
+}
+
+pub fn a_hint_is_one_short_printable_line_test() {
+  assert refusal(one_server("hint = \"one\\ntwo\""))
+    == "lsp.x.hint must be one line, with no line break"
+  assert refusal(one_server("hint = \"one\\rtwo\""))
+    == "lsp.x.hint must be one line, with no line break"
+  assert refusal(one_server("hint = \"tab\\there\""))
+    == "lsp.x.hint may not hold a control character"
+  assert refusal(one_server("hint = \"escape\\e[0m\""))
+    == "lsp.x.hint may not hold a control character"
+
+  // TOML has no escape for these two, so they are written raw: a BEL
+  // (C0) and a NEL (C1), which is a line break in some renderings.
+  assert refusal(one_server("hint = \"bell\u{0007}\""))
+    == "lsp.x.hint may not hold a control character"
+  assert refusal(one_server("hint = \"c1\u{0085}\""))
+    == "lsp.x.hint may not hold a control character"
+  assert refusal(one_server("hint = \"del\u{007F}\""))
+    == "lsp.x.hint may not hold a control character"
+  assert refusal(one_server("hint = \"\"")) == "lsp.x.hint must be non-empty"
+  assert refusal(one_server("hint = 1")) == "lsp.x.hint must be a string"
+}
+
+// The bound is in bytes, the unit the cached prefix is paid in, so a
+// multi-byte character counts for what it costs.
+pub fn a_hint_is_at_most_two_hundred_bytes_test() {
+  let two_hundred = string.repeat("a", 200)
+  let assert Ok(parsed) =
+    catalog.parse(one_server("hint = \"" <> two_hundred <> "\""))
+  let assert [server] = parsed.lsp_servers
+  assert server.hint == Some(two_hundred)
+  assert refusal(one_server("hint = \"" <> two_hundred <> "a\""))
+    == "lsp.x.hint is longer than 200 bytes"
+  assert refusal(one_server("hint = \"" <> string.repeat("é", 101) <> "\""))
+    == "lsp.x.hint is longer than 200 bytes"
+}
+
+pub fn the_profile_keys_are_known_keys_test() {
+  let assert "unknown key `languageId` in lsp.x (allowed: " <> allowed =
+    refusal(one_server("languageId = \"ts\""))
+  list.each(
+    ["language_id", "qualifier_separators", "module_case", "hint"],
+    fn(key) {
+      assert string.contains(allowed, key)
+    },
+  )
+}
+
+// --- the decoder alone ---------------------------------------------------------
+
+// The decoder an extension manifest will share takes the `[lsp]` table's
+// entries directly, and judges ownership across them itself.
+pub fn the_decoder_decodes_a_table_set_directly_test() {
+  let assert Ok(document) = tom.parse(documented)
+  let assert Ok(tom.Table(entries)) = dict.get(document, "lsp")
+    as "the documented servers are one [lsp] table"
+  let assert Ok(servers) = profile.decode_servers(entries)
+  assert list.map(servers, fn(server) { server.name }) == ["gleam", "go"]
+
+  let assert Ok(gleam_table) = dict.get(entries, "gleam")
+  let assert Ok(gleam) = profile.decode_server("gleam", gleam_table)
+  assert gleam.language_id == "gleam"
+  let assert Error(_) = profile.claim_extensions([#(".gleam", "other")], gleam)
+    as "an extension another server holds is refused"
 }

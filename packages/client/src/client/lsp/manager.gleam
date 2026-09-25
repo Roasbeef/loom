@@ -81,10 +81,10 @@ import broker/broker.{type CallEvent, type CallSpec}
 import broker/budget
 import broker/exec
 import broker/policy.{type SandboxPolicy}
-import client/catalog.{type LspServer}
 import client/codemode.{type Toolchain}
 import client/lsp/jail
 import client/lsp/leases
+import client/lsp/profile.{type LspServer, type Places}
 import client/lsp/resolve.{type Identity, type Owned, type Symbol}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
@@ -244,8 +244,9 @@ pub type Jailed {
     /// Code mode's located toolchain, which is the `gleam` a bare `gleam`
     /// command means (`jail.locate`).
     toolchain: Option(Toolchain),
-    /// The daemon's own `HOME`.
-    home: Option(String),
+    /// The daemon's own `HOME` and cache directory, which expand a
+    /// table's `~/` and `<cache>/` roots.
+    places: Places,
     /// The daemon's environment, read for `PATH` and the configured names.
     reading: fn(String) -> Result(String, Nil),
     /// Clears and dispatches one call: `tool.broker_runner` in production.
@@ -347,7 +348,7 @@ fn jail_for(
       root:,
       workspace: jailed.workspace,
       executable:,
-      home: jailed.home,
+      places: jailed.places,
     )
   use built <- result.try(jail.policy_for(
     placement,
@@ -483,7 +484,7 @@ pub fn search_jailed(
   search: Search,
 ) -> Result(List(Hit), String) {
   let server =
-    catalog.LspServer(..search.server, project: catalog.ProjectReadOnly)
+    profile.LspServer(..search.server, project: profile.ProjectReadOnly)
   use built <- result.try(jail_for(jailed, server, search.root))
   let #(now, _clock) = clock.read(jailed.clock)
   let argv =
@@ -1199,7 +1200,7 @@ fn begin_server(keeping: Keeping) -> Result(lsp.Client, String) {
       ..lsp.options(
         server: identity.server.name,
         root: identity.root,
-        language_id: server_language(identity.server),
+        language_id: identity.server.language_id,
       ),
       initialize_ms: config.timing.start_ms,
       request_ms: config.timing.request_ms,
@@ -1221,17 +1222,6 @@ fn begin_server(keeping: Keeping) -> Result(lsp.Client, String) {
     ops -> lsp.sync(client, ops)
   }
   Ok(client)
-}
-
-// The `languageId` a document is opened with: the server's first
-// extension without its dot, which is what both measured servers accept
-// (`gleam`, `go`). The catalogue has no field for it, and every language
-// ADR-013 names spells its id exactly this way.
-fn server_language(server: LspServer) -> String {
-  case server.extensions {
-    [first, ..] -> string.drop_start(first, 1)
-    [] -> server.name
-  }
 }
 
 fn start_error_text(error: lsp.StartError) -> String {
@@ -1677,7 +1667,7 @@ fn prepare_rename(
 ) -> Result(Served(List(query.FileEdit)), QueryError) {
   use target <- result.try(target(manager, asked))
   let session = target.session
-  let identifier = resolve.split_symbol(asked.symbol).identifier
+  let identifier = symbol_for(session.identity.server, asked.symbol).identifier
   use old <- result.try(renamed_identifier(target, identifier))
   use edit <- result.try(
     lsp.rename(
@@ -1884,23 +1874,32 @@ fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
 // Turns a question into a position, by the three rules ADR-013 §5 names:
 // a line narrows to the first boundary occurrence on it, a path alone to
 // the file's outline, and a bare name to a search of the server's root.
+//
+// How the symbol splits is the owning server's to say (its
+// `qualifier_separators`), so it is split only once a server is known:
+// after the path's owner is found, or, for a bare name, per server as
+// the search visits each one.
 fn target(manager: Manager, asked: SymbolQuery) -> Result(Target, QueryError) {
-  let symbol = resolve.split_symbol(asked.symbol)
   case asked.path, asked.line {
-    Some(path), Some(line) -> on_line(manager, asked, symbol, path, line)
-    Some(path), None -> in_outline(manager, asked, symbol, path)
-    None, Some(_) | None, None -> anywhere(manager, asked, symbol)
+    Some(path), Some(line) -> on_line(manager, asked, path, line)
+    Some(path), None -> in_outline(manager, asked, path)
+    None, Some(_) | None, None -> anywhere(manager, asked)
   }
+}
+
+// The model's symbol as `server` spells a qualified name.
+fn symbol_for(server: LspServer, written: String) -> Symbol {
+  resolve.split_symbol(written, server.qualifier_separators)
 }
 
 fn on_line(
   manager: Manager,
   asked: SymbolQuery,
-  symbol: Symbol,
   path: String,
   line: Int,
 ) -> Result(Target, QueryError) {
   use #(session, owned) <- result.try(session_for(manager, path))
+  let symbol = symbol_for(session.identity.server, asked.symbol)
   use at <- result.try(
     resolve.read_text(owned.path)
     |> result.replace_error(Nil)
@@ -1916,10 +1915,11 @@ fn on_line(
 fn in_outline(
   manager: Manager,
   asked: SymbolQuery,
-  symbol: Symbol,
   path: String,
 ) -> Result(Target, QueryError) {
   use #(session, owned) <- result.try(session_for(manager, path))
+  let server = session.identity.server
+  let symbol = symbol_for(server, asked.symbol)
   use symbols <- result.try(
     lsp.document_symbol(session.client, owned.path, request_ms(session))
     |> result.map_error(request_error(session, _)),
@@ -1930,6 +1930,7 @@ fn in_outline(
       symbols,
       symbol.identifier,
       symbol.qualifier,
+      server.module_case,
       root: session.identity.root,
       path: owned.path,
     )
@@ -1959,10 +1960,10 @@ type Definition {
 fn anywhere(
   manager: Manager,
   asked: SymbolQuery,
-  symbol: Symbol,
 ) -> Result(Target, QueryError) {
-  use #(identity, hits) <- result.try(searched(manager, asked, symbol))
+  use #(identity, hits) <- result.try(searched(manager, asked))
   use session <- result.try(acquire(manager, identity))
+  let symbol = symbol_for(identity.server, asked.symbol)
 
   // The hit files are opened with the pull. `gleam lsp` answers nothing
   // about a document it does not hold open (measured: an empty
@@ -1981,7 +1982,12 @@ fn anywhere(
     None -> found
     Some(qualifier) ->
       list.filter(found, fn(definition) {
-        resolve.satisfies(identity.root, definition.path, qualifier)
+        resolve.satisfies(
+          identity.root,
+          definition.path,
+          qualifier,
+          identity.server.module_case,
+        )
       })
   }
   case found {
@@ -2006,11 +2012,13 @@ fn anywhere(
 // Where to search, and what was found. With a server already chosen, its
 // root; with none yet, the whole workspace for each configured server,
 // and the hits then say which project the name lives in. Hits in two
-// projects are two answers, and the model narrows with a path.
+// projects are two answers, and the model narrows with a path. Each
+// server searches for the identifier its own separators leave, since
+// `util::greet` is `greet` to a `::` server and the unsplit
+// `util::greet` to a `.` one.
 fn searched(
   manager: Manager,
   asked: SymbolQuery,
-  symbol: Symbol,
 ) -> Result(#(Identity, List(Hit)), QueryError) {
   let search = manager.config.backend.search
   case peek(manager).identity {
@@ -2019,7 +2027,7 @@ fn searched(
         search(Search(
           server: identity.server,
           root: identity.root,
-          identifier: symbol.identifier,
+          identifier: symbol_for(identity.server, asked.symbol).identifier,
         ))
         |> result.map_error(fn(reason) { query.Unavailable(reason:) }),
       )
@@ -2031,7 +2039,7 @@ fn searched(
           search(Search(
             server:,
             root: manager.config.workspace,
-            identifier: symbol.identifier,
+            identifier: symbol_for(server, asked.symbol).identifier,
           ))
         })
         |> result.map(list.flatten)
@@ -2089,7 +2097,7 @@ fn by_project(
               text.symbol_position(
                 content,
                 hit.line,
-                resolve.split_symbol(asked.symbol).identifier,
+                symbol_for(entry.0.server, asked.symbol).identifier,
               )
               |> result.unwrap(range.Position(line: hit.line - 1, character: 0))
             resolve.site(content, shown(manager, hit.path), at)

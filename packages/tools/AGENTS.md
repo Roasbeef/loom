@@ -317,6 +317,13 @@ was asked.
   `client` hands `fs.write_tool_with`/`edit_tool_with`. `lsp_rename` is
   `Never`/`Exclusive`, the other six `Safe`/`Concurrent`, and all seven ask
   the broker for nothing: the door clears its own server.
+  `tools(door, hints)` takes the configured servers' profile hints as
+  `#(server name, hint)` (ADR-014 §2) and appends them once, as a
+  "Language notes:" block of `name: hint` lines, to `lsp_definition`'s
+  description and to no other tool's. **Invariant: with no hints every
+  description is byte-identical to the hint-less one**, since the tool
+  array is the cached prefix; `lsp_test` pins `lsp_definition`'s text and
+  checks the other six are unchanged by hints.
 - `tools/advise.{Advice, Verdict, Ack, name, tool, decode_verdict}` — the
   `advise` tool: an advisor strand's entire outward surface, a value over
   a seam the host fills, exactly as `remember` and `schedule` are.

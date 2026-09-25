@@ -168,10 +168,13 @@ api_key_env = "GITHUB_TOKEN"
 # Language servers, one [lsp.<name>] table per server. They are
 # configured, never discovered: with no [lsp] table there are no lsp_*
 # tools and nothing is spawned. Loom has no built-in servers; the gleam
-# and go tables below are examples of the shape, nothing more. Each server runs jailed, rooted at the
-# nearest ancestor of a file that holds one of its `root_markers`, and
-# this table is the whole of what that jail grants beyond the project.
-# The table key follows the [mcp.<name>] rule ([a-z][a-z0-9_]*).
+# and go tables below are examples of the shape, nothing more. Each
+# server runs jailed, rooted at the nearest ancestor of a file that
+# holds one of its `root_markers`, and this table is the whole of what
+# that jail grants beyond the project. The table key follows the
+# [mcp.<name>] rule ([a-z][a-z0-9_]*). A table is a language profile
+# (docs/adr/014-language-profiles.md): an extension may ship the same
+# table, and both are decoded by one decoder.
 #
 #   command       the argv, executable first. An ARRAY, never a shell
 #                 string: `command = "gopls serve"` is refused.
@@ -184,34 +187,62 @@ api_key_env = "GITHUB_TOKEN"
 #                 writes manifest.toml and build/ into the project, so
 #                 it needs "writable"; gopls writes nothing there.
 #   readable      optional extra roots the server may read, and
-#   writable      optional extra roots it may write. Absolute, or under
-#                 the home directory as ~/<path>, expanded against the
-#                 HOME the Loom daemon itself was started with. Relative
-#                 paths, `..` components and a bare `~/` are refused.
+#   writable      optional extra roots it may write. Each is absolute,
+#                 under the home directory as ~/<path>, or under the
+#                 per-user cache directory as <cache>/<path>. Both are
+#                 expanded against the Loom daemon's own environment:
+#                 ~/ is its HOME, and <cache>/ is ~/Library/Caches on
+#                 macOS and, elsewhere, $XDG_CACHE_HOME when that is an
+#                 absolute path, else ~/.cache. Relative paths, `..`
+#                 components and a bare ~/ or <cache>/ are refused.
 #   env           optional environment variable NAMES passed through
 #                 from the daemon's environment ([A-Z_][A-Z0-9_]*); the
 #                 values never live in this file. PATH, HOME and TMPDIR
 #                 are the harness's own and are refused.
+#
+# Four optional keys say how the language spells things. Each default is
+# what Loom did before the key existed.
+#
+#   language_id   the languageId documents are opened with, e.g.
+#                 "typescript" for [".ts"]. Default: the first extension
+#                 without its dot. [a-z0-9][a-z0-9+._-]*, at most 40
+#                 characters.
+#   qualifier_separators
+#                 what a qualified symbol is split on, e.g. ["::"] for
+#                 Rust or C++. Default ["."]; the longest is tried first
+#                 when several are listed. Never "/", which already means
+#                 a path inside a qualifier (pkg/mod.name).
+#   module_case   "as-written" (the default) compares a qualifier with
+#                 file and directory names verbatim; "snake" maps each
+#                 segment from CamelCase first (MyApp.Accounts finds
+#                 my_app/accounts.ex), as Elixir and Ruby lay files out.
+#   hint          one line, at most 200 bytes, telling the model how the
+#                 language spells a qualified name. It is appended to the
+#                 lsp_definition tool's description, so it is text the
+#                 model reads on every request: write it as you would a
+#                 tool description.
 [lsp.gleam]
 command = ["gleam", "lsp"]
 extensions = [".gleam"]
 root_markers = ["gleam.toml"]
 project = "writable"
+hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
 # gopls reads the module cache and writes the build cache and its own
-# cache, all outside the project, so all are named here. Take the paths
-# from `go env GOMODCACHE` and `go env GOCACHE`: the cache directory is
-# ~/.cache on Linux but ~/Library/Caches on macOS (so there the writable
-# roots are ~/Library/Caches/go-build and ~/Library/Caches/gopls), and a
-# jail that grants the wrong one leaves go unable to write, so gopls loads
-# no packages and every definition comes back empty.
+# cache, all outside the project, so all are named here. The two caches
+# live in the per-user cache directory, which <cache>/ names on every
+# platform; a jail that grants the wrong directory leaves go unable to
+# write, so gopls loads no packages and every definition comes back
+# empty. If `go env GOMODCACHE` or `go env GOCACHE` has been moved, name
+# the directories it prints instead.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["~/.cache/go-build", "~/.cache/gopls"]
+writable = ["<cache>/go-build", "<cache>/gopls"]
 env = ["GOFLAGS"]
+hint = "Qualify a name with its package name as imported: util.Greet"
 
 # Triggered project rules, one [[rule]] table per rule. A rule is a
 # paragraph of standing instruction that only matters some of the time.

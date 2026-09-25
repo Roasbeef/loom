@@ -162,7 +162,10 @@ pub type Collision {
 /// tools too: with a door, `fs_write` and `fs_edit` are built with
 /// `tools/lsp.diagnostics_observer` so a landed write's result gains its
 /// settled diagnostics. Without one they are the plain tools, byte for
-/// byte, and the `lsp_*` definitions are absent.
+/// byte, and the `lsp_*` definitions are absent. `lsp_hints` are the
+/// served profiles' hints as `#(server name, hint)`, which
+/// `tools/lsp.tools` appends to `lsp_definition`'s description; they
+/// matter only with a door, and `[]` leaves every description as it was.
 ///
 /// ## Examples
 ///
@@ -177,6 +180,7 @@ pub type Collision {
 ///     option.None,
 ///     option.None,
 ///     option.None,
+///     [],
 ///   )
 /// ```
 ///
@@ -189,6 +193,7 @@ pub fn built_in(
   context: Option(context_tool.Context),
   jobs: Option(job_tool.Jobs),
   lsp: Option(query.Door),
+  lsp_hints: List(#(String, String)),
 ) -> List(Contribution) {
   // The jobs plane is the one that reaches a *core* tool: `bash` takes
   // the door whether or not there is one behind it, because `mode:
@@ -263,7 +268,7 @@ pub fn built_in(
         },
         case lsp {
           None -> []
-          Some(lsp_door) -> lsp_tool.tools(lsp_door)
+          Some(lsp_door) -> lsp_tool.tools(lsp_door, lsp_hints)
         },
       ]),
     ),

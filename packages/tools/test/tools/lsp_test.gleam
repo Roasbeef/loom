@@ -65,7 +65,7 @@ fn hit(path: String, line: Int, text: String) -> String {
 
 fn named(door: query.Door, name: String) -> tool.Tool {
   let assert Ok(found) =
-    lsp.tools(door) |> list.find(fn(candidate) { candidate.name == name })
+    lsp.tools(door, []) |> list.find(fn(candidate) { candidate.name == name })
     as "the tool list names every lsp tool"
   found
 }
@@ -164,8 +164,45 @@ fn error_diagnostic(path: String, line: Int, text: String) -> query.Diagnostic {
 
 // --- the definitions -----------------------------------------------------
 
+// The description a session with no profile hints carries, byte for
+// byte. The tool array is the cached prefix, so a hint-less session must
+// not pay for the hints feature with a single changed byte (ADR-014 §2).
+const plain_definition_description = "Find where a symbol is defined, using the language server's semantic view rather than a text search. Address the symbol by name as the code spells it, optionally qualified (`util.Greet`, `probe.greet`); positions are never needed. Add `path`, and `line` as fs_read prints it, only to narrow an ambiguous name. Every site in the answer is printed as `path:line:anchor|text`, so it can be edited with fs_edit without reading the file first."
+
+pub fn definition_description_without_hints_is_unchanged_test() {
+  assert named(door(), "lsp_definition").description
+    == plain_definition_description
+}
+
+// A hint is appended once, to `lsp_definition` alone, as one block with a
+// line per server in the order given; every other tool's description is
+// what it is without hints.
+pub fn hints_reach_only_the_definition_description_test() {
+  let plain = lsp.tools(door(), [])
+  let hinted =
+    lsp.tools(door(), [
+      #("go", "Qualify as pkg.Name"),
+      #("rust", "Qualify as module::name, without crate::"),
+    ])
+  list.zip(plain, hinted)
+  |> list.each(fn(pair) {
+    let #(before, after) = pair
+    case after.name {
+      "lsp_definition" -> {
+        assert after.description
+          == plain_definition_description
+          <> "\n\nLanguage notes:\ngo: Qualify as pkg.Name\n"
+          <> "rust: Qualify as module::name, without crate::"
+      }
+      _other -> {
+        assert after.description == before.description
+      }
+    }
+  })
+}
+
 pub fn seven_tools_with_declared_replay_and_concurrency_test() {
-  let tools = lsp.tools(door())
+  let tools = lsp.tools(door(), [])
   assert list.map(tools, fn(entry) { entry.name })
     == [
       "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols",
