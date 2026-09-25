@@ -2982,18 +2982,32 @@ fn specialist_ready(
   background: codemode_tool.Background,
   record: async_execution.Execution,
 ) -> Bool {
-  until(
-    fn() {
-      case background.interact("main", record.id, codemode_tool.Check, 0) {
-        Ok(json.Object(fields)) ->
-          list.key_find(fields, "readiness") == Ok(json.String("ready"))
-          && list.key_find(fields, "endpoints")
-          == Ok(json.Array([json.String("finding")]))
-        _ -> False
+  let ready =
+    until(
+      fn() {
+        case background.interact("main", record.id, codemode_tool.Check, 0) {
+          Ok(json.Object(fields)) ->
+            list.key_find(fields, "readiness") == Ok(json.String("ready"))
+            && list.key_find(fields, "endpoints")
+            == Ok(json.Array([json.String("finding")]))
+          _ -> False
+        }
+      },
+      6000,
+    )
+  case ready {
+    True -> True
+    False -> {
+      let last = case
+        background.interact("main", record.id, codemode_tool.Check, 0)
+      {
+        Ok(value) -> json.to_string(value)
+        Error(_) -> "check refused"
       }
-    },
-    6000,
-  )
+      io.println_error("specialist readiness expired: " <> last)
+      False
+    }
+  }
 }
 
 fn specialist_delivery(
