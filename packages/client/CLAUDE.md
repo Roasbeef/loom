@@ -1974,7 +1974,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
   Option(History), Option(Memory), Option(Schedules), Option(Context),
-  Option(Jobs))`
+  Option(Jobs), Option(lsp/query.Door))`
   — the host's own single contribution: five core tools, plus the six
   `agent_*` tools only when a messaging plane exists, plus `code_mode`
   only when this host wired a code-mode pipeline, plus `history_search`
@@ -1986,7 +1986,13 @@ catalogue without opening runtimes. Explicit admission invokes
   with no session behind it. A plane that is absent contributes nothing
   at all. When code mode or jobs is available, the built-in `fs_read` also
   receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
-  reuse those planes and add no separate registry entry.
+  reuse those planes and add no separate registry entry. A language-server
+  door (ADR-013 §6) adds the seven `lsp_*` tools and builds `fs_write` and
+  `fs_edit` with `tools/lsp.diagnostics_observer`, so a landed write's
+  result gains its settled diagnostics; with `None` the two write tools are
+  the plain ones and the definitions are byte-identical to a host that
+  never heard of language servers. `serve` passes `None` until the
+  session's language-server manager is wired into the boot.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -4230,6 +4236,30 @@ MCP layer retirement fixes one monotonic proof deadline before issuing stops.
 Each parallel collector passes only the remaining budget to client shutdown;
 late scheduling cannot grant a fresh per-client wait. The outer Weft scope
 retains its collection margin so a verdict at the proof cutoff can be observed.
+
+## Code-mode language servers
+
+`codemode.over_lsp(config, Option(lsp/query.Door))` sets `Config.lsp`, the
+one field behind four halves of one decision, exactly as `Config.mcp` and
+`Config.notes` are: `seam_allowlist` admits `cap/lsp`, the description
+therefore renders its surface, `seam_caps_on` appends
+`codemode/lsp.serviced_caps`, and `workspace_router` installs
+`codemode/lsp.routing` between read-only search and the MCP arm. `cap/lsp`
+is on no static allowlist (`codemode/vet/policy.default_cap_modules`),
+because its roughly 5.6 KB surface would otherwise sit in every session's
+cached prefix to advertise imports that could only be refused; without a
+door vetting refuses the import by name and `lsp.*` falls to the default
+table's `unsupported_cap`. `lsp_on` excludes extensions and resident hooks.
+
+The field holds the door, not a `codemode/lsp.Seam`, because the seam's
+applied rename is bound to one execution's write boundary.
+`client/lsp/codemode_rename.seam(door, workspace:, roots:, protected:)`
+builds it per request from the request's workspace, its approved writable
+roots and its base policy's protected list, the values `workspace_seam`
+gives `cap/fs.write`: `door.prepare_rename`, then `tools/lsp.land` with
+`fs.write_target` as the target maker, then `door.after_write` per landed
+file. A protected path is refused to a rename in `fs_write`'s own words.
+`test/client/lsp/plumbing_test` pins both polarities against a fake door.
 
 ## Durable code-mode notes
 

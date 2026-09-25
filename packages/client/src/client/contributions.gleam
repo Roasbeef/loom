@@ -83,6 +83,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import lsp/query
 import tools/agent.{type Agency}
 import tools/bash
 import tools/codemode as codemode_tool
@@ -91,6 +92,7 @@ import tools/fs
 import tools/grep
 import tools/history as history_tool
 import tools/job as job_tool
+import tools/lsp as lsp_tool
 import tools/remember
 import tools/schedule as schedule_tool
 import tools/tool.{type Registry, type Tool}
@@ -141,7 +143,8 @@ pub type Collision {
 /// The one contribution a host's own planes make, in the order the
 /// registry has always been built in: the five core tools, the six
 /// `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
-/// `schedule_*` tools, `context_remaining`, and the three `job_*` tools.
+/// `schedule_*` tools, `context_remaining`, the three `job_*` tools, and
+/// the seven `lsp_*` tools.
 ///
 /// Each `Option` is a plane that decided its own presence from the host
 /// it found, and the gating is arithmetic rather than tidiness: the wire
@@ -154,11 +157,19 @@ pub type Collision {
 /// compaction settings and nothing else — so its `Option` is for a
 /// registry built with no session behind it, which only a test does.
 ///
+/// `lsp` is the session's language-server door, `None` when no
+/// `[lsp.<name>]` server is configured (ADR-013 §6). It reaches core
+/// tools too: with a door, `fs_write` and `fs_edit` are built with
+/// `tools/lsp.diagnostics_observer` so a landed write's result gains its
+/// settled diagnostics. Without one they are the plain tools, byte for
+/// byte, and the `lsp_*` definitions are absent.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// let assert [contributions.Contribution(origin: contributions.BuiltIn, ..)] =
 ///   contributions.built_in(
+///     option.None,
 ///     option.None,
 ///     option.None,
 ///     option.None,
@@ -177,6 +188,7 @@ pub fn built_in(
   schedules: Option(schedule_tool.Schedules),
   context: Option(context_tool.Context),
   jobs: Option(job_tool.Jobs),
+  lsp: Option(query.Door),
 ) -> List(Contribution) {
   // The jobs plane is the one that reaches a *core* tool: `bash` takes
   // the door whether or not there is one behind it, because `mode:
@@ -186,6 +198,18 @@ pub fn built_in(
   // are — a host without the actor pays no cached bytes for tools that
   // could only refuse.
   let door = option.unwrap(jobs, job_tool.unavailable())
+
+  // The observer is the only difference a door makes to the two write
+  // tools, and `fs.write_tool()` is `write_tool_with` over an observer
+  // that always answers `None`, so the no-door arm is the tools every
+  // host without a language server has always registered.
+  let #(write_tool, edit_tool) = case lsp {
+    None -> #(fs.write_tool(), fs.edit_tool())
+    Some(lsp_door) -> {
+      let observer = lsp_tool.diagnostics_observer(lsp_door)
+      #(fs.write_tool_with(observer), fs.edit_tool_with(observer))
+    }
+  }
   let read_schemes =
     list.flatten([
       case code_mode {
@@ -205,8 +229,8 @@ pub fn built_in(
           bash.tool(door),
           grep.tool(),
           fs.read_tool_with(read_schemes),
-          fs.write_tool(),
-          fs.edit_tool(),
+          write_tool,
+          edit_tool,
         ],
         case agency {
           None -> []
@@ -236,6 +260,10 @@ pub fn built_in(
         case jobs {
           None -> []
           Some(jobs) -> job_tool.tools(jobs)
+        },
+        case lsp {
+          None -> []
+          Some(lsp_door) -> lsp_tool.tools(lsp_door)
         },
       ]),
     ),

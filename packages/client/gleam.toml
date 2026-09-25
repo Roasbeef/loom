@@ -19,6 +19,7 @@ provider = { path = "../provider" }
 tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
+lsp = { path = "../lsp" }
 telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"

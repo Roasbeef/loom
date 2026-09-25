@@ -3048,6 +3048,10 @@ fn assemble_in(
         schedule_seam,
         Some(context_seam),
         Some(jobtools.seam(jobs_door)),
+        // No language-server door yet: the manager that fills one is
+        // wired into the boot separately, and until then no `lsp_*` tool
+        // is registered and the write tools are the plain ones.
+        None,
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
