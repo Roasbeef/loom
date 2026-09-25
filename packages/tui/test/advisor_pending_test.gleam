@@ -19,6 +19,7 @@ import tui
 import tui/advisor_pending
 import tui/connection
 import tui/frame
+import tui/inbound
 import tui/model as tui_model
 import tui/protocol.{type Strand, Strand}
 import tui/render
@@ -27,6 +28,7 @@ import tui/surfaces
 import tui/transcript_lines
 import tui/workspace
 import tui/worktree_view
+import tui_test/gateway
 import tui_test/pushed
 
 fn model() {
@@ -336,4 +338,27 @@ fn record(strand: String, text: String) -> protocol.EntryRecord {
       terminate: False,
     ),
   )
+}
+
+/// The same retire, reached the way the daemon reaches it: a pushed entry
+/// through the connection handler, which pins the call in `inbound`.
+pub fn a_pushed_delivery_retires_the_board_test() {
+  let observed =
+    tui_model.Model(
+      ..with_roster(roster(Some("assistant"), None)),
+      nudges: Some(board(["no down step"], 1)),
+    )
+  let frame =
+    gateway.user_entry(
+      "main",
+      transcript_lines.nudges_header
+        <> "\n```"
+        <> transcript_lines.nudges_fence
+        <> "\n- no down step\n```",
+      9,
+    )
+  let delivered =
+    inbound.accept_connection_message(observed, connection.Incoming(frame))
+  assert delivered.nudges == None
+  assert delivered.nudges_refresh == worktree_view.Requested
 }

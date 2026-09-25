@@ -433,6 +433,8 @@ pub fn service_advisor_nudges_read(model: Model) -> Model {
 /// delivered nudges frame on the primary's branch is the one observable
 /// every door shares, so it clears the board and asks for a fresh read:
 /// advice queued after the drain is still waiting and must stay visible.
+/// An earlier read still in flight is disowned, as `DropNudges` disowns
+/// one, so its reply cannot land after the fresh read and hide it.
 ///
 /// ## Examples
 ///
@@ -450,7 +452,12 @@ pub fn retire_delivered_nudges(
     ->
       case transcript_lines.advisor_payload(value) {
         Some(transcript_lines.Nudges(..)) ->
-          Model(..model, nudges: None, nudges_refresh: worktree_view.Requested)
+          Model(
+            ..model,
+            nudges: None,
+            nudges_refresh: worktree_view.Requested,
+            nudges_awaiting: None,
+          )
           |> tui_model.invalidate_transcript
           |> tui_model.invalidate_frame
 
