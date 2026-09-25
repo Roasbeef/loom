@@ -1161,7 +1161,7 @@ fn scheme_refusal(refusal: Refusal) -> fs.SchemeRefusal {
   case refusal {
     NotFound(id:) -> fs.NotFound(what: "background job `" <> id <> "`")
     Invalid(reason:) -> fs.Malformed(reason:)
-    CeilingReached(..) | ClearanceRefused(..) | Unavailable(..) ->
+    CeilingReached(..) | ClearanceRefused(..) | Unavailable(..) | NoJobsPlane ->
       fs.Unavailable(reason: refusal_reason(refusal))
   }
 }

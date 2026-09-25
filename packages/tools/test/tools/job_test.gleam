@@ -196,6 +196,12 @@ pub fn job_virtual_read_preserves_owner_refusal_test() {
     == Error(fs.NotFound(what: "background job `" <> job_id <> "`"))
 }
 
+pub fn job_virtual_read_reports_an_absent_jobs_plane_test() {
+  let scheme = job.scheme(job.unavailable())
+  let assert Error(fs.Unavailable(reason:)) = scheme.read(ctx(), "")
+  assert string.contains(reason, "this session runs no background jobs")
+}
+
 fn detail(outcome: tool.ToolOutcome, key: String) -> json.JsonValue {
   let assert Some(json.Object(fields)) = outcome.details
     as "expected an object of details"
