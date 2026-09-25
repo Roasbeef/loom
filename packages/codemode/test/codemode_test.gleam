@@ -396,6 +396,8 @@ pub fn main() -> report.Outcome {
   let files = fs.list(\"src\")
   let renamed = list.map(files, fn(f) { string.replace(f, \".old\", \".new\") })
   let _ = task.parallel_map(renamed, fn(f) { proc.run(\"mv\", [f]) })
+  let _ =
+    lsp.rename(lsp.symbol(\"old_name\") |> lsp.in(\"src/app.gleam\"), \"new_name\", lsp.Apply)
   report.ok(\"migrated\")
 }
 "
