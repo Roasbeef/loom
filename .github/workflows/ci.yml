@@ -882,6 +882,13 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install tmux
 
+      # ripgrep for the same reason: the language-server tests (ADR-013)
+      # find a bare symbol with rg in the jail, and without it they skip.
+      - name: Install language-server test prerequisite
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ripgrep
+
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
@@ -908,6 +915,15 @@ jobs:
         run: |
           chmod +x bin/* packages/sandbox/loom-exec
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
+
+      # gopls for the language-server tests' Go variants, pinned as on
+      # the Linux jail lane; Go is already here for the helper.
+      - name: Install gopls
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
 
       # Owner-approved hosted load-sensitivity exception, not a performance
       # fix. https://github.com/Roasbeef/loom/issues/241
@@ -998,6 +1014,18 @@ jobs:
             2>&1 | tee ux-worktree-macos.log
           LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
             "macos (terminal observations)" ux-joined-macos.log ux-worktree-macos.log
+
+      # The language-server end-to-end (ADR-013) needs ripgrep for its
+      # bare-name search and gopls for its Go variant; macOS runners carry
+      # neither, and a skip here would be a hole the census exposes.
+      - name: Install language-server end-to-end prerequisites
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          brew install ripgrep
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: make e2e
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e 2>&1 | tee e2e-macos.log
