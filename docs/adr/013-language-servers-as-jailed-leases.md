@@ -384,3 +384,49 @@ before a barrier nor with versions. Each fails visibly: as `no_server`,
 or as diagnostics that did not settle. The first two are fixed by the
 server's `[lsp.<name>]` table, the third by a quiet window. None of the
 three is a change to the mechanism.
+
+## Addendum — a linked executable is resolved, never widened to its prefix
+
+*Added 2026-09-25. This amends one clause of §1's policy: "its install
+prefix only when the executable is a symlink into one" no longer holds.*
+
+That clause was a stand-in for reading a link's target, and it reopened
+the hole the sentence after it names. `~/.cargo/bin/rust-analyzer` is a
+link to `rustup`, so its install prefix was `~/.cargo`, and every
+rust-analyzer jail held `~/.cargo/credentials.toml` read-only. Project code
+runs in that jail through build scripts and proc macros, and a diagnostic
+is a channel back to the model. The same rule mounted `~/.local` for a
+`~/.local/bin` link and `/usr/local` for Homebrew's `bin/x ->
+../Cellar/...`.
+
+**A link is now followed, and no prefix is ever mounted.**
+`client/lsp/jail.locate` reads the chain without following it, resolving
+relative link text against the link's own directory and walking that
+directory's own links in POSIX order, for at most 32 links; a loop, an
+overrun, a dangling link or a chain that ends at a non-file is refused by
+name. `jail.regions` then mounts the directory of the executable and of
+every file the chain passes through — each is read again by the kernel
+when the jail executes the path — and nothing above them. rustup's proxy
+mounts `~/.cargo/bin` alone, and rustup's own dispatch into `~/.rustup` is
+the server table's to grant. The shadow check still judges every region,
+since a target's directory can cover a write as readily as the link's.
+
+It costs no new FFI: the link reader is the one `tools/fs` already owns
+for workspace containment (`tools_ffi:read_link/1`, over
+`file:read_link_all/1`).
+
+**A link the server can rewrite is refused.** Resolution makes the mounted
+directories depend on where links point, so a link the model can write —
+one under a writable project, such as `node_modules/.bin` — would let it
+choose which host directory is mounted, among directories that hold a
+regular file. `policy_for` therefore refuses a lease when any hop that is
+itself a link (the command path when it is one, and every intermediate
+link) lies at or under a path the server writes: the project root when
+`project = "writable"`, its scratch directory, and each `writable` root.
+The refusal tells the operator to name the file the link points to in
+`command`. The regular file the chain ends at is not judged: a plain
+executable in a writable project mounts only its own directory, which the
+jail already reaches, and stays admitted. Judging once, at resolution, is
+enough, because the mounts are built from that resolution and nothing
+re-reads the chain; a link rewritten afterwards points outside what is
+mounted and fails to execute in the jail rather than widening anything.

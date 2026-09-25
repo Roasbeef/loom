@@ -4285,10 +4285,35 @@ ADR-013 is the ruling; these are the pieces that carry it in this package.
   `Unavailable` or `Unsupported`; the references `documentSymbol` fold stops
   outlining there and keeps the rest with no container. Neither holds a
   caller for one deadline per hit.
-- `client/lsp/jail.{Placement, Jail, Launch, operation, step_id, locate,
-  policy_for, call_spec, launch, transport}` — one server's jail and its
-  transport. `call_spec(jail, op, now_ms:, demand:)` takes the demand from
-  its caller: the session's, which the probe proved.
+- `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
+  max_link_hops, operation, step_id, locate, regions, policy_for,
+  call_spec, launch, transport}` — one server's jail and its transport.
+  `call_spec(jail, op, now_ms:, demand:)` takes the demand from its
+  caller: the session's, which the probe proved.
+- **Invariant: a server's executable region is directories, never an
+  install prefix.** `locate` reads the executable without following it
+  (`tools/fs.real_filesystem().read_link`, the existing
+  `tools_ffi:read_link/1`; no FFI in this package) and follows a link to
+  its regular file, relative text against the link's own directory, at
+  most `max_link_hops` (32) links; a loop, an overrun, a dangling link and
+  a non-file end are refused by name. `ExecutableFile` is
+  `PlainExecutable | LinkedExecutable(chain)`, so `regions` is pure over
+  that answer: the executable's directory plus each chain entry's.
+  rustup's `~/.cargo/bin/rust-analyzer -> rustup` is `~/.cargo/bin` alone.
+  The prefix rule this replaced put `~/.cargo/credentials.toml` in every
+  rust-analyzer jail. `unshadowed` still judges every region, a target's
+  directory included. `client/codemode.install_prefix` is code mode's and
+  is no longer read here.
+- **Invariant: no link on the executable's chain is one the server can
+  rewrite.** Since the mounts follow where links point, `unrewritable`
+  refuses a lease when the command path (if a link) or any intermediate
+  link lies at or under the same `writes` list `unshadowed` reads — a
+  writable project root, the scratch directory, each `writable` root —
+  and tells the operator to name the target in `command`. The final
+  regular file is exempt: a plain executable in a writable project mounts
+  only its own directory. One check at resolution suffices, because
+  nothing re-reads the chain; a link rewritten later points outside what
+  was mounted and fails to execute.
 - `client/lsp/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
   release, stop}` — the per-session cap on session-lived helper leases,
   `pool_size - reserved_helpers`.

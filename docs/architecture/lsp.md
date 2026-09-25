@@ -166,13 +166,33 @@ The requirements ask for:
   `build/`; `gopls` writes nothing there);
 - the table's extra `readable` and `writable` roots, such as the Go
   module cache and build cache;
-- the directory holding the server's executable, and not its install
-  prefix, because a prefix such as `~/.cargo` would put a credentials file
-  inside every server's jail. That region is an explicit read-only mount,
-  and the helper lays explicit mounts over every root, so a region at or
-  above a path the server writes is refused by name rather than left to
-  turn that path read-only. `/bin/sh` is the case that found it: a link,
-  so its prefix is mounted, and the prefix of `/bin` is `/`;
+- the directory holding the server's executable, and never an install
+  prefix, because a prefix such as `~/.cargo` would put
+  `credentials.toml`, a registry token, inside every server's jail, where
+  a build script or proc macro the model wrote could read it and return
+  it through a diagnostic. A symbolic link is resolved rather than
+  widened: `jail.locate` follows the chain (at most `max_link_hops`, 32,
+  and a loop, a dangling link or a chain ending at a non-file is refused
+  by name), resolving relative link text against the link's own
+  directory, and `jail.regions` mounts the directory of the link and of
+  every file it leads through. rustup's `~/.cargo/bin/rust-analyzer ->
+  rustup` mounts `~/.cargo/bin` alone, and `/bin/sh -> dash` mounts
+  `/bin` and, on a merged-`/usr` host, `/usr/bin`. The link reader is the
+  one `tools/fs` already owns (`tools_ffi:read_link/1`), so no new FFI
+  was taken. Because the mounts now follow where links point, a link the
+  server can rewrite would let it choose a mount: a lease is refused when
+  any hop that is itself a link lies at or under a path the server
+  writes (a writable project root, the scratch directory, a `writable`
+  root), telling the operator to name the file it points to in
+  `command`. The file the chain ends at may still sit there, as a plain
+  `node_modules/.bin` executable does, since its own directory widens
+  nothing; and judging at resolution is enough, since a link rewritten
+  later points outside what was mounted and fails to execute. Each region is an explicit read-only mount, and the helper
+  lays explicit mounts over every root, so a region at or above a path
+  the server writes — the link's own directory or a target's — is refused
+  by name rather than left to turn that path read-only. `/bin/sh` is the
+  case that found that check, under the prefix rule this replaced: its
+  prefix was `/`;
 - a private scratch directory as `TMPDIR`, since the jail replaces `/tmp`;
 - network off, refused if narrowed (`RefuseNarrowed`);
 - `PATH`, `HOME`, `TMPDIR` and the table's `env` names, and no other
