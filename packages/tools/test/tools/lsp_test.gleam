@@ -295,6 +295,40 @@ pub fn hover_shows_the_site_then_the_type_test() {
     <> "\n\nfn() -> String\n\nSays hello."
 }
 
+// The server decides how long a hover is, so the tool shows at most
+// `max_hover_bytes` of it and says how much it left out.
+pub fn hover_is_clipped_at_its_bound_test() {
+  let line = "documentation line\n"
+  let long = string.repeat(line, 1000)
+  let fake =
+    query.Door(..door(), hover: fn(_) {
+      warm(query.Hover(
+        site: site("src/probe.gleam", 3, "pub fn greet() {"),
+        contents: long,
+      ))
+    })
+  let shown =
+    text_of(named(fake, "lsp_hover").run(
+      workspace("hover_clip").0,
+      args([symbol("greet")]),
+    ))
+  let heading = hit("src/probe.gleam", 3, "pub fn greet() {") <> "\n\n"
+  let kept_lines = lsp.max_hover_bytes / string.byte_size(line)
+  let kept = string.repeat(line, kept_lines) |> string.drop_end(1)
+  let cut = string.byte_size(string.trim(long)) - string.byte_size(kept)
+  assert shown
+    == heading <> kept <> "\n[" <> int.to_string(cut) <> " more bytes cut]"
+}
+
+pub fn clip_cuts_on_a_line_then_a_character_boundary_test() {
+  assert lsp.clip("short", 10) == "short"
+  assert lsp.clip("one\ntwo\nthree", 9) == "one\ntwo\n[6 more bytes cut]"
+
+  // One line longer than the bound is cut inside it, but never inside a
+  // character: `é` is two bytes and does not fit in the third.
+  assert lsp.clip("abé", 3) == "ab\n[2 more bytes cut]"
+}
+
 pub fn symbols_render_a_nested_outline_with_anchored_lines_test() {
   let method =
     query.SymbolEntry(

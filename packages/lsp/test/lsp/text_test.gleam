@@ -358,7 +358,7 @@ pub fn apply_out_of_range_fault_test() {
 pub fn check_selects_catches_shifted_range_test() {
   let stale = edit(0, 8, 13, "salute")
   assert text.check_selects(greet_module, [edit(5, 2, 7, "s"), stale], "greet")
-    == Error(RangeSelects(stale.range, expected: "greet", found: "reet("))
+    == Error(RangeSelects(stale.range, expected: "greet", found_length: 5))
 }
 
 pub fn check_selects_across_lines_test() {
@@ -379,17 +379,30 @@ pub fn describe_names_every_fault_test() {
     SymbolAbsent(1, "greet"),
     InvertedRange(at),
     OverlappingEdits(at, at),
-    RangeSelects(at, "greet", "reet("),
+    RangeSelects(at, "greet", 5),
   ]
   |> list.each(fn(fault) {
     assert text.describe(fault) != ""
   })
   assert text.describe(SymbolAbsent(line: 4, symbol: "greet"))
     == "`greet` does not occur as a whole identifier on line 4"
-  assert string.contains(
-    text.describe(RangeSelects(at, "greet", "reet(")),
-    "`reet(`",
-  )
+}
+
+// A server chooses the range, so the text under it may be any part of any
+// file; the refusal names the identifier the caller asked for and the
+// span's length, and must not carry the span.
+pub fn describe_never_echoes_the_selected_text_test() {
+  let at = Range(Position(0, 8), Position(0, 14))
+  let assert Error(fault) =
+    text.check_selects("fn main(secret) {}", [TextEdit(at, "x")], "greet")
+    as "the range selects `secret`, not `greet`"
+  let message = text.describe(fault)
+  assert !string.contains(message, "secret")
+  assert message
+    == "an edit at line 0, UTF-16 character 8, zero-based to line 0, "
+    <> "UTF-16 character 14, zero-based selects 6 characters where `greet` "
+    <> "(5 characters) was expected; the file changed since the server "
+    <> "read it"
 }
 
 // --- generated properties ----------------------------------------------

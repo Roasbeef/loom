@@ -113,7 +113,14 @@ pub type TextFault {
   /// An edit's range does not select the text it was expected to: the
   /// server computed it against a different text, or it is not the
   /// identifier a rename claims to replace.
-  RangeSelects(range: Range, expected: String, found: String)
+  ///
+  /// The fault carries how long the selected span is, never the span
+  /// itself. The range is the server's choice, so the text under it can be
+  /// any part of any file the server was pointed at; a fault that held it
+  /// would carry those bytes into every message rendered from it, and a
+  /// server could read a file out through refusals. `expected` is safe to
+  /// carry, because it is the identifier the caller already named.
+  RangeSelects(range: Range, expected: String, found_length: Int)
 }
 
 /// A text indexed by line, built once so that converting many positions
@@ -641,7 +648,12 @@ pub fn check_selects(
       |> string_tree.to_string
     case found == old {
       True -> Ok(Nil)
-      False -> Error(RangeSelects(range: edit.range, expected: old, found:))
+      False ->
+        Error(RangeSelects(
+          range: edit.range,
+          expected: old,
+          found_length: string.length(found),
+        ))
     }
   })
 }
@@ -839,14 +851,19 @@ pub fn describe(fault: TextFault) -> String {
       <> show_range(second)
       <> ")"
 
-    RangeSelects(range:, expected:, found:) ->
+    // Only the span's length is rendered, beside the identifier the
+    // caller named: see the variant's doc for why the text never is.
+    RangeSelects(range:, expected:, found_length:) ->
       "an edit at "
       <> show_range(range)
-      <> " selects `"
-      <> found
-      <> "` where `"
+      <> " selects "
+      <> int.to_string(found_length)
+      <> " characters where `"
       <> expected
-      <> "` was expected; the file changed since the server read it"
+      <> "` ("
+      <> int.to_string(string.length(expected))
+      <> " characters) was expected; the file changed since the server "
+      <> "read it"
   }
 }
 

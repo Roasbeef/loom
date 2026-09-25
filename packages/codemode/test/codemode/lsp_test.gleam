@@ -26,8 +26,10 @@ import core/msgpack.{type MsgPackValue}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import lsp/query
 import tools/hashline
+import tools/lsp as tools_lsp
 
 const t = 1_700_000_000_000
 
@@ -392,6 +394,25 @@ pub fn hover_answer_shape_test() {
   assert value == map([#("contents", text("fn() -> String"))])
 }
 
+// A program may take more of a hover than the tool shows, but not an
+// unbounded amount: the server decides how long it is.
+pub fn hover_answer_is_clipped_at_its_bound_test() {
+  let silent = refusing(query.Unavailable("unused"))
+  let long = string.repeat("documentation line\n", 10_000)
+  let seam =
+    lsp.Seam(
+      ..silent,
+      door: query.Door(..silent.door, hover: fn(_) {
+        served(query.Hover(site: site(3), contents: long))
+      }),
+    )
+  let clipped = tools_lsp.clip(long, lsp.max_hover_bytes)
+  assert ok_value(serviced(seam, "lsp.hover", args_for("lsp.hover")))
+    == map([#("contents", text(clipped))])
+  assert string.byte_size(clipped) < lsp.max_hover_bytes + 64
+  assert string.ends_with(clipped, " more bytes cut]")
+}
+
 pub fn outline_answer_shape_test() {
   let value =
     ok_value(serviced(
@@ -588,6 +609,26 @@ pub fn preview_shows_a_line_present_on_one_side_only_test() {
     == [
       lsp.PlannedFile(path: "a.gleam", edits: 1, changes: [
         lsp.LineChange(line: 2, before: "", after: "y"),
+      ]),
+    ]
+}
+
+// A server that adds a line: the span between the common prefix and
+// suffix is paired line by line, the extra line against an empty one and
+// numbered as the edited file numbers it, exactly as `lsp_rename` shows it.
+pub fn preview_pairs_a_span_that_grows_test() {
+  let edit =
+    query.FileEdit(
+      path: "a.gleam",
+      base: "a\nb\nc\n",
+      edited: "a\nX\nY\nc\n",
+      edits: 1,
+    )
+  assert lsp.preview([edit])
+    == [
+      lsp.PlannedFile(path: "a.gleam", edits: 1, changes: [
+        lsp.LineChange(line: 2, before: "b", after: "X"),
+        lsp.LineChange(line: 3, before: "", after: "Y"),
       ]),
     ]
 }

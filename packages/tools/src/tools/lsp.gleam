@@ -41,6 +41,7 @@
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
 import core/message
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -66,6 +67,16 @@ pub const max_reference_hits = 50
 /// rename's report and the post-write block alike. The count heading
 /// still names every one.
 pub const max_rendered_diagnostics = 20
+
+/// The most bytes of a server's hover text `lsp_hover` shows.
+///
+/// The server decides how long a hover is, and some render a whole
+/// module's documentation or an expanded type hundreds of lines long;
+/// without a bound here the only limit would be the 16 MiB frame cap.
+/// Four KiB holds a signature and its doc comment. Past it the text is cut
+/// by `clip` and says how much was left out, so a model that needs the
+/// rest reads the definition instead.
+pub const max_hover_bytes = 4096
 
 /// Whether `lsp_rename` shows the change or makes it.
 ///
@@ -892,9 +903,66 @@ pub fn render_definitions(symbol: String, sites: List(Site)) -> String {
 pub fn render_hover(hover: query.Hover) -> String {
   let contents = case string.trim(hover.contents) {
     "" -> "(the language server has no type or documentation for it)"
-    trimmed -> trimmed
+    trimmed -> clip(trimmed, max_hover_bytes)
   }
   render_site(hover.site) <> "\n\n" <> contents
+}
+
+/// A server's text cut to at most `limit` bytes, with a closing line
+/// saying how many bytes were cut.
+///
+/// The cut falls at the last line break inside the bound, so no line is
+/// shown half, unless the first line alone is longer than the bound; then
+/// it falls on the last character boundary inside it, so the result is
+/// always valid UTF-8. Text within the bound comes back unchanged. The
+/// marker line is added past the bound, since it is the harness's words
+/// rather than the server's. `lsp_hover` clips at `max_hover_bytes`, and
+/// code mode's `lsp.hover` at its own, larger bound.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert lsp.clip("short", 10) == "short"
+/// assert lsp.clip("one\ntwo\nthree", 9) == "one\ntwo\n[6 more bytes cut]"
+/// ```
+///
+pub fn clip(text: String, limit: Int) -> String {
+  let size = string.byte_size(text)
+  case size <= limit {
+    True -> text
+    False -> {
+      let kept = at_line_break(utf8_prefix(<<text:utf8>>, int.max(limit, 0)))
+      kept
+      <> "\n["
+      <> int.to_string(size - string.byte_size(kept))
+      <> " more bytes cut]"
+    }
+  }
+}
+
+// The longest prefix of `bytes` of at most `length` bytes that is valid
+// UTF-8. A cut inside a multi-byte character fails to decode, and backing
+// off one byte at a time reaches a boundary within three steps.
+fn utf8_prefix(bytes: BitArray, length: Int) -> String {
+  let decoded =
+    bit_array.slice(bytes, 0, length)
+    |> result.try(bit_array.to_string)
+  case decoded, length > 0 {
+    Ok(text), _ -> text
+    Error(Nil), True -> utf8_prefix(bytes, length - 1)
+    Error(Nil), False -> ""
+  }
+}
+
+// The text before its last line break, or the text whole
+// when it has none: a hover whose first line overruns the bound is still
+// shown up to the bound rather than not at all.
+fn at_line_break(text: String) -> String {
+  case list.reverse(string.split(text, "\n")) {
+    [_partial, _, ..] as reversed ->
+      list.drop(reversed, 1) |> list.reverse |> string.join("\n")
+    [_] | [] -> text
+  }
 }
 
 /// What `lsp_references` answers: the count and file count first, then
@@ -1237,35 +1305,79 @@ pub fn render_preview(
 }
 
 // The changed lines of one file, as a count and the rendered `-`/`+`
-// lines. A rename normally keeps every line where it was, so when the
-// line counts agree each changed line is shown as its own before/after
-// pair; otherwise the one span between the common prefix and suffix is
-// shown as a block, which is still every line that changed.
+// lines. A span with lines on both sides counts once per line of its
+// longer side, since each is one line that changed.
 fn changed_lines(edit: FileEdit) -> #(Int, List(String)) {
-  let before = hashline.annotate(edit.base)
-  let after = hashline.annotate(edit.edited)
-  case list.length(before) == list.length(after) {
-    True -> {
-      let pairs =
-        list.zip(before, after)
-        |> list.filter(fn(pair) { pair.0.text != pair.1.text })
-      #(
-        list.length(pairs),
-        list.flat_map(pairs, fn(pair) {
-          [removed_line(pair.0), added_line(pair.1)]
-        }),
+  let spans = changed_spans(edit.base, edit.edited)
+  #(
+    list.fold(spans, 0, fn(total, span) {
+      total + int.max(list.length(span.removed), list.length(span.added))
+    }),
+    list.flat_map(spans, fn(span) {
+      list.append(
+        list.map(span.removed, removed_line),
+        list.map(span.added, added_line),
       )
-    }
+    }),
+  )
+}
+
+/// One place a file changes: the lines taken out, as the file has them
+/// now, and the lines put in, as it will have them. Either side may be
+/// empty, not both.
+pub type ChangedSpan {
+  ChangedSpan(
+    /// The base's lines, numbered and anchored as the file is now.
+    removed: List(hashline.AnchoredLine),
+    /// The edited text's lines, numbered and anchored as it will be.
+    added: List(hashline.AnchoredLine),
+  )
+}
+
+/// The lines that differ between a file's base and edited text, in line
+/// order: the one diff behind both `lsp_rename`'s preview and code mode's
+/// `lsp.rename` preview, so a model and a program are shown the same
+/// change.
+///
+/// A rename normally keeps every line where it was, so when the line
+/// counts agree each changed line is its own one-line span. Otherwise the
+/// run between the common prefix and the common suffix is one span, which
+/// is still every line that changed, and a server that added or removed a
+/// line shows up rather than being lost.
+///
+/// Lines are split and anchored by `hashline.annotate`, so a CRLF line
+/// keeps its `\r` in `text` and its anchor is the one `fs_read` prints;
+/// lines are compared with it too, so a changed line ending is a change.
+/// A surface that shows the text without the `\r` trims it for display
+/// and never for the anchor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert [lsp.ChangedSpan(removed: [before], added: [after])] =
+///   lsp.changed_spans("x\ngreet\n", "x\nhi\n")
+/// assert before.line == 2 && before.text == "greet" && after.text == "hi"
+/// ```
+///
+pub fn changed_spans(base: String, edited: String) -> List(ChangedSpan) {
+  let before = hashline.annotate(base)
+  let after = hashline.annotate(edited)
+  case list.length(before) == list.length(after) {
+    True ->
+      list.zip(before, after)
+      |> list.filter(fn(pair) { pair.0.text != pair.1.text })
+      |> list.map(fn(pair) { ChangedSpan(removed: [pair.0], added: [pair.1]) })
+
     False -> {
       let #(before, after) = drop_common(before, after)
       let #(before, after) =
         drop_common(list.reverse(before), list.reverse(after))
-      let before = list.reverse(before)
-      let after = list.reverse(after)
-      #(
-        int.max(list.length(before), list.length(after)),
-        list.append(list.map(before, removed_line), list.map(after, added_line)),
-      )
+      case before, after {
+        [], [] -> []
+        _, _ -> [
+          ChangedSpan(removed: list.reverse(before), added: list.reverse(after)),
+        ]
+      }
     }
   }
 }
