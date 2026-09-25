@@ -27,8 +27,10 @@ The modules, in dependency order:
   gating, answers to server requests, and `file://` URI conversion.
 - `lsp/text` (added by a sibling slice) — UTF-16 ↔ codepoint conversion
   and pure text-edit application.
-- `lsp/client` (a later slice) — the client actor, a `weft/state_machine`
-  over `mcp/transport.Transport`.
+- `lsp/client` — the client actor, a `weft/state_machine` over
+  `mcp/transport.Transport`: one process owning one language server,
+  its handshake, gated requests, document sync, the diagnostics store and
+  settlement, and the stop sequence.
 
 ## Key Types
 
@@ -61,6 +63,28 @@ The modules, in dependency order:
 - `lsp/protocol.{answer_server_request, classify_notification,
   path_to_uri, uri_to_path, symbol_kind_name}` — pure policy the actor
   sends without deciding anything.
+- `lsp/client.{Client, Options, options, start, stop, pid,
+  request_deadline, capabilities, feature_method}` — the opaque handle
+  and its lifecycle. `start(Transport, Options) -> Result(Client,
+  StartError)` accepts only a `ChannelTransport` (the jail);
+  `StartError` is `BadRoot | TransportRefused | HandshakeFailed(
+  RequestError) | EncodingUnsupported`. `stop(client, grace_ms) ->
+  StopReport` is `Graceful | Forced | AlreadyGone | Unconfirmed`.
+- `lsp/client.{request, definition, references, hover, document_symbol,
+  prepare_rename, rename, prepare_call_hierarchy, incoming_calls,
+  outgoing_calls}` — gated requests taking absolute paths and protocol
+  `Position`s, answering `protocol`'s decoded types. `RequestError` is
+  `Unsupported(Feature) | ServerError(code, message) | TimedOut(after_ms)
+  | Unavailable(reason) | Malformed(reason) | InvalidPath(path) |
+  EditRefused(kind, uri)`.
+- `lsp/client.{DocOp(Open | Change | Close), sync, synced_text,
+  open_paths}` — full-text document sync computed by the caller, and the
+  exact last text sent (the rename base).
+- `lsp/client.{settle, Settlement, SettleOutcome(Settled |
+  DeadlineExpired), diagnostics}` — ADR-013 §3's two-rule settlement and
+  the latest-publication store, both in the server's coordinates
+  (`protocol.ServerDiagnostic`); converting to `query.Diagnostic` is the
+  manager's, which holds the text.
 
 ## Relationships
 
@@ -73,7 +97,8 @@ The modules, in dependency order:
   `protocol` and `text` import none of them and are pure functions of
   their arguments. The package as a whole is impure and not in the
   portable subset lint R6 gates.
-- **Depended on by**: `client` (the manager that fills `query.Door`),
+- **Depended on by**: `client` (the manager that fills `query.Door`, and
+  builds the production `ChannelTransport` over the broker's exec),
   `tools` (the `lsp_*` tools, over `Door`), `codemode` (`lsp.*` served
   here, over `Door`) — as those slices land.
 - **FFI**: none, and ADR-013 needs none. The production transport is a
@@ -81,7 +106,22 @@ The modules, in dependency order:
 
 ## Traffic
 
-- **Actor messages**: none yet; `lsp/client` will own them.
+- **Actor messages** (`lsp/client.Msg`, opaque): callers send
+  `Handshake` (once, from `start`), `Ask(feature, build, deadline_ms,
+  reply)`, `Sync(ops, reply)`, `Settle(uris, deadline_ms, reply)`,
+  `Read(TextOf | OpenPaths | PublishedFor | CapabilitiesOf)` and
+  `Stop(grace_ms, reply)`, every one through `mcp/call.try_call`. The
+  transport sends `FromTransport(TransportData | TransportClosed)`. The
+  actor sends itself `Expire(id)` and `SettleExpired(token)` (per-key
+  `send_after` timers, stale-checked against the pending tables — the
+  per-key deadline table `docs/weft.md` keeps hand-rolled) and the state
+  timeouts `HandshakeExpired`, `GraceExpired`, `RetireExpired`. The
+  owner's DOWN arrives as `Abandoned`.
+- **Phases**: `Initializing → Serving → ShuttingDown(grace_ms) →
+  Retiring(ending, reason)`; the actor exits from `Retiring` on the
+  transport's `TransportClosed` (normal after a requested stop, abnormal
+  after a fault) or after `retire_ms` without it, and at once, abnormally,
+  when the transport closes under `Initializing` or `Serving`.
 - **Commits**: none. **Registers**: none.
 - **Wire**: LSP base protocol — `Content-Length: <bytes>\r\n\r\n<json>`
   — riding inside the broker's `exec_stdin`/`exec_out` (ADR-013 §1).
@@ -130,6 +170,37 @@ The modules, in dependency order:
 - **URIs decode strictly.** `uri_to_path` refuses a bad `%` escape, a
   remote authority, a query or fragment, non-UTF-8 bytes and NUL; it
   never passes a malformed escape through.
+- **The client actor never blocks and never reads disk.** ADR-013 §1:
+  the jailed exec path has no backpressure. Every wait is a pending entry
+  plus a timer in actor state; the only I/O in a handler is
+  `Connection.send`. Document texts arrive in `sync`, read by the caller.
+- **Only a channel transport is accepted.** `start` refuses
+  `PortTransport`, which would run the server unjailed (Rule Zero).
+- **No caller is ever crashed by the client.** Every exchange is
+  `mcp/call.try_call`; a dead or wedged client answers `Unavailable`.
+- **Death settles everyone, then is reported.** A transport close, a
+  framing fault, a body that is not JSON-RPC or a failed write answers
+  every pending caller and settle-waiter `Unavailable(reason)`, closes
+  the transport, and ends the actor abnormally. Restart is the manager's.
+- **A timed-out request is cancelled and forgotten.** `TimedOut` is
+  answered, `$/cancelRequest` sent for the id, and a late answer
+  dropped; the actor keeps serving.
+- **At most 64 documents are open**, LRU by last sync: document versions
+  come from one counter shared by every document, so the smallest version
+  is the least recently synced, and a reopened document never reuses a
+  version an old publication carries. `synced_text` is exactly the last
+  text sent.
+- **The diagnostics store is bounded**: 512 URIs (the oldest publication
+  goes first) and 200 diagnostics per publication.
+- **Settlement is ADR-013 §3's two rules, and never a guess.** (a) the
+  `documentSymbol` barrier on the first changed URI answered; (b) once the
+  server has ever versioned a publication, every changed open document
+  has one at a version ≥ its synced version. A server with no
+  `documentSymbol` settles only by (b), so an unversioned one never
+  settles. The answer collects every URI published since the earliest
+  changed document's last sync, plus each changed path's stored
+  publication. A lapsed deadline answers `DeadlineExpired` and cancels
+  the barrier.
 
 ## Deep Docs
 
