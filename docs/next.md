@@ -27,8 +27,8 @@ link. The daemon does not enumerate target strands or activate saved sessions
 as a side effect of discovery.
 
 Main's #495 TUI split moved this flow into `tui/interaction`,
-`tui/session_control`, `tui/model`, and `tui/render`. Refresh the native
-screenshots from those modules before merging the stack.
+`tui/session_control`, `tui/model`, and `tui/render`. The native screenshots
+were recaptured from the post-split client.
 
 The stack's images in `docs/images/peer-links-*.png` come from the native
 116-by-38 terminal with two resident sample sessions. The target name and
