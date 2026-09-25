@@ -16,6 +16,7 @@ broker = { path = "../broker" }
 tools = { path = "../tools" }
 client = { path = "../client" }
 prompt = { path = "../prompt" }
+telemetry = { path = "../telemetry" }
 weft = "== 0.4.4"
 simplifile = ">= 2.0.0 and < 3.0.0"
 
