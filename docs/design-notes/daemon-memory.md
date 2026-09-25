@@ -789,8 +789,8 @@ The 117.5 MiB `weft@state_machine` that the previous section left unattributed
 is the daemon's session admission registry, `client/daemon/manager`. Its
 `Book.slots` dictionary (`packages/client/src/client/daemon/manager.gleam:794`)
 holds one `Slot` per resident session, and each slot's `phase` field
-(`manager.gleam:257`) carries `Occupancy.Running(instance)`
-(`manager.gleam:234`), where `instance` is a whole `client/serve.Instance`
+(`daemon/manager.gleam:257`) carries `Occupancy.Running(instance)`
+(`daemon/manager.gleam:234`), where `instance` is a whole `client/serve.Instance`
 (`packages/client/src/client/serve.gleam:464`) and therefore a whole
 `api.Runtime` and the `Effects` graph beneath it. Six resident sessions put six
 of those in one process. Nothing about the registry is unusual: it is the
@@ -870,7 +870,7 @@ was read at all.
 One `sys:get_state`, reduced to sizes and constructor names in the expression
 that received it. The state element of the pair is the atom `ready`, which is
 `manager.Phase.Ready`; the data element is the eleven-field `Book`
-(`manager.gleam:644`):
+(`daemon/manager.gleam:644`):
 
 | `Book` field | Shape | Flat size |
 |---|---|---:|
@@ -921,7 +921,7 @@ map/6 (six slots)                        77.138 MiB
 
 The registry holds the instance because `Resolve` hands it back: `resolve` reads
 `Slot(phase: Running(instance), ..)` out of the dictionary and replies with it
-(`manager.gleam:1473`).
+(`daemon/manager.gleam:1473`).
 
 ### The memory is live, and it is not binaries
 
@@ -964,8 +964,8 @@ reference.**
 Over 23 hours of real model turns, during which the daemon's process heaps grew
 by about 112 MiB, this process did not move. The growth law is one `Slot` of
 about 12.86 MiB flat per resident session, inserted at admission
-(`manager.gleam:2071`) and deleted when the reservation drains
-(`manager.gleam:2818`), or about 19.6 MiB of process heap per session once the
+(`daemon/manager.gleam:2071`) and deleted when the reservation drains
+(`daemon/manager.gleam:2818`), or about 19.6 MiB of process heap per session once the
 heap block is counted. It is constant in turns, constant in conversation length,
 and linear in resident sessions.
 

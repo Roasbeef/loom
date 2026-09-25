@@ -86,7 +86,10 @@ node per extension, cleared once, living for the session.
 - **Policy.** Requirements:
   - the project root is readable. It is writable only when the server's
     configuration says so, which Gleam's must;
-  - the located toolchain prefix is mounted read-only;
+  - the server executable's own directory is mounted read-only, and its
+    install prefix only when the executable is a symlink into one (the
+    rule code mode uses for `gleam`). Mounting a whole prefix would put
+    files like a cargo credentials file inside the jail;
   - the server's configured extra roots are mounted: `readable`, and
     `writable` for `GOCACHE`. These come from `loom.toml`, never from the
     model;
@@ -185,8 +188,9 @@ touches `mcp`'s port FFI, because its production transport is a
 - `lsp/framing`, a pure Content-Length framer: a bounded buffer, bytes
   rather than strings, and total decoding;
 - `lsp/protocol`: total decoders and encoders for every structure
-  consumed, advertised-capability gating, UTF-16 position conversion, and
-  pure text-edit application;
+  consumed, advertised-capability gating, and URI conversion;
+- `lsp/text`: UTF-16 position conversion and pure text-edit
+  application;
 - `lsp/client`: the client actor, a `weft/state_machine` over
   `mcp/transport.Transport`.
 
@@ -252,9 +256,10 @@ The server computes a `WorkspaceEdit` and never writes. A
   halves of a surrogate pair is `MalformedEdit` and is never rounded. A
   `character` past the end of the line clamps. Line = line-count with
   character 0 is a legal end-of-file insert. Lines split on `\n`, `\r\n`
-  and a lone `\r`, and each file's terminator is preserved. Several edits
-  on one line merge into one `Replace`, because `hashline.apply` rejects
-  overlapping hunks.
+  and a lone `\r`, and each file's terminator is preserved. The edited text
+  becomes one hashline plan (`hashline.plan_between`: a single hunk from
+  the common prefix to the common suffix, bound to the base's digest), so
+  several edits in a file can never become overlapping hunks.
 - **Order.** First, every file is converted and its `Plan` built. Then
   every digest is checked. Only then is anything written, file by file,
   through the resolve / `hashline.apply` / write path that `fs_edit` uses,
@@ -358,12 +363,13 @@ which is what the two-rule settlement in §3 answers.
 
 It also proposed dropping `workspace/symbol` and the `peer` package; both
 are dropped. It proposed one server per session and a daemon-wide cap;
-both are taken.
+both are taken, the cap per session once measurement showed each session
+has its own helper pool (§1).
 
 ## What it costs
 
 - One exec helper per live language server: one per session, under a
-  daemon-wide cap.
+  per-session cap.
 - Up to 1.5 s added to an `fs_edit` whose server never settles. The
   measured servers settle in milliseconds.
 - Configured servers only. Loom does not discover or install them.
