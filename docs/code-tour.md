@@ -333,9 +333,9 @@ pub fn next_action(
 ) -> Action {
 ```
 
-`next_action` lives at `machine/planner.gleam:551`. It reads a durable
+`next_action` lives at `machine/planner.gleam:574`. It reads a durable
 state and a bundle of inputs and returns one of six actions, defined by
-`Action` (`machine/planner.gleam:509`):
+`Action` (`machine/planner.gleam:532`):
 
 | Action | What the driver does |
 |---|---|
@@ -410,7 +410,7 @@ and both are worth knowing by name. `threshold_checked` records the
 trigger whose compaction check already ran, so a boundary is never
 checked twice; `skip_inbox_once` is set by a drain on the checkpoint it
 produces, so a crash mid-drain cannot turn a one-at-a-time drain into an
-all-item drain (`checkpoint_action`, `machine/planner.gleam:737`).
+all-item drain (`checkpoint_action`, `machine/planner.gleam:760`).
 
 Large payloads never live inline in the state. Tool arguments go to
 `op.tool_args/{op}:{step}:{index}`, a summary's frozen input to
@@ -442,7 +442,7 @@ two:
                    in one atomic transaction
 ```
 
-`admit_generation` (`machine/planner.gleam:1079`) mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1102`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
 next state. `runtime/strand_runtime.gleam:658` commits it and only then
 runs the continuation that starts the effect:
@@ -491,7 +491,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1521`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1575`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -590,7 +590,7 @@ compaction on its way out; ask about tool use before a genuine length
 stop and a truncated response executes calls cut in half.
 
 Then one transaction, in pi's normative order
-(`settle_writes`, `machine/planner.gleam:1530`):
+(`settle_writes`, `machine/planner.gleam:1517`):
 
 ```gleam
   [
@@ -722,7 +722,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1578`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1632`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1626`). That is the
@@ -958,7 +958,7 @@ a checkpoint. What happens next is the same code with three differences
 worth knowing.
 
 **The checkpoint drains first.** The procedure
-`checkpoint_action` (`machine/planner.gleam:737`) runs a fixed order:
+`checkpoint_action` (`machine/planner.gleam:760`) runs a fixed order:
 apply accepted deferred
 writes, drain steer input per the run's drain mode, check the compaction
 threshold, and only then start a generation step or, at a `MayFinish`
@@ -1206,7 +1206,7 @@ Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:1839`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:3724`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3753`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
@@ -1623,7 +1623,7 @@ the record's scope to the call standing at the door now, because a retry
 always arrives under a call id the provider has just minted and a scope
 frozen to the first attempt would leave an approval nothing can spend.
 Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:585`) holds the call —
+someone is attached, `park` (`client/escalate.gleam:596`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
 approval is consumed by CAS — after a scope check that is still exact

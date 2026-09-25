@@ -53,7 +53,7 @@ boundary, and the native extension API (`[[hook]]` in
 | `PreToolUse` | tool clearance, after the harness's own clearance passed (`cleared` in `client/extension/hooks.gleam`) | `permissionDecision: allow/deny/ask`, exit 2 = deny; `updatedInput` rewrites arguments, and the rewritten call is put back through the harness's clearance before it runs |
 | `PostToolUse` | tool settled, before the reply is committed (`ran`/`fold_tool_result`) | `decision: "block"` + `reason` becomes the visible result beside the original; `updatedToolOutput` rewrites content |
 | `PreCompact` | compaction decided, before the summary request (`compaction_note`) | `additionalContext`-style note appended to summarizer input |
-| `Stop` | run may finish (`run_end`, consulted at `finish_boundary`, `machine/planner.gleam:1020`) | `decision: "block"` + `reason` → the born-placed follow-up message; the run continues |
+| `Stop` | run may finish (`run_end`, consulted at `finish_boundary`, `machine/planner.gleam:1043`) | `decision: "block"` + `reason` → the born-placed follow-up message; the run continues |
 | `SubagentStop` | subagent run may finish (same slot, strand-scoped) | as `Stop` |
 | `Notification` | TUI notification moment | none (side effects) |
 | `PermissionRequest` | escalation raised, before the prompt is shown | `decision.behavior: allow/deny` answers the prompt |
