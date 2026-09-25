@@ -73,6 +73,7 @@ import client/lsp/jail as lsp_jail
 import client/lsp/leases as lsp_leases
 import client/lsp/manager as lsp_manager
 import client/lsp/profile
+import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -2060,8 +2061,15 @@ type LspWiring {
   )
 }
 
-// A boot with no `[lsp.<name>]` table builds nothing and logs nothing: an
-// unconfigured workspace pays nothing (ADR-013 §6). A configured server
+// A boot with no `[lsp.<name>]` table and no installed profile builds
+// nothing and logs nothing: an unconfigured workspace pays nothing
+// (ADR-013 §6). The servers are the `loom.toml` tables plus every
+// installed profile that survives ADR-014 §4's precedence
+// (`lsp_profiles.effective_lsp_servers`), and from there an installed
+// profile is treated exactly as a table is: the same root resolution, the
+// same plane and the same hints. A refused profile is one
+// `lsp.profile_refused` line naming its extension, its server and the
+// claimant it collided with, and the boot continues. A configured server
 // whose roots will not resolve is refused alone, one `lsp.unavailable`
 // line each, and the others still serve; a counter that will not start
 // refuses them all the same way. Neither refuses the boot, for the reason
@@ -2069,6 +2077,7 @@ type LspWiring {
 // a session, and the operator is told which table to fix.
 fn lsp_wiring(
   settings: Settings,
+  installed: List(#(String, profile.LspServer)),
   logger: Logger,
   base_policy: policy.SandboxPolicy,
   toolchain: Result(codemode_wiring.Toolchain, String),
@@ -2078,8 +2087,27 @@ fn lsp_wiring(
   name: address.Address(lsp_manager.Msg),
 ) -> Option(LspWiring) {
   let places = lsp_places()
+  let #(effective, refusals) =
+    lsp_profiles.effective_lsp_servers(
+      configured: settings.catalog.lsp_servers,
+      installed:,
+    )
+  list.each(refusals, fn(refusal) {
+    log.warn(logger, "lsp.profile_refused", [
+      field.text(key: "extension", value: refusal.extension),
+      field.text(key: "server", value: refusal.server),
+      field.text(
+        key: "other",
+        value: lsp_profiles.describe_claimant(refusal.other),
+      ),
+      field.text(
+        key: "reason",
+        value: lsp_profiles.describe_conflict(refusal.conflict),
+      ),
+    ])
+  })
   let servers =
-    list.filter_map(settings.catalog.lsp_servers, fn(server) {
+    list.filter_map(effective, fn(server) {
       lsp_server_roots(server, places)
       |> result.map_error(fn(reason) {
         log.warn(logger, "lsp.unavailable", [
@@ -2218,6 +2246,24 @@ fn lsp_places() -> profile.Places {
   )
 }
 
+// The language profiles the loaded profile extensions approved, each
+// paired with its extension's name for a refusal to cite. Read from the
+// install record rather than the manifest beside it: discovery has
+// already refused any extension whose manifest's profiles differ from the
+// record's, and the record is the operator's yes. A jailed extension's
+// record holds none.
+fn installed_profiles(
+  discovered: List(installed.Discovered),
+) -> List(#(String, profile.LspServer)) {
+  list.flat_map(discovered, fn(found) {
+    case found {
+      installed.Ready(record: written, manifest: _, artifact: _) ->
+        list.map(written.lsp, fn(server) { #(written.name, server) })
+      installed.Refused(..) -> []
+    }
+  })
+}
+
 // The profile hints of the servers the plane serves, as
 // `#(server name, hint)` in name order, for `lsp_definition`'s
 // description (ADR-014 §2). They are read from the wired servers rather
@@ -2272,15 +2318,18 @@ fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
 // this still the thing that was installed".
 //
 // What is left to decide is what to do with each answer, and there are
-// three. A `Refused` is *logged*, never silently dropped: an operator who
+// four. A `Refused` is *logged*, never silently dropped: an operator who
 // installed something and then sees nothing has no way to tell "it is
 // broken" from "I imagined installing it". A `Ready` on a host with no
 // toolchain is logged too and registers nothing, because an extension
 // tool with no `erl` to boot a satellite with is a definition in the
 // provider's cached byte prefix that can only ever fail — the same
-// argument that gates `code_mode` itself. Everything else becomes one
-// `Contribution` per extension, and a name two contributions both claim
-// refuses the boot in `contributions.registry`.
+// argument that gates `code_mode` itself. A `Ready` profile extension
+// registers nothing here either: it ships language profiles, which
+// `lsp_wiring` has already taken from the same discovery, and there is no
+// satellite for it to host. Every jailed extension becomes one
+// `Contribution`, and a name two contributions both claim refuses the
+// boot in `contributions.registry`.
 
 // One installed extension, registered: the tools it contributes to the
 // registry, its subscription on the hook bus, and the recipe the
@@ -2297,8 +2346,21 @@ type Registration {
   )
 }
 
+// Discovery, once per boot. The language-server plane and the tool
+// registry both read this one answer, so a profile and a tool cannot be
+// judged against two different readings of the extensions root. No home
+// is no extensions root, which is the same fact to a booting server as an
+// empty one.
+fn discovered_extensions(settings: Settings) -> List(installed.Discovered) {
+  case settings.home {
+    None -> []
+    Some(home) -> installed.discover(extension_record.root_for(home))
+  }
+}
+
 fn extension_registrations(
   settings: Settings,
+  discovered: List(installed.Discovered),
   logger: Logger,
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
@@ -2313,7 +2375,7 @@ fn extension_registrations(
 
     Some(home) -> {
       let root = extension_record.root_for(home)
-      list.filter_map(installed.discover(root), fn(found) {
+      list.filter_map(discovered, fn(found) {
         extension_contribution(
           root,
           found,
@@ -2349,18 +2411,26 @@ fn extension_contribution(
     }
 
     installed.Ready(record: written, manifest: decoded, artifact:) ->
-      extension_registered(
-        root,
-        written,
-        decoded,
-        artifact,
-        store,
-        logger,
-        hosts,
-        hooking,
-        host,
-        memory,
-      )
+      case written.tier {
+        extension_manifest.Jailed ->
+          extension_registered(
+            root,
+            written,
+            decoded,
+            artifact,
+            store,
+            logger,
+            hosts,
+            hooking,
+            host,
+            memory,
+          )
+
+        // A profile extension runs nothing, so it has no tool to register,
+        // no hook to subscribe and no satellite to host. Its servers reach
+        // the session through `lsp_wiring`.
+        extension_manifest.Profile -> Error(Nil)
+      }
   }
 }
 
@@ -3101,12 +3171,19 @@ fn assemble_in(
   // address is minted now so the door the tools, code mode and the write
   // tools' diagnostics observer all share can close over it, and the
   // manager starts under the service supervisor below. No `[lsp.<name>]`
-  // table, or none that survived its load, means no plane at all: no
+  // table or installed profile, or none that survived its load, means no
+  // plane at all: no
   // counter, no manager, no `lsp_*` tool and no `cap/lsp`, and the write
   // tools are the plain ones.
+  //
+  // The installed extensions are discovered here, once, because a profile
+  // extension's servers join this plane and a jailed extension's tools
+  // join the registry further down, and both must read the same answer.
+  let discovered = discovered_extensions(settings)
   let lsp_wiring =
     lsp_wiring(
       settings,
+      installed_profiles(discovered),
       logger,
       base_policy,
       toolchain,
@@ -3227,9 +3304,9 @@ fn assemble_in(
   // answers it starts under the service supervisor below, because the
   // registry has to exist before the tools that reach it are built.
   //
-  // Discovery then happens once and answers three questions: which tools
-  // each installed extension contributes, which hook events it
-  // subscribed to, and how its node is launched. The hook half is used
+  // Discovery, which happened once above, then answers three more
+  // questions of each jailed extension: which tools it contributes, which
+  // hook events it subscribed to, and how its node is launched. The hook half is used
   // further down, after the effects record exists to compose it into.
   let hosts_name = address.new_address(namespace)
   let hosts_seam =
@@ -3241,6 +3318,7 @@ fn assemble_in(
   let extensions =
     extension_registrations(
       settings,
+      discovered,
       logger,
       hosts_seam,
       extension_hosts.invoker(
