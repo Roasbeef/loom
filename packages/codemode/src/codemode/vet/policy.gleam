@@ -502,7 +502,18 @@ pub fn extension_authority_modules() -> List(String) {
 /// The capability-prelude modules in the default allowlist. The union of the
 /// sets named in design §6.2 (`fs proc net git lsp task actor report`) and
 /// spec WP-J (`fs proc git lsp report task actor kv`), widened since by
-/// `cap/schedule`, `cap/job` and `cap/search`.
+/// `cap/schedule`, `cap/job` and `cap/search`, and narrowed by one: `cap/lsp`.
+///
+/// Both lists name `lsp`, and it is left off here on purpose. Its router
+/// answers only over a language server the session actually runs, and
+/// ADR-013 §6 configures those per workspace with no built-in default, so
+/// most sessions have none. A static entry would render the module's
+/// whole type surface into the `code_mode` description of every session,
+/// the cached prefix every request pays for, to advertise imports that
+/// could only be refused. It is admitted the way `cap/notes` and the MCP
+/// façades are, per host and only with its door present
+/// (`client/codemode.seam_allowlist`), and it waits on
+/// `harness_only_cap_modules` until then.
 ///
 /// `cap/search` is here on the same argument that puts `cap/fs` here and
 /// on one more of its own: it is read-only navigation and search over the
@@ -524,9 +535,9 @@ pub fn extension_authority_modules() -> List(String) {
 ///
 pub fn default_cap_modules() -> List(String) {
   [
-    "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/execution", "cap/peer", "cap/task", "cap/actor", "cap/kv",
-    "cap/schedule", "cap/job", "cap/search",
+    "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/report", "cap/execution",
+    "cap/peer", "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job",
+    "cap/search",
   ]
 }
 
@@ -655,6 +666,12 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// it. Its static absence prevents advertising a door an unconfigured host
 /// cannot answer.
 ///
+/// `cap/lsp` is the same kind of wait as `cap/notes`: `client/codemode`
+/// admits it for workspace and orchestration programs on a host whose
+/// session runs a language server, together with the `lsp.*` router arm
+/// and serviced capabilities, and never for extensions or resident hooks.
+/// `default_cap_modules` says why it is not static.
+///
 /// `cap/runtime` is the boot runtime: the satellite's generated entry
 /// module calls it, and a submitted program has no business naming it. So
 /// it is unreachable from either allowlist — which, on its own, is
@@ -687,11 +704,12 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert policy.harness_only_cap_modules() == ["cap/notes", "cap/mcp", "cap/runtime"]
+/// assert policy.harness_only_cap_modules()
+///   == ["cap/notes", "cap/lsp", "cap/mcp", "cap/runtime"]
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
-  ["cap/notes", "cap/mcp", "cap/runtime"]
+  ["cap/notes", "cap/lsp", "cap/mcp", "cap/runtime"]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,

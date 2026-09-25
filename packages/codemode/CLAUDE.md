@@ -13,8 +13,9 @@ There are **four seams over one pipeline**, and a submission is vetted
 against exactly one of them (`vet/policy.Seam`). Three of them admit
 source that runs today; the fourth is frozen for a tier that does not
 exist. The *workspace* seam is
-`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
-search}`, routed by
+`cap/{fs, proc, net, git, report, task, actor, kv, schedule, job,
+search}` — plus `cap/lsp`, admitted per host only where the session has a
+language-server door (below) — routed by
 `satellite.default_router` for the jailed `proc.run`, by
 `codemode/workspace` for the harness-side `fs.read`, `fs.list` and
 `kv.*`, and by `codemode/search` for the four read-only `search.*` names.
@@ -269,7 +270,13 @@ session and sends it many invocations.
   `hashline.anchor`, because `lsp` cannot depend on `tools`. Lists are
   capped at `max_items` (200) with the uncapped `total` beside them.
   `serviced_caps` is appended to the advertised set by the client only
-  when a server is configured.
+  when a server is configured, and `cap/lsp` is admitted the same way:
+  it is on `harness_only_cap_modules` rather than `default_cap_modules`,
+  so its type surface enters the `code_mode` description (the cached
+  prefix every request pays) and its import is allowed only on a host
+  whose `client/codemode.Config.lsp` holds a door. A host with no
+  `[lsp.<name>]` server renders no `cap/lsp` block and vetting refuses the
+  import by name; extensions and resident hooks never get it.
 - `codemode/artifact.{Artifact, Emit, EmitRefusal, plan, answer, ceiling,
   emit_cap, max_emit_bytes, default_emit_ceiling, emit_ceiling_code}` —
   the `report.emit` mechanism, shared by both seams. One byte bound per
@@ -443,7 +450,9 @@ session and sends it many invocations.
   reaches a description and any program importing it is rejected — which
   is right for `cap/runtime` and indistinguishable from an oversight for
   anything else. `harness_only_cap_modules` is where that exclusion is
-  written down, and `scripts/gen-prelude.sh --check` holds all three lists
+  written down — `cap/notes` and `cap/lsp` there are waits on a per-host
+  door rather than refusals, admitted by `client/codemode.seam_allowlist`
+  when the door is present — and `scripts/gen-prelude.sh --check` holds all three lists
   against the modules `packages/cap` actually ships: every module must be
   on a seam or on that list, and every listed name must be a module that
   exists (issue #95). Both directions self-test.

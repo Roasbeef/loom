@@ -54,6 +54,7 @@ pub fn built_in(
       schedules,
       None,
       None,
+      None,
     )
     |> contributions.registry
     as "the built-in contributions never claim the same tool name twice"
