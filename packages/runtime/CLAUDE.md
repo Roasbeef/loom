@@ -489,6 +489,20 @@ extended by the M3 runtime wave.
   timer behind. `runtime/idle_poll_test` asserts both periods, the single
   chain, and that becoming occupied arms the short period without waiting.
 
+- **A call the model keeps repeating into failure is stopped at
+  clearance.** Before `clear_tool_call`, `tool_clearance_key` reads the
+  branch's newest `repeat_guard.window` message entries back to the latest
+  compaction and asks `repeat_guard.judge` how many consecutive turns made
+  this same call, by name and `core/json.canonical` arguments, and saw
+  every copy fail. At `refuse_after` (3) the call is refused unrun with
+  `RefusalContinues`; at `end_after` (4), which only a repeat past that
+  refusal reaches, it is refused with `RefusalEndsRun` and the run
+  completes as `CompletedByTerminatedTools`. Any user message breaks a
+  streak, so an operator's reply or an advisor's nudge buys the model a
+  fresh start. The count is read from write-once entries, so recovery
+  judges exactly what the first incarnation would have, and a read that
+  fails reads as no history rather than halting the strand: the guard is
+  a brake on a loop, not a correctness condition.
 - **One writer, structurally.** All commits are calls into one actor, so
   "transactions on one session are serialized" is a property of the process
   topology, not a convention. Reads route through it too, keeping a single

@@ -110,6 +110,7 @@ import runtime/hooks
 import runtime/internal/ffi_sup
 import runtime/internal/provider_custodian
 import runtime/projection
+import runtime/repeat_guard
 import runtime/residency
 import runtime/writer
 import storage/storage
@@ -1428,7 +1429,60 @@ fn tool_clearance_key(
   // is safe: only a live tool effect causes it, and that effect's
   // settlement re-plans.
   use <- bool.guard(when: !tool_may_start(state, call.name), return: KeyWait)
-  clear_tool_call(state, loaded, operation, step_id, source_index, call, now)
+
+  // Before a call clears, the branch says whether the model has just
+  // watched this exact call fail turn after turn. A streak refuses the
+  // call unrun, and a streak the refusal did not break ends the run;
+  // `runtime/repeat_guard` has the counts and why the harness owns them.
+  case repeat_guard.judge(call, recent_messages(state, loaded)) {
+    repeat_guard.Proceed ->
+      clear_tool_call(
+        state,
+        loaded,
+        operation,
+        step_id,
+        source_index,
+        call,
+        now,
+      )
+    repeat_guard.Refuse(reason:, ending:) ->
+      KeyObservation(planner.ObservedToolRefused(
+        source_index:,
+        result: synthetic_tool_error(call, reason, now),
+        ending:,
+      ))
+  }
+}
+
+// The branch's newest messages back to the latest compaction, at most
+// `repeat_guard.window` of them, newest first: the bounded read the guard
+// judges from, so a long session costs no more per clearance than a short
+// one. A read that fails reads as no history, because the guard is a
+// brake on a loop, and a store it could not read is no evidence of one.
+fn recent_messages(state: State, loaded: Loaded) -> List(AgentMessage) {
+  case loaded.leaf {
+    None -> []
+    Some(leaf) -> {
+      let q =
+        storage.branch_scan(from: leaf)
+        |> storage.branch_stop_at_kind(storage.Compaction)
+        |> storage.branch_kind(storage.Message)
+        |> storage.branch_limit(repeat_guard.window)
+      case scan(state, q) {
+        Ok(entries) -> list.filter_map(entries, message_of)
+        Error(_) -> []
+      }
+    }
+  }
+}
+
+fn message_of(entry: Entry) -> Result(AgentMessage, Nil) {
+  case entry {
+    entry.MessageEntry(message:, ..) -> Ok(message)
+    entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> Error(Nil)
+  }
 }
 
 fn tool_key(
