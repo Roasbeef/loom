@@ -7,6 +7,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 broker = { path = "../broker" }
 tools = { path = "../tools" }
+lsp = { path = "../lsp" }
 glance = ">= 6.1.0 and < 7.0.0"
 glexer = ">= 2.0.0 and < 3.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
@@ -14,7 +15,7 @@ gleam_otp = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 filepath = ">= 1.0.0 and < 2.0.0"
 tom = ">= 2.1.0 and < 3.0.0"
-weft = "== 0.4.4"
+weft = "== 0.4.5"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

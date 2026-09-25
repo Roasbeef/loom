@@ -38,6 +38,16 @@
 //// cap/notes imports, prompt guidance, routing, and lifetime quotas, and
 //// extension and resident surfaces never inherit it.
 ////
+//// `over_lsp` is the same arrangement for the session's language-server
+//// door (ADR-013 §6), and for a reason with a price on it. `cap/lsp` is
+//// on no static allowlist (`codemode/vet/policy.default_cap_modules`), so
+//// its type surface enters the `code_mode` description, the `lsp.*` names
+//// enter the serviced list, the import is admitted and the router arm is
+//// installed only on a host whose door is present. A host with no
+//// `[lsp.<name>]` server pays no cached bytes for a module that could only
+//// refuse, and a program there that imports it is refused at vetting with
+//// the reason rather than at its first call.
+////
 //// ## One execution, one identity, one budget
 ////
 //// Everything a code-mode call does — the hermetic `gleam build`, the
@@ -176,6 +186,7 @@ import client/install
 import client/internal/ffi_os
 import client/jobseam
 import client/jobtools
+import client/lsp/codemode_rename
 import client/mcp as mcp_wiring
 import client/scheduleseam
 import client/scratch
@@ -186,6 +197,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/lsp as codemode_lsp
 import codemode/notes
 import codemode/orchestration
 import codemode/satellite
@@ -205,6 +217,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import lsp/query
 import simplifile
 import tools/agent.{type Agency}
 import tools/blob
@@ -323,6 +336,18 @@ pub type Config {
     /// set them apart. `mcp.none()` is the empty layer every host has
     /// until an operator configures a server.
     mcp: McpLayer,
+    /// The session's language-server door, or `None` when no
+    /// `[lsp.<name>]` server is configured.
+    ///
+    /// One field for the reason `mcp` is one: the door admits `cap/lsp`,
+    /// renders its surface into the description, advertises the seven
+    /// `lsp.*` capabilities and installs their router arm, and a host that
+    /// could set those apart would eventually advertise a module it cannot
+    /// serve. The field holds the door and not a `codemode/lsp.Seam`
+    /// because the seam's applied rename is bound to one execution's
+    /// workspace, grants and protected list, so it is built per request
+    /// (`client/lsp/codemode_rename`).
+    lsp: Option(query.Door),
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -520,6 +545,26 @@ pub fn over_mcp(config: Config, layer: McpLayer) -> Config {
   Config(..config, mcp: layer)
 }
 
+/// The same host configuration, serving `lsp.*` over the session's
+/// language-server door, or withdrawing it with `None`.
+///
+/// `None` is what every host has until an operator configures an
+/// `[lsp.<name>]` server, and it changes nothing a program can see beyond
+/// `cap/lsp` being absent: no import admitted, no surface rendered, no
+/// capability advertised, no arm routed. So a host may call this
+/// unconditionally with whatever its manager returned.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.over_lsp(option.Some(door))
+/// ```
+///
+pub fn over_lsp(config: Config, door: Option(query.Door)) -> Config {
+  Config(..config, lsp: door)
+}
+
 /// The vetting allowlist one seam judges a submission against.
 ///
 /// Indexed by the seam and not by the surface: a program is vetted
@@ -538,7 +583,8 @@ pub fn seam_policy(seam: vet_policy.Seam) -> vet_policy.VetPolicy {
 
 /// The vetting allowlist *this host* judges a submission against: the
 /// seam's own, widened by the capability modules the MCP layer
-/// generated at boot.
+/// generated at boot, by `cap/notes` where a blackboard door is wired,
+/// and by `cap/lsp` where a language-server door is.
 ///
 /// The widening is per host and cannot be otherwise. A generated
 /// `cap/mcp/<server>` façade exists only where that server is
@@ -567,9 +613,13 @@ pub fn seam_allowlist(
   let allowed =
     mcp_wiring.allowed_imports(seam_mcp(config, seam))
     |> list.fold(base, vet_policy.allow)
-  case notes_on(config, seam) {
+  let noted = case notes_on(config, seam) {
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
+  }
+  case lsp_on(config, seam) {
+    None -> noted
+    Some(_) -> vet_policy.allow(noted, "cap/lsp")
   }
 }
 
@@ -679,7 +729,8 @@ fn workspace_caps() -> List(String) {
 
 /// The capability names one seam's router services *on this host*: the
 /// seam's own, plus one `mcp.<server>` per MCP server the layer
-/// reached.
+/// reached, the `notes.*` names where a blackboard door is wired, and the
+/// `lsp.*` names where a language-server door is.
 ///
 /// Read off the running layer rather than copied, for the reason
 /// `seam_caps` is: the sentence the model is charged for on every
@@ -698,9 +749,13 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
     _, _ -> seam_caps(seam)
   }
   let caps = list.append(base, mcp_wiring.serviced_caps(seam_mcp(config, seam)))
-  case notes_on(config, seam) {
+  let noted = case notes_on(config, seam) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
+  }
+  case lsp_on(config, seam) {
+    None -> noted
+    Some(_) -> list.append(noted, codemode_lsp.serviced_caps)
   }
 }
 
@@ -802,6 +857,9 @@ pub fn default_config(
     // differ here.
     jobs: None,
     mcp: mcp_wiring.none(),
+    // No language server by default: ADR-013 §6 has no built-in one, and
+    // `cap/lsp` stays off every allowlist until a host wires a door.
+    lsp: None,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -2042,11 +2100,12 @@ fn surface_router(
   }
 }
 
-// The effect router: three arms over the shipped table.
+// The effect router: arms over the shipped table.
 //
 // Outermost is the harness-side bridge — `fs.read`, `fs.list`, `kv.*`,
-// `report.emit` — then the MCP arm answering `mcp.<server>`, then
-// `satellite.default_router`, which clears `proc.run` into a jail and
+// `report.emit` — then read-only search, then the language-server arm
+// answering `lsp.*` where the host has a door, then the MCP arm answering
+// `mcp.<server>`, then `satellite.default_router`, which clears `proc.run` into a jail and
 // refuses everything it does not know. Each arm hands what it does not
 // answer to the one beneath, so nothing about `proc.run` or about what
 // the default table refuses changes shape.
@@ -2064,14 +2123,33 @@ fn workspace_router(
   config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
+  let access =
+    directory_access.approved(request.directory_access, request.grants)
+  let mcp_router =
+    mcp_wiring.routing(config.mcp, over: satellite.default_router)
+
+  // Without a door `lsp.*` falls through to the default table, which
+  // refuses it as unknown; the seam's allowlist has already refused the
+  // import, so this arm is the second of two locks, not the only one.
+  let lsp_router = case lsp_on(config, vetting_seam(request.seam)) {
+    None -> mcp_router
+    Some(door) ->
+      codemode_lsp.routing(
+        codemode_rename.seam(
+          door,
+          workspace: request.workspace,
+          roots: access.writable,
+          protected: request.base_policy.protected,
+        ),
+        over: mcp_router,
+      )
+  }
+
   workspace.routing(
     workspace_seam(config, request),
     over: search_router.routing(
-      search_seam_with_access(
-        request.workspace,
-        directory_access.approved(request.directory_access, request.grants).readable,
-      ),
-      over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+      search_seam_with_access(request.workspace, access.readable),
+      over: lsp_router,
     ),
   )
 }
@@ -3159,6 +3237,18 @@ fn directory_of(path: String) -> String {
           }
         [] -> "."
       }
+  }
+}
+
+// The language-server door a seam sees. Installed extensions and resident
+// hooks never see it, for `seam_mcp`'s reasons: an extension's allowlist
+// is fixed and recorded at install, and a resident body has no capability
+// channel at all. This one choice gates the import, the rendered surface,
+// the advertised calls and the router arm together.
+fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
+  case seam {
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.lsp
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
   }
 }
 

@@ -1974,7 +1974,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
   Option(History), Option(Memory), Option(Schedules), Option(Context),
-  Option(Jobs))`
+  Option(Jobs), Option(lsp/query.Door))`
   — the host's own single contribution: five core tools, plus the six
   `agent_*` tools only when a messaging plane exists, plus `code_mode`
   only when this host wired a code-mode pipeline, plus `history_search`
@@ -1986,7 +1986,14 @@ catalogue without opening runtimes. Explicit admission invokes
   with no session behind it. A plane that is absent contributes nothing
   at all. When code mode or jobs is available, the built-in `fs_read` also
   receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
-  reuse those planes and add no separate registry entry.
+  reuse those planes and add no separate registry entry. A language-server
+  door (ADR-013 §6) adds the seven `lsp_*` tools and builds `fs_write` and
+  `fs_edit` with `tools/lsp.diagnostics_observer`, so a landed write's
+  result gains its settled diagnostics; with `None` the two write tools are
+  the plain ones and the definitions are byte-identical to a host that
+  never heard of language servers. `serve` passes the session manager's
+  door when the catalogue configures an `[lsp.<name>]` server that
+  survived its load, and `None` otherwise (see "Language servers").
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -2119,7 +2126,10 @@ catalogue without opening runtimes. Explicit admission invokes
   error, not a fallback — a typo that quietly served the workspace seam
   would look exactly like a server ignoring the flag.
 - `client/serve.Instance` owns one session's runtime, broker, helper pool,
-  MCP layer, gateway and composition-service supervisor.
+  MCP layer, gateway and composition-service supervisor, and `lsp:
+  Option(LspPlane)` — the language-server manager's handle, the helper-lease
+  counter and the servers' attribution operation, `None` with no
+  configured server.
   Its `namespace` owns the 11 reclaimable service addresses and is retired
   after the services stop. `prompt` retains the exact assembled prompt;
   `helper_path` identifies the executable used by this session. Optional
@@ -4230,6 +4240,134 @@ MCP layer retirement fixes one monotonic proof deadline before issuing stops.
 Each parallel collector passes only the remaining budget to client shutdown;
 late scheduling cannot grant a fresh per-client wait. The outer Weft scope
 retains its collection margin so a verdict at the proof cutoff can be observed.
+
+## Language servers
+
+ADR-013 is the ruling; these are the pieces that carry it in this package.
+
+- `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
+  Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,
+  probe, search_jailed}` — the session's one-server manager. The door's
+  closures run in the caller: they ask the manager for the live client,
+  then do the pull-resync, the requests and the conversion to `Site`s
+  themselves, so a slow query holds up only its caller. The probe
+  (`probe_argv` under the server's exact policy) must pass under the
+  session's demand before the server clears; `after_write` never starts a
+  server. `supervised(name, config)` is the service-tier child (transient,
+  bound to a `weft/registry` address); `addressed(name, config)` is the
+  handle over it, resolving the address per exchange, so a replacement is
+  the same manager to every door. `stop` asks the manager to shut down and
+  waits, in the caller and bounded by `Timing.previous_ms`, for the
+  server's keeper to finish its graceful stop.
+- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
+  same, display, split_symbol, named, container, outline, site}` — the pure
+  half: which `{server, root}` owns a path (nearest root marker, real path
+  under the root; an absolute path is placed under the workspace as written
+  or its real location, since the write observer hands over real paths),
+  which server-named paths the harness may read (`admit`), how a symbol
+  splits into qualifier and identifier, which definition a qualifier
+  selects, and how a location renders as `path:line:anchor|text`.
+- **Invariant: no server-named path is read, opened or echoed ungated.**
+  The jail bounds what a server reads, never which paths it emits, and the
+  door reads in the caller, unjailed. Every path out of an answer
+  (definition, references, call edges, published diagnostics, a rename's
+  `WorkspaceEdit`, bare-name hits) passes `resolve.admit(root:, protected:,
+  path:)` — `tools/fs.resolve_writable` against the server's real root and
+  `Backend.protected` (the session base's list, filled by `jailed`) — and
+  becomes `Admitted`/`Withheld`. Withheld: shown at raw coordinates with
+  `text: ""`, never `didOpen`ed (`resync` gates again), and a rename naming
+  one answers `ServerRefused` whole. The bound is the root alone, not the
+  server's `readable` roots, so a stdlib jump shows no line text.
+  `resolve.read_text` has no discipline of its own; its callers pass
+  `owner` or `admit` output only.
+- **Invariant: one lapsed request ends a batch.** A bare-name search's
+  `definition` fold answers `Unavailable` at the first `TimedOut`,
+  `Unavailable` or `Unsupported`; the references `documentSymbol` fold stops
+  outlining there and keeps the rest with no container. Neither holds a
+  caller for one deadline per hit.
+- `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
+  max_link_hops, operation, step_id, locate, regions, policy_for,
+  call_spec, launch, transport}` — one server's jail and its transport.
+  `call_spec(jail, op, now_ms:, demand:)` takes the demand from its
+  caller: the session's, which the probe proved.
+- **Invariant: a server's executable region is directories, never an
+  install prefix.** `locate` reads the executable without following it
+  (`tools/fs.real_filesystem().read_link`, the existing
+  `tools_ffi:read_link/1`; no FFI in this package) and follows a link to
+  its regular file, relative text against the link's own directory, at
+  most `max_link_hops` (32) links; a loop, an overrun, a dangling link and
+  a non-file end are refused by name. `ExecutableFile` is
+  `PlainExecutable | LinkedExecutable(chain)`, so `regions` is pure over
+  that answer: the executable's directory plus each chain entry's.
+  rustup's `~/.cargo/bin/rust-analyzer -> rustup` is `~/.cargo/bin` alone.
+  The prefix rule this replaced put `~/.cargo/credentials.toml` in every
+  rust-analyzer jail. `unshadowed` still judges every region, a target's
+  directory included. `client/codemode.install_prefix` is code mode's and
+  is no longer read here.
+- **Invariant: no link on the executable's chain is one the server can
+  rewrite.** Since the mounts follow where links point, `unrewritable`
+  refuses a lease when the command path (if a link) or any intermediate
+  link lies at or under the same `writes` list `unshadowed` reads — a
+  writable project root, the scratch directory, each `writable` root —
+  and tells the operator to name the target in `command`. The final
+  regular file is exempt: a plain executable in a writable project mounts
+  only its own directory. One check at resolution suffices, because
+  nothing re-reads the chain; a link rewritten later points outside what
+  was mounted and fails to execute.
+- `client/lsp/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
+  release, stop}` — the per-session cap on session-lived helper leases,
+  `pool_size - reserved_helpers`.
+- **Traffic.** `manager.Msg`: `Acquire(identity, reply)` (a caller wants the
+  server, started if need be; waiters join one start), `Peek`,
+  `Opened(identity, paths)` (a cast recording documents a caller opened),
+  `KeeperReady(keeper, outcome)`, `KeeperDown`, `Shutdown(reply:
+  Subject(Option(Pid)))` (the reply names the keeper still stopping a
+  server). The keeper's own messages are `Begin`, `PreviousGone`, `Release`,
+  `ClientDown` and `ManagerDown`: an evicted or released keeper, or one
+  whose manager died, stops its client gracefully (`lsp/client.stop`).
+- **Serve wiring.** `serve.assemble_in` builds the plane only when
+  `Catalog.lsp_servers` is non-empty. Each server's `readable`/`writable`
+  `~/` roots are expanded once with `catalog.expand_lsp_path(_,
+  serve.home_directory())`; a server whose roots will not resolve, or every
+  server when the lease counter will not start, is refused with one
+  `lsp.unavailable` line and the boot goes on. The counter starts from
+  `Settings.helper_pool_size`, `jail.operation` mints the attribution
+  operation, and the manager runs as a service-tier child under a minted
+  address, over `manager.jailed` with `Settings.demand`. The same door goes
+  to `contributions.built_in` and `codemode.over_lsp`. `close_instance`
+  stops the manager after `api.close` and before the service tree, then
+  aborts the plane's operation (the backstop) and stops the counter. A
+  daemon session retired through custody loses the manager with the
+  service tree; its keeper sees `ManagerDown` and stops the server, and
+  pool close is the backstop there.
+- `conformance/lsp_e2e_test` is issue #25's acceptance through
+  `serve.open_instance`: references, an anchored `fs_edit`, a rename
+  preview and apply over a real jailed `gleam lsp`, and a stale apply
+  raced by a concurrent writer.
+
+## Code-mode language servers
+
+`codemode.over_lsp(config, Option(lsp/query.Door))` sets `Config.lsp`, the
+one field behind four halves of one decision, exactly as `Config.mcp` and
+`Config.notes` are: `seam_allowlist` admits `cap/lsp`, the description
+therefore renders its surface, `seam_caps_on` appends
+`codemode/lsp.serviced_caps`, and `workspace_router` installs
+`codemode/lsp.routing` between read-only search and the MCP arm. `cap/lsp`
+is on no static allowlist (`codemode/vet/policy.default_cap_modules`),
+because its roughly 5.6 KB surface would otherwise sit in every session's
+cached prefix to advertise imports that could only be refused; without a
+door vetting refuses the import by name and `lsp.*` falls to the default
+table's `unsupported_cap`. `lsp_on` excludes extensions and resident hooks.
+
+The field holds the door, not a `codemode/lsp.Seam`, because the seam's
+applied rename is bound to one execution's write boundary.
+`client/lsp/codemode_rename.seam(door, workspace:, roots:, protected:)`
+builds it per request from the request's workspace, its approved writable
+roots and its base policy's protected list, the values `workspace_seam`
+gives `cap/fs.write`: `door.prepare_rename`, then `tools/lsp.land` with
+`fs.write_target` as the target maker, then `door.after_write` per landed
+file. A protected path is refused to a rename in `fs_write`'s own words.
+`test/client/lsp/plumbing_test` pins both polarities against a fake door.
 
 ## Durable code-mode notes
 

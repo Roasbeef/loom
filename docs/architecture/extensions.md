@@ -122,9 +122,9 @@ belongs behind the stronger boundary, which is the same ordering
 and unlike the other two it deliberately overlaps its siblings.
 `extension_cap_modules` is `default_cap_modules()` widened by exactly
 three names, `ext`, `ext/hook` and `ext/memory`
-(`vet/policy.gleam:599`). `extension_stdlib_modules` is the shared pure
+(`vet/policy.gleam:607`). `extension_stdlib_modules` is the shared pure
 subset widened by `gleam/bit_array` and `gleam/uri`
-(`vet/policy.gleam:618`). JSON and dynamic decoding belong to the shared
+(`vet/policy.gleam:626`). JSON and dynamic decoding belong to the shared
 subset, so ordinary code-mode programs have them too.
 
 The workspace and orchestration seams are disjoint because an
@@ -560,7 +560,7 @@ value the previous step produced.
 
 1. **At boot, discovery feeds the registry.** `serve.assemble` reads
    `installed.discover` for the extensions root before it builds the
-   registry (`extension_registrations` at `client/serve.gleam:2044`). A
+   registry (`extension_registrations` at `client/serve.gleam:2264`). A
    `Refused` is logged and registers nothing. A `Ready` on a host with no
    code-mode toolchain is also logged and registers nothing: with no
    `erl` there is no satellite to boot, and a tool definition that can
@@ -1303,7 +1303,9 @@ child the extension starts from `session_start` through `cap/proc`, in
 the jail, with access to the workspace roots and no network. What the
 plan does not yet contain is a grant for binaries: a `[proc]` table in
 the manifest beside `[net]`, with the same per-execution ceiling shape.
-`cap/lsp` exists today as an allowlisted stub, and this route retires it.
+LSP has since landed in the harness instead, as a jailed session lease
+whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-013,
+`lsp.md`); the route remains named for DAP.
 
 ## Where the code lives
 
@@ -1314,7 +1316,7 @@ the manifest beside `[net]`, with the same per-execution ceiling shape.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1931`) with `start`, `invoke` (`codemode/satellite.gleam:2122`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The four seams. The fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:599`) and `extension_stdlib_modules` (`vet/policy.gleam:618`) widen the effect-only workspace subset, so extensions do not gain child custody. |
+| `codemode/vet/policy.gleam` | The four seams. The fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:607`) and `extension_stdlib_modules` (`vet/policy.gleam:626`) widen the effect-only workspace subset, so extensions do not gain child custody. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
@@ -1329,8 +1331,8 @@ the manifest beside `[net]`, with the same per-execution ceiling shape.
 | `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` (the one composition of `ext/<name>/<key>`), `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
-| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:676`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:877`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2044`), the two refusals it logs, and the contribution it appends. |
+| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:656`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:853`). |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2264`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:280`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |

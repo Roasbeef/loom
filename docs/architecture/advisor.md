@@ -781,7 +781,7 @@ feed_every_steps = 20           # default; 0 is the run-end-only cadence
 block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
-The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:289`). It is `model.Custom("advisor")` rather than
+The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:389`). It is `model.Custom("advisor")` rather than
 a sixth named variant, because `provider/model.Role`'s five names are the
 design vocabulary and `Custom` is what that type provides for a role an
 application defines. It is last in the canonical order because it is the
@@ -803,7 +803,7 @@ cases an operator could not otherwise tell apart. A catalogue with no
 catalogue that routes the role to a chain this host cannot serve would
 otherwise show only a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1552`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:2164`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is. An unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

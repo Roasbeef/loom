@@ -628,5 +628,6 @@ fn scripted_catalog() -> catalog.Catalog {
     ],
     roles: [#(model.Main, ["acme"])],
     mcp_servers: [],
+    lsp_servers: [],
   )
 }

@@ -174,7 +174,7 @@ list of **contributions**, each a `Contribution(origin, tools)` whose
 
 ### The built-in contribution
 
-`built_in` (`client/contributions.gleam:172`) takes one `Option` per
+`built_in` (`client/contributions.gleam:183`) takes one `Option` per
 plane and returns the host's own contribution in a fixed order:
 
 1. the five core tools, `bash`, `grep`, `fs_read`, `fs_write`, and
@@ -186,7 +186,8 @@ plane and returns the host's own contribution in a fixed order:
 6. the three `schedule_*` tools, if the operator's schedule policy
    admits model-created schedules;
 7. `context_remaining`, given a `Context`;
-8. the three `job_*` tools, given a `Jobs` door.
+8. the three `job_*` tools, given a `Jobs` door;
+9. the seven `lsp_*` tools, given the session's language-server door.
 
 `client/serve` always supplies the `Agency`, `Context`, and `Jobs`
 seams, so on a served session only code mode, search, memory, and
@@ -200,6 +201,13 @@ to gating: it always takes a `Jobs` door, and with no jobs plane the
 door is `job.unavailable()`, so `mode: "background"` is refused in band
 rather than absent from the schema.
 
+The language-server door is the other plane that reaches core tools.
+With a door, `fs_write` and `fs_edit` are built with a write observer,
+`tools/lsp.diagnostics_observer`, and a landed write's result gains the
+server's settled diagnostics after its fresh-anchor block. Without one
+they are the plain tools, byte for byte. A host has a door only when
+`loom.toml` configures an `[lsp.<name>]` server (`lsp.md`).
+
 `client/serve` then appends three more contributions. Two carry the
 `BuiltIn` origin: `load_skill` (if any skill allows model invocation)
 with the three `peer_*` tools, and `advise` (if an advisor is
@@ -209,7 +217,7 @@ covers how discovery turns an install record into tools.
 
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:282`) refuses a name that two
+`registry` (`client/contributions.gleam:321`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could
@@ -365,9 +373,12 @@ The declarations follow from each tool's effects:
   `schedule_create`, `schedule_cancel`, the `job_*` tools, and every
   extension tool are `Never`. Each either has an arbitrary external
   effect or mints a fresh identifier per call, so a replay would act
-  twice.
+  twice. `lsp_rename` is `Never` for a narrower reason: an applied
+  rename writes several files and is not atomic across them, so a replay
+  after a partial landing would ask the server about a half-renamed tree.
 - Every other tool is `Safe`. For `fs_read`, `grep`, `history_search`,
-  and `context_remaining` the reason is that they only read.
+  `context_remaining` and the six read-only `lsp_*` tools the reason is
+  that they only read.
 - `fs_write` is `Safe` because writing the same bytes to the same path
   is idempotent. `fs_edit` is `Safe` because its plan is bound to the
   digest of the exact content it was computed against, so a replay after
@@ -378,8 +389,8 @@ The declarations follow from each tool's effects:
 
 `execution_mode` is `Exclusive` for tools that may mutate shared state
 (`bash`, `fs_write`, `fs_edit`, `code_mode`, `remember`, `agent_spawn`,
-`agent_send`, the schedule writers, `advise`, extension tools) and
-`Concurrent` for the rest. The broker pools execution budget per
+`agent_send`, the schedule writers, `advise`, `lsp_rename`, extension
+tools) and `Concurrent` for the rest. The broker pools execution budget per
 `{op_id, step_id}`, which is the whole batch
 (`docs/adr/005-budget-pooling-granularity.md`). A `Concurrent` tool that
 clears through the broker must therefore declare enough outstanding
@@ -433,6 +444,7 @@ model-authored code runs there, which is what Rule Zero requires.
 | `schedule_create`, `schedule_list`, `schedule_cancel` | Create, list, and cancel the model's scheduled heartbeats. | Harness VM | `automation.md` §"Scheduled heartbeats" |
 | `advise` | The advisor strand's verdict: `quiet`, `nudge`, or `block`, plus `continue` and `complete` for a goal feed. Active on the advisor strand only. | Harness VM | `advisor.md` |
 | `load_skill` | Load a skill's instructions by name. | Harness VM | `docs/skills.md`; `client.md` §"Skill discovery and activation" |
+| `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols`, `lsp_calls`, `lsp_diagnostics`, `lsp_rename` | Ask the session's language server about a symbol by name, outline a file, list diagnostics, and preview or apply a rename; every site carries its `fs_edit` anchor. Registered only where a server is configured. | Harness VM; the server runs jailed (broker, helper) | `lsp.md` |
 | `peer_describe`, `peer_roster`, `peer_send` | Set this session's peer description, list linked sessions, and send to a peer. | Harness VM | `messaging.md` §"Explicit peers and background workflows" |
 | Extension tools | Whatever an installed extension's manifest declares. | Jailed (the extension's satellite) | `extensions.md` |
 
@@ -458,6 +470,7 @@ of them is registered:
 | `tools/blob.gleam`, `tools/tail.gleam` | Output overflow and the rolling output window. |
 | `tools/permissions.gleam`, `tools/directory_access.gleam` | The optional `permissions` argument and explicit directory additions. |
 | `tools/agent.gleam`, `tools/job.gleam`, `tools/history.gleam`, `tools/remember.gleam`, `tools/schedule.gleam`, `tools/context.gleam`, `tools/advise.gleam`, `tools/codemode.gleam` | The shells over host seams, one module per family. |
+| `tools/lsp.gleam` | The `lsp_*` tools over `lsp/query.Door`, the rename landing, and the diagnostics observer. |
 | `tools/prelude.gleam` | Generated public-type prefixes for the description and full capability declarations for `cap://` reads (`make gen-prelude`). |
 | `client/contributions.gleam` | `Origin`, `Contribution`, `built_in`, `deactivate`, and the collision-checked `registry`. |
 | `client/serve.gleam` | Session assembly: opens the planes, builds the contribution list and registry, seeds `active_tool_names`, renders the prompt index. |

@@ -19,10 +19,11 @@ provider = { path = "../provider" }
 tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
+lsp = { path = "../lsp" }
 telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = "== 0.4.4"
+weft = "== 0.4.5"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 mist = { git = "https://github.com/Roasbeef/mist.git", ref = "65b29375ecefc9a5d58bf4190a2eee41d7dd1db5" }

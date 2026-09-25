@@ -210,11 +210,14 @@ language server meant to be driven by an editor over stdio, so it answers
 nothing from a shell, and Claude Code's own LSP tool has no Gleam server
 configured — asking it for a hover returns "No LSP server available for
 file type: .gleam". Do not plan a task around go-to-definition or
-find-references. `ast-grep` does not know Gleam either (`gleam is not
-supported!`), so structural search over these sources is grep, or a
-throwaway `glance` walk in `packages/lint` when the question is really
-about the AST. For the public API surface, `gleam export
-package-interface` is the answer and is exact.
+find-references. That is about the tooling a developer drives this repo
+with, not about Loom: Loom's own agent has language-server tools, run
+jailed per session (ADR-013, `docs/architecture/lsp.md`). `ast-grep`
+does not know Gleam either (`gleam is not supported!`), so structural
+search over these sources is grep, or a throwaway `glance` walk in
+`packages/lint` when the question is really about the AST. For the
+public API surface, `gleam export package-interface` is the answer and
+is exact.
 
 `main` is the primary branch. Work happens on short-lived topic branches
 named for the work itself — `storage/branch-index-repair`,
@@ -261,7 +264,7 @@ one.
   The three planes: `durability`, `orchestration`, `effects`. The
   process and its sessions: `daemon`, `sessions`, `client`,
   `terminal`, `multiplayer`. What the model sees and does: `prompt`,
-  `tools`, `approvals`, `models`, `compaction`, `memory`.
+  `tools`, `lsp`, `approvals`, `models`, `compaction`, `memory`.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,
   `advisor`, `goals`, `automation`, `hooks-compat`. Observation and

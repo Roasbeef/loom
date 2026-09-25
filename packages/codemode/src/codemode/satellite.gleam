@@ -1524,7 +1524,7 @@ fn outcome_body(payload: BitArray) -> Result(MsgPackValue, String) {
 /// | `report.emit` | `codemode/artifact`, over the session's blob store | `ServedHere` |
 /// | `git.*` | **nothing here, and nothing is owed**: `cap/git` composes `proc.run` inside the satellite | the row above |
 /// | `net.request` | `client/extension/seam`, for an extension only, under the policy its manifest declared | `ServedHere` |
-/// | `lsp.*` | nobody yet — gated on the long-lived stdio client (#25) | not `clear_call`: a protocol, not a one-shot exec |
+/// | `lsp.*` | `codemode/lsp`, over the session's language-server door (ADR-013) | `ServedHere` |
 /// | `mcp.<server>` | `client/mcp`, per configured server (#106) | `ServedHere` |
 /// | `strand.*` | `codemode/orchestration` — the *other* seam, never this one | `ServedHere` |
 ///

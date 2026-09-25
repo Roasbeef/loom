@@ -30,7 +30,7 @@
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
-////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
+////   8940047d87db925d381fe940c19c58a3f97430d02c4aa31bc38311651767b349  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
@@ -45,7 +45,7 @@
 ////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
 ////   b3b58fee4cd1fb3ac91be3c441df7483ebfbf342fe92fe456f8d14f49d4c681d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 3db14136b55d60dfde83d9aa83830868a956484005131d80deb664ec256b54ec
+//// Body digest (every line after the marker): 44350c9f007c497b01c5f6651371991ba28cd0dbecb81b1f6bb11ea8fe6de4bb
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -538,56 +538,200 @@ pub fn set(String, BitArray) -> Result(Nil, KvError)
   #(
     "cap/lsp",
     "### cap/lsp
-`cap/lsp` — semantic queries through the project's language server:
-references, go-to-definition, rename, and diagnostics.
+`cap/lsp` — semantic questions about the workspace's code, answered by the
+language server the session runs for it (ADR-013).
 
-/// One diagnostic reported by the language server.
+/// One edge of a call hierarchy.
+pub type Call {
+  Call(name: String, site: Site, at: List(Site))
+}
+/// Which way a call-hierarchy query walks.
+pub type CallDirection {
+  /// Who calls the symbol.
+  Incoming
+  /// What the symbol calls.
+  Outgoing
+}
+/// One diagnostic from the server.
 pub type Diagnostic {
-  Diagnostic(location: Location, severity: Severity, message: String)
+  Diagnostic(site: Site, severity: Severity, message: String)
 }
-/// A position in a file: zero-based `line` and `character`, matching the
-/// LSP convention.
-pub type Location {
-  Location(path: String, line: Int, character: Int)
+/// Diagnostics, and whether they are known to be current.
+///
+/// Two variants rather than a flag, because the two are different claims
+/// and a program must not read one as the other: `Settled([])` is clean
+/// code, and `Unsettled([])` is only that nothing had arrived yet.
+pub type Diagnostics {
+  /// The server finished reacting to the latest change. An empty list is
+  /// a clean result.
+  Settled(diagnostics: List(Diagnostic))
+  /// The harness's wait ran out first. `seen` is whatever arrived, which
+  /// may be stale or partial. Never read this as clean code.
+  Unsettled(seen: List(Diagnostic))
 }
-/// Why an LSP query failed.
+/// A bounded list and how long it was before the bound.
+pub type Found(a) {
+  Found(items: List(a), total: Int)
+}
+/// What landing one file of an applied rename did.
+pub type Landing {
+  /// Written.
+  Landed(path: String, edits: Int)
+  /// Refused before or during its write; nothing was written to it. A
+  /// file changed since the server computed the rename rejects here,
+  /// exactly as a stale `fs_edit` does.
+  Rejected(path: String, reason: String)
+  /// Not attempted, because a check on some file failed before any write
+  /// began.
+  NotAttempted(path: String)
+}
+/// One line a previewed rename would change.
+pub type LineChange {
+  LineChange(line: Int, before: String, after: String)
+}
+/// Why a query produced no answer. Every variant is something a program
+/// can act on, which is why none of them is a bare string.
 pub type LspError {
-  /// No language server is available for the file's language.
-  NoServer(message: String)
-  /// The broker refused the query in-band.
+  /// No configured server owns the path, the path's real location is
+  /// outside the server's root, or the server could not start.
+  NoServer(reason: String)
+  /// The server does not offer `request` (for example call hierarchy), so
+  /// it was never sent.
+  Unsupported(server: String, request: String)
+  /// The symbol was not found where the query said to look.
+  NotFound(symbol: String)
+  /// More than one distinct definition matched. Narrow the query with
+  /// `in` or `at_line` using one of these.
+  Ambiguous(candidates: List(Site))
+  /// The server answered with an error, kept in its own words: a refused
+  /// rename's reason is the useful part.
+  Refused(message: String)
+  /// The harness refused the call in band, under `code`.
   LspDenied(code: String, message: String)
-  /// The capability channel could not carry the call.
+  /// The call could not be carried, the server did not answer in time, or
+  /// the answer was not a shape this module reads.
   LspUnavailable(reason: String)
 }
-/// A diagnostic's severity.
+/// One file a previewed rename would change.
+pub type PlannedFile {
+  PlannedFile(path: String, edits: Int, changes: List(LineChange))
+}
+/// What a program asks about: a symbol by name, optionally narrowed.
+///
+/// `symbol` is the name as code reads it, and may be qualified the way
+/// code reads it too: `greet`, `Greet`, `util.Greet`, `probe.greet`. The
+/// last dot-separated segment is the identifier; anything before it
+/// narrows the candidates to definitions whose module path or directory
+/// ends with that qualifier. The harness does the resolving; this module
+/// passes the string through untouched.
+///
+/// With `path` and `line`, the first occurrence of the identifier on that
+/// line is meant. With `path` alone, the file's outline is searched by
+/// name. With neither, the whole project is searched, and more than one
+/// distinct definition is `Ambiguous` rather than a guess. A `line`
+/// without a `path` narrows nothing and is refused as `LspDenied` with
+/// code `invalid_argument`, as is a line below 1.
+pub type Query {
+  Query(symbol: String, path: option.Option(String), line: option.Option(Int))
+}
+/// One reference to a symbol, with the symbol whose body holds it.
+pub type Reference {
+  Reference(site: Site, container: option.Option(String))
+}
+/// Whether a rename only reports what it would do, or does it.
+pub type RenameMode {
+  /// Compute the rename and write nothing.
+  Preview
+  /// Compute the rename and land it, file by file, through the same
+  /// anchor-checked write path `fs_edit` uses.
+  Apply
+}
+/// A rename's outcome.
+///
+/// Landing across files is not atomic, which is why `Applied` reports
+/// every file and the diagnostics that followed: a half-landed rename
+/// shows up in both.
+pub type RenameReport {
+  /// What `Preview` would change, file by file. Nothing was written.
+  Previewed(files: List(PlannedFile))
+  /// What `Apply` did, file by file, and the diagnostics afterwards.
+  Applied(files: List(Landing), diagnostics: Diagnostics)
+}
+/// A diagnostic's severity, in LSP's order.
 pub type Severity {
+  /// The code does not compile.
   SeverityError
+  /// The code compiles, and the server has an objection.
   SeverityWarning
+  /// Information the server thought worth saying.
   SeverityInformation
+  /// A suggestion.
   SeverityHint
 }
-/// A text edit a rename would apply.
-pub type TextEdit {
-  TextEdit(path: String, line: Int, character: Int, new_text: String)
+/// A place in a workspace file, in the form `fs.read` and `search.grep`
+/// use.
+pub type Site {
+  Site(path: String, line: Int, column: Int, text: String, anchor: String)
 }
-/// The definition site(s) of the symbol at `location`.
+/// One entry of a file's outline, nested as the server nests it.
+pub type Symbol {
+  Symbol(name: String, kind: String, detail: option.Option(String), site: Site, children: List(Symbol))
+}
+/// The most entries a `definition` or `references` answer carries, and
+/// the most candidates an `Ambiguous` refusal lists. The harness
+/// (`codemode/lsp`) is the enforcer and holds the same number; `total` in
+/// a `Found` says how many there were before the cap.
+pub const max_items: Int
+/// Narrows a query to one line of its file, 1-based as `fs.read` shows
+/// it. Pair it with `in`.
+pub fn at_line(Query, Int) -> Query
+/// One level of the call hierarchy around the queried symbol. Servers
+/// that do not offer call hierarchy answer `Unsupported`; `references`
+/// with its `container` is the portable way to ask who calls a symbol.
+///
+/// Capability: `lsp.calls`.
+pub fn calls(Query, CallDirection) -> Result(List(Call), LspError)
+/// Where the queried symbol is defined.
 ///
 /// Capability: `lsp.definition`.
-pub fn definition(Location) -> Result(List(Location), LspError)
-/// Diagnostics for a file.
+pub fn definition(Query) -> Result(Found(Site), LspError)
+/// Diagnostics for one file, or for every file the server has reported on
+/// when `path` is `None`.
 ///
 /// Capability: `lsp.diagnostics`.
-pub fn diagnostics(String) -> Result(List(Diagnostic), LspError)
-/// All references to the symbol at `location`.
+pub fn diagnostics(option.Option(String)) -> Result(Diagnostics, LspError)
+/// Type information and documentation for the queried symbol, as the
+/// server renders it (usually markdown).
+///
+/// At most 64 KiB of it. A longer answer is cut at the last line break
+/// inside that bound and ends with a line saying how many bytes were cut,
+/// because the server chooses how much it sends.
+///
+/// Capability: `lsp.hover`.
+pub fn hover(Query) -> Result(String, LspError)
+/// Narrows a query to one file.
+pub fn in(Query, String) -> Query
+/// A file's outline: its declared symbols, nested.
+///
+/// Capability: `lsp.outline`.
+pub fn outline(String) -> Result(List(Symbol), LspError)
+/// Every reference to the queried symbol, its declaration included, each
+/// with the symbol whose body holds it.
 ///
 /// Capability: `lsp.references`.
-pub fn references(Location) -> Result(List(Location), LspError)
-/// The edits a rename of the symbol at `location` to `new_name` would
-/// apply. The caller applies them (e.g. via `cap/fs`) — the query itself
-/// changes nothing.
+pub fn references(Query) -> Result(Found(Reference), LspError)
+/// Renames the queried symbol to `new_name` across the project.
+///
+/// `Preview` writes nothing and answers `Previewed`, the lines each file
+/// would change. `Apply` lands the rename through the anchor-checked
+/// write path and answers `Applied`: what landed in each file, and the
+/// diagnostics that followed. A file changed since the server computed
+/// the rename is `Rejected`, never overwritten.
 ///
 /// Capability: `lsp.rename`.
-pub fn rename(Location, String) -> Result(List(TextEdit), LspError)
+pub fn rename(Query, String, RenameMode) -> Result(RenameReport, LspError)
+/// A query for `name` anywhere in the project.
+pub fn symbol(String) -> Query
 ",
   ),
   #(
@@ -1980,37 +2124,144 @@ pub type KvError {
   #(
     "cap/lsp",
     "### cap/lsp
-`cap/lsp` — semantic queries through the project's language server:
-references, go-to-definition, rename, and diagnostics.
+`cap/lsp` — semantic questions about the workspace's code, answered by the
+language server the session runs for it (ADR-013).
 
-/// One diagnostic reported by the language server.
+/// One edge of a call hierarchy.
+pub type Call {
+  Call(name: String, site: Site, at: List(Site))
+}
+/// Which way a call-hierarchy query walks.
+pub type CallDirection {
+  /// Who calls the symbol.
+  Incoming
+  /// What the symbol calls.
+  Outgoing
+}
+/// One diagnostic from the server.
 pub type Diagnostic {
-  Diagnostic(location: Location, severity: Severity, message: String)
+  Diagnostic(site: Site, severity: Severity, message: String)
 }
-/// A position in a file: zero-based `line` and `character`, matching the
-/// LSP convention.
-pub type Location {
-  Location(path: String, line: Int, character: Int)
+/// Diagnostics, and whether they are known to be current.
+///
+/// Two variants rather than a flag, because the two are different claims
+/// and a program must not read one as the other: `Settled([])` is clean
+/// code, and `Unsettled([])` is only that nothing had arrived yet.
+pub type Diagnostics {
+  /// The server finished reacting to the latest change. An empty list is
+  /// a clean result.
+  Settled(diagnostics: List(Diagnostic))
+  /// The harness's wait ran out first. `seen` is whatever arrived, which
+  /// may be stale or partial. Never read this as clean code.
+  Unsettled(seen: List(Diagnostic))
 }
-/// Why an LSP query failed.
+/// A bounded list and how long it was before the bound.
+pub type Found(a) {
+  Found(items: List(a), total: Int)
+}
+/// What landing one file of an applied rename did.
+pub type Landing {
+  /// Written.
+  Landed(path: String, edits: Int)
+  /// Refused before or during its write; nothing was written to it. A
+  /// file changed since the server computed the rename rejects here,
+  /// exactly as a stale `fs_edit` does.
+  Rejected(path: String, reason: String)
+  /// Not attempted, because a check on some file failed before any write
+  /// began.
+  NotAttempted(path: String)
+}
+/// One line a previewed rename would change.
+pub type LineChange {
+  LineChange(line: Int, before: String, after: String)
+}
+/// Why a query produced no answer. Every variant is something a program
+/// can act on, which is why none of them is a bare string.
 pub type LspError {
-  /// No language server is available for the file's language.
-  NoServer(message: String)
-  /// The broker refused the query in-band.
+  /// No configured server owns the path, the path's real location is
+  /// outside the server's root, or the server could not start.
+  NoServer(reason: String)
+  /// The server does not offer `request` (for example call hierarchy), so
+  /// it was never sent.
+  Unsupported(server: String, request: String)
+  /// The symbol was not found where the query said to look.
+  NotFound(symbol: String)
+  /// More than one distinct definition matched. Narrow the query with
+  /// `in` or `at_line` using one of these.
+  Ambiguous(candidates: List(Site))
+  /// The server answered with an error, kept in its own words: a refused
+  /// rename's reason is the useful part.
+  Refused(message: String)
+  /// The harness refused the call in band, under `code`.
   LspDenied(code: String, message: String)
-  /// The capability channel could not carry the call.
+  /// The call could not be carried, the server did not answer in time, or
+  /// the answer was not a shape this module reads.
   LspUnavailable(reason: String)
 }
-/// A diagnostic's severity.
+/// One file a previewed rename would change.
+pub type PlannedFile {
+  PlannedFile(path: String, edits: Int, changes: List(LineChange))
+}
+/// What a program asks about: a symbol by name, optionally narrowed.
+///
+/// `symbol` is the name as code reads it, and may be qualified the way
+/// code reads it too: `greet`, `Greet`, `util.Greet`, `probe.greet`. The
+/// last dot-separated segment is the identifier; anything before it
+/// narrows the candidates to definitions whose module path or directory
+/// ends with that qualifier. The harness does the resolving; this module
+/// passes the string through untouched.
+///
+/// With `path` and `line`, the first occurrence of the identifier on that
+/// line is meant. With `path` alone, the file's outline is searched by
+/// name. With neither, the whole project is searched, and more than one
+/// distinct definition is `Ambiguous` rather than a guess. A `line`
+/// without a `path` narrows nothing and is refused as `LspDenied` with
+/// code `invalid_argument`, as is a line below 1.
+pub type Query {
+  Query(symbol: String, path: option.Option(String), line: option.Option(Int))
+}
+/// One reference to a symbol, with the symbol whose body holds it.
+pub type Reference {
+  Reference(site: Site, container: option.Option(String))
+}
+/// Whether a rename only reports what it would do, or does it.
+pub type RenameMode {
+  /// Compute the rename and write nothing.
+  Preview
+  /// Compute the rename and land it, file by file, through the same
+  /// anchor-checked write path `fs_edit` uses.
+  Apply
+}
+/// A rename's outcome.
+///
+/// Landing across files is not atomic, which is why `Applied` reports
+/// every file and the diagnostics that followed: a half-landed rename
+/// shows up in both.
+pub type RenameReport {
+  /// What `Preview` would change, file by file. Nothing was written.
+  Previewed(files: List(PlannedFile))
+  /// What `Apply` did, file by file, and the diagnostics afterwards.
+  Applied(files: List(Landing), diagnostics: Diagnostics)
+}
+/// A diagnostic's severity, in LSP's order.
 pub type Severity {
+  /// The code does not compile.
   SeverityError
+  /// The code compiles, and the server has an objection.
   SeverityWarning
+  /// Information the server thought worth saying.
   SeverityInformation
+  /// A suggestion.
   SeverityHint
 }
-/// A text edit a rename would apply.
-pub type TextEdit {
-  TextEdit(path: String, line: Int, character: Int, new_text: String)
+/// A place in a workspace file, in the form `fs.read` and `search.grep`
+/// use.
+pub type Site {
+  Site(path: String, line: Int, column: Int, text: String, anchor: String)
+}
+/// One entry of a file's outline, nested as the server nests it.
+pub type Symbol {
+  Symbol(name: String, kind: String, detail: option.Option(String), site: Site, children: List(Symbol))
 }
 ",
   ),

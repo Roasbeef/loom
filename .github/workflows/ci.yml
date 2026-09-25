@@ -417,7 +417,7 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt telemetry provider broker mcp tools
+              host core machine prompt telemetry provider broker mcp lsp tools
               cap ext codemode tui lint sandbox
     steps:
       # actions/checkout v7.0.1
@@ -455,6 +455,16 @@ jobs:
         run: |
           chmod +x bin/* packages/sandbox/loom-exec
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
+
+      # ripgrep alone, not bwrap: the LSP end-to-end names a bare symbol,
+      # which the language-server manager finds with rg before asking the
+      # server. Installing bwrap here would change what every other
+      # conformance fixture exercises; the jail job runs the enforced path.
+      - name: Install ripgrep for the language-server end-to-end
+        if: matrix.bucket == 'conformance'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
 
       # The developer fixture checks both host and restricted read views.
       # Restricted reads need bwrap's mount namespace, as in the jail job.
@@ -872,6 +882,13 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: brew install tmux
 
+      # ripgrep for the same reason: the language-server tests (ADR-013)
+      # find a bare symbol with rg in the jail, and without it they skip.
+      - name: Install language-server test prerequisite
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install ripgrep
+
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
@@ -898,6 +915,15 @@ jobs:
         run: |
           chmod +x bin/* packages/sandbox/loom-exec
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
+
+      # gopls for the language-server tests' Go variants, pinned as on
+      # the Linux jail lane; Go is already here for the helper.
+      - name: Install gopls
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
 
       # Owner-approved hosted load-sensitivity exception, not a performance
       # fix. https://github.com/Roasbeef/loom/issues/241
@@ -988,6 +1014,18 @@ jobs:
             2>&1 | tee ux-worktree-macos.log
           LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
             "macos (terminal observations)" ux-joined-macos.log ux-worktree-macos.log
+
+      # The language-server end-to-end (ADR-013) needs ripgrep for its
+      # bare-name search and gopls for its Go variant; macOS runners carry
+      # neither, and a skip here would be a hole the census exposes.
+      - name: Install language-server end-to-end prerequisites
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          set -euo pipefail
+          brew install ripgrep
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: make e2e
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e 2>&1 | tee e2e-macos.log
@@ -1145,7 +1183,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          # ripgrep beside bwrap: the grep tool and the language-server
+          # manager's bare-name search both run `rg` inside the jail, and
+          # the LSP end-to-end names a bare symbol.
+          sudo apt-get install -y --no-install-recommends bubblewrap ripgrep
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then
             echo "apparmor_restrict_unprivileged_userns was: $(cat "$knob")"
@@ -1283,6 +1324,18 @@ jobs:
 
       - name: Prepare the code-mode build seed
         run: .github/scripts/hex_retry.sh make codemode-seed
+
+      # gopls for the language-server end-to-end's Go variant (ADR-013),
+      # pinned exactly like every other tool here. The lane already has Go
+      # for the helper; without gopls the Go variant skips, and this
+      # lane's census rightly refuses an undeclared skip. v0.23.0 is the
+      # version the Go measurements in ADR-013 were taken against.
+      - name: Install gopls
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
 
       # Both end-to-end suites again — but this time over a helper that
       # has bwrap, Landlock and namespaces, so the enforcement they report

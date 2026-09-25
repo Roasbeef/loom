@@ -35,7 +35,7 @@
 ////
 //// ## Callers are never killed by a slow or dead actor
 ////
-//// Every public call is a monitored send-and-select (the
+//// Every public call is a monitored send-and-select through `mcp/call` (the
 //// `broker/internal/call.try_call` shape), never `process.call`, which
 //// panics on a timeout and on a dead callee. A dead client answers
 //// `Unavailable`; a wedged one answers `Unavailable` after the call's
@@ -62,6 +62,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import mcp/call
 import mcp/jsonrpc.{type Id}
 import mcp/protocol.{type CallToolResult, type ToolDescriptor}
 import mcp/stdio
@@ -570,43 +571,25 @@ fn request(
   |> result.flatten
 }
 
-// A `process.call` that answers instead of crashing — the
-// `broker/internal/call.try_call` shape, reproduced here because this
-// package deliberately does not depend on the broker. The caller of a
-// tool call holds a verdict its death would lose; a dead or wedged
-// client must answer `Unavailable`, never exit the asker. The cost of
-// not crashing is one stale message: a reply arriving after the wait
-// sits in the caller's mailbox as an inert term, bounded by the number
-// of faulty exchanges.
+// A `process.call` that answers instead of crashing, through `mcp/call`
+// (the one copy of `broker/internal/call.try_call` outside the broker).
+// The caller of a tool call holds a verdict its death would lose; a dead
+// or wedged client must answer `Unavailable`, never exit the asker. The
+// cost of not crashing is one stale message: a reply arriving after the
+// wait sits in the caller's mailbox as an inert term, bounded by the
+// number of faulty exchanges.
 fn exchange(
   subject: Subject(Msg),
   waiting: Int,
   make: fn(Subject(reply)) -> Msg,
 ) -> Result(reply, ClientError) {
-  // A subject whose owner is gone has nobody to answer; the monitor
-  // below covers the owner dying after this check.
-  case process.subject_owner(subject) {
-    Error(Nil) -> Error(Unavailable(reason: "mcp client is not running"))
-    Ok(owner) -> {
-      let reply_subject = process.new_subject()
-      let monitor = process.monitor(owner)
-      process.send(subject, make(reply_subject))
-      let answer =
-        process.new_selector()
-        |> process.select_map(reply_subject, Ok)
-        |> process.select_specific_monitor(monitor, fn(_down) {
-          Error(Unavailable(reason: "mcp client is not running"))
-        })
-        |> process.selector_receive(waiting)
-
-      // Demonitoring flushes a DOWN that arrived after the wait, so the
-      // only thing this exchange can leave behind is a late reply.
-      process.demonitor_process(monitor)
-      result.lazy_unwrap(answer, fn() {
-        Error(Unavailable(reason: "mcp client did not answer"))
-      })
+  call.try_call(subject, waiting:, sending: make)
+  |> result.map_error(fn(fault) {
+    case fault {
+      call.CalleeGone -> Unavailable(reason: "mcp client is not running")
+      call.NoReply -> Unavailable(reason: "mcp client did not answer")
     }
-  }
+  })
 }
 
 fn malformed(fault: protocol.ProtocolFault) -> ClientError {
@@ -936,28 +919,17 @@ fn refuse_server_request(state: State, id: Id) -> Result(State, String) {
   }
 }
 
-// The JSON-RPC error response `mcp/jsonrpc` has no encoder for, built
-// here because answering server requests is the client actor's job
-// (the protocol layer only decodes them).
+// The refusal is `{code: -32601, message}` with no `data`: the server
+// learns only that we do not serve its method, never why.
 fn method_not_found_response(id: Id) -> JsonValue {
-  json.Object([
-    #("jsonrpc", json.String(jsonrpc.version)),
-    #("id", encode_id(id)),
-    #(
-      "error",
-      json.Object([
-        #("code", json.Int(method_not_found_code)),
-        #("message", json.String("method not found")),
-      ]),
+  jsonrpc.error_response(
+    id,
+    jsonrpc.RpcError(
+      code: method_not_found_code,
+      message: "method not found",
+      data: None,
     ),
-  ])
-}
-
-fn encode_id(id: Id) -> JsonValue {
-  case id {
-    jsonrpc.IdInt(value:) -> json.Int(value)
-    jsonrpc.IdString(value:) -> json.String(value)
-  }
+  )
 }
 
 fn outcome_to_result(

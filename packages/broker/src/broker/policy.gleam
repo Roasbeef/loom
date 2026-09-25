@@ -332,6 +332,77 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
   )
 }
 
+/// What a session lease's standard output *is*, which decides whether the
+/// helper's per-stream output cap may stay on it.
+///
+/// The type names the role of the stream rather than the flag it sets,
+/// because the role is what a caller knows and the cap is a consequence.
+/// An extension host's stdout is a log: diagnostics nobody parses, where
+/// the 4 MiB per-stream cap truncating a chatty node loses nothing the
+/// session depends on and bounds what a runaway node can pour into the
+/// relay. A language server's stdout is its wire: every JSON-RPC reply
+/// and notification rides it for the whole session, so a cap sized for
+/// one command's output would, some hours in, stop the stream mid-frame
+/// and leave a live server that can never answer again. A third role
+/// would be a third variant, decided here rather than at a call site.
+pub type LeaseOutput {
+  /// The stream is a log. `output_bytes` passes through from the base,
+  /// so the helper's per-stream cap still applies.
+  OutputIsLog
+
+  /// The stream is the lease's protocol. `output_bytes` is zeroed,
+  /// which the helper reads as "no cap of its own".
+  OutputIsWire
+}
+
+/// The base policy for a jailed process held open for the session — an
+/// extension host, a language server — rather than one that runs a
+/// command and exits: the base with `wall_s` and `cpu_s` at zero, and
+/// `output_bytes` at zero too when the output is a wire.
+///
+/// The zeros go on the *base* because of how composition treats them.
+/// Limits meet with `0` as "unlimited", so a base zero leaves the field
+/// to whatever the requirements carry and a requirements zero against a
+/// non-zero base takes the base's number. Asking for unlimited in the
+/// requirements alone is therefore a narrowing: `shortfall` reports it
+/// as `NarrowedLimit(wanted: 0, granted: 600)`, and a clearance under
+/// `RefuseNarrowed` refuses the whole lease. With the zeros on the base,
+/// a requirements policy that also carries zeros composes to zeros with
+/// nothing narrowed.
+///
+/// The zero wall does not make a lease unbounded. What bounds it is the
+/// pooled budget deadline its clearance carries (`budget.deadline_ms`,
+/// enforced at the relay), which the caller sets to the lease's
+/// lifetime; the zero only stops the helper's own wall timer and
+/// RLIMIT_CPU from killing it sooner, at numbers sized for one command.
+/// Every other field is passed through untouched — the roots, the
+/// protected paths, the network mode, the environment allowlist, and in
+/// particular `mem_bytes`, `pids` and `fsize_bytes`, so a lease is held
+/// to the same memory and process ceilings as any execution.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let base = policy.workspace_default("/work")
+/// let lease = policy.session_lease(base, policy.OutputIsWire)
+/// assert lease.limits.wall_s == 0
+/// assert lease.limits.output_bytes == 0
+/// ```
+///
+pub fn session_lease(
+  base: SandboxPolicy,
+  output: LeaseOutput,
+) -> SandboxPolicy {
+  let output_bytes = case output {
+    OutputIsLog -> base.limits.output_bytes
+    OutputIsWire -> 0
+  }
+  SandboxPolicy(
+    ..base,
+    limits: Limits(..base.limits, wall_s: 0, cpu_s: 0, output_bytes:),
+  )
+}
+
 /// Checks the invariants the wire shape demands: absolute paths
 /// everywhere, non-negative limits, a scratch that is not the literal
 /// host root (`ScratchIsRoot` — issue #59; see the module doc's layering

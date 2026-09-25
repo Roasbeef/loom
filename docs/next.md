@@ -1,70 +1,110 @@
 # Current handoff
 
-The collaboration stack landed on `main` in [#510](https://github.com/Roasbeef/loom/pull/510)
-at `645b8faf`. PR #484 had already merged async execution, resident peer
-messaging, and the named workflow core. The four review layers below add
-model-visible virtual reads, owner controls, a terminal link manager, and
-executable collaboration examples. GitHub marked #494 merged and the other
-three layers were closed as landed through #510; their diffs remain available
-for review.
+Issue #25 landed on `claude/gleam-lsp-support-7oagc3`: Loom's own agent
+can ask a language server about the code it is editing. The ruling is
+[ADR-013](adr/013-language-servers-as-jailed-leases.md) and the account
+is [the LSP architecture doc](architecture/lsp.md). Read both before
+touching any of it; the ADR's "Measured" table and its corrections are
+what the code is built against.
 
-| PR | Result |
-|---|---|
-| [#494](https://github.com/Roasbeef/loom/pull/494) | `fs_read` discovers full capability declarations at `cap://` and polls caller-owned jobs at `job://`. Prompt pack v9 describes both program modes. |
-| [#499](https://github.com/Roasbeef/loom/pull/499) | The owner CLI inspects, links, unlinks, and sends across exact session and strand pairs. |
-| [#502](https://github.com/Roasbeef/loom/pull/502) | `/sessions` links the attached strand to a selected resident target; `/peers` inspects and revokes directional grants, and `/agents` can choose another source strand. |
-| [#503](https://github.com/Roasbeef/loom/pull/503) | A coordinator and two specialists exercise durable child steps and granted peer exchange in jailed code mode. |
+## What exists
 
-The [code-mode architecture](architecture/code-mode.md) explains virtual-read
-routing. The [async architecture](architecture/async-collaboration.md) and
-[messaging architecture](architecture/messaging.md) explain execution custody
-and peer delivery. The [API guide](async-collaboration.md) and
-[collaboration example](examples/collaboration.md) show the calls. Protocol 048
-owns the async and peer wire; protocol 049 adds owner inspection.
+A session whose `loom.toml` carries an `[lsp.<name>]` table gets:
 
-In the TUI, `/sessions` is the normal target-discovery path. Selecting a
-resident row and pressing `l` starts a link from the currently attached
-session and strand. Enter still opens a session. The form asks for the exact
-receiving strand and shows both endpoints and wake permission before sending
-the grant. Escape returns to the same session selection. `/agents` plus `p`
-selects another source strand, and `/peers` opens inspection and revocation
-directly. A saved session must be opened explicitly before it can receive a
-link. The daemon does not enumerate target strands or activate saved sessions
-as a side effect of discovery.
+- seven tools — `lsp_definition`, `lsp_references`, `lsp_hover`,
+  `lsp_symbols`, `lsp_calls`, `lsp_diagnostics`, `lsp_rename` — that
+  address symbols by name (optionally qualified, `util.Greet`, and
+  narrowed by a path and a 1-based line), never by position, and answer
+  with anchored sites a model can feed straight into `fs_edit`;
+- settled diagnostics appended to `fs_write` and `fs_edit` results for
+  files the running server owns;
+- `cap/lsp` in code mode, admitted only when a server is configured, so
+  a session without one pays nothing in its cached prefix;
+- a rename that previews by default and applies through the hashline
+  landing path, refusing the whole rename when any file on disk no
+  longer matches what the server saw.
 
-Main's #495 TUI split moved this flow into `tui/interaction`,
-`tui/session_control`, `tui/model`, and `tui/render`. The native screenshots
-were recaptured from the post-split client.
+The server runs as an ordinary jailed exec under the session's own
+enforcement demand, after a probe proves that demand is met, one per
+session, with a lazy restart. Nothing is discovered or installed; an
+unconfigured workspace starts nothing.
 
-The stack's images in `docs/images/peer-links-*.png` come from the native
-116-by-38 terminal with two resident sample sessions. The target name and
-source name are fixture metadata, and no model request was sent. The current
-design leaves cross-machine routing, saved-session outboxes, deadline renewal,
-and actor-heap recovery for separate work.
-
-PR #484 merged at `77269e50`. The native Collaboration tab projects
-captured execution, workflow and peer-message facts without starting work.
-Protocol 048 owns the backend contracts. The sections below record
-earlier validation and follow-ups as a historical handoff.
-
-## Shell approval recovery on main
-
-A running shell can hit a kernel permission error after earlier effects. It
-still settles in band: stderr cannot supply a trusted canonical grant, and
-replaying a `Never` command could repeat those effects. A failed `bash` call
-now tells the agent to make a fresh invocation with `permissions` declaring
-the needed roots. For a quoted Git lock path, it names the reported `.git`
-directory as a possible writable root. The declared request goes through
-canonicalization, protected-path checks, and the operator dialog before the
-new command starts.
-
-The real-jail Git worktree regression exercises the denied write and approved
-retry. The client regression checks the durable question, displayed command,
-and exact grants through production wiring. A trusted helper-side denial
-report would be needed before an automatic prompt could safely identify a
-resource from an already-running command; stderr remains diagnostic only.
+Validated here (a cgroup-v1 container, so under `BestEffort`): the
+scripted-model acceptance in `conformance/lsp_e2e_test.gleam` against a
+jailed `gleam lsp` (rename across three files, concurrent-write
+rejection, an `fs_edit` using a references anchor) and a `gopls`
+variant. **Not validated here:** the enforced path under
+`PlatformEnforcement` (the probe refuses on this host, correctly), and
+macOS. The jailed Linux gate and a sign-off host with a delegated
+cgroup v2 base are where those run.
 
 ## Rulings to preserve
+
+**Positions never leave `packages/lsp`.** The model and every surface
+speak `lsp/query.Site`; `lsp/text` is the only converter, against the
+exact text a position was computed on. A site's text is the line as
+hashline sees it (a CRLF line keeps its `\r`) so its anchor is the one
+`fs_read` prints.
+
+**Gate every request on advertised capabilities.** `gleam lsp` never
+answers a request it did not advertise.
+
+**Edits land only through hashline.** The server never writes;
+`workspace/applyEdit` is declined; resource operations are refused.
+
+**The harness never reads a path a server merely names.** The jail
+bounds what a server reads, not what it names; `client/lsp/resolve.admit`
+admits a server-named path only under the server's root and outside
+every protected entry, and anything else is shown with no text and
+never opened (found by the final review, fixed before merge).
+
+**Enforcement is proven before a server starts,** because the helper
+reports enforcement only when an execution exits.
+
+## A production race the LSP end-to-end exposed (fixed in weft 0.4.5)
+
+`make check` failed the LSP rename end-to-end once, under a machine
+loaded by two parallel cold builds. The root cause was in weft: a scope
+monitors an owner, but the permit that starts the owner reaches it
+through another process chain and can overtake the monitor signal (BEAM
+orders signals only per sender and receiver pair). An owner that exited
+normally in that window was judged `noproc`, weft read that as
+`weft_drain_proof_lost`, and the session failed closed. The scripted
+provider's owner exits about 100 µs after begin, which is why this test
+found the window first; real httpc owners were exposed too, only rarely.
+
+weft 0.4.5 (Roasbeef/weft#14) puts a delivery barrier between the
+monitor and the permit on both owner arms, `adopt_owners` and
+`adopt_published`. The barrier is `process_info/2`, not
+`erlang:is_process_alive/1`: on OTP 29 the latter leaves the overtaking
+rate unchanged, measured, although its documentation promises the same
+ordering. Against weft itself, under CPU load, 8 or more of 7.68M
+adoptions settled as `DrainProofLost(Noproc)` before the fix and none
+after. Every package pins `weft == 0.4.5`.
+
+## Remaining work
+
+1. The daemon custody retirement path stops the manager with the
+   service tree, racing the broker stop that follows; a graceful ordered
+   stop needs a custody part in `internal/instance_owner`.
+2. The helper writes stdin while holding the mutex `Cancel` needs
+   (ADR-013 §1, known hazard); a wedged server blocks cancel until the
+   broker's three-second helper kill. Worth fixing in the helper.
+3. Count extension hosts against the per-session lease cap.
+4. A second server per session (a Go and a Gleam project side by side
+   evict each other today).
+5. Follow-ups from the design discussion that are the owner's call: move
+   #26 (DAP) out of release-blocker in favour of a satellite-local trace
+   capability; bounded read-only BEAM introspection for the agent
+   (#454); structured session-trace queries beside `history_search`
+   (#236); write the upstreaming stance down.
+6. Still open from before: measure how virtual-read discovery affects
+   prompt size and cached-prefix reuse; a coordinator example that does
+   independent work after launching children and then sends them
+   follow-up tasks; saved-session outboxes, cross-machine transport and
+   durable actor recovery, designed separately.
+
+## Collaboration rulings (from #510, still in force)
 
 **Authority and communication are separate.** A link grants neither child
 custody nor filesystem access. The source index permits discovery; the
@@ -89,37 +129,11 @@ large catalogue or grant set is not permission to activate a saved target.
 The CLI reports partial unlink when source authority was removed but
 recipient revocation could not finish.
 
-## Remaining work
+## Developer tooling note
 
-1. Measure how virtual-read discovery affects prompt size and cached-prefix
-   reuse in real sessions. The prompt-size repository budget is a test
-   threshold, not a provider token limit.
-2. Add an example in which a coordinator does independent work after launching
-   children, then sends follow-up tasks to those same children.
-3. Design saved-session outboxes, cross-machine transport, and durable actor
-   recovery separately from the resident-session link path.
-
-The current examples demonstrate fan-out, a bounded join, named steps, progress,
-and recovery. They do not yet show one coordinator doing independent work after
-launching children and then sending follow-up tasks to the same children.
-
-Saved-session outboxes, cross-machine peer transport, actor-heap persistence,
-automatic deadline renewal, general effect replay, and an automatic workflow
-retry language remain separate designs. At the outgoing-link limit, creation
-can still write a recipient grant before the source refuses its 65th distinct
-link. This pre-existing sequence cannot send without the source index, but it
-can leave a stale incoming grant. A future atomic or reserved link-admission
-protocol should address it; a compensating revoke can race a successful link
-to the same pair.
-
-## Validation boundary
-
-The exact combined tip `f63deb04` passed fresh-container obelisk
-`signoff/linux`: client, mid, conformance, fast, static, enforcement, release
-update, and a clean skip census. Its hosted Linux client and jail jobs also
-passed. The first signoff exposed a fixture collision: two deterministic
-specialist sessions could select the same code-mode build root and remove one
-another's files or cap socket. Each session now uses its own workspace; the
-real-satellite collaboration test passed on the corrected obelisk run. The
-merged `main` commit is `645b8faf`; the signoff belongs to its PR head, not
-to that new merge-commit SHA. Issues #485, #488, and #489 closed with #510.
+The root `CLAUDE.md` paragraph on `gleam lsp` is about the editor
+tooling a developer drives this repo with: Claude Code still has no
+Gleam server configured. A project-local plugin with an `.lsp.json`
+(`gleam lsp`, `.gleam`) would give local CLI sessions go-to-definition
+and post-edit diagnostics; cloud sessions do not start language
+servers. That is separate from, and not needed by, anything above.

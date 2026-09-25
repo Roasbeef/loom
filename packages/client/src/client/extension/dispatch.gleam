@@ -488,7 +488,18 @@ fn host_config(
       step_id: host_step_id,
       budget: codemode.pooled_budget(config.host, now + host_lifetime_ms),
     )),
-    base_policy: session_lived(codemode.execution_policy(at.base_policy)),
+    // An extension's node runs no program of its own: it waits, answers
+    // an invocation, and waits again. Under the operator's `wall_s`,
+    // `launch.node_requirements` would clamp it to ten minutes whatever
+    // `host_lifetime_ms` says, so the base is a session lease and the
+    // pooled deadline above is its real bound. Each invocation is still
+    // bounded by the host's state timeout, and every effect it clears is
+    // composed per call under the unmodified base. Its stdout is a log,
+    // so the output cap stays.
+    base_policy: policy.session_lease(
+      codemode.execution_policy(at.base_policy),
+      policy.OutputIsLog,
+    ),
     demand: at.demand,
     // The satellite's children inherit the driver's constructed
     // environment, exactly as a code-mode program's do. No binding's
@@ -570,41 +581,6 @@ fn node_seed(config: Config) -> Int {
 /// is far longer than a session and far shorter than forever, which is the
 /// property wanted — this is a backstop, not a policy anybody tunes.
 pub const host_lifetime_ms = 43_200_000
-
-/// The session base with its two *time* limits cleared, so a node held
-/// open for the session is bounded by the session rather than by the
-/// numbers that bound one execution.
-///
-/// This is the difference between the two host shapes stated as code. A
-/// code-mode node runs one program and dies, so the operator's `wall_s`
-/// and `cpu_s` are exactly right for it. An extension's node runs no
-/// program of its own: it waits, answers an invocation, and waits again.
-/// Left alone, `codemode/launch.node_requirements` would clamp its wall
-/// to the base's `wall_s` — ten minutes by default — and every session
-/// would lose its extensions ten minutes in, whatever `host_lifetime_ms`
-/// said. Zero means "no limit of its own" to `bound_wall`, which then
-/// takes the pooled deadline, and that pooled deadline *is*
-/// `host_lifetime_ms`.
-///
-/// What still bounds the extension's work is not weakened by this, and
-/// it is worth being exact about what does. Every invocation is bounded
-/// by the host's own state timeout, and a satellite that overruns one
-/// loses its node; every jailed effect it clears goes through the broker
-/// under a policy composed per call, carrying the base's limits
-/// unmodified. What is genuinely unbounded is an extension burning CPU
-/// *between* invocations, holding no capability — which is the authority
-/// Decision 3 grants on purpose, and which the twelve-hour wall is the
-/// backstop for.
-///
-/// Every other field of the base — the roots, the protected paths, the
-/// network mode, the memory and process ceilings, the environment
-/// allowlist — is passed through untouched.
-fn session_lived(base: SandboxPolicy) -> SandboxPolicy {
-  policy.SandboxPolicy(
-    ..base,
-    limits: policy.Limits(..base.limits, wall_s: 0, cpu_s: 0),
-  )
-}
 
 // What one invocation is judged under: this call's clearance coordinates,
 // this call's base policy, the extension's own router and its ceilings.

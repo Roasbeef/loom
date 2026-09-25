@@ -1065,14 +1065,8 @@ fn empty_window_text(total_lines: Int, offset: Int) -> String {
   }
 }
 
-// `read_text` already renders its failure as a `ToolOutcome`, so
-// chaining it through `tool.or_outcome` needs no mapping.
-fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
-  outcome
-}
-
 /// Why a resolved path did not yield text. The structured half of what
-/// `read_text` renders as prose.
+/// `read_error_outcome` renders as prose.
 ///
 /// Split out so a caller that is not a tool — the code-mode capability
 /// bridge answering `cap/fs.read`, which owes a program a typed error
@@ -1131,13 +1125,6 @@ fn read_bytes(
   Ok(bytes)
 }
 
-// Reads and decodes a file for the text tools; failures are in-band
-// outcomes.
-fn read_text(ctx: Ctx, resolved: String) -> Result(String, ToolOutcome) {
-  read_text_file(filesystem: ctx.filesystem, resolved:)
-  |> result.map_error(read_error_outcome)
-}
-
 // The prose the text tools have always answered a failed read with, one
 // sentence per `ReadError`. Extracting the decision above left the
 // wording here, unchanged, so a model reads what it read before.
@@ -1159,8 +1146,80 @@ fn read_error_outcome(error: ReadError) -> ToolOutcome {
 
 // --- fs_write ------------------------------------------------------------
 
+/// What a host is told after `fs_write` or `fs_edit` lands a write: the
+/// resolved path just written, answered with an optional block of text to
+/// append to the call's result.
+///
+/// It exists for post-edit diagnostics (ADR-013 §6): the language server
+/// that owns the file is told of the change and its settled diagnostics
+/// join the result, so a model learns it broke the build in the same turn
+/// it broke it. It is a closure rather than a value this package computes
+/// because this module must not reach a language server — the client owns
+/// the session's server and fills this seam from the session's language-server
+/// door exactly as it fills `Agency` or `CodeMode`. `None` is the answer
+/// for a path no server owns, and it leaves the result exactly as it was.
+///
+/// The observer runs only after the bytes are on disk, never on a failed
+/// or refused write: a server told of a change that did not happen would
+/// report diagnostics for text that is not there.
+pub type WriteObserver =
+  fn(String) -> Option(String)
+
+// The observer a host with no language servers has: every write goes
+// unremarked, and the result is the one these tools have always rendered.
+fn unobserved(_resolved: String) -> Option(String) {
+  None
+}
+
+// Appends an observer's block to a result's text and its details.
+//
+// The block goes after everything the result already says, behind a blank
+// line. Order is the contract: an edit's first two lines — the hunk count,
+// then `digest:` — are what the model and the terminal read off it, and a
+// block in front of them would move the digest the next edit is planned
+// with.
+fn observed_text(text: String, observed: Option(String)) -> String {
+  case observed {
+    None -> text
+    Some(block) -> text <> "\n\n" <> block
+  }
+}
+
+// The same block, whole, in the structured half under `diagnostics`, so a
+// client can show it apart from the text it trails.
+fn observed_fields(
+  fields: List(#(String, JsonValue)),
+  observed: Option(String),
+) -> List(#(String, JsonValue)) {
+  case observed {
+    None -> fields
+    Some(block) -> list.append(fields, [#("diagnostics", json.String(block))])
+  }
+}
+
 /// The `fs_write` tool: create or replace a whole file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.write_tool().name == "fs_write"
+/// ```
+///
 pub fn write_tool() -> tool.Tool {
+  write_tool_with(unobserved)
+}
+
+/// Build `fs_write` with a host's `WriteObserver`, whose block is appended
+/// to every successful write's result. `write_tool()` is this with an
+/// observer that always answers `None`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.write_tool_with(fn(resolved) { diagnostics_after(resolved) })
+/// ```
+///
+pub fn write_tool_with(observer: WriteObserver) -> tool.Tool {
   tool.Tool(
     name: "fs_write",
     description: "Create or overwrite a whole file with the given content. "
@@ -1186,11 +1245,15 @@ pub fn write_tool() -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Exclusive,
     requirements: workspace_requirements,
-    run: run_write,
+    run: fn(ctx, args) { run_write(observer, ctx, args) },
   )
 }
 
-fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_write(
+  observer: WriteObserver,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use content <- tool.with_arg(tool.required_string(args, "content"))
   use resolved <- tool.or_outcome(
@@ -1202,7 +1265,9 @@ fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     write_whole(filesystem: ctx.filesystem, resolved:, bytes:),
     fs_error_outcome,
   )
-  write_outcome(path, content, bytes)
+
+  // The bytes are on disk; only now may anything be told they changed.
+  write_outcome(path, content, bytes, observer(resolved))
 }
 
 /// Creates any missing parent directories, then writes the whole file —
@@ -1251,19 +1316,23 @@ fn write_outcome(
   path: String,
   content: String,
   bytes: BitArray,
+  observed: Option(String),
 ) -> ToolOutcome {
   let size = bit_array.byte_size(bytes)
-  tool.success(
+  let text =
     "wrote "
     <> int.to_string(size)
     <> " bytes to "
     <> path
     <> "\ndigest: "
     <> hashline.digest(content)
-    <> written_anchor_text(content, size),
-  )
+    <> written_anchor_text(content, size)
+  tool.success(observed_text(text, observed))
   |> tool.with_details(
-    json.Object([#("path", json.String(path)), #("bytes", json.Int(size))]),
+    json.Object(observed_fields(
+      [#("path", json.String(path)), #("bytes", json.Int(size))],
+      observed,
+    )),
   )
 }
 
@@ -1309,7 +1378,29 @@ fn parent_directory(path: String) -> String {
 // --- fs_edit -------------------------------------------------------------
 
 /// The `fs_edit` tool: anchor-checked multi-hunk edits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.edit_tool().name == "fs_edit"
+/// ```
+///
 pub fn edit_tool() -> tool.Tool {
+  edit_tool_with(unobserved)
+}
+
+/// Build `fs_edit` with a host's `WriteObserver`, whose block is appended
+/// after everything a successful edit's result renders — after the fresh
+/// anchors, and never ahead of the fixed first two lines. `edit_tool()` is
+/// this with an observer that always answers `None`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.edit_tool_with(fn(resolved) { diagnostics_after(resolved) })
+/// ```
+///
+pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
   tool.Tool(
     name: "fs_edit",
     description: "Apply anchored edit hunks to a file. Pass the digest from "
@@ -1329,7 +1420,7 @@ pub fn edit_tool() -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Exclusive,
     requirements: workspace_requirements,
-    run: run_edit,
+    run: fn(ctx, args) { run_edit(observer, ctx, args) },
   )
 }
 
@@ -1425,24 +1516,176 @@ fn edit_schema() -> JsonValue {
   ])
 }
 
-fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run_edit(observer: WriteObserver, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use digest <- tool.with_arg(tool.required_string(args, "digest"))
   use hunks <- tool.with_arg(decode_hunks(args))
-  use resolved <- tool.or_outcome(
-    resolve_invocation(ctx, path, Writing),
-    fn(outcome) { outcome },
+  use target <- tool.or_outcome(edit_target(ctx, path), fn(outcome) { outcome })
+  use landed <- tool.or_outcome(
+    land_plan(
+      filesystem: ctx.filesystem,
+      target:,
+      plan: hashline.Plan(digest:, hunks:),
+    ),
+    land_error_outcome,
   )
-  use content <- tool.or_outcome(read_text(ctx, resolved), identity_outcome)
-  use edited <- tool.or_outcome(
-    hashline.apply(content, hashline.Plan(digest:, hunks:)),
-    fn(error) { apply_error_outcome(error, content) },
+
+  // The edit is on disk; only now may anything be told the file changed.
+  let observed = observer(target.resolved)
+  edit_outcome(path, landed.before, hunks, landed.edited, observed)
+}
+
+// --- the one landing path ------------------------------------------------
+
+/// A path that has been through the write boundary: resolved against the
+/// real filesystem, contained, and checked against the protected list.
+///
+/// Opaque so that `land_plan` cannot be handed a path that skipped any of
+/// that. `read_text_file` and `write_whole` document the same precondition
+/// in prose; here the type carries it, because the landing path has
+/// callers outside this module — the rename lander and code mode — and a
+/// caller that forgot the resolve would reopen the symlink hole
+/// `resolve_real` closes and the `.git/hooks` hole `protected` closes.
+/// The only ways to hold one are `edit_target` and `write_target`.
+pub opaque type WriteTarget {
+  WriteTarget(resolved: String)
+}
+
+/// The resolved, real path a `WriteTarget` names.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.target_path(target) == "/work/src/main.gleam"
+/// ```
+///
+pub fn target_path(target: WriteTarget) -> String {
+  target.resolved
+}
+
+/// Resolves a write target exactly as `fs_edit` does, for a caller holding
+/// the tool's `Ctx`: the same `Writing` resolution, the same protected-path
+/// refusal (#105), and the same action-bound approval for a target outside
+/// session access. The refusal is the in-band outcome `fs_edit` answers,
+/// wording and details included.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(target) = fs.edit_target(ctx, "src/main.gleam")
+/// ```
+///
+pub fn edit_target(ctx: Ctx, path: String) -> Result(WriteTarget, ToolOutcome) {
+  resolve_invocation(ctx, path, Writing) |> result.map(WriteTarget)
+}
+
+/// Resolves a write target for a caller holding write authority but no
+/// `Ctx` — a code-mode capability closure, or a language-server door — by
+/// `resolve_writable_roots`, the one function behind every such door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.write_target(filesystem, "/work", [], ["/work/.git"], "a.txt")
+/// ```
+///
+pub fn write_target(
+  filesystem filesystem: FileSystem,
+  workspace workspace: String,
+  roots roots: List(String),
+  protected protected: List(String),
+  path path: String,
+) -> Result(WriteTarget, PathError) {
+  resolve_writable_roots(filesystem, workspace, roots, protected, path)
+  |> result.map(WriteTarget)
+}
+
+/// What a landed plan did: the text that was on disk, and the text that
+/// replaced it.
+pub type Landed {
+  Landed(
+    /// The file's content when the plan was checked against it — the
+    /// pre-image, which is the side a plan's references name.
+    before: String,
+    /// The content written.
+    edited: String,
   )
-  use Nil <- tool.or_outcome(
-    ctx.filesystem.write(resolved, <<edited:utf8>>),
-    fs_error_outcome,
+}
+
+/// Why a plan did not land. Nothing was written in any of these.
+pub type LandError {
+  /// The file could not be read as text: the seam refused, it is too
+  /// large, or it is not UTF-8.
+  LandUnreadable(error: ReadError)
+
+  /// `hashline.apply` rejected the plan against the file's current
+  /// content, which is carried so a rejection can render fresh anchors.
+  /// `StaleContent` here is what a concurrent modification looks like.
+  LandRejected(error: hashline.ApplyError, current: String)
+
+  /// The plan applied, but the write itself failed.
+  LandUnwritten(error: FsError)
+}
+
+/// Reads the target, applies the plan to exactly what is on disk, and
+/// writes the result: the whole of `fs_edit` after its arguments are
+/// decoded and its path resolved.
+///
+/// One landing path, so there is one thing to be right. `fs_edit` calls
+/// it, and so does anything else that turns an answer into bytes on disk
+/// — a language server's rename arrives as whole texts, which
+/// `hashline.plan_between` turns into a plan bound to the text the server
+/// saw. Because the plan's digest is checked against what is read here, an
+/// answer computed against text that has since changed rejects as stale,
+/// exactly as a stale `fs_edit` does, instead of overwriting the change.
+///
+/// The read-apply-write is not atomic against a writer outside this
+/// process; the window is the one `fs_edit` has always had, and the
+/// digest makes a replay reject rather than double-apply.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(plan) = hashline.plan_between(base:, edited:)
+/// // fs.land_plan(filesystem:, target:, plan:)
+/// ```
+///
+pub fn land_plan(
+  filesystem filesystem: FileSystem,
+  target target: WriteTarget,
+  plan plan: hashline.Plan,
+) -> Result(Landed, LandError) {
+  use before <- result.try(
+    read_text_file(filesystem:, resolved: target.resolved)
+    |> result.map_error(LandUnreadable),
   )
-  edit_outcome(path, content, hunks, edited)
+  use edited <- result.try(
+    hashline.apply(before, plan)
+    |> result.map_error(LandRejected(error: _, current: before)),
+  )
+  use Nil <- result.try(
+    filesystem.write(target.resolved, <<edited:utf8>>)
+    |> result.map_error(LandUnwritten),
+  )
+  Ok(Landed(before:, edited:))
+}
+
+/// Renders a `LandError` as the in-band failure `fs_edit` answers with, so
+/// a plan landed by another door is refused in the same words and the same
+/// details — `stale_content` with its fresh digest and anchors included.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.land_error_outcome(fs.LandUnwritten(error)).is_error == True
+/// ```
+///
+pub fn land_error_outcome(error: LandError) -> ToolOutcome {
+  case error {
+    LandUnreadable(error:) -> read_error_outcome(error)
+    LandRejected(error:, current:) -> apply_error_outcome(error, current)
+    LandUnwritten(error:) -> fs_error_outcome(error)
+  }
 }
 
 /// The most the fresh-anchor block appended to a successful edit may
@@ -1475,6 +1718,7 @@ fn edit_outcome(
   before: String,
   hunks: List(hashline.Hunk),
   edited: String,
+  observed: Option(String),
 ) -> ToolOutcome {
   // One annotation of the written content serves the line count, the
   // regions' rendering, and nothing else re-walks the file.
@@ -1482,7 +1726,7 @@ fn edit_outcome(
   let total_lines = list.length(annotated)
   let digest = hashline.digest(edited)
   let regions = hashline.applied_regions(hunks:, edited:)
-  tool.success(
+  let text =
     "applied "
     <> int.to_string(list.length(hunks))
     <> " hunk(s) to "
@@ -1494,17 +1738,20 @@ fn edit_outcome(
       annotated,
       total_lines,
       oversized: edit_too_large,
-    ),
-  )
+    )
+  tool.success(observed_text(text, observed))
   |> tool.with_details(
-    json.Object([
-      #("path", json.String(path)),
-      #("hunks_applied", json.Int(list.length(hunks))),
-      #("total_lines", json.Int(total_lines)),
-      #("digest", json.String(digest)),
-      #("anchor_version", json.Int(hashline.anchor_version)),
-      #("diff", json.String(hashline.render_diff(before, hunks))),
-    ]),
+    json.Object(observed_fields(
+      [
+        #("path", json.String(path)),
+        #("hunks_applied", json.Int(list.length(hunks))),
+        #("total_lines", json.Int(total_lines)),
+        #("digest", json.String(digest)),
+        #("anchor_version", json.Int(hashline.anchor_version)),
+        #("diff", json.String(hashline.render_diff(before, hunks))),
+      ],
+      observed,
+    )),
   )
 }
 
