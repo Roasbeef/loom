@@ -353,9 +353,10 @@ pub type Jail {
 /// `reading` is the daemon's environment (`provider/secret.lookup` over the
 /// session's store in production), read for `PATH` and for each configured
 /// `env` name. The `Error` is a worded refusal naming what does not fit:
-/// a relative root, an unresolvable `~/`, or a narrowing — most usefully a
-/// project root outside what the session may reach, which this refuses
-/// rather than grants.
+/// a relative root, an unresolvable `~/`, an executable whose read-only
+/// region would cover a path the server must write, or a narrowing — most
+/// usefully a project root outside what the session may reach, which this
+/// refuses rather than grants.
 ///
 /// ## Examples
 ///
@@ -386,6 +387,22 @@ pub fn policy_for(
   let lease = policy.session_lease(session_base, policy.OutputIsWire)
   let #(mounts, wanted) =
     admitted_mounts(lease.mounts, regions(placement.executable))
+
+  // Every path the server writes, settled before either policy is built,
+  // because the executable's region is an explicit mount and the helper
+  // lays explicit mounts over every root: a region covering one of these
+  // would leave it read-only in the jail however the policy granted it.
+  let writes =
+    list.unique(
+      list.flatten([project_writes(server, root), [scratch], writable]),
+    )
+  use Nil <- result.try(unshadowed(
+    server.name,
+    placement.executable,
+    wanted,
+    writes,
+  ))
+
   let base =
     policy.SandboxPolicy(
       ..lease,
@@ -404,9 +421,7 @@ pub fn policy_for(
   let requirements =
     policy.SandboxPolicy(
       ..base,
-      writable_roots: list.unique(
-        list.flatten([project_writes(server, root), [scratch], writable]),
-      ),
+      writable_roots: writes,
       readable_roots: list.unique(
         list.flatten([[root, scratch], readable, writable]),
       ),
@@ -438,6 +453,67 @@ fn project_writes(server: LspServer, root: String) -> List(String) {
   case server.project {
     catalog.ProjectWritable -> [root]
     catalog.ProjectReadOnly -> []
+  }
+}
+
+// Refuses an executable region that would shadow a write.
+//
+// The region reaches the helper as an explicit read-only mount, and the
+// mount plan emits explicit mounts after every root, scratch and mask
+// (`packages/sandbox/internal/jail/bwrap.go`, `MountPlan`): that order is
+// what lets a cap socket's mount survive the scratch tmpfs, and it is not
+// this module's to change. So a region at or above a writable root lands
+// on top of the root's read-write bind, and the server meets "Read-only
+// file system" on a path its policy grants. Nothing downstream says so:
+// composition compares path lists, and the helper's audit counts a
+// writable root that came out read-only as narrower than asked, never as
+// a skip. The case that found it is `/bin/sh`, a link whose install
+// prefix climbs out of `/bin` to `/`, which bound the whole host
+// read-only over every other mount in the jail.
+//
+// A region strictly inside a writable root is left alone: it makes the
+// server's own directory read-only and nothing more.
+fn unshadowed(
+  name: String,
+  executable: Executable,
+  wanted: List(Mount),
+  writes: List(String),
+) -> Result(Nil, String) {
+  let shadow =
+    list.find_map(wanted, fn(mount) {
+      list.find(writes, fn(write) {
+        policy.covers(root: mount.path, path: write)
+      })
+      |> result.map(fn(write) { #(mount.path, write) })
+    })
+  case shadow {
+    Error(Nil) -> Ok(Nil)
+    Ok(#(region, write)) ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s executable "
+        <> executable.path
+        <> " needs "
+        <> region
+        <> " mounted read-only, and that mount would cover "
+        <> write
+        <> ", which the server must write; "
+        <> shadow_remedy(executable),
+      )
+  }
+}
+
+// What an operator changes to clear a shadow. A link is mounted by its
+// install prefix only because nothing here can read where it points, so
+// naming the target in `command` narrows the region to that target's own
+// directory.
+fn shadow_remedy(executable: Executable) -> String {
+  case executable.file {
+    LinkedExecutable ->
+      "it is a symbolic link, so its install prefix is mounted; name the "
+      <> "file the link points to in `command`"
+    PlainExecutable -> "install the server outside that path"
   }
 }
 
