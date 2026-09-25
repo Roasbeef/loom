@@ -281,7 +281,7 @@ pub fn pending_bodies_collapse_until_details_are_expanded_test() {
     )
 
   let collapsed = painted(observed)
-  assert string.contains(collapsed, "Pending advisor nudge: check the dedup")
+  assert string.contains(collapsed, "- check the dedup")
   assert string.contains(collapsed, "Ctrl+G to expand")
   assert !string.contains(collapsed, "only detail mode shows")
 

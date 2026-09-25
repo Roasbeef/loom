@@ -694,7 +694,9 @@ fn transient_lines(model: Model) -> List(Line) {
 
 // Pending advice is a labeled, disposable observation in the scrollable tail.
 // It is never appended to durable records, and inspecting it does not deliver
-// it. Collapsed, each nudge is one preview row: a queue that grows through a
+// it. Collapsed, each nudge is one preview row under the heading, which
+// already names the rows as pending advice, so a row spends no width saying it
+// again. A queue that grows through a
 // long run would otherwise print every body in full and push the run itself
 // out of view. Detail mode prints the complete bodies, the same toggle the
 // delivered nudges answer to, so every received line stays readable.
@@ -710,7 +712,7 @@ fn pending_nudge_lines(model: Model) -> List(Line) {
           list.map(board.pending, fn(body) {
             Line(
               System,
-              "Pending advisor nudge: "
+              "  - "
                 <> transcript_lines.advisor_body_preview(body)
                 <> composer.expand_hint,
             )
