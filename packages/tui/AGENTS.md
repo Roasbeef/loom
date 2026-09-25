@@ -112,6 +112,17 @@ one row. Each status has a glyph as well as a color (`✓ ▸ ○ ⊘ –`). A s
 `todo` call is one compact transcript row naming what it changed and the
 progress it left, which keeps the compact height rule.
 
+The notes browser (`/notes` and the inspector's Notes tab) draws the same
+cell. `notes_view.todo_board` is the one reading of a note as a board: the
+key is `notes_view.todo_key` (which `todo_panel.note_key` names), the extent
+is complete, and the value passes `todo_list.decode`; `todo_panel.seed` uses
+it too. A note that passes renders in readable mode through
+`notes_view.readable_note` as a Markdown checklist, one `### Phase · n/m`
+heading per phase and the panel's glyphs per task, with task text escaped so
+model-written Markdown stays literal. `notes_view.summary` gives its list row
+`n/m done · active: Task`. Raw mode keeps the stored JSON, and an excerpt or an
+undecodable board keeps the generic projection.
+
 ## Automatic permission dialog
 
 A newly pending exact request opens `approval_panel` for an owner or operator.
@@ -287,6 +298,8 @@ boundaries and the split's measurements under Invariants.
   an explicit unavailable notice and bounds new commit streams at four KiB.
 - `notes_view.readable` unwraps one JSON document held inside a string value
   and projects objects as compact nested lists with readable field labels.
+  `notes_view.readable_note` and `notes_view.summary` are what the browser
+  calls, so a decodable `todo` cell reads as a checklist instead.
   Raw inspection pretty-prints complete JSON; excerpts remain literal.
   `session_selector.prioritize` sorts exact workspace matches first, related
   directories next, and preserves order within each group and selection by ID.

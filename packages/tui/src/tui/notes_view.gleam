@@ -1,11 +1,25 @@
 //// Current note values arrive as a bounded auxiliary view, separate from the
 //// historical conversation. Its revision is evidence of when the values were
 //// read; a run-start digest is never relabelled as the current blackboard.
+////
+//// Most cells are free-form, so they are shown through one generic
+//// JSON-to-Markdown projection. The `todo` cell is the exception: its shape
+//// is fixed by `core/todo_list`, and the generic projection turns a board
+//// into nested `Phases`/`Name`/`Tasks` bullets that hide the one thing a
+//// reader wants from it, which is how far along the work is. A complete
+//// `todo` cell that decodes is therefore drawn as a phased checklist with
+//// the pinned panel's glyphs. Anything else, an excerpt included, keeps the
+//// generic projection, because an excerpt may end mid-value and a board
+//// that fails the total decoder is exactly the case a reader needs to see
+//// as it was stored.
 
 import core/json
+import core/todo_list.{Active, Blocked, Done, Dropped, Pending}
 import gleam/bool
 import gleam/dict
+import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import tui/text_hygiene
@@ -26,6 +40,129 @@ pub fn readable(text: String) -> String {
     Error(_) -> text
   }
   |> text_hygiene.multiline
+}
+
+/// The strand-relative key of the cell holding a strand's todo board.
+pub const todo_key = "todo"
+
+/// The todo board a note holds, when it is the complete `todo` cell and its
+/// value passes the board's total decoder.
+///
+/// An excerpt is never parsed: its text may stop partway through a task, and
+/// a board read from it would silently drop the tasks past the cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notes_view.todo_board(notes_view.Note("todo", 3, text, notes_view.Complete))
+/// ```
+pub fn todo_board(note: Note) -> Result(todo_list.Board, Nil) {
+  use <- bool.guard(note.key != todo_key || note.extent == Excerpt, Error(Nil))
+  use value <- result.try(json.parse(note.text) |> result.replace_error(Nil))
+  note_value(value) |> todo_list.decode |> result.replace_error(Nil)
+}
+
+/// The readable body of one note: a phased checklist for a decodable todo
+/// board, and the generic projection for every other note.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notes_view.readable_note(note)
+/// ```
+pub fn readable_note(note: Note) -> String {
+  case todo_board(note) {
+    Ok(board) -> checklist(board) |> text_hygiene.multiline
+    Error(Nil) -> readable(note.text)
+  }
+}
+
+/// The text a note's list row summarises: board progress for a decodable
+/// todo board, the readable projection for other complete notes, and the
+/// literal text of an excerpt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notes_view.summary(todo_note) == "3/8 done · active: Wire the panel"
+/// ```
+pub fn summary(note: Note) -> String {
+  case todo_board(note), note.extent {
+    Ok(board), _ -> progress(board)
+    Error(Nil), Complete -> readable(note.text)
+    Error(Nil), Excerpt -> note.text
+  }
+}
+
+// The row has room for one clause after the count, and the active task is
+// the one that says what the agent is doing now. A board with no active
+// task has nothing better to name than its count.
+fn progress(board: todo_list.Board) -> String {
+  let #(closed, total) = todo_list.count(board)
+  let done = int.to_string(closed) <> "/" <> int.to_string(total) <> " done"
+  case board.phases, todo_list.active(board) {
+    [], _ -> "no tasks"
+    _, Some(#(_, task)) ->
+      done <> " · active: " <> text_hygiene.single_line(task.text)
+    _, None -> done
+  }
+}
+
+// Each phase is a heading carrying its own closed count, so a reader can
+// see which phases are finished without reading their tasks.
+fn checklist(board: todo_list.Board) -> String {
+  case board.phases {
+    [] -> "No tasks."
+    phases ->
+      phases
+      |> list.map(fn(phase) {
+        let #(closed, total) = todo_list.tally(phase.tasks)
+        let heading =
+          "### "
+          <> escape(phase.name)
+          <> " · "
+          <> int.to_string(closed)
+          <> "/"
+          <> int.to_string(total)
+        case phase.tasks {
+          [] -> heading
+          tasks ->
+            heading <> "\n\n" <> string.join(list.map(tasks, task_item), "\n")
+        }
+      })
+      |> string.join("\n\n")
+  }
+}
+
+// The glyphs are the pinned panel's, so a status reads the same in both
+// places, and each still reads on a terminal without color. Strikethrough
+// and bold stand in for the panel's struck and highlighted text.
+fn task_item(task: todo_list.Task) -> String {
+  let text = escape(task.text)
+  "- "
+  <> case task.status {
+    Done -> "✓ ~~" <> text <> "~~"
+    Dropped -> "– ~~" <> text <> "~~"
+    Active -> "▸ **" <> text <> "**"
+    Pending -> "○ " <> text
+    Blocked(Some(reason)) -> "⊘ " <> text <> " · " <> escape(reason)
+    Blocked(None) -> "⊘ " <> text
+  }
+}
+
+// Task text is written by the model, so every Markdown delimiter in it is
+// escaped: a stray `*` or `~~` must not restyle the rest of the row.
+fn escape(value: String) -> String {
+  value
+  |> text_hygiene.single_line
+  |> string.replace("\\", "\\\\")
+  |> string.replace("*", "\\*")
+  |> string.replace("_", "\\_")
+  |> string.replace("~", "\\~")
+  |> string.replace("`", "\\`")
+  |> string.replace("[", "\\[")
+  |> string.replace("]", "\\]")
+  |> string.replace("<", "\\<")
 }
 
 /// Renders complete cells from a historical run-start digest.

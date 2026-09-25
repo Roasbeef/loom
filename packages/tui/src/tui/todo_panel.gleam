@@ -33,7 +33,6 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import tui/notes_view
@@ -166,18 +165,7 @@ pub fn seed(
   boards: Dict(String, Board),
   notes: notes_view.Board,
 ) -> Dict(String, Board) {
-  let found =
-    list.find_map(notes.notes, fn(note) {
-      case note.key == note_key, note.extent {
-        True, notes_view.Complete ->
-          json.parse(note.text)
-          |> result.replace_error(Nil)
-          |> result.try(fn(value) {
-            todo_list.decode(value) |> result.replace_error(Nil)
-          })
-        _, _ -> Error(Nil)
-      }
-    })
+  let found = list.find_map(notes.notes, notes_view.todo_board)
   case found, dict.has_key(boards, notes.strand) {
     Ok(board), False -> dict.insert(boards, notes.strand, board)
     Ok(_), True | Error(Nil), _ -> boards
@@ -185,7 +173,7 @@ pub fn seed(
 }
 
 /// The note key, relative to a strand's namespace, that holds its board.
-pub const note_key = "todo"
+pub const note_key = notes_view.todo_key
 
 /// Whether a strand should have its board read from its notes: it has no
 /// board from the transcript, and it has not been asked about before in
