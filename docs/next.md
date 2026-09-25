@@ -61,44 +61,44 @@ never opened (found by the final review, fixed before merge).
 **Enforcement is proven before a server starts,** because the helper
 reports enforcement only when an execution exits.
 
-## A production race the LSP end-to-end exposed (not fixed here)
+## A production race the LSP end-to-end exposed (fixed in weft 0.4.5)
 
 `make check` failed the LSP rename end-to-end once, under a machine
-loaded by two parallel cold builds. The root cause is in weft, not in
-this work: a custodian adopts a published transport owner as Transitive
-and monitors it, but the begin permit reaches the owner through another
-process chain and can overtake the monitor signal (BEAM orders signals
-only per sender and receiver pair). An owner that exits normally in
-that window is judged `noproc`, weft reads that as `weft_drain_proof_lost`,
-and the session fails closed. A thirty-line plain-Erlang module
-reproduces the ordering (a few dozen `noproc`s per 1.6M runs under load),
-and a round trip or `process_info(Owner, current_function)` after the
-monitor removes it. The proposed fix is that barrier in weft's
-`adopt_published` and the `OwnedTask` arm of `fill_slots`, recording
-`ProofAbsent` when the owner is really gone. weft is pinned from Hex at
-0.4.4 with no sibling checkout here, so it waits for a weft release.
-The scripted provider's owner exits about 100 µs after begin, which is
-why this test finds the window first; real httpc owners are exposed
-too, only rarely.
+loaded by two parallel cold builds. The root cause was in weft: a scope
+monitors an owner, but the permit that starts the owner reaches it
+through another process chain and can overtake the monitor signal (BEAM
+orders signals only per sender and receiver pair). An owner that exited
+normally in that window was judged `noproc`, weft read that as
+`weft_drain_proof_lost`, and the session failed closed. The scripted
+provider's owner exits about 100 µs after begin, which is why this test
+found the window first; real httpc owners were exposed too, only rarely.
+
+weft 0.4.5 (Roasbeef/weft#14) puts a delivery barrier between the
+monitor and the permit on both owner arms, `adopt_owners` and
+`adopt_published`. The barrier is `process_info/2`, not
+`erlang:is_process_alive/1`: on OTP 29 the latter leaves the overtaking
+rate unchanged, measured, although its documentation promises the same
+ordering. Against weft itself, under CPU load, 8 or more of 7.68M
+adoptions settled as `DrainProofLost(Noproc)` before the fix and none
+after. Every package pins `weft == 0.4.5`.
 
 ## Remaining work
 
-1. Land the weft barrier above and bump the pin.
-2. The daemon custody retirement path stops the manager with the
+1. The daemon custody retirement path stops the manager with the
    service tree, racing the broker stop that follows; a graceful ordered
    stop needs a custody part in `internal/instance_owner`.
-3. The helper writes stdin while holding the mutex `Cancel` needs
+2. The helper writes stdin while holding the mutex `Cancel` needs
    (ADR-013 §1, known hazard); a wedged server blocks cancel until the
    broker's three-second helper kill. Worth fixing in the helper.
-4. Count extension hosts against the per-session lease cap.
-5. A second server per session (a Go and a Gleam project side by side
+3. Count extension hosts against the per-session lease cap.
+4. A second server per session (a Go and a Gleam project side by side
    evict each other today).
-6. Follow-ups from the design discussion that are the owner's call: move
+5. Follow-ups from the design discussion that are the owner's call: move
    #26 (DAP) out of release-blocker in favour of a satellite-local trace
    capability; bounded read-only BEAM introspection for the agent
    (#454); structured session-trace queries beside `history_search`
    (#236); write the upstreaming stance down.
-7. Still open from before: measure how virtual-read discovery affects
+6. Still open from before: measure how virtual-read discovery affects
    prompt size and cached-prefix reuse; a coordinator example that does
    independent work after launching children and then sends them
    follow-up tasks; saved-session outboxes, cross-machine transport and
