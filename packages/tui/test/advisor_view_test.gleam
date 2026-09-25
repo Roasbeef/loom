@@ -480,3 +480,61 @@ fn user_message(text: String) -> message.AgentMessage {
     origin: None,
   )
 }
+
+// A tool group's place in the merged transcript is its first call's sequence,
+// so commentary landing between two calls used to sort below the whole group
+// and stay at the bottom while later calls joined the group above it.
+pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
+  let records =
+    [
+      gateway.identified_tool_call_entry("main", "a", "bash", "echo first", 1),
+      gateway.identified_tool_result_ok_entry("main", "a", "one", 2),
+      gateway.identified_tool_call_entry("main", "b", "bash", "echo second", 4),
+      gateway.identified_tool_result_ok_entry("main", "b", "two", 5),
+    ]
+    |> list.map(fn(wire) {
+      let assert Ok(protocol.EntryAdded(record)) = protocol.decode_event(wire)
+        as "the fixture decodes"
+      record
+    })
+    |> list.reverse
+  let commentary =
+    advisor_history.Item(
+      "advisor-entry",
+      3,
+      0,
+      "The primary is on track.",
+      advisor_history.RequestedQuiet,
+    )
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let model = tui_model.Model(..base, records:)
+  let #(lines, _, _) =
+    transcript_lines.record_lines(
+      records,
+      model,
+      [],
+      advisor_history.Board([commentary], None),
+    )
+  let texts = list.map(lines, fn(line) { line.text })
+  let position = fn(needle) {
+    texts
+    |> list.index_fold(-1, fn(found, text, index) {
+      case found < 0 && string.contains(text, needle) {
+        True -> index
+        False -> found
+      }
+    })
+  }
+
+  let first = position("echo first")
+  let heading = position("Advisor transcript")
+  let second = position("echo second")
+  assert first >= 0 && first < heading && heading < second
+    as "the commentary sits between the two calls"
+
+  // The heading is not welded to the call row above it.
+  let assert Ok(above) = list.drop(lines, heading - 1) |> list.first
+    as "a row precedes the heading"
+  assert above.speaker == tui_model.Spacer
+}

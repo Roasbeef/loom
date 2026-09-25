@@ -53,9 +53,72 @@ type Group {
 /// assert tool_activity.project([]) == []
 /// ```
 pub fn project(entries: List(entry.Entry)) -> List(Item) {
-  let #(items, group) =
-    list.fold(entries, #([], Group([], dict.new())), collect)
+  project_split(entries, [])
+}
+
+/// Projects like `project`, but ends a tool group where the transcript
+/// places a row between two of its entries.
+///
+/// A group's place in the merged transcript is its first call's sequence.
+/// Advisor commentary is merged by its own sequence, so commentary that
+/// arrives while a run of calls is still growing would sort after the
+/// whole group, and every later call would join the group above it: the
+/// commentary would sit at the bottom until something else, such as the
+/// operator's next prompt, ended the group. Splitting at `splits`, oldest
+/// first, gives the commentary a boundary to sit on.
+///
+/// A split waits until every call in the open group has its result.
+/// Ending a group between a call and its result would leave the result
+/// outside the group that holds its call, where it renders as a stray
+/// narrative row; one late result above the commentary is the cheaper
+/// disorder.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool_activity.project_split([], [7]) == []
+/// ```
+pub fn project_split(
+  entries: List(entry.Entry),
+  splits: List(Int),
+) -> List(Item) {
+  let #(items, group, _splits, _pending) =
+    list.fold(
+      entries,
+      #([], Group([], dict.new()), splits, Settled),
+      fn(acc, value) {
+        let #(items, group, splits, pending) = acc
+
+        // Every split at or before this entry has been passed, so a
+        // boundary is now owed to the open group.
+        let passed = list.drop_while(splits, fn(split) { split < value.seq })
+        let pending = case passed == splits {
+          True -> pending
+          False -> Owed
+        }
+
+        let #(items, group, pending) = case pending, complete(group) {
+          Owed, True -> #(flush(items, group), Group([], dict.new()), Settled)
+          Owed, False | Settled, _ -> #(items, group, pending)
+        }
+
+        let #(items, group) = collect(#(items, group), value)
+        #(items, group, passed, pending)
+      },
+    )
   flush(items, group) |> list.reverse
+}
+
+// Whether a split has been passed that the open group has not yet taken.
+type Split {
+  Owed
+  Settled
+}
+
+// An empty group is complete, so a split owed to it is simply discharged.
+fn complete(group: Group) -> Bool {
+  dict.values(group.calls)
+  |> list.all(fn(call) { option.is_some(call.outcome) })
 }
 
 /// Finds effect-pending calls in the captured current operation.
