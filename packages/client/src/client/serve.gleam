@@ -2298,6 +2298,12 @@ fn lsp_plane_wiring(
 /// makes the refusal an operator-visible boot line rather than a
 /// `no_server` answer the model meets on its first query.
 ///
+/// The private caches `cache_env` names are resolved here for the same
+/// refusal and then left as written: their host paths are the jail's to
+/// derive (`profile.cache_env_paths`), and the directories are made by the
+/// manager just before a jail binds them, not here, so a server nobody
+/// queries creates nothing.
+///
 /// Public because `loom ext check` starts a server exactly as a session
 /// would, and a second expansion there would be a second answer to where
 /// a profile's `~/` and `<cache>/` roots are.
@@ -2320,6 +2326,11 @@ pub fn lsp_server_roots(
   }
   use readable <- result.try(absolute(server.readable))
   use writable <- result.try(absolute(server.writable))
+  use _caches <- result.try(
+    list.try_map(profile.cache_env_paths(server), fn(entry) {
+      profile.expand_path(entry.1, places)
+    }),
+  )
   Ok(profile.LspServer(..server, readable:, writable:))
 }
 

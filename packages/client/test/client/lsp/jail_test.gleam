@@ -60,6 +60,7 @@ fn server(project: profile.ProjectAccess) -> profile.LspServer {
     readable: [],
     writable: [],
     env: [],
+    cache_env: [],
     language_id: "gleam",
     qualifier_separators: ["."],
     module_case: profile.AsWritten,
@@ -155,6 +156,66 @@ pub fn the_extra_roots_are_the_operators_expanded_against_home_test() {
   assert list.contains(final.readable_roots, "/home/o/go/pkg/mod")
   assert list.contains(final.writable_roots, "/home/o/.cache/go-build")
   assert !list.contains(final.writable_roots, "/home/o/go/pkg/mod")
+}
+
+/// `cache_env` is the one value a table sets, and it can only be a
+/// directory Loom owns. The mutation this pins is the one that would make
+/// the key useless and the jail refuse: the directory set in the
+/// environment but never granted, so the server writes to a path the jail
+/// holds read-only.
+pub fn a_private_cache_is_granted_and_set_in_the_environment_test() {
+  let gopls =
+    profile.LspServer(
+      ..server(profile.ProjectReadOnly),
+      name: "go",
+      env: ["GOFLAGS"],
+      cache_env: [#("XDG_CACHE_HOME", "xdg")],
+    )
+  let assert Ok(built) =
+    jail.policy_for(
+      jail.Placement(
+        ..placement(gopls),
+        places: profile.Places(
+          home: Some("/home/o"),
+          cache: Some("/home/o/.cache"),
+        ),
+      ),
+      session_base(),
+      reading: host_env,
+    )
+    as "a server with a private cache must be jailable"
+  let private = "/home/o/.cache/loom/lsp/go/xdg"
+  let final = composed(built)
+
+  // Granted on both sides, so composition keeps it writable.
+  assert list.contains(built.base.writable_roots, private)
+  assert list.contains(built.requirements.writable_roots, private)
+  assert list.contains(final.writable_roots, private)
+  assert built.caches == [private]
+
+  // Set, last, to the directory itself; never read from the daemon, which
+  // `host_env` would answer nothing for.
+  assert list.key_find(built.env, "XDG_CACHE_HOME") == Ok(private)
+  assert list.key_find(built.env, "GOFLAGS") == Ok("-mod=mod")
+  assert list.contains(final.env_allow, "XDG_CACHE_HOME")
+  assert built.unset == []
+
+  // The operator's own cache is not granted: only Loom's directory is.
+  assert !list.contains(final.writable_roots, "/home/o/.cache")
+  assert !list.contains(final.writable_roots, "/home/o/.cache/go-build")
+}
+
+pub fn a_private_cache_without_a_cache_place_is_refused_test() {
+  let gopls =
+    profile.LspServer(..server(profile.ProjectReadOnly), name: "go", cache_env: [
+      #("XDG_CACHE_HOME", "xdg"),
+    ])
+  let assert Error(reason) =
+    jail.policy_for(placement(gopls), session_base(), reading: host_env)
+    as "a private cache with no cache directory cannot be placed"
+  assert reason
+    == "<cache>/loom/lsp/go/xdg cannot be resolved: the harness's cache"
+    <> " directory is unknown, because HOME is unset"
 }
 
 pub fn a_home_root_without_a_home_is_refused_test() {

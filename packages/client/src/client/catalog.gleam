@@ -53,8 +53,10 @@
 //// root_markers = ["go.mod"]          # nearest ancestor holding one
 //// project = "read-only"              # read-only (default) | writable
 //// readable = ["~/go/pkg/mod"]        # optional extra roots: absolute,
-//// writable = ["<cache>/go-build"]    #   ~/-relative or <cache>/-relative
+//// writable = ["/srv/cache"]          #   ~/-relative or <cache>/-relative
 //// env = ["GOFLAGS"]                  # optional; env var *names*
+//// cache_env = { XDG_CACHE_HOME = "xdg" } # optional; a private cache,
+////                                    #   <cache>/loom/lsp/<name>/xdg
 //// language_id = "go"                 # optional; default: the first
 ////                                    #   extension without its dot
 //// qualifier_separators = ["."]       # optional; default ["."]

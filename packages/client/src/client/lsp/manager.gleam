@@ -366,9 +366,14 @@ pub fn connect_jailed(
   )
 }
 
-// Locates the executable and composes the jail. The scratch directory's
-// `tmp` is made here too: the probe and a search clear under a policy that
-// binds it, and the relay makes it only for the server itself.
+// Locates the executable, composes the jail, and makes the directories the
+// jail binds that may not exist yet. This is where a jail's impure
+// preparation lives, and the private caches belong with it rather than at
+// boot: the probe, a search and the server all clear through here, so a
+// directory made here exists before any policy that binds it is cleared,
+// and a server nobody queries costs no directory, which is ADR-013 §1's
+// laziness kept. The scratch directory's `tmp` is made for the same reason;
+// the relay makes it only for the server itself.
 fn jail_for(
   jailed: Jailed,
   server: LspServer,
@@ -393,6 +398,22 @@ fn jail_for(
     |> result.map_error(fn(error) {
       "the language server's scratch directory could not be made: "
       <> simplifile.describe_error(error)
+    }),
+  )
+
+  // `mkdir -p` over a directory that already exists is a no-op, so a cache
+  // a previous start filled is kept, and warm.
+  use Nil <- result.try(
+    list.try_each(built.caches, fn(cache) {
+      simplifile.create_directory_all(cache)
+      |> result.map_error(fn(error) {
+        "lsp."
+        <> server.name
+        <> "'s private cache "
+        <> cache
+        <> " could not be made: "
+        <> simplifile.describe_error(error)
+      })
     }),
   )
   Ok(built)

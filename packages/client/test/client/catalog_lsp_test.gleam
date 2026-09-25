@@ -30,7 +30,8 @@ main = [\"one\"]
 
 // The two servers the documentation shows, verbatim: `gleam lsp`, which
 // writes its manifest and `build/` into the project, and `gopls`, which
-// writes nothing there but needs the module cache and the build cache.
+// writes nothing there but needs the module cache and a private build
+// cache.
 const documented = "
 [lsp.gleam]
 command = [\"gleam\", \"lsp\"]
@@ -44,8 +45,8 @@ command = [\"gopls\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
 readable = [\"~/go/pkg/mod\"]
-writable = [\"<cache>/go-build\"]
-env = [\"GOFLAGS\", \"XDG_CACHE_HOME\"]
+cache_env = { XDG_CACHE_HOME = \"xdg\", GOCACHE = \"go-build\", GOPLSCACHE = \"gopls\" }
+env = [\"GOFLAGS\"]
 hint = \"Qualify a name with its package name as imported: util.Greet\"
 "
 
@@ -88,6 +89,7 @@ pub fn documented_servers_parse_to_exact_records_test() {
         readable: [],
         writable: [],
         env: [],
+        cache_env: [],
         language_id: "gleam",
         qualifier_separators: ["."],
         module_case: profile.AsWritten,
@@ -103,8 +105,13 @@ pub fn documented_servers_parse_to_exact_records_test() {
         root_markers: ["go.mod"],
         project: profile.ProjectReadOnly,
         readable: [profile.HomePath("go/pkg/mod")],
-        writable: [profile.CachePath("go-build")],
-        env: ["GOFLAGS", "XDG_CACHE_HOME"],
+        writable: [],
+        env: ["GOFLAGS"],
+        cache_env: [
+          #("GOCACHE", "go-build"),
+          #("GOPLSCACHE", "gopls"),
+          #("XDG_CACHE_HOME", "xdg"),
+        ],
         language_id: "go",
         qualifier_separators: ["."],
         module_case: profile.AsWritten,
@@ -500,6 +507,7 @@ pub fn the_profile_keys_default_to_the_old_behaviour_test() {
   assert server.qualifier_separators == ["."]
   assert server.module_case == profile.AsWritten
   assert server.hint == None
+  assert server.cache_env == []
 }
 
 pub fn every_profile_key_is_accepted_test() {
@@ -617,11 +625,102 @@ pub fn the_profile_keys_are_known_keys_test() {
   let assert "unknown key `languageId` in lsp.x (allowed: " <> allowed =
     refusal(one_server("languageId = \"ts\""))
   list.each(
-    ["language_id", "qualifier_separators", "module_case", "hint"],
+    ["language_id", "qualifier_separators", "module_case", "hint", "cache_env"],
     fn(key) {
       assert string.contains(allowed, key)
     },
   )
+}
+
+// --- cache_env ----------------------------------------------------------------
+
+// Each entry is kept as written, and the set comes back sorted by name,
+// since a TOML table has no order and the install record compares it.
+pub fn a_cache_env_decodes_sorted_by_name_test() {
+  let assert Ok(parsed) =
+    catalog.parse(one_server(
+      "cache_env = { XDG_CACHE_HOME = \"xdg\", GOCACHE = \"go-build\" }",
+    ))
+  let assert [server] = parsed.lsp_servers
+  assert server.cache_env
+    == [#("GOCACHE", "go-build"), #("XDG_CACHE_HOME", "xdg")]
+  assert profile.cache_env_paths(server)
+    == [
+      #("GOCACHE", profile.CachePath("loom/lsp/x/go-build")),
+      #("XDG_CACHE_HOME", profile.CachePath("loom/lsp/x/xdg")),
+    ]
+
+  // A standard table is a table too.
+  let assert Ok(parsed) =
+    catalog.parse(one_server("\n[lsp.x.cache_env]\nXDG_CACHE_HOME = \"xdg\""))
+  let assert [server] = parsed.lsp_servers
+  assert server.cache_env == [#("XDG_CACHE_HOME", "xdg")]
+}
+
+pub fn a_cache_env_name_meets_the_env_rules_test() {
+  assert refusal(one_server("cache_env = { lower = \"x\" }"))
+    == "lsp.x.cache_env.lower is not an environment variable name"
+    <> " ([A-Z_][A-Z0-9_]*)"
+  let assert "lsp.x.cache_env.HOME may not name HOME: " <> _rest =
+    refusal(one_server("cache_env = { HOME = \"x\" }"))
+  let assert "lsp.x.cache_env.TMPDIR may not name TMPDIR: " <> _rest =
+    refusal(one_server("cache_env = { TMPDIR = \"x\" }"))
+}
+
+/// A cache inside another is one the server could swap for a link before
+/// the next start binds it, so nesting is refused in either order the
+/// names sort in; two names sharing one directory share one bind.
+pub fn a_cache_env_directory_inside_another_is_refused_test() {
+  assert refusal(one_server(
+      "cache_env = { XDG_CACHE_HOME = \"xdg\", GOCACHE = \"xdg/go-build\" }",
+    ))
+    == "lsp.x.cache_env.GOCACHE is \"xdg/go-build\", inside XDG_CACHE_HOME's"
+    <> " \"xdg\", which the server can write, so it could swap the inner"
+    <> " directory for a link before the next start binds it; name sibling"
+    <> " directories"
+  let assert "lsp.x.cache_env.Z is \"a/b\", inside A's \"a\"" <> _rest =
+    refusal(one_server("cache_env = { A = \"a\", Z = \"a/b\" }"))
+  let assert Ok(parsed) =
+    catalog.parse(one_server("cache_env = { A = \"ab\", B = \"a\", C = \"a\" }"))
+  let assert [server] = parsed.lsp_servers
+  assert server.cache_env == [#("A", "ab"), #("B", "a"), #("C", "a")]
+}
+
+// Two sources for one variable, the daemon's value and Loom's directory,
+// would leave which one the server sees to the order they were applied.
+pub fn a_cache_env_name_also_in_env_is_refused_test() {
+  assert refusal(one_server(
+      "env = [\"XDG_CACHE_HOME\"]\ncache_env = { XDG_CACHE_HOME = \"xdg\" }",
+    ))
+    == "lsp.x.cache_env.XDG_CACHE_HOME is also listed in lsp.x.env; one"
+    <> " variable has one source, so drop it from one of them"
+}
+
+/// The mutation this pins is the one the key's safety rests on: a `..`
+/// accepted would point a variable out of Loom's directory and into the
+/// operator's own cache, the sharing the key exists to prevent.
+pub fn a_cache_env_directory_stays_beneath_the_private_cache_test() {
+  let refused = fn(directory) {
+    refusal(one_server("cache_env = { XDG_CACHE_HOME = " <> directory <> " }"))
+  }
+  assert refused("\"\"")
+    == "lsp.x.cache_env.XDG_CACHE_HOME must name a directory, not be empty"
+  assert refused("\"/home/o/.cache\"")
+    == "lsp.x.cache_env.XDG_CACHE_HOME is \"/home/o/.cache\", an absolute"
+    <> " path; name a directory relative to Loom's private cache"
+  list.each(["\"..\"", "\"../go-build\"", "\"xdg/../../go-build\""], fn(dir) {
+    let assert "lsp.x.cache_env.XDG_CACHE_HOME is " <> rest = refused(dir)
+    assert string.contains(rest, "which has a .. component")
+  })
+  list.each(["\".\"", "\"./xdg\"", "\"xdg//go\"", "\"xdg/\""], fn(dir) {
+    let assert "lsp.x.cache_env.XDG_CACHE_HOME is " <> rest = refused(dir)
+    assert string.contains(rest, "which has an empty or . component")
+  })
+  assert refused("3")
+    == "lsp.x.cache_env.XDG_CACHE_HOME must be a string naming a directory"
+  assert refusal(one_server("cache_env = [\"XDG_CACHE_HOME\"]"))
+    == "lsp.x.cache_env must be a table of variable names to directory"
+    <> " names, such as { XDG_CACHE_HOME = \"xdg\" }"
 }
 
 // --- the decoder alone ---------------------------------------------------------

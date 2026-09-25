@@ -89,6 +89,7 @@ fn fake_server() -> profile.LspServer {
     readable: [],
     writable: [],
     env: [],
+    cache_env: [],
     language_id: "gleam",
     qualifier_separators: ["."],
     module_case: profile.AsWritten,
@@ -589,6 +590,44 @@ pub fn a_clean_probe_clears_the_server_under_the_session_demand_test() {
   let assert [spec] = drain(cleared, [])
     as "only the probe is cleared before the transport connects"
   assert spec.demand == exec.BestEffort
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+/// A private cache must exist before any policy that binds it is cleared,
+/// because bwrap refuses a writable root whose source is missing. The
+/// runner looks for the directory at the moment the probe is cleared, so
+/// a manager that made it later, or never, fails here.
+pub fn a_private_cache_is_made_before_the_probe_is_cleared_test() {
+  let workspace = scratch("private-cache")
+  let root = project(workspace, "app")
+  let cache = workspace <> "/host-cache"
+  let private = cache <> "/loom/lsp/shell/xdg"
+  let seen = process.new_subject()
+  let run = fn(spec: broker.CallSpec, events) {
+    process.send(seen, #(
+      simplifile.is_directory(private) == Ok(True),
+      list.key_find(spec.env, "XDG_CACHE_HOME"),
+    ))
+    process.send(events, broker.CallSettled(outcome: clean()))
+    Ok(tool.RunningCall(stdin: fn(_data, _eof) { Nil }, cancel: fn() { Nil }))
+  }
+  let jailed =
+    manager.Jailed(
+      ..probe_jailed(workspace, run, exec.BestEffort),
+      places: profile.Places(home: None, cache: Some(cache)),
+    )
+  let server =
+    profile.LspServer(..shell_server(), cache_env: [#("XDG_CACHE_HOME", "xdg")])
+  assert simplifile.is_directory(private) != Ok(True)
+
+  let assert Ok(_transport) =
+    manager.connect_jailed(jailed, resolve.Identity(server:, root:))
+    as "a server with a private cache must start"
+  let assert [#(made, value)] = drain(seen, [])
+    as "only the probe is cleared before the transport connects"
+  assert made
+  assert value == Ok(private)
   let _ = simplifile.delete_all([workspace])
   Nil
 }
@@ -1579,6 +1618,7 @@ fn run_gleam(live: Live) -> Nil {
       readable: [],
       writable: [],
       env: [],
+      cache_env: [],
       language_id: "gleam",
       qualifier_separators: ["."],
       module_case: profile.AsWritten,
@@ -1749,6 +1789,7 @@ fn run_gopls(live: Live, gopls: String, go: String) -> Nil {
       readable: [],
       writable: [profile.AbsolutePath(cache), profile.AbsolutePath(gopath)],
       env: ["GOCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY"],
+      cache_env: [],
       language_id: "go",
       qualifier_separators: ["."],
       module_case: profile.AsWritten,
@@ -1920,6 +1961,7 @@ fn run_rust_analyzer(live: Live, home: String) -> Nil {
         "CARGO_TARGET_DIR",
         "CARGO_NET_OFFLINE",
       ],
+      cache_env: [],
       language_id: "rust",
       qualifier_separators: ["::"],
       module_case: profile.AsWritten,

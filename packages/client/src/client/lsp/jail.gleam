@@ -18,11 +18,13 @@
 //// judged under. The lease base is the session's own, with the three
 //// per-command limits zeroed (`broker/policy.session_lease`, `OutputIsWire`)
 //// and widened by exactly what the operator wrote in `loom.toml` — the extra
-//// roots, the environment names, and the mount the server's own executable
-//// needs. Nothing the model supplies widens it, and in particular the
-//// project root does not: a root the session base cannot already reach is
-//// refused, never granted. The requirements then ask for the root (writable
-//// only for `ProjectWritable`), those extra roots, a private scratch
+//// roots, the environment names, the private caches `cache_env` names
+//// under Loom's own `<cache>/loom/lsp/<server>/`, and the mount the
+//// server's own executable needs. Nothing the model supplies widens it,
+//// and in particular the project root does not: a root the session base
+//// cannot already reach is refused, never granted. The requirements then
+//// ask for the root (writable only for `ProjectWritable`), those extra
+//// roots and private caches, a private scratch
 //// directory for `TMPDIR`, the network off, and unlimited wall, CPU and
 //// output. The zeros are written into the requirements literally rather
 //// than derived from the base, so a base that kept a cap is a narrowing
@@ -558,6 +560,11 @@ pub type Jail {
     cwd: String,
     /// The server's private scratch directory; `TMPDIR` is its `tmp`.
     scratch: String,
+    /// The server's private caches (`profile.cache_env_paths`), expanded.
+    /// Each is a writable root and must exist before the jail starts,
+    /// because bwrap refuses a read-write bind whose source is missing;
+    /// making them is the caller's one impure step, as the scratch is.
+    caches: List(String),
     /// `lsp/<server>/<root-digest>`.
     step_id: String,
     /// Configured `env` names the daemon's environment does not set. They
@@ -596,8 +603,16 @@ pub fn policy_for(
   use Nil <- result.try(absolute_root(server.name, root))
   use readable <- result.try(expanded(server.readable, placement.places))
   use writable <- result.try(expanded(server.writable, placement.places))
+
+  // The private caches join the table's writable roots from here on: they
+  // are granted as any `writable` entry is, and they are shadowed, covered
+  // and composed under the same rules. What sets them apart is only that
+  // their paths are Loom's, never the operator's cache or another tool's.
+  use caches <- result.try(private_caches(server, placement.places))
+  let writable =
+    list.unique(list.append(writable, list.map(caches, fn(pair) { pair.1 })))
   let scratch = scratch_directory(placement.workspace, server.name, root)
-  let #(env, unset) = environment(placement, scratch, reading)
+  let #(env, unset) = environment(placement, scratch, caches, reading)
   let names = list.map(env, fn(pair) { pair.0 })
 
   // The lease base: the session's base with the per-command limits zeroed,
@@ -668,6 +683,7 @@ pub fn policy_for(
     env:,
     cwd: root,
     scratch:,
+    caches: list.map(caches, fn(pair) { pair.1 }),
     step_id: step_id(server.name, root),
     unset:,
   ))
@@ -811,6 +827,17 @@ fn expanded(
   list.try_map(paths, profile.expand_path(_, places))
 }
 
+// Each `cache_env` variable with the host path of its private directory.
+fn private_caches(
+  server: LspServer,
+  places: Places,
+) -> Result(List(#(String, String)), String) {
+  list.try_map(profile.cache_env_paths(server), fn(entry) {
+    profile.expand_path(entry.1, places)
+    |> result.map(fn(path) { #(entry.0, path) })
+  })
+}
+
 // Mounts are met by exact path, so a region the lease base already binds —
 // the toolchain mounts code mode put on the session base, say — is asked
 // for under the base's own path, and only a region nothing covers is added
@@ -849,10 +876,14 @@ fn read_only(path: String) -> Mount {
 // set. PATH leads with the executable's own directory so a server that
 // re-executes itself finds itself, then follows the daemon's PATH, which is
 // where an operator's `go` or `cargo` is; a PATH entry names a place to
-// look and grants nothing, since reach is the policy's.
+// look and grants nothing, since reach is the policy's. The `cache_env`
+// variables come last and carry values the daemon never supplied: each is
+// the private directory the policy grants, so a tool inside the jail keeps
+// its cache there rather than in one the host's own tools read.
 fn environment(
   placement: Placement,
   scratch: String,
+  caches: List(#(String, String)),
   reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
   let path =
@@ -883,7 +914,7 @@ fn environment(
         Error(Nil) -> #(acc.0, [name, ..acc.1])
       }
     })
-  #(list.append(owned, list.reverse(present)), list.reverse(unset))
+  #(list.flatten([owned, list.reverse(present), caches]), list.reverse(unset))
 }
 
 // Composes the two exactly as the broker will, so a lease that would be
