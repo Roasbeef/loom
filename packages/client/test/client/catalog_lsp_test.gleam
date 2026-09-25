@@ -44,8 +44,8 @@ command = [\"gopls\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
 readable = [\"~/go/pkg/mod\"]
-writable = [\"<cache>/go-build\", \"<cache>/gopls\"]
-env = [\"GOFLAGS\"]
+writable = [\"<cache>/go-build\"]
+env = [\"GOFLAGS\", \"XDG_CACHE_HOME\"]
 hint = \"Qualify a name with its package name as imported: util.Greet\"
 "
 
@@ -103,8 +103,8 @@ pub fn documented_servers_parse_to_exact_records_test() {
         root_markers: ["go.mod"],
         project: profile.ProjectReadOnly,
         readable: [profile.HomePath("go/pkg/mod")],
-        writable: [profile.CachePath("go-build"), profile.CachePath("gopls")],
-        env: ["GOFLAGS"],
+        writable: [profile.CachePath("go-build")],
+        env: ["GOFLAGS", "XDG_CACHE_HOME"],
         language_id: "go",
         qualifier_separators: ["."],
         module_case: profile.AsWritten,
