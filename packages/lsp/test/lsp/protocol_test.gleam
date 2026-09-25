@@ -121,7 +121,8 @@ pub fn initialize_request_declares_the_minimal_client_test() {
     <> "\"documentSymbol\":{\"hierarchicalDocumentSymbolSupport\":true},"
     <> "\"rename\":{\"prepareSupport\":true}},"
     <> "\"workspace\":{\"workspaceEdit\":{\"documentChanges\":true,"
-    <> "\"resourceOperations\":[]},\"applyEdit\":false}}}}"
+    <> "\"resourceOperations\":[]},\"applyEdit\":false},"
+    <> "\"window\":{\"workDoneProgress\":true}}}}"
 }
 
 pub fn lifecycle_and_sync_builders_test() {
@@ -691,13 +692,64 @@ pub fn other_notifications_are_recognised_or_not_test() {
     == Ok(protocol.Ignored("window/logMessage"))
   assert protocol.classify_notification("window/showMessage", None)
     == Ok(protocol.Ignored("window/showMessage"))
-  assert protocol.classify_notification("$/progress", None)
-    == Ok(protocol.Ignored("$/progress"))
   assert protocol.classify_notification("telemetry/event", None)
     == Ok(protocol.Unrecognised("telemetry/event"))
   let assert Error(protocol.BadResult(_)) =
     protocol.classify_notification("textDocument/publishDiagnostics", None)
     as "a publication with no params is malformed"
+}
+
+// Work-done progress in each of its three kinds, under both token
+// shapes, with the unread fields of a real `rust-analyzer` report left in.
+pub fn work_done_progress_decodes_each_kind_test() {
+  let progress = fn(text) {
+    protocol.classify_notification("$/progress", Some(parse(text)))
+  }
+  assert progress(
+      "{\"token\": \"rustAnalyzer/cachePriming\", \"value\": "
+      <> "{\"kind\": \"begin\", \"title\": \"Indexing\", "
+      <> "\"cancellable\": false, \"percentage\": 0}}",
+    )
+    == Ok(
+      protocol.Progressed(protocol.ProgressBegin(
+        token: protocol.StringToken("rustAnalyzer/cachePriming"),
+        title: "Indexing",
+      )),
+    )
+  assert progress(
+      "{\"token\": 7, \"value\": {\"kind\": \"report\", "
+      <> "\"message\": \"1/4 (core)\", \"percentage\": 25}}",
+    )
+    == Ok(protocol.Progressed(protocol.ProgressReport(protocol.IntToken(7))))
+  assert progress("{\"token\": 7, \"value\": {\"kind\": \"end\"}}")
+    == Ok(protocol.Progressed(protocol.ProgressEnd(protocol.IntToken(7))))
+}
+
+// A progress the client cannot read is a fault the actor drops, never a
+// guess at which token moved.
+pub fn malformed_progress_is_a_fault_test() {
+  let refused = fn(params) {
+    case protocol.classify_notification("$/progress", params) {
+      Error(protocol.BadResult(_)) -> True
+      Ok(_) -> False
+    }
+  }
+  assert refused(None)
+  assert refused(Some(parse("{\"value\": {\"kind\": \"end\"}}")))
+  assert refused(
+    Some(parse("{\"token\": 1.5, \"value\": {\"kind\": \"end\"}}")),
+  )
+  assert refused(
+    Some(parse("{\"token\": 1, \"value\": {\"kind\": \"begin\"}}")),
+  )
+  assert refused(
+    Some(parse("{\"token\": 1, \"value\": {\"kind\": \"paused\"}}")),
+  )
+
+  // A partial-result value carries no `kind`; this client never asked for
+  // one.
+  assert refused(Some(parse("{\"token\": 1, \"value\": [1, 2]}")))
+  assert refused(Some(parse("{\"token\": 1, \"value\": {\"items\": []}}")))
 }
 
 // --- server requests --------------------------------------------------------
