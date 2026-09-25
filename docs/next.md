@@ -1,10 +1,12 @@
 # Current handoff
 
-The collaboration stack was rebased onto `main` at `9616fb03`. PR #484 already
-merged the async execution, resident peer messaging, and named workflow core.
-The four PRs below add model-visible virtual reads, owner controls, a terminal
-link manager, and executable collaboration examples. The four PRs must pass
-CI on their rebased heads before the stack merges through #503.
+The collaboration stack landed on `main` in [#510](https://github.com/Roasbeef/loom/pull/510)
+at `645b8faf`. PR #484 had already merged async execution, resident peer
+messaging, and the named workflow core. The four review layers below add
+model-visible virtual reads, owner controls, a terminal link manager, and
+executable collaboration examples. GitHub marked #494 merged and the other
+three layers were closed as landed through #510; their diffs remain available
+for review.
 
 | PR | Result |
 |---|---|
@@ -89,13 +91,13 @@ recipient revocation could not finish.
 
 ## Remaining work
 
-1. Submit the rebased stack and verify each PR's base and exact head.
-2. Post the committed #502 native terminal captures on its PR.
-3. Wait for Linux and macOS CI on those exact heads, then merge the stack
-   through #503. Close #485, #488, and #489 through their PRs.
-4. After merge, update this handoff with the resulting `main` commit and any
-   measured limits. The enlarged code-mode description may still merit a
-   cached-prefix measurement.
+1. Measure how virtual-read discovery affects prompt size and cached-prefix
+   reuse in real sessions. The prompt-size repository budget is a test
+   threshold, not a provider token limit.
+2. Add an example in which a coordinator does independent work after launching
+   children, then sends follow-up tasks to those same children.
+3. Design saved-session outboxes, cross-machine transport, and durable actor
+   recovery separately from the resident-session link path.
 
 The current examples demonstrate fan-out, a bounded join, named steps, progress,
 and recovery. They do not yet show one coordinator doing independent work after
@@ -112,8 +114,12 @@ to the same pair.
 
 ## Validation boundary
 
-The four PRs passed Linux and macOS CI before this rebase. That result does
-not establish the rebased heads. Run the repository checks on the new commits
-and use each command's exit status. The top example layer previously passed
-all 2,093 client tests; the shipped bootstrap fixture covered peer delivery
-on a clean CI host. Keep those results separate from the new CI run.
+The exact combined tip `f63deb04` passed fresh-container obelisk
+`signoff/linux`: client, mid, conformance, fast, static, enforcement, release
+update, and a clean skip census. Its hosted Linux client and jail jobs also
+passed. The first signoff exposed a fixture collision: two deterministic
+specialist sessions could select the same code-mode build root and remove one
+another's files or cap socket. Each session now uses its own workspace; the
+real-satellite collaboration test passed on the corrected obelisk run. The
+merged `main` commit is `645b8faf`; the signoff belongs to its PR head, not
+to that new merge-commit SHA. Issues #485, #488, and #489 closed with #510.
