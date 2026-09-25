@@ -199,9 +199,31 @@ daemon epoch and canonical session IDs are required:
 
 Peer messaging is disabled until the owner grants a link. There is no automatic
 link for sessions in the same repository, and granting A-to-B does not grant
-B-to-A. Both sessions must be open when the owner creates the link.
+B-to-A. Both sessions must be resident when the owner creates the link.
 Each source strand can hold 64 outgoing links. The next distinct link is
 refused at admission; replacing an existing link does not consume another slot.
+
+To link from the TUI, open `/sessions`, select a resident target session, and
+press `l`. The attached session and strand remain the source; selecting a row
+does not switch sessions. Type the exact receiving strand, then review the
+source, target and wake permission before pressing Enter. The default is
+`busy_only`, which accepts messages while the recipient is running. Tab or the
+arrow keys select `may_wake`, which can start an idle recipient strand. Enter
+still opens the selected session, and a saved row must be opened before it can
+receive a link. Escape returns to the same session selection.
+
+Enter `/peers` to inspect links for the active strand. To inspect a different
+source strand, open `/agents`, select it, and press `p`. From the link view,
+press `l` to choose a target, `d` to revoke the selected direction, `v` to
+propose its reverse, or `r` to refresh. A reverse link requires its own
+confirmation. The daemon does not enumerate target strands, so the receiving
+strand name must be entered explicitly. Link management uses the authenticated
+owner control connection and preserves the conversation draft.
+
+The TUI loads a bounded inspection page at a time. Press `n` to append the next
+page; the view merges duplicate coordinates so a grant that moves across a page
+boundary does not appear twice. Each page is a fresh observation, and the daemon
+checks current authority again when it handles a link or revoke request.
 
 `busy_only` permits messages during an existing run. `may_wake` also permits a
 new run on that exported strand. Neither opens a saved session. A link permits
@@ -244,6 +266,36 @@ placed conversation entry. The entry codec preserves that identity through
 storage and replay, and provider rendering labels it as a peer-agent message.
 The receipt separately retains optional source metadata supplied by the host. The sending model
 cannot override the origin; message text and model descriptions carry no authority.
+
+The `loomd peer` CLI uses the same owner credential and epoch-checked control
+socket. It prints one JSON object, so a script can keep the exact coordinates
+and message ID from a result:
+
+```sh
+loomd peer inspect SOURCE main
+loomd peer link SOURCE main TARGET reviewer --wake busy_only
+loomd peer send SOURCE main TARGET reviewer --message-id review-42-finding-1 --text 'The review found a missing cancellation check.'
+loomd peer unlink SOURCE main TARGET reviewer
+```
+
+`SOURCE` and `TARGET` are canonical session IDs. Pass `--state-dir PATH` after
+`peer` when the daemon uses a nondefault state directory. `inspect` reports the
+source strand's outgoing links and incoming grants. Each outgoing row shows
+the target's catalogue state, current wake permission when the target is
+resident, and `wake: null` when it is unavailable. Incoming rows show their
+source metadata and wake permission. Large inspections use bounded control
+pages; the CLI follows them and returns one aggregate JSON result. Each page
+is a fresh observation, so concurrent link changes may appear or disappear
+between pages. Sends recheck the current grant. The CLI never opens a saved
+session.
+
+The CLI requires `--message-id` on every send. Reuse it only for an explicit
+retry with the same body and target. A successful send returns a durable
+admission receipt, not proof of model consumption. Exit 0 acknowledges a
+complete operation; exit 2 rejects arguments, 3 reports a daemon refusal, 4
+reports a transport or unknown outcome, and 5 reports that unlink removed the
+outgoing link but could not revoke the unavailable recipient's grant. The JSON
+result includes `partial: true` for that last case.
 
 Discovery shows linked resident and saved sessions, catalogue name and workspace,
 exported strands, current operation and state sequence, latest terminal result,

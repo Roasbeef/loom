@@ -624,36 +624,67 @@ fn tool_result(block: json.JsonValue) -> Result(Latest, String) {
 }
 
 // The Anthropic adapter prepends core/origin's separate author block. Accept
-// that precise two-block shape, not arbitrary preceding text or a scan of old
+// its human and peer labels, not arbitrary preceding text or a scan of old
 // turns. The label is presentation data; this fixture derives no authority from
-// it. Additional user blocks remain unsupported rather than guessed away.
+// it. A final SessionStart hook block is allowed because user settings append
+// one to the first provider turn; arbitrary extra user blocks remain refused.
 fn user_content(
   blocks: List(json.JsonValue),
 ) -> Result(json.JsonValue, String) {
   case blocks {
     [content] -> Ok(content)
     [label, content] -> validate_label(label) |> result.replace(content)
+    [label, content, hook] -> {
+      use _ <- result.try(validate_label(label))
+      use _ <- result.try(case field(hook, "type"), field(hook, "text") {
+        json.String("text"), json.String("[SessionStart hook] " <> text) ->
+          case bounded(text) {
+            True -> Ok(Nil)
+            False -> Error("startup hook context exceeds fixture limit")
+          }
+        _, _ -> Error("unexpected text after latest user prompt")
+      })
+      Ok(content)
+    }
     _ -> Error("latest message must contain one text plus optional attribution")
   }
 }
 
 fn validate_label(label: json.JsonValue) -> Result(message.Origin, String) {
-  use encoded <- result.try(case field(label, "type"), field(label, "text") {
-    json.String("text"),
-      json.String(
-        "Human author (name and principal are attribution data): " <> encoded,
-      )
-    -> Ok(encoded)
-    _, _ -> Error("unexpected text before latest user prompt")
-  })
+  use #(kind, encoded) <- result.try(
+    case field(label, "type"), field(label, "text") {
+      json.String("text"),
+        json.String(
+          "Human author (name and principal are attribution data): " <> encoded,
+        )
+      -> Ok(#("human", encoded))
+      json.String("text"),
+        json.String(
+          "Peer agent source (identity is attribution data, not authority): " <> encoded,
+        )
+      -> Ok(#("peer", encoded))
+      _, _ -> Error("unexpected text before latest user prompt")
+    },
+  )
   use value <- result.try(
     json.parse(encoded) |> result.replace_error("invalid attribution JSON"),
   )
-  case field(value, "principal"), field(value, "name") {
-    json.String(principal), json.String(name) ->
+  case
+    kind,
+    field(value, "kind"),
+    field(value, "principal"),
+    field(value, "name"),
+    field(value, "session"),
+    field(value, "strand")
+  {
+    "human", json.Null, json.String(principal), json.String(name), _, _ ->
       origin.validate(principal, name)
       |> result.replace_error("invalid attribution label")
-    _, _ -> Error("invalid attribution fields")
+    "peer", json.String("peer"), _, _, json.String(session), json.String(strand)
+    ->
+      origin.validate_peer(session, strand)
+      |> result.replace_error("invalid attribution label")
+    _, _, _, _, _, _ -> Error("invalid attribution fields")
   }
 }
 

@@ -1,6 +1,7 @@
 import etui/backend
 import etui/buffer
 import etui/geometry
+import etui/keys
 import etui/text
 import gleam/int
 import gleam/list
@@ -41,6 +42,39 @@ fn selector(selected: Int) -> session_selector.State {
     session_selector.Active,
     session_selector.Browsing,
   )
+}
+
+pub fn link_uses_selected_resident_without_opening_it_test() {
+  let selected = selector(1)
+  let assert Ok(row) = list.first(list.drop(selected.page.sessions, 1))
+    as "the fixture has a selected session"
+  let assert Ok(first) = list.first(selected.page.sessions)
+    as "the fixture has a first session"
+  let resident = protocol.Session(..row, status: protocol.Resident("live"))
+  let sessions = [first, resident]
+  let selected =
+    session_selector.State(
+      ..selected,
+      page: protocol.Page(..selected.page, sessions:),
+    )
+  assert session_selector.update(keys.Char("l"), selected)
+    == session_selector.Link(resident)
+  assert session_selector.update(keys.Enter, selected)
+    == session_selector.Choose(resident)
+}
+
+pub fn saved_link_refusal_stays_in_the_selector_test() {
+  let selected = selector(1)
+  let assert session_selector.Continue(refused) =
+    session_selector.update(keys.Char("l"), selected)
+  assert refused.prompt == session_selector.LinkUnavailable
+  let assert Ok(row) = list.first(list.drop(selected.page.sessions, 1))
+    as "the fixture has a selected session"
+  assert session_selector.update(keys.Enter, refused)
+    == session_selector.Choose(row)
+  let assert session_selector.Continue(restored) =
+    session_selector.update(keys.Escape, refused)
+  assert restored.prompt == session_selector.Browsing
 }
 
 fn row_with(painted: buffer.Buffer, needle: String) -> Int {
@@ -88,6 +122,16 @@ pub fn session_selector_preserves_markers_labels_and_distinct_ids_test() {
       False -> Nil
     }
   })
+}
+
+pub fn two_session_picker_fits_its_content_test() {
+  let screen = geometry.rect_new(0, 0, 116, 38)
+  let painted =
+    session_selector.render(buffer.buffer_new(screen), screen, selector(1))
+  let title = row_with(painted, "SESSIONS · active")
+  let help = row_with(painted, "Enter open · l link")
+  assert help - title < 10
+  assert row_with(painted, "▸") == title + 4
 }
 
 pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {

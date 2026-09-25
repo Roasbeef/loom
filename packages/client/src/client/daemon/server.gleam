@@ -422,7 +422,7 @@ fn control(
           manager.authenticate(current.registry, digest)
           |> result.replace_error("unauthorized"),
         )
-        dispatch(config, state, digest, principal, request.command)
+        dispatch(config, state, digest, principal, request.id, request.command)
       }
       case outcome {
         Ok(#(event, body)) -> {
@@ -432,7 +432,8 @@ fn control(
           // rather than inheriting "keep serving" from a catch-all.
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
-            protocol.LinkPeers(..)
+            protocol.InspectPeers(..)
+            | protocol.LinkPeers(..)
             | protocol.UnlinkPeers(..)
             | protocol.SendPeer(..)
             | protocol.Status
@@ -472,6 +473,7 @@ fn control(
 fn control_use(command: protocol.Command) {
   case command {
     protocol.Status
+    | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
@@ -533,12 +535,45 @@ fn dispatch(
   state: root.Ready(instance),
   digest,
   principal,
+  reply_to: Int,
   command,
 ) {
   // Owner-only filesystem choices are canonicalized on the host. Participant
   // authority is narrower: an operator may open a granted identity, but cannot
   // choose another workspace, configuration, or durable default.
   case command {
+    protocol.InspectPeers(source, strand, after, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use endpoint <- result.try(peer_endpoint(config, state.registry, source))
+      use metadata <- result.try(
+        manager.get(state.registry, source)
+        |> result.map(view_json)
+        |> result.map_error(error_code),
+      )
+      let registry = state.registry
+      let directory =
+        peers.Directory(
+          resolve: fn(id) { peer_endpoint(config, registry, id) },
+          describe: fn(id) {
+            manager.get(registry, id)
+            |> result.map(view_json)
+            |> result.map_error(error_code)
+          },
+        )
+      use empty_frame <- result.try(
+        protocol.event(Some(reply_to), "peers.inspect", json.Null)
+        |> result.map_error(fn(_) { "invalid inspection frame" }),
+      )
+      let body_budget = 60_000 - string.byte_size(empty_frame) + 4
+      peers.inspect(
+        peers.Wiring(endpoint, metadata, Some(directory)),
+        strand,
+        after,
+        body_budget,
+      )
+      |> result.map(fn(value) { #("peers.inspect", value) })
+    }
     protocol.LinkPeers(source, from, target, to, wake, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))

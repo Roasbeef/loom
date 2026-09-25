@@ -79,6 +79,7 @@ import gleam/string
 import tools/blob
 import tools/codemode_recipes
 import tools/directory_access
+import tools/fs
 import tools/permissions
 import tools/prelude
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
@@ -623,9 +624,8 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 }
 
 /// The model-facing description: what to write, which seams this host
-/// serves and what each may import, the public surface of every module
-/// they admit, what is actually serviced, and what comes back when a
-/// program is refused.
+/// serves and what each may import, the public types of every admitted
+/// module, what is serviced, and what comes back when a program is refused.
 ///
 /// Every list here is read off the seam rather than copied, so the
 /// sentence the model is charged for on every request cannot drift from
@@ -652,15 +652,15 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 /// offers different modes, shared imports are still stated once and each
 /// mode names only what it adds. Both forms derive from the live offers.
 ///
-/// The prelude's own signatures are appended after all of that, on the
-/// same per-seam split and for a related reason; `signatures_text` has
-/// the measurement and the argument.
+/// The generated prelude contributes an index and public types. A model
+/// reads complete function declarations on demand through `fs_read` at
+/// `cap://<module>`. Both paths use the host's offered-seam allowlists.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // string.contains(codemode.description(mode), "cap/report")
-/// // string.contains(codemode.description(mode), "pub fn run(Command)")
+/// // string.contains(codemode.description(mode), "### cap/proc")
 /// ```
 ///
 pub fn description(mode: CodeMode) -> String {
@@ -745,49 +745,17 @@ fn async_text(background: Option(Background), seams: Seams) -> String {
 // name was omitted, and the call it writes next is the labelled form the
 // compiler rejects. Sixty tokens against a wasted submission is the same
 // trade the import lists already won.
-const signature_legend = "Each module's public surface, as the compiler reports it. A parameter written `label: Type` is labelled and must be passed that way; a bare type is positional. A `pub type` body lists the constructors and fields a program may build and match; a type with no body is opaque and reached only through the functions under it."
+const signature_legend = "Each importable module is indexed here with its public types. A field or parameter written `label: Type` is labelled; a bare type is positional. Read `cap://<module>` with `fs_read` for its full function signatures, constants, and documentation, or `cap://` for the module index."
 
-// The rendered public surface of every prelude module a seam admits.
+// The description keeps the module index and public types; a virtual read
+// returns full function declarations only for modules the host admits.
 //
-// A model writing a program authors blind. Before this, the description
-// named the modules it could import and said nothing about what was in
-// them, so the compiler was the only oracle for a signature and it was
-// reachable only by being wrong first — a `CompileFailed` round trip
-// carrying a whole hermetic build, to learn that `proc.run` takes a
-// `Command` rather than a `String` (issue #36).
-//
-// The blocks are generated (`tools/prelude`, `make gen-prelude`) and
-// rendered here, so these are the whole description as it goes on the
-// wire. A host offering both default modes renders shared module surfaces
-// once; generated host-specific modules are included under the modes that
-// actually admit them.
-//
-// `cap/job` is the largest single block in the prelude and 7,823 bytes
-// (~1,950 tokens) of the descriptions that carry it: a job's `Exit`
-// record and the six `State` variants are most of it, and they are
-// there for the reason the `pub type` argument below gives — a program
-// that cannot name `Exited` cannot tell a finished job from a killed
-// one. Both modes on the default server admit it.
-//
-// That is above the ~2,100/~1,900 the work was scoped against, and the
-// whole of the difference is the `pub type` declarations: issue #36
-// measured function signatures and their docs alone. They are not
-// optional. `proc.run` returns a `proc.Output`, and a program that
-// cannot name the `stdout` field cannot read the output it just paid
-// for; `strand.wait` returns a `List(Waited)` whose three variants are
-// the whole of what a join means. A signature without the record it
-// returns is a contract half stated, which is the same failure the
-// signatures were added to fix, one level down.
-//
-// The ledger still favours it, and by more than the ratio suggests.
-// These bytes render ahead of the system prompt, inside the provider's
-// one-hour cached prefix: written once per cache lifetime, then read at
-// about a tenth of base input on every request. A wrong guess about a
-// signature costs a provider round trip, several hundred *output*
-// tokens — the dearest line in the ledger — and a hermetic build to
-// produce the diagnostic. One avoided rewrite pays for many requests'
-// worth of prefix reads. What was deliberately left out, and what a
-// reader loses by it, is in `scripts/gen-prelude.py`.
+// Names and record shapes must be visible before a program is written. A
+// guessed field name can waste a compile even if the model knows which
+// function to call. Full signatures are larger and can be read with one
+// `fs_read` when needed, outside the cached provider prefix. The generated
+// `type_surfaces` entries are prefixes of the full `surfaces` entries, so
+// discovery extends rather than contradicts the description.
 fn signatures_text(seams: Seams) -> String {
   case list.filter(signature_sections(seams), fn(section) { section.1 != "" }) {
     [] -> ""
@@ -839,7 +807,10 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
       [
         #(
           "## On every seam",
-          string.join([surface_text(shared), ..shared_extra], "\n"),
+          string.join(
+            [type_surface_text(shared), ..list.map(shared_extra, index_entry)],
+            "\n",
+          ),
         ),
         ..added
       ]
@@ -861,14 +832,14 @@ fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
   }
 }
 
-// One seam's rendered surface: the committed blocks for the prelude
-// modules it admits, then whatever this host generated for it.
+// One seam's indexed surface: public types for committed modules and a
+// short entry for each host-generated module. `cap://` returns full blocks.
 //
 // Host-generated blocks follow the committed prelude. A block shared by
 // all installed modes is rendered once, and a mode-specific block stays
 // under that mode.
 fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
-  [surface_text(modules), ..offer.extra_surfaces]
+  [type_surface_text(modules), ..list.map(offer.extra_surfaces, index_entry)]
   |> list.filter(fn(block) { block != "" })
   |> string.join("\n")
 }
@@ -884,11 +855,128 @@ fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
 // rejects into the description, which is a lie of the same class as
 // classifying a submission by reading its imports. The stdlib modules on
 // the allowlist have no block here and simply do not match.
-fn surface_text(allowed: List(String)) -> String {
-  prelude.surfaces
+fn type_surface_text(allowed: List(String)) -> String {
+  prelude.type_surfaces
   |> list.filter(fn(entry) { list.contains(allowed, entry.0) })
   |> list.map(fn(entry) { entry.1 })
   |> string.join("\n")
+}
+
+// Host-generated façades carry no separate type section. Their heading and
+// first sentence are enough to tell a program when to read the full block.
+fn index_entry(block: String) -> String {
+  case surface_module(block) {
+    Ok(module) -> "### " <> module <> "\n" <> first_sentence(block) <> "\n"
+    Error(Nil) -> ""
+  }
+}
+
+/// The `cap://` namespace for code-mode module discovery.
+///
+/// `cap://` lists only modules admitted by a seam this host offers.
+/// `cap://fs`, for example, returns the full public surface of `cap/fs`.
+/// The same offered-seam allowlists filter the tool description and this
+/// resolver, so discovery cannot advertise a module the host will reject.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_tool_with([codemode.cap_scheme(mode)])
+/// ```
+///
+pub fn cap_scheme(mode: CodeMode) -> fs.Scheme {
+  let seams = mode.seams
+  fs.Scheme(
+    name: "cap",
+    summary: "`cap://<module>` reads a code-mode module's full public API "
+      <> "(`cap://fs`); `cap://` lists importable modules.",
+    read: fn(_ctx, reference) { read_cap(seams, reference) },
+  )
+}
+
+fn read_cap(
+  seams: Seams,
+  reference: String,
+) -> Result(String, fs.SchemeRefusal) {
+  let readable = readable_surfaces(seams)
+  case string.is_empty(reference) {
+    True -> Ok(cap_index(readable))
+    False -> {
+      let module = "cap/" <> reference
+      readable
+      |> list.key_find(module)
+      |> result.map_error(fn(_missing) {
+        fs.NotFound(what: "prelude module `" <> module <> "`")
+      })
+    }
+  }
+}
+
+// The read side starts from the same offered-seam allowlists as the
+// description. The committed block stays whole; generated MCP façades are
+// keyed by their own heading and offered only on admitted seams.
+fn readable_surfaces(seams: Seams) -> List(#(String, String)) {
+  let offers = offered(seams)
+  let committed =
+    prelude.surfaces
+    |> list.filter(fn(entry) {
+      list.any(offers, fn(offer) {
+        list.contains(offer.allowed_imports, entry.0)
+      })
+    })
+  let generated =
+    offers
+    |> list.flat_map(fn(offer) { offer.extra_surfaces })
+    |> list.filter_map(fn(block) {
+      surface_module(block) |> result.map(fn(name) { #(name, block) })
+    })
+  list.unique(list.append(committed, generated))
+}
+
+fn cap_index(readable: List(#(String, String))) -> String {
+  readable
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.map(fn(entry) {
+    case first_sentence(entry.1) {
+      "" -> entry.0
+      sentence -> entry.0 <> ": " <> sentence
+    }
+  })
+  |> string.join("\n")
+}
+
+fn surface_module(block: String) -> Result(String, Nil) {
+  let first = case string.split_once(block, on: "\n") {
+    Ok(#(line, _rest)) -> line
+    Error(Nil) -> block
+  }
+  case string.starts_with(first, "### ") {
+    True -> Ok(string.trim(string.drop_start(first, 4)))
+    False -> Error(Nil)
+  }
+}
+
+// Generator summaries can wrap across lines. Rejoin the first paragraph
+// before cutting it to one sentence for a stable, compact index entry.
+fn first_sentence(block: String) -> String {
+  let paragraph =
+    block
+    |> string.split("\n")
+    |> list.drop(1)
+    |> list.drop_while(fn(line) { string.trim(line) == "" })
+    |> list.take_while(fn(line) { string.trim(line) != "" })
+    |> string.join(" ")
+  case
+    string.starts_with(paragraph, "pub ")
+    || string.starts_with(paragraph, "///")
+  {
+    True -> ""
+    False ->
+      case string.split_once(paragraph, on: ". ") {
+        Ok(#(sentence, _rest)) -> sentence <> "."
+        Error(Nil) -> paragraph
+      }
+  }
 }
 
 // One seam: the sentence this tool has always rendered.

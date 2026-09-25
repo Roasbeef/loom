@@ -20,6 +20,7 @@
 import argv
 import client/daemon/admin
 import client/daemon/main as daemon
+import client/daemon/peer_cli
 import client/extension/cli
 import gleam/io
 import gleam/list
@@ -47,6 +48,7 @@ pub fn main() -> Nil {
     None ->
       case arguments {
         ["access", ..rest] -> admin.main(rest)
+        ["peer", ..rest] -> peer_cli.main(rest)
         ["ext", ..rest] -> cli.main(rest)
         _other -> daemon.main()
       }
@@ -70,6 +72,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
     True ->
       case list.find(arguments, is_topic) {
         Ok("access") -> Some(admin.usage)
+        Ok("peer") -> Some(peer_cli.usage)
         Ok("ext") -> Some(cli.usage)
         Ok(_other) | Error(Nil) -> Some(usage)
       }
@@ -78,9 +81,9 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "access" | "ext" -> True
+    "access" | "peer" | "ext" -> True
     _ -> False
   }
 }
 
-const usage = "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  ext <command>       Manage extensions.\n\nRun `loomd help <command>` for command usage."
+const usage = "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  ext <command>       Manage extensions.\n\nRun `loomd help <command>` for command usage."

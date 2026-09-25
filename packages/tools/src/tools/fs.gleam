@@ -24,6 +24,17 @@
 //// `.git/hooks/post-checkout` is arbitrary code execution outside the
 //// jail on the next checkout.
 ////
+//// ## Virtual reads
+////
+//// A host may register `Scheme` resolvers on `fs_read`. A path containing
+//// `://` selects a resolver before any filesystem path processing; an
+//// unknown prefix is refused instead of falling back to a file. The
+//// resolver receives the calling `Ctx`, so `job://` retains strand
+//// ownership, while `cap://` can read only modules admitted by the host's
+//// code-mode seams. Virtual text uses the same line window and inline
+//// bound but has no edit anchors or digest. An ordinary file read still
+//// follows the path-access boundary above and retains image support.
+////
 //// ## Replay safety
 ////
 //// All three tools declare `replay: Safe`:
@@ -680,8 +691,69 @@ fn covers_target(
 
 // --- fs_read -------------------------------------------------------------
 
+/// A read-only virtual namespace served by `fs_read`.
+///
+/// Constructor invariants: `name` contains no `://`; `read` receives the
+/// suffix after that separator, including the empty suffix for an index.
+/// The resolver returns text or a typed refusal and never treats a virtual
+/// reference as a filesystem path.
+pub type Scheme {
+  Scheme(
+    /// The prefix before `://`.
+    name: String,
+    /// One sentence added to the `fs_read` description.
+    summary: String,
+    /// Resolve the suffix for the calling strand without filesystem fallback.
+    read: fn(Ctx, String) -> Result(String, SchemeRefusal),
+  )
+}
+
+/// Why a registered virtual namespace could not answer a read.
+pub type SchemeRefusal {
+  /// The named item does not exist in this namespace.
+  NotFound(
+    /// The missing item, named in the resolver's vocabulary.
+    what: String,
+  )
+
+  /// The backing service cannot answer this request.
+  Unavailable(
+    /// Why the backing service cannot answer.
+    reason: String,
+  )
+
+  /// The reference has an invalid shape.
+  Malformed(
+    /// Why the suffix cannot be parsed.
+    reason: String,
+  )
+}
+
 /// The `fs_read` tool: anchored text windows or whole images.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fs.read_tool().name == "fs_read"
+/// ```
+///
 pub fn read_tool() -> tool.Tool {
+  read_tool_with([])
+}
+
+/// Build `fs_read` with host-provided read-only virtual namespaces.
+///
+/// Registration order determines the order of scheme descriptions in the
+/// model-facing tool definition. An empty list preserves the ordinary file
+/// reader's description and behavior.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_tool_with([codemode.cap_scheme(mode), job.scheme(jobs)])
+/// ```
+///
+pub fn read_tool_with(schemes: List(Scheme)) -> tool.Tool {
   tool.Tool(
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
@@ -690,10 +762,12 @@ pub fn read_tool() -> tool.Tool {
       <> "but the start of the file. Anchors are what fs_edit "
       <> "hunks must reference, and the result text carries the file digest "
       <> "fs_edit requires. PNG, JPEG, GIF, and WebP files return images for "
-      <> "visual inspection; offset/limit apply only to text.",
+      <> "visual inspection; offset/limit apply only to text."
+      <> scheme_sentences(schemes),
     prompt_snippet: Some(
       "`fs_read` reads a text file as anchored lines, which is where an "
-      <> "edit's anchors come from, or returns an image for visual inspection.",
+      <> "edit's anchors come from, or returns an image for visual inspection."
+      <> scheme_sentences(schemes),
     ),
     schema: tool.object_schema(
       [
@@ -721,11 +795,17 @@ pub fn read_tool() -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: read_only_requirements,
-    run: run_read,
+    run: fn(ctx, args) { run_read(schemes, ctx, args) },
   )
 }
 
-fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn scheme_sentences(schemes: List(Scheme)) -> String {
+  schemes
+  |> list.map(fn(scheme) { " " <> scheme.summary })
+  |> string.concat
+}
+
+fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use offset <- tool.with_arg(tool.optional_int(args, "offset"))
   use limit <- tool.with_arg(tool.optional_int(args, "limit"))
@@ -735,6 +815,21 @@ fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     when: offset < 1 || limit < 1,
     return: tool.failure("invalid arguments: offset and limit must be >= 1"),
   )
+  case string.split_once(path, on: "://") {
+    Ok(#(name, reference)) ->
+      scheme_outcome(schemes, ctx, name, reference, offset, limit)
+    Error(Nil) -> file_outcome(ctx, path, offset, limit)
+  }
+}
+
+// A virtual reference is resolved before path approval and never falls back
+// to the filesystem. Ordinary paths retain the existing approval boundary.
+fn file_outcome(
+  ctx: Ctx,
+  path: String,
+  offset: Int,
+  limit: Int,
+) -> ToolOutcome {
   use resolved <- tool.or_outcome(
     resolve_invocation(ctx, path, Reading),
     fn(outcome) { outcome },
@@ -753,6 +848,92 @@ fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
       read_outcome(path, content, offset, limit)
     }
   }
+}
+
+fn scheme_outcome(
+  schemes: List(Scheme),
+  ctx: Ctx,
+  name: String,
+  reference: String,
+  offset: Int,
+  limit: Int,
+) -> ToolOutcome {
+  use scheme <- tool.or_outcome(
+    list.find(schemes, fn(scheme) { scheme.name == name }),
+    fn(_missing) { unknown_scheme_outcome(schemes, name) },
+  )
+  use body <- tool.or_outcome(
+    scheme.read(ctx, reference),
+    scheme_refusal_outcome,
+  )
+  scheme_read_outcome(scheme.name, body, offset, limit)
+}
+
+fn unknown_scheme_outcome(schemes: List(Scheme), name: String) -> ToolOutcome {
+  let served = case schemes {
+    [] -> "this host serves only file paths"
+    _ ->
+      "this host serves "
+      <> string.join(
+        list.map(schemes, fn(scheme) { scheme.name <> "://" }),
+        ", ",
+      )
+  }
+  tool.failure("unknown scheme `" <> name <> "://`; " <> served)
+  |> tool.with_details(
+    json.Object([
+      #("error", json.String("unknown_scheme")),
+      #("scheme", json.String(name)),
+    ]),
+  )
+}
+
+fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
+  let #(code, reason) = case refusal {
+    NotFound(what:) -> #("scheme_not_found", "no such " <> what)
+    Unavailable(reason:) -> #("scheme_unavailable", reason)
+    Malformed(reason:) -> #(
+      "scheme_malformed",
+      "malformed reference: " <> reason,
+    )
+  }
+  tool.failure(reason)
+  |> tool.with_details(
+    json.Object([
+      #("error", json.String(code)),
+      #("reason", json.String(reason)),
+    ]),
+  )
+}
+
+// Virtual text uses the same line window and inline byte limit as files, but
+// has no digest or edit anchors because no file edit can target it.
+fn scheme_read_outcome(
+  scheme: String,
+  body: String,
+  offset: Int,
+  limit: Int,
+) -> ToolOutcome {
+  let window = hashline.window(body, offset:, limit:)
+  let text = case window.lines {
+    [] -> empty_window_text(window.total_lines, offset)
+    lines -> string.join(list.map(lines, fn(line) { line.text }), "\n")
+  }
+  let text = text <> continuation(window)
+  use <- bool.guard(
+    when: bit_array.byte_size(<<text:utf8>>) > blob.overflow_threshold_bytes,
+    return: tool.failure("virtual read is too large; use a smaller `limit`"),
+  )
+  tool.success(text)
+  |> tool.with_details(
+    json.Object([
+      #("scheme", json.String(scheme)),
+      #("offset", json.Int(window.offset)),
+      #("limit", json.Int(limit)),
+      #("total_lines", json.Int(window.total_lines)),
+      #("has_more", json.Bool(window.has_more)),
+    ]),
+  )
 }
 
 // File contents determine the media type; a misleading extension must not

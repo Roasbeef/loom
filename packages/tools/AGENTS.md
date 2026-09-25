@@ -251,6 +251,10 @@ was asked.
   each under the prelude's own `///` docs — rendered from `gleam export
   package-interface` over `packages/cap`. Unfiltered by design;
   `tools/codemode` selects from it through a seam's `allowed_imports`.
+- `tools/prelude.type_surfaces` — the same generated modules cut after their
+  public type declarations. `code_mode` renders these smaller blocks in its
+  description; `cap://<module>` returns the matching whole block from
+  `surfaces`.
 - `tools/history.{History, Hit, Scope, Refusal, tool, tool_name,
   clamp_limit, min_limit, max_limit, default_limit, fence}` — the recall
   seam and the `history_search` tool over it. `History.search` takes a
@@ -719,25 +723,14 @@ was asked.
   all. Background launch assigns a separate broker step and releases the
   tool invocation after admission. `Exclusive` does not serialize the
   remaining lifetime of admitted satellites.
-- **The description carries the prelude's signatures, and they are
-  filtered through the allowlist rather than through the package.** A
-  model writing a program has no autocomplete and no language server: it
-  authors blind and learns a signature from a `CompileFailed` round trip
-  carrying a whole hermetic build. So every module a seam admits is
-  rendered into the description in full, statically — nothing is added to
-  the tool array and nothing varies between turns, because tool bytes are
-  the byte prefix of the provider's cached region and a surface that
-  changes per turn does not cost a cache write, it costs the cache
-  (issue #36). The generated prelude provides the shipped module set, so
-  `surface_text` runs each `SeamOffer.allowed_imports` over
-  `prelude.surfaces` and not the other way round. Advertising a module
-  vetting will reject is the same class of lie as classifying a
-  submission by reading its imports. The signatures follow the same
-  per-seam split as the import lists. On the default server, workspace and
-  orchestration share the full effect and child-operation surface, so the
-  common signatures appear once. The `pub type` declarations are needed:
-  a program that cannot name
-  `proc.Output`'s `stdout` field cannot read the output it paid for.
+- **The description indexes types; virtual reads return full declarations.**
+  `tools/codemode.type_surface_text` filters generated `type_surfaces` by
+  each offered seam's `allowed_imports`. `cap_scheme` applies the same
+  filter to whole `prelude.surfaces` blocks and generated MCP façades.
+  `cap/runtime` is on neither allowlist and remains undiscoverable. Public
+  types stay in the description because a program needs fields such as
+  `proc.Output.stdout` to use a returned value. Function signatures and
+  documentation are read on demand through `fs_read` at `cap://<module>`.
 - **A code-mode result never implies a jail that was not applied.** The
   seam hands back an `Enforcement` naming *both* jailed stages — the
   hermetic build and the satellite node — as a record rather than a
@@ -880,3 +873,20 @@ See [protocol 045](../../protocol-change/045-code-mode-notes.md).
 description only when the corresponding imports are offered. Client live tests
 execute those exact strings and compare them with docs/examples. The generated
 prelude advertises report JSON conversion and bounded strand.map.
+
+## Virtual `fs_read` namespaces
+
+`fs.Scheme` registers a read-only namespace by name, description sentence,
+and total resolver. `fs.read_tool_with` routes `://` references before file
+resolution. An unknown namespace returns `unknown_scheme`; a resolver returns
+typed not-found, unavailable, or malformed refusals. A virtual answer is
+windowed by line and bounded inline, without a file digest or edit anchors.
+Ordinary paths still use `resolve_invocation`, and ordinary images still return
+`ToolResultImage` blocks.
+
+`codemode.cap_scheme` projects only offered-seam allowlists into `cap://`.
+The index and full module blocks come from the same generated prelude artifact;
+configured MCP façades are read from their host-generated surfaces. `job.scheme`
+uses the caller's own `Ctx` for `job://` list and zero-wait poll, preserving
+strand ownership. The poll starts at zero cursors and advances no state, so
+the `fs_read` wrapper remains replay-safe.

@@ -14,7 +14,9 @@ import core/json.{type JsonValue}
 import core/msgpack
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
+import gleam/string
 import tools/tool
 
 /// Narrow lookups over the daemon manager, evaluated outside its mailbox.
@@ -80,14 +82,28 @@ pub fn unlink(
   use _ <- result.try(
     source.call(peer_mail.Unlink(from, recipient.session, to)),
   )
-  recipient.call(
-    peer_mail.Revoke(peer_mail.Grant(
-      source.session,
-      from,
-      to,
-      peer_mail.BusyOnly,
-    )),
-  )
+  case
+    recipient.call(
+      peer_mail.Revoke(peer_mail.Grant(
+        source.session,
+        from,
+        to,
+        peer_mail.BusyOnly,
+      )),
+    )
+  {
+    Ok(value) -> Ok(value)
+
+    // The source link is already gone. Preserve that outcome so the operator
+    // can retry revocation without mistaking this for a full refusal.
+    Error(reason) ->
+      Ok(
+        json.Object([
+          #("outgoing_link_removed", json.Bool(True)),
+          #("recipient_grant", json.String("revoke failed: " <> reason)),
+        ]),
+      )
+  }
 }
 
 /// Sends using a stable caller-chosen request identity. Reusing the identity
@@ -173,6 +189,181 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
     }),
   )
   Ok(json.Array(rows))
+}
+
+/// Reads one resident strand's outgoing links and incoming operator grants.
+/// Saved recipients remain visible as unavailable rows; inspection never
+/// resolves them into a running session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.inspect(wiring, "main", None, 59000)
+/// ```
+pub fn inspect(
+  wiring: Wiring,
+  strand: String,
+  after: Option(String),
+  body_budget: Int,
+) -> Result(JsonValue, String) {
+  use _ <- result.try(wiring.own.call(peer_mail.Activity(strand)))
+  use outgoing <- result.try(links(wiring, strand))
+  use incoming <- result.try(wiring.own.call(peer_mail.Grants(strand)))
+  use outgoing <- result.try(
+    list.try_map(outgoing, fn(link) {
+      use session <- result.try(text(link, "session"))
+      use target <- result.try(text(link, "strand"))
+      let metadata = case describe(wiring, session) {
+        Ok(value) -> value
+        Error(reason) -> json.Object([#("unavailable", json.String(reason))])
+      }
+      let wake = case resolve(wiring, session) {
+        Error(_) -> json.Null
+        Ok(endpoint) ->
+          case endpoint.call(peer_mail.Roster(wiring.own.session, strand)) {
+            Error(_) -> json.Null
+            Ok(json.Array(rows)) ->
+              case
+                list.find(rows, fn(row) {
+                  field(row, "strand") == Ok(json.String(target))
+                })
+              {
+                Error(Nil) -> json.Null
+                Ok(row) -> field(row, "wake") |> result.unwrap(json.Null)
+              }
+            Ok(_) -> json.Null
+          }
+      }
+      Ok(InspectRow(
+        inspect_key("o", session, target),
+        OutgoingRow,
+        json.Object([
+          #("session", json.String(session)),
+          #("target_strand", json.String(target)),
+          #("wake", wake),
+          #("metadata", metadata),
+        ]),
+      ))
+    }),
+  )
+  use incoming <- result.try(case incoming {
+    json.Array(rows) ->
+      list.try_map(rows, fn(row) {
+        use source <- result.try(text(row, "source_session"))
+        use source_strand <- result.try(text(row, "source_strand"))
+        let metadata = case describe(wiring, source) {
+          Ok(value) -> value
+          Error(reason) -> json.Object([#("unavailable", json.String(reason))])
+        }
+        case row {
+          json.Object(fields) ->
+            Ok(InspectRow(
+              inspect_key("i", source, source_strand),
+              IncomingRow,
+              json.Object([#("metadata", metadata), ..fields]),
+            ))
+          _ -> Error("invalid incoming peer grant")
+        }
+      })
+    _ -> Error("invalid incoming peer grants")
+  })
+  let rows =
+    list.sort(list.append(outgoing, incoming), fn(a, b) {
+      string.compare(a.key, b.key)
+    })
+  let rows = case after {
+    None -> rows
+    Some(cursor) ->
+      list.filter(rows, fn(row) { string.compare(row.key, cursor) == order.Gt })
+  }
+  page_inspection(wiring, strand, rows, [], [], None, body_budget)
+}
+
+type InspectKind {
+  OutgoingRow
+  IncomingRow
+}
+
+type InspectRow {
+  InspectRow(key: String, kind: InspectKind, value: JsonValue)
+}
+
+fn inspect_key(direction: String, session: String, strand: String) -> String {
+  direction
+  <> ":"
+  <> json.to_string(json.Array([json.String(session), json.String(strand)]))
+}
+
+fn inspection_body(
+  wiring: Wiring,
+  strand: String,
+  outgoing: List(JsonValue),
+  incoming: List(JsonValue),
+  next: Option(String),
+) -> JsonValue {
+  json.Object([
+    #("source_session", json.String(wiring.own.session)),
+    #("source_strand", json.String(strand)),
+    #("metadata", wiring.metadata),
+    #("outgoing", json.Array(list.reverse(outgoing))),
+    #("incoming", json.Array(list.reverse(incoming))),
+    #("next", case next {
+      Some(cursor) -> json.String(cursor)
+      None -> json.Null
+    }),
+  ])
+}
+
+fn page_inspection(
+  wiring: Wiring,
+  strand: String,
+  rows: List(InspectRow),
+  outgoing: List(JsonValue),
+  incoming: List(JsonValue),
+  last: Option(String),
+  budget: Int,
+) -> Result(JsonValue, String) {
+  case rows {
+    [] -> {
+      let body = inspection_body(wiring, strand, outgoing, incoming, None)
+      case string.byte_size(json.to_string(body)) <= budget {
+        True -> Ok(body)
+        False -> Error("metadata_too_large")
+      }
+    }
+    [row, ..rest] -> {
+      let #(outgoing_next, incoming_next) = case row.kind {
+        OutgoingRow -> #([row.value, ..outgoing], incoming)
+        IncomingRow -> #(outgoing, [row.value, ..incoming])
+      }
+      let candidate =
+        inspection_body(
+          wiring,
+          strand,
+          outgoing_next,
+          incoming_next,
+          Some(row.key),
+        )
+      case string.byte_size(json.to_string(candidate)) <= budget {
+        True ->
+          page_inspection(
+            wiring,
+            strand,
+            rest,
+            outgoing_next,
+            incoming_next,
+            Some(row.key),
+            budget,
+          )
+        False ->
+          case last {
+            None -> Error("metadata_too_large")
+            Some(_) ->
+              Ok(inspection_body(wiring, strand, outgoing, incoming, last))
+          }
+      }
+    }
+  }
 }
 
 fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {

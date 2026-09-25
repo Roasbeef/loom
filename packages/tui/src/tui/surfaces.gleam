@@ -33,8 +33,8 @@ import tui/live_jobs
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, ConfirmGoal,
   DaemonSelector, Disconnected, GoalInspector, HoldGoalReport, Model,
-  ModelSelector, NoOverlay, OverlaySubmission, Preview, Replaying, ReportGoal,
-  SessionSelector,
+  ModelSelector, NoOverlay, OverlaySubmission, PeerLinkManager, Preview,
+  Replaying, ReportGoal, SessionSelector,
 } as tui_model
 import tui/outbound
 import tui/protocol
@@ -68,6 +68,7 @@ pub fn notes_surface(model: Model) -> Bool {
     | False, GoalInspector(_)
     | False, SessionSelector(_)
     | False, DaemonSelector(_)
+    | False, PeerLinkManager(_)
     | False, AgentInspector(_)
     | False, ApprovalInspector(_)
     -> False

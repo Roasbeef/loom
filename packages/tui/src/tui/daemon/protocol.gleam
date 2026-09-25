@@ -52,6 +52,15 @@ pub type Hello {
   )
 }
 
+/// Idle delivery policy attached to a directional peer grant.
+pub type PeerWake {
+  /// Delivery is allowed only during an active target run.
+  BusyOnly
+
+  /// Delivery may start an idle target strand.
+  MayWake
+}
+
 /// Requests are explicit; metadata reads never imply an open.
 pub type Command {
   /// Renames the active session without changing its identity or lifetime.
@@ -155,6 +164,42 @@ pub type Command {
 
   /// Requests daemon drain.
   Shutdown
+
+  /// Inspects the directional peer grants for one resident strand.
+  InspectPeers(
+    /// Canonical resident source session selected by the owner.
+    source_session: String,
+    /// Exact source strand whose incoming and outgoing grants are inspected.
+    source_strand: String,
+    /// Opaque continuation returned by the previous bounded inspection page.
+    after: Option(String),
+  )
+
+  /// Creates one exact directional peer grant.
+  LinkPeers(
+    /// Canonical resident source session selected by the owner.
+    source_session: String,
+    /// Exact sending strand.
+    source_strand: String,
+    /// Canonical resident recipient session.
+    target_session: String,
+    /// Exact recipient strand.
+    target_strand: String,
+    /// Recipient's independent idle-wake permission.
+    wake: PeerWake,
+  )
+
+  /// Removes one exact directional peer grant.
+  UnlinkPeers(
+    /// Canonical resident source session selected by the owner.
+    source_session: String,
+    /// Exact sending strand.
+    source_strand: String,
+    /// Canonical recipient session, which may be unavailable.
+    target_session: String,
+    /// Exact recipient strand.
+    target_strand: String,
+  )
 }
 
 /// Lifecycle observations are transient; only Saved means no resident runtime.
@@ -287,6 +332,18 @@ pub type Reply {
 
   /// The daemon accepted its drain request.
   ShutdownReply
+
+  /// One owner-authorized inspection document for an exact resident strand.
+  PeersInspectionReply(
+    /// Bounded JSON returned by the daemon's resident-only peer directory.
+    document: json.JsonValue,
+  )
+
+  /// One peer-link mutation acknowledgement, including partial revocation.
+  PeersMutationReply(
+    /// Bounded JSON retaining the server's per-direction result.
+    document: json.JsonValue,
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -341,6 +398,9 @@ pub fn name(command: Command) -> String {
     StopSession(..) -> "sessions.stop"
     DeleteSession(..) -> "sessions.delete"
     GetOperation(..) -> "operations.get"
+    InspectPeers(..) -> "peers.inspect"
+    LinkPeers(..) -> "peers.link"
+    UnlinkPeers(..) -> "peers.unlink"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -359,7 +419,8 @@ pub fn mutates(command: Command) -> Bool {
     | ListArchivedSessions(..)
     | GetSession(..)
     | WorkspaceDefault(..)
-    | GetOperation(..) -> False
+    | GetOperation(..)
+    | InspectPeers(..) -> False
     SetDefault(..)
     | RenameSession(..)
     | CreateSession(..)
@@ -368,6 +429,8 @@ pub fn mutates(command: Command) -> Bool {
     | DeleteSession(..)
     | ArchiveSession(..)
     | RestoreSession(..)
+    | LinkPeers(..)
+    | UnlinkPeers(..)
     | Shutdown -> True
   }
 }
@@ -468,6 +531,92 @@ fn command_fields(command: Command, epoch: Epoch) {
       [#("epoch", json.String(epoch_value)), ..list.append(fields, other)]
     }
     Shutdown -> Ok([#("epoch", json.String(epoch_value))])
+    InspectPeers(source, strand, after) -> {
+      use fields <- result.try(peer_session_field(source, "source_session"))
+      use other <- result.try(peer_strand_field(strand, "source_strand"))
+      use cursor <- result.try(optional_text_field(after, "after", 4096))
+      Ok([
+        #("epoch", json.String(epoch_value)),
+        ..list.append(fields, list.append(other, cursor))
+      ])
+    }
+    LinkPeers(source, from, target, to, wake) -> {
+      use source_fields <- result.try(peer_session_field(
+        source,
+        "source_session",
+      ))
+      use from_field <- result.try(peer_strand_field(from, "source_strand"))
+      use target_fields <- result.try(peer_session_field(
+        target,
+        "target_session",
+      ))
+      use to_field <- result.try(peer_strand_field(to, "target_strand"))
+      let wake = case wake {
+        BusyOnly -> "busy_only"
+        MayWake -> "may_wake"
+      }
+      Ok([
+        #("epoch", json.String(epoch_value)),
+        ..list.append(
+          source_fields,
+          list.append(
+            from_field,
+            list.append(
+              target_fields,
+              list.append(to_field, [#("wake", json.String(wake))]),
+            ),
+          ),
+        )
+      ])
+    }
+    UnlinkPeers(source, from, target, to) -> {
+      use source_fields <- result.try(peer_session_field(
+        source,
+        "source_session",
+      ))
+      use from_field <- result.try(peer_strand_field(from, "source_strand"))
+      use target_fields <- result.try(peer_session_field(
+        target,
+        "target_session",
+      ))
+      use to_field <- result.try(peer_strand_field(to, "target_strand"))
+      Ok([
+        #("epoch", json.String(epoch_value)),
+        ..list.append(
+          source_fields,
+          list.append(from_field, list.append(target_fields, to_field)),
+        )
+      ])
+    }
+  }
+}
+
+fn peer_session_field(id: String, key: String) {
+  use Nil <- result.try(valid_id(id))
+  Ok([#(key, json.String(id))])
+}
+
+fn peer_strand_field(strand: String, key: String) {
+  use Nil <- result.try(
+    case string.byte_size(strand) > 0 && string.byte_size(strand) <= 128 {
+      True -> Ok(Nil)
+      False -> Error("invalid peer strand")
+    },
+  )
+  Ok([#(key, json.String(strand))])
+}
+
+fn optional_text_field(value: Option(String), key: String, limit: Int) {
+  case value {
+    None -> Ok([])
+    Some(text) ->
+      case string.byte_size(text) > 0 {
+        True -> {
+          use text <- result.try(bounded_text(json.String(text), limit))
+          Ok([#(key, json.String(text))])
+        }
+        False -> Error("invalid empty cursor")
+      }
   }
 }
 
@@ -562,6 +711,8 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.open" | "sessions.stop" ->
       result.map(lifecycle(body), LifecycleReply)
     "sessions.delete" -> result.map(deletion(body), DeletedReply)
+    "peers.inspect" -> Ok(PeersInspectionReply(body))
+    "peers.link" | "peers.unlink" -> Ok(PeersMutationReply(body))
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)

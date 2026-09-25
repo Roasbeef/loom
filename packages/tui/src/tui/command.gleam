@@ -46,6 +46,9 @@ pub type Command {
   /// Inspect the session's agents and sub-agents.
   Agents
 
+  /// Inspect and administer owner-granted peer links.
+  PeerLinks
+
   /// Choose another locally managed session.
   Sessions
 
@@ -334,6 +337,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/help", "show the command reference", False),
     Suggestion("/model", "choose a model", False),
     Suggestion("/agents", "inspect agents and sub-agents", False),
+    Suggestion("/peers", "manage directional agent links", False),
     Suggestion("/sessions", "switch local sessions", False),
     Suggestion("/rename", "rename the current session", True),
     Suggestion("/notes", "browse agent notes", False),
@@ -407,6 +411,7 @@ pub fn parse(input: String) -> Command {
     "/schedules" -> Schedules
     "/unschedule" -> MissingArgument("unschedule")
     "/agents" -> Agents
+    "/peers" -> PeerLinks
     "/sessions" -> Sessions
     "/rename" -> MissingArgument("rename")
     "/rename " <> rest -> required_argument("rename", rest, Rename)
@@ -646,6 +651,7 @@ pub fn help_text() -> String {
   <> "/model            open the model selector\n"
   <> "/model <name>     switch the active strand model\n"
   <> "/agents           inspect agents and sub-agents\n"
+  <> "/peers            manage directional agent links\n"
   <> "/sessions         switch locally managed sessions\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"

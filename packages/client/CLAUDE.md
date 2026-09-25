@@ -112,6 +112,14 @@ catalogue without opening runtimes. Explicit admission invokes
   starts a daemon or opens a conversation. The caller's bounded principal ID
   is printed before sending; only explicit successful invitation/rotation
   output contains a bearer. A timeout does not trigger a retry.
+- `client/daemon/peer_cli.Command` provides `loomd peer inspect`, `link`,
+  `unlink`, and `send` over that same private owner control transport. It
+  requires explicit source and target coordinates, wake policy for links, and
+  a stable caller-chosen message ID for sends. It emits JSON with the exact
+  coordinates and distinguishes refusal, unknown outcome, and partial
+  recipient revocation by exit status. Local discovery errors are classified
+  as not sent, and inspect follows bounded pages before returning one result.
+  It never starts a daemon.
 - `client/daemon/manager.Administration` carries digest-only invitation,
   membership, and principal-scoped credential changes. `administer` checks
   phase, current owner credential, and epoch in the same serialized dispatch
@@ -142,7 +150,7 @@ catalogue without opening runtimes. Explicit admission invokes
   The `--help` and `-h` flags anywhere in argv — after daemon flags as
   readily as first — and the bare word `help` in first position are
   dispatched in `client.gleam` before daemon startup,
-  with the first `access` or `ext` word choosing the topic. `help` in any
+  with the first `access`, `peer`, or `ext` word choosing the topic. `help` in any
   other position stays a value: principal and display names are free-form.
   Help prints
   usage to stdout and never creates state or binds a listener.
@@ -1897,7 +1905,8 @@ catalogue without opening runtimes. Explicit admission invokes
   name. `code_mode` is `BuiltIn` and gated on its plane, exactly as
   `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
-  Option(History), Option(Memory), Option(Schedules), Option(Context))`
+  Option(History), Option(Memory), Option(Schedules), Option(Context),
+  Option(Jobs))`
   — the host's own single contribution: five core tools, plus the six
   `agent_*` tools only when a messaging plane exists, plus `code_mode`
   only when this host wired a code-mode pipeline, plus `history_search`
@@ -1907,7 +1916,9 @@ catalogue without opening runtimes. Explicit admission invokes
   `context_remaining` over `client/checkpoint.remaining_seam` — the one
   seam every served session has, so its `Option` is for a registry built
   with no session behind it. A plane that is absent contributes nothing
-  at all.
+  at all. When code mode or jobs is available, the built-in `fs_read` also
+  receives `codemode.cap_scheme` or `job.scheme`, respectively. The schemes
+  reuse those planes and add no separate registry entry.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -4105,15 +4116,22 @@ and the cap router. `daemon/main.peer_directory` resolves only residents and
 reads saved metadata without opening stores. `Assembly.build` receives the
 small manager handle; resident values carry an address-only peer endpoint.
 The owner/epoch-checked `peers.link` and `peers.unlink` controls are the only
-grant mutation surface. Owner-only `peers.send` reuses the normal sender and
+grant mutation surface. Owner-only `peers.inspect` reads one resident strand's
+outgoing links and recipient-owned incoming grants. The `Grants` Agency command
+returns incoming wake policy, while outgoing rows combine catalogue metadata
+and the exact target strand's wake policy. Inspection sorts both directions
+under one opaque cursor and keeps every serialized reply below 60,000 bytes;
+pages are fresh observations. Unavailable recipients remain visible without
+opening saved stores. Owner-only `peers.send` reuses the normal sender and
 recipient handlers after checking the daemon epoch. It selects a resident source
 strand but cannot bypass links or supply provenance metadata. Communication
 grants confer no lineage or custody.
 `peer_mail.Link` enforces 64 outgoing links per source strand before writing the
 source index. Replacing an exact link at the limit remains idempotent.
 
-See [async collaboration](../../docs/async-collaboration.md) for bounds,
-recovery semantics and the deferred terminal presentation.
+See [async collaboration](../../docs/async-collaboration.md) for bounds and
+recovery semantics, and [Protocol 049](../../protocol-change/049-peer-inspection.md)
+for the read-only owner inspection extension.
 
 Input readiness is separate from the execution phase. `Ready` publishes an
 immutable endpoint set and idle interval; `SendTo` journals a named value only

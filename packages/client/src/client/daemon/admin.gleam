@@ -147,9 +147,40 @@ fn valid_principal(id) {
   }
 }
 
+/// Builds a peer control request while sharing this client's private endpoint
+/// discovery and authenticated WebSocket exchange.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin.peer_request("", "peers.inspect", fields)
+/// ```
+@internal
+pub fn peer_request(
+  directory: String,
+  command: String,
+  fields: List(#(String, JsonValue)),
+) -> Result(Request, String) {
+  use source <- result.try(
+    list.key_find(fields, "source_session")
+    |> result.replace_error("missing source session"),
+  )
+  use source <- result.try(case source {
+    json.String(source) -> Ok(source)
+    _ -> Error("invalid source session")
+  })
+  let request = Request(directory, command, source, fields)
+  use _ <- result.try(
+    protocol.decode(envelope(request, "validation-only"))
+    |> result.replace_error("invalid or oversized peer request"),
+  )
+  Ok(request)
+}
+
 fn envelope(request: Request, epoch) {
   let identity = case request.command {
     "sessions.isolate" -> []
+    "peers.inspect" | "peers.link" | "peers.unlink" | "peers.send" -> []
     _member_command -> [#("principal_id", json.String(request.principal))]
   }
   json.to_string(
@@ -167,8 +198,31 @@ fn envelope(request: Request, epoch) {
   )
 }
 
-fn execute(request: Request) {
-  use directory <- result.try(case request.directory {
+@internal
+pub fn execute(request: Request) {
+  use #(address, token, epoch) <- result.try(discover(request.directory))
+  exchange(address, token, epoch, request)
+}
+
+/// Discovers the private owner control endpoint before any peer request is sent.
+/// Local discovery failures are explicitly marked, so the CLI does not report
+/// them as daemon refusals.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // admin.peer_discover("/private/loom")
+/// ```
+@internal
+pub fn peer_discover(
+  directory: String,
+) -> Result(#(String, String, String), String) {
+  discover(directory)
+  |> result.map_error(fn(reason) { "request not sent: " <> reason })
+}
+
+fn discover(directory) {
+  use directory <- result.try(case directory {
     "" ->
       bootstrap.getenv("HOME")
       |> result.map(fn(home) { home <> "/.loom" })
@@ -191,7 +245,7 @@ fn execute(request: Request) {
     |> result.replace_error("invalid private credential"),
   )
   use Nil <- result.try(hex_credential(token))
-  exchange(address, token, epoch, request)
+  Ok(#(address, token, epoch))
 }
 
 fn ready_record(record) {
@@ -251,10 +305,27 @@ fn transact(socket, inbox, epoch, request: Request) {
     ),
   )
   case list.key_find(fields, "event") {
-    Ok(json.String("error")) -> Error(refusal_code(body))
-    Ok(json.String(event)) if event == request.command ->
-      success(body, request)
-      |> result.replace_error("invalid successful reply; outcome unknown")
+    Ok(json.String("error")) -> {
+      use body <- result.try(
+        object_fields(body)
+        |> result.replace_error("invalid refusal reply; outcome unknown"),
+      )
+      Error(refusal_code(body))
+    }
+    Ok(json.String(event)) if event == request.command -> {
+      case request.command {
+        "peers.inspect" | "peers.link" | "peers.unlink" | "peers.send" ->
+          Ok(body)
+        _ -> {
+          use body <- result.try(
+            object_fields(body)
+            |> result.replace_error("invalid successful reply; outcome unknown"),
+          )
+          success(body, request)
+          |> result.replace_error("invalid successful reply; outcome unknown")
+        }
+      }
+    }
     Ok(_) | Error(Nil) ->
       Error("unexpected administration reply; outcome unknown")
   }
@@ -273,7 +344,10 @@ fn receive_reply(inbox) {
   use reply <- result.try(next_frame(inbox))
   use fields <- result.try(event_fields(reply))
   use Nil <- result.try(equal_field(fields, "reply_to", json.Int(1)))
-  use body <- result.try(body_fields(fields))
+  use body <- result.try(
+    list.key_find(fields, "body")
+    |> result.replace_error("missing response body"),
+  )
   Ok(#(fields, body))
 }
 
@@ -407,6 +481,7 @@ fn refusal_code(fields) {
     Ok(json.String("bad_request")) -> "bad_request"
     Ok(json.String("isolation_required")) ->
       "isolation_required: stop the session and explicitly isolate its existing transcript before sharing"
+    Ok(json.String(code)) -> code
     Ok(_) | Error(Nil) -> "administration refused"
   }
 }

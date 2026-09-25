@@ -164,6 +164,16 @@ directional, and permission to wake an idle target is granted separately.
 Messaging does not grant access to the peer's files or permission to join or
 cancel its work. Saved sessions are not opened by a message.
 
+In the terminal, `/sessions` lists resident targets. Select one and press `l`
+to link it from the attached strand; Enter still opens the selected session.
+The review shows both endpoints and the wake permission before creating the
+link. `/peers` inspects and revokes grants, while `/agents` plus `p` starts from
+a selected source strand.
+
+![Loom reviewing a directional peer link between two resident sessions](docs/images/peer-links-confirm.png)
+
+*The owner reviews an exact source and target strand before granting the link.*
+
 The [API guide](docs/async-collaboration.md) shows launch, typed endpoints,
 workflow steps, and peer-link commands. The
 [architecture guide](docs/architecture/async-collaboration.md) explains durable
@@ -204,6 +214,14 @@ artifact reporting, and child-agent coordination. The default server offers
 these modules in both program modes, so one program can inspect files and
 coordinate subagents. Configured MCP servers become generated modules in both
 modes. An explicit workspace-only host keeps an effect-only policy.
+
+`fs_read` also accepts `cap://` to list the installed capability modules and
+`cap://<module>` to read their full Gleam declarations when an agent needs a
+signature or example. `job://` lists the caller's background jobs, and
+`job://<id>` polls one without consuming its result. These are capability
+views, not filesystem mounts; ordinary file and image reads keep their existing
+behavior. The [code-mode architecture](docs/architecture/code-mode.md)
+describes the routing and ownership rules.
 
 With `code_mode` in `launch` mode, a program can keep typed actors alive after
 the tool call returns. Programs register named typed input endpoints and

@@ -36,7 +36,7 @@
 /// ```
 ///
 pub const source = "%% loom-prompt-pack 1
-%% version loom-default-8
+%% version loom-default-9
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -82,16 +82,15 @@ room before compaction; it does not initiate compaction or reserve a final
 note-writing turn.
 
 Default code-mode modes combine workspace effects and child work; omitting
-seam selects workspace. Check this host's imports and signatures. cap/strand
+seam selects workspace. Use fs_read: cap:// lists modules;
+cap://<module> gives signatures. job:// polls without waiting. cap/strand
 manages children; cap/peer needs a directional grant. cap/execution carries
 background input and progress; workflow.step needs background launch. Use
 cap/notes for durable analysis when offered; cap/kv is evictable. Inspect
 strand.map partial outcomes before retrying.
 
 %% section tool_discipline
-Your tools and their schemas are given to you separately and are
-authoritative. They are not repeated here; the rest of this section is
-the policy around them.
+Tool schemas are authoritative. The rules below govern their use.
 
 File edits are anchored to a hash of the lines they replace. A file that
 changed under you rejects the patch instead of corrupting it, so an

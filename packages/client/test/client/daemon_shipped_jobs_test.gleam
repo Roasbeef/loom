@@ -704,7 +704,7 @@ fn drive_programs(
   assert simplifile.write(config, configuration(url)) == Ok(Nil)
   let session = attach(connected, "jobs-programs", workspace, config)
   prompt(session.driver, "start the watcher")
-  let started = settled(session.driver, ["started"])
+  let started = settled_within(session.driver, ["started"], 60_000)
   let assert Ok(#(_before, id)) =
     string.split_once(program_value(started), on: "started ")
     as "the first program reports the job it admitted"
@@ -716,7 +716,7 @@ fn drive_programs(
   // this fixture.
   let witness = await_payload(identity, workspace)
   prompt(session.driver, "read it from another program")
-  let read = settled(session.driver, ["read", "started"])
+  let read = settled_within(session.driver, ["read", "started"], 60_000)
 
   // The satellite that started the job has returned and been reaped, and
   // what it left behind is the strand's to find under its own id and
@@ -1292,6 +1292,16 @@ fn settled(
   driver: actor.Started(process.Subject(tui_driver.Message)),
   answers: List(String),
 ) -> tui_driver.Sample {
+  settled_within(driver, answers, 30_000)
+}
+
+// Code-mode builds may outlast an ordinary terminal turn, so their test
+// waits for the same completed state with a deadline suited to the build.
+fn settled_within(
+  driver: actor.Started(process.Subject(tui_driver.Message)),
+  answers: List(String),
+  within: Int,
+) -> tui_driver.Sample {
   tui_v2_test.await_within(
     driver.data,
     fn(sample) {
@@ -1302,7 +1312,7 @@ fn settled(
         strand.id == "main" && strand.live_phase == None
       })
     },
-    30_000,
+    within,
   )
 }
 

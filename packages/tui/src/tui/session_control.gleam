@@ -1,5 +1,6 @@
 //// Daemon control: opening, creating, renaming, archiving and deleting
-//// catalogue sessions, and reattaching after a lost connection.
+//// catalogue sessions, inspecting and mutating exact peer links, and
+//// reattaching after a lost connection.
 ////
 //// These requests go to the daemon's control socket rather than a session
 //// channel, and each runs in a background worker so the terminal never
@@ -10,12 +11,14 @@
 //// drains each. `accept_control_event` and `accept_reconnect_event` are
 //// the entry points a test drives directly.
 
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
+import tui/agents
 import tui/attachment
 import tui/attempt
 import tui/bootstrap
@@ -26,10 +29,12 @@ import tui/inbound
 import tui/model.{
   type ControlEvent, type Model, AgentInspector, ApprovalInspector,
   ControlRequest, DaemonSelector, GoalInspector, Model, ModelSelector, NoOverlay,
-  PageLoaded, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  SessionArchived, SessionDeleted, SessionRenamed, SessionRestored,
-  SessionSelector,
+  PageLoaded, PeerInspectionLoaded, PeerLinkManager, PeerOperationCompleted,
+  PeerSessionsLoaded, PeerWorkspaceLoaded, ReconnectAttempting, ReconnectIdle,
+  ReconnectSpent, SessionArchived, SessionDeleted, SessionRenamed,
+  SessionRestored, SessionSelector,
 } as tui_model
+import tui/peer_links
 import tui/recording
 import tui/session_selector
 import tui/workspace
@@ -203,6 +208,8 @@ pub fn load_catalogue_collection(
               | control_protocol.SessionReply(_)
               | control_protocol.LifecycleReply(_)
               | control_protocol.DeletedReply(_)
+              | control_protocol.PeersInspectionReply(_)
+              | control_protocol.PeersMutationReply(_)
               | control_protocol.ShutdownReply ->
                 Error("catalogue returned an unexpected control reply")
             })
@@ -450,7 +457,8 @@ fn finish_control(model: Model, result) {
           | AgentInspector(_)
           | GoalInspector(_)
           | ApprovalInspector(_)
-          | SessionSelector(_) -> model.overlay
+          | SessionSelector(_)
+          | PeerLinkManager(_) -> model.overlay
         },
         notice: "renamed session to " <> row.name,
       )
@@ -459,13 +467,20 @@ fn finish_control(model: Model, result) {
     // The row is dropped from the page already on screen rather than by
     // re-listing: the reply proves this identity is gone, and a fresh page
     // would move every other row under the operator's cursor.
+    Some(Ok(PeerWorkspaceLoaded(page, document))) ->
+      finish_peer_workspace(model, page, document)
+    Some(Ok(PeerSessionsLoaded(page))) -> finish_peer_sessions(model, page)
+    Some(Ok(PeerInspectionLoaded(document, after))) ->
+      finish_peer_inspection(model, document, after)
+    Some(Ok(PeerOperationCompleted(document))) ->
+      finish_peer_operation(model, document)
     Some(Ok(SessionDeleted(id))) ->
       catalogue_removed(model, id, "deleted session ")
     Some(Ok(SessionArchived(id))) ->
       catalogue_removed(model, id, "archived session ")
     Some(Ok(SessionRestored(id))) ->
       catalogue_removed(model, id, "restored session ")
-    Some(Error(reason)) -> tui_model.append_error(model, reason)
+    Some(Error(reason)) -> finish_control_failure(model, reason)
     None ->
       tui_model.append_error(model, "control job ended without an outcome")
   }
@@ -484,7 +499,8 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       | AgentInspector(_)
       | GoalInspector(_)
       | ApprovalInspector(_)
-      | SessionSelector(_) -> model.overlay
+      | SessionSelector(_)
+      | PeerLinkManager(_) -> model.overlay
     },
     notice: description <> id,
   )
@@ -577,5 +593,445 @@ pub fn flag_value(
         True -> Ok(value)
         False -> flag_value([value, ..rest], flag)
       }
+  }
+}
+
+/// Applies one peer-manager key without changing the attached conversation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.update_peer_link_manager(key, model, state)
+/// ```
+pub fn update_peer_link_manager(key, model, state) {
+  case peer_links.update(key, state) {
+    peer_links.Continue(next) ->
+      Model(..model, overlay: PeerLinkManager(next))
+      |> tui_model.invalidate_frame
+    peer_links.Close ->
+      Model(
+        ..model,
+        overlay: case state.return_to {
+          peer_links.Conversation -> NoOverlay
+          peer_links.Agents(inspector) -> AgentInspector(inspector)
+          peer_links.Sessions(selector) -> DaemonSelector(selector)
+        },
+        notice: "peer links closed; composer draft retained",
+      )
+      |> tui_model.invalidate_frame
+    peer_links.Inspect(session, strand) ->
+      begin_peer_inspection(model, session, strand, None)
+    peer_links.NextPage(cursor) ->
+      begin_peer_inspection(
+        model,
+        state.source_session,
+        state.source_strand,
+        Some(cursor),
+      )
+    peer_links.NextSessions(cursor, revision) ->
+      begin_peer_sessions(model, cursor, revision)
+    peer_links.Link(proposal) -> begin_peer_link(model, proposal)
+    peer_links.Unlink(grant) -> begin_peer_unlink(model, grant)
+  }
+}
+
+/// Opens peer management for the attached strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.begin_peer_workspace(model)
+/// ```
+pub fn begin_peer_workspace(model: Model) {
+  begin_peer_workspace_state(
+    model,
+    peer_links.new(model.session, model.active_strand),
+  )
+}
+
+/// Opens peer management from an agent inspection, retaining its selection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.begin_peer_workspace_for(model, inspector)
+/// ```
+pub fn begin_peer_workspace_for(model: Model, inspector: agents.Inspector) {
+  begin_peer_workspace_state(
+    model,
+    peer_links.from_agent(model.session, inspector),
+  )
+}
+
+/// Opens the selected target session in the peer manager without attaching it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.begin_peer_workspace_for_session(model, selector, row)
+/// ```
+pub fn begin_peer_workspace_for_session(
+  model: Model,
+  selector: session_selector.State,
+  target: control_protocol.Session,
+) {
+  begin_peer_workspace_state(
+    model,
+    peer_links.from_session(
+      model.session,
+      model.active_strand,
+      selector,
+      target,
+    ),
+  )
+}
+
+fn begin_peer_workspace_state(model: Model, state: peer_links.State) {
+  case model.session, model.daemon_host, model.control_request {
+    "", _, _ ->
+      tui_model.append_error(model, "peer links require an attached session")
+    _, _, Some(_) ->
+      tui_model.append_error(model, "another daemon control request is running")
+    _session, Some(host), None -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use sessions_reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.ListSessions("", None),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            use page <- result.try(case sessions_reply {
+              control_protocol.SessionsReply(page) -> Ok(page)
+              _ -> Error("peer catalogue returned an unexpected reply")
+            })
+            use inspection_reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.InspectPeers(
+                  state.source_session,
+                  state.source_strand,
+                  None,
+                ),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            use document <- result.try(case inspection_reply {
+              control_protocol.PeersInspectionReply(document) -> Ok(document)
+              _ -> Error("peer inspection returned an unexpected reply")
+            })
+            Ok(PeerWorkspaceLoaded(page, document))
+          },
+        ])
+        |> weft.deadline(15_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        overlay: PeerLinkManager(state),
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: "loading owner-authorized peer grants",
+      )
+      |> tui_model.invalidate_frame
+    }
+    _, None, None ->
+      tui_model.append_error(model, "daemon owner control is unavailable")
+  }
+}
+
+fn begin_peer_inspection(
+  model: Model,
+  session: String,
+  strand: String,
+  after: Option(String),
+) {
+  case model.control_request, model.daemon_host {
+    Some(_), _ ->
+      tui_model.append_error(model, "another daemon control request is running")
+    None, None ->
+      tui_model.append_error(model, "daemon owner control is unavailable")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.InspectPeers(session, strand, after),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            case reply {
+              control_protocol.PeersInspectionReply(document) ->
+                Ok(PeerInspectionLoaded(document, after))
+              _ -> Error("peer inspection returned an unexpected reply")
+            }
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: case after {
+          None -> "refreshing peer grants"
+          Some(_) -> "loading next peer page"
+        },
+      )
+    }
+  }
+}
+
+// The chooser reads only metadata under the first page's catalogue revision.
+fn begin_peer_sessions(model: Model, after: String, revision: Int) {
+  case model.control_request, model.daemon_host {
+    Some(_), _ ->
+      tui_model.append_error(model, "another daemon control request is running")
+    None, None ->
+      tui_model.append_error(model, "daemon owner control is unavailable")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.ListSessions(after, Some(revision)),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            case reply {
+              control_protocol.SessionsReply(page) ->
+                Ok(PeerSessionsLoaded(page))
+              _ -> Error("peer catalogue returned an unexpected reply")
+            }
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: "loading more target sessions",
+      )
+    }
+  }
+}
+
+fn begin_peer_link(model: Model, proposal: peer_links.Proposal) {
+  run_peer_mutation(
+    model,
+    control_protocol.LinkPeers(
+      proposal.source_session,
+      proposal.source_strand,
+      proposal.target_session,
+      proposal.target_strand,
+      proposal.wake,
+    ),
+  )
+}
+
+fn begin_peer_unlink(model: Model, grant: peer_links.Grant) {
+  run_peer_mutation(
+    model,
+    control_protocol.UnlinkPeers(
+      grant.source_session,
+      grant.source_strand,
+      grant.target_session,
+      grant.target_strand,
+    ),
+  )
+}
+
+fn run_peer_mutation(model: Model, command: control_protocol.Command) {
+  case model.control_request, model.daemon_host {
+    Some(_), _ ->
+      tui_model.append_error(model, "another daemon control request is running")
+    None, None ->
+      tui_model.append_error(model, "daemon owner control is unavailable")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use reply <- result.try(
+              daemon.request(daemon_selection.control(host), command, 5000)
+              |> result.map_error(daemon_selection.failure),
+            )
+            case reply {
+              control_protocol.PeersMutationReply(document) ->
+                Ok(PeerOperationCompleted(document))
+              _ -> Error("peer mutation returned an unexpected reply")
+            }
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: "sending one directional peer operation",
+      )
+    }
+  }
+}
+
+fn finish_peer_workspace(
+  model: Model,
+  page: control_protocol.Page,
+  document: json.JsonValue,
+) {
+  case model.overlay {
+    PeerLinkManager(state) ->
+      case
+        peer_links.decode_inspection_page(
+          document,
+          state.source_session,
+          state.source_strand,
+        )
+      {
+        Ok(inspection) ->
+          Model(
+            ..model,
+            overlay: PeerLinkManager(peer_links.loaded(
+              peer_links.catalogue(state, page),
+              page.sessions,
+              inspection.inspection,
+              inspection.next,
+            )),
+          )
+          |> tui_model.invalidate_frame
+        Error(reason) ->
+          Model(
+            ..model,
+            overlay: PeerLinkManager(peer_links.failed(state, reason)),
+          )
+          |> tui_model.invalidate_frame
+      }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> model
+  }
+}
+
+fn finish_peer_sessions(model: Model, page: control_protocol.Page) {
+  case model.overlay {
+    PeerLinkManager(state) ->
+      Model(
+        ..model,
+        overlay: PeerLinkManager(case state.session_revision {
+          Some(revision) if revision == page.revision ->
+            peer_links.append_sessions(state, page)
+          _ -> peer_links.failed(state, "target session catalogue changed")
+        }),
+      )
+      |> tui_model.invalidate_frame
+    _ -> model
+  }
+}
+
+fn finish_peer_inspection(
+  model: Model,
+  document: json.JsonValue,
+  after: Option(String),
+) {
+  case model.overlay {
+    PeerLinkManager(state) ->
+      case
+        peer_links.decode_inspection_page(
+          document,
+          state.source_session,
+          state.source_strand,
+        )
+      {
+        Ok(page) ->
+          Model(
+            ..model,
+            overlay: PeerLinkManager(case after {
+              None ->
+                peer_links.loaded(
+                  state,
+                  state.sessions,
+                  page.inspection,
+                  page.next,
+                )
+              Some(_) -> peer_links.append_page(state, page)
+            }),
+          )
+          |> tui_model.invalidate_frame
+        Error(reason) ->
+          Model(
+            ..model,
+            overlay: PeerLinkManager(peer_links.failed(state, reason)),
+          )
+          |> tui_model.invalidate_frame
+      }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> model
+  }
+}
+
+fn finish_peer_operation(model: Model, document: json.JsonValue) {
+  case model.overlay {
+    PeerLinkManager(state) -> {
+      let notice = peer_links.completed(state, document)
+      begin_peer_inspection(
+        Model(..model, overlay: PeerLinkManager(notice)),
+        state.source_session,
+        state.source_strand,
+        None,
+      )
+    }
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> model
+  }
+}
+
+fn finish_control_failure(model: Model, reason: String) {
+  case model.overlay {
+    PeerLinkManager(state) ->
+      Model(..model, overlay: PeerLinkManager(peer_links.failed(state, reason)))
+      |> tui_model.invalidate_frame
+    NoOverlay
+    | ModelSelector(_)
+    | AgentInspector(_)
+    | GoalInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> tui_model.append_error(model, reason)
   }
 }

@@ -18,6 +18,7 @@ import gleam/string
 import support/fake_broker
 import support/memory_fs
 import tools/bash
+import tools/fs
 import tools/job
 import tools/tool
 
@@ -166,6 +167,39 @@ fn first_text(outcome: tool.ToolOutcome) -> String {
     outcome.content
     as "expected a single text block"
   text
+}
+
+pub fn job_virtual_read_lists_and_polls_without_advancing_a_cursor_test() {
+  let asked = recorder()
+  let scheme = job.scheme(answering(asked, job.Running))
+  let assert Ok(listed) = scheme.read(ctx(), "")
+  assert string.contains(listed, job_id)
+  let assert Ok(polled) = scheme.read(ctx(), job_id)
+  assert string.contains(polled, "building")
+  assert drain(asked)
+    == [ListAsked, PollAsked(job_id, 0, job.Cursors(stdout: 0, stderr: 0))]
+}
+
+pub fn job_virtual_read_preserves_owner_refusal_test() {
+  let visible = answering(recorder(), job.Running)
+  let owned =
+    job.Jobs(..visible, poll: fn(caller: tool.Ctx, id, wait_ms, cursors) {
+      case caller.strand {
+        "main" -> visible.poll(caller, id, wait_ms, cursors)
+        _ -> Error(job.NotFound(id:))
+      }
+    })
+  let scheme = job.scheme(owned)
+  let assert Ok(_output) = scheme.read(ctx(), job_id)
+  let foreign = tool.Ctx(..ctx(), strand: "other")
+  assert scheme.read(foreign, job_id)
+    == Error(fs.NotFound(what: "background job `" <> job_id <> "`"))
+}
+
+pub fn job_virtual_read_reports_an_absent_jobs_plane_test() {
+  let scheme = job.scheme(job.unavailable())
+  let assert Error(fs.Unavailable(reason:)) = scheme.read(ctx(), "")
+  assert string.contains(reason, "this session runs no background jobs")
 }
 
 fn detail(outcome: tool.ToolOutcome, key: String) -> json.JsonValue {

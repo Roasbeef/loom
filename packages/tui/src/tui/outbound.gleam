@@ -93,6 +93,7 @@ pub fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Strands
     | command.Schedules
     | command.Agents
+    | command.PeerLinks
     | command.Sessions
     | command.Rename(_)
     | command.Approvals(_)

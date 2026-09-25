@@ -6,6 +6,7 @@ import broker/token
 import client/daemon/domain as domain_service
 import client/daemon/limits
 import client/daemon/manager
+import client/daemon/peer_cli
 import client/daemon/root
 import client/daemon/server
 import client/peer_mail
@@ -1019,4 +1020,259 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
   assert !string.contains(json.to_string(sender.metadata), "forged metadata")
   assert string.contains(json.to_string(sender.metadata), "Source")
   assert process.receive(delivered, 0) == Error(Nil)
+}
+
+pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
+  let #(source_id, _) = ids.mint_session(ids.generator(clock.fixed(0), 701))
+  let source_id = ids.session_id_to_string(source_id)
+  let #(target_id, _) = ids.mint_session(ids.generator(clock.fixed(0), 702))
+  let target_id = ids.session_id_to_string(target_id)
+  let observed = process.new_subject()
+  let endpoint = fn(session) {
+    Some(
+      peer_mail.Endpoint(session, fn(command) {
+        process.send(observed, #(session, command))
+        case command {
+          peer_mail.Links("main") ->
+            Ok(
+              json.Array([
+                json.Object([
+                  #("session", json.String(target_id)),
+                  #("strand", json.String("reviewer")),
+                ]),
+              ]),
+            )
+          peer_mail.Grants("main") ->
+            Ok(
+              json.Array([
+                json.Object([
+                  #("source_session", json.String(target_id)),
+                  #("source_strand", json.String("reviewer")),
+                  #("target_strand", json.String("main")),
+                  #("wake", json.String("busy_only")),
+                ]),
+              ]),
+            )
+          peer_mail.Roster(_, _) ->
+            Ok(
+              json.Array([
+                json.Object([
+                  #("strand", json.String("reviewer")),
+                  #("wake", json.String("may_wake")),
+                ]),
+              ]),
+            )
+          peer_mail.Activity(_) -> Ok(json.Object([]))
+          peer_mail.Deliver(_, _, id, _) ->
+            Ok(json.Object([#("message_id", json.String(id))]))
+          peer_mail.Revoke(_) -> Error("recipient unavailable")
+          peer_mail.Allow(_)
+          | peer_mail.Link(_, _, _)
+          | peer_mail.Unlink(_, _, _)
+          | peer_mail.Describe(_, _)
+          | peer_mail.Links(_)
+          | peer_mail.Grants(_) -> Ok(json.Null)
+        }
+      }),
+    )
+  }
+  fixture_with_peers(limits.defaults, endpoint, fn(_, ready, port, owner) {
+    let assert Ok(source) =
+      manager.create(
+        ready.registry,
+        manager.Creation("cli-source", ready.state_root, "Source", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 701),
+      )
+      as "source session exists"
+    let assert Ok(target) =
+      manager.create(
+        ready.registry,
+        manager.Creation("cli-target", ready.state_root, "Target", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 702),
+      )
+      as "target session exists"
+    assert source.registration.id == source_id
+    assert target.registration.id == target_id
+    list.each([source_id, target_id], fn(id) {
+      let assert poll.Answered(_) =
+        poll.until(within: 2000, every: 1, attempt: fn() {
+          case manager.resolve(ready.registry, id) {
+            Ok(instance) -> poll.Done(instance)
+            Error(_) -> poll.Retry
+          }
+        })
+        as "CLI endpoints become resident"
+    })
+    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+    let assert Ok(inspect) = peer_cli.parse(["inspect", source_id, "main"])
+    let assert Ok(view) =
+      peer_cli.exchange(address, owner, ready.epoch, inspect)
+      as "owner can inspect the exact source strand"
+    let body = field(view, "result")
+    assert field(body, "source_session") == json.String(source_id)
+    let assert json.Array([outgoing]) = field(body, "outgoing")
+      as "one outgoing target is visible"
+    assert field(outgoing, "target_strand") == json.String("reviewer")
+    assert field(outgoing, "wake") == json.String("may_wake")
+    let assert json.Array([incoming]) = field(body, "incoming")
+      as "recipient-owned incoming grants are visible"
+    assert field(incoming, "wake") == json.String("busy_only")
+    assert field(field(incoming, "metadata"), "session_id")
+      == json.String(target_id)
+
+    let assert Ok(link) =
+      peer_cli.parse([
+        "link", source_id, "main", target_id, "reviewer", "--wake", "may_wake",
+      ])
+    assert peer_cli.exchange(address, owner, "stale", link)
+      == Error("control handshake failed; request not sent")
+      as "a stale published epoch prevents the CLI from sending a mutation"
+    let member_token = "peer-cli-member-token"
+    let assert Ok(digest) =
+      member_token
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "member authority can be added through the real catalogue"
+    let assert Ok(member) =
+      access.create_member(store, "peer-cli-member", "Member", digest)
+      as "member credential is durable"
+    assert access.grant(store, member.id, source_id, access.Operator) == Ok(Nil)
+    assert peer_cli.exchange(address, member_token, ready.epoch, inspect)
+      == Error("forbidden")
+    assert peer_cli.exchange(address, member_token, ready.epoch, link)
+      == Error("forbidden")
+    assert catalogue.close(store) == Ok(Nil)
+    let assert Ok(linked) = peer_cli.exchange(address, owner, ready.epoch, link)
+      as "the owner grant uses real control routing"
+    assert field(linked, "command") == json.String("peers.link")
+    assert field(linked, "wake") == json.String("may_wake")
+    let assert Ok(peer_send) =
+      peer_cli.parse([
+        "send", source_id, "main", target_id, "reviewer", "--message-id",
+        "review-7", "--text", "finding",
+      ])
+    let assert Ok(receipt) =
+      peer_cli.exchange(address, owner, ready.epoch, peer_send)
+      as "owner send reaches the resident recipient"
+    assert field(receipt, "message_id") == json.String("review-7")
+    assert field(field(receipt, "result"), "message_id")
+      == json.String("review-7")
+    let assert Ok(retried) =
+      peer_cli.exchange(address, owner, ready.epoch, peer_send)
+      as "an explicit retry retains its message identity"
+    assert field(retried, "message_id") == json.String("review-7")
+
+    let assert Ok(unlink_resident) =
+      peer_cli.parse(["unlink", source_id, "main", target_id, "reviewer"])
+    let assert Ok(partial_resident) =
+      peer_cli.exchange(address, owner, ready.epoch, unlink_resident)
+      as "a failed recipient revocation retains the source unlink result"
+    assert field(partial_resident, "partial") == json.Bool(True)
+    assert field(field(partial_resident, "result"), "outgoing_link_removed")
+      == json.Bool(True)
+    assert field(field(partial_resident, "result"), "recipient_grant")
+      == json.String("revoke failed: recipient unavailable")
+    let assert Ok(_) = peer_cli.exchange(address, owner, ready.epoch, link)
+      as "the source link is restored for saved-recipient inspection"
+
+    let #(socket, _) = connect(port, owner, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let stopped =
+      send(
+        socket,
+        1,
+        "sessions.stop",
+        json.Object([
+          #("session_id", json.String(target_id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    let _ = ffi_ws.tcp_close(socket)
+    assert field(stopped, "event") == json.String("sessions.stop")
+    let assert poll.Answered(Nil) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, target_id) {
+          Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "recipient is saved"
+    let assert Ok(saved_view) =
+      peer_cli.exchange(address, owner, ready.epoch, inspect)
+      as "inspection describes a saved recipient without opening it"
+    let assert json.Array([saved_target]) =
+      field(field(saved_view, "result"), "outgoing")
+      as "the outgoing link remains visible"
+    assert field(saved_target, "wake") == json.Null
+    assert field(field(field(saved_target, "metadata"), "status"), "state")
+      == json.String("saved")
+    assert peer_cli.exchange(address, owner, ready.epoch, peer_send)
+      == Error("unavailable")
+    assert result.is_error(manager.resolve(ready.registry, target_id))
+    let assert Ok(unlink) =
+      peer_cli.parse(["unlink", source_id, "main", target_id, "reviewer"])
+    let assert Ok(partial) =
+      peer_cli.exchange(address, owner, ready.epoch, unlink)
+      as "outgoing authority is removed without opening the target"
+    assert field(partial, "partial") == json.Bool(True)
+    assert field(field(partial, "result"), "outgoing_link_removed")
+      == json.Bool(True)
+  })
+}
+
+pub fn peer_cli_collects_bounded_inspection_pages_test() {
+  let #(source_id, _) = ids.mint_session(ids.generator(clock.fixed(0), 703))
+  let source_id = ids.session_id_to_string(source_id)
+  let grants =
+    list.index_map(list.repeat(Nil, 800), fn(_, offset) {
+      json.Object([
+        #("source_session", json.String("source-" <> int.to_string(offset))),
+        #("source_strand", json.String("main")),
+        #("target_strand", json.String("main")),
+        #("wake", json.String("busy_only")),
+      ])
+    })
+  let endpoint = fn(session) {
+    Some(
+      peer_mail.Endpoint(session, fn(command) {
+        case command {
+          peer_mail.Activity(_) -> Ok(json.Object([]))
+          peer_mail.Links(_) -> Ok(json.Array([]))
+          peer_mail.Grants(_) -> Ok(json.Array(grants))
+          _ -> Error("unexpected peer command")
+        }
+      }),
+    )
+  }
+  fixture_with_peers(limits.defaults, endpoint, fn(_, ready, port, owner) {
+    let assert Ok(source) =
+      manager.create(
+        ready.registry,
+        manager.Creation("paged-cli-source", ready.state_root, "Source", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 703),
+      )
+    assert source.registration.id == source_id
+    let assert poll.Answered(_) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.resolve(ready.registry, source_id) {
+          Ok(instance) -> poll.Done(instance)
+          Error(_) -> poll.Retry
+        }
+      })
+    let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+    let assert Ok(command) = peer_cli.parse(["inspect", source_id, "main"])
+    let assert Ok(reply) =
+      peer_cli.exchange(address, owner, ready.epoch, command)
+    let assert json.Array(incoming) = field(field(reply, "result"), "incoming")
+    assert list.length(incoming) == 800
+  })
 }

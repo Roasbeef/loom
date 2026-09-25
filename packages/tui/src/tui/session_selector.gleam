@@ -38,6 +38,9 @@ pub type Prompt {
   /// Ordinary navigation; every key means what the help line says.
   Browsing
 
+  /// The selected session must be opened before it can receive a link.
+  LinkUnavailable
+
   /// A draft belongs to the identity selected when editing began.
   Renaming(
     /// Stable identity, independent of the highlighted row.
@@ -84,6 +87,9 @@ pub type Action {
 
   /// Enter explicitly selects this row for bounded open and attachment.
   Choose(protocol.Session)
+
+  /// Start a directional link to this selected session without opening it.
+  Link(protocol.Session)
 
   /// Request explicit creation under the terminal's retained durable key.
   NewSession
@@ -220,6 +226,11 @@ pub fn without(state: State, session_id: String) -> State {
 pub fn update(key: keys.Key, state: State) -> Action {
   case state.prompt {
     Browsing -> browsing(key, state)
+    LinkUnavailable ->
+      case key {
+        keys.Escape -> Continue(State(..state, prompt: Browsing))
+        _ -> browsing(key, State(..state, prompt: Browsing))
+      }
     Renaming(id, draft) -> renaming(key, state, id, draft)
     ConfirmingDelete(session_id) -> confirming(key, state, Delete(session_id))
     ConfirmingArchive(session_id) -> confirming(key, state, Archive(session_id))
@@ -290,6 +301,7 @@ fn browsing(key: keys.Key, state: State) -> Action {
           }
         Error(Nil) -> Continue(state)
       }
+    keys.Char("l") -> link_selected(state)
     keys.Up ->
       Continue(State(..state, selected: int.max(0, state.selected - 1)))
     keys.Down ->
@@ -335,6 +347,22 @@ fn browsing(key: keys.Key, state: State) -> Action {
   }
 }
 
+// A saved or archived row cannot become a peer target through selection.
+fn link_selected(state: State) -> Action {
+  case list.first(list.drop(state.page.sessions, state.selected)) {
+    Ok(row) ->
+      case state.collection {
+        Active ->
+          case row.status {
+            protocol.Resident(_) -> Link(row)
+            _ -> Continue(State(..state, prompt: LinkUnavailable))
+          }
+        Archived -> Continue(state)
+      }
+    Error(Nil) -> Continue(state)
+  }
+}
+
 /// Renders only one bounded page and its explicit action hints.
 ///
 /// ## Examples
@@ -343,10 +371,13 @@ fn browsing(key: keys.Key, state: State) -> Action {
 /// // session_selector.render(buffer, screen, selector)
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
+  // Small catalogues need no empty scroll area; full pages retain seven rows.
+  let row_count = int.min(7, list.length(state.page.sessions))
+  let desired_height = int.max(7, row_count * 2 + 7)
   let area =
     geometry.centered_rect(
       int.max(1, int.min(144, screen.size.width - 4)),
-      int.max(1, int.min(22, screen.size.height - 4)),
+      int.max(1, int.min(desired_height, screen.size.height - 4)),
       screen,
     )
   let frame =
@@ -470,14 +501,26 @@ fn help_line(state: State, width: Int) {
           text.truncate(
             case state.collection {
               Active ->
-                "↑↓ select · Enter open · n new · r rename · d archive · a archived · → next · ← first · Esc close"
+                "↑↓ select · Enter open · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close"
               Archived ->
-                "↑↓ select · Enter restore · r rename · d permanently delete · a active · → next · ← first · Esc close"
+                "↑↓ select · Enter restore · r rename · d delete · a active · ←→ pages · Esc close"
             },
             width,
             "…",
           ),
           theme.overlay_quiet(),
+        ),
+      ])
+
+    LinkUnavailable ->
+      span.line_new([
+        span.span_styled(
+          text.truncate(
+            "Open this saved session before linking it · Esc back",
+            width,
+            "…",
+          ),
+          theme.overlay_signal(),
         ),
       ])
 

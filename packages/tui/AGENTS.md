@@ -692,6 +692,11 @@ boundaries and the split's measurements under Invariants.
 - `tui/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
+- `tui/peer_links` owns the peer-grant inspector, exact target-strand draft,
+  and review step. `tui/interaction` routes the selected key to
+  `tui/session_control`, which sends each inspection, link, or revocation over
+  the owner-authenticated daemon control socket. `tui/model` holds the modal
+  and its pending control outcome; `tui/render` paints the resulting state.
 - `tui/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local
@@ -807,7 +812,17 @@ boundaries and the split's measurements under Invariants.
   <name> [target]` retires one a strand created (the target defaults to
   the active strand, and an operator `[[schedule]]` comes back as a
   `conflict` naming the configuration file),
-  `/sessions` opens the daemon's authorized metadata selector. `/approve <id>`
+  `/sessions` opens the daemon's authorized metadata selector. `/peers` inspects
+the active strand's owner-managed directional links; press `l` to choose a resident
+session and enter its exact strand, `d` to revoke the selected direction, and `v`
+to propose a separately confirmed reverse link. `busy_only` is the default wake
+permission; Tab or the arrow keys select `may_wake`. Saved sessions remain
+unavailable in the chooser and are never opened. Press `p` in `/agents` to manage
+links for the selected strand. Press `n` to append a bounded inspect page; `r`
+refreshes from the first page. Pages are fresh observations and the daemon checks
+current authority again for each mutation. The peer view leaves composer text
+untouched.
+`/approve <id>`
   and `/deny <id>` answer the captured request; `/approvals <id>` loads an exact
   decision. `/notes` opens the
   current note values with their revisions, `Shift+Tab` toggles the compact rail,
@@ -1686,5 +1701,25 @@ after an execution has closed; the phase still governs whether input is open.
 The peer message section says `stored`, never `read` or `completed`; inherited
 branch entries may appear. Workflow counts are durable step intents, not child
 outcomes. The source link fact lacks wake scope, so the tab labels that value
-unavailable rather than inferring it. Peer linking and revocation controls
-remain follow-up work (#485).
+unavailable rather than inferring it.
+
+`/sessions` selects the target session for a link with `l`, while Enter still
+opens the row. The selected row must be resident; a saved row displays a refusal
+in the selector. The attached session and exact strand remain the source.
+`/peers` opens `PeerLinkManager` for the active strand, and `p` from `/agents`
+uses that selected source strand. `tui/peer_links.State` owns the grant
+inspection, target strand draft, selected target, catalogue revision and
+continuation cursors. `ReturnTo` restores the original session selector, agent
+inspector or conversation after close. `TargetEntry` sends Escape back to the
+session selector for a direct link, or to the peer chooser for a later link.
+The selected target survives a catalogue refresh, even when it came from a
+later page. The overlay never changes the
+composer recipient or opens a saved session. A link starts with `BusyOnly`; the
+operator explicitly reviews its direction and wake permission before
+`LinkPeers`. A successful mutation returns to browsing, and
+`operation_result` keeps its acknowledgement visible through the inspection
+refresh, including a partial unlink. The grant and session lists scroll with
+selection while reserving rows for the result and controls. Target-session
+pages retain the first catalogue revision, so a later page cannot silently
+mix another catalogue snapshot. Control requests still carry the owner's epoch
+and are checked by the daemon; TUI selection itself confers no peer authority.

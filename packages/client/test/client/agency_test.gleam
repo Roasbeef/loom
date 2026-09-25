@@ -2695,6 +2695,367 @@ pub fn peer_delivery_requires_exact_grant_and_commits_one_receipt_test() {
   close(target)
 }
 
+pub fn collaboration_example_exchanges_findings_across_sessions_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the example test must locate the repository"
+    let repo = here <> "/../.."
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) -> run_collaboration_exchange(repo, toolchain)
+      _, _ ->
+        io.println_error(
+          "SKIP collaboration_example_exchange: run make sandbox codemode-seed",
+        )
+    }
+  })
+}
+
+fn run_collaboration_exchange(
+  repo: String,
+  toolchain: codemode.Toolchain,
+) -> Nil {
+  let suffix =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let workspace = "/var/tmp/lac-example-" <> suffix
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+    as "the example workspace must exist"
+
+  // Independent sessions may mint the same operation id in this deterministic
+  // fixture, so each needs its own code-mode build and cap-socket directory.
+  let first_workspace = workspace <> "/specialist-a"
+  let second_workspace = workspace <> "/specialist-b"
+  let assert Ok(Nil) = simplifile.create_directory_all(first_workspace)
+    as "the first specialist workspace must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(second_workspace)
+    as "the second specialist workspace must exist"
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let first =
+    start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
+  let second =
+    start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
+  let first_peer = agency.peer_endpoint(first.config, "specialist-a")
+  let second_peer = agency.peer_endpoint(second.config, "specialist-b")
+  let directory =
+    peers.Directory(
+      resolve: fn(id) {
+        case id {
+          "specialist-a" -> Ok(first_peer)
+          "specialist-b" -> Ok(second_peer)
+          _ -> Error("not resident")
+        }
+      },
+      describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
+    )
+  let first_wiring = peers.Wiring(first_peer, json.Null, Some(directory))
+  let second_wiring = peers.Wiring(second_peer, json.Null, Some(directory))
+  let assert Ok(plane) =
+    serve.start_build_plane(
+      helper: Some(repo <> "/packages/sandbox/loom-exec"),
+      seed: Some(repo <> "/build/codemode-seed"),
+      workspace: repo,
+      writable: workspace,
+      state_root: workspace <> "-state",
+      tmp_dir: workspace <> "/tmp",
+      clock: wall,
+    )
+    as "the real jailed build plane must start"
+  let assert Ok(source) =
+    simplifile.read(repo <> "/docs/examples/specialist_exchange.gleam")
+    as "the example source must be read verbatim"
+  let #(first_service, first_mode) =
+    specialist_mode(
+      first,
+      first_wiring,
+      plane,
+      first_workspace,
+      toolchain,
+      wall,
+    )
+  let #(second_service, second_mode) =
+    specialist_mode(
+      second,
+      second_wiring,
+      plane,
+      second_workspace,
+      toolchain,
+      wall,
+    )
+  let first_parent = open_parent(first, "specialist exchange a")
+  let second_parent = open_parent(second, "specialist exchange b")
+  let first_record =
+    launch_specialist(
+      first_mode,
+      first_parent,
+      codemode_tool.WorkspaceSeam,
+      "specialist-e2e",
+      source,
+      first_workspace,
+      plane,
+    )
+  let second_record =
+    launch_specialist(
+      second_mode,
+      second_parent,
+      codemode_tool.WorkspaceSeam,
+      "specialist-e2e",
+      source,
+      second_workspace,
+      plane,
+    )
+  assert specialist_ready(first_mode, first_record)
+    as "the first real satellite must register its typed endpoint"
+  assert specialist_ready(second_mode, second_record)
+    as "the second real satellite must register its typed endpoint"
+
+  let assert Ok(json.Int(1)) =
+    first_mode.interact(
+      "main",
+      first_record.id,
+      codemode_tool.SendTo(
+        "finding",
+        finding("specialist-b", "one", "security found a gap"),
+      ),
+      0,
+    )
+    as "the denied finding must still enter the typed input journal"
+  assert specialist_delivery(first_mode, first_record, 1, "rejected")
+    as "the source must refuse a message with no outgoing link"
+  let assert Ok(refused_receipts) =
+    api.reserved_facts(second.runtime, "client/peers/receipt/")
+  assert refused_receipts == []
+    as "grant refusal must not commit a recipient receipt"
+  let assert Ok(_) =
+    peers.link(first_peer, second_peer, "main", "main", peer_mail.BusyOnly)
+    as "the owner grants one exact direction"
+  let assert Ok(_) =
+    second_peer.call(
+      peer_mail.Revoke(peer_mail.Grant(
+        "specialist-a",
+        "main",
+        "main",
+        peer_mail.BusyOnly,
+      )),
+    )
+    as "the recipient revokes its grant while source discovery remains"
+  let assert Ok(json.Int(2)) =
+    first_mode.interact(
+      "main",
+      first_record.id,
+      codemode_tool.SendTo(
+        "finding",
+        finding("specialist-b", "revoked", "security found a gap"),
+      ),
+      0,
+    )
+  assert specialist_delivery(first_mode, first_record, 2, "rejected")
+    as "the recipient grant must be checked after source discovery"
+  let assert Ok(revoked_receipts) =
+    api.reserved_facts(second.runtime, "client/peers/receipt/")
+  assert revoked_receipts == [] as "recipient refusal must not commit a receipt"
+  let assert Ok(_) =
+    peers.link(first_peer, second_peer, "main", "main", peer_mail.BusyOnly)
+    as "the owner restores the recipient grant"
+  let assert Ok(json.Int(1)) =
+    second_mode.interact(
+      "main",
+      second_record.id,
+      codemode_tool.SendTo(
+        "finding",
+        finding("specialist-a", "early-reply", "performance confirmed it"),
+      ),
+      0,
+    )
+  assert specialist_delivery(second_mode, second_record, 1, "rejected")
+    as "the outgoing security grant must not authorize a reverse send"
+  let assert Ok(_) =
+    peers.link(second_peer, first_peer, "main", "main", peer_mail.BusyOnly)
+    as "the owner grants the reverse direction separately"
+  let assert Ok(json.Int(3)) =
+    first_mode.interact(
+      "main",
+      first_record.id,
+      codemode_tool.SendTo(
+        "finding",
+        finding("specialist-b", "two", "security found a gap"),
+      ),
+      0,
+    )
+  let assert Ok(json.Int(2)) =
+    second_mode.interact(
+      "main",
+      second_record.id,
+      codemode_tool.SendTo(
+        "finding",
+        finding("specialist-a", "reply", "performance confirmed it"),
+      ),
+      0,
+    )
+  assert specialist_delivery(first_mode, first_record, 3, "delivered")
+    as "the first satellite must receive its peer admission receipt"
+  assert specialist_delivery(second_mode, second_record, 2, "delivered")
+    as "the second satellite must receive its peer admission receipt"
+  assert_queued_peer_message(
+    second,
+    "specialist-a",
+    "main",
+    "security found a gap",
+  )
+  assert_queued_peer_message(
+    first,
+    "specialist-b",
+    "main",
+    "performance confirmed it",
+  )
+  let assert Ok(_) =
+    first_mode.interact("main", first_record.id, codemode_tool.Cancel, 0)
+  let assert Ok(_) =
+    second_mode.interact("main", second_record.id, codemode_tool.Cancel, 0)
+  assert review_lost(first_mode, first_record)
+    as "the first specialist must finish cancellation before teardown"
+  assert review_lost(second_mode, second_record)
+    as "the second specialist must finish cancellation before teardown"
+  process.unlink(first_service.pid)
+  process.kill(first_service.pid)
+  process.unlink(second_service.pid)
+  process.kill(second_service.pid)
+  serve.stop_build_plane(plane)
+  close(first)
+  close(second)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+fn specialist_mode(
+  harness: Harness,
+  wiring: peers.Wiring,
+  plane: serve.BuildPlane,
+  workspace: String,
+  toolchain: codemode.Toolchain,
+  wall: Clock,
+) -> #(actor.Started(Subject(async_runs.Message)), codemode_tool.Background) {
+  let name = addresses.new()
+  let assert Ok(service) =
+    async_runs.start(
+      name,
+      async_runs.Wiring(
+        runtime: harness.runtime,
+        clock: wall,
+        abort: async_codemode.abort(plane.broker),
+        heartbeat_ms: 0,
+      ),
+    )
+  let config =
+    codemode.default_config(plane.broker, wall, workspace, toolchain)
+    |> codemode.serving(codemode.BothSeams, over: harness.seam)
+  let config =
+    codemode.Config(
+      ..config,
+      wrap_router: fn(request: codemode_tool.Request, router) {
+        peers.router(wiring, request.strand, router)
+      },
+    )
+  let mode = async_codemode.seam(config, name, harness.config)
+  let assert Some(background) = mode.background
+  #(service, background)
+}
+
+fn launch_specialist(
+  background: codemode_tool.Background,
+  parent: Caller,
+  selected: codemode_tool.Seam,
+  step_id: String,
+  source: String,
+  workspace: String,
+  plane: serve.BuildPlane,
+) -> async_execution.Execution {
+  let request =
+    codemode_tool.Request(
+      source:,
+      seam: selected,
+      strand: "main",
+      op_id: parent.operation,
+      step_id:,
+      source_index: 0,
+      workspace:,
+      base_policy: plane.base_policy,
+      directory_access: directory_access.none(),
+      demand: exec.BestEffort,
+      env: [#("PATH", serve.toolchain_path_of(plane))],
+      within_ms: 180_000,
+      grants: [],
+      observe_output: tool.ignore_output(),
+    )
+  let assert Ok(value) = background.launch(request)
+  let assert Ok(record) = async_execution.decode(value)
+  record
+}
+
+fn finding(session: String, id: String, text: String) -> json.JsonValue {
+  json.Object([
+    #("session", json.String(session)),
+    #("message_id", json.String(id)),
+    #("text", json.String(text)),
+  ])
+}
+
+fn specialist_ready(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Bool {
+  let ready =
+    until(
+      fn() {
+        case background.interact("main", record.id, codemode_tool.Check, 0) {
+          Ok(json.Object(fields)) ->
+            list.key_find(fields, "readiness") == Ok(json.String("ready"))
+            && list.key_find(fields, "endpoints")
+            == Ok(json.Array([json.String("finding")]))
+          _ -> False
+        }
+      },
+      6000,
+    )
+  case ready {
+    True -> True
+    False -> {
+      let last = case
+        background.interact("main", record.id, codemode_tool.Check, 0)
+      {
+        Ok(value) -> json.to_string(value)
+        Error(_) -> "check refused"
+      }
+      io.println_error("specialist readiness expired: " <> last)
+      False
+    }
+  }
+}
+
+fn specialist_delivery(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+  sequence: Int,
+  status: String,
+) -> Bool {
+  until(
+    fn() {
+      case background.interact("main", record.id, codemode_tool.Check, 0) {
+        Ok(json.Object(fields)) ->
+          case list.key_find(fields, "latest_delivery") {
+            Ok(json.Object(delivery)) ->
+              list.key_find(delivery, "sequence") == Ok(json.Int(sequence))
+              && list.key_find(delivery, "status") == Ok(json.String(status))
+            _ -> False
+          }
+        _ -> False
+      }
+    },
+    100,
+  )
+}
+
 pub fn outgoing_peer_links_stop_at_the_roster_bound_test() {
   let source = start_harness(Hangs)
   let target = start_harness(Hangs)
@@ -3032,6 +3393,343 @@ pub fn async_real_workflow_reuses_named_children_test_() -> AsyncEunitTest {
       NamedWorkflow,
     )
   })
+}
+
+pub fn collaboration_example_recovers_named_results_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+      as "the example test must locate the repository"
+    let repo = here <> "/../.."
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) -> run_collaboration_recovery(repo, toolchain)
+      _, _ ->
+        io.println_error(
+          "SKIP collaboration_example_recovery: run make sandbox codemode-seed",
+        )
+    }
+  })
+}
+
+pub fn collaboration_example_retries_pending_children_test_() -> AsyncEunitTest {
+  Timeout(90, fn() {
+    let assert Ok(here) = simplifile.current_directory()
+    let repo = here <> "/../.."
+    case
+      simplifile.is_file(repo <> "/packages/sandbox/loom-exec"),
+      codemode.discover(repo <> "/build/codemode-seed")
+    {
+      Ok(True), Ok(toolchain) -> run_collaboration_pending(repo, toolchain)
+      _, _ ->
+        io.println_error(
+          "SKIP collaboration_example_pending: run make sandbox codemode-seed",
+        )
+    }
+  })
+}
+
+fn run_collaboration_pending(
+  repo: String,
+  toolchain: codemode.Toolchain,
+) -> Nil {
+  let suffix =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let workspace = "/var/tmp/lac-pending-" <> suffix
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let harness =
+    start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
+  let assert Ok(plane) =
+    serve.start_build_plane(
+      helper: Some(repo <> "/packages/sandbox/loom-exec"),
+      seed: Some(repo <> "/build/codemode-seed"),
+      workspace: repo,
+      writable: workspace,
+      state_root: workspace <> "-state",
+      tmp_dir: workspace <> "/tmp",
+      clock: wall,
+    )
+    as "the pending review must use the real jailed build plane"
+  let own = agency.peer_endpoint(harness.config, "coordinator")
+  let wiring = peers.Wiring(own, json.Null, None)
+  let #(service, background) =
+    specialist_mode(harness, wiring, plane, workspace, toolchain, wall)
+  let assert Ok(source) =
+    simplifile.read(repo <> "/docs/examples/collaboration_review.gleam")
+  let parent = open_parent(harness, "coordinator pending")
+  let execution =
+    launch_specialist(
+      background,
+      parent,
+      codemode_tool.OrchestrationSeam,
+      "review-pending",
+      source,
+      workspace,
+      plane,
+    )
+  assert review_ready(background, execution)
+  let assert Ok(json.Int(1)) =
+    background.interact(
+      "main",
+      execution.id,
+      codemode_tool.SendTo("review", review_input()),
+      0,
+    )
+  assert review_waiting(background, execution)
+    as "a bounded join must publish both unfinished handles"
+  let assert Ok(children_before) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  assert list.length(children_before) == 2
+  let assert Ok(json.Int(2)) =
+    background.interact(
+      "main",
+      execution.id,
+      codemode_tool.SendTo("review", review_input()),
+      0,
+    )
+  assert specialist_delivery(background, execution, 2, "delivered")
+    as "the same typed input must collect the named steps again"
+  assert review_waiting(background, execution)
+  let assert Ok(children_after) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  assert list.map(children_after, fn(cell) { cell.0 })
+    == list.map(children_before, fn(cell) { cell.0 })
+    as "retrying a pending join must not spawn duplicate children"
+  let assert Ok(_) =
+    background.interact("main", execution.id, codemode_tool.Cancel, 0)
+  assert review_lost(background, execution)
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  serve.stop_build_plane(plane)
+  close(harness)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+fn run_collaboration_recovery(
+  repo: String,
+  toolchain: codemode.Toolchain,
+) -> Nil {
+  let suffix =
+    token.production_entropy()(4) |> bit_array.base16_encode |> string.lowercase
+  let workspace = "/var/tmp/lac-review-" <> suffix
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+  let wall = clock.from_function(ffi_os.system_time_ms)
+  let harness =
+    start_harness_on(HoldsParent, fn(config) { config }, wall, wall, fn(sess) {
+      sess
+    })
+  let assert Ok(plane) =
+    serve.start_build_plane(
+      helper: Some(repo <> "/packages/sandbox/loom-exec"),
+      seed: Some(repo <> "/build/codemode-seed"),
+      workspace: repo,
+      writable: workspace,
+      state_root: workspace <> "-state",
+      tmp_dir: workspace <> "/tmp",
+      clock: wall,
+    )
+    as "the named review must use the real jailed build plane"
+  let own = agency.peer_endpoint(harness.config, "coordinator")
+  let wiring = peers.Wiring(own, json.Null, None)
+  let #(service, background) =
+    specialist_mode(harness, wiring, plane, workspace, toolchain, wall)
+  let assert Ok(source) =
+    simplifile.read(repo <> "/docs/examples/collaboration_review.gleam")
+    as "the coordinator example source must be submitted verbatim"
+  let parent = open_parent(harness, "coordinator example")
+  let first =
+    launch_specialist(
+      background,
+      parent,
+      codemode_tool.OrchestrationSeam,
+      "review-first",
+      source,
+      workspace,
+      plane,
+    )
+  assert review_ready(background, first)
+    as "the review endpoint must be registered before the typed send"
+  let assert Ok(json.Int(1)) =
+    background.interact(
+      "main",
+      first.id,
+      codemode_tool.SendTo("review", review_input()),
+      0,
+    )
+  assert review_joined(background, first)
+    as "both real child results must be visible before execution loss"
+  let assert Ok(children_before) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  let assert Ok(steps_before) =
+    api.reserved_facts(harness.runtime, "client/workflow/step/")
+  assert list.length(children_before) == 2
+  assert list.length(steps_before) == 2
+  let assert Ok(_) =
+    background.interact("main", first.id, codemode_tool.Cancel, 0)
+    as "the first satellite loses custody without deleting child results"
+  assert review_lost(background, first)
+    as "cancellation must finish owned-work cleanup before terminal loss"
+  let assert Ok(children_stopped) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  assert list.all(children_stopped, fn(cell) {
+    case child_run.decode(cell.1) {
+      Ok(run) -> run.stop == child_run.ParentFinished
+      Error(_) -> False
+    }
+  })
+    as "every owned child must be marked reaped before execution loss settles"
+
+  let recovered =
+    launch_specialist(
+      background,
+      parent,
+      codemode_tool.OrchestrationSeam,
+      "review-recovered",
+      source,
+      workspace,
+      plane,
+    )
+  assert recovered.id != first.id
+    as "recovery is a new execution, not the original satellite heap"
+  assert review_ready(background, recovered)
+  let assert Ok(json.Int(1)) =
+    background.interact(
+      "main",
+      recovered.id,
+      codemode_tool.SendTo("review", review_input()),
+      0,
+    )
+  assert review_joined(background, recovered)
+    as "the new satellite must join the old durable results"
+  let assert Ok(children_after) =
+    api.reserved_facts(harness.runtime, child_run.key_prefix)
+  let assert Ok(steps_after) =
+    api.reserved_facts(harness.runtime, "client/workflow/step/")
+  assert list.map(children_after, fn(cell) { cell.0 })
+    == list.map(children_before, fn(cell) { cell.0 })
+    as "recovery must not admit a duplicate child operation"
+  assert steps_after == steps_before
+    as "recovery must preserve both immutable named steps"
+  let assert Ok(_) =
+    background.interact("main", recovered.id, codemode_tool.Cancel, 0)
+  assert review_lost(background, recovered)
+    as "the recovered execution must drain before teardown"
+  process.unlink(service.pid)
+  process.kill(service.pid)
+  serve.stop_build_plane(plane)
+  close(harness)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+fn review_input() -> json.JsonValue {
+  json.Object([
+    #("run", json.String("review-42")),
+    #("commit", json.String("commit-a")),
+  ])
+}
+
+fn review_ready(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Bool {
+  until(
+    fn() {
+      case background.interact("main", record.id, codemode_tool.Check, 0) {
+        Ok(json.Object(fields)) ->
+          list.key_find(fields, "readiness") == Ok(json.String("ready"))
+          && list.key_find(fields, "endpoints")
+          == Ok(json.Array([json.String("review")]))
+        _ -> False
+      }
+    },
+    6000,
+  )
+}
+
+fn review_joined(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Bool {
+  until(
+    fn() {
+      case background.interact("main", record.id, codemode_tool.Check, 0) {
+        Ok(json.Object(fields)) ->
+          case list.key_find(fields, "progress") {
+            Ok(json.Object(progress)) ->
+              case list.key_find(progress, "value") {
+                Ok(json.Object(value)) ->
+                  list.key_find(value, "phase") == Ok(json.String("joined"))
+                  && list.key_find(value, "results") == Ok(json.Int(2))
+                  && list.key_find(value, "reports")
+                  == Ok(
+                    json.Array([
+                      json.String("review complete"),
+                      json.String("review complete"),
+                    ]),
+                  )
+                _ -> False
+              }
+            _ -> False
+          }
+        _ -> False
+      }
+    },
+    3000,
+  )
+}
+
+fn review_waiting(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Bool {
+  until(
+    fn() {
+      case background.interact("main", record.id, codemode_tool.Check, 0) {
+        Ok(json.Object(fields)) ->
+          case list.key_find(fields, "progress") {
+            Ok(json.Object(progress)) ->
+              case list.key_find(progress, "value") {
+                Ok(json.Object(value)) ->
+                  list.key_find(value, "phase") == Ok(json.String("waiting"))
+                  && list.key_find(value, "results") == Ok(json.Int(0))
+                  && case list.key_find(value, "statuses") {
+                    Ok(json.Array([json.String(first), json.String(second)])) ->
+                      string.contains(first, "pending after")
+                      && string.contains(second, "pending after")
+                    _ -> False
+                  }
+                _ -> False
+              }
+            _ -> False
+          }
+        _ -> False
+      }
+    },
+    3000,
+  )
+}
+
+fn review_lost(
+  background: codemode_tool.Background,
+  record: async_execution.Execution,
+) -> Bool {
+  until(
+    fn() {
+      case background.interact("main", record.id, codemode_tool.Check, 0) {
+        Ok(value) ->
+          case async_execution.decode(value) {
+            Ok(done) -> done.phase == async_execution.Lost("cancelled")
+            Error(_) -> False
+          }
+        Error(_) -> False
+      }
+    },
+    3000,
+  )
 }
 
 pub fn workspace_mode_combines_files_and_named_children_test_() -> AsyncEunitTest {
