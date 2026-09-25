@@ -199,6 +199,14 @@ api_key_env = "GITHUB_TOKEN"
 #                 from the daemon's environment ([A-Z_][A-Z0-9_]*); the
 #                 values never live in this file. PATH, HOME and TMPDIR
 #                 are the harness's own and are refused.
+#   cache_env     optional private caches: a table of variable name to
+#                 directory, e.g. { XDG_CACHE_HOME = "xdg" }. Each
+#                 variable is set to <cache>/loom/lsp/<server>/<dir>, a
+#                 directory Loom owns and creates, granted writable and
+#                 shared with no host tool. It is the one value this
+#                 table may set. The directory is relative, with no . or
+#                 .. component, and not inside another entry's (name
+#                 siblings); a name may not also be in env.
 #
 # Four optional keys say how the language spells things. Each default is
 # what Loom did before the key existed.
@@ -235,22 +243,23 @@ root_markers = ["gleam.toml"]
 project = "writable"
 hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
-# gopls reads the module cache and writes the build cache, both outside
-# the project, so both are named here. The build cache lives in the
-# per-user cache directory, which <cache>/ names on every platform; a
-# jail that grants the wrong directory leaves go unable to write, so
-# gopls loads no packages and every definition comes back empty. A
-# writable root must already exist, and any `go build` makes this one.
-# XDG_CACHE_HOME is passed so that go inside the jail finds the same
-# directory <cache>/ expanded to. If `go env GOMODCACHE` or `go env
-# GOCACHE` has been moved, name the directories it prints instead.
+# gopls reads the module cache, outside the project, so it is named
+# here. It must also write a build cache, or it loads no packages and
+# every definition comes back empty, and that cache must not be the
+# host's own: the host's `go build` trusts ~/.cache/go-build without
+# verifying it, and go in the jail runs cgo with flags the project can
+# write. So cache_env points GOCACHE, GOPLSCACHE and XDG_CACHE_HOME at
+# private directories: go builds into go-build, gopls keeps its file cache
+# in gopls, and other tools use xdg. The first two are named because on
+# macOS go and gopls ignore XDG_CACHE_HOME.
+# If `go env GOMODCACHE` has been moved, name the directory it prints.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build"]
-env = ["GOFLAGS", "XDG_CACHE_HOME"]
+cache_env = { XDG_CACHE_HOME = "xdg", GOCACHE = "go-build", GOPLSCACHE = "gopls" }
+env = ["GOFLAGS"]
 hint = "Qualify a name with its package name as imported: util.Greet"
 
 # Triggered project rules, one [[rule]] table per rule. A rule is a

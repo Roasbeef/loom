@@ -24,20 +24,27 @@ root_markers = ["go.mod"]
 # without it; any real module needs it.
 readable = ["~/go/pkg/mod"]
 
-# The build cache, which `go list` must be able to write or it loads no
-# packages at all and every question comes back not found. gopls's own
-# file cache, <cache>/gopls, is left out on purpose: measured, gopls
-# answers without it, and a writable root that does not exist yet refuses
-# the whole jail, which on a host where gopls has never run it does not.
-writable = ["<cache>/go-build"]
+# The caches, private to this server. `go list` must be able to write a
+# build cache or it loads no packages at all and every question comes
+# back not found, and it must not be the host's own: the host's
+# `go build` trusts GOCACHE without verifying it, and `go list` in the
+# jail runs cgo with the project's `#cgo` flags, which the model can
+# write. So the build cache is Loom's, never ~/.cache/go-build.
+# GOCACHE points `go` at <cache>/loom/lsp/go/go-build and GOPLSCACHE
+# points gopls's own file cache at <cache>/loom/lsp/go/gopls; Loom creates
+# each and grants it writable. Both are named rather than left to follow
+# XDG_CACHE_HOME, because Go and gopls read XDG_CACHE_HOME on Linux only:
+# on macOS their defaults are under ~/Library/Caches, which the jail does
+# not grant. XDG_CACHE_HOME stays, at <cache>/loom/lsp/go/xdg, for the
+# other tools gopls runs that read it (goimports keeps a cache there). The
+# three are siblings, since a cache inside another is refused. The
+# directories outlive a session, so only the first query on a host starts
+# cold.
+cache_env = { XDG_CACHE_HOME = "xdg", GOCACHE = "go-build", GOPLSCACHE = "gopls" }
 
 # GOFLAGS carries an operator's build tags and -mod mode, without which
 # gopls would load a different package set than their build does.
-# XDG_CACHE_HOME is how <cache>/ was expanded: when the daemon runs with
-# one, `go` inside the jail must see it too, or it writes to
-# ~/.cache/go-build, which is not granted (measured: every check then
-# answers not found).
-env = ["GOFLAGS", "XDG_CACHE_HOME"]
+env = ["GOFLAGS"]
 
 # Appended once to lsp_definition's description, in sessions that
 # configure this server, so the model qualifies a name as the resolver
