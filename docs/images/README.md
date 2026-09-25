@@ -30,12 +30,17 @@ results, and UI elements were not composited or rewritten for the image.
 ## Peer-link captures
 
 `peer-links-chooser.png`, `peer-links-confirm.png`, and `peer-links-linked.png`
-show the native 116-by-38 terminal at post-split code commit `0e3fae3f`. Two
+show the native 116-by-38 terminal after the #495 TUI split. Two
 sample sessions were resident in the same isolated daemon. The operator
 selected **Review target** from `/sessions`, keeping **Coordinator / main** as
 the source, then pressed `l`. The operator entered the target's exact `main`
 strand, explicitly selected the `may_wake` permission, and created the link.
 No model request was sent.
+
+The linked-result capture uses the corrected four-line grant view, which keeps
+both full session IDs visible at an 80-column terminal width. Its local
+transcript was cleared before capture so a daemon-version notice from the
+isolated fixture does not obscure the link.
 
 Each image renders an actual full-color `tmux capture-pane -e -p` frame with
 `docs/design-notes/tui-agent-workspace/render_capture.py`. The UI content was
