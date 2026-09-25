@@ -4,7 +4,7 @@
 # what CI runs and what you run locally are the same commands.
 
 PACKAGES := host core storage session machine prompt telemetry runtime provider \
-	broker mcp tools cap ext codemode events client conformance tui lint
+	broker mcp lsp tools cap ext codemode events client conformance tui lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
 PREFIX   ?= $(HOME)/.local

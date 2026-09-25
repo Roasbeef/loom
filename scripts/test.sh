@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 package="${1:?usage: scripts/test.sh package [--match module-or-function]}"
 shift
-known="host core storage session machine prompt telemetry runtime provider broker mcp tools cap ext codemode events client conformance tui lint"
+known="host core storage session machine prompt telemetry runtime provider broker mcp lsp tools cap ext codemode events client conformance tui lint"
 case " $known " in
   *" $package "*) ;;
   *) echo "unknown test package: $package" >&2; exit 2 ;;

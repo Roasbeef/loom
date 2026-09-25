@@ -417,7 +417,7 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt telemetry provider broker mcp tools
+              host core machine prompt telemetry provider broker mcp lsp tools
               cap ext codemode tui lint sandbox
     steps:
       # actions/checkout v7.0.1
