@@ -280,6 +280,85 @@ pub fn a_linked_executable_mounts_its_prefix_test() {
     == ["/home/o/go/bin"]
 }
 
+// The helper lays explicit mounts over every root, so an executable region
+// at or above a path the server writes would leave that path read-only in
+// the jail. `/bin/sh` is the case that found it: a link whose prefix climbs
+// out of `/bin` to `/`, which bound the whole host read-only over the
+// project, the extra writable roots, the scratch, `/proc` and `/dev`.
+pub fn a_region_over_the_servers_writes_is_refused_test() {
+  let shell = jail.Executable(path: "/bin/sh", file: jail.LinkedExecutable)
+  assert jail.regions(shell) == ["/"]
+
+  let refused =
+    jail.policy_for(
+      jail.Placement(
+        ..placement(server(catalog.ProjectWritable)),
+        executable: shell,
+      ),
+      session_base(),
+      reading: host_env,
+    )
+  let assert Error(reason) = refused as "a region of / must be refused"
+  assert string.contains(reason, "/bin/sh needs / mounted read-only")
+  assert string.contains(reason, "name the file the link points to")
+
+  // A plain executable whose own directory holds a writable root is the
+  // same shadow with a different remedy.
+  let gopls =
+    catalog.LspServer(
+      ..server(catalog.ProjectReadOnly),
+      name: "gopls",
+      writable: [catalog.HomePath(".cache/go-build")],
+    )
+  let refused =
+    jail.policy_for(
+      jail.Placement(
+        ..placement(gopls),
+        executable: jail.Executable(
+          path: "/home/o/.cache/gopls",
+          file: jail.PlainExecutable,
+        ),
+      ),
+      session_base(),
+      reading: host_env,
+    )
+  let assert Error(reason) = refused
+    as "a region over a writable root must be refused"
+  assert string.contains(reason, "cover /home/o/.cache/go-build")
+  assert string.contains(reason, "install the server outside that path")
+}
+
+// Only a write decides it. A region equal to a project the server only
+// reads shadows nothing, and a region strictly inside a writable project
+// makes the server's own directory read-only and leaves the rest writable.
+pub fn a_region_that_shadows_no_write_is_admitted_test() {
+  let in_root = fn(path) {
+    jail.Placement(
+      ..placement(server(catalog.ProjectReadOnly)),
+      executable: jail.Executable(path:, file: jail.PlainExecutable),
+    )
+  }
+  let assert Ok(_read_only) =
+    jail.policy_for(
+      in_root(root <> "/server"),
+      session_base(),
+      reading: host_env,
+    )
+    as "a read-only project may hold the executable"
+
+  let assert Ok(built) =
+    jail.policy_for(
+      jail.Placement(
+        ..in_root(root <> "/node_modules/.bin/server"),
+        server: server(catalog.ProjectWritable),
+      ),
+      session_base(),
+      reading: host_env,
+    )
+    as "a region inside a writable project must be admitted"
+  assert list.contains(composed(built).writable_roots, root)
+}
+
 pub fn the_step_names_the_server_and_its_root_test() {
   let step = jail.step_id("gleam", "/work/a")
   assert string.starts_with(step, "lsp/gleam/")

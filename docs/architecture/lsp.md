@@ -168,7 +168,11 @@ The requirements ask for:
   module cache and build cache;
 - the directory holding the server's executable, and not its install
   prefix, because a prefix such as `~/.cargo` would put a credentials file
-  inside every server's jail;
+  inside every server's jail. That region is an explicit read-only mount,
+  and the helper lays explicit mounts over every root, so a region at or
+  above a path the server writes is refused by name rather than left to
+  turn that path read-only. `/bin/sh` is the case that found it: a link,
+  so its prefix is mounted, and the prefix of `/bin` is `/`;
 - a private scratch directory as `TMPDIR`, since the jail replaces `/tmp`;
 - network off, refused if narrowed (`RefuseNarrowed`);
 - `PATH`, `HOME`, `TMPDIR` and the table's `env` names, and no other
