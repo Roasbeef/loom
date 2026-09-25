@@ -456,36 +456,37 @@ Rulings the next change must preserve:
 - **Enforcement is proven before a server starts,** because the helper reports
   enforcement only when an execution exits.
 
-A weft ordering race the LSP end-to-end exposed, not fixed here. `make check`
-failed the LSP rename end-to-end once, on a machine loaded by two parallel cold
-builds. The cause is in weft. A custodian adopts a published transport owner
-as Transitive and monitors it, but the begin permit reaches the owner through
-another process chain and can overtake the monitor signal, because BEAM orders
-signals only per sender and receiver pair. An owner that exits normally in that
-window is judged `noproc`, weft reads that as `weft_drain_proof_lost`, and the
-session fails closed. A thirty-line plain-Erlang module reproduces the ordering
-(a few dozen `noproc`s per 1.6M runs under load), and a round trip or
-`process_info(Owner, current_function)` after the monitor removes it. The
-proposed fix is that barrier in weft's `adopt_published` and the `OwnedTask`
-arm of `fill_slots`, recording `ProofAbsent` when the owner is really gone. It
-was observed on weft 0.4.4; this tree pins 0.4.5 and that release has not been
-checked for the barrier. The scripted provider's owner exits about 100 µs after
-begin, which is why this test finds the window first; real httpc owners are
-exposed too, only rarely.
+A weft ordering race the LSP end-to-end exposed, fixed in weft 0.4.5.
+`make check` failed the LSP rename end-to-end once, on a machine loaded by two
+parallel cold builds. The cause was in weft: a scope monitors an owner, but the
+permit that starts the owner reaches it through another process chain and can
+overtake the monitor signal, because BEAM orders signals only per sender and
+receiver pair. An owner that exited normally in that window was judged
+`noproc`, weft read that as `weft_drain_proof_lost`, and the session failed
+closed. The scripted provider's owner exits about 100 µs after begin, which is
+why this test found the window first; real httpc owners were exposed too, only
+rarely.
+
+weft 0.4.5 (Roasbeef/weft#14) puts a delivery barrier between the monitor and
+the permit on both owner arms, `adopt_owners` and `adopt_published`. The
+barrier is `process_info/2`, not `erlang:is_process_alive/1`: on OTP 29 the
+latter leaves the overtaking rate unchanged, measured, although its
+documentation promises the same ordering. Against weft itself, under CPU load,
+8 or more of 7.68M adoptions settled as `DrainProofLost(Noproc)` before the fix
+and none after. Every package pins `weft == 0.4.5`.
 
 Remaining language-server work:
 
-1. Land the weft barrier above, if 0.4.5 does not carry it, and bump the pin.
-2. The daemon custody retirement path stops the manager with the service tree,
+1. The daemon custody retirement path stops the manager with the service tree,
    racing the broker stop that follows. A graceful ordered stop needs a custody
    part in `internal/instance_owner`.
-3. The helper writes stdin while holding the mutex `Cancel` needs (ADR-013 §1,
+2. The helper writes stdin while holding the mutex `Cancel` needs (ADR-013 §1,
    known hazard), so a wedged server blocks cancel until the broker's
    three-second helper kill. Worth fixing in the helper.
-4. Count extension hosts against the per-session lease cap.
-5. A second server per session. A Go and a Gleam project side by side evict
+3. Count extension hosts against the per-session lease cap.
+4. A second server per session. A Go and a Gleam project side by side evict
    each other today.
-6. Follow-ups from the design discussion that are the owner's call: move #26
+5. Follow-ups from the design discussion that are the owner's call: move #26
    (DAP) out of release-blocker in favour of a satellite-local trace
    capability; bounded read-only BEAM introspection for the agent (#454);
    structured session-trace queries beside `history_search` (#236); write the
