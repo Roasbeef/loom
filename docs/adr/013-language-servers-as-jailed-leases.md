@@ -210,8 +210,12 @@ the `mcp` one, made public.
 - **Pull.** Before every query, the caller re-reads every document the
   server holds open. It sends a `didChange` for each document whose digest
   moved, and a `didClose` for each that vanished. This catches `bash`,
-  jobs and code mode's writes. A document the server never opened is read
-  from disk by the server itself. Open documents are bounded at 64, with
+  jobs and code mode's writes. A document the server never opened is not
+  something to rely on the server reading: `gleam lsp`, measured, answers
+  `definition` with nothing and outlines nothing for a file it was never
+  sent. So the manager opens the files a query touches (the hit files of
+  a bare-symbol search, at most 50; the referencing files it computes
+  containers for, at most 32), under the same 64-document bound. Open documents are bounded at 64, with
   LRU `didClose`. The pull is not a lock. Its race with a concurrent write
   is the same race `fs_edit` already has with `bash`, and tool concurrency
   (`Exclusive` on `lsp_rename`) closes it for tools.
