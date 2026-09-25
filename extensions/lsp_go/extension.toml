@@ -1,0 +1,61 @@
+# gopls as a Loom language profile (ADR-014). The [lsp.go] table is
+# exactly what `loom.toml` would carry; installing this extension
+# approves it, and `loom ext check lsp_go` proves it against the module
+# in fixture/.
+[extension]
+name = "lsp_go"
+version = "0.1.0"
+description = "gopls for Loom's language-server tools"
+license = "Apache-2.0"
+tier = "profile"
+
+# gopls writes nothing into the project, so the project stays read-only.
+# It loads packages by running `go list`, and `go` is found on the
+# daemon's PATH; its own GOROOT must be readable in the jail, which it is
+# under /usr, /opt or Homebrew's prefix and is not in a toolchain cache
+# elsewhere (see README.md).
+[lsp.go]
+command = ["gopls"]
+extensions = [".go"]
+root_markers = ["go.mod"]
+
+# The module cache: a module with requirements has their sources here,
+# and `go list` reads them. The fixture has none, so its checks pass
+# without it; any real module needs it.
+readable = ["~/go/pkg/mod"]
+
+# The build cache, which `go list` must be able to write or it loads no
+# packages at all and every question comes back not found. gopls's own
+# file cache, <cache>/gopls, is left out on purpose: measured, gopls
+# answers without it, and a writable root that does not exist yet refuses
+# the whole jail, which on a host where gopls has never run it does not.
+writable = ["<cache>/go-build"]
+
+# GOFLAGS carries an operator's build tags and -mod mode, without which
+# gopls would load a different package set than their build does.
+# XDG_CACHE_HOME is how <cache>/ was expanded: when the daemon runs with
+# one, `go` inside the jail must see it too, or it writes to
+# ~/.cache/go-build, which is not granted (measured: every check then
+# answers not found).
+env = ["GOFLAGS", "XDG_CACHE_HOME"]
+
+# Appended once to lsp_definition's description, in sessions that
+# configure this server, so the model qualifies a name as the resolver
+# splits it.
+hint = "Qualify a name with its package name as imported: util.Greet"
+
+# A qualified name, found by searching the module and narrowed by the
+# package directory the qualifier names.
+[[check]]
+server = "go"
+query = "definition"
+symbol = "util.Greet"
+expect = ["util/util.go:4"]
+
+# Every reference across both packages: the declaration, two calls on one
+# line of main.go, and one on the next.
+[[check]]
+server = "go"
+query = "references"
+symbol = "util.Greet"
+expect = ["util/util.go:4", "main.go:6", "main.go:7"]
