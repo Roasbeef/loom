@@ -288,6 +288,35 @@ was asked.
   threshold reads (`client/checkpoint.remaining_seam`), so asked and told
   are one number. Read-only, `Safe`, `Concurrent`, no sandbox
   requirements.
+- `tools/lsp.{tools, land, diagnostics_observer, RenameMode, render_site,
+  render_references, render_outline, render_calls, render_hover,
+  render_definitions, render_diagnostics, render_preview, render_report,
+  render_error, max_reference_hits, max_rendered_diagnostics}` — the seven
+  `lsp_*` tools over `lsp/query.Door`, the record of closures `client`
+  fills from the session's language-server manager (ADR-013 §5–§6). Every
+  symbol-addressed tool takes `symbol` (qualified names allowed), optional
+  `path` and optional 1-based `line` — a `line` without a `path` is refused
+  in band — and never a position. Every site renders as
+  `path:line:anchor|text`: a grep hit with the anchor `fs_read` prints
+  spliced in, so an answer feeds `fs_edit` without a read. References count
+  first, group by file then by containing symbol, and stop at
+  `max_reference_hits` (50) with a line naming how many were left out.
+  `Warmth.Started` puts one line in front of the answer. `lsp_calls` takes
+  `direction` and `lsp_rename` takes `mode` (`RenameMode`: `Preview`, the
+  default, or `Apply`); an unknown value of either is refused before the
+  door is asked. `land` is the rename's one landing path and needs no
+  `Ctx`, so code mode calls it with `fs.write_target` where the tool uses
+  `fs.edit_target`: plans (`hashline.plan_between`), then targets, then a
+  digest check of every file against the server's base, each phase over
+  every file — any failure writes nothing and reports the failures
+  `Rejected` and the rest `NotAttempted` — then `fs.land_plan` per file in
+  path order, then `after_write` for landed paths only. A diagnostics block
+  is clean only when `Settled([])`; an `Unsettled` one says "NOT settled"
+  first, even when empty, and a rename that wrote nothing carries
+  `Unsettled([])`. `diagnostics_observer` is the `fs.WriteObserver`
+  `client` hands `fs.write_tool_with`/`edit_tool_with`. `lsp_rename` is
+  `Never`/`Exclusive`, the other six `Safe`/`Concurrent`, and all seven ask
+  the broker for nothing: the door clears its own server.
 - `tools/advise.{Advice, Verdict, Ack, name, tool, decode_verdict}` — the
   `advise` tool: an advisor strand's entire outward surface, a value over
   a seam the host fills, exactly as `remember` and `schedule` are.
@@ -421,7 +450,10 @@ was asked.
 - **Depends on**: `core` (json, messages, ids, clock), `broker` (policy
   vocabulary, `clear_call`, `exec` failure shapes, framing output streams —
   the spec DAG's `I → G`), `simplifile` (the production `FileSystem`),
-  `gleam_erlang` (subjects for streamed call events).
+  `gleam_erlang` (subjects for streamed call events), `lsp` (only
+  `lsp/query`, the door's vocabulary: types and a record of closures, no
+  process — `tools/lsp` renders it, and `lsp` depends on nothing here, so
+  the edge cannot cycle; it brings `mcp` and `weft` in transitively).
 - **Depended on by**: `codemode` (the capability router renders a
   `tool.Collected` into a `cap_result`, which is why `tools` cannot
   import it back and `tools/codemode` mirrors its vocabulary instead),
