@@ -197,14 +197,19 @@ extensions = [".gleam"]
 root_markers = ["gleam.toml"]
 project = "writable"
 
-# gopls reads the module cache and writes the build cache, both outside
-# the project, so both are named here.
+# gopls reads the module cache and writes the build cache and its own
+# cache, all outside the project, so all are named here. Take the paths
+# from `go env GOMODCACHE` and `go env GOCACHE`: the cache directory is
+# ~/.cache on Linux but ~/Library/Caches on macOS (so there the writable
+# roots are ~/Library/Caches/go-build and ~/Library/Caches/gopls), and a
+# jail that grants the wrong one leaves go unable to write, so gopls loads
+# no packages and every definition comes back empty.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["~/.cache/go-build"]
+writable = ["~/.cache/go-build", "~/.cache/gopls"]
 env = ["GOFLAGS"]
 
 # Triggered project rules, one [[rule]] table per rule. A rule is a

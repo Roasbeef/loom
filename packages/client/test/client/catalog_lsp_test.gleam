@@ -40,7 +40,7 @@ command = [\"gopls\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
 readable = [\"~/go/pkg/mod\"]
-writable = [\"~/.cache/go-build\"]
+writable = [\"~/.cache/go-build\", \"~/.cache/gopls\"]
 env = [\"GOFLAGS\"]
 "
 
@@ -91,7 +91,10 @@ pub fn documented_servers_parse_to_exact_records_test() {
         root_markers: ["go.mod"],
         project: catalog.ProjectReadOnly,
         readable: [catalog.HomePath("go/pkg/mod")],
-        writable: [catalog.HomePath(".cache/go-build")],
+        writable: [
+          catalog.HomePath(".cache/go-build"),
+          catalog.HomePath(".cache/gopls"),
+        ],
         env: ["GOFLAGS"],
       ),
     ]
