@@ -30,7 +30,7 @@
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
 ////   100c99a10bdf7c898a32de79b01ca4d3cb1664c23c0db29a158b2a3862ecec18  packages/cap/src/cap/kv.gleam
-////   ad73633b9160c053d585f91efc81b1f1a338cfffbd6a9231420aaecd5786f0b3  packages/cap/src/cap/lsp.gleam
+////   8940047d87db925d381fe940c19c58a3f97430d02c4aa31bc38311651767b349  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   cfbfea662dbdb362857911d078d78262c7f781153a3036256997a6309c428b2f  packages/cap/src/cap/notes.gleam
@@ -45,7 +45,7 @@
 ////   4e2446b2d42545449a4c977aca0c71a129e22d694460cd37999fa9429841dd21  packages/cap/src/cap/workflow.gleam
 ////   b3b58fee4cd1fb3ac91be3c441df7483ebfbf342fe92fe456f8d14f49d4c681d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 9ec5f1ab26d71b4ab42a0a59012b0a7e0d1df858db3769db9e4d89a80aa6c7dc
+//// Body digest (every line after the marker): 44350c9f007c497b01c5f6651371991ba28cd0dbecb81b1f6bb11ea8fe6de4bb
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -702,6 +702,10 @@ pub fn definition(Query) -> Result(Found(Site), LspError)
 pub fn diagnostics(option.Option(String)) -> Result(Diagnostics, LspError)
 /// Type information and documentation for the queried symbol, as the
 /// server renders it (usually markdown).
+///
+/// At most 64 KiB of it. A longer answer is cut at the last line break
+/// inside that bound and ends with a line saying how many bytes were cut,
+/// because the server chooses how much it sends.
 ///
 /// Capability: `lsp.hover`.
 pub fn hover(Query) -> Result(String, LspError)
