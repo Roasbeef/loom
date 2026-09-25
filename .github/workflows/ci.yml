@@ -397,7 +397,7 @@ jobs:
           - bucket: fast
             packages: >-
               host core machine prompt session_view web_view web_client telemetry provider broker
-              mcp tools cap ext codemode tui lint sandbox
+              mcp lsp tools cap ext codemode tui lint sandbox
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
