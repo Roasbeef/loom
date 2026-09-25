@@ -125,6 +125,32 @@ pub fn to_string(value: JsonValue) -> String {
   |> string_tree.to_string
 }
 
+/// The same value in a form two encoders cannot disagree about: every
+/// object's fields stable-sorted by key, recursively. Arrays keep their
+/// order, because a JSON array is ordered and reordering one would make
+/// two different values compare equal. Two tool calls whose arguments
+/// differ only in the order a provider streamed their keys are the same
+/// call, and this is the form in which they are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.canonical(json.Object([#("b", json.Int(1)), #("a", json.Null)]))
+///   == json.Object([#("a", json.Null), #("b", json.Int(1))])
+/// ```
+///
+pub fn canonical(value: JsonValue) -> JsonValue {
+  case value {
+    Object(fields:) ->
+      fields
+      |> list.map(fn(field) { #(field.0, canonical(field.1)) })
+      |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+      |> Object
+    Array(items:) -> Array(list.map(items, canonical))
+    String(..) | Int(..) | Float(..) | Bool(..) | Null -> value
+  }
+}
+
 // --- serialization ------------------------------------------------------
 
 fn build(value: JsonValue) -> StringTree {

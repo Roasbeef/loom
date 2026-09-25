@@ -491,32 +491,12 @@ fn limit_field(field: policy.LimitField) -> String {
 /// ```
 ///
 pub fn action_digest(arguments: JsonValue) -> String {
-  let rendered = json.to_string(canonical(arguments))
+  let rendered = json.to_string(json.canonical(arguments))
   let digest = blob.ref_for(bit_array.from_string(rendered))
 
   // Truncated exactly as `record_id` is, and for the same reason: 128
   // bits is far past what a session's escalation set can collide in.
   string.slice(digest, at_index: 7, length: 32)
-}
-
-// Arguments in a form two encoders cannot disagree about: every object's
-// fields stable-sorted by key, recursively. Arrays keep their order —
-// a JSON array is semantically ordered and reordering one would make two
-// genuinely different actions digest alike.
-fn canonical(value: JsonValue) -> JsonValue {
-  case value {
-    json.Object(fields:) ->
-      fields
-      |> list.map(fn(field) { #(field.0, canonical(field.1)) })
-      |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-      |> json.Object
-    json.Array(items:) -> json.Array(list.map(items, canonical))
-    json.String(..)
-    | json.Int(..)
-    | json.Float(..)
-    | json.Bool(..)
-    | json.Null -> value
-  }
 }
 
 /// A bounded human rendering of a call's arguments: the canonicalised
@@ -539,7 +519,7 @@ fn canonical(value: JsonValue) -> JsonValue {
 /// ```
 ///
 pub fn action_preview(arguments: JsonValue) -> String {
-  let rendered = json.to_string(canonical(arguments))
+  let rendered = json.to_string(json.canonical(arguments))
   let bytes = bit_array.from_string(rendered)
   let size = bit_array.byte_size(bytes)
   case size <= preview_bytes {

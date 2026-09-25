@@ -327,3 +327,26 @@ pub fn a_report_offset_counts_codepoints_test() {
   let assert Error(report) = json.parse("\"日本語\" x")
   assert string.contains(report.subject, "codepoint offset 6")
 }
+
+// Key order is the one difference two encoders of the same arguments are
+// free to disagree on, so the canonical form erases it at every depth and
+// keeps array order, which is part of the value.
+pub fn canonical_sorts_keys_at_every_depth_and_keeps_arrays_test() {
+  let streamed =
+    json.Object([
+      #("scope", json.String("repository")),
+      #("limit", json.Int(15)),
+      #("action", json.Object([#("z", json.Null), #("a", json.Int(1))])),
+      #("order", json.Array([json.Int(2), json.Int(1)])),
+    ])
+  let reordered =
+    json.Object([
+      #("order", json.Array([json.Int(2), json.Int(1)])),
+      #("action", json.Object([#("a", json.Int(1)), #("z", json.Null)])),
+      #("limit", json.Int(15)),
+      #("scope", json.String("repository")),
+    ])
+  assert json.canonical(streamed) == json.canonical(reordered)
+  assert json.to_string(json.canonical(streamed))
+    == "{\"action\":{\"a\":1,\"z\":null},\"limit\":15,\"order\":[2,1],\"scope\":\"repository\"}"
+}
