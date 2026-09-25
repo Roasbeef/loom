@@ -45,3 +45,11 @@ declared|linux|SKIP git worktree: helper has no filesystem enforcement|The ordin
 # the settlement. The policy, lease-cap and relay assertions in the same
 # file run on every runner without this waiver.
 declared|linux|SKIP lsp jailed gleam lsp: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement (cgroup v2); the conversation, the write containment and the lease release still run, and a runner with a delegated cgroup base exercises the enforced settlement without this waiver.
+
+# The language-server manager's `gopls` fixture drives a real `gopls`
+# through the jail on a two-package Go module. It is feature-detected: a
+# runner without `gopls` (or without `go`, which `gopls` shells out to)
+# prints this line and passes. The `gleam lsp` fixture beside it needs only
+# the toolchain every runner has, so the manager's door, its jail and its
+# probe are still exercised against a real server without this waiver.
+declared|linux|SKIP lsp manager gopls: gopls or go is not installed|The ordinary runner installs no gopls; the gleam lsp fixture in the same file runs the whole door against a real jailed server, and a host with gopls on PATH or at ~/go/bin runs this one.
