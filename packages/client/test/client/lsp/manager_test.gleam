@@ -1229,15 +1229,24 @@ const probe_source = "pub fn greet() -> String {\n  \"hi\"\n}\n"
 
 const other_source = "import probe\n\npub fn twice() -> String {\n  probe.greet() <> probe.greet()\n}\n"
 
+// The live tests resolve a bare symbol, which the manager does with
+// ripgrep inside the jail before asking the server, so ripgrep is as much
+// a prerequisite as the server itself: without it the answer is a worded
+// refusal, not a result to assert on.
 pub fn gleam_lsp_answers_the_door_from_inside_the_jail_test() {
   case
     live_prerequisites("lsp manager gleam lsp"),
-    ffi_os.find_executable("gleam")
+    ffi_os.find_executable("gleam"),
+    ffi_os.find_executable("rg")
   {
-    Error(Nil), _ -> Nil
-    Ok(_), Error(_) ->
+    Error(Nil), _, _ -> Nil
+    Ok(_), Error(_), _ ->
       io.println_error("SKIP lsp manager gleam lsp: gleam is not on PATH")
-    Ok(helper), Ok(_) -> run_gleam(live_rig(helper, "gleam"))
+    Ok(_), Ok(_), Error(_) ->
+      io.println_error(
+        "SKIP lsp manager gleam lsp: ripgrep (rg) is not on PATH",
+      )
+    Ok(helper), Ok(_), Ok(_) -> run_gleam(live_rig(helper, "gleam"))
   }
 }
 
@@ -1381,11 +1390,14 @@ pub fn gopls_answers_the_door_from_inside_the_jail_test() {
   case
     live_prerequisites("lsp manager gopls"),
     simplifile.is_file(gopls),
-    ffi_os.find_executable("go")
+    ffi_os.find_executable("go"),
+    ffi_os.find_executable("rg")
   {
-    Error(Nil), _, _ -> Nil
-    Ok(_), Ok(True), Ok(go) -> run_gopls(live_rig_for_go(), gopls, go)
-    Ok(_), _, _ ->
+    Error(Nil), _, _, _ -> Nil
+    Ok(_), Ok(True), Ok(go), Ok(_) -> run_gopls(live_rig_for_go(), gopls, go)
+    Ok(_), Ok(True), Ok(_), Error(_) ->
+      io.println_error("SKIP lsp manager gopls: ripgrep (rg) is not on PATH")
+    Ok(_), _, _, _ ->
       io.println_error("SKIP lsp manager gopls: gopls or go is not installed")
   }
 }
