@@ -69,6 +69,9 @@ import client/internal/instance_owner as custody
 import client/jobs
 import client/jobseam
 import client/jobtools
+import client/lsp/jail as lsp_jail
+import client/lsp/leases as lsp_leases
+import client/lsp/manager as lsp_manager
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -535,6 +538,32 @@ pub type Instance {
     /// `rulescan`'s is one, and the door `client/distillpass.settled`
     /// waits on.
     memory_pass: Option(address.Address(distillpass.Message)),
+    /// The session's language-server plane, or `None` on a boot whose
+    /// catalogue configures no `[lsp.<name>]` server, or whose every
+    /// server was refused at load. Held so `close_instance` can stop the
+    /// server gracefully and then abort the plane's operation, the
+    /// backstop ADR-013 §1 assigns to session end.
+    lsp: Option(LspPlane),
+  )
+}
+
+/// The session's language-server plane: the manager every `lsp_*` tool,
+/// `cap/lsp` capability and post-write diagnostics block asks through, and
+/// what its teardown needs.
+///
+/// One per session, because the helper pool it leases from is one per
+/// session (ADR-013 §1, "Pool pressure").
+pub type LspPlane {
+  LspPlane(
+    /// The handle on the supervised manager, reached through its address
+    /// so a replacement is the same manager to every door built over it.
+    manager: lsp_manager.Manager,
+    /// The session's helper-lease counter, started from the pool size.
+    leases: lsp_leases.Leases,
+    /// The language servers' attribution operation. Session end aborts
+    /// it after the graceful stop, so a server that outlived its grace
+    /// cannot outlive the session.
+    op_id: OpId,
   )
 }
 
@@ -2009,6 +2038,194 @@ fn code_mode_seam(
   }
 }
 
+// --- the language-server plane ----------------------------------------------
+//
+// ADR-013 §§1 and 6: a configured `[lsp.<name>]` server runs in the jail as
+// a session lease, under the session's own enforcement demand, and every
+// surface reaches it through one manager's door. The boot does four things
+// and no more: it resolves each server's `~/` roots once, against the
+// harness's own `HOME`; it starts the lease counter from the session's pool
+// size; it mints the servers' attribution operation; and it describes the
+// manager for the service supervisor. Nothing is spawned here — the first
+// query starts a server, after the manager's enforcement probe.
+
+// The plane and the manager's configuration, which the service supervisor
+// needs to start the manager under its address.
+type LspWiring {
+  LspWiring(
+    plane: LspPlane,
+    name: address.Address(lsp_manager.Msg),
+    config: lsp_manager.Config,
+  )
+}
+
+// A boot with no `[lsp.<name>]` table builds nothing and logs nothing: an
+// unconfigured workspace pays nothing (ADR-013 §6). A configured server
+// whose roots will not resolve is refused alone, one `lsp.unavailable`
+// line each, and the others still serve; a counter that will not start
+// refuses them all the same way. Neither refuses the boot, for the reason
+// `mcp.unavailable` does not: a session without semantic queries is still
+// a session, and the operator is told which table to fix.
+fn lsp_wiring(
+  settings: Settings,
+  logger: Logger,
+  base_policy: policy.SandboxPolicy,
+  toolchain: Result(codemode_wiring.Toolchain, String),
+  broker_actor: Broker,
+  clock: Clock,
+  seed: Int,
+  name: address.Address(lsp_manager.Msg),
+) -> Option(LspWiring) {
+  let home = home_directory()
+  let servers =
+    list.filter_map(settings.catalog.lsp_servers, fn(server) {
+      lsp_server_roots(server, home)
+      |> result.map_error(fn(reason) {
+        log.warn(logger, "lsp.unavailable", [
+          field.text(key: "server", value: server.name),
+          field.text(key: "reason", value: reason),
+        ])
+      })
+    })
+  case servers {
+    [] -> None
+    [_, ..] ->
+      case lsp_leases.start(settings.helper_pool_size) {
+        Error(error) -> {
+          log.warn(logger, "lsp.unavailable", [
+            field.text(
+              key: "servers",
+              value: string.join(list.map(servers, fn(one) { one.name }), ","),
+            ),
+            field.text(
+              key: "reason",
+              value: "the helper-lease counter would not start: "
+                <> string.inspect(error),
+            ),
+          ])
+          None
+        }
+        Ok(leases) ->
+          Some(lsp_plane_wiring(
+            settings,
+            servers,
+            leases,
+            base_policy,
+            toolchain,
+            broker_actor,
+            clock,
+            seed,
+            name,
+            home,
+          ))
+      }
+  }
+}
+
+// The manager's configuration over the production backend: every server,
+// its probe and every symbol search clear through the session's broker,
+// under the session's demand and the plane's own operation.
+fn lsp_plane_wiring(
+  settings: Settings,
+  servers: List(catalog.LspServer),
+  leases: lsp_leases.Leases,
+  base_policy: policy.SandboxPolicy,
+  toolchain: Result(codemode_wiring.Toolchain, String),
+  broker_actor: Broker,
+  clock: Clock,
+  seed: Int,
+  name: address.Address(lsp_manager.Msg),
+  home: Option(String),
+) -> LspWiring {
+  let op_id = lsp_jail.operation(clock, seed:)
+  let timing = lsp_manager.default_timing()
+  let backend =
+    lsp_manager.jailed(lsp_manager.Jailed(
+      workspace: settings.workspace,
+      session_base: base_policy,
+      demand: settings.demand,
+      toolchain: option.from_result(toolchain),
+      home:,
+      // The session's store, the same reader the jailed tool environment
+      // is built from, so `PATH` and a server's `env` names mean what
+      // they mean to `bash`.
+      reading: fn(variable) { secret.lookup(settings.secrets, variable) },
+      run: tool.broker_runner(
+        broker: broker_actor,
+        waiting: lsp_jail.clearance_wait_ms,
+      ),
+      abort_step: fn(step_id) {
+        broker.abort_step(broker_actor, op_id, step_id:)
+      },
+      leases:,
+      op_id:,
+      clock:,
+      exec_ms: timing.exec_ms,
+    ))
+  let config =
+    lsp_manager.Config(
+      workspace: settings.workspace,
+      servers:,
+      backend:,
+      timing:,
+    )
+  LspWiring(
+    plane: LspPlane(
+      manager: lsp_manager.addressed(name, config),
+      leases:,
+      op_id:,
+    ),
+    name:,
+    config:,
+  )
+}
+
+// One server with its `readable` and `writable` roots resolved to
+// absolute paths, once, at load. The jail resolves them again at every
+// start and would refuse the same way; refusing here instead is what makes
+// the refusal an operator-visible boot line rather than a `no_server`
+// answer the model meets on its first query.
+fn lsp_server_roots(
+  server: catalog.LspServer,
+  home: Option(String),
+) -> Result(catalog.LspServer, String) {
+  let absolute = fn(paths) {
+    list.try_map(paths, fn(path) {
+      catalog.expand_lsp_path(path, home) |> result.map(catalog.AbsolutePath)
+    })
+  }
+  use readable <- result.try(absolute(server.readable))
+  use writable <- result.try(absolute(server.writable))
+  Ok(catalog.LspServer(..server, readable:, writable:))
+}
+
+// The manager as a supervised child, when there is a plane to run.
+fn with_lsp_manager(
+  builder: sup.Builder,
+  wiring: Option(LspWiring),
+) -> sup.Builder {
+  case wiring {
+    None -> builder
+    Some(wiring) ->
+      sup.add(builder, lsp_manager.supervised(wiring.name, wiring.config))
+  }
+}
+
+// Session end for the plane, in ADR-013 §1's order: the graceful stop
+// (`shutdown`, `exit`, stdin EOF, waited for in this process), then the
+// abort of the plane's operation as the backstop for a server that
+// outlived its grace, then the counter.
+fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
+  case plane {
+    None -> Nil
+    Some(plane) -> {
+      lsp_manager.stop(plane.manager)
+      broker.abort(broker_actor, plane.op_id)
+      lsp_leases.stop(plane.leases)
+    }
+  }
+}
+
 // --- installed extensions ---------------------------------------------------
 //
 // Discovery is read-only and happens once, here, before the registry is
@@ -2844,6 +3061,27 @@ fn assemble_in(
       clearance_ms: jobs_clearance_ms,
     ))
 
+  // The language-server plane, on the two-name pattern: the manager's
+  // address is minted now so the door the tools, code mode and the write
+  // tools' diagnostics observer all share can close over it, and the
+  // manager starts under the service supervisor below. No `[lsp.<name>]`
+  // table, or none that survived its load, means no plane at all: no
+  // counter, no manager, no `lsp_*` tool and no `cap/lsp`, and the write
+  // tools are the plain ones.
+  let lsp_wiring =
+    lsp_wiring(
+      settings,
+      logger,
+      base_policy,
+      toolchain,
+      broker_actor,
+      clock,
+      entropy(),
+      address.new_address(namespace),
+    )
+  let lsp_door =
+    option.map(lsp_wiring, fn(wiring) { lsp_manager.door(wiring.plane.manager) })
+
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -2860,6 +3098,13 @@ fn assemble_in(
     jobs_door,
     owner,
   ))
+
+  // `lsp.*` is answered by the same door the `lsp_*` tools call, so a
+  // program and a tool call ask the one server this session runs. A
+  // `None` door leaves `cap/lsp` unadmitted, which is what a host with no
+  // configured server has always had.
+  let code_mode_host =
+    option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
   let code_mode_host =
     option.map(code_mode_host, fn(config) {
       codemode_wiring.Config(
@@ -3048,10 +3293,10 @@ fn assemble_in(
         schedule_seam,
         Some(context_seam),
         Some(jobtools.seam(jobs_door)),
-        // No language-server door yet: the manager that fills one is
-        // wired into the boot separately, and until then no `lsp_*` tool
-        // is registered and the write tools are the plain ones.
-        None,
+        // The language-server door, when a server is configured: it
+        // registers the `lsp_*` tools and gives `fs_write` and `fs_edit`
+        // their settled-diagnostics block.
+        lsp_door,
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
@@ -3468,6 +3713,11 @@ fn assemble_in(
     // either durable or offered again: titles live in their cells, and the
     // next step on each strand books it afresh.
     |> with_glance_loop(glance_wiring)
+    // The language-server manager is in this tier because a replacement
+    // loses nothing a query cannot rebuild: the dead manager's keepers
+    // stop their servers when it goes, and the next query starts one
+    // again, cold, and says so.
+    |> with_lsp_manager(lsp_wiring)
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -3615,6 +3865,7 @@ fn assemble_in(
     prompt: assembled,
     helper_path: settings.helper_path,
     mcp: mcp_layer,
+    lsp: option.map(lsp_wiring, fn(wiring) { wiring.plane }),
     rulescan: case settings.rules {
       [] -> None
       _configured -> Some(rulescan_name)
@@ -3802,6 +4053,11 @@ pub fn shutdown(booted: Booted) -> Nil {
 pub fn close_instance(instance: Instance) -> Nil {
   hub.drain_held(instance.gateway)
   let _closed = api.close(instance.runtime)
+
+  // The language server stops after the runtime, so no query is still
+  // asking it, and before the services, so its manager is stopped
+  // deliberately (and not replaced) rather than killed with the tree.
+  stop_lsp(instance.lsp, instance.broker)
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)
   broker.stop(instance.broker)

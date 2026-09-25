@@ -588,16 +588,29 @@ pub fn narrowing_text(narrowing: Narrowing) -> String {
 
 /// The clearance one server runs under: the jail, the lease's operation
 /// and step, one outstanding execution and a budget deadline
-/// `lease_lifetime_ms` after `now_ms`, platform enforcement, and
-/// `RefuseNarrowed`, because nothing about a jailed server is best-effort.
+/// `lease_lifetime_ms` after `now_ms`, `RefuseNarrowed` because no part of
+/// a jailed server's policy may be quietly dropped, and the caller's
+/// `demand`.
+///
+/// The demand is a parameter rather than a constant because ADR-013 §1
+/// clears a server under the session's own `EnforcementDemand` — the one
+/// `bash` clears under — and the manager's enforcement probe proves exactly
+/// that demand before the lease is cleared. A spec that wrote its own
+/// demand would clear the lease under something the probe never proved.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // jail.call_spec(built, lsp_op, now_ms: 0).budget.max_outstanding == 1
+/// // jail.call_spec(built, lsp_op, now_ms: 0, demand: settings.demand)
+/// //   .budget.max_outstanding == 1
 /// ```
 ///
-pub fn call_spec(jail: Jail, op_id: OpId, now_ms now_ms: Int) -> CallSpec {
+pub fn call_spec(
+  jail: Jail,
+  op_id: OpId,
+  now_ms now_ms: Int,
+  demand demand: exec.EnforcementDemand,
+) -> CallSpec {
   broker.CallSpec(
     op_id:,
     step_id: jail.step_id,
@@ -605,9 +618,7 @@ pub fn call_spec(jail: Jail, op_id: OpId, now_ms now_ms: Int) -> CallSpec {
     requirements: jail.requirements,
     grants: [],
     response: broker.RefuseNarrowed,
-    // Full enforcement always fails on Darwin; platform enforcement is
-    // strict on Linux and admits only the reported Darwin gaps.
-    demand: exec.PlatformEnforcement,
+    demand:,
     argv: jail.argv,
     env: jail.env,
     cwd: jail.cwd,
@@ -676,12 +687,14 @@ pub type Launch {
 pub const clearance_wait_ms = 30_000
 
 /// The production launch for one jail: the broker's runner and step abort,
-/// under `op_id`, with the budget deadline read from `clock` now.
+/// under `op_id` and `demand`, with the budget deadline read from `clock`
+/// now.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // jail.transport(jail.launch(broker, counter, built, lsp_op, clock))
+/// // jail.transport(jail.launch(broker, counter, built, lsp_op, clock,
+/// //   demand: settings.demand))
 /// ```
 ///
 pub fn launch(
@@ -690,9 +703,10 @@ pub fn launch(
   jail: Jail,
   op_id: OpId,
   clock: Clock,
+  demand demand: exec.EnforcementDemand,
 ) -> Launch {
   let #(now, _clock) = clock.read(clock)
-  let spec = call_spec(jail, op_id, now_ms: now)
+  let spec = call_spec(jail, op_id, now_ms: now, demand:)
   Launch(
     run: tool.broker_runner(broker: broker_actor, waiting: clearance_wait_ms),
     abort: fn() {

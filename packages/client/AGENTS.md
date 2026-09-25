@@ -1991,8 +1991,9 @@ catalogue without opening runtimes. Explicit admission invokes
   `fs_edit` with `tools/lsp.diagnostics_observer`, so a landed write's
   result gains its settled diagnostics; with `None` the two write tools are
   the plain ones and the definitions are byte-identical to a host that
-  never heard of language servers. `serve` passes `None` until the
-  session's language-server manager is wired into the boot.
+  never heard of language servers. `serve` passes the session manager's
+  door when the catalogue configures an `[lsp.<name>]` server that
+  survived its load, and `None` otherwise (see "Language servers").
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -2125,7 +2126,10 @@ catalogue without opening runtimes. Explicit admission invokes
   error, not a fallback — a typo that quietly served the workspace seam
   would look exactly like a server ignoring the flag.
 - `client/serve.Instance` owns one session's runtime, broker, helper pool,
-  MCP layer, gateway and composition-service supervisor.
+  MCP layer, gateway and composition-service supervisor, and `lsp:
+  Option(LspPlane)` — the language-server manager's handle, the helper-lease
+  counter and the servers' attribution operation, `None` with no
+  configured server.
   Its `namespace` owns the 11 reclaimable service addresses and is retired
   after the services stop. `prompt` retains the exact assembled prompt;
   `helper_path` identifies the executable used by this session. Optional
@@ -4236,6 +4240,65 @@ MCP layer retirement fixes one monotonic proof deadline before issuing stops.
 Each parallel collector passes only the remaining budget to client shutdown;
 late scheduling cannot grant a fresh per-client wait. The outer Weft scope
 retains its collection margin so a verdict at the proof cutoff can be observed.
+
+## Language servers
+
+ADR-013 is the ruling; these are the pieces that carry it in this package.
+
+- `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
+  Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,
+  probe, search_jailed}` — the session's one-server manager. The door's
+  closures run in the caller: they ask the manager for the live client,
+  then do the pull-resync, the requests and the conversion to `Site`s
+  themselves, so a slow query holds up only its caller. The probe
+  (`probe_argv` under the server's exact policy) must pass under the
+  session's demand before the server clears; `after_write` never starts a
+  server. `supervised(name, config)` is the service-tier child (transient,
+  bound to a `weft/registry` address); `addressed(name, config)` is the
+  handle over it, resolving the address per exchange, so a replacement is
+  the same manager to every door. `stop` asks the manager to shut down and
+  waits, in the caller and bounded by `Timing.previous_ms`, for the
+  server's keeper to finish its graceful stop.
+- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, same,
+  display, split_symbol, named, container, outline, site}` — the pure half:
+  which `{server, root}` owns a path (nearest root marker, real path under
+  the root), how a symbol splits into qualifier and identifier, which
+  definition a qualifier selects, and how a location renders as
+  `path:line:anchor|text`.
+- `client/lsp/jail.{Placement, Jail, Launch, operation, step_id, locate,
+  policy_for, call_spec, launch, transport}` — one server's jail and its
+  transport. `call_spec(jail, op, now_ms:, demand:)` takes the demand from
+  its caller: the session's, which the probe proved.
+- `client/lsp/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
+  release, stop}` — the per-session cap on session-lived helper leases,
+  `pool_size - reserved_helpers`.
+- **Traffic.** `manager.Msg`: `Acquire(identity, reply)` (a caller wants the
+  server, started if need be; waiters join one start), `Peek`,
+  `Opened(identity, paths)` (a cast recording documents a caller opened),
+  `KeeperReady(keeper, outcome)`, `KeeperDown`, `Shutdown(reply:
+  Subject(Option(Pid)))` (the reply names the keeper still stopping a
+  server). The keeper's own messages are `Begin`, `PreviousGone`, `Release`,
+  `ClientDown` and `ManagerDown`: an evicted or released keeper, or one
+  whose manager died, stops its client gracefully (`lsp/client.stop`).
+- **Serve wiring.** `serve.assemble_in` builds the plane only when
+  `Catalog.lsp_servers` is non-empty. Each server's `readable`/`writable`
+  `~/` roots are expanded once with `catalog.expand_lsp_path(_,
+  serve.home_directory())`; a server whose roots will not resolve, or every
+  server when the lease counter will not start, is refused with one
+  `lsp.unavailable` line and the boot goes on. The counter starts from
+  `Settings.helper_pool_size`, `jail.operation` mints the attribution
+  operation, and the manager runs as a service-tier child under a minted
+  address, over `manager.jailed` with `Settings.demand`. The same door goes
+  to `contributions.built_in` and `codemode.over_lsp`. `close_instance`
+  stops the manager after `api.close` and before the service tree, then
+  aborts the plane's operation (the backstop) and stops the counter. A
+  daemon session retired through custody loses the manager with the
+  service tree; its keeper sees `ManagerDown` and stops the server, and
+  pool close is the backstop there.
+- `conformance/lsp_e2e_test` is issue #25's acceptance through
+  `serve.open_instance`: references, an anchored `fs_edit`, a rename
+  preview and apply over a real jailed `gleam lsp`, and a stale apply
+  raced by a concurrent writer.
 
 ## Code-mode language servers
 
