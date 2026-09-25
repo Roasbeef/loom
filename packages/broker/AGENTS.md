@@ -22,6 +22,13 @@ protocol (spec Part 1.4). WP-G.
   `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
   tool requirements ⊕ escalation grants; `narrow_unenforceable` fails
   closed.
+- `broker/policy.{session_lease, LeaseOutput}` — the base a session-lived
+  jailed process clears under: `wall_s` and `cpu_s` zeroed on the *base*
+  (a zero requirement against a non-zero base is a narrowing
+  `RefuseNarrowed` refuses), and `output_bytes` zeroed only for
+  `OutputIsWire`. An extension host's stdout is a log and keeps its cap; a
+  language server's stdout is its JSON-RPC wire (ADR-013). The lease's
+  real bound is the pooled budget deadline the relay enforces.
 - `broker/policy.{Mount, MountAccess, MountRequirement}` — one explicit
   bind of a host path into the jail, at policy version 2
   (`protocol-change/004`). `MountRequired` asks the helper to refuse an
