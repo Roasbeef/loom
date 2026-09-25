@@ -155,7 +155,7 @@ pub fn render_rail(
     |> block.with_title_styled(
       [
         span.span_styled(" AGENTS ", theme.current_bold()),
-        span.span_styled("· F2 inspect ", theme.quiet_text()),
+        span.span_styled("· ^O inspect ", theme.quiet_text()),
       ],
       block.Top,
     )

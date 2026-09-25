@@ -717,7 +717,7 @@ pub fn render(
             text.pad_right(
               "  +"
                 <> int.to_string(list.length(lines) - list.length(shown))
-                <> " more · F2 agents",
+                <> " more · ^O agents",
               area.size.width,
             ),
             theme.quiet_text(),

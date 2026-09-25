@@ -1532,7 +1532,7 @@ fn input_behavior(model: Model) -> String {
   use <- bool.guard(
     model.captured != None
       && !tui_model.is_known_strand(model.strands, model.active_strand),
-    " recipient unavailable · draft retained · F2 agents ",
+    " recipient unavailable · draft retained · ^O agents ",
   )
   use <- bool.guard(model.peer == Disconnected, case model.reconnect {
     ReconnectAttempting(..) -> " Reconnecting to the daemon · draft retained "

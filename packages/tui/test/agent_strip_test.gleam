@@ -728,3 +728,23 @@ pub fn minted_ids_in_the_activity_read_as_names_test() {
     as "main is always listed"
   assert line.text == "Waiting for audit-json, read-docs"
 }
+
+// Ctrl+O opens and closes the agent inspector from the composer, as F2
+// does, and leaves the draft and its recipient untouched.
+pub fn ctrl_o_opens_and_closes_the_agent_inspector_test() {
+  let initial =
+    tui_model.Model(
+      ..model(),
+      strands: roster(),
+      input: textarea.state_from_string("draft"),
+    )
+    |> sized(120, 30)
+  let opened = initial |> press("ctrl+o")
+  let assert tui_model.AgentInspector(_) = opened.overlay
+    as "ctrl+o opens the inspector"
+  assert opened.input == initial.input
+  let closed = opened |> press("ctrl+o")
+  assert closed.overlay == tui_model.NoOverlay
+  assert closed.active_strand == "main"
+  assert closed.input == initial.input
+}

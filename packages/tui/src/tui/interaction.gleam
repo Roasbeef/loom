@@ -547,7 +547,7 @@ fn update_agent_inspector(
           agents.Inspector(..inspector, focus: agents.Composing),
         ),
       )
-    keys.Escape | keys.F(2) ->
+    keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
         ..model,
         overlay: NoOverlay,
@@ -805,7 +805,7 @@ fn update_workspace_composer(
   inspector: agents.Inspector,
 ) -> Model {
   case key {
-    keys.Escape | keys.F(2) ->
+    keys.Escape | keys.F(2) | keys.Ctrl("o") ->
       Model(
         ..model,
         overlay: AgentInspector(
@@ -905,7 +905,11 @@ fn update_strip_key(key: keys.Key, model: Model) -> Model {
 fn update_main_key_composing(key: keys.Key, model: Model) -> Model {
   case layout.diff_shown(model), model.worktree.focus, key {
     _, _, keys.Alt("q") -> submit.open_queue(model)
-    _, _, keys.F(2) -> submit.open_agents(model)
+
+    // Ctrl+O ("open agents") is the chord a hand already on the keyboard
+    // reaches; F2 stays for anyone who learned it. Ctrl+A was the other
+    // candidate and is the composer's start-of-line.
+    _, _, keys.F(2) | _, _, keys.Ctrl("o") -> submit.open_agents(model)
     True, _, keys.Ctrl("d") ->
       Model(
         ..model,

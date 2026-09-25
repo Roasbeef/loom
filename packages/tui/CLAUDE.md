@@ -2,7 +2,7 @@
 
 ## Agent workspace
 
-`F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
+`Ctrl+O`, `F2` and `/agents` open `agents.Inspector`, whose selection is a strand ID.
 Arrows inspect without changing `Model.active_strand`; Enter explicitly opens
 the selected transcript and recipient. Missing selections stay visible as
 unavailable until navigation chooses another row. `n` visits the next attention
@@ -96,7 +96,7 @@ and the advisor, which has its own band, is listed only while it is active.
 The strip appears once a second agent is listed and the terminal is at least
 `min_screen_height` rows. It grows a row per agent, up to a quarter of the
 screen and never more than `max_rows`; any further rows fold into a
-`+N more · F2 agents` row. `layout.layout` includes it in the footer
+`+N more · ^O agents` row. `layout.layout` includes it in the footer
 rectangle and `layout.footer_split` divides the two, so no other hit-test
 or scroll path sees it. While it is drawn, the reviewer band above the
 composer steps aside.
