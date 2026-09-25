@@ -673,7 +673,51 @@ fn run_session(
   let assert Ok(operation.RunLastResult(outcome: completion, ..)) = outcome
     as "the run must settle"
   assert completion == operation.RunCompleted(operation.CompletedByAssistant)
-  transcript(settings.session_path)
+  let messages = transcript(settings.session_path)
+
+  echo_language_server_results(name, messages)
+  messages
+}
+
+// Every language-server tool result, printed whole to stderr before any
+// assertion reads the transcript. The assertions below print their value
+// truncated, which cut the one line that names why a server failed ("the
+// language server did not answer: …") on the jailed CI lane, where the
+// enforced jail differs from a developer's container. Stderr survives
+// EUnit's capture, so a failure there names its own cause.
+fn echo_language_server_results(
+  name: String,
+  messages: List(message.AgentMessage),
+) -> Nil {
+  list.each(messages, fn(entry) {
+    case entry {
+      message.ToolResultMessage(tool_name:, content:, ..) ->
+        case string.starts_with(tool_name, "lsp_") {
+          True ->
+            io.println_error(
+              "lsp e2e "
+              <> name
+              <> " "
+              <> tool_name
+              <> ": "
+              <> result_text(content),
+            )
+          False -> Nil
+        }
+      _ -> Nil
+    }
+  })
+}
+
+fn result_text(content: List(message.ToolResultBlock)) -> String {
+  content
+  |> list.filter_map(fn(block) {
+    case block {
+      message.ToolResultText(text:, ..) -> Ok(text)
+      message.ToolResultImage(..) -> Error(Nil)
+    }
+  })
+  |> string.join("\n")
 }
 
 // The scripted transport with a hook in front of it. The hook runs in the
