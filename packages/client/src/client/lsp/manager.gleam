@@ -540,10 +540,22 @@ pub fn search_jailed(
   search_result(collected)
 }
 
+// Why a bare name could not be searched for when ripgrep is missing, and
+// the form of the question that needs no search at all.
+const rg_missing = "finding a bare name searches the project with ripgrep (rg), "
+  <> "which is not installed where the sandbox can run it; give the `path` "
+  <> "(and the 1-based `line`) of a file that mentions the symbol, and the "
+  <> "language server is asked directly"
+
 // ripgrep exits 0 with matches and 1 without; anything else is its own
-// error, which it wrote to stderr.
+// error, which it wrote to stderr. 126 and 127 are the helper's own codes
+// for a program it could not resolve or run inside the jail: ripgrep is
+// not installed where the jail can see it, which a bare name cannot work
+// around but a named file can, so that is what the answer says.
 fn search_result(collected: tool.Collected) -> Result(List(Hit), String) {
   case collected.outcome {
+    broker.CallExited(result:) if result.code == 126 || result.code == 127 ->
+      Error(rg_missing)
     broker.CallExited(result:) if result.code == 0 || result.code == 1 ->
       bit_array.to_string(collected.stdout)
       |> result.unwrap("")
@@ -559,7 +571,7 @@ fn search_result(collected: tool.Collected) -> Result(List(Hit), String) {
         <> string.trim(result.unwrap(bit_array.to_string(collected.stderr), "")),
       )
     broker.CallFailed(failure: exec.RefusedByHelper(code: "spawn_failed", ..)) ->
-      Error("ripgrep (rg) is not available in the language server's jail")
+      Error(rg_missing)
     broker.CallFailed(failure:) ->
       Error("the symbol search failed: " <> tool.exec_failure_text(failure))
   }
