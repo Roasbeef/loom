@@ -403,6 +403,101 @@ alias renderer. Capability mutations need a rebuilt code-mode seed; the final
 full gate used a restored seed. Hosted CI and Linux signoff on the new PR
 remain separate from this local verification.
 
+## Language-server support (issue #25)
+
+Loom's own agent can ask a language server about the code it is editing. The
+ruling is [ADR-013](adr/013-language-servers-as-jailed-leases.md) and the
+account is [the LSP architecture doc](architecture/lsp.md). Read both before
+touching any of it; the ADR's "Measured" table and its corrections are what
+the code is built against.
+
+A session whose `loom.toml` carries an `[lsp.<name>]` table gets:
+
+- seven tools, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols`,
+  `lsp_calls`, `lsp_diagnostics` and `lsp_rename`. They address symbols by
+  name (optionally qualified, `util.Greet`, and narrowed by a path and a
+  1-based line), never by position, and answer with anchored sites a model can
+  feed straight into `fs_edit`.
+- settled diagnostics appended to `fs_write` and `fs_edit` results for files
+  the running server owns.
+- `cap/lsp` in code mode, admitted only when a server is configured, so a
+  session without one pays nothing in its cached prefix.
+- a rename that previews by default and applies through the hashline landing
+  path, refusing the whole rename when any file on disk no longer matches what
+  the server saw.
+
+The server runs as an ordinary jailed exec under the session's own enforcement
+demand, after a probe proves that demand is met, one per session, with a lazy
+restart. Nothing is discovered or installed; an unconfigured workspace starts
+nothing.
+
+Validated on a cgroup-v1 container, so under `BestEffort`: the scripted-model
+acceptance in `conformance/lsp_e2e_test.gleam` against a jailed `gleam lsp`
+(rename across three files, concurrent-write rejection, an `fs_edit` using a
+references anchor) and a `gopls` variant. Not validated there: the enforced
+path under `PlatformEnforcement` (the probe refuses on that host, correctly),
+and macOS. The Linux signoff on a host with a delegated cgroup v2 base is where
+those run.
+
+Rulings the next change must preserve:
+
+- **Positions never leave `packages/lsp`.** The model and every surface speak
+  `lsp/query.Site`; `lsp/text` is the only converter, against the exact text a
+  position was computed on. A site's text is the line as hashline sees it (a
+  CRLF line keeps its `\r`), so its anchor is the one `fs_read` prints.
+- **Gate every request on advertised capabilities.** `gleam lsp` never answers
+  a request it did not advertise.
+- **Edits land only through hashline.** The server never writes;
+  `workspace/applyEdit` is declined and resource operations are refused.
+- **The harness never reads a path a server merely names.** The jail bounds
+  what a server reads, not what it names. `client/lsp/resolve.admit` admits a
+  server-named path only under the server's root and outside every protected
+  entry; anything else is shown with no text and never opened.
+- **Enforcement is proven before a server starts,** because the helper reports
+  enforcement only when an execution exits.
+
+A weft ordering race the LSP end-to-end exposed, not fixed here. `make check`
+failed the LSP rename end-to-end once, on a machine loaded by two parallel cold
+builds. The cause is in weft. A custodian adopts a published transport owner
+as Transitive and monitors it, but the begin permit reaches the owner through
+another process chain and can overtake the monitor signal, because BEAM orders
+signals only per sender and receiver pair. An owner that exits normally in that
+window is judged `noproc`, weft reads that as `weft_drain_proof_lost`, and the
+session fails closed. A thirty-line plain-Erlang module reproduces the ordering
+(a few dozen `noproc`s per 1.6M runs under load), and a round trip or
+`process_info(Owner, current_function)` after the monitor removes it. The
+proposed fix is that barrier in weft's `adopt_published` and the `OwnedTask`
+arm of `fill_slots`, recording `ProofAbsent` when the owner is really gone. It
+was observed on weft 0.4.4; this tree pins 0.4.5 and that release has not been
+checked for the barrier. The scripted provider's owner exits about 100 µs after
+begin, which is why this test finds the window first; real httpc owners are
+exposed too, only rarely.
+
+Remaining language-server work:
+
+1. Land the weft barrier above, if 0.4.5 does not carry it, and bump the pin.
+2. The daemon custody retirement path stops the manager with the service tree,
+   racing the broker stop that follows. A graceful ordered stop needs a custody
+   part in `internal/instance_owner`.
+3. The helper writes stdin while holding the mutex `Cancel` needs (ADR-013 §1,
+   known hazard), so a wedged server blocks cancel until the broker's
+   three-second helper kill. Worth fixing in the helper.
+4. Count extension hosts against the per-session lease cap.
+5. A second server per session. A Go and a Gleam project side by side evict
+   each other today.
+6. Follow-ups from the design discussion that are the owner's call: move #26
+   (DAP) out of release-blocker in favour of a satellite-local trace
+   capability; bounded read-only BEAM introspection for the agent (#454);
+   structured session-trace queries beside `history_search` (#236); write the
+   upstreaming stance down.
+
+The root `CLAUDE.md` paragraph on `gleam lsp` is about the editor tooling a
+developer drives this repo with, which is separate from everything above:
+Claude Code still has no Gleam server configured. A project-local plugin with
+an `.lsp.json` (`gleam lsp`, `.gleam`) would give local CLI sessions
+go-to-definition and post-edit diagnostics; cloud sessions do not start
+language servers.
+
 ## Next actions, in order
 
 Terminal CPU work merged in #664 at `a54effa07` and is locally verified
