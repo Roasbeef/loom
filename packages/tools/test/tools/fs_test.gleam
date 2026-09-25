@@ -1877,3 +1877,217 @@ fn upto_count_loop(n: Int, built: List(Int)) -> List(Int) {
     False -> upto_count_loop(n - 1, [n, ..built])
   }
 }
+
+// --- the landing path ----------------------------------------------------
+
+pub fn land_plan_lands_on_base_and_rejects_a_concurrent_change_test() {
+  // A rename arrives as the text the server saw and the text after its
+  // edits. It lands while the disk still holds that text, and rejects as
+  // stale — writing nothing — once anything in the file has moved.
+  let #(ctx, filesystem) = memory_ctx()
+  let base = "fn foo() {\n  foo()\n}\n\n// tail\n"
+  let edited = "fn bar() {\n  bar()\n}\n\n// tail\n"
+  let assert Ok(plan) = hashline.plan_between(base:, edited:)
+  let assert Ok(target) =
+    fs.write_target(
+      filesystem:,
+      workspace:,
+      roots: [],
+      protected: [],
+      path: "r.gleam",
+    )
+  assert fs.target_path(target) == "/work/r.gleam"
+
+  write_file(ctx, "r.gleam", base)
+  assert fs.land_plan(filesystem:, target:, plan:)
+    == Ok(fs.Landed(before: base, edited:))
+  let assert Ok(bytes) = filesystem.read("/work/r.gleam")
+  assert bytes == <<edited:utf8>>
+
+  // The same answer again, against a file edited far from every hunk.
+  let other = "fn foo() {\n  foo()\n}\n\n// tail, edited concurrently\n"
+  write_file(ctx, "r.gleam", other)
+  let assert Error(fs.LandRejected(
+    error: hashline.StaleContent(digest:, fresh: _),
+    current:,
+  )) = fs.land_plan(filesystem:, target:, plan:)
+  assert digest == hashline.digest(other)
+  assert current == other
+  let assert Ok(bytes) = filesystem.read("/work/r.gleam")
+  assert bytes == <<other:utf8>>
+
+  // And it is refused in fs_edit's own words.
+  let refused =
+    fs.land_error_outcome(fs.LandRejected(
+      error: hashline.StaleContent(digest:, fresh: []),
+      current: other,
+    ))
+  assert refused.is_error
+  assert string.starts_with(first_text(refused), "stale content:")
+}
+
+pub fn write_target_refuses_a_protected_path_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  write_file(ctx, ".git/config", "[core]\n")
+  assert fs.write_target(
+      filesystem:,
+      workspace:,
+      roots: [],
+      protected: ["/work/.git"],
+      path: ".git/config",
+    )
+    == Error(fs.ProtectedPath(path: ".git/config", protected: "/work/.git"))
+}
+
+pub fn edit_target_refuses_a_protected_path_as_fs_edit_does_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, ".git/config", "[core]\n")
+  let ctx = with_protected(ctx, ["/work/.git"])
+  let assert Error(outcome) = fs.edit_target(ctx, ".git/config")
+  let edit = fs.edit_tool().run(ctx, insert_call(".git/config", "[core]\n"))
+  assert outcome == edit
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "error") == Ok(json.String("protected_path"))
+}
+
+// --- the write observer --------------------------------------------------
+
+// An edit replacing line 2 of `content`, planned against it.
+fn replace_second_line(path: String, content: String) -> json.JsonValue {
+  args([
+    #("path", json.String(path)),
+    #("digest", digest_of(content)),
+    #(
+      "hunks",
+      json.Array([
+        json.Object([
+          #("op", json.String("replace")),
+          #("from", anchor_ref(content, 2)),
+          #("to", anchor_ref(content, 2)),
+          #("lines", json.Array([json.String("TWO")])),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+// An observer that reports every path it is shown to `seen` and answers
+// with a block quoting the file as it stood when it was asked — so a test
+// can tell an observer called after the write from one called before it.
+fn quoting_observer(
+  filesystem: tool.FileSystem,
+  seen: process.Subject(String),
+) -> fs.WriteObserver {
+  fn(resolved) {
+    process.send(seen, resolved)
+    let on_disk =
+      filesystem.read(resolved)
+      |> result.try(fn(bytes) {
+        bit_array.to_string(bytes)
+        |> result.replace_error(tool.FsFailure(path: resolved, reason: "utf8"))
+      })
+      |> result.unwrap("<unreadable>")
+    Some("Diagnostics:\n" <> on_disk)
+  }
+}
+
+pub fn edit_observer_block_follows_everything_else_test() {
+  let content = "one\ntwo\nthree\n"
+  let edited = "one\nTWO\nthree\n"
+
+  // The same edit with no observer is what the observed result must begin
+  // with, byte for byte.
+  let #(plain_ctx, _filesystem) = memory_ctx()
+  write_file(plain_ctx, "e.txt", content)
+  let plain =
+    fs.edit_tool().run(plain_ctx, replace_second_line("e.txt", content))
+
+  let #(ctx, filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", content)
+  let seen = process.new_subject()
+  let observed =
+    fs.edit_tool_with(quoting_observer(filesystem, seen)).run(
+      ctx,
+      replace_second_line("e.txt", content),
+    )
+  assert !observed.is_error
+
+  // Appended after the fresh anchors; the first two lines are untouched.
+  let block = "Diagnostics:\n" <> edited
+  assert first_text(observed) == first_text(plain) <> "\n\n" <> block
+  let assert [count, digest, ..] = string.split(first_text(observed), "\n")
+  assert count == "applied 1 hunk(s) to e.txt"
+  assert digest == "digest: " <> hashline.digest(edited)
+
+  // Shown the resolved path, once, after the bytes were on disk.
+  assert process.receive(seen, 0) == Ok("/work/e.txt")
+  assert process.receive(seen, 0) == Error(Nil)
+
+  // The structured half carries the block whole, after everything else.
+  let assert Some(json.Object(fields)) = observed.details
+  let assert Some(json.Object(plain_fields)) = plain.details
+  assert fields
+    == list.append(plain_fields, [#("diagnostics", json.String(block))])
+}
+
+pub fn edit_observer_is_not_called_on_a_rejected_edit_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  write_file(ctx, "s.txt", "one\ntwo CHANGED\nthree\n")
+  let seen = process.new_subject()
+  let outcome =
+    fs.edit_tool_with(quoting_observer(filesystem, seen)).run(
+      ctx,
+      replace_second_line("s.txt", "one\ntwo\nthree\n"),
+    )
+  assert outcome.is_error
+  assert process.receive(seen, 0) == Error(Nil)
+  assert !string.contains(first_text(outcome), "Diagnostics:")
+}
+
+pub fn edit_observer_answering_none_changes_nothing_test() {
+  let content = "one\ntwo\nthree\n"
+  let #(plain_ctx, _filesystem) = memory_ctx()
+  write_file(plain_ctx, "e.txt", content)
+  let plain =
+    fs.edit_tool().run(plain_ctx, replace_second_line("e.txt", content))
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "e.txt", content)
+  let quiet =
+    fs.edit_tool_with(fn(_resolved) { option.None }).run(
+      ctx,
+      replace_second_line("e.txt", content),
+    )
+  assert quiet == plain
+}
+
+pub fn write_observer_block_follows_everything_else_test() {
+  let #(plain_ctx, _filesystem) = memory_ctx()
+  let plain = fs.write_tool().run(plain_ctx, write_call("w.txt", "hello\n"))
+
+  let #(ctx, filesystem) = memory_ctx()
+  let seen = process.new_subject()
+  let observed =
+    fs.write_tool_with(quoting_observer(filesystem, seen)).run(
+      ctx,
+      write_call("w.txt", "hello\n"),
+    )
+  assert !observed.is_error
+  let block = "Diagnostics:\nhello\n"
+  assert first_text(observed) == first_text(plain) <> "\n\n" <> block
+  assert process.receive(seen, 0) == Ok("/work/w.txt")
+  let assert Some(json.Object(fields)) = observed.details
+  assert list.key_find(fields, "diagnostics") == Ok(json.String(block))
+}
+
+pub fn write_observer_is_not_called_on_a_refused_write_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let ctx = with_protected(ctx, ["/work/.env"])
+  let seen = process.new_subject()
+  let outcome =
+    fs.write_tool_with(quoting_observer(filesystem, seen)).run(
+      ctx,
+      write_call(".env", "TOKEN=leaked\n"),
+    )
+  assert outcome.is_error
+  assert process.receive(seen, 0) == Error(Nil)
+}
