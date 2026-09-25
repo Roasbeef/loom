@@ -448,6 +448,19 @@ also what #26 runs on. Build it here.
 **Labels.** `release-blocker`, `phase:3`, `kind:feature`, `area:tools`,
 `area:broker`
 
+> **Landed.** ADR-013 is the ruling and `docs/architecture/lsp.md` the
+> account of what was built. Two parts of the "Done" line changed on the
+> way. The server is not a stdio port: it is the broker's ordinary jailed
+> exec, cleared once and held for the session under the session's
+> enforcement demand, one server per session, so Rule Zero holds without a
+> new frame or any FFI. And the shared seam #26 was to inherit was
+> deliberately not extracted: a `packages/peer` would have moved MCP's
+> port FFI for a consumer that does not use it, so DAP extracts it when it
+> lands as the third consumer. The `lsp_*` tools, post-edit diagnostics on
+> `fs_write` and `fs_edit`, and `cap/lsp` in code mode all ask through one
+> door, and a rename lands through the hashline path, file by file, with a
+> stale file refusing the whole rename before the first write.
+
 ### #26. `dap_*` tools: a debug-adapter session over the same port seam
 
 **Problem.** No debugger surface exists.

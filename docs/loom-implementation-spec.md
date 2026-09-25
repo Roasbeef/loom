@@ -397,7 +397,7 @@ constructing a jail or admitting a command. The framed ExecProto is unchanged.
 
 ### WP-I `tools` — core tool set
 
-**Scope**: tool behaviour (`name, schema, replay: Never|Safe, execution_mode, requirements → run(ctx, args)`); `bash` (via broker exec), `fs_read` (hashline anchors: per-line `xxh3(content)[:8]`; large files: windowed reads), `fs_edit` (anchor-checked replace/insert/delete; multi-hunk; stale-anchor → structured rejection listing fresh anchors), `fs_write`, `grep` (rg via exec). Later in M5: `lsp_*` (client over stdio port, per-project supervised, sandboxed), `dap_*`.
+**Scope**: tool behaviour (`name, schema, replay: Never|Safe, execution_mode, requirements → run(ctx, args)`); `bash` (via broker exec), `fs_read` (hashline anchors: per-line `xxh3(content)[:8]`; large files: windowed reads), `fs_edit` (anchor-checked replace/insert/delete; multi-hunk; stale-anchor → structured rejection listing fresh anchors), `fs_write`, `grep` (rg via exec). Later in M5: `lsp_*` (client over stdio port, per-project supervised, sandboxed; landed as a jailed exec held for the session, one server per session, per ADR-013), `dap_*`.
 **Exit**: hashline property tests (edit after concurrent modification always rejected; applied edits byte-exact); tool results conform to schema; `replay` honored in interleave scenarios (a `Never` bash mid-crash yields synthetic interrupted result — the pi §0.5 scenario verbatim).
 
 ### WP-J `codemode` + `cap`
@@ -550,7 +550,7 @@ demonstrated.
 | M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the real TUI drives the real server; `H(macOS)` now runs under Seatbelt) |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
 | M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | partial (three of the four demonstrated end to end; the sample's fan-out reaches a scripted Agency rather than live child strands) |
-| M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | partial (routing, TTSR and memory landed and the 429-storm criterion is demonstrated; LSP and DAP are unbuilt and moved to phase 5) |
+| M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | partial (routing, TTSR and memory landed and the 429-storm criterion is demonstrated; LSP landed per ADR-013 — jailed session-lived servers, `lsp_*` tools, post-edit diagnostics and `cap/lsp`, with the rename landing through the hashline path; DAP is unbuilt, #26) |
 | M6 | +M | promotion-ladder integration test; rollback live | partial (the TCB freeze test exists and gates — the package graph, both prelude source trees and both vetting seams are walked and shown disjoint from the base, with the review record in `docs/review/extension-zone.md`; the ladder and rollback criteria are deferred with the tier-H loader, #32, because no surveyed extension needs in-VM residency) |
 | M7 | follow-ups below | per-feature | not started |
 
@@ -685,10 +685,11 @@ seed bands.
   in. `proc.run` routes through the jailed executor, `fs.read`, `fs.list`,
   `fs.write`, `fs.edit`, `kv.get`/`set`/`delete` and `report.emit` are
   served by `codemode/workspace` and `codemode/artifact`, and
-  `mcp.<server>` by `client/mcp`. Two names still vet, compile and refuse
-  in band with `unsupported_cap`: `net.request`, which waits on the egress
-  story, and `lsp.*`, which waits on the long-lived stdio client (issue
-  #25). `cap/git` needs no arm, since every function in it builds a
+  `mcp.<server>` by `client/mcp`, and `lsp.*` by `codemode/lsp` over the
+  session's language-server door, admitted only where an `[lsp.<name>]`
+  server is configured (ADR-013, `docs/architecture/lsp.md`). One name
+  still vets, compiles and refuses in band with `unsupported_cap`:
+  `net.request`, which waits on the egress story. `cap/git` needs no arm, since every function in it builds a
   `cap/proc` command. Issue #97's half of the escalation loop has since
   closed too: `client/codemode.execute` reports what composition refused
   at the satellite launch as a `PolicyRefusal` beside the outcome, and

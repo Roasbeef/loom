@@ -1080,7 +1080,7 @@ bring it back.
 | The 2026-07-28 stateless revision | it has no `initialize`, and servers in the field speak the older lifecycle | servers in the field speaking it |
 | `listChanged` handling | it decodes faithfully and is ignored: this client lists tools once per connection | a server whose tool set changes mid-session, which also means re-rendering a description the model was already given |
 | HTTP and SSE transports | a locally-spawned server speaks stdio, and a spawned child is what the jailing story attaches to | a server worth reaching that speaks nothing else, decided together with the jail question |
-| Restart and reconnect supervision | a dead peer latches dead and answers `Unavailable` in band | phase 5's LSP client (#25), which needs the same substrate: a supervised, long-lived stdio peer |
+| Restart and reconnect supervision | a dead peer latches dead and answers `Unavailable` in band | unbuilt; the LSP client (#25, ADR-013) restarts lazily on the next query rather than supervising a reconnect, so no shared substrate exists yet |
 | Nested records for tier-2 parameters | the typed subset covers 30 of 31 required parameters on a GitHub-shaped listing | tier 2 past 25% of required parameters on mainstream servers (the falsifier is in `codegen_test`) |
 | Per-tool trust | a human trusts a server, not a tool | a policy vocabulary keyed on tool identity, which is a protocol change and strictly more work than generating modules |
 
@@ -1103,8 +1103,11 @@ lint.
 - **#111**: whether Loom answers elicitation, now folded into the base
   protocol as `input_required`.
 - **#112**: acting on `listChanged` by regenerating a server's module.
-- **#25**: restart and reconnect supervision, which phase 5's LSP client
-  needs from the same substrate.
+- **Restart and reconnect supervision.** #25 was expected to build it as
+  a shared substrate and did not: the LSP manager (ADR-013) restarts a
+  dead server lazily on the next query, which suits a query-driven
+  peer. An MCP client that needs supervised reconnection is still
+  unbuilt.
 - **#107**: async code mode, the open question a long-running MCP call raises.
 
 ## Where the code lives
