@@ -144,6 +144,12 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           "$(go env GOPATH)/bin/gopls" version
 
+      # The first-party language profiles and the live manager test drive
+      # a real rust-analyzer; the same script ci.yml runs installs it, its
+      # standard library source, and the sysroot's dependencies.
+      - name: Install rust-analyzer
+        run: .github/scripts/install_rust_analyzer.sh
+
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 

@@ -1815,25 +1815,53 @@ fn run_gopls(live: Live, gopls: String, go: String) -> Nil {
 pub fn rust_analyzer_answers_the_door_once_ready_test() {
   let home =
     secret.lookup(secret.env(), "HOME") |> result.unwrap("/nonexistent")
-  let analyzer = home <> "/.cargo/bin/rust-analyzer"
-  let cargo = home <> "/.cargo/bin/cargo"
   case
     live_prerequisites("lsp manager rust-analyzer"),
-    simplifile.is_file(analyzer),
-    simplifile.is_file(cargo),
+    rust_prerequisites(home),
     ffi_os.find_executable("rg")
   {
-    Error(Nil), _, _, _ -> Nil
-    Ok(helper), Ok(True), Ok(True), Ok(_) ->
+    Error(Nil), _, _ -> Nil
+    Ok(helper), Ok(Nil), Ok(_) ->
       run_rust_analyzer(live_rig(helper, "rust-analyzer"), home)
-    Ok(_), Ok(True), Ok(True), Error(_) ->
+    Ok(_), Error(reason), _ ->
+      io.println_error("SKIP lsp manager rust-analyzer: " <> reason)
+    Ok(_), Ok(Nil), Error(_) ->
       io.println_error(
         "SKIP lsp manager rust-analyzer: ripgrep (rg) is not on PATH",
       )
-    Ok(_), _, _, _ ->
-      io.println_error(
-        "SKIP lsp manager rust-analyzer: rust-analyzer or cargo is not installed in ~/.cargo/bin",
-      )
+  }
+}
+
+// Whether rustup's `rust-analyzer` can actually serve. The file existing
+// proves nothing: rustup installs its `rust-analyzer` link whether or not
+// the component is installed, and the link then fails at its first use.
+// So the server must answer `--version`, and `rust-src` must be in the
+// sysroot, since the server loads the standard library from it and the
+// call inside `println!` is never found without it.
+fn rust_prerequisites(home: String) -> Result(Nil, String) {
+  let bin = home <> "/.cargo/bin/"
+  let missing =
+    "rust-analyzer does not run (rustup component add rust-analyzer rust-src)"
+  use #(status, _version) <- result.try(
+    ffi_os.run_capture(bin <> "rust-analyzer", ["--version"], 10_000)
+    |> result.replace_error(missing),
+  )
+  use Nil <- result.try(case status {
+    0 -> Ok(Nil)
+    _failed -> Error(missing)
+  })
+  use #(_status, sysroot) <- result.try(
+    ffi_os.run_capture(bin <> "rustc", ["--print", "sysroot"], 10_000)
+    |> result.replace_error("rustc does not run in ~/.cargo/bin"),
+  )
+  case
+    simplifile.is_directory(
+      string.trim(sysroot) <> "/lib/rustlib/src/rust/library",
+    )
+  {
+    Ok(True) -> Ok(Nil)
+    Ok(False) | Error(_) ->
+      Error("rust-src is not installed (rustup component add rust-src)")
   }
 }
 
