@@ -60,17 +60,19 @@ repository,
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots, and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
 | 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven (#204); loader deferred (#32). #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`. The loader is deferred because no surveyed extension needs in-VM residency |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
+| P | The profile tier: language-server profiles shipped as data (ADR-014 §§3–4) | **Built**: `tier = "profile"`, an install that neither vets nor compiles, record format 3, the load's profile comparison, and the session's precedence over `loom.toml`. The `[[check]]` runner, `loom ext check`, and the first-party profiles (ADR-014 §§5–6) are next; checks are decoded and kept but nothing runs them |
 
 A section that describes phase 3 or later says so in its first sentence,
 so a reader who wants only the tree as it stands can skip it on sight.
 
 ## Two tiers, and why jailed is the default
 
-An installed extension has one manifest and up to two bodies.
+An installed extension has one manifest and up to two bodies, or, in the
+profile tier, none.
 
-**Tier J, the jailed body**, is the only one phase 1 admits. This is
-literal: `manifest.Tier` has one variant and the decoder accepts one
-string (`extension/manifest.gleam:74`). A tier-J body runs in a satellite
+**Tier J, the jailed body**, is the only body the tree admits.
+`manifest.Tier` has two variants, `Jailed` and `Profile`, and the second
+has no body at all. A tier-J body runs in a satellite
 under the *extension seam*, which is the workspace seam's capability
 modules plus the `ext` prelude that carries the typed behaviours. (A
 *seam* is the module allowlist a program is vetted against;
@@ -87,6 +89,16 @@ nothing planned needs it. A manifest naming tier H is refused today with
 an error naming the tier; it is not installed and silently ignored. That
 distinction is what `an_unknown_tier_is_refused_test`
 (`client/test/client/extension_test.gleam:56`) pins.
+
+**The profile tier** (ADR-014 §3) holds data and nothing that runs: one or
+more `[lsp.<name>]` language profiles, the same tables an operator writes
+into `loom.toml`, and optionally the `[[check]]`s that prove one against a
+fixture. It is strictly narrower than tier J, with one authority tier J
+does not have: a profile names a binary the harness runs in a
+language-server jail, with the extra roots and environment names that
+jail grants. That authority is exactly what an `[lsp.<name>]` table
+already holds, and the install record makes its approval explicit. The
+sections below say where a profile's install, record and load differ.
 
 ```mermaid
 flowchart LR
@@ -203,7 +215,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:239`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:324`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** The general rule is what refuses the `[client]`
 table the design note reserves for a later ruling, with no special case
@@ -217,7 +229,7 @@ codepoint because a Cyrillic lookalike in a tool name is not a
 normalization variant of anything.
 
 Three rules need the file tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:200`):
+`Surroundings` (`extension/manifest.gleam:285`):
 
 1. A tool's `parameters` must be a path under `schema/` that exists and
    *parses as JSON*.
@@ -238,6 +250,53 @@ naming the problem. Second, an absent `[net]` table decodes to `no_net()`
 (`extension/manifest.gleam:177`): empty hosts, empty methods and zero
 caps. An extension that names no network reaches none, which is the
 deny-by-default the whole design rests on.
+
+### A profile manifest
+
+**Built** (ADR-014 §3). A `tier = "profile"` manifest declares language
+profiles instead of tools:
+
+```toml
+[extension]
+name = "lsp_go"
+version = "0.1.0"
+description = "gopls for Loom's language-server tools"
+license = "Apache-2.0"
+tier = "profile"
+
+[lsp.go]
+command = ["gopls"]
+extensions = [".go"]
+root_markers = ["go.mod"]
+readable = ["~/go/pkg/mod"]
+writable = ["<cache>/go-build", "<cache>/gopls"]
+env = ["GOFLAGS"]
+```
+
+The two tiers declare disjoint tables, and each refuses the other's **by
+name** rather than ignoring them. A profile manifest refuses `[[tool]]`,
+`[[hook]]` and `[net]` ("a profile extension runs no code; [[tool]] is
+not allowed") and needs at least one `[lsp.<name>]`. A jailed manifest
+refuses `[lsp]` and `[[check]]`, naming the profile tier, and keeps every
+rule it had, "at least one `[[tool]]`" included. A table ignored would be
+a promise the author believes was kept: a tool nothing registers, or a
+server nothing starts.
+
+The `[lsp]` tables are decoded by `client/lsp/profile.decode_servers`,
+the decoder `loom.toml`'s catalogue uses, so a profile means the same
+thing in either file and is refused in the same words. Extension
+ownership is judged within the manifest exactly as within `loom.toml`.
+
+A `[[check]]` (ADR-014 §5 has an example) is decoded and kept, and
+nothing runs it yet; the runner is the next slice. Its keys are `server`, which must name one of the
+manifest's own `[lsp]` servers; `fixture`, a directory of the tree that
+holds at least one file, `fixture` by default; `query`, `definition` or
+`references`; `symbol`; an optional `path`, and an optional `line` (at
+least 1) that is refused without a `path`; and `expect`, a non-empty list
+of `"path:line"` sites. Every path is relative, with no empty, `.` or `..`
+component, and an unknown key is refused as everywhere in the manifest.
+Checks are numbered from one in a refusal (`[[check]] 2.line ...`),
+because a check has no name of its own.
 
 ## Installing
 
@@ -279,13 +338,54 @@ sequenceDiagram
   C->>D: rename staging into place
 ```
 
-`run` (`extension/install.gleam:205`) is that sequence read top to bottom,
-in five `use` lines and a `stage` call. Every failure removes its staging
+`run` (`extension/install.gleam:231`) acquires the tree and hands it to
+one of two paths by the tier its manifest declares; the jailed path is
+that sequence read top to bottom, in four `use` lines and a `stage`
+call. Every failure removes its staging
 directory, including failures after a build has written megabytes into
 it, so a directory under `~/.loom/extensions` is either a complete install
 or absent. A name already taken is refused rather than overwritten.
 Replacing an install means removing it and then installing, so nobody
 loses a working extension to a failed reinstall.
+
+### Installing a profile
+
+**Built** (ADR-014 §3). A profile extension's install is fetch, extract,
+manifest and record: no vetting, no compile, and no artifact directory.
+`install.run` reads the tier from the fetched tree's `extension.toml`
+before anything else touches the tree (`manifest.declared_tier`), because
+the two tiers keep different subsets of it. Only a manifest that parses
+and names `tier = "profile"` takes the profile path; anything else takes
+the jailed path, whose own steps refuse it in the words they always used.
+
+A profile's installed tree is its `extension.toml`, its root `README*`
+and `LICENSE*`, and every file under a fixture one of its checks names,
+since the check runner will run against the installed copy. Everything
+else is pruned, so a `.gleam` file in a profile's repository is never
+kept, let alone vetted, compiled or loaded. The manifest is decoded
+against the whole fetched tree first, because a check's fixture must
+exist before the prune can know to keep it; the prune keeps every file
+that decode relied on. The kept files must be UTF-8, as in a jailed tree,
+because a load refuses a tree that is not. Staging, the record written
+last and the atomic rename are shared with the jailed path.
+
+The build seam is never called, which is what lets a profile install on a
+host with no code-mode toolchain. `loom ext install` therefore starts the
+build plane **inside** the build seam, on the one call a jailed install
+makes to it, rather than before the install runs; deciding the tier in the
+CLI instead would have meant fetching outside the pipeline whose layers
+name every failure. The seam starts the plane, builds once and tears it
+down on every path out, and a plane that will not start is reported under
+the `compile:` layer. `the_cli_installs_a_profile_with_no_toolchain_test`
+installs a profile with the helper and seed pointed at paths that do not
+exist.
+
+A profile install prints what was approved rather than a tool list and an
+enforcement line: each server's command (quoted element by element, since
+a command is never a shell string), its extensions, its project access,
+its readable and writable roots as written, its environment names, and
+its hint when it has one (`cli.installed_lines`,
+`profile.approval_lines`).
 
 ### Hardening the install
 
@@ -375,7 +475,7 @@ it is not part of what an operator approves.
 
 Three orderings matter.
 
-1. `installed_tree` runs **first** (`extension/install.gleam:215`), ahead
+1. `installed_tree` runs **first** (`extension/install.gleam:255`), ahead
    of the UTF-8 decode, the manifest, the vetting, the digest and the
    write. So the recorded digest describes the installed tree, and a
    later load compares like with like instead of re-deriving the prune
@@ -408,13 +508,13 @@ then asserts the recorded digest verifies against the pruned tree.
 ## Discovery, and what a load re-derives
 
 **Built**, both the re-derivation and the registration at boot.
-`installed.discover` (`extension/installed.gleam:82`) reads the
+`installed.discover` (`extension/installed.gleam:93`) reads the
 extensions root, filters entries through the same name grammar the
 manifest uses, and returns `Ready` or `Refused` for each. A refusal is a
 *value*, not a shorter list, because an operator who installed something
 and then sees nothing cannot tell "it is broken" from "I imagined it".
 
-`check` (`extension/installed.gleam:197`) re-derives five things from
+`check` (`extension/installed.gleam:234`) re-derives five things from
 disk and compares each with the record:
 
 1. the tree digest;
@@ -435,6 +535,30 @@ recomputed, an operator's approval would silently follow the harness's
 current definition of the seam. Storing it means a widened seam becomes a
 question the operator is asked again.
 
+**Record format 3** (ADR-014 §3) adds `tier` and `lsp`, the approved
+profiles in full, encoded and decoded totally by `client/lsp/profile`
+(`encode_server`, `server_decoder`). Every field is written, the
+defaulted ones included, so a default that changes in a later release
+cannot change a profile an operator already approved. A profile record's
+`allowlist`, `manifest_hash` and `artifact` are empty, because nothing
+was vetted, compiled or kept. `record.readable` and `record.current`
+accept format 3 and still read format 2, as a jailed extension with no
+profiles: a format-2 record cannot hold a profile, so reading it that way
+loses nothing and forces no reinstall. Every other format is refused as a
+version skew, "this server reads 2 or 3".
+
+**A profile's load** runs the record, the directory's name, the digest
+and the re-decoded manifest exactly as above, then checks that the
+manifest names the tier the record approved, and then, in place of the
+vetting, the allowlist and the artifact, that the manifest's profiles
+equal the record's. A mismatch refuses the extension: "the manifest's
+language profiles no longer match the install record; reinstall it to
+approve what is there now". An edited `extension.toml` is caught first by
+the digest; an edited record passes the digest and is caught by the
+comparison. The tier check applies to both tiers, because the tier
+decides which checks run: without it, a jailed record edited to say
+`profile` would skip its own vetting.
+
 One gap remains. The workspace-local root, `<workspace>/.loom/extensions`,
 whose extensions are listed but never loaded until approved, is a design
 ruling and not yet code. Today the only root is `<home>/.loom/extensions`
@@ -442,6 +566,24 @@ ruling and not yet code. Today the only root is `<home>/.loom/extensions`
 Discovery's other caller is the boot itself: `client/serve` reads the same
 records `loom ext list` and `loom ext verify` read, and the dispatch
 section below says what it does with them.
+
+**The session's language servers** (ADR-014 §4). The boot discovers
+once, and two readers take that one answer: the language-server plane
+takes every loaded profile, and the tool registry takes every loaded
+jailed extension; a profile extension contributes no tool and hosts no
+satellite. The servers a session runs are
+`client/lsp/profiles.effective_lsp_servers` over the `loom.toml` tables
+and the installed profiles (read from the records, the operator's yes).
+A `loom.toml` table replaces an installed profile of the same name whole.
+Every remaining installed profile involved in a conflict is refused: two
+installed profiles sharing a server name, or a file extension claimed
+twice across the combined set. The operator's own tables are never the
+refused side, and nothing is first-wins, since install order is not an
+order anybody chose. Each refusal is one `lsp.profile_refused` warning
+naming the extension, the server, the other claimant and what they
+collided over, and the boot continues. From there an installed profile is
+a `loom.toml` server in every respect: the same root resolution, the same
+plane, the same hints.
 
 ### `loom ext`
 
@@ -455,9 +597,11 @@ loom ext remove <name>
 loom ext verify <name>
 ```
 
-`install` prints five lines: what was installed and at which revision,
-the tool names, the tree digest, where it went, and what the kernel
-enforced on the jail that built it. The last is the same enforcement
+`install` prints five lines for a jailed extension: what was installed and
+at which revision, the tool names, the tree digest, where it went, and
+what the kernel enforced on the jail that built it. A profile extension
+prints its approved profiles in place of the tools and the jail line, and
+`list` summarises it as `lsp_go  0.1.0  local  lsp: go (.go)`. The last is the same enforcement
 report code mode prints, for the same reason: a green build on a kernel
 missing a layer must say so rather than let the absence read as success.
 `verify` exits non-zero on a `Refused`, so scripts can use it.
@@ -509,7 +653,7 @@ the exclusive channel slot in one place, and it means this module could
 not read a token if it tried. `serve` (`ext/runtime.gleam:148`) is the
 same call with an empty event table, which is what an artifact declaring
 no `[[hook]]` gets. The generated entry writes whichever of the two the
-manifest asked for (`entry_source` at `extension/install.gleam:586`).
+manifest asked for (`entry_source` at `extension/install.gleam:689`).
 
 `answer` does exactly two things: it dispatches on what the harness asked
 for, and it returns a value or an in-band code. There is no third step,
@@ -560,7 +704,7 @@ value the previous step produced.
 
 1. **At boot, discovery feeds the registry.** `serve.assemble` reads
    `installed.discover` for the extensions root before it builds the
-   registry (`extension_registrations` at `client/serve.gleam:2300`). A
+   registry (`extension_registrations` at `client/serve.gleam:2361`). A
    `Refused` is logged and registers nothing. A `Ready` on a host with no
    code-mode toolchain is also logged and registers nothing: with no
    `erl` there is no satellite to boot, and a tool definition that can
@@ -702,7 +846,7 @@ actor is alive, so a breach fails the next boot outright instead of
 silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:3459`).
+per session (`extension_hosts.supervised` at `client/serve.gleam:3537`).
 It holds at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first. That is
 sound because every extension call in a session runs under one workspace
@@ -1320,24 +1464,26 @@ whose door serves the `lsp_*` tools and `cap/lsp` alike (ADR-013,
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:234`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
-| `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:209`), the staging discipline, and the generated satellite entry that serves this manifest's tools and hooks. |
-| `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:121`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:324`), the closed key lists, the name grammars, the `[[hook]]` event names, and `no_net()`. |
+| `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:231`), the staging discipline, and the generated satellite entry that serves this manifest's tools and hooks. |
+| `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:134`), `terms`, `root_for`. Format 2 carries the hooks an operator approved; format 3 adds the tier and the approved language profiles, and format 2 is still read. |
+| `client/lsp/profiles.gleam` | ADR-014 §4's precedence as one pure function: `effective_lsp_servers` over the `loom.toml` tables and the installed profiles, and the `Refusal` the boot logs as `lsp.profile_refused`. |
 | `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
 | `packages/ext/src/ext/hook.gleam` | The extension's side: the typed `Hook` behaviours, `Verdict`, `rendered`, and the JSON marshalling of every event's payload. |
-| `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:197`), `artifact_matches`, `summarise`. |
+| `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:234`), `artifact_matches`, `summarise`. |
 | `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify`: `dispatch` (`extension/cli.gleam:106`), the one-host fetch, and `build_for` over a started build plane. |
 | `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:142`), the per-invocation `ceilings` (`extension/policy.gleam:184`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
 | `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` (the one composition of `ext/<name>/<key>`), `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:656`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:853`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2300`), the two refusals it logs, and the contribution it appends. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2361`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:280`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:208`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
+| `client/test/client/extension/profile_test.gleam` | The profile tier: both tiers' manifest refusals, `[[check]]` decoding, an install that never fetches or builds, record format 3, and the load's profile comparison. |
 | `codemode/test/codemode/host_test.gleam` | The host's contract over a faked satellite: two invocations on one node, `busy`, the revoked token, and the two endings that destroy it. |
 | `client/test/client/extension_e2e_test.gleam` | The dispatch acceptance: a real build, a real satellite, a real TLS origin, and the two absence claims about the credential. |
 | `broker/test/broker/egress_test.gleam` | The credential canary, the header-injection refusals, and the live TLS origin. |

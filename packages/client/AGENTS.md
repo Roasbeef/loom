@@ -2291,13 +2291,28 @@ The rest of the path is phase 1's own, and each module is one question:
   the `[[hook]]` list, and `[net]` with its `[[net.secret]]` bindings.
   Unknown keys are errors in *every* table, which is what refuses the
   `[client]` table the design note reserves for a later ruling without a
-  special case for it. `tier` decodes only `"jailed"`. Three rules need
+  special case for it. `tier` decodes `"jailed"` (`Jailed`) and
+  `"profile"` (`Profile`, ADR-014 §3). Three rules need
   the tree beside the manifest, so `decode` takes a `Surroundings`: a
   tool's `parameters` must be a path under `schema/` that exists and
   parses as JSON, its `entry` must name a module `src/` ships, and a
   secret's `host` must be one of `[net].hosts`. A secret carries the
   *name* of an environment variable and never a value, the rule
-  `api_key_env` set one layer out.
+  `api_key_env` set one layer out. `Manifest` also carries `lsp:
+  List(profile.LspServer)` and `checks: List(Check)` (`Check(server,
+  fixture, query: CheckQuery(Definition | References), symbol, path:
+  Option(String), line: Option(Int), expect: List(Site(path, line)))`).
+  **Invariant: the tiers declare disjoint tables, each refusing the
+  other's by name.** A profile needs at least one `[lsp.<name>]`, decoded
+  by `profile.decode_servers` so a profile means in a manifest what it
+  means in `loom.toml`, and refuses `[[tool]]`, `[[hook]]` and `[net]`
+  ("a profile extension runs no code; [[tool]] is not allowed"); a jailed
+  manifest refuses `[lsp]` and `[[check]]` and still needs a `[[tool]]`.
+  A check's `server` is one of the manifest's own, its `fixture`
+  (default `fixture`) holds a file in `Surroundings.files`, `line` needs
+  `path`, and `expect` is non-empty; every path is relative with no
+  empty, `.` or `..` component. `declared_tier(text)` reads the tier
+  alone, for the install to choose its path.
 - `client/extension/record` — the install record, JSON with a total
   decoder, and the `Root` value that says where installs live.
   `root_for(home)` is `<home>/.loom/extensions`; the root is a value
@@ -2312,13 +2327,25 @@ The rest of the path is phase 1's own, and each module is one question:
   `readable(text)` is the door discovery uses, and it decodes the
   version *first* — the full decoder would otherwise reach a format-1
   file before the version check and report a missing `hooks` field when
-  the fact an operator needs is the version skew.
+  the fact an operator needs is the version skew. Format 3
+  (`format_version`) adds `tier` and `lsp`, the approved profiles in full
+  through `profile.encode_server` / `profile.server_decoder`; a format-2
+  record (`legacy_format_version`) is still read, as `Jailed` with `lsp:
+  []`, and every other format is refused naming "reads 2 or 3". A profile
+  record's `allowlist`, `manifest_hash` and `artifact` are empty.
 - `client/extension/install` — the pipeline, as six steps each returning
   a `Failure` naming its layer: `Fetch`, `Extract`, `Manifest`,
   `Vetting`, `Compile`, `Record`. The fetch and the jailed build are
   both injected (`Fetcher`, `Build`), so the module holds no HTTP client
   and no broker, and a test drives the whole thing with a fetcher that
-  was never called.
+  was never called. `run` reads the fetched tree's tier first
+  (`manifest.declared_tier`) and takes one of two paths. **A profile
+  install never calls the build seam and never vets**: it decodes the
+  manifest against the fetched tree's text, prunes to `extension.toml`,
+  root `README*`/`LICENSE*` and each check's fixture directory, refuses a
+  kept non-UTF-8 file, and stages and records exactly as the jailed path
+  does, with no artifact directory. The rest of this entry is the jailed
+  path.
   **`installed_tree` runs first and everything after sees only what it
   kept.** A repository is not an installed extension — it has tests, a
   `.gitignore`, `.github/`, docs, Gleam's resolved `manifest.toml` and a
@@ -2344,7 +2371,14 @@ The rest of the path is phase 1's own, and each module is one question:
   each returning `Ready` or `Refused`. Five things are re-derived from
   disk and compared with the record: the tree digest, the artifact's
   content address (with `build.fingerprint_directory`, the function the
-  build itself used), the manifest, the vetting, and the allowlist.
+  build itself used), the manifest, the vetting, and the allowlist. After
+  the manifest, the manifest's tier must equal the record's (so a record
+  cannot talk a jailed tree out of its vetting), and a profile record then
+  skips the vetting, the allowlist and the artifact and checks instead
+  that the manifest's `lsp` equals the record's; a mismatch refuses "the
+  manifest's language profiles no longer match the install record".
+  `Ready.artifact` is `""` for a profile. `summarise` prints a profile as
+  `lsp: go (.go), rust (.rs)`.
   **Nothing is pruned here**, and that is the point: the install already
   narrowed the repository to the extension's own tree and wrote exactly
   that, so what is under `<name>/src/` *is* the installed tree and a file
@@ -2357,6 +2391,12 @@ The rest of the path is phase 1's own, and each module is one question:
   first subcommand surface in the tree. The verb is the first argument
   and the rest is the flat-recursion flag parse `client/serve` uses.
   `build_for` is the install's build seam over a started `BuildPlane`.
+  `install` starts that plane **inside** the build seam, on the one call a
+  jailed install makes, and stops it there on every path out, so a
+  profile installs on a host with no code-mode toolchain or helper; a
+  plane that will not start is a `compile:` refusal. `installed_lines`
+  renders a success: tools and the jail's enforcement line for a jailed
+  extension, `profile.approval_lines` per server for a profile.
 
 Phase 3 added the hook bus, and it hangs off the same satellites the
 tools reach:
@@ -4255,9 +4295,13 @@ language profile; these are the pieces that carry both in this package.
   Places, decode_servers, decode_server, claim_extensions, expand_path,
   cache_place, mangling_fault, not_server_owned}` — the one
   `[lsp.<name>]` decoder, pure (no I/O, no external). `client/catalog`
-  hands `decode_servers` the `[lsp]` table's entries, and an extension
-  manifest's profiles are meant to go through the same functions, so the
-  two can never accept different things. `LspServer` carries the ADR-013
+  hands `decode_servers` the `[lsp]` table's entries, and so does
+  `client/extension/manifest` for a profile extension, so the two can
+  never accept different things. `encode_server` and `server_decoder` are
+  the profile's JSON form in an install record (every field written,
+  roots as written, the decoder total and structural: the load's
+  comparison with the re-decoded manifest is what holds the table's
+  rules), and `approval_lines` is what an install prints for one. `LspServer` carries the ADR-013
   keys plus four profile keys, each defaulting to the behaviour it
   replaced: `language_id: String` (always filled; default the first
   extension without its dot; written, `[a-z0-9][a-z0-9+._-]*` in at most
@@ -4274,6 +4318,17 @@ language profile; these are the pieces that carry both in this package.
   `home/.cache`). `mangling_fault` and `not_server_owned` live here
   because `catalog`, which imports this module, shares them for its
   `[mcp.<name>]` and `[tools]` checks.
+- `client/lsp/profiles.{Claimant, Conflict, Refusal,
+  effective_lsp_servers, describe_claimant, describe_conflict}` — ADR-014
+  §4, pure. `effective_lsp_servers(configured:, installed:)` returns the
+  session's servers sorted by name plus the refused installed profiles.
+  **Invariant: the operator's file wins whole, and conflicts refuse every
+  installed profile involved, never first-wins.** A `loom.toml` table
+  replaces an installed profile of the same name (not a refusal); every
+  remaining installed profile is judged against the whole candidate set,
+  refused for sharing a server name with another installed profile or a
+  file extension with any server, so the answer does not depend on
+  discovery order. A `loom.toml` server is never the refused side.
 - **Invariant: a profile key's default is the old behaviour.** A table
   naming none of the four keys decodes to exactly what ADR-013 shipped;
   `catalog_lsp_test` pins it, and the resolve tests pass with `["."]` and
@@ -4368,8 +4423,13 @@ language profile; these are the pieces that carry both in this package.
   server). The keeper's own messages are `Begin`, `PreviousGone`, `Release`,
   `ClientDown` and `ManagerDown`: an evicted or released keeper, or one
   whose manager died, stops its client gracefully (`lsp/client.stop`).
-- **Serve wiring.** `serve.assemble_in` builds the plane only when
-  `Catalog.lsp_servers` is non-empty. Each server's `readable`/`writable`
+- **Serve wiring.** The boot discovers installed extensions once
+  (`discovered_extensions`) and hands both readers that answer: the
+  `Ready` records' `lsp` go through `profiles.effective_lsp_servers` with
+  `Catalog.lsp_servers`, each refusal one `lsp.profile_refused` warning
+  (`extension`, `server`, `other`, `reason`), and only `Jailed`
+  extensions become tool contributions. `serve.assemble_in` builds the
+  plane only when the effective server list is non-empty. Each server's `readable`/`writable`
   `~/` and `<cache>/` roots are expanded once with
   `profile.expand_path(_, places)`, where `places` is
   `serve.home_directory()` and `profile.cache_place` over
