@@ -39,7 +39,7 @@
 //// location under the server's root and under no protected path.
 
 import broker/policy
-import client/catalog.{type LspServer}
+import client/lsp/profile.{type LspServer, type ModuleCase}
 import filepath
 import gleam/bool
 import gleam/int
@@ -382,59 +382,192 @@ pub fn admit(
 /// A symbol as the model wrote it, split the way code reads it.
 pub type Symbol {
   Symbol(
-    /// The last dot-separated segment: the identifier searched for.
+    /// The last segment between separators: the identifier searched for.
     identifier: String,
-    /// Everything before it with `.` normalised to `/`, when there was
-    /// anything: the module path or directory that narrows candidates.
+    /// Everything before it, the segments joined with `/`, when there was
+    /// anything: the module path, directory or parent type that narrows
+    /// candidates.
     qualifier: Option(String),
   )
 }
 
-/// Splits `probe.greet`, `util.Greet` or `pkg/mod.name` into identifier and
-/// qualifier. A symbol with no dot, or one that is all dots (an operator),
-/// is its own identifier.
+/// Splits a symbol on its server's `qualifier_separators` into identifier
+/// and qualifier: `probe.greet`, `util.Greet` or `pkg/mod.name` under the
+/// default `["."]`, `util::greet` under `["::"]`.
+///
+/// The separators are tried longest first at each position, so a server
+/// listing both `:` and `::` reads `a::b` as two segments rather than
+/// three with an empty one between. The identifier is the last segment,
+/// and the qualifier is the segments before it joined with `/`. A `/` the
+/// model wrote inside a segment is kept, so it still reads as a path
+/// (`pkg/mod.name`), which is why `/` can never be a separator. A symbol
+/// with no separator in it, or one ending in a separator (an operator
+/// such as `..`, or `a.` mid-typing), is its own identifier.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert resolve.split_symbol("pkg/mod.name")
+/// assert resolve.split_symbol("pkg/mod.name", ["."])
 ///   == resolve.Symbol("name", Some("pkg/mod"))
-/// assert resolve.split_symbol("greet") == resolve.Symbol("greet", None)
 /// ```
 ///
-pub fn split_symbol(symbol: String) -> Symbol {
-  let parts = string.split(symbol, ".")
+/// ```gleam
+/// assert resolve.split_symbol("util::greet", ["::"])
+///   == resolve.Symbol("greet", Some("util"))
+/// ```
+///
+/// ```gleam
+/// assert resolve.split_symbol("greet", ["."]) == resolve.Symbol("greet", None)
+/// ```
+///
+pub fn split_symbol(symbol: String, separators: List(String)) -> Symbol {
+  let longest_first =
+    list.sort(separators, fn(a, b) {
+      int.compare(string.byte_size(b), string.byte_size(a))
+    })
+  let parts = segments(symbol, longest_first, "", [])
   let #(before, last) = case list.reverse(parts) {
     [last, ..before] -> #(list.reverse(before), last)
     [] -> #([], symbol)
   }
   case last, before {
     "", _ | _, [] -> Symbol(identifier: symbol, qualifier: None)
-    _, _ ->
-      Symbol(
-        identifier: last,
-        qualifier: Some(string.join(before, "/") |> string.replace(".", "/")),
-      )
+    _, _ -> Symbol(identifier: last, qualifier: Some(string.join(before, "/")))
   }
 }
 
-/// Whether a definition in `path` satisfies a qualifier: the path without
-/// its extension, or its directory, ends with the qualifier on segment
-/// boundaries. `root` is stripped first, so `src/probe.gleam` under the
-/// root satisfies `probe` and `util/util.go` satisfies `util`.
+// Walks `rest` once, cutting a segment wherever one of `separators`
+// begins. `current` is the segment being read and `done` the segments
+// already cut, newest first. The first separator in the list that matches
+// wins, which is why the caller sorts them longest first. An empty
+// separator would match everywhere and cut nothing, and the profile
+// decoder refuses one, but it is skipped here as well so a hand-built
+// server cannot loop.
+fn segments(
+  rest: String,
+  separators: List(String),
+  current: String,
+  done: List(String),
+) -> List(String) {
+  let cut =
+    list.find(separators, fn(separator) {
+      separator != "" && string.starts_with(rest, separator)
+    })
+  case cut, string.pop_grapheme(rest) {
+    Ok(separator), _ ->
+      segments(
+        string.drop_start(rest, string.length(separator)),
+        separators,
+        "",
+        [current, ..done],
+      )
+    Error(Nil), Ok(#(grapheme, rest)) ->
+      segments(rest, separators, current <> grapheme, done)
+    Error(Nil), Error(Nil) -> list.reverse([current, ..done])
+  }
+}
+
+/// A qualifier as it should meet the file tree under a module case: each
+/// `/`-separated segment verbatim for `AsWritten`, or mapped from
+/// CamelCase to snake_case for `Snake`.
+///
+/// The snake mapping puts an underscore before an upper-case letter that
+/// follows a lower-case letter or a digit, or that begins a new word after
+/// a run of capitals (the `S` of `HTTPServer`), then lower-cases the
+/// whole. That is how Elixir's and Ruby's conventions name a module's file
+/// (`MyApp.Accounts` in `my_app/accounts.ex`), and a segment already in
+/// snake_case has no upper-case letter to move.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert resolve.satisfies("/w", "/w/src/probe.gleam", "probe")
-/// assert !resolve.satisfies("/w", "/w/src/probe.gleam", "other")
+/// assert resolve.cased("MyApp/HTTPServer", profile.Snake)
+///   == "my_app/http_server"
 /// ```
 ///
-pub fn satisfies(root: String, path: String, qualifier: String) -> Bool {
+/// ```gleam
+/// assert resolve.cased("MyApp", profile.AsWritten) == "MyApp"
+/// ```
+///
+pub fn cased(qualifier: String, module_case: ModuleCase) -> String {
+  case module_case {
+    profile.AsWritten -> qualifier
+    profile.Snake ->
+      string.split(qualifier, "/")
+      |> list.map(snake)
+      |> string.join("/")
+  }
+}
+
+// One segment in snake_case. Each grapheme is judged with its neighbours,
+// since whether a capital starts a word depends on the letter before it
+// and, inside a run of capitals, on the letter after it.
+fn snake(segment: String) -> String {
+  let graphemes = string.to_graphemes(segment)
+  let before = ["", ..graphemes]
+  let after = list.append(list.drop(graphemes, 1), [""])
+  list.zip(before, list.zip(graphemes, after))
+  |> list.map(fn(triple) {
+    let #(previous, #(grapheme, next)) = triple
+    let starts_word =
+      is_upper(grapheme)
+      && {
+        is_lower(previous)
+        || is_digit(previous)
+        || { is_upper(previous) && is_lower(next) }
+      }
+    case starts_word {
+      True -> "_" <> string.lowercase(grapheme)
+      False -> string.lowercase(grapheme)
+    }
+  })
+  |> string.concat
+}
+
+fn is_upper(grapheme: String) -> Bool {
+  grapheme != "" && string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", grapheme)
+}
+
+fn is_lower(grapheme: String) -> Bool {
+  grapheme != "" && string.contains("abcdefghijklmnopqrstuvwxyz", grapheme)
+}
+
+fn is_digit(grapheme: String) -> Bool {
+  grapheme != "" && string.contains("0123456789", grapheme)
+}
+
+/// Whether a definition in `path` satisfies a qualifier: the path without
+/// its extension, or its directory, ends with the qualifier on segment
+/// boundaries, once the qualifier is `cased` for the server's module
+/// case. `root` is stripped first, so `src/probe.gleam` under the root
+/// satisfies `probe` and `util/util.go` satisfies `util`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert resolve.satisfies("/w", "/w/src/probe.gleam", "probe", profile.AsWritten)
+/// assert !resolve.satisfies("/w", "/w/src/probe.gleam", "other", profile.AsWritten)
+/// ```
+///
+/// ```gleam
+/// assert resolve.satisfies(
+///   "/w",
+///   "/w/lib/my_app/accounts.ex",
+///   "MyApp/Accounts",
+///   profile.Snake,
+/// )
+/// ```
+///
+pub fn satisfies(
+  root: String,
+  path: String,
+  qualifier: String,
+  module_case: ModuleCase,
+) -> Bool {
   let relative = "/" <> display([root], path)
   let module = filepath.strip_extension(relative)
   let directory = filepath.directory_name(relative)
-  let wanted = "/" <> qualifier
+  let wanted = "/" <> cased(qualifier, module_case)
   string.ends_with(module, wanted) || string.ends_with(directory, wanted)
 }
 
@@ -443,10 +576,14 @@ pub fn satisfies(root: String, path: String, qualifier: String) -> Bool {
 /// parent chain ends with it, or when the file at `path` under `root`
 /// satisfies it (the qualifier named the module rather than a type).
 ///
+/// Only the module match is `cased`. A parent chain is the server's own
+/// spelling of a type (`Server.handle` in Elixir is `Server`, not
+/// `server`), so it is compared with the qualifier as the model wrote it.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // resolve.named(symbols, "greet", None, root: "/w", path: "/w/a.gleam")
+/// // resolve.named(symbols, "greet", None, profile.AsWritten, root: "/w", path: "/w/a.gleam")
 /// //   == [#("greet", Position(0, 7))]
 /// ```
 ///
@@ -454,6 +591,7 @@ pub fn named(
   symbols: DocumentSymbols,
   identifier: String,
   qualifier: Option(String),
+  module_case: ModuleCase,
   root root: String,
   path path: String,
 ) -> List(#(String, Position)) {
@@ -463,7 +601,7 @@ pub fn named(
     case qualifier {
       None -> True
       Some(qualifier) ->
-        satisfies(root, path, qualifier)
+        satisfies(root, path, qualifier, module_case)
         || string.ends_with(
           "/" <> string.replace(entry.parents, ".", "/"),
           "/" <> qualifier,
