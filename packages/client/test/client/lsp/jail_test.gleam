@@ -29,6 +29,7 @@ import client/lsp/leases
 import core/clock
 import core/ids
 import core/json
+import filepath
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -40,6 +41,7 @@ import gleam/string
 import mcp/jsonrpc
 import mcp/transport
 import simplifile
+import tools/fs
 import tools/tool
 
 // --- fixtures ----------------------------------------------------------------
@@ -267,12 +269,31 @@ pub fn a_region_the_base_already_binds_is_asked_for_by_its_path_test() {
   assert built.requirements.mounts == [prefix]
 }
 
-pub fn a_linked_executable_mounts_its_prefix_test() {
-  assert jail.regions(jail.Executable(
+// A link mounts the directories its chain passes through and never the
+// install prefix above them. The rustup proxy is the case that matters:
+// `~/.cargo` holds `credentials.toml`, a registry token that a build script
+// or a proc macro in the jail could read and hand back through a
+// diagnostic, and the proxy's target sits beside it in `~/.cargo/bin`.
+pub fn a_linked_executable_mounts_directories_never_a_prefix_test() {
+  let rust_analyzer =
+    jail.Executable(
+      path: "/home/o/.cargo/bin/rust-analyzer",
+      file: jail.LinkedExecutable(chain: ["/home/o/.cargo/bin/rustup"]),
+    )
+  assert jail.regions(rust_analyzer) == ["/home/o/.cargo/bin"]
+
+  // Homebrew's relative link climbs out of `bin` into the Cellar: both
+  // directories are mounted, and `/opt/homebrew` itself is not.
+  let homebrew =
+    jail.Executable(
       path: "/opt/homebrew/bin/gleam",
-      file: jail.LinkedExecutable,
-    ))
-    == ["/opt/homebrew"]
+      file: jail.LinkedExecutable(chain: [
+        "/opt/homebrew/Cellar/gleam/1.0/bin/gleam",
+      ]),
+    )
+  assert jail.regions(homebrew)
+    == ["/opt/homebrew/bin", "/opt/homebrew/Cellar/gleam/1.0/bin"]
+
   assert jail.regions(jail.Executable(
       path: "/home/o/go/bin/gopls",
       file: jail.PlainExecutable,
@@ -282,14 +303,19 @@ pub fn a_linked_executable_mounts_its_prefix_test() {
 
 // The helper lays explicit mounts over every root, so an executable region
 // at or above a path the server writes would leave that path read-only in
-// the jail. `/bin/sh` is the case that found it: a link whose prefix climbs
-// out of `/bin` to `/`, which bound the whole host read-only over the
-// project, the extra writable roots, the scratch, `/proc` and `/dev`.
+// the jail. `/bin/sh` is the case that found it, under the prefix rule
+// `regions` no longer has: a link whose prefix climbed out of `/bin` to
+// `/`, which bound the whole host read-only over the project, the extra
+// writable roots, the scratch, `/proc` and `/dev`. Followed instead, it is
+// `/bin` and the directory `dash` really lives in, which shadow nothing.
 pub fn a_region_over_the_servers_writes_is_refused_test() {
-  let shell = jail.Executable(path: "/bin/sh", file: jail.LinkedExecutable)
-  assert jail.regions(shell) == ["/"]
-
-  let refused =
+  let shell =
+    jail.Executable(
+      path: "/bin/sh",
+      file: jail.LinkedExecutable(chain: ["/usr/bin/dash"]),
+    )
+  assert jail.regions(shell) == ["/bin", "/usr/bin"]
+  let assert Ok(_admitted) =
     jail.policy_for(
       jail.Placement(
         ..placement(server(catalog.ProjectWritable)),
@@ -298,13 +324,11 @@ pub fn a_region_over_the_servers_writes_is_refused_test() {
       session_base(),
       reading: host_env,
     )
-  let assert Error(reason) = refused as "a region of / must be refused"
-  assert string.contains(reason, "/bin/sh needs / mounted read-only")
-  assert string.contains(reason, "name the file the link points to")
+    as "a followed /bin/sh shadows nothing"
 
-  // A plain executable whose own directory holds a writable root is the
-  // same shadow with a different remedy.
-  let gopls =
+  // The shadow check still judges a link's target: a link into a directory
+  // holding a writable root is refused, and the remedy names the chain.
+  let cached =
     catalog.LspServer(
       ..server(catalog.ProjectReadOnly),
       name: "gopls",
@@ -313,7 +337,25 @@ pub fn a_region_over_the_servers_writes_is_refused_test() {
   let refused =
     jail.policy_for(
       jail.Placement(
-        ..placement(gopls),
+        ..placement(cached),
+        executable: jail.Executable(
+          path: "/usr/local/bin/gopls",
+          file: jail.LinkedExecutable(chain: ["/home/o/.cache/gopls"]),
+        ),
+      ),
+      session_base(),
+      reading: host_env,
+    )
+  let assert Error(reason) = refused as "a link into a written path refuses"
+  assert string.contains(reason, "cover /home/o/.cache/go-build")
+  assert string.contains(reason, "every file it leads through")
+
+  // A plain executable whose own directory holds a writable root is the
+  // same shadow with a different remedy.
+  let refused =
+    jail.policy_for(
+      jail.Placement(
+        ..placement(cached),
         executable: jail.Executable(
           path: "/home/o/.cache/gopls",
           file: jail.PlainExecutable,
@@ -326,6 +368,251 @@ pub fn a_region_over_the_servers_writes_is_refused_test() {
     as "a region over a writable root must be refused"
   assert string.contains(reason, "cover /home/o/.cache/go-build")
   assert string.contains(reason, "install the server outside that path")
+}
+
+// A link the server can write chooses which host directory is mounted,
+// because `regions` follows it. The model reaches a writable project
+// through the workspace tools and project code reaches it from inside the
+// jail, so either could point `node_modules/.bin/server` beside a
+// credential; the lease is refused and the operator told to name the file.
+fn linked_at(
+  server: catalog.LspServer,
+  path: String,
+  chain: List(String),
+) -> Result(jail.Jail, String) {
+  jail.policy_for(
+    jail.Placement(
+      ..placement(server),
+      executable: jail.Executable(path:, file: jail.LinkedExecutable(chain:)),
+    ),
+    session_base(),
+    reading: host_env,
+  )
+}
+
+pub fn a_link_inside_a_writable_project_is_refused_test() {
+  let link = root <> "/node_modules/.bin/server"
+  let assert Error(reason) =
+    linked_at(server(catalog.ProjectWritable), link, [
+      "/home/o/.cargo/credentials.toml",
+    ])
+    as "a link the server can rewrite must be refused"
+  assert reason
+    == "lsp.gleam's executable "
+    <> link
+    <> " is reached through the link "
+    <> link
+    <> ", which the server can rewrite; name the file it points to in "
+    <> "`command`"
+}
+
+// An intermediate link counts as much as the command path: here the
+// command is a link outside every write, and the hop it leads to sits in
+// an operator's `writable` root.
+pub fn a_link_inside_a_writable_root_is_refused_test() {
+  let tools =
+    catalog.LspServer(..server(catalog.ProjectReadOnly), writable: [
+      catalog.HomePath(".cache/tools"),
+    ])
+  let hop = "/home/o/.cache/tools/bin/server"
+  let assert Error(reason) =
+    linked_at(tools, "/usr/local/bin/server", [hop, "/opt/server/bin/server"])
+    as "an intermediate link in a writable root must be refused"
+  assert string.contains(reason, "reached through the link " <> hop <> ",")
+  assert string.contains(reason, "name the file it points to in `command`")
+}
+
+// A project the server only reads is one it cannot rewrite, so a link in
+// it chooses nothing the operator did not.
+pub fn a_link_inside_a_read_only_project_is_admitted_test() {
+  let assert Ok(built) =
+    linked_at(
+      server(catalog.ProjectReadOnly),
+      root <> "/node_modules/.bin/server",
+      ["/opt/server/bin/server"],
+    )
+    as "a link in a read-only project must be admitted"
+  assert list.map(built.requirements.mounts, fn(mount) { mount.path })
+    == [root <> "/node_modules/.bin", "/opt/server/bin"]
+}
+
+// The rule is about links: a plain file under a writable root mounts only
+// its own directory, which the jail already reaches, so it widens nothing.
+pub fn a_plain_executable_in_a_writable_project_is_admitted_test() {
+  let assert Ok(_built) =
+    jail.policy_for(
+      jail.Placement(
+        ..placement(server(catalog.ProjectWritable)),
+        executable: jail.Executable(
+          path: root <> "/node_modules/.bin/server",
+          file: jail.PlainExecutable,
+        ),
+      ),
+      session_base(),
+      reading: host_env,
+    )
+    as "a plain executable in a writable project must be admitted"
+}
+
+// --- locating a linked executable on disk --------------------------------
+//
+// These build real links under this package's `build/` directory and hand
+// `locate` an absolute command, so the chain it follows is the kernel's own
+// answer rather than a fixture's. The scratch directory is resolved before
+// use, so a checkout under a linked directory still compares its paths.
+
+// A fresh, resolved scratch directory for one test's links. It is emptied
+// first: the unique suffix restarts with every VM, so a run that failed
+// before its cleanup leaves a directory the next run's name lands on, and a
+// link fixture made over an old one answers `eexist`.
+fn links_dir(label: String) -> String {
+  let directory = scratch_dir("links-" <> label)
+  let _ = simplifile.delete_all([directory])
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the link scratch directory must be made"
+  let assert Ok(resolved) =
+    fs.resolve_real(fs.real_filesystem(), workspace: "/", path: directory)
+    as "the link scratch directory must resolve"
+  resolved
+}
+
+fn executable_file(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(filepath.directory_name(path))
+    as "an executable's directory must be made"
+  let assert Ok(Nil) = simplifile.write(path, "#!/bin/sh\n")
+    as "an executable fixture must be written"
+  Nil
+}
+
+fn link(at path: String, to target: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(filepath.directory_name(path))
+    as "a link's directory must be made"
+  let assert Ok(Nil) = simplifile.create_symlink(to: target, from: path)
+    as "a link fixture must be made"
+  Nil
+}
+
+fn located(path: String) -> Result(jail.Executable, String) {
+  jail.locate(
+    catalog.LspServer(..server(catalog.ProjectReadOnly), command: [
+      path,
+      "lsp",
+    ]),
+    None,
+  )
+}
+
+// rustup's shape: `bin/rust-analyzer -> rustup`, a relative link to a
+// sibling. The prefix above `bin` is where the credentials live, and it
+// must not be among the regions.
+pub fn a_relative_link_like_rustups_mounts_only_its_directory_test() {
+  let cargo = links_dir("rustup") <> "/.cargo"
+  executable_file(cargo <> "/bin/rustup")
+  let assert Ok(Nil) = simplifile.write(cargo <> "/credentials.toml", "token")
+    as "the credentials fixture must be written"
+  link(at: cargo <> "/bin/rust-analyzer", to: "rustup")
+
+  let assert Ok(executable) = located(cargo <> "/bin/rust-analyzer")
+    as "a relative link to a file must be followed"
+  assert executable.file
+    == jail.LinkedExecutable(chain: [cargo <> "/bin/rustup"])
+  assert jail.regions(executable) == [cargo <> "/bin"]
+  assert !list.any(jail.regions(executable), fn(region) {
+    policy.covers(root: region, path: cargo <> "/credentials.toml")
+  })
+  let _ = simplifile.delete_all([filepath.directory_name(cargo)])
+  Nil
+}
+
+// A chain of two links, the second relative with a `..` in it: every
+// directory the chain passes through is mounted, and nothing above them.
+pub fn a_chain_of_links_mounts_each_directory_it_passes_test() {
+  let prefix = links_dir("chain") <> "/prefix"
+  executable_file(prefix <> "/libexec/server")
+  link(at: prefix <> "/alt/server", to: "../libexec/server")
+  link(at: prefix <> "/bin/server", to: prefix <> "/alt/server")
+
+  let assert Ok(executable) = located(prefix <> "/bin/server")
+    as "a chain of links must be followed"
+  assert executable.file
+    == jail.LinkedExecutable(chain: [
+      prefix <> "/alt/server",
+      prefix <> "/libexec/server",
+    ])
+  assert jail.regions(executable)
+    == [prefix <> "/bin", prefix <> "/alt", prefix <> "/libexec"]
+  assert !list.contains(jail.regions(executable), prefix)
+  let _ = simplifile.delete_all([filepath.directory_name(prefix)])
+  Nil
+}
+
+// An absolute link out of its prefix entirely: the old rule mounted the
+// link's prefix and missed the target; the target's own directory is what
+// the jail needs.
+pub fn an_absolute_link_out_of_the_prefix_mounts_the_targets_directory_test() {
+  let scratch = links_dir("absolute")
+  executable_file(scratch <> "/elsewhere/opt/server")
+  link(
+    at: scratch <> "/prefix/bin/server",
+    to: scratch <> "/elsewhere/opt/server",
+  )
+
+  let assert Ok(executable) = located(scratch <> "/prefix/bin/server")
+    as "an absolute link must be followed"
+  assert jail.regions(executable)
+    == [scratch <> "/prefix/bin", scratch <> "/elsewhere/opt"]
+  let _ = simplifile.delete_all([scratch])
+  Nil
+}
+
+pub fn a_link_loop_is_refused_by_name_test() {
+  let bin = links_dir("loop") <> "/bin"
+  link(at: bin <> "/ping", to: "pong")
+  link(at: bin <> "/pong", to: "ping")
+
+  let assert Error(reason) = located(bin <> "/ping")
+    as "a link loop must be refused"
+  assert string.contains(reason, "loops back to " <> bin <> "/ping")
+  let _ = simplifile.delete_all([filepath.directory_name(bin)])
+  Nil
+}
+
+pub fn a_dangling_link_is_refused_by_name_test() {
+  let bin = links_dir("dangling") <> "/bin"
+  link(at: bin <> "/server", to: "gone")
+
+  let assert Error(reason) = located(bin <> "/server")
+    as "a dangling link must be refused"
+  assert string.contains(reason, bin <> "/gone, which does not exist")
+  let _ = simplifile.delete_all([filepath.directory_name(bin)])
+  Nil
+}
+
+// A chain that never revisits a path is refused at the bound instead:
+// `max_link_hops` links are followed and one more is not.
+pub fn a_chain_past_the_bound_is_refused_by_name_test() {
+  let bin = links_dir("bound") <> "/bin"
+  executable_file(bin <> "/end")
+  let name = fn(index) { bin <> "/hop" <> int.to_string(index) }
+  list.repeat(Nil, jail.max_link_hops)
+  |> list.index_map(fn(_nil, offset) { offset + 1 })
+  |> list.each(fn(index) {
+    link(at: name(index), to: case index == jail.max_link_hops {
+      True -> "end"
+      False -> "hop" <> int.to_string(index + 1)
+    })
+  })
+  let assert Ok(_within) = located(name(1))
+    as "a chain of exactly the bound must be followed"
+
+  link(at: name(0), to: "hop1")
+  let assert Error(reason) = located(name(0))
+    as "a chain past the bound must be refused"
+  assert string.contains(reason, "more than 32 symbolic links")
+  let _ = simplifile.delete_all([filepath.directory_name(bin)])
+  Nil
 }
 
 // Only a write decides it. A region equal to a project the server only

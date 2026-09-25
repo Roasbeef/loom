@@ -69,6 +69,7 @@ import core/clock.{type Clock}
 import core/ids.{type OpId}
 import filepath
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -78,6 +79,7 @@ import gleam/string
 import host/bootstrap
 import mcp/transport
 import simplifile
+import tools/fs
 import tools/tool.{type RunningCall}
 import weft/state_machine as sm
 
@@ -173,16 +175,27 @@ pub fn scratch_directory(
 
 // --- locating the executable ----------------------------------------------
 
+/// How many symbolic links `locate` will read on the way from a server's
+/// executable to the file it runs before it refuses the chain.
+///
+/// Installers make short chains: rustup's proxy is one link, Homebrew's is
+/// one, a Debian alternative is two. Thirty-two is far past any of them and
+/// still ends an absurd chain at once. A loop is refused before the bound,
+/// by name, because it revisits a path; the bound is for a chain that never
+/// revisits anything and simply does not end.
+pub const max_link_hops = 32
+
 /// Whether the server's executable is an ordinary file or a link, measured
-/// once when it is located. The answer decides which region is mounted.
+/// once when it is located. The answer decides which regions are mounted.
 pub type ExecutableFile {
   /// An ordinary file: its own directory is all the jail needs.
   PlainExecutable
 
-  /// A symbolic link. Nothing here can read a link's target without FFI,
-  /// so the install prefix is mounted as well, which holds both ends of a
-  /// relative link such as Homebrew's `bin/x -> ../Cellar/x/1.0/bin/x`.
-  LinkedExecutable
+  /// A symbolic link, followed when it was located to the regular file it
+  /// ends at. `chain` is every path the link led through after itself, in
+  /// order, and the last is that file. Each is absolute and has the links
+  /// in its directory resolved, so it names where the file really is.
+  LinkedExecutable(chain: List(String))
 }
 
 /// The server's executable, resolved to an absolute path.
@@ -190,12 +203,14 @@ pub type Executable {
   Executable(
     /// The absolute path the jail will run.
     path: String,
-    /// Whether that path is a link, which widens the mounted region.
+    /// Whether that path is a link, and if so where it leads, which adds
+    /// the directories it leads through to the mounted regions.
     file: ExecutableFile,
   )
 }
 
-/// Resolves a server's `command` head to the executable the jail runs.
+/// Resolves a server's `command` head to the executable the jail runs, and
+/// follows it if it is a symbolic link.
 ///
 /// Three shapes, in order. An absolute path is taken as written and must be
 /// a file. The bare name `gleam`, when code mode located a toolchain, is
@@ -206,10 +221,22 @@ pub type Executable {
 /// falls back to. A relative path with a slash in it is refused, because it
 /// would resolve against whatever directory the daemon was started in.
 ///
+/// A link is followed here, once, so that `regions` stays a pure function
+/// of the answer. The chain is refused, by name, when it loops, when it
+/// runs past `max_link_hops`, when it dangles, or when it ends at something
+/// other than a regular file: in each case there is no file the jail could
+/// be built around.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // jail.locate(server, None) == Ok(Executable("/usr/local/bin/gleam", PlainExecutable))
+/// // jail.locate(server, None)
+/// //   == Ok(Executable("/usr/local/bin/gleam", PlainExecutable))
+/// // jail.locate(rust_analyzer, None)
+/// //   == Ok(Executable(
+/// //     "/home/o/.cargo/bin/rust-analyzer",
+/// //     LinkedExecutable(["/home/o/.cargo/bin/rustup"]),
+/// //   ))
 /// ```
 ///
 pub fn locate(
@@ -221,29 +248,22 @@ pub fn locate(
     [] -> Error("lsp." <> server.name <> " has an empty command")
   })
   use path <- result.try(executable_path(server.name, head, toolchain))
-  let file = case simplifile.is_symlink(path) {
-    Ok(True) -> LinkedExecutable
-    Ok(False) | Error(_unreadable) -> PlainExecutable
-  }
+  use file <- result.try(measured(server.name, path))
   Ok(Executable(path:, file:))
 }
 
 // The three shapes `locate` documents. A bare `gleam` with no toolchain is
 // an ordinary PATH lookup: code mode may be absent while `gleam lsp` still
 // works, and refusing it there would be refusing a server over a feature
-// it does not use.
+// it does not use. An absolute path is checked by `measured`, which has to
+// read it without following it anyway.
 fn executable_path(
   name: String,
   head: String,
   toolchain: Option(Toolchain),
 ) -> Result(String, String) {
   case string.starts_with(head, "/"), string.contains(head, "/"), toolchain {
-    True, _, _ ->
-      case simplifile.is_file(head) {
-        Ok(True) -> Ok(head)
-        Ok(False) | Error(_) ->
-          Error("lsp." <> name <> "'s command " <> head <> " is not a file")
-      }
+    True, _, _ -> Ok(head)
     False, True, _ ->
       Error(
         "lsp."
@@ -262,40 +282,239 @@ fn executable_path(
   }
 }
 
+// What the located path is, read without following it (lstat semantics),
+// through the link reader `tools/fs` already owns for workspace
+// containment. A path whose status cannot be read is refused rather than
+// taken as a plain file: the answer decides what is mounted, and guessing
+// it wrong is how a link's target would go missing from the jail.
+fn measured(name: String, path: String) -> Result(ExecutableFile, String) {
+  case fs.real_filesystem().read_link(path) {
+    Ok(tool.NotALink) -> ending(name, path, at: path, chain: [])
+    Ok(tool.LinkTarget(target:)) ->
+      followed(name, path, from: path, target:, seen: [path], chain: [])
+    Ok(tool.LinkMissing) ->
+      Error("lsp." <> name <> "'s command " <> path <> " is not a file")
+    Error(error) -> Error(unreadable(name, path, at: path, error:))
+  }
+}
+
+// One hop: `from` is a link whose text is `target`. The text is resolved
+// the way the kernel resolves it, against the link's own directory, and the
+// directory the hop lands in is walked for links of its own, so a `..` in
+// the text climbs out of where that directory really is rather than out of
+// how it happened to be spelled. Revisiting a path is a loop, refused
+// before the hop bound because it is the more useful thing to be told.
+fn followed(
+  name: String,
+  command: String,
+  from from: String,
+  target target: String,
+  seen seen: List(String),
+  chain chain: List(String),
+) -> Result(ExecutableFile, String) {
+  use next <- result.try(hop(name, command, from:, target:))
+  use <- bool.lazy_guard(when: list.contains(seen, next), return: fn() {
+    Error(
+      "lsp."
+      <> name
+      <> "'s command "
+      <> command
+      <> " is a symbolic link that loops back to "
+      <> next,
+    )
+  })
+  landed(name, command, at: next, seen: [next, ..seen], chain: [next, ..chain])
+}
+
+// Where a hop landed, read without following it. Another link is one more
+// hop, and `seen` holds every link read so far, this one included, so the
+// bound is checked exactly when a further link would be followed: `seen`
+// running past `max_link_hops` is the chain running past it. Nothing there
+// means the link dangles, and it is refused: the jail would otherwise be
+// built around a file that does not exist.
+fn landed(
+  name: String,
+  command: String,
+  at next: String,
+  seen seen: List(String),
+  chain chain: List(String),
+) -> Result(ExecutableFile, String) {
+  case fs.real_filesystem().read_link(next) {
+    Ok(tool.NotALink) -> ending(name, command, at: next, chain:)
+    Ok(tool.LinkTarget(target:)) ->
+      case list.drop(seen, max_link_hops) {
+        [_, ..] ->
+          Error(
+            "lsp."
+            <> name
+            <> "'s command "
+            <> command
+            <> " is a chain of more than "
+            <> int.to_string(max_link_hops)
+            <> " symbolic links",
+          )
+        [] -> followed(name, command, from: next, target:, seen:, chain:)
+      }
+    Ok(tool.LinkMissing) ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s command "
+        <> command
+        <> " is a symbolic link to "
+        <> next
+        <> ", which does not exist",
+      )
+    Error(error) -> Error(unreadable(name, command, at: next, error:))
+  }
+}
+
+// The end of the chain, which must be a regular file. `chain` is empty for
+// a plain executable, and that emptiness is the whole difference between
+// the two answers.
+fn ending(
+  name: String,
+  command: String,
+  at path: String,
+  chain chain: List(String),
+) -> Result(ExecutableFile, String) {
+  case simplifile.is_file(path), chain {
+    Ok(True), [] -> Ok(PlainExecutable)
+    Ok(True), [_, ..] -> Ok(LinkedExecutable(chain: list.reverse(chain)))
+    Ok(False), [] | Error(_), [] ->
+      Error("lsp." <> name <> "'s command " <> command <> " is not a file")
+    Ok(False), [_, ..] | Error(_), [_, ..] ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s command "
+        <> command
+        <> " is a symbolic link to "
+        <> path
+        <> ", which is not a file",
+      )
+  }
+}
+
+// The path one link's text names. An absolute text stands as written; a
+// relative one joins the link's own directory. Either way the directory is
+// resolved through `tools/fs.resolve_real` rooted at `/`, the same walker
+// the file tools trust, which follows the links in it in POSIX order and
+// bounds them against loops. The last component is kept, because it is
+// the next hop and `landed` reads it without following it.
+fn hop(
+  name: String,
+  command: String,
+  from from: String,
+  target target: String,
+) -> Result(String, String) {
+  let joined = case string.starts_with(target, "/") {
+    True -> target
+    False -> filepath.join(filepath.directory_name(from), target)
+  }
+  fs.resolve_real(
+    fs.real_filesystem(),
+    workspace: "/",
+    path: filepath.directory_name(joined),
+  )
+  |> result.map(filepath.join(_, filepath.base_name(joined)))
+  |> result.map_error(fn(error) {
+    "lsp."
+    <> name
+    <> "'s command "
+    <> command
+    <> " leads to "
+    <> joined
+    <> ", whose directory does not resolve: "
+    <> unresolved(error)
+  })
+}
+
+// Rooted at `/` with no protected list, only `Unresolvable` can come back
+// from the walker; the other shapes are named for totality and say only
+// that the path did not resolve.
+fn unresolved(error: fs.PathError) -> String {
+  case error {
+    fs.Unresolvable(path: _, reason:) -> reason
+    fs.EmptyPath -> "the path is empty"
+    fs.EscapesWorkspace(path:)
+    | fs.ProtectedPath(path:, protected: _)
+    | fs.ProtectionMisconfigured(path:, protected: _) ->
+      path <> " did not resolve"
+  }
+}
+
+fn unreadable(
+  name: String,
+  command: String,
+  at path: String,
+  error error: tool.FsError,
+) -> String {
+  let reason = case error {
+    tool.FsNotFound(path: _) -> "not found"
+    tool.FsPermissionDenied(path: _) -> "permission denied"
+    tool.FsFailure(path: _, reason:) -> reason
+  }
+  "lsp."
+  <> name
+  <> "'s command "
+  <> command
+  <> " could not be read at "
+  <> path
+  <> ": "
+  <> reason
+}
+
 /// The host regions the jail must bind for `executable` to run: its own
-/// directory, and for a link its install prefix as well.
+/// directory, and for a link the directory of every file the link leads
+/// through. Never an install prefix.
 ///
-/// The directory rather than the prefix, for the reason code mode mounts
+/// Directories rather than prefixes, for the reason code mode mounts
 /// `gleam` that way: a developer install puts binaries in `~/.cargo/bin`,
 /// `~/.local/bin` or `~/go/bin`, and mounting the prefix read-only would put
-/// `~/.cargo/credentials.toml` inside every server's jail. That is also the
-/// answer for `gopls` and its kind: `~/go/bin/gopls` mounts `~/go/bin`, and
-/// the module cache and the Go toolchain it shells out to are the operator's
-/// to list as `readable` roots in the server's table — they are that
-/// server's needs, not a property of where its binary happens to live. A
-/// link falls back to the prefix (`client/codemode.install_prefix`), which
-/// holds a relative link's target; an absolute link out of the prefix is
-/// not covered, and the jail refuses it by naming the path.
+/// `~/.cargo/credentials.toml` — a registry token — inside every server's
+/// jail, where a build script or a proc macro the model wrote could read it
+/// and hand it back through a diagnostic. That is also the answer for
+/// `gopls` and its kind: `~/go/bin/gopls` mounts `~/go/bin`, and the module
+/// cache and the Go toolchain it shells out to are the operator's to list
+/// as `readable` roots in the server's table — they are that server's
+/// needs, not a property of where its binary happens to live.
+///
+/// A link is resolved rather than widened. `locate` followed it to the file
+/// it runs, and the kernel will read every link on that chain again when the
+/// jail executes the path, so each one's directory must be present and
+/// nothing above them need be. rustup's `~/.cargo/bin/rust-analyzer ->
+/// rustup` therefore mounts `~/.cargo/bin` and nothing else; rustup then
+/// dispatches into `~/.rustup`, which the server's table grants. Homebrew's
+/// `bin/x -> ../Cellar/x/1.0/bin/x` mounts both `bin` directories and not
+/// the prefix that holds them, and `/bin/sh -> dash` mounts `/bin` and,
+/// where `/bin` is a link to `usr/bin`, `/usr/bin` too. A region covered by
+/// another is dropped, since binding it twice adds nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert jail.regions(jail.Executable("/usr/local/bin/gleam", jail.PlainExecutable))
 ///   == ["/usr/local/bin"]
+/// assert jail.regions(jail.Executable(
+///     "/home/o/.cargo/bin/rust-analyzer",
+///     jail.LinkedExecutable(["/home/o/.cargo/bin/rustup"]),
+///   ))
+///   == ["/home/o/.cargo/bin"]
 /// ```
 ///
 pub fn regions(executable: Executable) -> List(String) {
-  let directory = filepath.directory_name(executable.path)
-  case executable.file {
-    PlainExecutable -> [directory]
-    LinkedExecutable -> {
-      let prefix = codemode.install_prefix(executable.path)
-      case policy.covers(root: prefix, path: directory) {
-        True -> [prefix]
-        False -> [directory, prefix]
-      }
-    }
+  let led = case executable.file {
+    PlainExecutable -> []
+    LinkedExecutable(chain:) -> list.map(chain, filepath.directory_name)
   }
+  let directories =
+    list.unique([filepath.directory_name(executable.path), ..led])
+  list.filter(directories, fn(directory) {
+    !list.any(directories, fn(other) {
+      other != directory && policy.covers(root: other, path: directory)
+    })
+  })
 }
 
 // --- the policy -----------------------------------------------------------
@@ -354,7 +573,8 @@ pub type Jail {
 /// session's store in production), read for `PATH` and for each configured
 /// `env` name. The `Error` is a worded refusal naming what does not fit:
 /// a relative root, an unresolvable `~/`, an executable whose read-only
-/// region would cover a path the server must write, or a narrowing — most
+/// region would cover a path the server must write, an executable reached
+/// through a link the server could rewrite, or a narrowing — most
 /// usefully a project root outside what the session may reach, which this
 /// refuses rather than grants.
 ///
@@ -402,6 +622,10 @@ pub fn policy_for(
     wanted,
     writes,
   ))
+
+  // The same writes decide whether any link on the way to the executable
+  // is one the server could rewrite, which would let it choose a mount.
+  use Nil <- result.try(unrewritable(server.name, placement.executable, writes))
 
   let base =
     policy.SandboxPolicy(
@@ -467,9 +691,13 @@ fn project_writes(server: LspServer, root: String) -> List(String) {
 // file system" on a path its policy grants. Nothing downstream says so:
 // composition compares path lists, and the helper's audit counts a
 // writable root that came out read-only as narrower than asked, never as
-// a skip. The case that found it is `/bin/sh`, a link whose install
-// prefix climbs out of `/bin` to `/`, which bound the whole host
-// read-only over every other mount in the jail.
+// a skip. The case that found it was `/bin/sh` under the install-prefix
+// rule this module has since dropped: a link, so its prefix was mounted,
+// and the prefix of `/bin` is `/`, which bound the whole host read-only
+// over every other mount in the jail. Links are now followed and only
+// directories are mounted, but a link can still lead into a directory
+// that holds a path the server writes, so the check judges every region
+// `regions` answers, the target's as much as the link's own.
 //
 // A region strictly inside a writable root is left alone: it makes the
 // server's own directory read-only and nothing more.
@@ -504,15 +732,65 @@ fn unshadowed(
   }
 }
 
-// What an operator changes to clear a shadow. A link is mounted by its
-// install prefix only because nothing here can read where it points, so
-// naming the target in `command` narrows the region to that target's own
-// directory.
+// Refuses an executable reached through a link the server can rewrite.
+//
+// `regions` mounts the directory of every file the chain leads through, so
+// with links the mounted directories are chosen by where the links point.
+// A link at or under a path the server writes is one that project code in
+// the jail, or the model through the workspace tools, can point anywhere:
+// `node_modules/.bin/server` retargeted at a file beside a credential would
+// have that credential's directory mounted into the next lease. Every hop
+// that is itself a link is judged — the command path when it is one, and
+// each intermediate link — while the regular file the chain ends at is
+// not: a plain executable under a writable root mounts only its own
+// directory, which the jail can already reach, and so widens nothing.
+//
+// Checking once, here, at resolution time is enough. The mounts are built
+// from this resolution and nothing re-reads the chain, so a link rewritten
+// after it points outside what is mounted and fails to execute in the
+// jail rather than widening anything.
+fn unrewritable(
+  name: String,
+  executable: Executable,
+  writes: List(String),
+) -> Result(Nil, String) {
+  let links = case executable.file {
+    PlainExecutable -> []
+    LinkedExecutable(chain:) -> [
+      executable.path,
+      ..list.take(chain, list.length(chain) - 1)
+    ]
+  }
+  let rewritable =
+    list.find(links, fn(link) {
+      list.any(writes, fn(write) { policy.covers(root: write, path: link) })
+    })
+  case rewritable {
+    Error(Nil) -> Ok(Nil)
+    Ok(link) ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s executable "
+        <> executable.path
+        <> " is reached through the link "
+        <> link
+        <> ", which the server can rewrite; name the file it points to in "
+        <> "`command`",
+      )
+  }
+}
+
+// What an operator changes to clear a shadow. For a link the region may be
+// the link's own directory or the directory of anything it leads through,
+// and naming the target in `command` would drop only the first, so the
+// remedy says the whole chain has to move.
 fn shadow_remedy(executable: Executable) -> String {
   case executable.file {
-    LinkedExecutable ->
-      "it is a symbolic link, so its install prefix is mounted; name the "
-      <> "file the link points to in `command`"
+    LinkedExecutable(chain: _) ->
+      "it is a symbolic link, and the directory of every file it leads "
+      <> "through is mounted; install the server, and whatever its link "
+      <> "leads to, outside that path"
     PlainExecutable -> "install the server outside that path"
   }
 }
