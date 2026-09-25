@@ -423,6 +423,62 @@ pub fn probe(
   now_ms now_ms: Int,
   waiting waiting: Int,
 ) -> Result(Nil, String) {
+  use outcome <- result.try(probe_outcome(
+    run,
+    built,
+    demand,
+    op_id,
+    now_ms:,
+    waiting:,
+  ))
+  judged(outcome)
+}
+
+/// Builds `server`'s jail over `root` exactly as a start would, clears the
+/// enforcement probe under it, and answers how the probe settled, before
+/// any verdict is drawn from it.
+///
+/// `probe` is the gate a start passes; this is the same clearance for a
+/// caller that has to *say* what the jail enforced rather than only
+/// refuse on a degraded one. `loom ext check` prints it, as an install
+/// prints its build's jail: an operator proving a profile is entitled to
+/// know whether the server it proved was actually confined. The `Error`
+/// is a jail that could not be built, or a probe that did not settle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.probe_server(jailed, gleam, "/work/app")
+/// // -> Ok(broker.CallExited(result: ..))
+/// ```
+///
+pub fn probe_server(
+  jailed: Jailed,
+  server: LspServer,
+  root: String,
+) -> Result(broker.CallOutcome, String) {
+  use built <- result.try(jail_for(jailed, server, root))
+  let #(now, _clock) = clock.read(jailed.clock)
+  probe_outcome(
+    jailed.run,
+    built,
+    jailed.demand,
+    jailed.op_id,
+    now_ms: now,
+    waiting: jailed.exec_ms,
+  )
+}
+
+// The probe's clearance and its settlement, with no verdict: `probe`
+// judges it, and `probe_server` hands it to a caller that reports it.
+fn probe_outcome(
+  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
+  built: jail.Jail,
+  demand: exec.EnforcementDemand,
+  op_id: OpId,
+  now_ms now_ms: Int,
+  waiting waiting: Int,
+) -> Result(broker.CallOutcome, String) {
   let spec =
     broker.CallSpec(
       ..jail.call_spec(built, op_id, now_ms:, demand:),
@@ -445,7 +501,7 @@ pub fn probe(
         <> " ms",
       )
     }
-    Ok(collected) -> judged(collected.outcome)
+    Ok(collected) -> Ok(collected.outcome)
   }
 }
 

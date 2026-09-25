@@ -10,6 +10,7 @@
 //// the pipeline never reached for them.
 
 import client/extension/archive
+import client/extension/check
 import client/extension/cli
 import client/extension/install
 import client/extension/installed
@@ -17,7 +18,9 @@ import client/extension/manifest
 import client/extension/record
 import client/extension/source
 import client/lsp/profile
+import client/lsp/profile_check
 import codemode/compile
+import codemode/enforcement
 import core/clock
 import gleam/json
 import gleam/list
@@ -498,6 +501,85 @@ pub fn a_profile_summary_names_its_servers_test() {
       artifact:,
     ))
     == "lsp_go  0.1.0  local  lsp: go (.go), rust (.rs)"
+}
+
+// --- loom ext check: what is refused before anything starts ------------------
+
+// Every refusal below is reached with the helper pointed at a path that
+// does not exist, so a verb that started a plane before refusing would
+// fail on the helper instead, in different words.
+
+pub fn check_refuses_an_unknown_name_test() {
+  let home = extensions.scratch("check-unknown")
+  let assert Error(reason) =
+    cli.dispatch([
+      "check", "lsp_nothing", "--home", home, "--helper", "/nonexistent/helper",
+    ])
+    as "nothing is installed under that name"
+  assert string.starts_with(reason, "check refused: lsp_nothing: ")
+  assert string.contains(reason, "no install record")
+}
+
+pub fn check_refuses_a_profile_with_no_checks_test() {
+  let home = extensions.scratch("check-no-checks")
+  let unchecked =
+    with(extensions.profile_go(), "extension.toml", fn(text) {
+      let assert Ok(#(head, _checks)) = string.split_once(text, "[[check]]")
+        as "the fixture manifest carries a check"
+      head
+    })
+  let tree =
+    extensions.materialise(unchecked, extensions.scratch("check-no-checks-src"))
+  let assert Ok(_installed) = cli.dispatch(["install", tree, "--home", home])
+    as "a profile with no checks still installs"
+  let assert Error(reason) =
+    cli.dispatch([
+      "check", "lsp_go", "--home", home, "--helper", "/nonexistent/helper",
+    ])
+    as "a profile with no checks has nothing to run"
+  assert string.starts_with(
+    reason,
+    "check refused: lsp_go declares no [[check]], so there is nothing to run",
+  )
+}
+
+/// The report's shape, from a run that never needed a server: the heading
+/// counts, the jail line says there was no report rather than nothing,
+/// and each check is one line.
+pub fn a_check_report_prints_the_jail_and_one_line_per_check_test() {
+  let go_check =
+    manifest.Check(
+      server: "go",
+      fixture: "fixture",
+      query: manifest.Definition,
+      symbol: "util.Greet",
+      path: None,
+      line: None,
+      expect: [manifest.Site(path: "util/util.go", line: 4)],
+    )
+  let report =
+    check.Report(name: "lsp_go", version: "0.1.0", runs: [
+      check.Run(
+        server: "go",
+        fixture: "fixture",
+        enforcement: enforcement.Unreported("the helper was not found"),
+        outcomes: [
+          #(go_check, profile_check.Passed),
+          #(go_check, profile_check.Mismatch(["util/util.go:4"], [])),
+        ],
+      ),
+    ])
+  assert check.failed(report) == 1
+  assert check.total(report) == 2
+  assert check.lines(report)
+    == [
+      "checked lsp_go 0.1.0: 1 of 2 checks passed",
+      "  lsp.go against fixture",
+      "    jail:  the language server's probe made NO enforcement report: "
+        <> "the helper was not found",
+      "    ok    definition util.Greet",
+      "    FAIL  definition util.Greet: expected {util/util.go:4}, got {}",
+    ]
 }
 
 // --- helpers -----------------------------------------------------------------
