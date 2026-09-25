@@ -1154,8 +1154,8 @@ fn read_error_outcome(error: ReadError) -> ToolOutcome {
 /// that owns the file is told of the change and its settled diagnostics
 /// join the result, so a model learns it broke the build in the same turn
 /// it broke it. It is a closure rather than a value this package computes
-/// because `tools` must not import `lsp` — the edge runs the other way,
-/// with the client filling this seam from the session's language-server
+/// because this module must not reach a language server — the client owns
+/// the session's server and fills this seam from the session's language-server
 /// door exactly as it fills `Agency` or `CodeMode`. `None` is the answer
 /// for a path no server owns, and it leaves the result exactly as it was.
 ///
