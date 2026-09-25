@@ -9,9 +9,10 @@
 //// Everything else a workspace program can import is either composed out
 //// of `proc.run` inside the satellite (`cap/git`, which needs no routing
 //// at all and never did), still gated on something outside this package
-//// (`net.request` on the egress proxy, `lsp.*` on the long-lived stdio
-//// client), or a request the harness answers *itself*. This module is
-//// that last group.
+//// (`net.request` on the egress proxy), served by a router of its own
+//// (`lsp.*` by `codemode/lsp`, over the session's language-server door),
+//// or a request the harness answers *itself*. This module is that last
+//// group.
 ////
 //// Its plans are therefore `satellite.ServedHere` and never
 //// `satellite.ClearedCall`, for the same reason the orchestration seam's
