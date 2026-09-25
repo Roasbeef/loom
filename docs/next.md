@@ -1,6 +1,6 @@
 # Current handoff
 
-The collaboration stack was rebased onto `main` at `125b7925`. PR #484 already
+The collaboration stack was rebased onto `main` at `9616fb03`. PR #484 already
 merged the async execution, resident peer messaging, and named workflow core.
 The four PRs below add model-visible virtual reads, owner controls, a terminal
 link manager, and executable collaboration examples. The four PRs must pass
