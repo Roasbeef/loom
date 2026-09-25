@@ -1549,6 +1549,109 @@ pub fn a_mount_path_is_canonical_before_it_reaches_a_policy_test() {
     == ["/usr", "/srv/loom/build/seed", "/opt/homebrew/bin"]
 }
 
+// --- a prefix that shadows the jail (protocol-change/050) --------------------
+
+// The reproduction. On a merged-usr host `/bin` is a link to `usr/bin`,
+// and a PATH listing `/bin` before `/usr/bin` finds `/bin/erl`. The
+// prefix is the parent of that `bin`, which is `/`, and `discover`'s ERTS
+// check passes it because `//lib/erlang` is `/usr/lib/erlang` through the
+// same link. Every other region is inside `/`, so the list collapses to
+// one read-only mount of the whole host — emitted after the workspace's
+// writable bind, and after the fresh `/proc` and `/dev`.
+pub fn a_merged_usr_erl_found_through_bin_takes_the_root_as_prefix_test() {
+  assert codemode.install_prefix("/bin/erl") == "/"
+  let found =
+    codemode.toolchain(
+      gleam_path: "/usr/bin/gleam",
+      erl_path: "/bin/erl",
+      seed_root: "/opt/seed",
+    )
+  assert codemode.toolchain_mounts(found)
+    == [
+      policy.Mount(
+        path: "/",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ]
+}
+
+// The other ordinary host. `~/bin/gleam` linked to a checkout's build is
+// a symlink, so its prefix is mounted too, and that prefix is the home
+// directory the workspace usually sits in.
+pub fn a_symlinked_gleam_in_home_bin_takes_the_home_directory_test() {
+  let found =
+    codemode.Toolchain(
+      ..codemode.toolchain(
+        gleam_path: "/home/o/bin/gleam",
+        erl_path: "/usr/lib/erlang/bin/erl",
+        seed_root: "/opt/seed",
+      ),
+      gleam_binary: codemode.GleamSymlink,
+    )
+  assert list.contains(
+    list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path }),
+    "/home/o",
+  )
+}
+
+pub fn a_toolchain_mounted_at_the_root_is_refused_test() {
+  let found =
+    codemode.toolchain(
+      gleam_path: "/usr/bin/gleam",
+      erl_path: "/bin/erl",
+      seed_root: "/opt/seed",
+    )
+  let assert Error(reason) = codemode.clear_of(found, writable_roots: ["/work"])
+  assert string.contains(reason, "code mode would mount / read-only")
+  assert string.contains(reason, "the install prefix of `erl` at /bin/erl")
+  assert string.contains(reason, "No code_mode tool is registered")
+}
+
+// A jail that names no writable root is no safer under `/`: the mount
+// would bind the host's `/proc` and `/dev` back over the fresh ones,
+// which is issue #37's confinement gap.
+pub fn a_toolchain_mounted_at_the_root_is_refused_with_no_writable_root_test() {
+  let found =
+    codemode.toolchain(
+      gleam_path: "/usr/bin/gleam",
+      erl_path: "/bin/erl",
+      seed_root: "/opt/seed",
+    )
+  let assert Error(reason) = codemode.clear_of(found, writable_roots: [])
+  assert string.contains(reason, "that region contains /proc")
+}
+
+pub fn a_toolchain_prefix_above_the_workspace_is_refused_test() {
+  let found =
+    codemode.Toolchain(
+      ..codemode.toolchain(
+        gleam_path: "/home/o/bin/gleam",
+        erl_path: "/usr/lib/erlang/bin/erl",
+        seed_root: "/opt/seed",
+      ),
+      gleam_binary: codemode.GleamSymlink,
+    )
+  let assert Error(reason) =
+    codemode.clear_of(found, writable_roots: ["/home/o/src/project"])
+  assert string.contains(reason, "code mode would mount /home/o read-only")
+  assert string.contains(reason, "contains /home/o/src/project")
+  assert string.contains(reason, "the install prefix of `gleam` at")
+}
+
+// The layouts that must keep working, including the development one: a
+// seed prepared inside the checkout is a read-only mount *under* the
+// workspace, which narrows one subtree and shadows no writable root.
+pub fn an_ordinary_toolchain_is_clear_of_the_workspace_test() {
+  let found =
+    codemode.toolchain(
+      gleam_path: "/home/o/.cargo/bin/gleam",
+      erl_path: "/usr/lib/erlang/bin/erl",
+      seed_root: "/home/o/loom/build/codemode-seed",
+    )
+  assert codemode.clear_of(found, writable_roots: ["/home/o/loom"]) == Ok(found)
+}
+
 // --- the search bridge (#365) -------------------------------------------------
 
 pub fn the_workspace_seam_advertises_the_search_capabilities_test() {
