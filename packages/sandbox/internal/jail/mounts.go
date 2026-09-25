@@ -33,7 +33,12 @@ package jail
 // A mask that a later `--bind /work /work` defeats drops `mask` below
 // the number of protected paths and emits `skip:mounts: …` naming the
 // path and the operation that re-exposed it. A readable root turned
-// writable does the same. The broker holds the policy it sent, so those
+// writable does the same, and so does a writable root a later read-only
+// mount turned read-only (protocol-change/050): that one is narrower
+// rather than wider, but it is a policy neither decoder admits and the
+// platforms disagree about, and the skip is what makes a full-enforcement
+// demand see it without the broker re-deriving the plan to compare
+// `rw=`. The broker holds the policy it sent, so those
 // counts are checkable against it rather than merely descriptive — which
 // a digest is not: a digest detects *change*, and nobody holds the
 // expected value to compare it against. The digest is carried anyway, as
@@ -165,11 +170,29 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 
 	rw := 0
 	for _, w := range p.WritableRoots {
-		// A writable root the plan leaves unwritable is the fail-closed
-		// direction: narrower than asked, never wider, so it is counted
-		// out but is not a confinement skip. The counts carry it, and
-		// the broker can see the shortfall against its own policy.
-		if v := effective(plan, w); v.writable() && !v.masked() {
+		v := effective(plan, w)
+
+		// A writable root under an explicit read-only mount is the one
+		// narrowing that is a skip. Every other way a root comes out
+		// unwritable — the scratch tmpfs winning a tie at /tmp, a
+		// protected mask over it — is a policy both decoders admit and
+		// both platforms carry out alike, so it is counted out below and
+		// no more. This one both decoders refuse (protocol-change/050),
+		// Darwin would have left writable, and nothing but `rw=` would
+		// otherwise say it happened: the broker does not compare that
+		// count, so a full-enforcement demand read the jail as whole.
+		// Reaching here means a policy got past the decoder, which is
+		// exactly when the report must not stay quiet.
+		if v.op.Class == ClassMountReadOnly {
+			rep.Skipped = append(rep.Skipped, widened(
+				"writable root", w, "is read-only", v))
+			continue
+		}
+
+		// A writable root the plan leaves unwritable otherwise is the
+		// fail-closed direction: narrower than asked, never wider, so it
+		// is counted out but is not a confinement skip.
+		if v.writable() && !v.masked() {
 			rw++
 		}
 	}
@@ -379,7 +402,9 @@ func statReason(err error) string {
 
 // widened renders one skip reason, naming both the path and the
 // operation that left it wider than the policy asked for — the second
-// half is what turns "something is wrong" into a fix.
+// half is what turns "something is wrong" into a fix. It renders the one
+// narrowing that is a skip too, a writable root under a read-only mount,
+// because that reason needs the same two halves.
 func widened(kind, path, what string, v view) string {
 	return fmt.Sprintf("%s: %s %s %s: %s is the last mount operation "+
 		"covering it", MountSkipPrefix, kind, path, what, v.describe())

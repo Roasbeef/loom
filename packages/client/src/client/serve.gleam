@@ -709,12 +709,16 @@ pub fn start_build_plane(
   // `protocol-change/020` a compile that reaches a region the base does
   // not name is refused by the meet. Asking first also means a host
   // without a toolchain never spawns a pool it would immediately tear
-  // down.
+  // down. The toolchain is admitted against the build root it would
+  // share a jail with, because a prefix covering that root would leave
+  // every compile unable to write its own output.
+  let unmounted = build_plane_policy(writable, state_root)
   use toolchain <- result.try(
-    codemode_wiring.discover(seed_root(seed, workspace)),
+    codemode_wiring.discover(seed_root(seed, workspace))
+    |> admissible_toolchain(unmounted),
   )
   let base =
-    build_plane_policy(writable, state_root)
+    unmounted
     |> admitting_codemode(Ok(toolchain))
     |> merging_mounts
 
@@ -2589,8 +2593,13 @@ fn assemble_in(
   // filesystem probe over the settings alone, so hoisting it costs
   // nothing and buys the one ordering that matters: a base built before
   // the toolchain is known could not name it, and a launch requiring a
-  // mount the base does not carry is refused by the meet.
-  let toolchain = codemode_wiring.discover(settings.codemode_seed)
+  // mount the base does not carry is refused by the meet. Discovery says
+  // where the toolchain is; `session_toolchain` says whether this
+  // session may mount it, and the one answer reaches both the base and
+  // the tool registration below.
+  let toolchain =
+    codemode_wiring.discover(settings.codemode_seed)
+    |> session_toolchain(settings, index_path, memory_store, memory_digest)
   let base_policy =
     session_base(settings, index_path, memory_store, memory_digest, toolchain)
 
@@ -4287,6 +4296,40 @@ pub fn widening_linked_worktree(
   }
 }
 
+/// The discovered toolchain, or the reason this base cannot carry it: one
+/// of its read-only mounts would sit at or above one of the base's
+/// writable roots (`codemode.clear_of`).
+///
+/// A separate step from `admitting_codemode`, and ahead of it, because
+/// the answer has two readers. The base must not carry the mount — the
+/// helper and `broker/policy.validate` both refuse a read-only mount over
+/// a writable root (`protocol-change/050`), so admitting it would refuse
+/// the boot — and `code_mode_seam` must not register a tool whose every
+/// launch the meet would then refuse. Turning the discovery into an
+/// `Error` is what tells both, in the words `discover` uses for a host
+/// with no toolchain at all.
+///
+/// Only `base.writable_roots` is read. The session assembly asks a base
+/// built with the toolchain already in it, which is the same answer,
+/// because admitting the toolchain changes the mounts and no root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With `erl` found at /bin/erl, so its prefix is `/`:
+/// // serve.admissible_toolchain(Ok(toolchain), policy.workspace_default("/w"))
+/// //   == Error("code mode would mount / read-only …")
+/// ```
+///
+@internal
+pub fn admissible_toolchain(
+  discovered: Result(codemode_wiring.Toolchain, String),
+  base: policy.SandboxPolicy,
+) -> Result(codemode_wiring.Toolchain, String) {
+  use toolchain <- result.try(discovered)
+  codemode_wiring.clear_of(toolchain, writable_roots: base.writable_roots)
+}
+
 /// The base policy with the code-mode toolchain admitted as explicit
 /// mounts: the `erl` install prefix, the `gleam` prefix, and the prepared
 /// build seed, each read-only and required.
@@ -4303,6 +4346,12 @@ pub fn widening_linked_worktree(
 /// A host with no toolchain is left exactly as it was. It registers no
 /// `code_mode` tool, so no satellite will ever be launched on it, and a
 /// mount nothing needs is a region granted for nothing.
+///
+/// The toolchain handed here should already have passed
+/// `admissible_toolchain` against this base. This step does not refuse on
+/// its own, because it returns a policy and the refusal has to reach the
+/// tool registration too; a toolchain that skipped admission and shadows
+/// a writable root leaves a base `base_policy_fault` refuses.
 ///
 /// ## Examples
 ///
@@ -4733,6 +4782,38 @@ pub fn session_base(
   |> widening_linked_worktree(settings.workspace)
   |> admitting_codemode(toolchain)
   |> merging_mounts
+}
+
+/// The discovered toolchain as this session may use it: the same value,
+/// or an `Error` when one of its mounts would shadow a writable root of
+/// the assembled session base (`admissible_toolchain`).
+///
+/// The roots are read off `session_base` itself rather than restated,
+/// so a step that widens the writable roots — a linked worktree's git
+/// directories today — is judged against without anyone remembering to
+/// add it here. That base is assembled with the unadmitted toolchain in
+/// it, which gives the same roots, because `admitting_codemode` touches
+/// the mounts and nothing else; only the roots are read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With `erl` found at /bin/erl:
+/// // serve.session_toolchain(Ok(found), settings, index, store, digest)
+/// //   == Error("code mode would mount / read-only …")
+/// ```
+///
+@internal
+pub fn session_toolchain(
+  discovered: Result(codemode_wiring.Toolchain, String),
+  settings: Settings,
+  index_path: String,
+  memory_store: String,
+  memory_digest: String,
+) -> Result(codemode_wiring.Toolchain, String) {
+  let assembled =
+    session_base(settings, index_path, memory_store, memory_digest, discovered)
+  admissible_toolchain(discovered, assembled)
 }
 
 /// The policy meet keeps only the environment names the session base
@@ -5804,6 +5885,16 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
       <> "` contains a `..` segment. Mount paths are compared by "
       <> "component against protected entries and roots before anything "
       <> "resolves them, so this would claim one region and bind another"
+    policy.MountShadowsWritableRoot(mount:, writable_root:) ->
+      "the read-only mount `"
+      <> mount
+      <> "` covers the writable root `"
+      <> writable_root
+      <> "`. On Linux every explicit mount is applied after the roots, so "
+      <> "the jail would see that root read-only and every write under it "
+      <> "would fail; on Darwin it would stay writable. Mount a directory "
+      <> "beside the writable root rather than above it, or make the mount "
+      <> "read-write"
   }
 }
 

@@ -1019,6 +1019,11 @@ pub fn gleam_binary_kind(gleam_path: String) -> GleamBinary {
 /// reads a link target, and `simplifile.resolve` is `filename:absname`,
 /// which resolves `..` and not symlinks.
 ///
+/// The price of not following links is that a `bin` reached through one
+/// can name far too much: `/bin/erl` on a merged-usr host gives `/`, and a
+/// symlinked `~/bin/gleam` gives the home directory. Such a prefix is not
+/// repaired here; `clear_of` refuses it before it can reach a policy.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1165,6 +1170,129 @@ fn covered_by_another(path: String, mounts: List(String)) -> Bool {
   list.any(mounts, fn(other) {
     other != path && policy.covers(root: other, path:)
   })
+}
+
+/// The toolchain back, or the sentence that refuses it, when one of its
+/// read-only mounts would sit at or above one of `writable_roots` or over
+/// the jail's fresh `/proc` and `/dev`.
+///
+/// The mounts are emitted after every grant (protocol-change/004's rule
+/// 1a), so a toolchain region above a writable root lands on top of it
+/// and the root comes out read-only in every jail carrying the mount.
+/// Two ordinary hosts produce that region, both through `install_prefix`
+/// taking the parent of a `bin` directory without resolving links. When
+/// no `erl` sits beside the running ERTS, `locate` falls back to `PATH`,
+/// and a merged-usr host whose `PATH` lists `/bin` before `/usr/bin` finds
+/// `/bin/erl`; `/bin` is itself a link to `usr/bin`, so the prefix is
+/// `/`, which `discover`'s ERTS check passes, because `//lib/erlang` is
+/// `/usr/lib/erlang` through the same link. A `~/bin/gleam` that is a
+/// symlink to a checkout's build keeps its prefix, and that prefix is the
+/// home directory the workspace is usually under.
+///
+/// The prefix is refused here rather than repaired, and the safer choice
+/// is the reason. Resolving the link would name a better region on both
+/// hosts, but it needs a `read_link` nothing in the standard library
+/// offers, and a resolved target can still be `/` or a home directory:
+/// resolution improves the guess, while this check is what holds whatever
+/// the guess was. Dropping the one offending mount would leave code mode
+/// registered on a host where every launch is then refused by the meet,
+/// which is the tool that can only refuse `discover` exists to avoid. And
+/// admitting it refuses the whole boot: `protocol-change/050` rejects the
+/// base, and before 050 a session base already failed on the blob-store
+/// mask the mount also covered, naming the mask rather than the toolchain.
+/// So the answer is the one
+/// `discover` gives for a missing toolchain: no `code_mode` tool, and a
+/// sentence saying which region, why, and what to change.
+///
+/// `/proc` and `/dev` are checked beside the writable roots because a
+/// region covering either binds the host's copy back over the fresh one
+/// the jail mounts, which is issue #37's confinement gap; only `/` covers
+/// them, and it is refused even for a jail with no writable root at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // A merged-usr host with `/bin` first on PATH:
+/// // codemode.toolchain(gleam_path: "/usr/bin/gleam", erl_path: "/bin/erl",
+/// //   seed_root: "/opt/seed")
+/// // |> codemode.clear_of(writable_roots: ["/work"])
+/// //   == Error("code mode would mount / read-only …")
+/// ```
+///
+pub fn clear_of(
+  toolchain: Toolchain,
+  writable_roots writable_roots: List(String),
+) -> Result(Toolchain, String) {
+  let guarded = list.append(fresh_regions, writable_roots)
+  let shadowed =
+    toolchain_mounts(toolchain)
+    |> list.find_map(fn(mount) {
+      list.find(guarded, fn(root) {
+        policy.covers(root: mount.path, path: root)
+      })
+      |> result.map(fn(root) { #(mount.path, root) })
+    })
+  case shadowed {
+    Error(Nil) -> Ok(toolchain)
+    Ok(#(region, root)) -> Error(shadowing_refusal(toolchain, region, root))
+  }
+}
+
+// The regions the helper mounts fresh inside every jail, which a
+// read-only bind of the host above them would replace with the host's
+// own. Only `/` covers either, and a toolchain region of `/` is refused
+// even where the jail names no writable root.
+const fresh_regions = ["/proc", "/dev"]
+
+// The refusal names the region, the path it would shadow, which of the
+// toolchain's paths the region was derived from, and the change that
+// avoids it. It is the only thing an operator will ever see about it,
+// because the tool it would have registered does not exist.
+fn shadowing_refusal(
+  toolchain: Toolchain,
+  region: String,
+  root: String,
+) -> String {
+  "code mode would mount "
+  <> region
+  <> " read-only for its toolchain ("
+  <> region_source(toolchain, region)
+  <> "), and that region contains "
+  <> root
+  <> ". Explicit mounts are applied after a jail's own roots, so every jail "
+  <> "carrying it would see "
+  <> root
+  <> " read-only. The region is the parent of the `bin` directory the "
+  <> "executable was found in, and a `bin` directly under `/` (a merged-usr "
+  <> "`/bin` listed before `/usr/bin` on PATH) or under a home directory "
+  <> "names all of it. Put the toolchain's own directory first on PATH — "
+  <> "`/usr/bin` before `/bin`, or the directory a symlinked `gleam` points "
+  <> "into — or, when the region is the build seed, pass a --codemode-seed "
+  <> "that does not contain it. No code_mode tool is registered."
+}
+
+// Which of the toolchain's paths a mount region came from. The regions
+// `toolchain_mounts` emits are exactly these four, canonicalized and with
+// nested entries dropped, so the fallback is never reached on a region
+// that list produced.
+fn region_source(toolchain: Toolchain, region: String) -> String {
+  [
+    #(
+      toolchain.erl_prefix,
+      "the install prefix of `erl` at " <> toolchain.erl_path,
+    ),
+    #(canonical(toolchain.seed_root), "the build seed"),
+    #(
+      toolchain.gleam_prefix,
+      "the install prefix of `gleam` at " <> toolchain.gleam_path,
+    ),
+    #(
+      filepath.directory_name(canonical(toolchain.gleam_path)),
+      "the directory holding `gleam` at " <> toolchain.gleam_path,
+    ),
+  ]
+  |> list.key_find(region)
+  |> result.unwrap("a toolchain region")
 }
 
 /// One executable of the code-mode toolchain: the copy shipped beside

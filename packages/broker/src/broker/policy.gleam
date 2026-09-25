@@ -249,6 +249,17 @@ pub type PolicyError {
   /// resolves it, so a ".." would let a mount claim one region and bind
   /// another.
   MountPathParentSegment(path: String)
+
+  /// A read-only mount names a writable root or an ancestor of one
+  /// (`protocol-change/050`). The two platforms disagree about what that
+  /// document means. On Linux every explicit mount is emitted after every
+  /// grant, so the read-only bind lands on top of the writable one and the
+  /// root comes out read-only in the jail; a mount of `/` also puts the
+  /// host's `/proc`, `/dev` and `/tmp` back over the fresh ones. On
+  /// Darwin a mount is only an allow rule, so the root stays writable.
+  /// Neither reading is what a sender who named both meant, which is the
+  /// argument that refuses a mount overlapping a protected entry too.
+  MountShadowsWritableRoot(mount: String, writable_root: String)
 }
 
 /// One explicit widening of a policy, granted by an approval. Grants are
@@ -336,8 +347,9 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
 /// everywhere, non-negative limits, a scratch that is not the literal
 /// host root (`ScratchIsRoot` — issue #59; see the module doc's layering
 /// note in `packages/sandbox/CLAUDE.md`), and a mount list that names
-/// each region once, canonically, and never a region a protected entry
-/// also names.
+/// each region once, canonically, never a region a protected entry
+/// also names, and never a read-only region at or above a writable root
+/// (`MountShadowsWritableRoot`, `protocol-change/050`).
 ///
 /// The mount checks are here rather than in the emitters because the
 /// broker validates the *composed* policy before dispatch. A base
@@ -378,6 +390,10 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
   use _ <- result.try(refuse_mounts_over_protected(
     policy.mounts,
     policy.protected,
+  ))
+  use _ <- result.try(refuse_read_only_mounts_over_writable_roots(
+    policy.mounts,
+    policy.writable_roots,
   ))
   list.try_each(limit_fields(), fn(field) {
     let value = limit_get(policy.limits, field)
@@ -463,6 +479,46 @@ fn refuse_mounts_over_protected(
         False -> Ok(Nil)
       }
     })
+  })
+}
+
+// A read-only mount at or above a writable root is a policy that says
+// "writable" and "read-only" about the same directory, and the two
+// platforms pick different answers (`protocol-change/050`). bwrap takes
+// the later operation, and rule 1a puts every explicit mount after every
+// grant, so the root comes out read-only; Seatbelt unions allow rules,
+// so it stays writable. The Linux answer is the worse one because it is
+// silent: the jail starts, reports the mount layer applied, and every
+// write under the root fails with EROFS. A mount of `/` does more — it
+// binds the host's `/proc`, `/dev` and `/tmp` back over the fresh ones —
+// and it covers every writable root there is, so it is refused by the
+// same test.
+//
+// Only this direction is refused. A read-only mount *under* a writable
+// root narrows one subtree the policy named on purpose (a build seed
+// inside the workspace), which both platforms honour the same way. A
+// read-write mount above a writable root leaves it writable. The Go
+// helper's `policy.checkMounts` makes the identical refusal in the
+// identical words.
+fn refuse_read_only_mounts_over_writable_roots(
+  mounts: List(Mount),
+  writable_roots: List(String),
+) -> Result(Nil, PolicyError) {
+  list.try_each(mounts, fn(mount) {
+    case mount.access {
+      MountReadWrite -> Ok(Nil)
+      MountReadOnly ->
+        list.try_each(writable_roots, fn(root) {
+          case covers(root: mount.path, path: root) {
+            True ->
+              Error(MountShadowsWritableRoot(
+                mount: mount.path,
+                writable_root: root,
+              ))
+            False -> Ok(Nil)
+          }
+        })
+    }
   })
 }
 

@@ -467,6 +467,19 @@ protocol (spec Part 1.4). WP-G.
   exactly because of them, and the Go emitters carry no tie-break. The
   helper's decoder makes the same refusals at the wire
   (`policy.checkMounts`).
+- **A read-only mount at or above a writable root is refused**
+  (`MountShadowsWritableRoot`, `protocol-change/050`). Every explicit
+  mount is emitted after every grant, so on Linux the read-only bind
+  lands on the writable one and the root comes out read-only — and a
+  mount of `/` binds the host's `/proc` and `/dev` back over the fresh
+  ones — while on Darwin the allow rules union and the root stays
+  writable. Only that direction: a read-only mount *under* a writable
+  root, and a read-write mount above one, stay valid. Because `validate`
+  runs on the composed policy, it also refuses a grant of a writable
+  root under a region the base mounts read-only, which used to be
+  granted and then silently unwritable. The helper's decoder refuses the
+  same pair in the same words, and `jail.AuditMounts` reports it as a
+  `skip:mounts:` if it ever gets past both.
 - **The policy wire is version 2 on both sides.** The `mounts` field could
   not be added compatibly, because both decoders refuse unknown keys and
   refuse any `v` but their own, so the two halves of `protocol-change/004`

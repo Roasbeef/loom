@@ -621,7 +621,7 @@ catalogue without opening runtimes. Explicit admission invokes
   substitute: it says a name was minted by *an* Agency, not by whom, and
   a sibling's name is shaped exactly like a child's.
 - `client/codemode.{Config, Toolchain, seam, discover, toolchain,
-  install_prefix, toolchain_mounts, default_config,
+  install_prefix, toolchain_mounts, clear_of, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
   implemented over the real pipeline, the other package this one exists
@@ -635,7 +635,13 @@ catalogue without opening runtimes. Explicit admission invokes
   run under the caller's own `{op_id, step_id}`, restates the pipeline's
   two enforcement reports in the tool's vocabulary, and removes the
   directory again. `Config` carries no `vet_policy` of its own: it
-  carries `surface`.
+  carries `surface`. `clear_of(toolchain, writable_roots:)` refuses a
+  toolchain one of whose read-only mounts would cover a writable root,
+  `/proc` or `/dev` (`protocol-change/050`). `install_prefix` resolves no
+  symlink, so a merged-usr `/bin/erl` found through `PATH` gives `/` and a
+  symlinked `~/bin/gleam` gives the home directory; the refusal is the
+  choice over resolving the link because resolution needs an `@external`
+  and a resolved target can still be `/` or `$HOME`.
 - `client/codemode.launch_refusal` — what policy composition would
   refuse a satellite launch for: `tools/codemode.RunRefused` carrying the
   exact grants that would satisfy it, or `NothingRefused`. `execute`
@@ -2091,6 +2097,19 @@ catalogue without opening runtimes. Explicit admission invokes
   — is refused at boot by `base_policy_fault` naming both paths, which is
   the same treatment `broker/policy.validate` gives every mount-over-mask
   pair.
+- `client/serve.admissible_toolchain(discovered, base)` — the step in
+  front of `admitting_codemode`, in both the session assembly and
+  `start_build_plane`. It turns a discovered toolchain into an `Error`
+  when one of its mounts would shadow a writable root of `base`
+  (`codemode.clear_of`), so the base never carries the mount — which
+  `validate` and the helper now refuse (`protocol-change/050`), and which
+  would otherwise refuse the whole boot — and `code_mode_seam` registers
+  no tool and logs the sentence. The session asks a base assembled with
+  the toolchain already in it for its writable roots, which is the same
+  answer, because `admitting_codemode` changes mounts and no root. An
+  operator's `[workspace] mounts` line naming a read-only ancestor of the
+  workspace is *not* filtered: `base_policy_fault` refuses the boot naming
+  both paths, the treatment every written mount gets.
 - `client/serve.{base_policy_for, admitting_config_mounts}` select the
   session's filesystem view. `catalog.ReadScope` defaults to `HostReads`,
   with readable root `/`; `WorkspaceReads` selects the minimal helper view.

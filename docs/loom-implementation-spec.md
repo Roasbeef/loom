@@ -232,6 +232,17 @@ when both sides name the same path, at the weaker of the two accesses. There
 is deliberately no grant that adds one, so a tool requesting a mount the
 session base does not carry is refused in band rather than escalated.
 
+Because a mount is emitted after everything else, a document is invalid —
+refused by both decoders and by the broker's `validate` on the composed
+policy — when a mount could only be carried out differently on the two
+platforms: a mount path that overlaps a `protected` entry in either
+direction, a path named twice or spelled with a trailing slash or a `..`
+segment (all four from 004), and a read-only mount at or above a
+`writable_roots` entry
+([protocol-change/050](../protocol-change/050-read-only-mount-over-writable-root.md)),
+which Linux would leave read-only and Darwin writable. The shape of the
+document is unchanged by 050, so `v` stays 2.
+
 ### 1.5 Provider gateway (WP-F)
 
 ```gleam

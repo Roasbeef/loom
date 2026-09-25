@@ -1885,6 +1885,122 @@ pub fn a_toolchain_inside_the_state_root_refuses_the_boot_test() {
   assert serve.base_policy_fault(admitted) != Ok(Nil)
 }
 
+// A merged-usr host with `/bin` first on PATH: `erl` is found at
+// `/bin/erl` and its install prefix is `/`.
+fn a_root_prefixed_toolchain() -> codemode.Toolchain {
+  codemode.toolchain(
+    gleam_path: "/usr/bin/gleam",
+    erl_path: "/bin/erl",
+    seed_root: "/opt/seed",
+  )
+}
+
+// What admission is for. Admitted as it was, the toolchain puts a
+// read-only mount of `/` into the session base, and the base refuses the
+// boot. On main it already did, for a reason that named the wrong thing:
+// the workspace's blob store is a protected entry, and `/` overlaps it,
+// so the operator read "mount / overlaps protected /work/.blobs" about a
+// toolchain layout. Without that mask — the build plane's base on a host
+// that has written no state yet — nothing refused it, and the workspace
+// came out read-only. protocol-change/050 is the refusal that names the
+// shape itself.
+pub fn a_root_prefixed_toolchain_would_refuse_the_boot_test() {
+  let admitted =
+    serve.admitting_codemode(
+      serve.base_policy("/work"),
+      Ok(a_root_prefixed_toolchain()),
+    )
+  let assert Error(reason) = serve.base_policy_fault(admitted)
+  assert string.contains(reason, "the mount `/` overlaps the protected entry")
+
+  let unmasked =
+    serve.admitting_codemode(
+      policy.SandboxPolicy(..serve.base_policy("/work"), protected: []),
+      Ok(a_root_prefixed_toolchain()),
+    )
+  assert policy.validate(unmasked)
+    == Error(policy.MountShadowsWritableRoot(mount: "/", writable_root: "/work"))
+}
+
+// So the toolchain is refused before the base is built, and the refusal
+// reaches both of its readers: the base is left without the mount and
+// boots, and `code_mode_seam` sees an `Error` and registers no tool,
+// logging the sentence instead.
+pub fn admission_refuses_a_toolchain_that_shadows_the_workspace_test() {
+  let base = serve.base_policy("/work")
+  let admitted =
+    serve.admissible_toolchain(Ok(a_root_prefixed_toolchain()), base)
+  let assert Error(reason) = admitted
+  assert string.contains(reason, "code mode would mount / read-only")
+  assert serve.base_policy_fault(serve.admitting_codemode(base, admitted))
+    == Ok(Nil)
+}
+
+// The roots admission is judged against are the assembled session's, not
+// the settings' alone: a linked worktree's git directories are writable
+// roots outside the workspace, and a toolchain prefix above one of them
+// would shadow `git commit` in every jail just the same.
+pub fn admission_judges_the_toolchain_against_every_writable_root_test() {
+  let base =
+    policy.SandboxPolicy(..serve.base_policy("/work"), writable_roots: [
+      "/work",
+      "/home/o/repo/.git",
+    ])
+  let linked =
+    codemode.Toolchain(
+      ..codemode.toolchain(
+        gleam_path: "/home/o/bin/gleam",
+        erl_path: "/usr/lib/erlang/bin/erl",
+        seed_root: "/opt/seed",
+      ),
+      gleam_binary: codemode.GleamSymlink,
+    )
+  let assert Error(reason) = serve.admissible_toolchain(Ok(linked), base)
+  assert string.contains(reason, "contains /home/o/repo/.git")
+}
+
+// An ordinary toolchain, and a host with none, pass through unchanged.
+pub fn admission_passes_an_ordinary_toolchain_through_test() {
+  let base = serve.base_policy("/work")
+  assert serve.admissible_toolchain(Ok(a_toolchain()), base)
+    == Ok(a_toolchain())
+  assert serve.admissible_toolchain(Error("no gleam on PATH"), base)
+    == Error("no gleam on PATH")
+}
+
+// The step the boot actually runs: the toolchain is judged against the
+// session base assembled from the settings, whose writable root is the
+// fixture's workspace. A `gleam` symlinked from the directory above the
+// workspace is the `~/bin/gleam` host in miniature.
+pub fn the_session_judges_the_toolchain_against_its_assembled_base_test() {
+  let settings = settings_under("build/serve-test-session-toolchain")
+
+  // `settings_under` puts the workspace at `<root>/work`.
+  let above = string.drop_end(settings.workspace, string.length("/work"))
+  let linked =
+    codemode.Toolchain(
+      ..codemode.toolchain(
+        gleam_path: above <> "/bin/gleam",
+        erl_path: "/usr/lib/erlang/bin/erl",
+        seed_root: "/opt/seed",
+      ),
+      gleam_binary: codemode.GleamSymlink,
+    )
+  let judged = fn(discovered) {
+    serve.session_toolchain(
+      discovered,
+      settings,
+      settings.session_path <> ".index",
+      settings.session_path <> ".memory",
+      settings.session_path <> ".digest",
+    )
+  }
+  let assert Error(reason) = judged(Ok(linked))
+  assert string.contains(reason, "contains " <> settings.workspace)
+  let assert Error(_) = judged(Ok(a_root_prefixed_toolchain()))
+  assert judged(Ok(a_toolchain())) == Ok(a_toolchain())
+}
+
 // --- the minimal jail root (protocol-change/020) ---------------------------
 
 // The base view is no longer the whole host, so every region a session

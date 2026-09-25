@@ -352,6 +352,83 @@ func TestAuditMountsCountsExplicitMounts(t *testing.T) {
 	}
 }
 
+// protocol-change/050's audit half. The policy is built as a value rather
+// than decoded, because the decoder refuses it: this is the report for
+// the day a policy gets past that refusal. The read-only mount of an
+// ancestor is emitted after the workspace's writable bind, so the
+// workspace comes out read-only, and the report used to say only `rw=0`
+// — a count the broker does not compare — with no skip for a
+// full-enforcement demand to see.
+func TestAuditMountsReportsAWritableRootShadowedByAReadOnlyMount(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/home/o/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Mounts: []policy.Mount{
+			{Path: "/home/o", Access: policy.MountReadOnly, Required: true},
+		},
+	}
+	got := AuditMounts(pol, MountPlan(pol, nil, ""))
+	if len(got.Skipped) != 1 {
+		t.Fatalf("want exactly one skip for the shadowed root, got %v", got.Skipped)
+	}
+	for _, want := range []string{"mounts:", "writable root /home/o/work",
+		"is read-only", "--ro-bind /home/o /home/o"} {
+		if !strings.Contains(got.Skipped[0], want) {
+			t.Fatalf("skip %q lacks %q", got.Skipped[0], want)
+		}
+	}
+	if !strings.Contains(got.Applied, "rw=0") {
+		t.Fatalf("the applied counts must not claim the shadowed root: %q",
+			got.Applied)
+	}
+}
+
+// The mount of "/" is the shape that was measured. It shadows the
+// writable root and the scratch tmpfs alike, and each gets its own skip.
+func TestAuditMountsReportsEverythingAMountOfTheRootShadows(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Mounts: []policy.Mount{
+			{Path: "/", Access: policy.MountReadOnly, Required: true},
+		},
+	}
+	got := strings.Join(AuditMounts(pol, MountPlan(pol, nil, "")).Skipped, "|")
+	for _, want := range []string{"writable root /work is read-only",
+		"tmpfs scratch /tmp"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("skips %q lack %q", got, want)
+		}
+	}
+}
+
+// The narrowings that stay counted out rather than skipped. A writable
+// root at exactly /tmp loses the tie to the scratch tmpfs, and a
+// read-only mount *under* a writable root narrows only its own subtree;
+// both are policies the decoders admit and both platforms honour alike,
+// so a skip for either would be noise that teaches readers to ignore
+// skips.
+func TestAuditMountsDoesNotSkipTheNarrowingsThePolicyAsksFor(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work", ScratchMount},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Mounts: []policy.Mount{
+			{Path: "/work/seed", Access: policy.MountReadOnly, Required: true},
+		},
+	}
+	got := AuditMounts(pol, MountPlan(pol, nil, ""))
+	if len(got.Skipped) != 0 {
+		t.Fatalf("no writable root was shadowed by a mount; skips: %v",
+			got.Skipped)
+	}
+	if !strings.Contains(got.Applied, "rw=1") {
+		t.Fatalf("/work is writable and /tmp is the scratch: %q", got.Applied)
+	}
+}
+
 // A required mount whose source is absent refuses the execution before
 // any jail starts. The entry names the path and the list, on the same
 // terms as MissingMountSources.

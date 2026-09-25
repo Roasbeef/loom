@@ -504,6 +504,116 @@ pub fn validate_accepts_a_mount_beside_a_protected_entry_test() {
   assert policy.validate(ok) == Ok(Nil)
 }
 
+// protocol-change/050. Every explicit mount is emitted after every grant,
+// so a read-only mount of an ancestor of the workspace lands on top of the
+// workspace's writable bind: the jail starts, the mount layer reports
+// itself applied, and every write fails with EROFS. Darwin keeps the
+// root writable from the same document, which is why it is refused
+// rather than resolved.
+pub fn validate_rejects_a_read_only_mount_above_a_writable_root_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), writable_roots: ["/home/o/work"], mounts: [
+      policy.Mount(
+        path: "/home/o",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountShadowsWritableRoot(
+      mount: "/home/o",
+      writable_root: "/home/o/work",
+    ))
+}
+
+// The shape that was measured: a toolchain prefix derived as `/` from a
+// symlinked binary under `/bin`. `/` covers every writable root there is,
+// and binds the host's `/proc` and `/dev` back over the fresh ones too.
+pub fn validate_rejects_a_read_only_mount_of_the_root_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountShadowsWritableRoot(mount: "/", writable_root: "/work"))
+}
+
+// "At" as well as "above": a read-only mount naming the writable root
+// itself replaces its bind exactly as an ancestor's would.
+pub fn validate_rejects_a_read_only_mount_at_a_writable_root_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/work",
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountShadowsWritableRoot(
+      mount: "/work",
+      writable_root: "/work",
+    ))
+}
+
+// The two directions the rule leaves alone. A read-only mount *under* the
+// workspace narrows a subtree the policy named on purpose — a build seed
+// inside a checkout — and both platforms honour it the same way. A
+// read-write mount above the workspace leaves it writable. And a sibling
+// sharing only a textual prefix is not an ancestor.
+pub fn validate_accepts_the_mounts_that_shadow_no_writable_root_test() {
+  let ok =
+    policy.SandboxPolicy(
+      ..base(),
+      writable_roots: ["/work", "/srv/out"],
+      mounts: [
+        policy.Mount(
+          path: "/work/build/codemode-seed",
+          access: policy.MountReadOnly,
+          requirement: policy.MountRequired,
+        ),
+        policy.Mount(
+          path: "/srv",
+          access: policy.MountReadWrite,
+          requirement: policy.MountRequired,
+        ),
+        policy.Mount(
+          path: "/wor",
+          access: policy.MountReadOnly,
+          requirement: policy.MountRequired,
+        ),
+      ],
+    )
+  assert policy.validate(ok) == Ok(Nil)
+}
+
+// The broker validates the *composed* policy, and composition is where a
+// clean base can still meet the shape: a grant adds a writable root under
+// a region the base mounts read-only. Refusing it at dispatch is what
+// keeps the escalation honest — the approval would otherwise grant a
+// write the jail silently cannot make.
+pub fn a_granted_writable_root_under_a_read_only_mount_fails_validation_test() {
+  let seed =
+    policy.Mount(
+      path: "/opt/seed",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  let base = policy.SandboxPolicy(..base(), mounts: [seed])
+  assert policy.validate(base) == Ok(Nil)
+  let #(composed, _) =
+    policy.compose(base, base, [policy.GrantWritableRoot(path: "/opt/seed/out")])
+  assert policy.validate(composed)
+    == Error(policy.MountShadowsWritableRoot(
+      mount: "/opt/seed",
+      writable_root: "/opt/seed/out",
+    ))
+}
+
 // --- phase-1 unenforceable narrowing ------------------------------------
 
 pub fn narrow_unenforceable_downgrades_proxy_test() {
