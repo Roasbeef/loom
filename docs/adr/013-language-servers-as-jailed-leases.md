@@ -119,8 +119,12 @@ node per extension, cleared once, living for the session.
   end aborts the language-server operation from the same place
   `extension/hosts.stop_all` stops extension hosts.** Daemon restart is
   covered by pool close and bwrap's `--die-with-parent`.
-- **Demand.** `exec.PlatformEnforcement`, because full enforcement always
-  fails on Darwin.
+- **Demand.** The server clears under the session's own
+  `EnforcementDemand`, the one `bash` clears under. That is
+  `PlatformEnforcement` by default (full enforcement always fails on
+  Darwin), and `BestEffort` only where the operator opted a development
+  container into it. A language server is no more trusted than the
+  shell beside it, and no less.
 - **Pool pressure.** Each assembled session starts its own helper pool
   and broker (`serve.assemble_in` → `start_effect_plane_in`); the pool
   clamps to 4–16 helpers. Code mode is a nested borrower: its satellite
