@@ -2722,6 +2722,15 @@ fn run_collaboration_exchange(
   let workspace = "/var/tmp/lac-example-" <> suffix
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
     as "the example workspace must exist"
+
+  // Independent sessions may mint the same operation id in this deterministic
+  // fixture, so each needs its own code-mode build and cap-socket directory.
+  let first_workspace = workspace <> "/specialist-a"
+  let second_workspace = workspace <> "/specialist-b"
+  let assert Ok(Nil) = simplifile.create_directory_all(first_workspace)
+    as "the first specialist workspace must exist"
+  let assert Ok(Nil) = simplifile.create_directory_all(second_workspace)
+    as "the second specialist workspace must exist"
   let wall = clock.from_function(ffi_os.system_time_ms)
   let first =
     start_harness_on(Hangs, fn(config) { config }, wall, wall, fn(sess) { sess })
@@ -2757,9 +2766,23 @@ fn run_collaboration_exchange(
     simplifile.read(repo <> "/docs/examples/specialist_exchange.gleam")
     as "the example source must be read verbatim"
   let #(first_service, first_mode) =
-    specialist_mode(first, first_wiring, plane, workspace, toolchain, wall)
+    specialist_mode(
+      first,
+      first_wiring,
+      plane,
+      first_workspace,
+      toolchain,
+      wall,
+    )
   let #(second_service, second_mode) =
-    specialist_mode(second, second_wiring, plane, workspace, toolchain, wall)
+    specialist_mode(
+      second,
+      second_wiring,
+      plane,
+      second_workspace,
+      toolchain,
+      wall,
+    )
   let first_parent = open_parent(first, "specialist exchange a")
   let second_parent = open_parent(second, "specialist exchange b")
   let first_record =
@@ -2769,7 +2792,7 @@ fn run_collaboration_exchange(
       codemode_tool.WorkspaceSeam,
       "specialist-e2e",
       source,
-      workspace,
+      first_workspace,
       plane,
     )
   let second_record =
@@ -2779,7 +2802,7 @@ fn run_collaboration_exchange(
       codemode_tool.WorkspaceSeam,
       "specialist-e2e",
       source,
-      workspace,
+      second_workspace,
       plane,
     )
   assert specialist_ready(first_mode, first_record)
