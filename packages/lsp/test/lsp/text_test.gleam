@@ -137,8 +137,10 @@ pub fn utf16_character_out_of_line_test() {
 // --- sites -------------------------------------------------------------
 
 pub fn to_site_converts_and_strips_terminator_test() {
-  assert text.to_site("a\r\n😀b\r\n", "m.gleam", Position(1, 2))
+  assert text.to_site("a\n😀b\n", "m.gleam", Position(1, 2))
     == Ok(Site(path: "m.gleam", line: 2, column: 2, text: "😀b"))
+  assert text.to_site("a\r\n😀b\r\n", "m.gleam", Position(1, 2))
+    == Ok(Site(path: "m.gleam", line: 2, column: 2, text: "😀b\r"))
 }
 
 pub fn to_site_empty_final_line_test() {
@@ -493,4 +495,13 @@ pub fn generator_covers_the_hard_characters_test() {
   |> list.each(fn(piece) {
     assert string.contains(samples, piece)
   })
+}
+
+// A CRLF line keeps its `\r` in a site's text, because hashline splits on
+// `\n` alone and the site's anchor must equal the one `fs_read` prints.
+pub fn to_site_keeps_the_carriage_return_of_a_crlf_line_test() {
+  assert text.to_site("ab\r\ncd\nef", "m.gleam", range.Position(0, 1))
+    == Ok(query.Site(path: "m.gleam", line: 1, column: 2, text: "ab\r"))
+  assert text.to_site("ab\r\ncd\nef", "m.gleam", range.Position(1, 0))
+    == Ok(query.Site(path: "m.gleam", line: 2, column: 1, text: "cd"))
 }
