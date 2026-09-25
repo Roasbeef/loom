@@ -1287,6 +1287,18 @@ jobs:
       - name: Prepare the code-mode build seed
         run: .github/scripts/hex_retry.sh make codemode-seed
 
+      # gopls for the language-server end-to-end's Go variant (ADR-013),
+      # pinned exactly like every other tool here. The lane already has Go
+      # for the helper; without gopls the Go variant skips, and this
+      # lane's census rightly refuses an undeclared skip. v0.23.0 is the
+      # version the Go measurements in ADR-013 were taken against.
+      - name: Install gopls
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/gopls@v0.23.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gopls" version
+
       # Both end-to-end suites again — but this time over a helper that
       # has bwrap, Landlock and namespaces, so the enforcement they report
       # in their tool details is the real thing rather than the degraded
