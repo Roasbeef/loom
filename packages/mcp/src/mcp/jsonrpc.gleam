@@ -117,6 +117,55 @@ pub fn notification(method: String, params: Option(JsonValue)) -> JsonValue {
   )
 }
 
+/// Encodes a successful response to a request the peer sent us, echoing
+/// its id verbatim in whichever JSON type carried it. `result` is required
+/// by the spec even when there is nothing to say, so a method whose answer
+/// is empty passes `json.Null` rather than omitting it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.to_string(jsonrpc.response(jsonrpc.IdString("a"), json.Null))
+///   == "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"result\":null}"
+/// ```
+///
+pub fn response(id: Id, result: JsonValue) -> JsonValue {
+  json.Object([
+    #("jsonrpc", json.String(version)),
+    #("id", encode_id(id)),
+    #("result", result),
+  ])
+}
+
+/// Encodes a failed response to a request the peer sent us. `data` is
+/// omitted from the error object when `None`, as the spec allows, so the
+/// common refusal is exactly `{code, message}`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let refusal = jsonrpc.RpcError(-32_601, "method not found", None)
+/// assert json.to_string(jsonrpc.error_response(jsonrpc.IdInt(7), refusal))
+///   == "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32601,\"message\":\"method not found\"}}"
+/// ```
+///
+pub fn error_response(id: Id, error: RpcError) -> JsonValue {
+  json.Object([
+    #("jsonrpc", json.String(version)),
+    #("id", encode_id(id)),
+    #("error", encode_error(error)),
+  ])
+}
+
+fn encode_error(error: RpcError) -> JsonValue {
+  let RpcError(code:, message:, data:) = error
+  let fields = [#("code", json.Int(code)), #("message", json.String(message))]
+  case data {
+    None -> json.Object(fields)
+    Some(data) -> json.Object(list.append(fields, [#("data", data)]))
+  }
+}
+
 fn with_params(
   fields: List(#(String, JsonValue)),
   params: Option(JsonValue),

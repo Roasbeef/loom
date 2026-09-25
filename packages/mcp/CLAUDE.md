@@ -36,6 +36,16 @@ built out of.
   `method`, `ServerRequest(id, method, params)` for a method with an id,
   `Notification(method, params)` for one without. A hostile line settles
   as `MalformedMessage(CorruptionReport)` or `BadMessage(reason)`.
+  `response(id, result)` and `error_response(id, RpcError)` encode the
+  replies a client owes a server's own requests; `lsp` answers every
+  server request through them, and the MCP client's method-not-found
+  refusal does too.
+- `mcp/call.{try_call, CallFault}` — the monitored send-and-select a
+  caller uses instead of `process.call`: `NoReply` on its deadline,
+  `CalleeGone` on a dead callee, never a panic. It is the one public copy
+  of `broker/internal/call.try_call` outside the broker, reused by `lsp`
+  rather than copied a third time; `docs/weft.md` names the gap weft
+  should eventually close.
 - `mcp/protocol.{requested_version, supported_versions}` — `"2025-06-18"`
   asked for, and the closed newest-first list accepted (`2025-06-18`,
   `2025-03-26`, `2024-11-05`).
@@ -232,8 +242,9 @@ built out of.
   inert connection first, so a port close never chases an exited child's
   possibly recycled OS pid with a kill.
 - **Callers never `process.call` the actor.** Every public call is a
-  monitored send-and-select (the `broker/internal/call.try_call` shape,
-  reproduced here because this package does not depend on the broker):
+  monitored send-and-select (`mcp/call.try_call`, the
+  `broker/internal/call.try_call` shape in the one public copy outside the
+  broker, which `lsp` reuses):
   `process.call` panics on a timeout and on a dead callee, and a caller
   holding a tool-call verdict must answer `Unavailable` instead of dying.
   The cost is one possible stale reply in the caller's mailbox.

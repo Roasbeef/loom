@@ -38,6 +38,46 @@ pub fn notification_with_params_test() {
     == "{\"jsonrpc\":\"2.0\",\"method\":\"note\",\"params\":{\"k\":1}}"
 }
 
+pub fn response_echoes_the_id_and_carries_the_result_test() {
+  let encoded =
+    jsonrpc.response(jsonrpc.IdInt(3), json.Array([json.Null, json.Null]))
+  assert json.to_string(encoded)
+    == "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":[null,null]}"
+}
+
+pub fn response_with_a_null_result_keeps_the_field_test() {
+  assert json.to_string(jsonrpc.response(jsonrpc.IdString("a"), json.Null))
+    == "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"result\":null}"
+}
+
+pub fn error_response_without_data_omits_it_test() {
+  let refusal = jsonrpc.RpcError(-32_601, "method not found", None)
+  assert json.to_string(jsonrpc.error_response(jsonrpc.IdInt(7), refusal))
+    == "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":"
+    <> "{\"code\":-32601,\"message\":\"method not found\"}}"
+}
+
+pub fn error_response_with_data_test() {
+  let refusal =
+    jsonrpc.RpcError(-32_600, "bad", Some(json.Object([#("k", json.Int(1))])))
+  assert json.to_string(jsonrpc.error_response(jsonrpc.IdString("x"), refusal))
+    == "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"error\":"
+    <> "{\"code\":-32600,\"message\":\"bad\",\"data\":{\"k\":1}}}"
+}
+
+// Both encoders are read back by this module's own decoder: what we send a
+// peer is exactly what we would accept from one.
+pub fn responses_round_trip_through_decode_test() {
+  let ok = jsonrpc.response(jsonrpc.IdInt(9), json.Bool(True))
+  assert jsonrpc.decode(json.to_string(ok))
+    == Ok(jsonrpc.Response(jsonrpc.IdInt(9), Ok(json.Bool(True))))
+
+  let refusal = jsonrpc.RpcError(-32_601, "nope", Some(json.String("d")))
+  let failed = jsonrpc.error_response(jsonrpc.IdString("q"), refusal)
+  assert jsonrpc.decode(json.to_string(failed))
+    == Ok(jsonrpc.Response(jsonrpc.IdString("q"), Error(refusal)))
+}
+
 // --- decoding: the three inbound shapes ---------------------------------------
 
 pub fn decode_result_response_test() {
