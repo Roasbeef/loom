@@ -545,6 +545,14 @@ only Go module.
     direction is refused when the policy is decoded, by
     `policy.checkMounts` here and by `broker/policy.validate` on the
     composed policy, so no plan built here contains that pair.
+    **Nor does a mount ever win over a writable root.** A *read-only*
+    mount at or above a `writable_roots` entry would land on the writable
+    bind and leave the root read-only on Linux while Darwin's allow rules
+    keep it writable, and a mount of `/` would also bind the host's
+    `/proc`, `/dev` and `/tmp` back over the fresh ones (#37 again). Both
+    decoders refuse it, in the same words (`protocol-change/050`); a
+    read-only mount *under* a writable root and a read-write mount above
+    one stay valid, because both platforms honour them alike.
     `required` reaches the argv as the absence of bwrap's `-try` suffix.
     On Darwin the ordering is the other way round — a mount is an allow
     rule over the subpath emitted *before* the trailing denies — because
@@ -647,7 +655,17 @@ only Go module.
   operations cannot: that number is identical in a healthy plan and in
   one whose mask a later bind of an ancestor undoes. Such a path drops
   out of `mask=` and gets a `skip:mounts:` naming it and the operation
-  that re-exposed it. The `plan=` digest is a diffing aid and a golden-test
+  that re-exposed it. A writable root the plan leaves unwritable is
+  counted out of `rw=` without a skip — the fail-closed direction, and
+  the scratch tie at `/tmp` and a protected mask produce it legitimately
+  — with one exception: a writable root whose effective view is an
+  explicit read-only mount gets `skip:mounts: writable root … is
+  read-only`. Both decoders refuse that policy (`protocol-change/050`),
+  so reaching the audit means one of them was bypassed, and the broker
+  does not compare `rw=`, so without the skip a full-enforcement demand
+  read the jail as whole. A skip rather than a broker-side `rw=`
+  comparison, because the broker could tell this shortfall from the
+  legitimate ones only by re-deriving the plan. The `plan=` digest is a diffing aid and a golden-test
   anchor, not a check: it detects *change*, and nobody holds the expected
   value. The audit proves the plan, not its execution — for that, see the
   witness rule below. Proving the resulting *view* would mean probing

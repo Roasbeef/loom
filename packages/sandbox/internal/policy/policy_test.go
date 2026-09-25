@@ -112,6 +112,16 @@ func TestDecodeAdversarial(t *testing.T) {
 	del := func(key string) map[string]any { m := validMap(); delete(m, key); return m }
 	set := func(key string, v any) map[string]any { m := validMap(); m[key] = v; return m }
 
+	// The writable-root refusal is checked after the protected one, and
+	// a mount of an ancestor of the workspace also covers the fixture's
+	// protected entries under it, so these cases drop them to reach the
+	// check they are about.
+	unprotected := func(mounts []any) map[string]any {
+		m := set("mounts", mounts)
+		m["protected"] = []any{}
+		return m
+	}
+
 	cases := []struct {
 		name    string
 		raw     []byte
@@ -208,6 +218,26 @@ func TestDecodeAdversarial(t *testing.T) {
 				"required": true},
 		})), "overlaps protected path"},
 
+		// protocol-change/050. Every explicit mount is emitted after
+		// every grant, so a read-only mount at or above a writable root
+		// leaves that root read-only on Linux, while Darwin's allow rules
+		// keep it writable. The mount of "/" is the measured shape: a
+		// toolchain prefix derived from a symlink under /bin.
+		{"read-only mount of the root", mustPack(t, unprotected([]any{
+			map[string]any{"path": "/", "access": "ro", "required": true},
+		})), `read-only path "/" covers writable root "/work"`},
+		{"read-only mount at a writable root", mustPack(t, unprotected([]any{
+			map[string]any{"path": "/work", "access": "ro", "required": false},
+		})), `read-only path "/work" covers writable root "/work"`},
+		{"read-only mount above a writable root", mustPack(t, func() map[string]any {
+			m := unprotected([]any{
+				map[string]any{"path": "/home/o", "access": "ro",
+					"required": true},
+			})
+			m["writable_roots"] = []any{"/home/o/work"}
+			return m
+		}()), `read-only path "/home/o" covers writable root "/home/o/work"`},
+
 		// One region, one entry, one spelling. Neither side of the wire
 		// canonicalizes a mount path, so a repeated path and the two
 		// spellings that hide a repeat are all refused rather than
@@ -237,6 +267,27 @@ func TestDecodeAdversarial(t *testing.T) {
 				t.Fatalf("error %q does not mention %q", err, tc.wantSub)
 			}
 		})
+	}
+}
+
+// The directions protocol-change/050 leaves alone, pinned so the refusal
+// cannot widen into them. A read-only mount under a writable root narrows
+// a subtree on purpose (a build seed inside a checkout) and both
+// platforms honour it alike; a read-write mount above one leaves it
+// writable; a sibling sharing only a textual prefix is not an ancestor.
+// The same three are accepted by `broker/policy.validate`.
+func TestDecodeAcceptsMountsThatShadowNoWritableRoot(t *testing.T) {
+	m := validMap()
+	m["protected"] = []any{}
+	m["writable_roots"] = []any{"/work", "/srv/out"}
+	m["mounts"] = []any{
+		map[string]any{"path": "/work/build/codemode-seed", "access": "ro",
+			"required": true},
+		map[string]any{"path": "/srv", "access": "rw", "required": true},
+		map[string]any{"path": "/wor", "access": "ro", "required": true},
+	}
+	if _, err := Decode(mustPack(t, m)); err != nil {
+		t.Fatalf("Decode refused mounts that shadow no writable root: %v", err)
 	}
 }
 

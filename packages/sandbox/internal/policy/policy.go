@@ -315,8 +315,10 @@ func fromMap(m map[string]any) (Policy, error) {
 	return p, nil
 }
 
-// checkMounts refuses the two mount shapes no jail can carry out, on the
-// same terms as the broker's own `policy.validate`. Both sides make the
+// checkMounts refuses the mount shapes no jail can carry out, on the
+// same terms as the broker's own `policy.validate`: a spelling that names
+// one region twice, a mount overlapping a protected entry, and a
+// read-only mount at or above a writable root. Both sides make the
 // refusal because both sides would otherwise have to cope with the
 // result, and the coping is what disagreed: bubblewrap applies argv in
 // order and Seatbelt takes the last matching rule, so the same document
@@ -356,6 +358,27 @@ func checkMounts(p Policy) error {
 				return fmt.Errorf(
 					"policy: mounts: path %q overlaps protected path %q",
 					m.Path, prot)
+			}
+		}
+
+		// A read-only mount at or above a writable root says "writable"
+		// and "read-only" about one directory, and the platforms pick
+		// different answers (protocol-change/050). The mount plan emits
+		// every explicit mount after every grant, so on Linux the root
+		// comes out read-only with nothing in the report to say so, and
+		// a mount of "/" also binds the host's /proc, /dev and /tmp back
+		// over the fresh ones; Seatbelt unions allow rules, so on Darwin
+		// the root stays writable. Only this direction is refused: a
+		// read-only mount under a writable root narrows a subtree the
+		// sender named on purpose, and both platforms honour it alike.
+		if m.Access != MountReadOnly {
+			continue
+		}
+		for _, root := range p.WritableRoots {
+			if covers(m.Path, root) {
+				return fmt.Errorf(
+					"policy: mounts: read-only path %q covers writable root %q",
+					m.Path, root)
 			}
 		}
 	}
