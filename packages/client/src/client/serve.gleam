@@ -4959,7 +4959,40 @@ fn prepare_directories(
     Some(tmp_dir),
   ]
   let directories = list.append(option.values(wanted), tool_dirs)
-  create_directories(directories)
+  use Nil <- result.try(create_directories(directories))
+
+  // Both workspace directories are the harness's, not the operator's,
+  // and without this they sit in every `git status` of the repository a
+  // session works in, and every `rg` walks the module caches beneath
+  // the tool home.
+  list.try_each(
+    [
+      blob_root,
+      settings.workspace <> "/" <> codemode_wiring.work_directory,
+    ],
+    ignore_directory,
+  )
+}
+
+/// The ignore file a harness-owned workspace directory carries: one
+/// pattern that ignores every entry, the file included, so the directory
+/// drops out of `git status` without touching the repository's own
+/// ignore files or resolving where a linked worktree keeps its metadata.
+@internal
+pub const ignore_everything = "# Written by loom: this directory is harness state.\n*\n"
+
+// Writes the ignore file only where none exists, so an operator who
+// replaced it with rules of their own keeps them.
+fn ignore_directory(directory: String) -> Result(Nil, String) {
+  let path = directory <> "/.gitignore"
+  case simplifile.is_file(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) | Error(_) ->
+      simplifile.write(path, ignore_everything)
+      |> result.map_error(fn(error) {
+        "could not write " <> path <> ": " <> string.inspect(error)
+      })
+  }
 }
 
 fn create_directories(directories: List(String)) -> Result(Nil, String) {

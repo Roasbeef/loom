@@ -4145,6 +4145,17 @@ cannot consume the observation budget. Tracked changes under those directories
 still appear. Both outputs retain NUL-framed path identity and the existing
 read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
+Session assembly keeps the same two directories out of the operator's own
+`git status` without editing a repository file either: `prepare_directories`
+writes `serve.ignore_everything` as `.gitignore` inside each, where none
+exists. An ignore file inside an untracked directory hides the directory
+itself, so no git metadata is resolved, and a linked worktree needs nothing
+different. An operator's replacement file is left alone. `$TMPDIR` under
+`.codemode/tmp` is therefore the persistent scratch the `bash` description
+names: a clone or a download a later call reads goes there, never into the
+repository and never into `LOOM_SCRATCH_DIR`, which the helper removes when
+its execution retires.
+
 ## Child run lifecycle
 
 The Agency keeps immutable `lineage.Lineage` for addressing and spawn replay,

@@ -251,6 +251,33 @@ pub fn boot_publishes_git_defaults_before_model_work_test() {
   })
 }
 
+pub fn boot_keeps_its_workspace_directories_out_of_git_status_test() {
+  let location =
+    "build/serve-test-ignore-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let settings = settings_under(location)
+  let work_directory = settings.workspace <> "/" <> codemode.work_directory
+  let blob_directory = settings.workspace <> "/" <> codemode.blob_directory
+
+  // The first boot writes one ignore-everything file into each directory
+  // the harness owns inside the workspace.
+  let assert Ok(booted) = serve.boot(settings) as "a fresh workspace boots"
+  serve.shutdown(booted)
+  assert simplifile.read(work_directory <> "/.gitignore")
+    == Ok(serve.ignore_everything)
+  assert simplifile.read(blob_directory <> "/.gitignore")
+    == Ok(serve.ignore_everything)
+
+  // An operator who replaced the file keeps their rules across a reboot.
+  let assert Ok(Nil) =
+    simplifile.write(work_directory <> "/.gitignore", "tmp/\n")
+  let assert Ok(booted) = serve.boot(settings)
+    as "a workspace with an operator's ignore file boots"
+  serve.shutdown(booted)
+  assert simplifile.read(work_directory <> "/.gitignore") == Ok("tmp/\n")
+  let _cleanup = simplifile.delete(location)
+}
+
 pub fn imported_hooks_keep_the_operator_git_configuration_test() {
   let environment =
     serve.session_environment("/work", None)
