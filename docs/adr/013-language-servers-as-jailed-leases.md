@@ -121,16 +121,31 @@ node per extension, cleared once, living for the session.
   covered by pool close and bwrap's `--die-with-parent`.
 - **Demand.** `exec.PlatformEnforcement`, because full enforcement always
   fails on Darwin.
-- **Pool pressure.** The pool is per daemon and clamps to 4–16 helpers.
-  Code mode is a nested borrower: its satellite holds one helper and each
-  capability call borrows another. So: **one language server per session**,
-  with a new project evicting the old server. **Session-lived leases are
-  also capped daemon-wide at `pool_size − 3`.** The three are for bash, a
+- **Pool pressure.** Each assembled session starts its own helper pool
+  and broker (`serve.assemble_in` → `start_effect_plane_in`); the pool
+  clamps to 4–16 helpers. Code mode is a nested borrower: its satellite
+  holds one helper and each capability call borrows another. So: **one
+  language server per session**, with a new project evicting the old
+  server, and **session-lived leases capped per session at
+  `pool_size − 3`** (`client/lsp/leases`). The three are for bash, a
   satellite, and its nested effect. At the cap a new server is refused as
-  `no_server`, naming the cap. The bound is tested at the minimum pool
-  size. Extension hosts already hold session-lived helpers with no
-  ceiling. Counting them against the same cap is filed as a follow-up
-  rather than widened into this change.
+  `no_server`, naming the cap. With one server and a pool of at least
+  four the cap cannot bind today. It is the guard that stops a second
+  server, or extension hosts counted against it later, from starving
+  code mode, and it is tested at the minimum pool size. Extension hosts
+  already hold session-lived helpers with no ceiling. Counting them
+  against the same cap is a follow-up. (The review that shaped this
+  paragraph assumed a daemon-wide pool. Measuring the boot path showed
+  the pool is per session, so the cap is too.)
+- **Enforcement is proven before a server starts.** Under
+  `PlatformEnforcement` the helper reports what it enforced only in the
+  exit report. For a one-shot command that arrives before its output is
+  trusted, but a server lives for hours and answers queries all the
+  while. So the manager first clears a trivial probe under the identical
+  policy and demand, and starts the server only if the probe settles
+  undegraded. A probe that degrades refuses the server as `no_server`,
+  naming what the helper could not enforce. That costs one short exec per
+  server start.
 - **Truncation.** A truncated *stdout* chunk is transport-fatal: the stream
   is no longer JSON-RPC. Stderr is drained into a bounded ring for the
   restart message and is never fatal. With `output_bytes` at zero, neither
