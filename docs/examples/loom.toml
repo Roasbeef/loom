@@ -165,6 +165,48 @@ summarize = ["anthropic-opus"]
 command = ["mcp-server-github", "--stdio"]
 api_key_env = "GITHUB_TOKEN"
 
+# Language servers, one [lsp.<name>] table per server. They are
+# configured, never discovered: with no [lsp] table there are no lsp_*
+# tools and nothing is spawned. Each server runs jailed, rooted at the
+# nearest ancestor of a file that holds one of its `root_markers`, and
+# this table is the whole of what that jail grants beyond the project.
+# The table key follows the [mcp.<name>] rule ([a-z][a-z0-9_]*).
+#
+#   command       the argv, executable first. An ARRAY, never a shell
+#                 string: `command = "gopls serve"` is refused.
+#   extensions    the file extensions this server answers for, each
+#                 with its leading dot. Compared case-insensitively, and
+#                 one extension has exactly one owner: two servers
+#                 listing ".go" is a configuration error naming both.
+#   root_markers  file names (not paths) marking a project root.
+#   project       "read-only" (the default) or "writable". gleam lsp
+#                 writes manifest.toml and build/ into the project, so
+#                 it needs "writable"; gopls writes nothing there.
+#   readable      optional extra roots the server may read, and
+#   writable      optional extra roots it may write. Absolute, or under
+#                 the home directory as ~/<path>, expanded against the
+#                 HOME the Loom daemon itself was started with. Relative
+#                 paths, `..` components and a bare `~/` are refused.
+#   env           optional environment variable NAMES passed through
+#                 from the daemon's environment ([A-Z_][A-Z0-9_]*); the
+#                 values never live in this file. PATH, HOME and TMPDIR
+#                 are the harness's own and are refused.
+[lsp.gleam]
+command = ["gleam", "lsp"]
+extensions = [".gleam"]
+root_markers = ["gleam.toml"]
+project = "writable"
+
+# gopls reads the module cache and writes the build cache, both outside
+# the project, so both are named here.
+[lsp.go]
+command = ["gopls"]
+extensions = [".go"]
+root_markers = ["go.mod"]
+readable = ["~/go/pkg/mod"]
+writable = ["~/.cache/go-build"]
+env = ["GOFLAGS"]
+
 # Triggered project rules, one [[rule]] table per rule. A rule is a
 # paragraph of standing instruction that only matters some of the time.
 # It costs the model's context NOTHING until something the model itself
