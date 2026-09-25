@@ -98,11 +98,12 @@ node per extension, cleared once, living for the session.
   **The base policy has `wall_s`, `cpu_s` and `output_bytes` at zero.**
   Limits meet with zero as "unlimited" (`policy.meet_limit`). A zero in the
   requirements against a non-zero base is a narrowing that `RefuseNarrowed`
-  refuses, so the zeros must sit on the base. This is the `session_lived`
-  shape extension hosts use, extended by `output_bytes`. It is **hoisted
-  into `broker/policy` as one public lease shape**, taking a two-variant
-  output argument rather than a `Bool`. `extension/dispatch` calls it
-  instead of keeping a private copy.
+  refuses, so the zeros must sit on the base. This is the shape extension
+  hosts already used, extended by `output_bytes`, now **hoisted into
+  `broker/policy.session_lease`** with a two-variant `LeaseOutput`
+  (`OutputIsLog` for an extension host, `OutputIsWire` for a language
+  server) rather than a `Bool`. `extension/dispatch` calls it instead of
+  keeping a private copy.
 - **The lease is the pooled budget deadline**, twelve hours as for
   extension hosts. The zero wall only stops the helper from killing the
   server earlier. The effects plane deliberately offers no renewal. A
