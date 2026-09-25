@@ -2748,6 +2748,7 @@ fn clear_tool_call(
       KeyObservation(planner.ObservedToolRefused(
         source_index:,
         result: synthetic_tool_error(call, reason, now),
+        ending: planner.RefusalContinues,
       ))
   }
 }

@@ -297,6 +297,22 @@ pub type SummaryProgress {
   SummaryFailed(error: OperationError, retryable: Bool)
 }
 
+/// What a refused call does to the run it belongs to. A refusal is
+/// staged like any settled result, so the question is the one a tool's
+/// own `terminate` answers: the run ends once its batch settles, if
+/// every call in the batch said so.
+pub type RefusalEnding {
+  /// The model reads the refusal and plans its next step. Every refusal
+  /// but one answers this.
+  RefusalContinues
+
+  /// The run ends after this batch. The runtime answers this for a call
+  /// the model has repeated, arguments and all, after the harness already
+  /// refused it for repeating: nothing the model sees next could differ
+  /// from what it just ignored, so another step is only cost.
+  RefusalEndsRun
+}
+
 /// What the runtime produced for the machine since the last plan.
 pub type Observation {
   /// Nothing new.
@@ -333,8 +349,14 @@ pub type Observation {
   )
 
   /// Clearance refused the call (unknown tool, invalid arguments, hook
-  /// block): `result` is the complete synthetic error result to stage.
-  ObservedToolRefused(source_index: Int, result: AgentMessage)
+  /// block, a call repeating one that kept failing): `result` is the
+  /// complete synthetic error result to stage, and `ending` says whether
+  /// the refusal also ends the run once its batch settles.
+  ObservedToolRefused(
+    source_index: Int,
+    result: AgentMessage,
+    ending: RefusalEnding,
+  )
 
   /// The effect-pending call at `source_index` finished and post-effect
   /// hooks ran; `result` is the finalized result message and `terminate`
@@ -1651,8 +1673,15 @@ fn advance_batch(
         effective_arguments,
         replay,
       )
-    ObservedToolRefused(source_index:, result:) ->
-      stage_result(pass, batch, source_index, result, False)
+    ObservedToolRefused(source_index:, result:, ending:) -> {
+      // A refusal ends the run by the rule a settled result does, and a
+      // cancelled run is never ended by a tool's say-so either way.
+      let terminate = case ending, control {
+        RefusalEndsRun, Running -> True
+        RefusalEndsRun, CancelRequested(..) | RefusalContinues, _ -> False
+      }
+      stage_result(pass, batch, source_index, result, terminate)
+    }
     ObservedToolSettled(source_index:, result:, terminate:) -> {
       // Under cancelled control a live result is preserved but never
       // terminates the run.

@@ -30,6 +30,12 @@ package is wrong.
   `Fault(report)`.
 - `machine/planner.{PlannerInputs, Observation, EffectKey, EffectIntent}` —
   what the driver gathers, what comes back, and what the machine asks for.
+- `machine/planner.RefusalEnding` — `RefusalContinues | RefusalEndsRun`,
+  carried by `ObservedToolRefused`. A refusal is staged like a settled
+  result, and `RefusalEndsRun` gives it the `terminate` a tool's own
+  settlement would, except under cancelled control. The runtime's
+  repeated-failure guard is the one producer of `RefusalEndsRun`;
+  `docs/spec-gaps.md` WP-D item 8 records the divergence from pi.
 - `machine/planner` is a big module on purpose: one public function over
   a closed vocabulary, then a section per phase of pi's spec. Read its
   module doc first — it enumerates the sections and what each *decides*,

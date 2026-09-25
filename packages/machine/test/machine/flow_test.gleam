@@ -655,3 +655,61 @@ fn prompt_ids(intent: operation.OperationIntent) -> List(ids.EntryId) {
 fn ids_generator(world: World) -> ids.Generator {
   ids.generator(clock.fixed(at: scenario.now(world)), seed: 424_242)
 }
+
+// A refusal that ends the run stages its result like any other and then
+// finishes the operation the way a terminating tool does, so the model is
+// asked for no further step.
+pub fn a_refusal_that_ends_the_run_finishes_it_test() {
+  let world = start_run("find the earlier session")
+  let answer = fixture.assistant_calls(["history_search"])
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(
+        settled: fixture.settled(answer),
+        overflow_preparation: None,
+      ),
+      opts(),
+    )
+  let assert Ok(#(world, action)) = scenario.step(world, NoObservation, opts())
+  let assert AwaitEffect(key: planner.ToolClearanceKey(source_index: 1, ..)) =
+    action
+
+  let refusal =
+    fixture.tool_result("call_history_search_0", "history_search", "refused")
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(
+      world,
+      planner.ObservedToolRefused(
+        source_index: 1,
+        result: refusal,
+        ending: planner.RefusalEndsRun,
+      ),
+      opts(),
+    )
+  assert writes == ["set:pending.entry", "set:op.state"]
+
+  let world = step_until_run_end(world, 8)
+  let assert Ok(#(_world, action)) =
+    scenario.step(world, ObservedRunEnd(follow_up: None), opts())
+  let assert Finish(
+    result: operation.RunLastResult(
+      outcome: operation.RunCompleted(
+        completion: operation.CompletedByTerminatedTools,
+      ),
+      ..,
+    ),
+    ..,
+  ) = action
+}
+
+// Steps with no observation until the machine asks for the run-end hook,
+// within a bound so a regression fails rather than spinning.
+fn step_until_run_end(world: World, fuel: Int) -> World {
+  let assert True = fuel > 0 as "the run never reached its end hook"
+  let assert Ok(#(next, action)) = scenario.step(world, NoObservation, opts())
+  case action {
+    AwaitEffect(key: planner.RunEndKey(..)) -> next
+    _ -> step_until_run_end(next, fuel - 1)
+  }
+}
