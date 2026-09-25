@@ -323,9 +323,11 @@ pub fn long_exact_strand_is_visible_on_confirmation_test() {
 }
 
 pub fn linked_row_shows_names_and_exact_session_ids_test() {
+  let source_id = "01a0d5de-368e-7cc1-beeb-8da1658eec67"
+  let target_id = "01a0d5de-cf33-7fca-bbff-7c596e26ce46"
   let source =
     protocol.Session(
-      "source-id",
+      source_id,
       "/workspace",
       "Coordinator",
       0,
@@ -333,7 +335,7 @@ pub fn linked_row_shows_names_and_exact_session_ids_test() {
     )
   let target =
     protocol.Session(
-      "target-id",
+      target_id,
       "/workspace",
       "Review target",
       0,
@@ -341,24 +343,30 @@ pub fn linked_row_shows_names_and_exact_session_ids_test() {
     )
   let grant =
     peer_links.Grant(
-      "source-id",
+      source_id,
       "main",
-      "target-id",
+      target_id,
       "reviewer",
       Some(protocol.MayWake),
       peer_links.Available,
     )
   let state =
     peer_links.loaded(
-      peer_links.new("source-id", "main"),
+      peer_links.new(source_id, "main"),
       [source, target],
       peer_links.Inspection([grant], []),
       None,
     )
-  let visible = view_text(state)
+  let screen = geometry.rect_new(0, 0, 80, 24)
+  let rendered = peer_links.render(buffer.buffer_new(screen), screen, state)
+  let selected =
+    selection.start(screen, Position(0, 0))
+    |> selection.extend(Position(79, 23))
+  let visible = selection.text(rendered, selected)
   assert string.contains(visible, "Outgoing  Coordinator / main")
   assert string.contains(visible, "To  Review target / reviewer")
-  assert string.contains(visible, "IDs source-id → target-id")
+  assert string.contains(visible, "From ID " <> source_id)
+  assert string.contains(visible, "To ID   " <> target_id)
 }
 
 pub fn malformed_or_oversized_inspection_is_refused_test() {

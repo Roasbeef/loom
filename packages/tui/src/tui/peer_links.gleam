@@ -680,7 +680,7 @@ fn grant_viewport(content, selected: Int, room: Int) {
       }
       let rows = list.drop(content, 2)
       let row_room = int.max(0, room - list.length(heading))
-      list.append(heading, row_viewport(rows, selected, 3, row_room))
+      list.append(heading, row_viewport(rows, selected, 4, row_room))
     }
   }
 }
@@ -746,11 +746,8 @@ fn listing_lines(state: State, width: Int) {
           width,
           "…",
         )),
-        quiet(text.truncate(
-          "    IDs " <> grant.source_session <> " → " <> grant.target_session,
-          width,
-          "…",
-        )),
+        quiet(text.truncate("    From ID " <> grant.source_session, width, "…")),
+        quiet(text.truncate("    To ID   " <> grant.target_session, width, "…")),
       ]
     })
   case rendered {
