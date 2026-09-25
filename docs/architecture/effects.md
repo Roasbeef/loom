@@ -476,6 +476,15 @@ ordered mount plan under two rules:
   survives it. Masks are exempt from this rule against grants, because
   `protected` is the only subtractive verb the policy has and nothing may
   carve a hole in it.
+- **The policy's explicit `mounts` come last of all**, after the masks, so
+  a cap socket under the scratch tmpfs stays visible
+  (`protocol-change/004`). That ordering is safe only because the shapes
+  it would resolve differently from Darwin's allow-then-deny profile never
+  reach it: both decoders refuse a mount overlapping a protected entry, a
+  mount path named twice, and a read-only mount at or above a writable
+  root, which would otherwise leave the root read-only on Linux and
+  writable on Darwin (`protocol-change/050`). A read-only mount of `/`
+  would also bind the host's `/proc` and `/dev` back over the fresh ones.
 
 A protected path is removed from the view whatever its inode type. A
 directory, or a path that does not exist yet, is shadowed by an empty
@@ -686,8 +695,12 @@ a healthy plan and in one whose mask a later bind undoes. They count the
 policy's own paths whose **effective view, after replaying the whole
 ordered plan, is the one the policy asked for**. A defeated mask drops
 out of `mask=` and emits a `skip:mounts:` naming the path and the
-operation that re-exposed it. The broker holds the policy it sent, so it
-can check those counts against it. The `plan=` digest is a diffing aid,
+operation that re-exposed it. A writable root under an explicit
+read-only mount gets a `skip:mounts:` too, though it is narrower rather
+than wider: the decoders refuse that policy, so the skip is what keeps a
+full-enforcement demand from reading a bypass as a whole jail. The
+broker holds the policy it sent, so it can check those counts against
+it. The `plan=` digest is a diffing aid,
 not a check, because nobody holds the expected value.
 
 One gap is deliberately kept out of that vocabulary. A kernel missing a
