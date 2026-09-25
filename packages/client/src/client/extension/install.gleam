@@ -488,16 +488,21 @@ fn readable_files(tree: Tree) -> List(#(String, String)) {
 }
 
 // A profile's installed tree: its manifest, its `README*` and
-// `LICENSE*` at the root, and every file under a fixture one of its
+// `LICENSE*` files at the root, and every file under a fixture one of its
 // checks names. The record's digest is over exactly this, and discovery
 // re-reads exactly this.
+//
+// The README and licence rule is for root-level *files*: a path holding a
+// `/` is inside a directory, and `README-assets/` or `LICENSES/` is a
+// directory of anything, which a prefix match would keep whole.
 fn profile_tree(tree: Tree, decoded: Manifest) -> Tree {
   let fixtures =
     list.map(decoded.checks, fn(check) { check.fixture <> "/" }) |> list.unique
+  let at_root = fn(path) { !string.contains(path, "/") }
   let kept = fn(path) {
     path == manifest_file
-    || string.starts_with(path, "README")
-    || string.starts_with(path, "LICENSE")
+    || { at_root(path) && string.starts_with(path, "README") }
+    || { at_root(path) && string.starts_with(path, "LICENSE") }
     || list.any(fixtures, fn(fixture) { string.starts_with(path, fixture) })
   }
   Tree(..tree, files: list.filter(tree.files, fn(file) { kept(file.path) }))
