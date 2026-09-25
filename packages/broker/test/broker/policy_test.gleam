@@ -994,3 +994,83 @@ pub fn validate_rejects_an_empty_mount_path_test() {
     ])
   assert policy.validate(bad) == Error(policy.RelativePath(""))
 }
+
+// --- session leases -----------------------------------------------------
+
+// A lease's own requirements: the same reach as the base, and no time or
+// output limit of its own. This is what an extension host or a language
+// server asks for, and the zeros in it are the ones that must not narrow.
+fn unlimited_requirements() -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base(),
+    limits: policy.Limits(..base().limits, cpu_s: 0, wall_s: 0, output_bytes: 0),
+  )
+}
+
+pub fn session_lease_composes_with_unlimited_requirements_test() {
+  let lease = policy.session_lease(base(), policy.OutputIsWire)
+  let #(composed, narrowings) =
+    policy.compose(
+      base: lease,
+      requirements: unlimited_requirements(),
+      grants: [],
+    )
+
+  // Zero met with zero stays zero, and nothing is reported short, so a
+  // clearance under `RefuseNarrowed` lets the lease through.
+  assert composed.limits.cpu_s == 0
+  assert composed.limits.wall_s == 0
+  assert composed.limits.output_bytes == 0
+  assert narrowings == []
+}
+
+pub fn ordinary_base_narrows_unlimited_requirements_test() {
+  let #(composed, narrowings) =
+    policy.compose(
+      base: base(),
+      requirements: unlimited_requirements(),
+      grants: [],
+    )
+
+  // The reason the lease shape exists: zeros asked for in the
+  // requirements alone take the base's numbers and are each a narrowing.
+  assert composed.limits.cpu_s == 300
+  assert composed.limits.wall_s == 600
+  assert narrowings
+    == [
+      policy.NarrowedLimit(field: policy.CpuSeconds, wanted: 0, granted: 300),
+      policy.NarrowedLimit(field: policy.WallSeconds, wanted: 0, granted: 600),
+      policy.NarrowedLimit(
+        field: policy.OutputBytes,
+        wanted: 0,
+        granted: 4_194_304,
+      ),
+    ]
+}
+
+pub fn session_lease_output_choice_test() {
+  let log = policy.session_lease(base(), policy.OutputIsLog)
+  let wire = policy.session_lease(base(), policy.OutputIsWire)
+
+  // A log keeps the base's per-stream cap; a wire has none.
+  assert log.limits.output_bytes == base().limits.output_bytes
+  assert wire.limits.output_bytes == 0
+
+  // Either way the time limits are cleared and nothing else moves.
+  assert log.limits.cpu_s == 0
+  assert log.limits.wall_s == 0
+  assert wire.limits.cpu_s == 0
+  assert wire.limits.wall_s == 0
+}
+
+pub fn session_lease_leaves_memory_and_processes_alone_test() {
+  let lease = policy.session_lease(proxy_policy(), policy.OutputIsWire)
+
+  // Memory, processes and file size still bound a lease exactly as they
+  // bound any execution, and the rest of the policy passes through.
+  assert lease.limits.mem_bytes == proxy_policy().limits.mem_bytes
+  assert lease.limits.pids == proxy_policy().limits.pids
+  assert lease.limits.fsize_bytes == proxy_policy().limits.fsize_bytes
+  assert policy.SandboxPolicy(..lease, limits: proxy_policy().limits)
+    == proxy_policy()
+}
