@@ -69,7 +69,8 @@ import lsp/query.{
   type Landing, type QueryError, type Reference, type RenameReport, type Served,
   type Site, type SymbolEntry, type SymbolQuery,
 }
-import tools/hashline
+import tools/hashline.{type AnchoredLine}
+import tools/lsp as lsp_tools
 
 // --- the capability names ----------------------------------------------------
 
@@ -112,6 +113,16 @@ pub const serviced_caps = [
 /// caps carries the uncapped `total` beside it.
 pub const max_items = 200
 
+/// The most bytes of a server's hover text a `hover` answer carries.
+///
+/// Larger than the `lsp_hover` tool's bound, because a program may be
+/// reading a type to act on it rather than showing it to a model, but a
+/// bound all the same: the server decides how long a hover is, and
+/// without one the only limit would be the frame cap. `cap/lsp.hover`
+/// states the same number to programs. The text is cut by
+/// `tools/lsp.clip`, the tool's own rule, so both surfaces cut alike.
+pub const max_hover_bytes = 65_536
+
 /// The refusal code for `query.NoServer`.
 pub const no_server_code = "no_server"
 
@@ -140,11 +151,14 @@ pub type RenameMode {
 /// One line a previewed rename would change.
 pub type LineChange {
   LineChange(
-    /// The 1-based line number in the file as it is now.
+    /// The 1-based line number in the file as it is now, or, for a line
+    /// the rename would add, the number it would have after it.
     line: Int,
-    /// The line as it reads now, without its terminator.
+    /// The line as it reads now, without its terminator (a CRLF line's
+    /// `\r` included), or empty for a line the rename would add.
     before: String,
-    /// The line as it would read after the rename.
+    /// The line as it would read after the rename, without its
+    /// terminator, or empty for a line the rename would remove.
     after: String,
   )
 }
@@ -254,7 +268,12 @@ fn hover_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
     ServedHere(fn() {
       hover(symbol_query)
       |> answer(fn(hover) {
-        [#("contents", msgpack.StringValue(hover.contents))]
+        [
+          #(
+            "contents",
+            msgpack.StringValue(lsp_tools.clip(hover.contents, max_hover_bytes)),
+          ),
+        ]
       })
     }),
   )
@@ -437,12 +456,14 @@ fn mode_arg(value: MsgPackValue) -> Result(RenameMode, CapDenial) {
 
 /// The lines each file of a computed rename would change.
 ///
-/// Line by line rather than a general diff, because a rename's edits each
-/// replace one identifier with another and so never add or remove a line.
-/// The walk still pairs a line present on one side only with an empty
-/// line on the other, so a server that broke that rule shows up in the
-/// preview instead of being lost from it. A `\r` left by a CRLF file is
-/// trimmed from both sides, because it is a terminator and not content.
+/// The diff is `tools/lsp.changed_spans`, the one the `lsp_rename` tool
+/// previews with, so a program and a model are shown the same change;
+/// this function only reshapes it into before/after pairs. A span with
+/// more lines on one side pairs each extra line with an empty line on the
+/// other, numbered as that side numbers it, so a server that added or
+/// removed a line shows up in the preview instead of being lost from it.
+/// A `\r` left by a CRLF file is trimmed from both sides for display,
+/// because it is a terminator and not content.
 ///
 /// ## Examples
 ///
@@ -456,12 +477,8 @@ fn mode_arg(value: MsgPackValue) -> Result(RenameMode, CapDenial) {
 pub fn preview(file_edits: List(FileEdit)) -> List(PlannedFile) {
   list.map(file_edits, fn(file_edit) {
     let changes =
-      changed_lines(
-        string.split(file_edit.base, "\n"),
-        string.split(file_edit.edited, "\n"),
-        1,
-        [],
-      )
+      lsp_tools.changed_spans(file_edit.base, file_edit.edited)
+      |> list.flat_map(fn(span) { paired(span.removed, span.added, []) })
     PlannedFile(
       path: file_edit.path,
       edits: file_edit.edits,
@@ -470,40 +487,30 @@ pub fn preview(file_edits: List(FileEdit)) -> List(PlannedFile) {
   })
 }
 
-// One step per line pair, accumulating changed lines in reverse; the list
-// is turned round once when both sides run out.
-fn changed_lines(
-  before: List(String),
-  after: List(String),
-  line: Int,
+// One step per line pair of a span, accumulating in reverse; the list is
+// turned round once when both sides run out. A line with no partner is
+// paired with an empty line, and takes its own side's number.
+fn paired(
+  removed: List(AnchoredLine),
+  added: List(AnchoredLine),
   found: List(LineChange),
 ) -> List(LineChange) {
-  case before, after {
+  case removed, added {
     [], [] -> list.reverse(found)
 
-    [old, ..before], [] ->
-      changed_lines(before, [], line + 1, record(found, line, old, ""))
+    [old, ..removed], [] ->
+      paired(removed, [], [change(old.line, old.text, ""), ..found])
 
-    [], [new, ..after] ->
-      changed_lines([], after, line + 1, record(found, line, "", new))
+    [], [new, ..added] ->
+      paired([], added, [change(new.line, "", new.text), ..found])
 
-    [old, ..before], [new, ..after] ->
-      changed_lines(before, after, line + 1, record(found, line, old, new))
+    [old, ..removed], [new, ..added] ->
+      paired(removed, added, [change(old.line, old.text, new.text), ..found])
   }
 }
 
-fn record(
-  found: List(LineChange),
-  line: Int,
-  old: String,
-  new: String,
-) -> List(LineChange) {
-  let old = trim_cr(old)
-  let new = trim_cr(new)
-  case old == new {
-    True -> found
-    False -> [LineChange(line:, before: old, after: new), ..found]
-  }
+fn change(line: Int, before: String, after: String) -> LineChange {
+  LineChange(line:, before: trim_cr(before), after: trim_cr(after))
 }
 
 fn trim_cr(text: String) -> String {
@@ -601,9 +608,10 @@ fn found_fields(
 /// as `fs_read` would show it.
 ///
 /// The anchor is computed here because the door cannot: `lsp` does not
-/// depend on `tools`. It is `hashline.anchor` of the terminator-free line
-/// text, which is `fs_read`'s anchor for every LF file. For a CRLF file
-/// `fs_read` anchors the line with its `\r`, so the two differ there.
+/// depend on `tools`. It is `hashline.anchor` of the site's text, which
+/// is the line with its `\n` removed and, in a CRLF file, its `\r` kept,
+/// exactly the text `fs_read` anchors, so the two agree for either line
+/// ending.
 ///
 /// ## Examples
 ///

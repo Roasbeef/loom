@@ -152,7 +152,9 @@ pub type Site {
     line: Int,
     /// The 1-based column, counted in Unicode codepoints.
     column: Int,
-    /// The text of that line without its terminator.
+    /// The text of that line with its `\n` terminator removed. A CRLF
+    /// line keeps its `\r`, as `fs.read` does, so that `anchor` is the
+    /// anchor of exactly this text.
     text: String,
     /// The hashline anchor of that line, as `fs_read` shows it, so a
     /// result the program reports can be edited without another read.
@@ -409,6 +411,10 @@ pub fn references(query: Query) -> Result(Found(Reference), LspError) {
 
 /// Type information and documentation for the queried symbol, as the
 /// server renders it (usually markdown).
+///
+/// At most 64 KiB of it. A longer answer is cut at the last line break
+/// inside that bound and ends with a line saying how many bytes were cut,
+/// because the server chooses how much it sends.
 ///
 /// Capability: `lsp.hover`.
 ///
