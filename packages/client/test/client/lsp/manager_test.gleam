@@ -33,16 +33,19 @@ import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
+import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
 import lsp/protocol
 import lsp/query
 import lsp/range
+import mcp/transport
 import provider/secret
 import simplifile
 import support/fake_lsp
 import tools/tool
 import weft/poll
+import weft/registry as address
 
 // --- fixtures ------------------------------------------------------------------
 
@@ -650,6 +653,108 @@ pub fn after_write_pushes_only_to_a_running_owner_test() {
   manager.stop(rig.manager)
   let _ = simplifile.delete_all([workspace])
   Nil
+}
+
+// The session's arrangement: the manager is a transient child of a
+// supervisor, bound to an address, and every door is built over the
+// address. A crashed manager is replaced and the same door reaches the
+// replacement, whose first query starts the server again; the crashed
+// one's keeper, seeing its manager go, stopped its server politely. A
+// manager `stop` ended is not replaced, and `stop` returns only once the
+// server's keeper has finished stopping it.
+pub fn a_supervised_manager_is_replaced_under_its_address_test() {
+  let workspace = scratch("supervised")
+  let _root = project(workspace, "app")
+  let starts = process.new_subject()
+  let closes = process.new_subject()
+
+  // Each fake's transport closes slowly, and says when it has: a server
+  // that takes a moment to exit is what makes "stop waits for the keeper"
+  // observable, since a fake that closed at once would look stopped
+  // whether or not anybody waited.
+  let connect = fn(identity: resolve.Identity) {
+    let fake = fake_lsp.start(fake_lsp.everything(), outline_script)
+    process.send(starts, #(identity.root, fake))
+    Ok(slow_close(fake_lsp.seam(fake), closes))
+  }
+  let config =
+    manager.Config(
+      workspace:,
+      servers: [fake_server()],
+      backend: manager.Backend(connect:, search: no_search),
+      timing: quick_timing(),
+    )
+  let assert Ok(names) = address.start() as "the registry must start"
+  let name = address.new_address(names)
+  let assert Ok(tree) =
+    sup.new(sup.OneForOne)
+    |> sup.add(manager.supervised(name, config))
+    |> sup.start
+    as "the supervisor must start the manager"
+  let handle = manager.addressed(name, config)
+  let door = manager.door(handle)
+
+  let assert Ok(served) = door.outline("app/src/a.gleam") as "first start"
+  assert served.warmth == query.Started("fake")
+  let assert [#(_, first)] = drain(starts, []) as "one start"
+
+  // The crash. The replacement answers through the same address.
+  let assert Ok(incarnation) = address.lookup(name) as "the manager is bound"
+  let assert Ok(crashed) = process.subject_owner(incarnation)
+    as "the manager has a pid"
+  process.kill(crashed)
+  let outcome =
+    poll.until(within: 5000, every: 20, attempt: fn() {
+      case door.outline("app/src/a.gleam") {
+        Ok(served) -> poll.Done(served)
+        Error(query.Unavailable(_)) -> poll.Retry
+        Error(other) -> poll.Fail(other)
+      }
+    })
+  let assert poll.Answered(again) = outcome
+    as "the replacement must serve the same door"
+  assert again.warmth == query.Started("fake")
+  let assert [#(_, second)] = drain(starts, []) as "exactly one restart"
+  assert list.contains(fake_lsp.methods(first), "shutdown")
+
+  // `stop` waits out the keeper's graceful stop, and a stopped manager
+  // is not replaced: the address stays unbound.
+  let _first_close = drain(closes, [])
+  manager.stop(handle)
+  assert process.receive(closes, within: 0) == Ok(Nil)
+    as "stop must return only after the server's transport closed"
+  assert list.contains(fake_lsp.methods(second), "shutdown")
+  process.sleep(200)
+  assert address.lookup(name) == Error(Nil)
+  assert door.after_write("app/src/a.gleam") == None
+
+  process.unlink(tree.pid)
+  process.kill(tree.pid)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+// A channel transport whose close takes 300 ms and then reports on
+// `closed`, for the stop-waits test above.
+fn slow_close(
+  inner: transport.Transport,
+  closed: Subject(Nil),
+) -> transport.Transport {
+  case inner {
+    transport.ChannelTransport(connect:) ->
+      transport.ChannelTransport(connect: fn(inbound) {
+        let connection = connect(inbound)
+        transport.Connection(..connection, close: fn() {
+          process.spawn_unlinked(fn() {
+            process.sleep(300)
+            connection.close()
+            process.send(closed, Nil)
+          })
+          Nil
+        })
+      })
+    transport.PortTransport(..) -> inner
+  }
 }
 
 // --- (d) the real servers, jailed ------------------------------------------------

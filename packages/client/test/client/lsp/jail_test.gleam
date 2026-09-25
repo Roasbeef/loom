@@ -218,7 +218,7 @@ pub fn the_network_is_off_whatever_the_base_allows_test() {
   assert built.base.network == policy.NetworkFull
   assert built.requirements.network == policy.NetworkOff
   assert composed(built).network == policy.NetworkOff
-  assert jail.call_spec(built, op(), now_ms: 0).response
+  assert jail.call_spec(built, op(), now_ms: 0, demand: exec.BestEffort).response
     == broker.RefuseNarrowed
 }
 
@@ -287,10 +287,26 @@ pub fn the_step_names_the_server_and_its_root_test() {
   assert step != jail.step_id("gleam", "/work/b")
 
   let spec =
-    jail.call_spec(built(server(catalog.ProjectWritable)), op(), now_ms: 5)
+    jail.call_spec(
+      built(server(catalog.ProjectWritable)),
+      op(),
+      now_ms: 5,
+      demand: exec.PlatformEnforcement,
+    )
   assert spec.budget.max_outstanding == 1
   assert spec.budget.deadline_ms == 5 + jail.lease_lifetime_ms
   assert spec.demand == exec.PlatformEnforcement
+
+  // The demand is the caller's, carried unchanged: the session's demand is
+  // what the probe proves, so the spec must not substitute its own.
+  let relaxed =
+    jail.call_spec(
+      built(server(catalog.ProjectWritable)),
+      op(),
+      now_ms: 5,
+      demand: exec.BestEffort,
+    )
+  assert relaxed.demand == exec.BestEffort
   assert spec.step_id == jail.step_id("gleam", root)
 }
 
@@ -394,6 +410,7 @@ fn scripted(
       built(server(catalog.ProjectWritable)),
       op(),
       now_ms: 0,
+      demand: exec.PlatformEnforcement,
     ),
     scratch:,
     timing: jail.Timing(
@@ -738,7 +755,15 @@ fn run_live(helper: String, here: String) -> Nil {
       }
     })
     as "the live jail must compose"
-  let launch = jail.launch(live.broker, live.counter, built, op(), wall_clock())
+  let launch =
+    jail.launch(
+      live.broker,
+      live.counter,
+      built,
+      op(),
+      wall_clock(),
+      demand: exec.PlatformEnforcement,
+    )
   let #(connection, inbound) = connected(launch)
   let uri = "file://" <> live.project
   send(connection, initialize(uri))

@@ -71,6 +71,7 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import lsp/client as lsp
@@ -86,6 +87,7 @@ import mcp/transport.{type Transport}
 import simplifile
 import tools/grep
 import tools/tool.{type RunningCall}
+import weft/registry as address
 import weft/state_machine as sm
 
 // --- configuration ---------------------------------------------------------
@@ -282,14 +284,10 @@ pub fn connect_jailed(
     waiting: jailed.exec_ms,
   ))
 
-  // The session's demand, not the one `jail.call_spec` writes: the probe
-  // just proved this demand holds under this policy, and the lease must
-  // clear under the demand that was proved.
+  // The probe just proved this demand holds under this policy, so the
+  // lease clears under the same demand and nothing weaker or stronger.
   let spec =
-    broker.CallSpec(
-      ..jail.call_spec(built, jailed.op_id, now_ms: now),
-      demand: jailed.demand,
-    )
+    jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand)
   Ok(
     jail.transport(jail.Launch(
       run: jailed.run,
@@ -361,9 +359,8 @@ pub fn probe(
 ) -> Result(Nil, String) {
   let spec =
     broker.CallSpec(
-      ..jail.call_spec(built, op_id, now_ms:),
+      ..jail.call_spec(built, op_id, now_ms:, demand:),
       step_id: built.step_id <> "/probe",
-      demand:,
       argv: probe_argv,
       budget: budget.Budget(max_outstanding: 1, deadline_ms: now_ms + waiting),
     )
@@ -487,10 +484,9 @@ pub fn search_jailed(
     )
   let spec =
     broker.CallSpec(
-      ..jail.call_spec(built, jailed.op_id, now_ms: now),
+      ..jail.call_spec(built, jailed.op_id, now_ms: now, demand: jailed.demand),
       step_id: built.step_id <> "/search",
       requirements:,
-      demand: jailed.demand,
       argv:,
       budget: budget.Budget(
         max_outstanding: 4,
@@ -568,9 +564,20 @@ pub fn bounded_hits(hits: List(Hit)) -> List(Hit) {
 
 // --- the manager actor -------------------------------------------------------
 
-/// A handle on a started manager. Sendable; the door's closures carry it.
+/// A handle on a manager. Sendable; the door's closures carry it.
+///
+/// It reaches the manager through `reach` rather than holding one subject,
+/// because the session runs its manager as a supervised child under a
+/// reclaimable address (`supervised`): a replacement answers on a fresh
+/// inbox, and a handle that had captured the first one would talk to a
+/// corpse for the rest of the session. `start` answers a handle whose
+/// `reach` is that one incarnation's subject, which is what a test wants.
 pub opaque type Manager {
-  Manager(subject: Subject(Msg), config: Config, workspaces: List(String))
+  Manager(
+    reach: fn() -> Result(Subject(Msg), Nil),
+    config: Config,
+    workspaces: List(String),
+  )
 }
 
 /// What a caller is handed for one query: the live client, and whether
@@ -585,8 +592,10 @@ type Peeked {
   Peeked(identity: Option(Identity), client: Option(lsp.Client))
 }
 
-// The manager's message set.
-type Msg {
+/// The manager's message set. Opaque: only this module sends it, and it is
+/// public only so a host can mint the `weft/registry` address a supervised
+/// manager binds (`supervised`).
+pub opaque type Msg {
   // A caller wants the server for `identity`, started if need be.
   Acquire(identity: Identity, reply: Subject(Result(Granted, QueryError)))
 
@@ -605,8 +614,9 @@ type Msg {
   // A port monitor fired; the manager monitors none, so this is noise.
   StrayDown
 
-  // The session is ending.
-  Shutdown(reply: Subject(Nil))
+  // The session is ending. The reply names the keeper still stopping a
+  // server, if any, so `stop` can wait for its exit in the caller.
+  Shutdown(reply: Subject(Option(Pid)))
 }
 
 // A running keeper: its pid for the monitor, its subject for `Release`.
@@ -645,8 +655,8 @@ type Data {
   )
 }
 
-/// Starts a manager over `config`. The manager is linked to the caller:
-/// it is the session's, and dies with it.
+/// Starts a manager over `config`. The manager is linked to the caller,
+/// and the handle reaches exactly this incarnation.
 ///
 /// ## Examples
 ///
@@ -656,6 +666,76 @@ type Data {
 /// ```
 ///
 pub fn start(config: Config) -> Result(Manager, String) {
+  builder(config)
+  |> sm.start
+  |> result.map(fn(started) {
+    let subject = started.data
+    handle_for(fn() { Ok(subject) }, config)
+  })
+  |> result.map_error(fn(error) {
+    "the language-server manager would not start: " <> string.inspect(error)
+  })
+}
+
+/// The manager as a child of the session's service supervisor, bound to
+/// `name` so the handle `addressed` builds reaches whichever incarnation
+/// is current.
+///
+/// Transient: a manager that crashes is replaced, while one that `stop`
+/// ended is not. A replacement starts `Idle` with no record of what the
+/// dead one ran. That costs nothing a query cannot rebuild: the dead
+/// manager's keepers saw it go and stopped their servers (a keeper
+/// monitors its manager), and the next query starts a server again, cold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let name = address.new_address(namespace)
+/// // sup.add(tree, manager.supervised(name, config))
+/// // let door = manager.door(manager.addressed(name, config))
+/// ```
+///
+pub fn supervised(
+  name: address.Address(Msg),
+  config: Config,
+) -> supervision.ChildSpecification(Subject(Msg)) {
+  builder(config)
+  |> sm.addressed(name)
+  |> sm.supervised
+  |> supervision.restart(supervision.Transient)
+}
+
+/// The handle on the manager `supervised` binds to `name`. It may be built
+/// before the manager starts: every exchange resolves the address when it
+/// is made, and a manager that is not running answers `Unavailable`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let door = manager.door(manager.addressed(name, config))
+/// ```
+///
+pub fn addressed(name: address.Address(Msg), config: Config) -> Manager {
+  handle_for(fn() { address.lookup(name) }, config)
+}
+
+fn handle_for(
+  reach: fn() -> Result(Subject(Msg), Nil),
+  config: Config,
+) -> Manager {
+  Manager(
+    reach:,
+    config:,
+    workspaces: list.unique([
+      resolve.workspace_real(config.workspace),
+      config.workspace,
+    ]),
+  )
+}
+
+// The one builder `start` and `supervised` share, so a supervised manager
+// is exactly the machine a test starts.
+fn builder(config: Config) -> sm.Builder(Phase, Data, Msg, Subject(Msg)) {
   sm.new_with_initialiser(1000, fn(commands) {
     // Keepers are monitored as they are started, so one selector arm for
     // every DOWN covers all of them.
@@ -678,25 +758,17 @@ pub fn start(config: Config) -> Result(Manager, String) {
     |> Ok
   })
   |> sm.on_event(handle)
-  |> sm.start
-  |> result.map(fn(started) {
-    Manager(
-      subject: started.data,
-      config:,
-      workspaces: list.unique([
-        resolve.workspace_real(config.workspace),
-        config.workspace,
-      ]),
-    )
-  })
-  |> result.map_error(fn(error) {
-    "the language-server manager would not start: " <> string.inspect(error)
-  })
 }
 
-/// Stops the manager and the server it runs. The server is stopped by its
-/// keeper, gracefully, after this returns; the language servers'
-/// operation abort at session end is the backstop (ADR-013 §1).
+/// Stops the manager and the server it runs, and waits — bounded by
+/// `Timing.previous_ms`, the same bound an evicting keeper waits for its
+/// predecessor — for the server's keeper to finish stopping it
+/// gracefully: `shutdown`, `exit`, stdin EOF, and the relay's release of
+/// the helper lease once the broker settles the execution. The wait runs
+/// here in the caller, never in the manager. The language servers'
+/// operation abort at session end is the backstop for a server that
+/// outlives the bound (ADR-013 §1). A manager that is not running is
+/// already stopped.
 ///
 /// ## Examples
 ///
@@ -705,8 +777,39 @@ pub fn start(config: Config) -> Result(Manager, String) {
 /// ```
 ///
 pub fn stop(manager: Manager) -> Nil {
-  let _ = call.try_call(manager.subject, waiting: 5000, sending: Shutdown)
-  Nil
+  case ask(manager, waiting: 5000, sending: Shutdown) {
+    Ok(Some(keeper)) -> {
+      let watch = process.monitor(keeper)
+      let _gone =
+        process.new_selector()
+        |> process.select_specific_monitor(watch, fn(_down) { Nil })
+        |> process.selector_receive(manager.config.timing.previous_ms)
+      process.demonitor_process(watch)
+    }
+    Ok(None) | Error(_fault) -> Nil
+  }
+}
+
+// One exchange with whichever incarnation the handle reaches now. An
+// address with nobody bound to it is the dead callee a monitored call
+// would report, because to the caller the two are the same absence.
+fn ask(
+  manager: Manager,
+  waiting waiting: Int,
+  sending make: fn(Subject(reply)) -> Msg,
+) -> Result(reply, call.CallFault) {
+  case manager.reach() {
+    Ok(subject) -> call.try_call(subject, waiting:, sending: make)
+    Error(Nil) -> Error(call.CalleeGone)
+  }
+}
+
+// A cast to the current incarnation; lost, harmlessly, if there is none.
+fn tell(manager: Manager, message: Msg) -> Nil {
+  case manager.reach() {
+    Ok(subject) -> process.send(subject, message)
+    Error(Nil) -> Nil
+  }
 }
 
 fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
@@ -799,7 +902,7 @@ fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
       sm.keep(data)
 
     Idle, Shutdown(reply:) -> {
-      process.send(reply, Nil)
+      process.send(reply, None)
       sm.stop()
     }
     Starting(identity: _, keeper:), Shutdown(reply:)
@@ -810,7 +913,7 @@ fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
         data.waiters,
         Error(query.Unavailable(reason: "the session is ending")),
       )
-      process.send(reply, Nil)
+      process.send(reply, Some(keeper.pid))
       sm.stop()
     }
   }
@@ -1599,7 +1702,7 @@ fn pushed(
       lsp.sync(client, [lsp.Change(path:, text: content)])
       |> result.replace_error(Nil),
     )
-    process.send(manager.subject, Opened(identity:, paths: [path]))
+    tell(manager, Opened(identity:, paths: [path]))
     lsp.settle(client, [path], manager.config.timing.settle_ms)
     |> result.replace_error(Nil)
   }
@@ -1926,7 +2029,7 @@ fn acquire(
 ) -> Result(Session, QueryError) {
   let timing = manager.config.timing
   let waiting = timing.previous_ms + timing.exec_ms * 2 + timing.start_ms + 1000
-  case call.try_call(manager.subject, waiting:, sending: Acquire(identity, _)) {
+  case ask(manager, waiting:, sending: Acquire(identity, _)) {
     Ok(Ok(granted)) ->
       Ok(Session(
         manager:,
@@ -1951,7 +2054,7 @@ fn acquire(
 }
 
 fn peek(manager: Manager) -> Peeked {
-  call.try_call(manager.subject, waiting: 5000, sending: Peek)
+  ask(manager, waiting: 5000, sending: Peek)
   |> result.unwrap(Peeked(identity: None, client: None))
 }
 
@@ -1984,11 +2087,7 @@ fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
   })
   case also {
     [] -> Nil
-    _ ->
-      process.send(
-        session.manager.subject,
-        Opened(identity: session.identity, paths: also),
-      )
+    _ -> tell(session.manager, Opened(identity: session.identity, paths: also))
   }
   Ok(Nil)
 }
