@@ -43,6 +43,7 @@ pub fn a_loom_toml_table_replaces_a_profile_whole_test() {
     profile.LspServer(
       ..server("go", [".go", ".mod"], "gopls"),
       env: ["GOFLAGS"],
+      cache_env: [],
       hint: Some("Qualify as package.Name"),
     )
   assert profiles.effective_lsp_servers(configured: [mine], installed: [
@@ -184,6 +185,7 @@ pub fn a_profile_round_trips_through_json_test() {
       readable: [profile.AbsolutePath("/opt/elixir"), profile.HomePath(".mix")],
       writable: [profile.CachePath("elixir-ls")],
       env: ["MIX_ENV"],
+      cache_env: [#("MIX_BUILD_ROOT", "build"), #("XDG_CACHE_HOME", "xdg")],
       language_id: "elixir",
       qualifier_separators: ["."],
       module_case: profile.Snake,
@@ -205,6 +207,12 @@ pub fn a_malformed_profile_is_refused_test() {
   refused("\"read-only\"", "\"sometimes\"")
   refused("\"as-written\"", "\"camel\"")
   refused("\"command\":[\"g\"]", "\"command\":\"g\"")
+
+  // A recorded private cache is re-read with the table's own rule: the
+  // jail creates and grants whatever a record holds.
+  refused("\"cache_env\":{}", "\"cache_env\":{\"X\":\"../go-build\"}")
+  refused("\"cache_env\":{}", "\"cache_env\":{\"X\":\"/abs\"}")
+  refused("\"cache_env\":{}", "\"cache_env\":[]")
 }
 
 // --- helpers --------------------------------------------------------------------
@@ -223,6 +231,7 @@ fn server(
     readable: [],
     writable: [],
     env: [],
+    cache_env: [],
     language_id: name,
     qualifier_separators: ["."],
     module_case: profile.AsWritten,
