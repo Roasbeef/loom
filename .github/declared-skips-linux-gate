@@ -36,3 +36,12 @@ declared|linux|SKIP worktree observation: platform enforcement unavailable|The o
 # The ordinary fast bucket does not install bwrap. The jailed Linux lane
 # installs it and runs this exact tools test without a skip declaration.
 declared|linux|SKIP git worktree: helper has no filesystem enforcement|The ordinary tools bucket cannot enforce the outside write; the jailed Linux lane runs the real Git worktree approval fixture with bubblewrap.
+
+# The jailed language-server fixture runs a real `gleam lsp` through the
+# helper under `PlatformEnforcement`, the demand ADR-013 fixes for a lease.
+# The helper reports what it enforced only in the exit report, so on a
+# runner without a delegated cgroup v2 base the whole conversation still
+# runs through the jail's mounts and the enforcement claim is declined at
+# the settlement. The policy, lease-cap and relay assertions in the same
+# file run on every runner without this waiver.
+declared|linux|SKIP lsp jailed gleam lsp: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement (cgroup v2); the conversation, the write containment and the lease release still run, and a runner with a delegated cgroup base exercises the enforced settlement without this waiver.
