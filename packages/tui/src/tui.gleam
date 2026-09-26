@@ -63,6 +63,7 @@ import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/effect
 import tui/frame
 import tui/history_view
 import tui/inbound
@@ -80,6 +81,7 @@ import tui/projection
 import tui/queue_editor
 import tui/recording
 import tui/render
+import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/sessions
@@ -566,6 +568,7 @@ pub fn new_model_with_clock(
     recorder: None,
     herdr_reporter: None,
     herdr_published: None,
+    outbox: [],
     selection: None,
     selection_frame: None,
     selection_gutters: [],
@@ -1303,7 +1306,11 @@ fn attach_daemon(
   }
 }
 
-/// Applies one terminal event to the model.
+/// Applies one terminal event and performs the effects it decided on.
+///
+/// This is the function etui and the virtual backend call: `step`, then
+/// `runtime.perform` on what the step returned. Everything that inspects a
+/// transition without acting on it calls `step` instead.
 ///
 /// ## Examples
 ///
@@ -1312,12 +1319,37 @@ fn attach_daemon(
 /// ```
 @internal
 pub fn update(event: backend.InputEvent, model: Model) -> Model {
+  let #(model, effects) = step(event, model)
+  runtime.perform(effects)
+  model
+}
+
+/// Applies one terminal event and returns the effects it decided on,
+/// without performing them.
+///
+/// The reducer queues its I/O as `effect.Effect` values rather than doing
+/// it, and this collects them, together with whatever was still queued
+/// from a caller that drove a reducer outside the loop. The returned model
+/// has empty queues. Phase 1 of issue #530 covers the fire-and-forget
+/// effects; mailbox drains, job starts, clock reads, file reads and
+/// recording appends still happen during the step.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(next, effects) = tui.step(backend.KeyPress(enter), model)
+/// ```
+@internal
+pub fn step(
+  event: backend.InputEvent,
+  model: Model,
+) -> #(Model, List(effect.Effect)) {
   // Before the event is interpreted, so a recording holds what the client
   // was given rather than what it made of it.
   recording.note_input(model.recorder, event)
 
   let updated = apply_input(event, model)
-  settle_update(event, model, updated)
+  runtime.take(settle_update(event, model, updated))
 }
 
 // The dispatch on the event and the settling of its result are two functions

@@ -20,6 +20,7 @@ import tui/daemon
 import tui/daemon/selection
 import tui/inbound
 import tui/model as tui_model
+import tui/runtime
 import tui/session_channel
 import weft/poll
 
@@ -47,6 +48,8 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       })
     let channel =
       session_channel.start_recorded(socket, target.expected, Some(trace))
+    // Driven outside the terminal loop, so the subscribe the channel queued
+    // is performed here rather than by the next step.
     let model =
       tui_model.Model(
         ..tui.new_model(inbox, target.workspace),
@@ -54,8 +57,10 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
         channel: Some(channel),
         session: session,
       )
+      |> runtime.flush
     let #(initial, ending) = hold_snapshot_end(model, 32)
-    let initial = inbound.accept_connection_message(initial, ending)
+    let initial =
+      inbound.accept_connection_message(initial, ending) |> runtime.flush
     let assert Some(channel) = initial.channel
       as "initial cut keeps its channel"
     assert session_channel.mutation_available(channel)
@@ -66,7 +71,11 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       poll.until(within: 1000, every: 5, attempt: fn() {
         let #(next, _) = session_channel.tick(channel)
         case session_channel.in_flight(next) {
-          True -> poll.Done(next)
+          True -> {
+            let #(next, outputs) = session_channel.take_outputs(next)
+            list.each(outputs, session_channel.perform)
+            poll.Done(next)
+          }
           False -> poll.Retry
         }
       })
@@ -121,7 +130,7 @@ fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
     True -> #(model, incoming)
     False ->
       hold_snapshot_end(
-        inbound.accept_connection_message(model, incoming),
+        inbound.accept_connection_message(model, incoming) |> runtime.flush,
         remaining - 1,
       )
   }

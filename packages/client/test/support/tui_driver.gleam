@@ -207,7 +207,11 @@ fn run(
 fn disconnect(model: tui_model.Model) -> Nil {
   attachment.cancel(model.candidate)
   case model.channel {
-    Some(channel) -> session_channel.close(channel)
+    Some(channel) -> {
+      let #(_, outputs) =
+        session_channel.take_outputs(session_channel.close(channel))
+      list.each(outputs, session_channel.perform)
+    }
     None ->
       case model.peer {
         tui_model.Attached(socket) -> connection.close(socket)

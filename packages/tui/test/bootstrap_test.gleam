@@ -557,7 +557,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert selected_name == target.session_name
   assert adopted.session_label
     == Some(#(target.expected.session, target.session_name))
-  session_channel.close(channel)
+  close_channel(channel)
 
   // A cancelled attempt must take its unadopted socket down. Two paths
   // cover it: a task that has returned its socket but whose outcome nobody
@@ -687,7 +687,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert readopted.session == adopted.session
   assert text_area.value(readopted.input) == "retained draft"
   assert_build_notice(readopted)
-  session_channel.close(reopened_channel)
+  close_channel(reopened_channel)
 
   // A control request that times out retires its owner, and closing it is the
   // same retirement by another route. Before `selection.reconnect` existed the
@@ -738,6 +738,12 @@ fn open_fixture_socket(choice, options, target: attachment.Target, frames) {
   )
 }
 
+fn close_channel(channel: session_channel.Channel) -> Nil {
+  let #(_, outputs) =
+    session_channel.take_outputs(session_channel.close(channel))
+  list.each(outputs, session_channel.perform)
+}
+
 fn wait_for_attachment(status, within) {
   case
     poll.fold_until(
@@ -746,9 +752,21 @@ fn wait_for_attachment(status, within) {
       every: poll.Fixed(5),
       from: status,
       attempt: fn(status) {
-        case attachment.poll(status) {
-          #(_, Some(outcome)) -> poll.Settled(outcome)
-          #(next, None) -> poll.Pending(next)
+        // Driven outside the terminal loop, so this poll performs what
+        // the candidate's channel queued and what the poll itself decided,
+        // in the order the runtime would after a step.
+        let #(next, outcome, decided) = attachment.poll(status)
+        case outcome {
+          Some(outcome) -> {
+            list.each(decided, attachment.perform)
+            poll.Settled(outcome)
+          }
+          None -> {
+            let #(next, queued) = attachment.take_outputs(next)
+            list.each(queued, attachment.perform)
+            list.each(decided, attachment.perform)
+            poll.Pending(next)
+          }
         }
       },
     )

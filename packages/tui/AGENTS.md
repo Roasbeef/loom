@@ -262,18 +262,27 @@ later input closure and terminates its reader and cleanup drain on EOF/error.
 
 `tui.gleam` holds the entry points (`main` and the launch parsing,
 `new_model`, `loop`, `run_script`, `replay_steps`, `connect_remote`) and the
-event dispatch (`update`, `apply_input`, `settle_update`). Everything else
+event dispatch (`update`, `step`, `apply_input`, `settle_update`). Everything else
 that used to share its 15,500 lines (issue #374) lives in modules under
 `tui/`, listed here in import order. Gleam forbids import cycles and none of
 them may import `tui`, so a module may import only those above it in the
 list:
 
+- `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
+  step decides on. It imports the modules whose handles its variants carry
+  (`attachment`, `connection`, `daemon`, `herdr`, `session_channel`,
+  `sessions`) and nothing that imports the model.
 - `tui/model`: the `Model` record, the types it names, and the helpers every
   reducer shares (`append_system`, `append_error`, `invalidate_frame`,
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`
   is the local variable in nearly every function and would shadow the module
-  name. Constructors stay unqualified.
+  name. Constructors stay unqualified. It also owns the effect outbox:
+  `emit` queues an effect, and `release_channel` moves a channel's queued
+  outputs into the outbox before a step replaces or drops the channel.
+- `tui/runtime`: `take`, `perform` and `flush`, which collect a step's
+  effects from the two channels and the outbox and perform them. `tui.gleam`
+  and test drivers import it; no reducer module does.
 - `tui/transcript_lines`: `Line`s from durable entries, streams and tool
   calls. A new kind of transcript row starts in `entry_lines`,
   `message_lines`, `assistant_block_lines`, `record_lines`,
@@ -703,6 +712,18 @@ boundaries and the split's measurements under Invariants.
   under the cursor. A refusal reaches the footer as an error and the page is
   left alone. The confirmation explicitly includes stopping the selected session
   before deletion; the job remains asynchronous while cleanup settles.
+- `tui/effect.Effect` is what a step asks the runtime to do, as data:
+  `Channel(session_channel.Out)` and `Attachment(attachment.Out)` wrap the
+  two channels' queued outputs, and the rest name a socket write or close, a
+  control close, a weft, session-switch or attachment cancel, an inbox
+  discard, the OSC 52 clipboard write, or a Herdr announcement or report.
+  Every variant carries the handle it acts on, because an adoption can
+  replace the model's socket later in the same step and the effect must
+  still reach the handle it was decided for. `session_channel.Out` is
+  `Transmit(socket, frame)` or `Shut(socket)`; `attachment.Out` is a
+  candidate channel output or `Acknowledge(to)`. `Model.outbox` holds
+  pending effects newest first and is empty between steps. ADR-013 records
+  the design (issue #530, phase 1).
 - `tui/attachment.Status` owns one provisional replacement. A deadline-bounded
   Weft task publishes its socket to terminal-owned subjects. The terminal
   validates the initial cut, acknowledges it, observes task completion and
@@ -1511,6 +1532,23 @@ untouched.
   the backend emits its settling ticks, which flush a deferred frame and
   drain the inbox, and then reports `Interrupted`; that is how the loop ends
   without a quit key.
+- **A step performs no fire-and-forget I/O.** `tui.step` returns the next
+  model and a `List(Effect)`; `tui.update` performs that list through
+  `runtime.perform` after the step, and nothing in a reducer writes to a
+  socket, closes a connection, cancels a worker, discards an inbox, prints
+  the clipboard sequence or reports to Herdr. `session_channel` and
+  `attachment` queue their writes and closes as outputs, and a reducer that
+  replaces or drops the adopted channel calls `release_channel` first, or
+  the channel's queued writes are lost with it. A caller that runs a reducer
+  or a channel outside `update` must flush what it queued: `runtime.flush`
+  on a model, or `take_outputs` then `perform` for a bare channel or
+  attachment. The next `update` also performs anything left queued. One
+  consequence is that a send leaves at the end of its step, so a
+  zero-timeout drain later in that step cannot see its reply. Recording
+  appends and attempt trace notes are the deliberate exception and stay
+  synchronous, because the recording orders an input before the channel
+  traces it caused (ADR-009); mailbox drains, job starts, clock reads and
+  file reads also remain in the step until phase 2 of issue #530.
 - **A replay reproduces inbound traffic and rendering, never an outbound
   effect.** No websocket write, no daemon start, no local catalogue read,
   and no line the live client would have been *sent*. Submitting under

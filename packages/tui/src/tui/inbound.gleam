@@ -52,6 +52,7 @@ import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/effect
 import tui/history_view
 import tui/layout
 import tui/model.{
@@ -940,7 +941,9 @@ pub fn decide(
 
 /// Applies a message from the local session-switch worker: a failure is
 /// reported in the transcript, and a ready socket is adopted as the new
-/// attachment.
+/// attachment. Closing the socket it replaces, or one it could not adopt,
+/// and flushing the inbox that socket fed are queued for the runtime rather
+/// than performed during the step.
 @internal
 pub fn handle_session_switch_message(
   model: Model,
@@ -961,15 +964,14 @@ pub fn handle_session_switch_message(
       |> tui_model.mark_activity
     sessions.Ready(choice, options, target, inbox, socket) ->
       case connection.adopt(socket) {
-        Error(reason) -> {
-          connection.close(socket)
-          sessions.discard(inbox)
-          tui_model.append_error(
-            Model(..model, session_switch: sessions.Idle),
+        Error(reason) ->
+          Model(..model, session_switch: sessions.Idle)
+          |> tui_model.emit(effect.CloseSocket(socket))
+          |> tui_model.emit(effect.Discard(inbox))
+          |> tui_model.append_error(
             "open session " <> target.session <> ": " <> reason,
           )
           |> tui_model.mark_activity
-        }
         Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
       }
   }
@@ -984,15 +986,18 @@ fn adopt_session(
   socket: connection.Connection,
 ) -> Model {
   let model = select_workspace(model, target.session, "main")
-  case model.peer {
-    Attached(socket: previous) -> connection.close(previous)
-    Preview | Replaying | Disconnected -> Nil
+  let model = case model.peer {
+    Attached(socket: previous) ->
+      tui_model.emit(model, effect.CloseSocket(previous))
+    Preview | Replaying | Disconnected -> model
   }
 
   // Frames the old socket already delivered would otherwise sit unread in
   // the terminal mailbox for every later selective receive to scan past. The
   // close notice it sends after this point is the only residue, one frame.
-  sessions.discard(model.inbox)
+  // The flush is queued behind the close, as the two used to run, and runs
+  // after the step; the model stops reading this inbox at the swap below.
+  let model = tui_model.emit(model, effect.Discard(model.inbox))
   Model(
     ..model,
     help_open: False,
