@@ -196,7 +196,8 @@ fn captured(model: tui_model.Model, data: String, seq: Int) -> tui_model.Model {
       ),
       #(channel, model),
       fn(acc, incoming) {
-        let #(channel, changes) = session_channel.receive(acc.0, incoming)
+        let #(channel, changes) =
+          session_channel.receive(acc.0, incoming, now: 0)
         #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )

@@ -12,7 +12,6 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
 import gleam/dict
-import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -827,12 +826,13 @@ fn read_channel(channel, source) {
     case event {
       attempt.Started(..) -> acc
       attempt.Issued(_, request) -> {
-        let assert Ok(next) = session_channel.replay_issued(acc.0, request)
+        let assert Ok(next) =
+          session_channel.replay_issued(acc.0, request, now: 0)
           as "retaining an unsent mutation cannot consume a snapshot credit ID"
         #(next, acc.1)
       }
       attempt.Received(_, incoming) -> {
-        let #(next, updates) = session_channel.receive(acc.0, incoming)
+        let #(next, updates) = session_channel.receive(acc.0, incoming, now: 0)
         #(next, list.append(acc.1, updates))
       }
       _ -> panic as "fixture contains only request and response traffic"
@@ -840,12 +840,9 @@ fn read_channel(channel, source) {
   })
 }
 
-fn waiting_capture(clock) {
+fn waiting_capture() {
   let channel =
-    session_channel.replay_with_clock(
-      snapshot.Expected("A", "epoch", "incarnation"),
-      clock,
-    )
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
   let #(ready, _) = read_channel(channel, events(1, "A"))
   let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(1000), 654))
   let row =
@@ -863,11 +860,12 @@ fn waiting_capture(clock) {
 }
 
 pub fn unsent_command_waits_for_valid_end_and_never_retries_sent_mutation_test() {
-  let #(capturing, remaining) = waiting_capture(fn() { 0 })
+  let #(capturing, remaining) = waiting_capture()
   let #(waiting, admission) =
     session_channel.submit(
       capturing,
       protocol.prompt(900, "main", "immutable original"),
+      now: 0,
     )
   assert admission == session_channel.Waiting("prompt")
   assert session_channel.has_unsent(waiting)
@@ -875,6 +873,7 @@ pub fn unsent_command_waits_for_valid_end_and_never_retries_sent_mutation_test()
     session_channel.submit(
       waiting,
       protocol.prompt(901, "main", "must not replace"),
+      now: 0,
     )
   let assert session_channel.DefinitelyNotSent(_) = second
     as "one local slot cannot be overwritten"
@@ -892,19 +891,23 @@ pub fn unsent_command_waits_for_valid_end_and_never_retries_sent_mutation_test()
     as "valid End alone allocates exactly the next unused wire ID"
   assert !session_channel.has_unsent(sent)
   let #(same, rejected) =
-    session_channel.submit(sent, protocol.prompt(1, "main", "second mutation"))
+    session_channel.submit(
+      sent,
+      protocol.prompt(1, "main", "second mutation"),
+      now: 0,
+    )
   let assert session_channel.DefinitelyNotSent(_) = rejected
     as "no mutation queues behind a sent mutation"
   assert same == sent
   let #(closed, updates) =
-    session_channel.receive(sent, connection.Closed("lost reply"))
+    session_channel.receive(sent, connection.Closed("lost reply"), now: 0)
   assert updates
     == [
       session_channel.UnknownOutcome("prompt", 8),
       session_channel.Failed("lost reply"),
     ]
   let #(_, repeated) =
-    session_channel.receive(closed, connection.Closed("already closed"))
+    session_channel.receive(closed, connection.Closed("already closed"), now: 0)
   assert !list.any(repeated, fn(update) {
     case update {
       session_channel.UnknownOutcome(..) -> True
@@ -917,21 +920,25 @@ pub fn unsent_command_failure_timeout_and_initial_capture_never_claim_unknown_te
   let initial =
     session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
   let #(same, refusal) =
-    session_channel.submit(initial, protocol.prompt(1, "main", "too early"))
+    session_channel.submit(
+      initial,
+      protocol.prompt(1, "main", "too early"),
+      now: 0,
+    )
   assert same == initial
   let assert session_channel.DefinitelyNotSent(_) = refusal
     as "initial synchronization cannot retain user intent"
-  let clock_values = process.new_subject()
-  let #(capturing, _) =
-    waiting_capture(fn() {
-      process.receive(clock_values, 0) |> result.unwrap(0)
-    })
+  let #(capturing, _) = waiting_capture()
   let #(waiting, _) =
-    session_channel.submit(capturing, protocol.prompt(1, "main", "unsent"))
+    session_channel.submit(
+      capturing,
+      protocol.prompt(1, "main", "unsent"),
+      now: 0,
+    )
   list.each(
     [connection.NetworkFault("revoked"), connection.Incoming("invalid capture")],
     fn(failure) {
-      let #(closed, updates) = session_channel.receive(waiting, failure)
+      let #(closed, updates) = session_channel.receive(waiting, failure, now: 0)
       let assert [
         session_channel.Submission(session_channel.DefinitelyNotSent(_)),
         session_channel.Failed(_),
@@ -940,8 +947,7 @@ pub fn unsent_command_failure_timeout_and_initial_capture_never_claim_unknown_te
       assert !session_channel.has_unsent(closed)
     },
   )
-  process.send(clock_values, 30_001)
-  let #(closed, updates) = session_channel.tick(waiting)
+  let #(closed, updates) = session_channel.tick(waiting, now: 30_001)
   assert updates
     == [
       session_channel.Submission(session_channel.DefinitelyNotSent(
@@ -953,9 +959,13 @@ pub fn unsent_command_failure_timeout_and_initial_capture_never_claim_unknown_te
 }
 
 fn waiting_model(source) {
-  let #(channel, remaining) = waiting_capture(fn() { 0 })
+  let #(channel, remaining) = waiting_capture()
   let #(channel, _) =
-    session_channel.submit(channel, protocol.prompt(1, "main", "visible draft"))
+    session_channel.submit(
+      channel,
+      protocol.prompt(1, "main", "visible draft"),
+      now: 0,
+    )
   let model =
     tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
@@ -1152,7 +1162,11 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
       events(1, "A"),
     )
   let #(sent, disposition) =
-    session_channel.submit(ready, protocol.prompt(900, "main", "sent once"))
+    session_channel.submit(
+      ready,
+      protocol.prompt(900, "main", "sent once"),
+      now: 0,
+    )
   assert disposition == session_channel.Sent("prompt", 4)
   let #(closed, updates) = session_channel.retire(sent, "attachment replaced")
   assert updates == [session_channel.UnknownOutcome("prompt", 4)]
@@ -1397,10 +1411,7 @@ fn older_page_events(row: entry.Entry, before: Int) {
 
 pub fn history_page_cannot_replace_live_metadata_or_catch_up_cursor_test() {
   let channel =
-    session_channel.replay_with_clock(
-      snapshot.Expected("A", "epoch", "incarnation"),
-      fn() { 0 },
-    )
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
   let #(ready, _) = read_channel(channel, events(1, "A"))
   let row =
     entry.MessageEntry(
@@ -1421,12 +1432,14 @@ pub fn history_page_cannot_replace_live_metadata_or_catch_up_cursor_test() {
     session_channel.replay_issued(
       completed,
       attempt.Request(8, "catch_up", attempt.Cursor(10)),
+      now: 0,
     )
     as "reconciliation resumes from the live cut, not the page's newer sample"
   let assert Error(_) =
     session_channel.replay_issued(
       completed,
       attempt.Request(8, "catch_up", attempt.Cursor(11)),
+      now: 0,
     )
     as "a historical response cannot advance the live cursor"
   let #(failed, updates) = read_channel(ready, older_page_events(row, 5))
@@ -1485,12 +1498,14 @@ pub fn prompt_waits_behind_automatic_read_without_losing_draft_test() {
     session_channel.replay_issued(
       ready,
       attempt.Request(4, "worktree_diff", attempt.NoSelection),
+      now: 0,
     )
     as "automatic worktree inspection owns the single read lane"
   let #(waiting, disposition) =
     session_channel.submit(
       reading,
       protocol.prompt(900, "main", "first prompt"),
+      now: 0,
     )
   assert disposition == session_channel.Waiting("prompt")
   assert session_channel.has_unsent(waiting)
@@ -1505,6 +1520,7 @@ pub fn prompt_waits_behind_automatic_read_without_losing_draft_test() {
           #("message", json.String("fixture observation unavailable")),
         ]),
       ),
+      now: 0,
     )
   assert list.any(updates, fn(update) {
     update == session_channel.Submission(session_channel.Sent("prompt", 5))
@@ -1595,6 +1611,7 @@ pub fn valid_large_history_page_retains_suffix_without_closing_channel_test() {
     session_channel.replay_issued(
       received,
       attempt.Request(request, "snapshot_next", attempt.Credit("1:4", index)),
+      now: 0,
     )
     as "the retained suffix still grants transfer credit"
   let #(completed, updates) =
@@ -1610,6 +1627,7 @@ pub fn valid_large_history_page_retains_suffix_without_closing_channel_test() {
           #("more_after", json.Null),
         ]),
       ),
+      now: 0,
     )
   let assert [session_channel.HistoryPage(window, 10, 0)] = updates
     as "local retention is not a protocol failure"
@@ -1631,7 +1649,7 @@ fn split_history_data(data, collected) {
 }
 
 pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
-  let #(busy, remaining) = waiting_capture(fn() { 0 })
+  let #(busy, remaining) = waiting_capture()
   let base =
     tui.new_model_with_clock(
       connection.new_inbox(),

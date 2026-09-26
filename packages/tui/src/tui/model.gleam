@@ -511,9 +511,11 @@ pub type StrandWorkspace {
 ///
 /// `tui.update` takes them through `runtime.stamp` before it steps, and
 /// every reducer reads them here instead of calling a clock. A step
-/// therefore reads no presentation or wall clock, every reducer in one
-/// step sees the same instant, and a test that calls `tui.step` directly
-/// chooses the time by setting this field.
+/// therefore reads no clock, every reducer in one step sees the same
+/// instant, and a test that calls `tui.step` directly chooses the time by
+/// setting this field. There are two monotonic readings because they time
+/// different things: a test may fix the presentation clock to pin frames
+/// while a live socket in the same test still needs real deadlines.
 @internal
 pub type Stamp {
   Stamp(
@@ -521,6 +523,9 @@ pub type Stamp {
     /// activity elapsed time, generation throughput, the cache outlook and
     /// the jobs and activity-poll ages.
     now_ms: Int,
+    /// The host's monotonic clock, which times the session lanes' request
+    /// deadlines and idle refresh.
+    transport_ms: Int,
     /// The host's wall clock, which only a session creation key reads.
     wall_ms: Int,
   )

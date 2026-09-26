@@ -18,6 +18,11 @@
 //// Any sub-list of a schedule is therefore another valid schedule, and a
 //// failure shrinks by deleting events.
 ////
+//// Time is part of the schedule. The lane reads no clock: every transition
+//// is passed the oracle's `now`, which starts at zero and moves only on a
+//// generated tick, so the refresh and deadline rules are checked against
+//// the same readings the lane was given.
+////
 //// The rules checked after every step, by tag:
 ////
 //// - I1: a correlated command is written only while no request awaits its
@@ -945,7 +950,11 @@ fn submit_prompt(
   let label = "intent-" <> int.to_string(oracle.counter)
   let oracle = Oracle(..oracle, counter: oracle.counter + 1)
   let #(channel, disposition) =
-    session_channel.submit(channel, protocol.prompt(1, "main", label))
+    session_channel.submit(
+      channel,
+      protocol.prompt(1, "main", label),
+      now: oracle.now,
+    )
   use #(channel, after) <- result.try(settle(
     oracle,
     oracle,
@@ -978,7 +987,11 @@ fn submit_read(
   name: String,
 ) -> Result(#(Channel, Oracle), String) {
   let #(channel, disposition) =
-    session_channel.submit(channel, session_wire.command(1, name, []))
+    session_channel.submit(
+      channel,
+      session_wire.command(1, name, []),
+      now: oracle.now,
+    )
   let event = SubmitRead(name)
   use #(channel, after) <- result.try(settle(
     oracle,
@@ -1072,7 +1085,9 @@ fn look_up(
 ) -> Result(#(Channel, Oracle), String) {
   let ids = ["esc-" <> int.to_string(oracle.counter)]
   let oracle = Oracle(..oracle, counter: oracle.counter + 1)
-  let #(channel, admitted) = case session_channel.lookup(channel, ids) {
+  let #(channel, admitted) = case
+    session_channel.lookup(channel, ids, now: oracle.now)
+  {
     Ok(channel) -> #(channel, Ok(Nil))
     Error(reason) -> #(channel, Error(reason))
   }
@@ -1102,7 +1117,9 @@ fn read_history(
   channel: Channel,
   oracle: Oracle,
 ) -> Result(#(Channel, Oracle), String) {
-  let #(channel, admitted) = case session_channel.history(channel, 0, 50) {
+  let #(channel, admitted) = case
+    session_channel.history(channel, 0, 50, now: oracle.now)
+  {
     Ok(channel) -> #(channel, Ok(Nil))
     Error(reason) -> #(channel, Error(reason))
   }
@@ -1256,7 +1273,8 @@ fn feed(
   frame: connection.Message,
   expect: Expect,
 ) -> Result(#(Channel, Oracle), String) {
-  let #(channel, updates) = session_channel.receive(channel, frame)
+  let #(channel, updates) =
+    session_channel.receive(channel, frame, now: fed.now)
   settle(before, fed, event, channel, updates, expect)
 }
 
@@ -1465,10 +1483,9 @@ fn tick(
   ms: Int,
 ) -> Result(#(Channel, Oracle), String) {
   let now = oracle.now + ms
-  set_clock(now)
   let before = Oracle(..oracle, now:)
   let fed = Oracle(..before, cause: session_channel.Refreshed)
-  let #(channel, updates) = session_channel.tick(channel)
+  let #(channel, updates) = session_channel.tick(channel, now:)
   use #(channel, after) <- result.try(settle(
     before,
     fed,
@@ -1823,29 +1840,13 @@ fn string_list_field(
 
 // --- running and shrinking --------------------------------------------------
 
-// The channel reads its clock through a closure fixed at construction, so a
-// clock the test can advance has to live outside the channel value. The
-// process dictionary of the test process is the smallest such place, and
-// the whole run happens in that one process.
-const clock_key = "session_channel_property_clock"
-
-fn set_clock(now: Int) -> Nil {
-  let _ = put(clock_key, now)
-  Nil
-}
-
-fn read_clock() -> Int {
-  get(clock_key)
-}
-
 // Runs one schedule from a fresh lane and ends it with a retirement, so that
 // every obligation a closing lane owes is checked on every run. The step
 // numbers count from one; the final retirement is step `length + 1`.
 fn run(role: Role, events: List(Event)) -> Result(Set(String), Failure) {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
-  set_clock(0)
-  let channel = session_channel.start_with_clock(socket, expected(), read_clock)
+  let channel = session_channel.start(socket, expected(), now: 0)
   let oracle =
     Oracle(
       socket:,
@@ -2035,9 +2036,3 @@ pub fn session_channel_keeps_its_invariants_over_generated_schedules_test() {
 
 @external(erlang, "effects_test_ffi", "socket_on")
 fn socket_on(owner: Subject(Dynamic)) -> connection.Connection
-
-@external(erlang, "erlang", "put")
-fn put(key: String, value: Int) -> Dynamic
-
-@external(erlang, "erlang", "get")
-fn get(key: String) -> Int

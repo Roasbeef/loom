@@ -258,12 +258,11 @@ pub fn attached() -> tui_model.Model {
   let channel =
     session_channel.replay_traced(
       snapshot.Expected("A", "epoch", "incarnation"),
-      fn() { 0 },
       trace,
     )
   let #(ready, _) =
     list.fold(transfer(1, "1:1", "recent", 10), #(channel, []), fn(acc, frame) {
-      let #(channel, updates) = session_channel.receive(acc.0, frame)
+      let #(channel, updates) = session_channel.receive(acc.0, frame, now: 0)
       #(channel, list.append(acc.1, updates))
     })
   tui_model.Model(

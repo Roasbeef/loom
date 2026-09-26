@@ -485,7 +485,10 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
 }
 
 fn drain_candidate(model: Model) -> Model {
-  interaction.advance_candidate(model, attachment.poll(model.candidate))
+  interaction.advance_candidate(
+    model,
+    attachment.poll(model.candidate, now: model.stamp.transport_ms),
+  )
 }
 
 fn drain_session_switch(model: Model) -> Model {

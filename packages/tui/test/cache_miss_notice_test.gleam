@@ -535,7 +535,7 @@ fn adopt_session(model: tui_model.Model, session: String) -> tui_model.Model {
       transfer_for(session, 1, "1:1", 10),
       #(channel, []),
       fn(acc, incoming) {
-        let #(next, changes) = session_channel.receive(acc.0, incoming)
+        let #(next, changes) = session_channel.receive(acc.0, incoming, now: 0)
         #(next, list.append(acc.1, changes))
       },
     )

@@ -253,7 +253,7 @@ pub fn the_observation_takes_the_read_lane_and_its_reply_settles_it_test() {
   let assert Some(channel) = model.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
-    session_channel.submit(channel, protocol.advisor_pending(999))
+    session_channel.submit(channel, protocol.advisor_pending(999), now: 0)
   let assert session_channel.Sent("advisor_pending", id) = disposition
     as "the queue read is issued once with the lane's request id"
   assert session_channel.mutation_available(channel)
@@ -265,7 +265,7 @@ pub fn the_observation_takes_the_read_lane_and_its_reply_settles_it_test() {
       #("board", wire([json.String("no down step")], 1)),
     ])
   let #(channel, updates) =
-    session_channel.receive(channel, pushed.reply(id, "snapshot", body))
+    session_channel.receive(channel, pushed.reply(id, "snapshot", body), now: 0)
   let assert [session_channel.Auxiliary(protocol.AdvisorPendingSnapshot(board))] =
     updates
     as "a successful read never becomes an answer to no command"

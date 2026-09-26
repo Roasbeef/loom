@@ -225,7 +225,8 @@ pub fn tick_channel(model: Model) -> Model {
   case model.channel {
     None -> model
     Some(channel) -> {
-      let #(channel, updates) = session_channel.tick(channel)
+      let #(channel, updates) =
+        session_channel.tick(channel, now: model.stamp.transport_ms)
       list.fold(
         updates,
         Model(..model, channel: Some(channel)),
@@ -478,7 +479,9 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
       case model.channel {
         None -> tui_model.append_error(model, "conversation is not attached")
         Some(channel) ->
-          case session_channel.lookup(channel, ids) {
+          case
+            session_channel.lookup(channel, ids, now: model.stamp.transport_ms)
+          {
             Ok(channel) -> Model(..model, channel: Some(channel))
             Error(reason) ->
               tui_model.append_error(
@@ -1098,7 +1101,12 @@ fn handle_connection_message(
 ) -> Model {
   case model.channel {
     Some(channel) -> {
-      let #(channel, updates) = session_channel.receive(channel, incoming)
+      let #(channel, updates) =
+        session_channel.receive(
+          channel,
+          incoming,
+          now: model.stamp.transport_ms,
+        )
       list.fold(
         updates,
         Model(..model, channel: Some(channel)),
@@ -2500,7 +2508,14 @@ pub fn cancel_pending(model: Model, reason: String) -> Model {
 pub fn service_history(model: Model) -> Model {
   case history_view.range(model.scrollback), model.channel {
     Some(#(after, before)), Some(channel) -> {
-      case session_channel.history(channel, after, before) {
+      case
+        session_channel.history(
+          channel,
+          after,
+          before,
+          now: model.stamp.transport_ms,
+        )
+      {
         Error(_) -> model
         Ok(channel) ->
           Model(

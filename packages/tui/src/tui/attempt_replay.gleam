@@ -16,6 +16,14 @@ import tui/session_wire
 import tui/snapshot
 import tui/snapshot_view
 
+// A replay lane's time. A recording carries no clock the lane could honour:
+// its frames arrive as fast as the file is read, so a deadline measured from
+// real time would expire or not by accident. Holding the lane at the zero it
+// started from keeps every deadline in the future and the idle refresh
+// unreached, which is what makes a replay issue exactly the requests the
+// recording says were issued and no refresh of its own.
+const replay_now = 0
+
 type Credit {
   NotIssued
   Issued
@@ -192,6 +200,7 @@ fn advance_lane(lane: Lane, event) {
       use channel <- result.map(session_channel.replay_issued(
         lane.channel,
         request,
+        now: replay_now,
       ))
       #(
         Lane(..lane, channel: channel, credit: Issued, last_request: request.id),
@@ -228,7 +237,8 @@ fn advance_lane(lane: Lane, event) {
 // The credit this leaves the lane with is the caller's decision, because
 // only the caller knows whether the frame named a request.
 fn received(lane: Lane, message, credit: Credit) {
-  let #(channel, updates) = session_channel.receive(lane.channel, message)
+  let #(channel, updates) =
+    session_channel.receive(lane.channel, message, now: replay_now)
   let captured =
     list.fold(updates, lane.captured, fn(previous, update) {
       case update {

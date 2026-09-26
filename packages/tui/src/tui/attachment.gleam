@@ -225,19 +225,24 @@ pub fn with_trace(status: Status, trace: Option(attempt.Trace)) -> Status {
 /// The poll still receives from the attempt's own mailboxes, but it performs
 /// nothing it decided: the worker's acknowledgement and a failed attempt's
 /// cleanup come back as outputs, oldest first, for the caller to queue. The
-/// provisional channel's writes stay on it until `take_outputs`.
+/// provisional channel's writes stay on it until `take_outputs`. `now` is
+/// the transport reading the candidate channel's deadlines are measured
+/// against, as for the adopted channel.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let #(pending, outcome, outputs) = attachment.poll(pending)
+/// // let #(pending, outcome, outputs) = attachment.poll(pending, now:)
 /// ```
-pub fn poll(status: Status) -> #(Status, Option(Outcome), List(Out)) {
+pub fn poll(
+  status: Status,
+  now now: Int,
+) -> #(Status, Option(Outcome), List(Out)) {
   case status {
     Idle -> #(Idle, None, [])
     Opening(run, prepared, frames, candidate) -> {
-      let candidate = prepare(prepared, candidate, run.trace)
-      case progress(candidate, frames) {
+      let candidate = prepare(prepared, candidate, run.trace, now)
+      case progress(candidate, frames, now) {
         Error(reason) ->
           failed(Opening(run, prepared, frames, candidate), reason)
         Ok(advanced) ->
@@ -276,16 +281,18 @@ pub fn select(
 
 /// Applies already selected traffic before draining any later mailbox message.
 ///
-/// Like `poll`, it returns what it decided rather than performing it.
+/// Like `poll`, it returns what it decided rather than performing it, and
+/// it measures the candidate channel's deadlines against `now`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let #(pending, outcome, outputs) = attachment.accept(pending, event)
+/// // let #(pending, outcome, outputs) = attachment.accept(pending, event, now:)
 /// ```
 pub fn accept(
   status: Status,
   event: Event,
+  now now: Int,
 ) -> #(Status, Option(Outcome), List(Out)) {
   case status, event {
     Opening(run, _, _, _), Settled(source, outcome) if source == run.outcomes ->
@@ -299,7 +306,7 @@ pub fn accept(
         prepared,
         frames,
         Some(Candidate(
-          channel.start_recorded(socket, expected, run.trace),
+          channel.start_recorded(socket, expected, run.trace, now:),
           ack,
           None,
           workspace,
@@ -324,7 +331,7 @@ pub fn accept(
       Frame(source, message)
       if frames == source
     -> {
-      let #(next, updates) = channel.receive(candidate.channel, message)
+      let #(next, updates) = channel.receive(candidate.channel, message, now:)
       case apply_updates(Candidate(..candidate, channel: next), updates) {
         Ok(advanced) ->
           settle(Opening(run, prepared, frames, Some(advanced)))
@@ -363,7 +370,7 @@ fn acknowledging(
   }
 }
 
-fn prepare(prepared, candidate, trace) {
+fn prepare(prepared, candidate, trace, now: Int) {
   case candidate {
     Some(_) -> candidate
     None ->
@@ -371,7 +378,7 @@ fn prepare(prepared, candidate, trace) {
         Error(Nil) -> None
         Ok(Prepared(socket, expected, workspace, name, key, acknowledgement)) ->
           Some(Candidate(
-            channel.start_recorded(socket, expected, trace),
+            channel.start_recorded(socket, expected, trace, now:),
             acknowledgement,
             None,
             workspace,
@@ -382,32 +389,33 @@ fn prepare(prepared, candidate, trace) {
   }
 }
 
-fn progress(candidate, frames) {
+fn progress(candidate, frames, now: Int) {
   case candidate {
     None -> Ok(None)
     Some(Candidate(captured: Some(_), ..)) -> Ok(candidate)
     Some(candidate) -> {
-      use candidate <- result.try(drain(candidate, frames, 40))
-      let #(next, updates) = channel.tick(candidate.channel)
+      use candidate <- result.try(drain(candidate, frames, 40, now))
+      let #(next, updates) = channel.tick(candidate.channel, now:)
       apply_updates(Candidate(..candidate, channel: next), updates)
       |> result.map(Some)
     }
   }
 }
 
-fn drain(candidate: Candidate, frames, remaining) {
+fn drain(candidate: Candidate, frames, remaining, now: Int) {
   case remaining <= 0, candidate.captured {
     True, _ | _, Some(_) -> Ok(candidate)
     False, None ->
       case process.receive(frames, 0) {
         Error(Nil) -> Ok(candidate)
         Ok(message) -> {
-          let #(next, updates) = channel.receive(candidate.channel, message)
+          let #(next, updates) =
+            channel.receive(candidate.channel, message, now:)
           use candidate <- result.try(apply_updates(
             Candidate(..candidate, channel: next),
             updates,
           ))
-          drain(candidate, frames, remaining - 1)
+          drain(candidate, frames, remaining - 1, now)
         }
       }
   }

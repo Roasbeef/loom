@@ -64,6 +64,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
     session_channel.start(
       socket,
       snapshot.Expected("A", "epoch", "incarnation"),
+      now: 0,
     )
     |> session_channel.take_outputs
   let model =
@@ -209,7 +210,7 @@ pub fn a_closed_lane_queues_nothing_after_its_close_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
   let closed =
-    session_channel.start(socket, snapshot.Expected("s", "e", "i"))
+    session_channel.start(socket, snapshot.Expected("s", "e", "i"), now: 0)
     |> session_channel.close
   let #(retired, updates) = session_channel.retire(closed, "replaced")
   let #(_, outputs) = session_channel.take_outputs(retired)

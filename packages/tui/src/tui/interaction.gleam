@@ -166,7 +166,10 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
 /// ```
 @internal
 pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
-  advance_candidate(model, attachment.accept(model.candidate, event))
+  advance_candidate(
+    model,
+    attachment.accept(model.candidate, event, now: model.stamp.transport_ms),
+  )
 }
 
 /// Applies one advance of the provisional attachment: a poll's or an

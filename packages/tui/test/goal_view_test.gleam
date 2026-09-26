@@ -1018,7 +1018,7 @@ pub fn the_read_takes_the_read_lane_and_a_mutation_answers_with_a_board_test() {
     as "fixture has a synchronized channel"
 
   let #(channel, disposition) =
-    session_channel.submit(channel, protocol.goal_get(999))
+    session_channel.submit(channel, protocol.goal_get(999), now: 0)
   let assert session_channel.Sent("goal_get", read_id) = disposition
     as "the goal read is issued once with the lane's request id"
   assert session_channel.mutation_available(channel)
@@ -1028,6 +1028,7 @@ pub fn the_read_takes_the_read_lane_and_a_mutation_answers_with_a_board_test() {
     session_channel.receive(
       channel,
       pushed.reply(read_id, "snapshot", snapshot()),
+      now: 0,
     )
   let assert [
     session_channel.Auxiliary(protocol.GoalSnapshot(goal_view.Pinned(
@@ -1042,6 +1043,7 @@ pub fn the_read_takes_the_read_lane_and_a_mutation_answers_with_a_board_test() {
     session_channel.submit(
       channel,
       protocol.goal_set(1000, "get the branch green", 400_000),
+      now: 0,
     )
   let assert session_channel.Sent("goal_set", set_id) = disposition
     as "a goal mutation is issued on the mutation lane"
@@ -1049,6 +1051,7 @@ pub fn the_read_takes_the_read_lane_and_a_mutation_answers_with_a_board_test() {
     session_channel.receive(
       channel,
       pushed.reply(set_id, "snapshot", snapshot()),
+      now: 0,
     )
   let assert [session_channel.Auxiliary(protocol.GoalSnapshot(_))] = updates
     as "a mutation is answered with the fresh board, not a bare committed"
@@ -1071,7 +1074,7 @@ fn snapshot() -> json.JsonValue {
 fn outstanding(frame: String, name: String) -> #(tui_model.Model, Int) {
   let model = pushed.attached()
   let assert Some(channel) = model.channel as "fixture has a channel"
-  let #(channel, disposition) = session_channel.submit(channel, frame)
+  let #(channel, disposition) = session_channel.submit(channel, frame, now: 0)
   let assert session_channel.Sent(sent, id) = disposition
     as "the goal command is issued once"
   assert sent == name

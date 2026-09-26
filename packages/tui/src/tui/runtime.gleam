@@ -58,8 +58,8 @@ pub fn stamp(model: Model) -> Model {
   Model(..model, stamp: read_stamp(model.monotonic_time_ms))
 }
 
-/// Reads the presentation clock it is given and the host's wall clock,
-/// once each.
+/// Reads the presentation clock it is given and the host's transport and
+/// wall clocks, once each.
 ///
 /// ## Examples
 ///
@@ -67,7 +67,11 @@ pub fn stamp(model: Model) -> Model {
 /// let stamp = runtime.read_stamp(host_bootstrap.monotonic_time_ms)
 /// ```
 pub fn read_stamp(presentation: fn() -> Int) -> Stamp {
-  Stamp(now_ms: presentation(), wall_ms: host_bootstrap.system_time_ms())
+  Stamp(
+    now_ms: presentation(),
+    transport_ms: host_bootstrap.monotonic_time_ms(),
+    wall_ms: host_bootstrap.system_time_ms(),
+  )
 }
 
 /// Names this terminal for a session creation key: the OS process and the

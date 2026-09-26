@@ -7,7 +7,8 @@
 //// The clocks are read once per event, by `runtime.stamp` inside
 //// `tui.update`, and the step itself reads none of them. The last group of
 //// tests pins that split: the step works with a presentation clock that
-//// panics when called, and `update` calls it exactly once per event.
+//// panics when called, `update` calls it exactly once per event, and the
+//// session lane's refresh and deadline follow the reading it is passed.
 
 import etui/backend
 import gleam/erlang/process
@@ -19,9 +20,12 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/pacing
+import tui/session_channel
+import tui/snapshot
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
+import tui_test/pushed
 
 fn initial(now: Int) -> tui_model.Model {
   tui.new_model_with_clock(
@@ -310,4 +314,54 @@ fn count(calls: process.Subject(Nil), seen: Int) -> Int {
     Ok(Nil) -> count(calls, seen + 1)
     Error(Nil) -> seen
   }
+}
+
+pub fn a_lane_refreshes_and_expires_at_the_time_it_is_passed_test() {
+  let lane =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, _) =
+    list.fold(
+      pushed.transfer(1, "1:1", "recent", 10),
+      #(lane, []),
+      fn(acc, frame) { session_channel.receive(acc.0, frame, now: 1000) },
+    )
+  assert !session_channel.in_flight(ready)
+    as "premise: the initial capture completed at 1000"
+
+  // The idle refresh is due 250 ms after the capture that completed at the
+  // reading the lane was handed, and not a millisecond before.
+  let #(early, _) = session_channel.tick(ready, now: 1249)
+  assert !session_channel.in_flight(early)
+  let #(refreshing, _) = session_channel.tick(ready, now: 1250)
+  assert session_channel.in_flight(refreshing)
+
+  // The catch-up issued at 1250 has thirty seconds, measured from 1250.
+  let #(waiting, updates) = session_channel.tick(refreshing, now: 31_249)
+  assert updates == []
+  assert session_channel.in_flight(waiting)
+  let #(expired, updates) = session_channel.tick(refreshing, now: 31_250)
+  assert updates == [session_channel.Failed("conversation request timed out")]
+  assert !session_channel.in_flight(expired)
+}
+
+pub fn a_step_ticks_the_lane_at_the_stamped_transport_reading_test() {
+  // The attached fixture's lane captured at zero, so its refresh is due at
+  // 250 on the transport reading, whatever the presentation clock says.
+  let model = pushed.attached()
+  let at = fn(model: tui_model.Model, transport: Int) {
+    tui_model.Model(
+      ..model,
+      stamp: tui_model.Stamp(..model.stamp, transport_ms: transport),
+    )
+  }
+  let assert Some(lane) = model.channel
+  assert !session_channel.in_flight(lane)
+
+  let #(early, _) = tui.step(backend.Tick, at(model, 249))
+  let assert Some(lane) = early.channel
+  assert !session_channel.in_flight(lane)
+  let #(due, _) = tui.step(backend.Tick, at(model, 250))
+  let assert Some(lane) = due.channel
+  assert session_channel.in_flight(lane)
+    as "the step's lane tick runs at the stamp, not at a clock it reads"
 }

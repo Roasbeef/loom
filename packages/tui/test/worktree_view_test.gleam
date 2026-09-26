@@ -124,7 +124,7 @@ pub fn ready_push_before_pending_reply_survives_channel_correlation_test() {
   let assert Some(channel) = model.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
-    session_channel.submit(channel, protocol.worktree_diff(999))
+    session_channel.submit(channel, protocol.worktree_diff(999), now: 0)
   let assert session_channel.Sent("worktree_diff", id) = disposition
     as "channel allocates the actual request id"
   assert id != 999
@@ -135,6 +135,7 @@ pub fn ready_push_before_pending_reply_survives_channel_correlation_test() {
         #("event", json.String("snapshot")),
         #("body", body(raw_ready(id))),
       ]),
+      now: 0,
     )
   let assert [
     session_channel.Auxiliary(protocol.WorktreeSnapshot(worktree_view.Ready(
@@ -157,6 +158,7 @@ pub fn ready_push_before_pending_reply_survives_channel_correlation_test() {
           ]),
         ),
       ),
+      now: 0,
     )
   let assert [session_channel.Auxiliary(protocol.WorktreeSnapshot(pending))] =
     updates
@@ -508,7 +510,7 @@ pub fn live_jobs_is_a_read_and_its_correlated_roster_keeps_channel_ready_test() 
   let assert Some(channel) = model.channel
     as "fixture has a synchronized channel"
   let #(channel, disposition) =
-    session_channel.submit(channel, protocol.live_jobs(999, "main"))
+    session_channel.submit(channel, protocol.live_jobs(999, "main"), now: 0)
   let assert session_channel.Sent("live_jobs", id) = disposition
     as "the roster is issued once with the lane's request id"
   let body =
@@ -526,14 +528,14 @@ pub fn live_jobs_is_a_read_and_its_correlated_roster_keeps_channel_ready_test() 
       ),
     ])
   let #(channel, updates) =
-    session_channel.receive(channel, pushed.reply(id, "snapshot", body))
+    session_channel.receive(channel, pushed.reply(id, "snapshot", body), now: 0)
   let assert [session_channel.Auxiliary(protocol.LiveJobsSnapshot(board))] =
     updates
     as "a successful read never becomes an unknown mutation or closes the lane"
   assert board.total == 0
   assert session_channel.ready_for_read(channel)
   let #(_, disposition) =
-    session_channel.submit(channel, protocol.notes(1000, "main"))
+    session_channel.submit(channel, protocol.notes(1000, "main"), now: 0)
   let assert session_channel.Sent("notes", _) = disposition
     as "the next read can use the same channel"
 }
@@ -543,7 +545,7 @@ fn apply_incoming(
   message: connection.Message,
 ) -> tui_model.Model {
   let assert Some(channel) = model.channel as "fixture has a channel"
-  let #(channel, updates) = session_channel.receive(channel, message)
+  let #(channel, updates) = session_channel.receive(channel, message, now: 0)
   list.fold(
     updates,
     tui_model.Model(..model, channel: Some(channel)),
@@ -553,7 +555,7 @@ fn apply_incoming(
 
 fn issue(model: tui_model.Model, command: String) -> #(tui_model.Model, Int) {
   let assert Some(channel) = model.channel as "fixture has a channel"
-  let #(channel, disposition) = session_channel.submit(channel, command)
+  let #(channel, disposition) = session_channel.submit(channel, command, now: 0)
   let assert session_channel.Sent(_, request_id) = disposition
     as "fixture command is sent immediately"
   #(

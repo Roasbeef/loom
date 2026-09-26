@@ -188,7 +188,7 @@ fn provenance(update) {
 
 fn feed(channel, messages) {
   list.fold(messages, #(channel, []), fn(acc, message) {
-    let #(channel, updates) = session_channel.receive(acc.0, message)
+    let #(channel, updates) = session_channel.receive(acc.0, message, now: 0)
     #(channel, list.append(acc.1, updates))
   })
 }
@@ -202,7 +202,6 @@ fn synchronized() {
   let channel =
     session_channel.replay_traced(
       snapshot.Expected("A", "epoch", "incarnation"),
-      fn() { 0 },
       trace,
     )
   let #(ready, updates) = feed(channel, transfer(1, "1:1", "recent", 10))
@@ -230,7 +229,8 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
   let assert [attempt.Request(2, "snapshot_next", _), ..] = requests(issued)
     as "the initial capture spends its credits and leaves the lane ready"
 
-  let #(notified, updates) = session_channel.receive(ready, notice("main", 10))
+  let #(notified, updates) =
+    session_channel.receive(ready, notice("main", 10), now: 0)
   assert updates == [session_channel.Noticed(10)]
     as "a notice is reported as received and changes nothing visible"
   assert session_channel.in_flight(notified)
@@ -250,7 +250,8 @@ pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
   let #(ready, issued) = synchronized()
   let _ = requests(issued)
 
-  let #(same, updates) = session_channel.receive(ready, notice("main", 9))
+  let #(same, updates) =
+    session_channel.receive(ready, notice("main", 9), now: 0)
   assert updates == [session_channel.Noticed(9)]
     as "the arrival is reported even though the sequence is already held"
   assert !session_channel.in_flight(same)
@@ -260,11 +261,8 @@ pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
   // Before the first cut there is no cursor to catch up from, and the initial
   // capture is already fetching everything the notice could describe.
   let fresh =
-    session_channel.replay_with_clock(
-      snapshot.Expected("A", "epoch", "incarnation"),
-      fn() { 0 },
-    )
-  let #(_, updates) = session_channel.receive(fresh, notice("main", 3))
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(_, updates) = session_channel.receive(fresh, notice("main", 3), now: 0)
   assert updates == [session_channel.Noticed(3)]
 }
 
@@ -273,11 +271,12 @@ pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
   let _ = requests(issued)
 
   // One notice opens a transfer, and a second lands in the middle of it.
-  let #(capturing, _) = session_channel.receive(ready, notice("main", 10))
+  let #(capturing, _) =
+    session_channel.receive(ready, notice("main", 10), now: 0)
   let #(capturing, updates) = feed(capturing, [begin(4, "1:2", "catch_up", 12)])
   assert updates == []
   let #(deferred, updates) =
-    session_channel.receive(capturing, notice("main", 12))
+    session_channel.receive(capturing, notice("main", 12), now: 0)
   assert updates == [session_channel.Noticed(12)]
     as "a notice mid-transfer defers rather than failing"
   let _ = requests(issued)
@@ -299,7 +298,7 @@ pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
   let #(settled, _) = feed(spent, transfer(7, "1:3", "catch_up", 12))
   assert !session_channel.in_flight(settled)
   let _ = requests(issued)
-  let #(_, updates) = session_channel.tick(settled)
+  let #(_, updates) = session_channel.tick(settled, now: 0)
   assert updates == []
   assert requests(issued) == []
     as "a spent notice does not keep issuing catch-ups of its own"
@@ -319,7 +318,7 @@ pub fn a_stream_delta_is_read_in_every_open_phase_without_moving_it_test() {
   ]
 
   let #(after_ready, updates) =
-    session_channel.receive(ready, delta("main", "op-1", "hel"))
+    session_channel.receive(ready, delta("main", "op-1", "hel"), now: 0)
   assert updates == streamed
   assert !session_channel.in_flight(after_ready)
     as "a fragment in Ready starts no request"
@@ -327,14 +326,15 @@ pub fn a_stream_delta_is_read_in_every_open_phase_without_moving_it_test() {
 
   // The three in-flight phases: awaiting a begin, mid-transfer, and awaiting
   // an auxiliary reply. A fragment leaves each of them exactly where it was.
-  let #(awaiting, _) = session_channel.receive(after_ready, notice("main", 10))
+  let #(awaiting, _) =
+    session_channel.receive(after_ready, notice("main", 10), now: 0)
   let #(awaiting, updates) =
-    session_channel.receive(awaiting, delta("main", "op-1", "hel"))
+    session_channel.receive(awaiting, delta("main", "op-1", "hel"), now: 0)
   assert updates == streamed
 
   let #(receiving, _) = feed(awaiting, [begin(4, "1:2", "catch_up", 12)])
   let #(receiving, updates) =
-    session_channel.receive(receiving, delta("main", "op-1", "hel"))
+    session_channel.receive(receiving, delta("main", "op-1", "hel"), now: 0)
   assert updates == streamed
 
   // The transfer continues from the credit it held, which is the proof the
@@ -344,9 +344,10 @@ pub fn a_stream_delta_is_read_in_every_open_phase_without_moving_it_test() {
   let assert [session_channel.Captured(..)] = updates
     as "a fragment mid-transfer neither spends credit nor fails the lane"
 
-  let #(replying, _) = session_channel.submit(captured, protocol.models(1))
+  let #(replying, _) =
+    session_channel.submit(captured, protocol.models(1), now: 0)
   let #(replying, updates) =
-    session_channel.receive(replying, delta("main", "op-1", "hel"))
+    session_channel.receive(replying, delta("main", "op-1", "hel"), now: 0)
   assert updates == streamed
   assert session_channel.in_flight(replying)
     as "a fragment while a command is outstanding leaves it outstanding"
@@ -367,6 +368,7 @@ pub fn a_pushed_error_is_an_auxiliary_refusal_and_leaves_the_socket_open_test() 
           ]),
         ),
       ]),
+      now: 0,
     )
   assert updates
     == [
@@ -378,7 +380,8 @@ pub fn a_pushed_error_is_an_auxiliary_refusal_and_leaves_the_socket_open_test() 
 
   // Still usable: the lane is ready and takes the next notice as it would
   // have before the refusal, which a closed lane could not do.
-  let #(capturing, _) = session_channel.receive(open, notice("main", 10))
+  let #(capturing, _) =
+    session_channel.receive(open, notice("main", 10), now: 0)
   assert session_channel.in_flight(capturing)
     as "a failed drain on the daemon does not retire this terminal's lane"
 }
@@ -393,6 +396,7 @@ pub fn an_unknown_push_is_dropped_and_a_mismatched_reply_still_fails_test() {
         #("event", json.String("weather")),
         #("body", json.Object([])),
       ]),
+      now: 0,
     )
   assert updates == [] as "a daemon ahead of this terminal cannot close it"
   assert !session_channel.in_flight(same)
@@ -407,6 +411,7 @@ pub fn an_unknown_push_is_dropped_and_a_mismatched_reply_still_fails_test() {
         "mutation_outcome",
         json.Object([#("status", json.String("admitted"))]),
       ),
+      now: 0,
     )
   let assert [session_channel.Failed(_)] = updates
     as "an unsolicited correlated reply still closes the socket"
@@ -415,7 +420,11 @@ pub fn an_unknown_push_is_dropped_and_a_mismatched_reply_still_fails_test() {
 pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
   let #(ready, _) = synchronized()
   let #(sent, disposition) =
-    session_channel.submit(ready, protocol.prompt(1, "main", "next turn"))
+    session_channel.submit(
+      ready,
+      protocol.prompt(1, "main", "next turn"),
+      now: 0,
+    )
   let assert session_channel.Sent("prompt", id) = disposition
     as "an operator lane admits a prompt once its cut exists"
 
@@ -427,6 +436,7 @@ pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
         "mutation_outcome",
         json.Object([#("status", json.String("queued"))]),
       ),
+      now: 0,
     )
   assert updates == [session_channel.Acknowledged("prompt", "queued")]
 }
@@ -621,7 +631,7 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
   // In Ready: handed straight to the terminal, moving neither phase nor
   // credit — the same contract a fragment has.
   let #(after_ready, updates) =
-    session_channel.receive(ready, usage_push("main", reported))
+    session_channel.receive(ready, usage_push("main", reported), now: 0)
   assert updates == [auxiliary]
     as "the lane forwards the row instead of dropping it"
   assert !session_channel.in_flight(after_ready)
@@ -630,10 +640,11 @@ pub fn a_pushed_usage_row_reaches_the_terminal_in_every_phase_test() {
 
   // Mid-transfer: applied without touching the phase, and the transfer
   // continues from the credit it held.
-  let #(capturing, _) = session_channel.receive(after_ready, notice("main", 10))
+  let #(capturing, _) =
+    session_channel.receive(after_ready, notice("main", 10), now: 0)
   let #(receiving, _) = feed(capturing, [begin(4, "1:2", "catch_up", 12)])
   let #(receiving, updates) =
-    session_channel.receive(receiving, usage_push("main", reported))
+    session_channel.receive(receiving, usage_push("main", reported), now: 0)
   assert updates == [auxiliary]
   let #(_, updates) = feed(receiving, [piece(5, "1:2"), end(6, "1:2", 12)])
   let assert [session_channel.Captured(..)] = updates
@@ -916,7 +927,11 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
   let model = attached()
   let assert Some(channel) = model.channel as "the fixture lane is attached"
   let #(sent, disposition) =
-    session_channel.submit(channel, protocol.prompt(1, "main", "next turn"))
+    session_channel.submit(
+      channel,
+      protocol.prompt(1, "main", "next turn"),
+      now: 0,
+    )
   let assert session_channel.Sent("prompt", id) = disposition
     as "an operator lane admits a prompt once its cut exists"
 
