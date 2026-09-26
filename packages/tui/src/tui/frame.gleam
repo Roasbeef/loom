@@ -8,11 +8,17 @@
 //// a replayed frame are compared on identical terms rather than on two
 //// renderings that drifted.
 ////
-//// Style is deliberately dropped. A text dump exists to answer "what does
-//// this say and where", and colour would either bloat the answer with
-//// escape sequences or reduce to an arbitrary encoding nobody reads. The
-//// buffer is still the authority for colour; a test that cares about a
-//// style asks the cell directly.
+//// Style is dropped from the plain form. A text dump exists to answer
+//// "what does this say and where", and colour would either bloat the
+//// answer with escape sequences or reduce to an arbitrary encoding nobody
+//// reads. The buffer is still the authority for colour; a test that cares
+//// about a style asks the cell directly.
+////
+//// A person at a terminal is the one reader who does want the colour, so
+//// `buffer_to_styled` keeps it for them. It prints into the scrollback
+//// rather than painting a screen: no row carries a cursor move and each
+//// closes its own style, so the frame lands above the shell prompt the way
+//// any other command's output does.
 
 import etui/buffer.{type Buffer}
 import etui/geometry.{Position}
@@ -121,4 +127,23 @@ fn trim_trailing_spaces(text: String) -> String {
     True -> trim_trailing_spaces(string.drop_end(text, 1))
     False -> text
   }
+}
+
+/// The whole frame as newline-joined lines that keep their colour.
+///
+/// The styled counterpart of `buffer_to_text`, for a terminal rather than a
+/// golden file. Each line resets whatever style it opened and trailing
+/// unstyled blanks are dropped, so the output is safe to print above a
+/// prompt, page with `less -R`, or cut line by line.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let screen = geometry.rect_new(0, 0, 4, 2)
+/// assert frame.buffer_to_styled(buffer.buffer_new(screen)) == "\n"
+/// ```
+pub fn buffer_to_styled(buffer: Buffer) -> String {
+  buffer
+  |> buffer.to_ansi_lines
+  |> string.join("\n")
 }
