@@ -242,6 +242,23 @@ pub type StdinEnd {
   KeepStdinOpen
 }
 
+/// Whether a strand left idle while this job runs is woken by the idle
+/// heartbeat.
+///
+/// Every job wakes its owner when it ends; this is only about the wait
+/// before that. A passive watcher — a mail watcher, a log tail, a server —
+/// is expected to run for as long as it runs, and a wake per interval
+/// spends a model turn to learn nothing. So quiet is the default and a
+/// caller asks for the heartbeat on the long build it wants to be
+/// reminded of.
+pub type IdleWake {
+  /// Wake the idle owner every heartbeat interval while the job runs.
+  WakeWhenIdle
+
+  /// Stay silent until the job ends.
+  QuietUntilDone
+}
+
 /// Why a request produced no answer.
 ///
 /// The host's own vocabulary (`client/jobs.Refusal`) restated here, so
@@ -304,14 +321,16 @@ pub type Jobs {
     /// The command and the wall it asked for in milliseconds, `None` for
     /// the host's default. Returns once the clearance has answered, so a
     /// policy refusal reaches the caller rather than the next poll. The
-    /// owner is sent a completion notice when the job ends.
-    start: fn(Ctx, String, Option(Int)) -> Result(Started, Refusal),
+    /// owner is sent a completion notice when the job ends, and is woken
+    /// while idle only if the `IdleWake` asks for it.
+    start: fn(Ctx, String, Option(Int), IdleWake) -> Result(Started, Refusal),
     /// The command, started for a caller that will wait on it: the job
     /// gets the host's default wall met with the session policy, its
     /// stdin is closed as a foreground call's is, and nobody is notified
     /// of its end until the caller `release`s it. This is what an
-    /// auto-mode `bash` call runs through.
-    attend: fn(Ctx, String) -> Result(Started, Refusal),
+    /// auto-mode `bash` call runs through. The `IdleWake` applies once the
+    /// caller releases it.
+    attend: fn(Ctx, String, IdleWake) -> Result(Started, Refusal),
     /// Gives up waiting on a job `attend` started. `Released` means the
     /// owner will be told when it ends; `AlreadyEnded` means it ended
     /// first and the caller renders it. Never both, never neither.
@@ -352,8 +371,8 @@ pub type Jobs {
 pub fn unavailable() -> Jobs {
   let absent = Unavailable(reason: "this session runs no background jobs")
   Jobs(
-    start: fn(_ctx, _command, _wall) { Error(absent) },
-    attend: fn(_ctx, _command) { Error(NoJobsPlane) },
+    start: fn(_ctx, _command, _wall, _wake) { Error(absent) },
+    attend: fn(_ctx, _command, _wake) { Error(NoJobsPlane) },
     release: fn(_ctx, _id) { Error(absent) },
     poll: fn(_ctx, _id, _wait, _cursors) { Error(absent) },
     list: fn(_ctx) { Error(absent) },

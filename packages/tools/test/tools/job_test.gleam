@@ -33,8 +33,8 @@ const job_id = "01JQ8XZ"
 // What the door was asked, so a test can prove an argument reached it as
 // the tool read it rather than only that a call happened.
 type Asked {
-  StartAsked(command: String, wall_ms: option.Option(Int))
-  AttendAsked(command: String)
+  StartAsked(command: String, wall_ms: option.Option(Int), wake: job.IdleWake)
+  AttendAsked(command: String, wake: job.IdleWake)
   ReleaseAsked(id: String)
   PollAsked(id: String, wait_ms: Int, cursors: job.Cursors)
   ListAsked
@@ -58,12 +58,12 @@ fn drain(asked: Subject(Asked)) -> List(Asked) {
 // test proving the clamp does not have to write 30_001 to see it move.
 fn answering(asked: Subject(Asked), state: job.JobState) -> job.Jobs {
   job.Jobs(
-    start: fn(_ctx, command, wall_ms) {
-      process.send(asked, StartAsked(command, wall_ms))
+    start: fn(_ctx, command, wall_ms, wake) {
+      process.send(asked, StartAsked(command, wall_ms, wake))
       Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
     },
-    attend: fn(_ctx, command) {
-      process.send(asked, AttendAsked(command))
+    attend: fn(_ctx, command, wake) {
+      process.send(asked, AttendAsked(command, wake))
       Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
     },
     release: fn(_ctx, id) {
@@ -112,8 +112,8 @@ fn polled(state: job.JobState) -> job.Polled {
 // A door whose every operation refuses, for the in-band-refusal tests.
 fn refusing(refusal: job.Refusal) -> job.Jobs {
   job.Jobs(
-    start: fn(_ctx, _command, _wall) { Error(refusal) },
-    attend: fn(_ctx, _command) { Error(refusal) },
+    start: fn(_ctx, _command, _wall, _wake) { Error(refusal) },
+    attend: fn(_ctx, _command, _wake) { Error(refusal) },
     release: fn(_ctx, _id) { Error(refusal) },
     poll: fn(_ctx, _id, _wait, _cursors) { Error(refusal) },
     list: fn(_ctx) { Error(refusal) },
@@ -608,7 +608,7 @@ pub fn an_auto_call_that_finishes_answers_as_a_foreground_call_test() {
   assert string.contains(first_text(outcome), "exit code 3")
   assert detail(outcome, "exit_code") == json.Int(3)
   let calls = drain(asked)
-  assert list.first(calls) == Ok(AttendAsked("make check"))
+  assert list.first(calls) == Ok(AttendAsked("make check", job.QuietUntilDone))
   assert !list.contains(calls, ReleaseAsked(job_id))
 }
 
@@ -630,7 +630,7 @@ pub fn an_auto_call_that_outlives_its_window_returns_the_handle_test() {
   assert detail(outcome, "backgrounded") == json.Bool(True)
   assert string.contains(first_text(outcome), "building")
   let calls = drain(asked)
-  assert list.first(calls) == Ok(AttendAsked("make check"))
+  assert list.first(calls) == Ok(AttendAsked("make check", job.QuietUntilDone))
   assert list.last(calls) == Ok(ReleaseAsked(job_id))
 }
 
@@ -643,7 +643,7 @@ pub fn an_auto_call_that_loses_the_release_race_renders_the_end_test() {
   let jobs =
     job.Jobs(
       ..job.unavailable(),
-      attend: fn(_ctx, _command) {
+      attend: fn(_ctx, _command, _wake) {
         Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
       },
       release: fn(_ctx, _id) {
@@ -707,7 +707,7 @@ pub fn a_background_call_starts_a_job_and_returns_its_handle_test() {
   assert detail(outcome, "job_id") == json.String(job_id)
   assert detail(outcome, "mode") == json.String("background")
   assert detail(outcome, "wall_ms") == json.Int(600_000)
-  assert drain(asked) == [StartAsked("make check", None)]
+  assert drain(asked) == [StartAsked("make check", None, job.QuietUntilDone)]
 }
 
 pub fn a_background_timeout_reaches_the_door_unclamped_test() {
@@ -724,7 +724,49 @@ pub fn a_background_timeout_reaches_the_door_unclamped_test() {
         #("timeout_ms", json.Int(3_600_000)),
       ]),
     )
-  assert drain(asked) == [StartAsked("./serve", Some(3_600_000))]
+  assert drain(asked)
+    == [StartAsked("./serve", Some(3_600_000), job.QuietUntilDone)]
+}
+
+pub fn a_heartbeat_is_asked_for_by_name_test() {
+  // Quiet is the default above; this is the one spelling that turns the
+  // idle heartbeat on, in both modes that can leave a job running.
+  let asked = recorder()
+  let _outcome =
+    bash_run(
+      answering(asked, job.Running),
+      json.Object([
+        #("command", json.String("make soak")),
+        #("mode", json.String("background")),
+        #("heartbeat", json.Bool(True)),
+      ]),
+    )
+  assert drain(asked) == [StartAsked("make soak", None, job.WakeWhenIdle)]
+  let _outcome =
+    bash_run(
+      answering(asked, finished),
+      json.Object([
+        #("command", json.String("make soak")),
+        #("heartbeat", json.Bool(True)),
+      ]),
+    )
+  assert list.first(drain(asked))
+    == Ok(AttendAsked("make soak", job.WakeWhenIdle))
+}
+
+pub fn a_heartbeat_that_is_not_a_boolean_is_refused_test() {
+  let asked = recorder()
+  let outcome =
+    bash_run(
+      answering(asked, job.Running),
+      json.Object([
+        #("command", json.String("make")),
+        #("mode", json.String("background")),
+        #("heartbeat", json.String("yes")),
+      ]),
+    )
+  assert outcome.is_error
+  assert drain(asked) == []
 }
 
 pub fn a_background_refusal_is_in_band_in_the_doors_own_words_test() {
