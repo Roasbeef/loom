@@ -36,15 +36,15 @@
 ////
 //// A streak is the run of the model's most recent turns that made this
 //// call and nothing else, every copy of it failing. It ends at the first
-//// turn that did anything besides the call, at a turn in which it
-//// succeeded, and at any user message. A turn that edited a file beside
-//// re-running a failing test changed the world the test runs in, so it
-//// is progress rather than a loop; it is also a batch the planner could
-//// not end, since a run ends only when every call in its batch says so.
-//// And at any user message: an operator's reply, a steer or an advisor's nudge is new
-//// input, and new input is a reason to let the model try again. The
-//// guard's own refusals are failed results, so they extend the streak
-//// that caused them, which is what lets the third step be reached.
+//// turn that did anything besides the call, and at a turn in which it
+//// succeeded. A turn that edited a file beside re-running a failing test
+//// changed the world the test runs in, so it is progress rather than a
+//// loop; it is also a batch the planner could not end, since a run ends
+//// only when every call in its batch says so. It ends at any user message
+//// too: an operator's reply, a steer or an advisor's nudge is new input,
+//// and new input is a reason to let the model try again. The guard's own
+//// refusals are failed results, so they extend the streak that caused
+//// them, which is what lets the third step be reached.
 
 import core/json
 import core/message.{
