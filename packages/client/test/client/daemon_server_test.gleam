@@ -9,6 +9,7 @@ import client/daemon/manager
 import client/daemon/peer_cli
 import client/daemon/root
 import client/daemon/server
+import client/gateway_test
 import client/peer_mail
 import core/clock
 import core/ids
@@ -24,6 +25,7 @@ import gleam/result
 import gleam/string
 import host/bootstrap
 import mist
+import runtime/api
 import simplifile
 import storage/access
 import storage/catalogue
@@ -1275,5 +1277,188 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
       peer_cli.exchange(address, owner, ready.epoch, command)
     let assert json.Array(incoming) = field(field(reply, "result"), "incoming")
     assert list.length(incoming) == 800
+  })
+}
+
+pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
+  let #(idle, _) = ids.mint_session(ids.generator(clock.fixed(0), 801))
+  let #(stuck, _) = ids.mint_session(ids.generator(clock.fixed(0), 802))
+  let idle_id = ids.session_id_to_string(idle)
+  let stuck_id = ids.session_id_to_string(stuck)
+  let runtime = gateway_test.reserved_fixture(idle).runtime
+
+  // The first resident answers from a real runtime through the same handler
+  // its Agency actor runs. The second never answers, which is what the
+  // request deadline is for.
+  let endpoint = fn(instance) {
+    case instance == idle_id {
+      True ->
+        Some(
+          peer_mail.Endpoint(instance, fn(command) {
+            peer_mail.handle(runtime, clock.fixed(0), command)
+          }),
+        )
+      False ->
+        Some(
+          peer_mail.Endpoint(instance, fn(_) {
+            process.sleep_forever()
+            Error("never answers")
+          }),
+        )
+    }
+  }
+  fixture_with_peers(limits.defaults, endpoint, fn(_, ready, port, credential) {
+    list.each([#(idle_id, 801), #(stuck_id, 802)], fn(pair) {
+      let assert Ok(created) =
+        manager.create(
+          ready.registry,
+          manager.Creation(pair.0, ready.state_root, pair.0, ""),
+          directory: ready.sessions_directory,
+          generator: ids.generator(clock.fixed(0), pair.1),
+        )
+        as "the session is created"
+      assert created.registration.id == pair.0
+      let assert poll.Answered(_) =
+        poll.until(within: 2000, every: 1, attempt: fn() {
+          case manager.resolve(ready.registry, pair.0) {
+            Ok(instance) -> poll.Done(instance)
+            Error(_) -> poll.Retry
+          }
+        })
+        as "the session becomes resident"
+    })
+    let #(never, _) = ids.mint_session(ids.generator(clock.fixed(0), 803))
+    let never_id = ids.session_id_to_string(never)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let request = fn(sessions, epoch) {
+      json.Object([
+        #("sessions", json.Array(list.map(sessions, json.String))),
+        #("epoch", json.String(epoch)),
+      ])
+    }
+
+    // The idle resident answers, the silent one becomes unknown once the
+    // deadline passes, and an identity with no registration is left out.
+    let reply =
+      send(
+        socket,
+        1,
+        "sessions.activity",
+        request([idle_id, never_id, stuck_id], ready.epoch),
+        within_ms: 5000,
+      )
+    assert field(reply, "event") == json.String("sessions.activity")
+    let assert json.Array([first, second]) =
+      field(field(reply, "body"), "activity")
+      as "one row per resident, in request order"
+    assert field(first, "session_id") == json.String(idle_id)
+    assert field(first, "state") == json.String("idle")
+    assert field(first, "model") == json.String("loom-1")
+    assert second
+      == json.Object([
+        #("session_id", json.String(stuck_id)),
+        #("state", json.String("unknown")),
+      ])
+
+    // Once stopped, the silent session is saved and is not asked at all.
+    // A pending approval on the other moves it to needs_you.
+    let stopped =
+      send(
+        socket,
+        2,
+        "sessions.stop",
+        json.Object([
+          #("session_id", json.String(stuck_id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(stopped, "event") == json.String("sessions.stop")
+    let assert poll.Answered(Nil) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, stuck_id) {
+          Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "the silent session becomes saved"
+    let assert Ok(Nil) = api.raise_escalation(runtime, "esc-1", json.Object([]))
+      as "an approval is pending"
+    let reply =
+      send(
+        socket,
+        3,
+        "sessions.activity",
+        request([stuck_id, idle_id], ready.epoch),
+        within_ms: 1000,
+      )
+    let assert json.Array([only]) = field(field(reply, "body"), "activity")
+      as "the saved session is absent"
+    assert field(only, "session_id") == json.String(idle_id)
+    assert field(only, "state") == json.String("needs_you")
+    assert field(only, "approvals") == json.Int(1)
+
+    // Malformed identity lists are refused whole, before authorization.
+    let many =
+      list.index_map(list.repeat(Nil, 25), fn(_, seed) {
+        let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), seed))
+        ids.session_id_to_string(id)
+      })
+    list.each(
+      [
+        request(many, ready.epoch),
+        request([idle_id, idle_id], ready.epoch),
+        request([], ready.epoch),
+      ],
+      fn(body) {
+        let refused =
+          send(socket, 4, "sessions.activity", body, within_ms: 1000)
+        assert field(field(refused, "body"), "code")
+          == json.String("bad_request")
+      },
+    )
+    let stale =
+      send(
+        socket,
+        5,
+        "sessions.activity",
+        request([idle_id], "previous-epoch"),
+        within_ms: 1000,
+      )
+    assert field(field(stale, "body"), "code") == json.String("stale_epoch")
+    let _ = ffi_ws.tcp_close(socket)
+
+    // A member may read the catalogue but may not ask sessions what they
+    // are doing, even one it operates.
+    let member = "activity-member-token"
+    let assert Ok(digest) =
+      member
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    let assert Ok(principal) =
+      access.create_member(store, "activity-member", "Member", digest)
+      as "member exists"
+    assert access.grant(store, principal.id, idle_id, access.Operator)
+      == Ok(Nil)
+    let #(socket, _) = connect(port, member, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let denied =
+      send(
+        socket,
+        1,
+        "sessions.activity",
+        request([idle_id], ready.epoch),
+        within_ms: 1000,
+      )
+    assert field(field(denied, "body"), "code") == json.String("forbidden")
+    let _ = ffi_ws.tcp_close(socket)
+    assert catalogue.close(store) == Ok(Nil)
   })
 }

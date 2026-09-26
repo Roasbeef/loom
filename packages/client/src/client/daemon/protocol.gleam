@@ -21,6 +21,11 @@ pub const version = 2
 /// A complete control frame or fragmented message may contain at most 64 KiB.
 pub const max_bytes = 65_536
 
+/// The most sessions one `sessions.activity` request may name. Each answer
+/// is bounded to 2,400 encoded bytes, so this many fit the 60,000-byte reply
+/// budget without a page cursor.
+pub const activity_limit = 24
+
 /// Decoded requests carry no client-supplied principal or database path.
 pub type Command {
   /// Reads both directions of one resident strand's operator peer grants.
@@ -105,6 +110,16 @@ pub type Command {
 
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
+
+  /// Asks the named resident sessions what they are doing
+  /// (`protocol-change/050`). Owner-only; saved sessions are never opened.
+  SessionActivity(
+    /// Between one and `activity_limit` distinct canonical identities, in
+    /// the order the reply keeps.
+    sessions: List(String),
+    /// Current daemon epoch, checked before any session is resolved.
+    epoch: String,
+  )
 
   /// Lists the owner's archived metadata without admitting execution.
   ListArchivedSessions(after: String, revision: Option(Int))
@@ -336,6 +351,11 @@ fn decode_fields(
       use revision <- result.try(optional_revision(fields))
       Ok(ListSessions(after, revision))
     }
+    "sessions.activity" -> {
+      use sessions <- result.try(activity_sessions(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      SessionActivity(sessions, epoch)
+    }
     "sessions.archived" -> {
       use after <- result.try(cursor(fields))
       use revision <- result.try(optional_revision(fields))
@@ -474,6 +494,34 @@ fn cursor(fields: List(#(String, JsonValue))) -> Result(String, String) {
     Ok(json.String("")) -> Ok("")
     Ok(json.String(text)) -> canonical_id(text)
     Ok(_) | Error(Nil) -> Error("expected a session cursor")
+  }
+}
+
+// The identity list is refused whole rather than truncated or deduplicated:
+// a reply shorter than the request must mean "these sessions are not
+// resident", never "the server dropped some of what you asked".
+fn activity_sessions(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(String), String) {
+  use values <- result.try(case list.key_find(fields, "sessions") {
+    Ok(json.Array([_, ..] as values)) -> Ok(values)
+    Ok(_) | Error(Nil) -> Error("expected a nonempty sessions array")
+  })
+  use Nil <- result.try(case list.drop(values, activity_limit) {
+    [] -> Ok(Nil)
+    [_, ..] -> Error("sessions names more than 24 identities")
+  })
+  use sessions <- result.try(
+    list.try_map(values, fn(value) {
+      case value {
+        json.String(text) -> canonical_id(text)
+        _ -> Error("expected a canonical session id")
+      }
+    }),
+  )
+  case list.length(list.unique(sessions)) == list.length(sessions) {
+    True -> Ok(sessions)
+    False -> Error("sessions repeats an identity")
   }
 }
 

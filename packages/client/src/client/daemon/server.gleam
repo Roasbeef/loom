@@ -30,6 +30,7 @@ import mist
 import storage/access
 import storage/catalogue
 import storage/domain
+import weft
 
 /// Capabilities owned by the daemon, not supplied over the wire.
 pub type Config(instance) {
@@ -438,6 +439,7 @@ fn control(
             | protocol.SendPeer(..)
             | protocol.Status
             | protocol.ListSessions(..)
+            | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
             | protocol.ArchiveSession(..)
             | protocol.RestoreSession(..)
@@ -475,6 +477,7 @@ fn control_use(command: protocol.Command) {
     protocol.Status
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
+    | protocol.SessionActivity(..)
     | protocol.ListArchivedSessions(..)
     | protocol.GetSession(_)
     | protocol.WorkspaceDefault(_)
@@ -770,6 +773,23 @@ fn dispatch(
       use bounded <- result.try(page_prefix(views, 60_000, []))
       Ok(#("sessions.list", page_body(bounded, current)))
     }
+    protocol.SessionActivity(sessions, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      let rows = activity(config, state.registry, sessions)
+      let body = json.Object([#("activity", json.Array(rows))])
+
+      // Each row is bounded, so the reply fits by construction; the check
+      // keeps that arithmetic honest if a bound above ever moves.
+      use frame <- result.try(
+        protocol.event(Some(reply_to), "sessions.activity", body)
+        |> result.replace_error("metadata_too_large"),
+      )
+      case string.byte_size(frame) <= 60_000 {
+        True -> Ok(#("sessions.activity", body))
+        False -> Error("metadata_too_large")
+      }
+    }
     protocol.GetSession(id) -> {
       use _ <- result.try(authorized(state, digest, id))
       manager.get(state.registry, id)
@@ -1053,6 +1073,80 @@ fn error_code(error) {
 fn plain(status, text) {
   response.new(status)
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
+}
+
+/// How long `sessions.activity` waits for the slowest resident to answer.
+const activity_deadline_ms = 2000
+
+/// The encoded size of one `sessions.activity` row, identity included. The
+/// resident bounds its own part to `peer_mail.overview_row_bytes`; this is
+/// that bound plus room for the session identity, and 24 rows of this size
+/// fit the 60,000-byte reply.
+const activity_row_bytes = 2400
+
+// One row per resident identity, in request order. Resolution goes through
+// the registry, which answers only for running slots, so a saved session is
+// never opened and its database is never read: it is simply left out, which
+// is what "inactive" means to the client.
+//
+// The residents are then asked concurrently, from this control socket's
+// process and not the registry's, so a slow Agency holds up neither the
+// registry nor the other residents. The run's deadline kills and joins any
+// worker still waiting, and every outcome other than an answer becomes an
+// `unknown` row rather than a failed reply.
+fn activity(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  sessions: List(String),
+) -> List(JsonValue) {
+  let residents =
+    list.filter_map(sessions, fn(id) {
+      manager.resolve(registry, id)
+      |> result.map(fn(resident) { #(id, config.peer_endpoint(resident)) })
+    })
+
+  // A resident without a peer service is still resident, so it is reported
+  // as unknown rather than left out as if it were saved.
+  let outcomes =
+    residents
+    |> list.map(fn(pair) {
+      case pair.1 {
+        Some(peer_mail.Endpoint(call:, ..)) -> fn() { call(peer_mail.Overview) }
+        None -> fn() { Error("peer_service_unavailable") }
+      }
+    })
+    |> weft.new
+    |> weft.deadline(activity_deadline_ms)
+    |> weft.start
+  list.map2(residents, outcomes, fn(pair, outcome) {
+    let #(id, _) = pair
+    case outcome {
+      weft.Completed(value: json.Object(fields), ..) ->
+        bounded_row(json.Object([#("session_id", json.String(id)), ..fields]))
+        |> result.lazy_unwrap(fn() { unknown_row(id) })
+      weft.Completed(..)
+      | weft.Failed(..)
+      | weft.Crashed(..)
+      | weft.Abandoned(..)
+      | weft.NeverStarted(..)
+      | weft.DrainProofLost(..)
+      | weft.CancellationUnconfirmed(..) -> unknown_row(id)
+    }
+  })
+}
+
+fn bounded_row(row: JsonValue) -> Result(JsonValue, Nil) {
+  case string.byte_size(json.to_string(row)) <= activity_row_bytes {
+    True -> Ok(row)
+    False -> Error(Nil)
+  }
+}
+
+fn unknown_row(id: String) -> JsonValue {
+  json.Object([
+    #("session_id", json.String(id)),
+    #("state", json.String("unknown")),
+  ])
 }
 
 fn peer_endpoint(
