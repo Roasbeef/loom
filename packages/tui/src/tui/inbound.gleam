@@ -226,7 +226,8 @@ pub fn tick_channel(model: Model) -> Model {
   case model.channel {
     None -> model
     Some(channel) -> {
-      let #(channel, updates) = session_channel.tick(channel)
+      let #(channel, updates) =
+        session_channel.tick(channel, now: model.stamp.transport_ms)
       list.fold(
         updates,
         Model(..model, channel: Some(channel)),
@@ -479,7 +480,9 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
       case model.channel {
         None -> tui_model.append_error(model, "conversation is not attached")
         Some(channel) ->
-          case session_channel.lookup(channel, ids) {
+          case
+            session_channel.lookup(channel, ids, now: model.stamp.transport_ms)
+          {
             Ok(channel) -> Model(..model, channel: Some(channel))
             Error(reason) ->
               tui_model.append_error(
@@ -708,7 +711,7 @@ fn render_cut(
     agent_summary: agents.summary_rows(rows),
     reviewer_rows: reviewers,
     agent_rows: rows,
-    strip: agent_strip.observe(model.strip, view, model.monotonic_time_ms()),
+    strip: agent_strip.observe(model.strip, view, model.stamp.now_ms),
     agent_messages: captured_messages,
     advisor_history:,
     todo_boards: boards,
@@ -1119,7 +1122,12 @@ fn handle_connection_message(
 ) -> Model {
   case model.channel {
     Some(channel) -> {
-      let #(channel, updates) = session_channel.receive(channel, incoming)
+      let #(channel, updates) =
+        session_channel.receive(
+          channel,
+          incoming,
+          now: model.stamp.transport_ms,
+        )
       list.fold(
         updates,
         Model(..model, channel: Some(channel)),
@@ -2087,7 +2095,7 @@ fn receive_usage_observation(
               seq:,
               operation:,
               usage: settled,
-              at: model.monotonic_time_ms(),
+              at: model.stamp.now_ms,
             ),
           )
       },
@@ -2189,10 +2197,7 @@ fn settle_usage(
     True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
 
     True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
-      transcript_lines.output_rate(
-        settled.output,
-        model.monotonic_time_ms() - started,
-      ),
+      transcript_lines.output_rate(settled.output, model.stamp.now_ms - started),
       None,
     )
     True, Attached(..), None | True, Preview, None -> #(
@@ -2212,7 +2217,7 @@ fn settle_usage(
 // file far faster than the session originally ran, so the gaps it would
 // measure are not the gaps that happened; it observes nothing.
 fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
-  watch_cache_at(model, strand, settled, model.monotonic_time_ms())
+  watch_cache_at(model, strand, settled, model.stamp.now_ms)
 }
 
 fn watch_cache_at(
@@ -2432,7 +2437,7 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 /// the first fragment as a fallback — and whichever comes first wins.
 fn generation_clock(model: Model, strand: String) -> Option(Int) {
   case model.generation_started_ms, strand == model.active_strand {
-    None, True -> Some(model.monotonic_time_ms())
+    None, True -> Some(model.stamp.now_ms)
     started, _ -> started
   }
 }
@@ -2560,7 +2565,14 @@ pub fn cancel_pending(model: Model, reason: String) -> Model {
 pub fn service_history(model: Model) -> Model {
   case history_view.range(model.scrollback), model.channel {
     Some(#(after, before)), Some(channel) -> {
-      case session_channel.history(channel, after, before) {
+      case
+        session_channel.history(
+          channel,
+          after,
+          before,
+          now: model.stamp.transport_ms,
+        )
+      {
         Error(_) -> model
         Ok(channel) ->
           Model(
@@ -3197,8 +3209,7 @@ pub fn tick_strip(model: Model) -> Model {
   case layout.strip_height(model) > 0 {
     False -> model
     True -> {
-      let #(strip, repaint) =
-        agent_strip.tick(model.strip, model.monotonic_time_ms())
+      let #(strip, repaint) = agent_strip.tick(model.strip, model.stamp.now_ms)
       case repaint {
         agent_strip.Changed ->
           tui_model.invalidate_frame(Model(..model, strip:))

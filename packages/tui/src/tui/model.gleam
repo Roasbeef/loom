@@ -520,6 +520,30 @@ pub type StrandWorkspace {
   )
 }
 
+/// The clock readings one event is applied at.
+///
+/// `tui.update` takes them through `runtime.stamp` before it steps, and
+/// every reducer reads them here instead of calling a clock. A step
+/// therefore reads no clock, every reducer in one step sees the same
+/// instant, and a test that calls `tui.step` directly chooses the time by
+/// setting this field. There are two monotonic readings because they time
+/// different things: a test may fix the presentation clock to pin frames
+/// while a live socket in the same test still needs real deadlines.
+@internal
+pub type Stamp {
+  Stamp(
+    /// The presentation clock, `Model.monotonic_time_ms`: frame pacing,
+    /// activity elapsed time, generation throughput, the cache outlook and
+    /// the jobs and activity-poll ages.
+    now_ms: Int,
+    /// The host's monotonic clock, which times the session lanes' request
+    /// deadlines and idle refresh.
+    transport_ms: Int,
+    /// The host's wall clock, which only a session creation key reads.
+    wall_ms: Int,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -837,8 +861,22 @@ pub type Model {
     frame_cache: Option(FrameCache),
     frame_debt: pacing.FrameDebt,
     /// The presentation clock, shared by pacing, activity, and throughput.
-    /// Scripts inject this clock without changing transport deadlines.
+    /// Scripts inject this clock without changing transport deadlines. Only
+    /// `runtime.stamp` calls it, once per event, before the step.
     monotonic_time_ms: fn() -> Int,
+    /// The transport clock the session channel's deadlines and refresh are
+    /// measured on. It is the host's monotonic clock in a live terminal and
+    /// a test driver holding a live socket; a fixture that puts a socketless
+    /// replay lane on a model freezes it, so the lane's timers cannot depend
+    /// on where the host's arbitrary monotonic origin happens to sit. Only
+    /// `runtime.stamp` calls it.
+    transport_time_ms: fn() -> Int,
+    /// The clock readings the current event is applied at. Every reducer
+    /// that needs the time reads it here, so a step reads no clock.
+    stamp: Stamp,
+    /// This terminal's identity in a session creation key: the OS process
+    /// and the BEAM process that created the model, read once at creation.
+    terminal: String,
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,

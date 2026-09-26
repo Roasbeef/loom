@@ -109,7 +109,8 @@ pub fn a_late_credited_idle_cut_preserves_a_new_request_test() {
       pushed.transfer(1, "1:1", "recent", 10),
       #(channel, first),
       fn(acc, incoming) {
-        let #(channel, changes) = session_channel.receive(acc.0, incoming)
+        let #(channel, changes) =
+          session_channel.receive(acc.0, incoming, now: 0)
         #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )
@@ -198,7 +199,8 @@ fn captured(model, metadata) {
       pushed.transfer_with_metadata(1, "1:1", "recent", 10, metadata),
       #(channel, model),
       fn(acc, incoming) {
-        let #(channel, changes) = session_channel.receive(acc.0, incoming)
+        let #(channel, changes) =
+          session_channel.receive(acc.0, incoming, now: 0)
         #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )

@@ -172,7 +172,7 @@ pub fn a_resumed_lane_requires_a_cursor_it_asked_for_test() {
     connection.Incoming(
       "{\"v\":2,\"reply_to\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"resume\",\"next_seq\":40}}",
     )
-  let #(closed, updates) = session_channel.receive(lane, marker)
+  let #(closed, updates) = session_channel.receive(lane, marker, now: 0)
   let assert [session_channel.Failed(_)] = updates
   assert session_channel.in_flight(closed) == False
 }

@@ -147,7 +147,8 @@ pub fn discard_own_turn(model: Model) -> Model {
 pub fn send_frame(model: Model, frame: String) -> Model {
   case model.channel {
     Some(channel) -> {
-      let #(channel, disposition) = session_channel.submit(channel, frame)
+      let #(channel, disposition) =
+        session_channel.submit(channel, frame, now: model.stamp.transport_ms)
       apply_submission(Model(..model, channel: Some(channel)), disposition)
     }
     None -> send_preview_frame(model, frame)

@@ -398,6 +398,10 @@ pub fn new_model(
 /// interval in the same era. A test may advance it between events without
 /// sleeping. Network and bootstrap deadlines retain their real clocks.
 ///
+/// The model starts stamped with one reading of each clock, so a reducer
+/// driven before the first event, or a test that calls `step` directly,
+/// runs at the time the model was created.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -411,6 +415,8 @@ pub fn new_model_with_clock(
   monotonic_time_ms: fn() -> Int,
 ) -> Model {
   let strands = interaction.demo_strands()
+  let stamp =
+    runtime.read_stamp(monotonic_time_ms, host_bootstrap.monotonic_time_ms)
   Model(
     quit: False,
     width: 80,
@@ -565,7 +571,10 @@ pub fn new_model_with_clock(
     frame_cache: None,
     frame_debt: pacing.FrameSettled,
     monotonic_time_ms:,
-    last_frame_ms: monotonic_time_ms(),
+    transport_time_ms: host_bootstrap.monotonic_time_ms,
+    stamp:,
+    terminal: runtime.terminal_identity(),
+    last_frame_ms: stamp.now_ms,
     activity_revision: 0,
     quiet_for_ms: pacing.quiet_after_ms,
     recorder: None,
@@ -1311,7 +1320,8 @@ fn attach_daemon(
 
 /// Applies one terminal event and performs the effects it decided on.
 ///
-/// This is the function etui and the virtual backend call: `step`, then
+/// This is the function etui and the virtual backend call: `runtime.stamp`,
+/// which reads the clocks once for this event, then `step`, then
 /// `runtime.perform` on what the step returned. Everything that inspects a
 /// transition without acting on it calls `step` instead.
 ///
@@ -1322,7 +1332,7 @@ fn attach_daemon(
 /// ```
 @internal
 pub fn update(event: backend.InputEvent, model: Model) -> Model {
-  let #(model, effects) = step(event, model)
+  let #(model, effects) = step(event, runtime.stamp(model))
   runtime.perform(effects)
   model
 }
@@ -1334,8 +1344,13 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// it, and this collects them, together with whatever was still queued
 /// from a caller that drove a reducer outside the loop. The returned model
 /// has empty queues. Phase 1 of issue #530 covers the fire-and-forget
-/// effects; mailbox drains, job starts, clock reads, file reads and
-/// recording appends still happen during the step.
+/// effects; mailbox drains, job starts, file reads and recording appends
+/// still happen during the step.
+///
+/// The step reads no clock. It applies the event at `model.stamp`, which
+/// `update` writes before calling it; a test calling `step` directly gets
+/// whatever stamp the model already carries, the creation-time reading
+/// for a fresh model, and sets the field to choose another time.
 ///
 /// ## Examples
 ///

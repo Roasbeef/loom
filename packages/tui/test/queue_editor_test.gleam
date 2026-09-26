@@ -95,7 +95,7 @@ fn receive(
   incoming: connection.Message,
 ) -> tui_model.Model {
   let assert Some(channel) = model.channel as "the fixture has an attached lane"
-  let #(channel, updates) = session_channel.receive(channel, incoming)
+  let #(channel, updates) = session_channel.receive(channel, incoming, now: 0)
   list.fold(
     updates,
     tui_model.Model(..model, channel: Some(channel)),
@@ -111,11 +111,14 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
   let events = process.new_subject()
   let trace =
     attempt.Trace(attempt.Id(1), fn(event) { process.send(events, event) })
-  let channel = session_channel.replay_traced(expected, fn() { 0 }, trace)
+  let channel = session_channel.replay_traced(expected, trace)
   let initial =
     tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
       peer: tui_model.Replaying,
+      // A socketless replay lane keeps the frozen transport clock its
+      // timers were written against, whatever the host's monotonic origin.
+      transport_time_ms: fn() { 0 },
       channel: Some(channel),
       input: textarea.state_from_string("ordinary composer draft"),
       attachments: [composer.Attachment("retained pasted context", 10)],

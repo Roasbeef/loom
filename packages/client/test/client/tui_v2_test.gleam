@@ -12,6 +12,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
+import host/bootstrap as host_bootstrap
 import support/tui_driver
 import tui
 import tui/attempt
@@ -47,7 +48,12 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
         }
       })
     let channel =
-      session_channel.start_recorded(socket, target.expected, Some(trace))
+      session_channel.start_recorded(
+        socket,
+        target.expected,
+        Some(trace),
+        now: host_bootstrap.monotonic_time_ms(),
+      )
     // Driven outside the terminal loop, so the subscribe the channel queued
     // is performed here rather than by the next step.
     let model =
@@ -60,7 +66,8 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
       |> runtime.flush
     let #(initial, ending) = hold_snapshot_end(model, 32)
     let initial =
-      inbound.accept_connection_message(initial, ending) |> runtime.flush
+      inbound.accept_connection_message(runtime.stamp(initial), ending)
+      |> runtime.flush
     let assert Some(channel) = initial.channel
       as "initial cut keeps its channel"
     assert session_channel.mutation_available(channel)
@@ -69,7 +76,8 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     // response. No synthetic snapshot or direct runtime submission is used.
     let assert poll.Answered(channel) =
       poll.until(within: 1000, every: 5, attempt: fn() {
-        let #(next, _) = session_channel.tick(channel)
+        let #(next, _) =
+          session_channel.tick(channel, now: host_bootstrap.monotonic_time_ms())
         case session_channel.in_flight(next) {
           True -> {
             let #(next, outputs) = session_channel.take_outputs(next)
@@ -130,7 +138,8 @@ fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
     True -> #(model, incoming)
     False ->
       hold_snapshot_end(
-        inbound.accept_connection_message(model, incoming) |> runtime.flush,
+        inbound.accept_connection_message(runtime.stamp(model), incoming)
+          |> runtime.flush,
         remaining - 1,
       )
   }

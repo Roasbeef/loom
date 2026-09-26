@@ -235,3 +235,46 @@ rule is that no message from the old inbox reaches the reducer after the
 swap. Whether the old inbox is also flushed afterwards does not matter for
 correctness; the `Discard` only frees memory. The runtime that phase 2
 introduces must stop delivering from a replaced inbox at the swap.
+
+## Addendum: phase 2 S1, the clock becomes an input (2026-09-26)
+
+The first slice of phase 2 takes clock reads out of the step. Nothing above
+is changed by it; this records how the step now gets the time.
+
+`tui.update` calls `runtime.stamp` before `step`. It reads the presentation
+clock (`Model.monotonic_time_ms`), the transport clock
+(`Model.transport_time_ms`) and the wall clock once each and stores them on
+the model as `Model.stamp`, and every reducer that read a clock reads the
+stamp instead. A step therefore reads no
+clock, and every reducer in one step sees the same instant. The OS and BEAM
+process identity in a session creation key is read once, when the model is
+created, and held as `Model.terminal`. The stamp is a call into
+`tui/runtime` applied to `update`'s parameter rather than a local step in
+`tui.gleam`, so it does not add to the inliner cost `docs/execution.md` §8
+describes; `core_inline_module` on the generated `tui` and `tui@tick`
+modules measured the same before and after.
+
+`tui/session_channel` no longer stores a clock. Every transition that sets
+or checks a deadline or the idle refresh takes `now` as a parameter. The
+terminal passes the stamp's transport reading rather than the presentation
+clock, because a test driver fixes the presentation clock to pin frames
+while its live socket still needs real deadlines. The transport clock is
+the host's monotonic clock in the shipped client, which is the clock the
+lane used before, and it is injected on the model like the presentation
+clock. That matters for tests: a replay lane's time starts at zero, and a
+fixture that puts one on a model freezes the transport clock at zero too.
+Read from the host instead, the lane's refresh would stay quiet only
+because ERTS starts its monotonic clock at a large negative value, which
+is not something a test should depend on. `tui/attempt_replay` passes zero,
+which is what its stored clock returned.
+
+Two cases are the caller's to handle. A test that calls `step` directly runs
+at whatever stamp the model carries, which for a fresh model is the reading
+taken when it was created, and sets the field to choose another time. A
+caller that runs a reducer outside `update`, such as a test driver handing a
+selected socket message to `inbound.accept_connection_message`, calls
+`runtime.stamp` first, or the reducer runs at the time of the previous event.
+
+Recording timestamps and the launch, bootstrap and daemon waits stay on the
+real clock. They are outside the step: the recording is S3's subject, and
+the waits run before the loop or in their own processes.
