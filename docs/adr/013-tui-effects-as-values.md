@@ -196,3 +196,42 @@ A test must pin that a scripted prompt yields exactly one `Transmit` from
 hold a live socket must flush or perform their channel outputs, and the
 existing replay goldens and real-client fixtures must pass unchanged, since
 `update` performs the same effects it did before, at the end of the step.
+
+## Addendum: protocol model
+
+The second correctness check named under "Later phases" now exists as a P
+model in `protocol/models/terminal-attachment/`, written before phase 2 moves
+mailbox drains into the runtime. It models the terminal as a reducer step
+followed by a separate perform step, the attachment worker, and each socket
+together with the daemon's gateway handler for it, with the network, the
+attempt deadline and the operator as the environment. Its README maps each
+machine and event to the Gleam functions it stands for.
+
+The model checks, over 30,000 random schedules per test case, that
+replacement is fail-preserving (the visible session changes only after a
+validated cut, a completed worker and a passed adoption check); that no
+message from a replaced socket is reduced into the adopted lane; that a
+mutation is written and applied at most once, a lost reply becomes
+`UnknownOutcome` exactly once, and a waiting command is sent or reported
+`DefinitelyNotSent` exactly once on its own attachment; that nothing is
+written to a socket after the terminal closes it and no socket is closed
+twice; that a worker which published `Prepared` is never left waiting; that
+quit releases every socket and worker; and that one request at a time owns
+each socket. Its invariants pair one for one with the property tests over
+`session_channel` from PR #536, and the rules that live inside one reducer are
+left to those tests. A mutation script in the model directory reintroduces
+seventeen changes one at a time. The thirteen that break a rule are each
+caught by the spec for that rule. The README explains the other four: three
+break no rule, and one leaves only a duplicate update that the property
+tests check.
+
+The model reproduced one bug in the shipped code: a lane that had already
+failed closed its socket a second time, on quit or on a second report of the
+same transport loss. The property tests found the same bug, and PR #536
+fixed it.
+
+The model also settles what phase 2 must preserve about the old inbox. The
+rule is that no message from the old inbox reaches the reducer after the
+swap. Whether the old inbox is also flushed afterwards does not matter for
+correctness; the `Discard` only frees memory. The runtime that phase 2
+introduces must stop delivering from a replaced inbox at the swap.
