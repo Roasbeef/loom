@@ -205,6 +205,21 @@ them from their own test mains.
   that legitimately changes the outcome (a provider that refuses, a user
   who aborts) is scripted into *both* runs so it cannot be mistaken for
   damage.
+- **A provider request is never parked on the logical clock** (#335). It
+  runs inside the runtime's provider deadline (`surface.provider_timeout_ms`,
+  60 ms) and two-second cancellation grace, and both are real time. A
+  `SlowEffect` park ends only after the runner has advanced the clock
+  through every earlier deadline, so its real length is the host's: about
+  165 ms idle and four to seven seconds under load for a 2000 ms park. The
+  loaded case outlived the grace, settled the attempt as
+  `CancellationUnconfirmed`, and folded a steer into the retry, one turn
+  short of the fault-free run (seed 14, `convergence/ledger`).
+  `surface.request` therefore applies only the survival faults; a
+  `SlowEffect` drawn on a provider index does nothing, while tool
+  executions, which have no runtime deadline, are still slowed. A live
+  intervention's rendezvous still runs inside the deadline, and a
+  settlement that misses it arrives inside the grace and is forwarded
+  unchanged.
 - **Starved provider owners end with their consumers.** A starved provider
   effect is a weft witnessed run (`weft.new_prepared([weft.managed(...)])
   |> weft.cancel_when_exits(consumer) |> weft.start_witnessed`), and its
@@ -290,6 +305,18 @@ them from their own test mains.
   failed: an admission whose reply was lost may already be durable, and
   every caller asks the durable state rather than concluding (issue #44,
   and the same ambiguity #6 records).
+- **A retry waits for the writer, not for a pause** (#335). The runner's
+  admission ladders (`admit`, the subagent's creation and brief, and the
+  cross-strand send) count their attempts. `before_retrying` advances the
+  clock one step and then `await_writer` polls through `weft/poll` until
+  the root has registered a writer or died, so an attempt is spent only on
+  a writer that could answer it. The fixed one-millisecond pause this
+  replaced gave a ladder a real budget of a few milliseconds: on a loaded
+  host, a crash on the commit before the subagent's creation spent all six
+  attempts on an unregistered writer, and the run reported
+  `run/terminated` with a clean timing line (seed 1). The wait's
+  3000 ms bound is a backstop, recorded as `expired@writer-restart` if it
+  is reached.
 - **A failing seed says whether it is repeatable.** `run`, `examine`, and
   `check` replan the failing seed — same script, same schedule, since
   `plan` draws only from the seed — and re-run it up to three times
