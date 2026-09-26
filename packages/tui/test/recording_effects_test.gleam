@@ -215,8 +215,6 @@ fn attempt_traffic(decided: effect.Effect) -> Result(String, Nil) {
         session_channel.Transmit(..) -> Ok("write")
         session_channel.Shut(..) -> Ok("shut")
       }
-    effect.Attachment(attachment.Note(_, event)) ->
-      Ok("note " <> note_name(event))
     effect.Attachment(attachment.Abandon(..)) -> Ok("abandon")
     _ -> Error(Nil)
   }
@@ -410,7 +408,6 @@ fn records(decided: effect.Effect) -> Bool {
   case decided {
     effect.Record(..) -> True
     effect.Channel(session_channel.Note(..)) -> True
-    effect.Attachment(attachment.Note(..)) -> True
     effect.Attachment(attachment.FromChannel(session_channel.Note(..))) -> True
     _ -> False
   }

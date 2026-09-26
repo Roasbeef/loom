@@ -416,11 +416,11 @@ addendum on recording as effects.
 through `tui_model.record_input` before the reducer runs, so it is the
 first effect of its step. A line is `effect.Record(recorder, event)`. An
 attempt event is `session_channel.Note(recorder, event)`, an output of the
-lane that decided it, or `attachment.Note` for the failure the attachment
-records itself. `attempt.Trace`, a closure, is gone: `recording.Trace` is
-the recorder handle and the attempt identity, as data, and every note
-carries the recorder it was decided under. `recording.append` is the
-perform half, and `session_channel.perform`, `attachment.perform` and
+lane that decided it, and the attachment queues its own failure note the
+same way, as one of the lane's notes. `attempt.Trace`, a closure, is gone:
+`recording.Trace` is the recorder handle and the attempt identity, as
+data, and every note carries the recorder it was decided under.
+`recording.append` is the perform half, and `session_channel.perform` and
 `runtime.perform` call it.
 
 **One queue.** The model outbox is the only queue a step has, and
@@ -477,7 +477,7 @@ collection order had it, and the preview peer's close moves with it.
 | `attempt_frame` and the lifecycle messages | `session_channel.receive` | trace callback | `Note`, ahead of anything the message queues |
 | `attempt_closed` of a lane the step closes | `session_channel.close`, through `fail`, `retire` and quit | trace callback | `Note`, ahead of its `Shut` |
 | `attempt_adopted` | `session_channel.adopted`, from `interaction.candidate_outcome` | trace callback | `Note`, stored after the cut |
-| `attempt_failed` | `attachment.failed` | trace callback | `attachment.Note`, ahead of `Abandon` |
+| `attempt_failed` | `attachment.failed` | trace callback | a `Note` in `attachment.FromChannel`, ahead of `Abandon` |
 | `attempt_closed` of an abandoned attempt | `attachment.cancel`, performing `Abandon` | after the step, after every other line | after the step, at the `Abandon`'s place |
 | the format header | `recording.start`, from `tui.open_recording` | at launch, before the loop | unchanged |
 | the teardown close in the client test driver | `tui_driver.disconnect` | outside the loop | unchanged, performed through `session_channel.perform` |

@@ -139,7 +139,7 @@ modules divide the work:
   through `tui_model.hold_channel`, which moves those outputs into the model
   outbox at that point. `tui/attachment` returns its candidate channel's
   outputs from `poll` and `accept` with the rest of what they decided: the
-  `Acknowledge` that releases its worker, the attempt's failure `Note`, and
+  `Acknowledge` that releases its worker, the attempt's failure note, and
   its cleanup.
 - `tui/runtime` owns collection and performance. `runtime.take` empties the
   model outbox, which is the step's one queue, and returns it oldest first.

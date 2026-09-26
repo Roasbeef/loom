@@ -669,13 +669,15 @@ fn adopt(status, candidate, frames) {
 }
 
 // The failure note is queued ahead of the cleanup, behind every note the
-// attempt queued before it. The cleanup is only decided: the status it
-// cancels travels in the output, and `cancel` closes the channel it holds
-// when the runtime performs it.
+// attempt queued before it. It is a note in the attempt's lane recording,
+// so it travels as the lane's own notes do, even when the attempt failed
+// before it had a lane. The cleanup is only decided: the status it cancels
+// travels in the output, and `cancel` closes the channel it holds when the
+// runtime performs it.
 fn failed(status, reason) -> #(Status, Option(Outcome), List(Out)) {
   let noted = case status {
     Opening(Run(trace: Some(recording.Trace(recorder:, id:)), ..), _, _, _) -> [
-      Note(recorder, attempt.Failed(id, reason)),
+      FromChannel(channel.Note(recorder, attempt.Failed(id, reason))),
     ]
     Idle | Opening(Run(trace: None, ..), _, _, _) -> []
   }
@@ -702,7 +704,7 @@ fn discard(
   let notes =
     list.filter_map(outputs, fn(output) {
       case output {
-        channel.Note(recorder, event) -> Ok(Note(recorder, event))
+        channel.Note(..) -> Ok(FromChannel(output))
         channel.Transmit(..) | channel.Shut(..) -> Error(Nil)
       }
     })
@@ -740,17 +742,15 @@ fn preceded_by(
 ///
 /// The provisional channel's writes, closes and notes pass through
 /// unchanged, `Acknowledge` is the reply that tells the preparing worker its
-/// initial capture has landed, `Note` records the attempt's failure, and the
-/// other two clean up after an attempt the terminal will not adopt.
+/// initial capture has landed, and the other two clean up after an attempt
+/// the terminal will not adopt.
 pub type Out {
-  /// An output of the candidate's own channel.
+  /// An output of the candidate's channel, or the attempt's failure note,
+  /// which is recorded as one of that lane's notes.
   FromChannel(channel.Out)
 
   /// Releases the worker waiting on its acknowledgement subject.
   Acknowledge(to: Subject(Nil))
-
-  /// One attempt event the attachment itself records, which is its failure.
-  Note(recorder: recording.Recorder, event: attempt.Event)
 
   /// Cancels an attempt the terminal will not adopt, one that failed or one
   /// abandoned at quit, and closes what it opened, as `cancel` does. The
@@ -774,8 +774,6 @@ pub fn perform(output: Out) -> Nil {
   case output {
     FromChannel(output) -> channel.perform(output)
     Acknowledge(to) -> process.send(to, Nil)
-    Note(recorder, event) ->
-      recording.append(recorder, recording.Attempt(event))
     Abandon(status) -> cancel(status)
     CloseStray(socket) -> connection.close(socket)
   }
