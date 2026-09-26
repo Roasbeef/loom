@@ -201,10 +201,29 @@ type Phase {
   Closed
 }
 
+/// What a channel transition asks the transport to do.
+///
+/// The channel decides what to write and when to close; it never writes or
+/// closes itself. A transition appends its outputs to the channel's outbox
+/// and the terminal's runtime takes and performs them after the reducer
+/// step that produced them, so every function below is a pure transition
+/// over its arguments. Each output names the socket it was decided for:
+/// an attachment replaced later in the same step must not redirect a write
+/// that was meant for the connection it replaced.
+pub type Out {
+  /// One protocol frame to write.
+  Transmit(socket: connection.Connection, frame: String)
+
+  /// A close of the lane's socket.
+  Shut(socket: connection.Connection)
+}
+
 /// One bounded protocol lane, held by the terminal which owns its inbox.
 pub opaque type Channel {
   Channel(
     socket: Option(connection.Connection),
+    /// Pending outputs, newest first, until `take_outputs` hands them over.
+    outbox: List(Out),
     trace: Option(attempt.Trace),
     timestamp: fn() -> Int,
     issued: attempt.Request,
@@ -254,7 +273,6 @@ pub fn start_recorded(
     None -> Nil
   }
   emit(channel, protocol.subscribe(1, expected.session))
-  channel
 }
 
 /// Creates effect-free replay state without a socket, process or wall clock.
@@ -282,6 +300,7 @@ pub fn start_resumed(
   let channel =
     Channel(
       socket: Some(socket),
+      outbox: [],
       trace: trace,
       timestamp: now,
       issued: attempt.Request(1, "subscribe", attempt.Cursor(retained.next_seq)),
@@ -302,7 +321,6 @@ pub fn start_resumed(
     None -> Nil
   }
   emit(channel, protocol.subscribe_from(1, expected.session, retained.next_seq))
-  channel
 }
 
 ///
@@ -350,6 +368,7 @@ pub fn replay_traced(
 fn initial(socket, expected, trace, timestamp) {
   Channel(
     socket: socket,
+    outbox: [],
     trace: trace,
     timestamp: timestamp,
     issued: attempt.Request(1, "subscribe", attempt.NoSelection),
@@ -367,14 +386,54 @@ fn initial(socket, expected, trace, timestamp) {
   )
 }
 
-fn emit(channel: Channel, frame) {
+// The trace note stays a synchronous append: the recording orders a
+// request's issue against the input that caused it, and that order is only
+// kept while every recording write happens where it did before. The write
+// itself becomes an output. A socketless lane has nowhere to write, so it
+// records the issue and queues nothing, which is what lets replay run the
+// same transitions.
+fn emit(channel: Channel, frame: String) -> Channel {
   case channel.trace {
     Some(trace) -> trace.note(attempt.Issued(trace.id, channel.issued))
     None -> Nil
   }
   case channel.socket {
-    Some(socket) -> connection.send(socket, frame)
-    None -> Nil
+    Some(socket) ->
+      Channel(..channel, outbox: [Transmit(socket, frame), ..channel.outbox])
+    None -> channel
+  }
+}
+
+/// Hands over the outputs queued since the last call, oldest first.
+///
+/// The runtime calls this after every reducer step. A caller that drives a
+/// channel outside the terminal loop, such as a test holding a live socket,
+/// takes the outputs itself and passes each to `perform`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(lane, outputs) = session_channel.take_outputs(lane)
+/// list.each(outputs, session_channel.perform)
+/// ```
+pub fn take_outputs(channel: Channel) -> #(Channel, List(Out)) {
+  #(Channel(..channel, outbox: []), list.reverse(channel.outbox))
+}
+
+/// Performs one output against its socket.
+///
+/// This is the only place a channel's decisions touch the transport, and
+/// it runs outside every transition.
+///
+/// ## Examples
+///
+/// ```gleam
+/// session_channel.perform(output)
+/// ```
+pub fn perform(output: Out) -> Nil {
+  case output {
+    Transmit(socket, frame) -> connection.send(socket, frame)
+    Shut(socket) -> connection.close(socket)
   }
 }
 
@@ -945,7 +1004,6 @@ fn credit(channel: Channel, transfer: snapshot.Transfer, lookup) {
       next_id: channel.next_id + 1,
     )
   emit(next, session_wire.next(channel.next_id, id, index))
-  next
 }
 
 /// Drives idle catch-up at 250ms and fails an expired in-flight request closed.
@@ -982,15 +1040,19 @@ pub fn tick(channel: Channel) -> #(Channel, List(Update)) {
 ///
 /// ## Examples
 ///
+/// The close is queued, like every other output: the returned channel
+/// carries it until `take_outputs`. The lane is `Closed` from here on, so no
+/// later transition in the same step can queue a write behind its close.
+///
 /// ```gleam
-/// session_channel.close(channel)
+/// let lane = session_channel.close(lane)
 /// ```
-pub fn close(channel: Channel) -> Nil {
+pub fn close(channel: Channel) -> Channel {
   case channel.trace {
     Some(trace) -> trace.note(attempt.Closed(trace.id))
     None -> Nil
   }
-  close_socket(channel)
+  close_socket(Channel(..channel, phase: Closed, queued: None))
 }
 
 /// Retires a local attachment while preserving unsent or unconfirmed intent.
@@ -1021,8 +1083,9 @@ pub fn retire(channel: Channel, reason: String) -> #(Channel, List(Update)) {
   }
 }
 
+// The outcome is read from the lane as it stood, because closing it is what
+// ends the request that was in flight.
 fn fail(channel: Channel, reason: String) {
-  close(channel)
   let updates = case channel.phase {
     AwaitingReply(name, Mutation) -> [
       UnknownOutcome(name, channel.request_id),
@@ -1042,16 +1105,13 @@ fn fail(channel: Channel, reason: String) {
     True -> [Submission(DefinitelyNotSent(reason))]
     False -> []
   }
-  #(
-    Channel(..channel, phase: Closed, queued: None),
-    list.append(unsent, updates),
-  )
+  #(close(channel), list.append(unsent, updates))
 }
 
-fn close_socket(channel: Channel) {
+fn close_socket(channel: Channel) -> Channel {
   case channel.socket {
-    Some(socket) -> connection.close(socket)
-    None -> Nil
+    Some(socket) -> Channel(..channel, outbox: [Shut(socket), ..channel.outbox])
+    None -> channel
   }
 }
 
@@ -1085,7 +1145,6 @@ fn capture_again(channel: Channel, cursor, trigger: Capture) {
       deadline: channel.timestamp() + 30_000,
     )
   emit(next, session_wire.catch_up(channel.next_id, cursor))
-  next
 }
 
 /// Validates a recorded request against the effect-free channel's next credit.
@@ -1276,7 +1335,6 @@ fn send(channel: Channel, outbound: Outbound) {
       deadline: channel.timestamp() + 10_000,
     )
   emit(next, frame)
-  next
 }
 
 fn outbound(frame: String) {

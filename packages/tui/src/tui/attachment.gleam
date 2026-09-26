@@ -7,6 +7,7 @@
 //// leaves the old connection untouched and cancels only this attempt.
 
 import gleam/erlang/process.{type Selector, type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -469,6 +470,62 @@ fn failed(status, reason) {
   #(Idle, Some(Failed(reason)))
 }
 
+/// What an attachment attempt asks the runtime to do.
+///
+/// The provisional channel's writes and closes pass through unchanged, and
+/// `Acknowledge` is the reply that tells the preparing worker its initial
+/// capture has landed.
+pub type Out {
+  /// An output of the candidate's own channel.
+  FromChannel(channel.Out)
+
+  /// Releases the worker waiting on its acknowledgement subject.
+  Acknowledge(to: Subject(Nil))
+}
+
+/// Hands over the outputs the provisional channel has queued, oldest first.
+///
+/// A candidate's channel lives inside this opaque status rather than on the
+/// model, so the runtime asks here after every step, as it asks the adopted
+/// channel. Without it the candidate's `subscribe` would never be written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(pending, outputs) = attachment.take_outputs(pending)
+/// ```
+pub fn take_outputs(status: Status) -> #(Status, List(Out)) {
+  case status {
+    Opening(run, prepared, frames, Some(candidate)) -> {
+      let #(lane, outputs) = channel.take_outputs(candidate.channel)
+      #(
+        Opening(
+          run,
+          prepared,
+          frames,
+          Some(Candidate(..candidate, channel: lane)),
+        ),
+        list.map(outputs, FromChannel),
+      )
+    }
+    Idle | Opening(_, _, _, None) -> #(status, [])
+  }
+}
+
+/// Performs one attachment output.
+///
+/// ## Examples
+///
+/// ```gleam
+/// list.each(outputs, attachment.perform)
+/// ```
+pub fn perform(output: Out) -> Nil {
+  case output {
+    FromChannel(output) -> channel.perform(output)
+    Acknowledge(to) -> process.send(to, Nil)
+  }
+}
+
 /// Cancels only this attempt; the terminal retains its previously adopted peer.
 ///
 /// ## Examples
@@ -487,7 +544,10 @@ pub fn cancel(status: Status) -> Nil {
             Ok(Prepared(socket, _, _, _, _, _)) -> connection.close(socket)
             Error(Nil) -> Nil
           }
-        Some(candidate) -> channel.close(candidate.channel)
+        Some(candidate) ->
+          channel.close(candidate.channel)
+          |> channel.take_outputs
+          |> fn(closed) { list.each(closed.1, channel.perform) }
       }
       sessions.discard(frames)
       sessions.discard(prepared)

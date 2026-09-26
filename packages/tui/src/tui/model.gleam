@@ -52,6 +52,7 @@ import tui/connection
 import tui/context_view
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/effect
 import tui/focused_goal_panel
 import tui/goal_view
 import tui/herdr
@@ -840,6 +841,11 @@ pub type Model {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
+    /// Effects this step has decided on, newest first. The reducer only
+    /// appends here, through `emit`; `runtime.take` empties it at the end of
+    /// every step and performs what it held, so between two steps it is
+    /// always empty.
+    outbox: List(effect.Effect),
   )
 }
 
@@ -887,6 +893,51 @@ pub fn mark_activity(model: Model) -> Model {
     activity_revision: model.activity_revision + 1,
     quiet_for_ms: 0,
   )
+}
+
+/// Moves the held channel's queued outputs into the outbox.
+///
+/// A step that replaces or drops its channel must call this first. The
+/// channel queues its writes rather than performing them, so an output
+/// decided earlier in the step would otherwise leave with the channel value
+/// and never reach its socket. Before effects were values that write had
+/// already happened; this keeps it happening.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.release_channel(model)
+/// Model(..model, channel: Some(replacement))
+/// ```
+@internal
+pub fn release_channel(model: Model) -> Model {
+  case model.channel {
+    None -> model
+    Some(held) -> {
+      let #(held, outputs) = session_channel.take_outputs(held)
+      let outbox =
+        list.fold(outputs, model.outbox, fn(outbox, output) {
+          [effect.Channel(output), ..outbox]
+        })
+      Model(..model, channel: Some(held), outbox:)
+    }
+  }
+}
+
+/// Queues an effect for the runtime to perform after this step.
+///
+/// This is how a reducer asks for I/O. It never performs the effect
+/// itself, so the step stays a function of its event and model, and a
+/// replay or a test decides what happens to what it asked for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.emit(model, effect.WriteClipboard(sequence))
+/// ```
+@internal
+pub fn emit(model: Model, requested: effect.Effect) -> Model {
+  Model(..model, outbox: [requested, ..model.outbox])
 }
 
 /// Marks the cached frame stale so the next paint redraws it.

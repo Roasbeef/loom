@@ -239,6 +239,10 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // Only then is the old inbox drained. Draining first would discard
       // frames the retirement is entitled to reduce.
       sessions.discard(model.inbox)
+
+      // The retired channel's close is still queued on it, and this is
+      // the last moment the step holds it.
+      let model = tui_model.release_channel(model)
       let adopted =
         Model(
           ..model,

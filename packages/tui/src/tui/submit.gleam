@@ -935,13 +935,19 @@ pub fn quit(model: Model) -> Model {
     None -> Nil
     Some(host) -> daemon.close(daemon_selection.control(host))
   }
-  case model.channel {
-    Some(channel) -> session_channel.close(channel)
-    None ->
+
+  // The channel queues its own close, which the runtime performs after
+  // this step along with everything else the step decided.
+  let model = case model.channel {
+    Some(channel) ->
+      Model(..model, channel: Some(session_channel.close(channel)))
+    None -> {
       case model.peer {
         Attached(socket:) -> connection.close(socket)
         Preview | Replaying | Disconnected -> Nil
       }
+      model
+    }
   }
   Model(..model, quit: True)
 }
