@@ -103,6 +103,39 @@ pub fn tool_output_has_its_own_topic_test() {
   bus.unsubscribe(bus, session:, topic: bus.Outputs)
 }
 
+// A summarizer label is display text, so it rides the same feed as a tool
+// tail and never wakes a hint subscriber. Both subjects land on `Outputs`:
+// the settled one because its truth is the reserved cell, the live one
+// because nothing about it is durable at all.
+pub fn block_summary_rides_the_display_feed_test() {
+  let bus = bus.start()
+  let session = bus.unidentified_key(name: "bus-block-summary")
+  let ctx = fixtures.new_ctx()
+  let #(entry, ctx) = fixtures.mint(ctx)
+  let #(op, _ctx) = fixtures.mint_op(ctx)
+  let settled =
+    bus.BlockSummary(
+      subject: bus.SettledBlock(entry:, block: 1),
+      text: "The agent weighs two fixes.",
+    )
+  let live =
+    bus.BlockSummary(
+      subject: bus.LiveStream(strand: "main", op:, generation: "g-1"),
+      text: "The agent reads the failing test.",
+    )
+  assert bus.topic_of(settled) == bus.Outputs
+  assert bus.topic_of(live) == bus.Outputs
+
+  bus.subscribe_hints(bus, session:)
+  bus.publish(bus, session:, event: settled)
+  assert receive_published(50) == Error(Nil)
+
+  bus.subscribe(bus, session:, topic: bus.Outputs)
+  bus.publish(bus, session:, event: live)
+  assert receive_published(500) == Ok(Published(session:, event: live))
+  bus.unsubscribe(bus, session:, topic: bus.Outputs)
+}
+
 pub fn publish_without_subscribers_is_legal_test() {
   let bus = bus.start()
   // Events are hints: loss (here, total) is legal and publish is a

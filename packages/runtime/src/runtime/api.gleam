@@ -2427,12 +2427,27 @@ pub const advisor_fact_prefix = "advisor/"
 /// reservation exists to stop.
 pub const goal_fact_prefix = "goal/"
 
+/// The reserved `fact.custom` key prefix the block summarizer keeps its
+/// cells under: `summary/<entry_id>/<block_index>`, one short label per
+/// long reasoning block or delivered advisor message (protocol 050).
+///
+/// Reserved because a terminal draws the cell as the summarizer's words
+/// about a block, beside the block. A model that could write one would
+/// choose how the operator reads its own reasoning at a glance — the
+/// collapsed row is all an operator sees until they expand it.
+///
+/// The cells live outside `client/` on purpose. Every transcript capture
+/// copies the whole `client/` prefix, and a capture fails past 1024 cells
+/// or 1 MiB, so a cell per long block there would eventually break the
+/// session's own captures. A terminal reads these by exact key instead.
+pub const summary_fact_prefix = "summary/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The thirteen corners, and what each would let a forged write do:
+/// The fourteen corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -2455,7 +2470,10 @@ pub const goal_fact_prefix = "goal/"
 /// everything the primary will ever append, which silences the session's
 /// reviewer without raising anything; `goal/` — fake the goal cell's
 /// status or accounting, waking the primary toward an objective the
-/// operator retired or spending past the budget the loop is bounded by.
+/// operator retired or spending past the budget the loop is bounded by;
+/// `summary/` — write the label a terminal shows in place of a reasoning
+/// block, so the operator reads the model's own account of its reasoning
+/// as though the harness's summarizer had written it.
 ///
 /// ## Examples
 ///
@@ -2481,6 +2499,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, job_fact_prefix)
   || string.starts_with(key, advisor_fact_prefix)
   || string.starts_with(key, goal_fact_prefix)
+  || string.starts_with(key, summary_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion
