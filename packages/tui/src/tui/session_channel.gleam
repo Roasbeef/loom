@@ -636,8 +636,17 @@ pub fn receive(
   }
   case message {
     connection.Connected -> #(channel, [])
+
+    // A socket reports its end more than once: a network fault is usually
+    // followed by the transport's own close. The first report fails the
+    // lane; a later one finds it `Closed` and has nothing left to end, so it
+    // neither queues a second close nor tells the operator twice.
     connection.Closed(reason) | connection.NetworkFault(reason) ->
-      fail(channel, reason)
+      case channel.phase {
+        Closed -> #(channel, [])
+        AwaitingBegin | Receiving(..) | AwaitingReply(..) | Ready ->
+          fail(channel, reason)
+      }
     connection.Incoming(text) ->
       case channel.phase {
         Closed -> #(channel, [])
@@ -1072,11 +1081,19 @@ pub fn tick(channel: Channel) -> #(Channel, List(Update)) {
 /// let lane = session_channel.close(lane)
 /// ```
 pub fn close(channel: Channel) -> Channel {
-  case channel.trace {
-    Some(trace) -> trace.note(attempt.Closed(trace.id))
-    None -> Nil
+  case channel.phase {
+    // A lane is closed once. A quit after a transport failure reaches a lane
+    // that `fail` already closed, and a second `Shut` or a second recorded
+    // close would describe an event that did not happen.
+    Closed -> channel
+    AwaitingBegin | Receiving(..) | AwaitingReply(..) | Ready -> {
+      case channel.trace {
+        Some(trace) -> trace.note(attempt.Closed(trace.id))
+        None -> Nil
+      }
+      close_socket(Channel(..channel, phase: Closed, queued: None))
+    }
   }
-  close_socket(Channel(..channel, phase: Closed, queued: None))
 }
 
 /// Retires a local attachment while preserving unsent or unconfirmed intent.

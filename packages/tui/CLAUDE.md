@@ -759,9 +759,11 @@ boundaries and the split's measurements under Invariants.
   one request in flight, increasing identities, credits, no mutation resend,
   exactly-once `UnknownOutcome` and `DefinitelyNotSent`, fail-closed stale
   replies, inert pushes, deadlines and the 250 ms refresh. A failure prints
-  its seed and a shrunk event list. `close` and a transport `Closed` on an
-  already closed lane each queue a second `Shut`; the test skips those two
-  cases until that rule is decided.
+  its seed and a shrunk event list. Its first run found that `close` and a
+  transport `Closed` on an already closed lane each queued a second `Shut`
+  (and the transport case a second `Failed`); both now leave a `Closed`
+  lane untouched, and the property holds every event on a closed lane to
+  inertness.
 - `tui/snapshot` validates attachment identity, exact credits, fragment
   offsets, immutable entry identity and payload limits. `tui/snapshot_view`
   projects captured leaf ancestry with pure `core` and `machine` codecs.

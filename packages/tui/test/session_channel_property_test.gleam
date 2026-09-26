@@ -904,7 +904,6 @@ fn apply(
 ) -> Result(#(Channel, Oracle), String) {
   let #(channel, oracle) = state
   let oracle = Oracle(..oracle, cause: session_channel.Notified)
-  use <- bool.guard(known_divergence(oracle, event), Ok(#(channel, oracle)))
   case event {
     SubmitPrompt -> submit_prompt(channel, oracle)
     SubmitRead(name) -> submit_read(channel, oracle, name)
@@ -936,21 +935,6 @@ fn apply(
     }
     Close -> ends(channel, oracle, event, [])
     CancelUnsent -> cancel(channel, oracle)
-  }
-}
-
-// A closed lane is not inert to two entry points. `close` queues a second
-// `Shut`, and a transport `Closed` message queues a second `Shut` and
-// reports a second `Failed`, because neither checks for the `Closed` phase
-// the way `retire`, `tick` and an incoming frame do. The first property run
-// found both; the smallest schedules are `retire, disconnect` and `close,
-// close`. They are reported rather than changed here, so the schedule skips
-// these two events on a closed lane until the channel's rule is decided,
-// and I5 still holds every other event on a closed lane to inertness.
-fn known_divergence(oracle: Oracle, event: Event) -> Bool {
-  case oracle.lane, event {
-    Shut, Close | Shut, Disconnect -> True
-    _, _ -> False
   }
 }
 
