@@ -292,3 +292,83 @@ pub fn a_model_repeating_a_failing_call_is_stopped_test() {
   assert string.contains(ended, ":err:loom refused this call and ended the run")
   process.kill(rt.tree.supervisor)
 }
+
+// The same loop with arguments that never parse, which GLM also produces.
+// Such a call is refused before any tool sees it, and the refusal is a
+// failed result like any other, so the guard counts it: three malformed
+// refusals, then the guard's warning, then the run ends. The tool itself
+// must never run.
+pub fn a_model_repeating_broken_json_is_stopped_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [#("history_search", ReplaySafe)],
+      fn(spec) {
+        case fake.turn(spec) {
+          n if n < 12 -> fake.Reply(broken_call("c" <> int.to_string(n)))
+          _ -> fake.Reply(fake.answer("giving up", 3))
+        }
+      },
+      fn(_run) {
+        fake.ToolReply(text: "ran", is_error: False, terminate: False)
+      },
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 50,
+      idle_poll_interval_ms: 50,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.prompt(rt, [fake.user("find the SI session")])
+    as "the prompt must be accepted"
+  let assert Ok(last) = api.await_result(rt, op, within_ms: 15_000)
+    as "the looping run must end"
+  let assert operation.RunLastResult(
+    outcome: operation.RunCompleted(
+      completion: operation.CompletedByTerminatedTools,
+    ),
+    ..,
+  ) = last
+
+  let executed =
+    list.count(["c0", "c1", "c2", "c3", "c4"], fn(id) {
+      recorder.read(rec, "tool:history_search:" <> id) >= 1
+    })
+  assert executed == 0
+  assert recorder.read(rec, "provider") == 5
+
+  let results =
+    harness.final_projection(sess)
+    |> list.filter(string.starts_with(_, "tool:"))
+  let assert [first, _, _, warned, ended] = results
+  assert string.contains(first, ":err:tool call not executed: its arguments")
+  assert string.contains(warned, ":err:loom refused this call without running")
+  assert string.contains(ended, ":err:loom refused this call and ended the run")
+  process.kill(rt.tree.supervisor)
+}
+
+// One tool-use turn whose only call carries argument text that never
+// became JSON, byte for byte the same every turn.
+fn broken_call(id: String) -> AgentMessage {
+  let assert AssistantMessage(..) as base =
+    fake.tool_use("searching", [#(id, "history_search")], 3)
+  AssistantMessage(..base, content: [
+    AssistantToolCall(
+      call: ToolCall(
+        ..call(id, json.Object([])),
+        arguments: message.malformed_arguments(
+          raw: "{\"action\": \"search\", \"scope\"",
+          reason: "expected a colon, got: end of input",
+        ),
+      ),
+    ),
+  ])
+}

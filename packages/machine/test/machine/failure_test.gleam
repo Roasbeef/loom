@@ -398,11 +398,43 @@ pub fn malformed_call_arguments_stage_a_synthetic_error_test() {
     operation.CallPlanned(source_index: 2, result_entry: _),
   ] = batch.calls
 
-  // No clearance is asked for the bad call: a call whose arguments never
-  // parsed must not reach a tool at all, so the machine stages its
-  // synthetic result directly, exactly as it does for a truncated batch.
+  // The bad call asks for clearance like any other, so the runtime's
+  // repeated-failure guard can count it; the runtime answers with the
+  // machine's own refusal, and no tool's clearance ever judges the
+  // sentinel. The text comes from `planner.malformed_refusal`, the one
+  // place it is written.
+  let assert Ok(#(world, action)) = scenario.step(world, NoObservation, opts())
+  let assert AwaitEffect(key: planner.ToolClearanceKey(source_index: 1, ..)) =
+    action
+  let assert message.AssistantMessage(
+    content: [_, message.AssistantToolCall(call: bad), ..],
+    ..,
+  ) = response
+  let assert Some(refusal) = planner.malformed_refusal(bad)
+    as "a call carrying the sentinel has a refusal"
+  assert planner.malformed_refusal(
+      message.ToolCall(..bad, arguments: json.Object([])),
+    )
+    == None
   let assert Ok(#(world, writes)) =
-    scenario.step_writes(world, NoObservation, opts())
+    scenario.step_writes(
+      world,
+      planner.ObservedToolRefused(
+        source_index: 1,
+        result: message.ToolResultMessage(
+          tool_call_id: bad.id,
+          tool_name: bad.name,
+          content: [message.ToolResultText(text: refusal, text_signature: None)],
+          details: None,
+          usage: None,
+          added_tool_names: None,
+          is_error: True,
+          timestamp: 0,
+        ),
+        ending: planner.RefusalContinues,
+      ),
+      opts(),
+    )
   assert writes == ["set:pending.entry", "set:op.state"]
 
   // It materializes as an `is_error` result the model reads next turn,

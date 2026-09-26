@@ -177,15 +177,18 @@ package is wrong.
   still-*planned* call even while earlier calls are effect-pending, and
   parks on the first pending call only once nothing is left to plan. Tree
   materialization stays source-ordered in both modes.
-- **A call whose arguments never parsed is refused before clearance, not
-  at it** (issue #189). The streaming adapters settle such a call carrying
-  `message.malformed_arguments` instead of failing the whole stream, and
-  `work_planned_call` reads that back into the same machine-built
-  synthetic `is_error` result a cancelled or truncated call gets. Clearance
-  is where a *tool* judges arguments, and the arguments here are not the
-  model's — they are the sentinel standing in for text that never became
-  JSON, which a schema of all-optional fields would happily accept as
-  defaults the model never asked for.
+- **A call whose arguments never parsed never reaches a tool's clearance**
+  (issue #189). The streaming adapters settle such a call carrying
+  `message.malformed_arguments` instead of failing the whole stream. The
+  planner still asks for its `ToolClearanceKey`, so the runtime's
+  repeated-failure guard can count a model that sends the same broken JSON
+  every turn, and the runtime answers with `planner.malformed_refusal`'s
+  in-band `is_error` text before any tool, hook or escalation sees the
+  arguments. Those arguments are not the model's — they are the sentinel
+  standing in for text that never became JSON, which a schema of
+  all-optional fields would happily accept as defaults the model never
+  asked for. Cancelled and truncated calls are still staged by the planner
+  directly.
 - **A really-settled response under cancelled control keeps its content and
   its reported usage** (pi §4.6, ORCH-M3), committed normalized to
   `aborted`. Only an *unknown-outcome* orphan gets the synthetic
