@@ -491,7 +491,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1575`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1608`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -722,7 +722,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1632`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1665`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1626`). That is the

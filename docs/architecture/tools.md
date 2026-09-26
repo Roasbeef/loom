@@ -313,7 +313,7 @@ shows where the tool layer enters it.
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:2718`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:2751`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`
