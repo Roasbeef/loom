@@ -112,15 +112,35 @@ pub fn accounting_fence_precedes_visible_commit_test() {
   control.stop(ctl)
 }
 
-/// A crashed seam closes for the killed writer without excusing a later
-/// writer from closing the seam opened by its own commit.
+/// A writer killed inside its post-commit seam releases that seam, even when
+/// the crash was noted before the writer opened it, and a recovered writer
+/// still owes the seam its own commit opens.
+///
+/// An effect-started crash sends its note and then kills the writer from
+/// another process, so the writer can commit and open a seam in between. The
+/// seam belongs to the dead writer, and nothing else will ever close it.
 pub fn recovered_commit_must_close_its_own_seam_test() {
   let ctl = control.start()
   control.arm(ctl)
 
-  let _first = control.note_commit(ctl)
+  // The note is settled before the doomed writer starts, which is the order
+  // an effect-started crash can produce when the kill lands late.
   control.note_crash(ctl)
   assert control.crashed(ctl) as "the injected crash must be recorded"
+
+  let opened = process.new_subject()
+  let doomed =
+    process.spawn_unlinked(fn() {
+      let _first = control.note_commit(ctl)
+      process.send(opened, Nil)
+      process.sleep_forever()
+    })
+  let assert Ok(Nil) = process.receive(opened, within: 1000)
+    as "the doomed writer must open its seam"
+  assert !control.seam_quiet(ctl)
+    as "a live writer's seam must hold the run open"
+
+  kill_and_wait(doomed)
   assert control.seam_quiet(ctl) as "the killed writer's seam must close"
 
   let _second = control.note_commit(ctl)
@@ -129,6 +149,87 @@ pub fn recovered_commit_must_close_its_own_seam_test() {
   control.seam_done(ctl)
   assert control.seam_quiet(ctl)
   control.stop(ctl)
+}
+
+/// A writer killed after its commit became visible and before the wrapper
+/// recorded it releases the accounting fence it opened.
+///
+/// This is the stall seeds 30 and 44 reached (issue #335): an effect-started
+/// crash killed the writer between `commit_started` and `commit_succeeded`,
+/// the in-flight count never came back down, and the runner waited out its
+/// whole idle budget on a terminal result that was already visible.
+pub fn killed_writer_releases_its_accounting_fence_test() {
+  let ctl = control.start()
+  let inside = process.new_subject()
+  let assert Ok(raw) = session.open_memory(clock.fixed(at: 1_700_000_000_000))
+    as "the probe session must open"
+  let instrumented =
+    store.instrument(
+      parking_commit(raw, inside),
+      ctl,
+      fault.none(),
+      strand: "main",
+      lease_interval_ms: 5,
+    )
+  control.arm(ctl)
+
+  let writer =
+    process.spawn_unlinked(fn() {
+      storage.commit(instrumented.store, terminal_transaction())
+    })
+  let assert Ok(Nil) = process.receive(inside, within: 1000)
+    as "the writer must park after the inner commit lands"
+  assert !control.seam_quiet(ctl)
+    as "a live writer's in-flight commit must hold the fence"
+
+  kill_and_wait(writer)
+  assert control.seam_quiet(ctl)
+    as "a killed writer's in-flight commit must release its fence"
+  assert control.notes(ctl) == []
+    as "releasing a dead writer's fence is not an accounting violation"
+  let assert Ok(Nil) = session.close(raw) as "the probe session must close"
+  control.stop(ctl)
+}
+
+// The inner commit lands and the committing process then parks for good,
+// which holds it at exactly the point an effect-started crash can kill it:
+// the commit is durable and visible, and the wrapper has not yet recorded it.
+fn parking_commit(raw: Session, inside: process.Subject(Nil)) -> Session {
+  let inner = raw.store
+  let parked: Storage(Nil) =
+    Storage(..inner, commit: fn(_handle, transaction) {
+      let _landed = storage.commit(inner, transaction)
+      process.send(inside, Nil)
+      process.sleep_forever()
+      Error(tx.Faulted(reason: "unreachable: the committer parks forever"))
+    })
+  Session(..raw, store: parked)
+}
+
+fn terminal_transaction() -> tx.Tx {
+  tx.Tx(
+    writes: [
+      tx.SetRegister(
+        ns: register.StrandLastResult,
+        key: "main",
+        value: register.value(json.Null),
+      ),
+    ],
+    expected: [],
+  )
+}
+
+// The monitor's DOWN is the proof the process is gone; a kill signal alone
+// is only a request that has not necessarily been delivered yet.
+fn kill_and_wait(pid: process.Pid) -> Nil {
+  let monitor = process.monitor(pid)
+  process.kill(pid)
+  let assert Ok(_down) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(within: 1000)
+    as "the killed writer must go down"
+  Nil
 }
 
 /// An unmatched accounting close is recorded and leaves the fence closed.

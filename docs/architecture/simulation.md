@@ -148,8 +148,10 @@ terminal result. A commit is durable, and its terminal result readable,
 *before* the writer runs the post-commit seam that a crash schedule fires
 from. A runner that took the terminal result the moment it appeared could
 therefore end a run while the fault armed on its last commit was still
-queued. A crash closes the killed writer's seam, and every recovered
-writer must close each new seam it opens. Waiting for the seam keeps a
+queued. The control actor records the seam against the writer that
+opened it, so a writer killed inside its seam releases it by dying, and
+every recovered writer must close each new seam it opens. Waiting for the
+seam keeps a
 commit-indexed fault's chance to fire inside the run rather than in a race
 against the observer.
 
@@ -517,6 +519,30 @@ after the raw commit becomes visible, where the old ordering
 deterministically reported quiet, and checks both the success and error
 paths. The fix leaves the production terminal transaction unchanged and
 keeps the exact once oracle intact.
+
+**A killed writer releases its fence and its seam** (issue #335). A
+`CrashDuringEffect` kills the writer from the effect's process, so the kill
+lands wherever the writer happens to be. When it landed between
+`commit_started` and `commit_succeeded`, the in-flight count stayed at one
+for the rest of the run: `seam_quiet` never turned true, and the runner
+waited out its whole idle budget on a terminal result that was already
+visible, reporting `run/terminated` with clean timing and an unstable
+verdict. A second shape had the same effect: the crash note closed the open
+seam, but it is sent before the kill, so the writer could open a new seam
+between the two and die inside it. The control actor now keys each fence
+and the open seam by the process that opened it, and `seam_quiet` counts
+only holders that are still alive. A dead writer's hold is released at the
+moment of death rather than by a message that has to race the kill, and a
+late message from the dead writer names a pid that no longer counts. The
+bookkeeping that writer had not yet done is lost with it, so a commit that
+became durable in that window is absent from the commit ordinal and the
+side counters. That is the same account a commit-boundary crash has always
+given. A terminal commit is not expected in the window, because a strand's
+terminal transaction cannot overlap a dispatch of that strand's own effect;
+if one ever were, it would surface as `terminal/last-result-once` rather
+than as a stall. `simulation_store_test` parks a writer after its inner
+commit lands, kills it, and requires the fence to release. It also kills a
+writer inside a seam opened after the crash note.
 
 **One backend, one strand, one session.** Every simulated session is an
 in-memory store with a synthetic lease. The SQLite backend's own crash
