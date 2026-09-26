@@ -493,14 +493,15 @@ extended by the M3 runtime wave.
   clearance.** Before `clear_tool_call`, `tool_clearance_key` reads the
   branch's newest `repeat_guard.window` message entries back to the latest
   compaction and asks `repeat_guard.judge` how many consecutive turns made
-  this same call, by name and `core/json.canonical` arguments, and saw
-  every copy fail. At `refuse_after` (3) the call is refused unrun with
+  this call and nothing else, by name and `core/json.canonical`
+  arguments, and saw every copy fail; a turn that also did other work is
+  progress and breaks the streak. At `refuse_after` (3) the call is refused unrun with
   `RefusalContinues`; at `end_after` (4), which only a repeat past that
   refusal reaches, it is refused with `RefusalEndsRun` and the run
   completes as `CompletedByTerminatedTools`. Any user message breaks a
   streak, so an operator's reply or an advisor's nudge buys the model a
   fresh start. The count is read from write-once entries, so recovery
-  judges exactly what the first incarnation would have, and a read that
+  judges from the same entries the first incarnation did, and a read that
   fails reads as no history rather than halting the strand: the guard is
   a brake on a loop, not a correctness condition.
 - **One writer, structurally.** All commits are calls into one actor, so

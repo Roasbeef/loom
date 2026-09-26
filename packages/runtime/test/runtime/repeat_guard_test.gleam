@@ -178,6 +178,26 @@ pub fn a_user_message_a_success_or_another_turn_breaks_the_streak_test() {
   assert repeat_guard.streak(current, elsewhere) == 1
 }
 
+// Editing a file beside re-running the same failing command changes what
+// the command runs against, so such a turn is progress, not a repeat: the
+// edit-then-test loop every coding model runs must never be refused.
+pub fn a_turn_that_also_did_other_work_breaks_the_streak_test() {
+  let current = call("now", no_query())
+  let edit = ToolCall(..call("e3", json.Object([])), name: "fs_edit")
+  let history =
+    list.flatten([
+      failed_turn("c4", no_query()),
+      [
+        result("c3", True),
+        result("e3", False),
+        turn([edit, call("c3", no_query())]),
+      ],
+      failed_turn("c2", no_query()),
+      failed_turn("c1", no_query()),
+    ])
+  assert repeat_guard.streak(current, history) == 1
+}
+
 // The incident's first turn sent the call twice in one batch. A turn
 // counts once, and only when every copy in it failed.
 pub fn a_turn_counts_once_and_only_if_every_copy_failed_test() {

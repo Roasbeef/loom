@@ -34,10 +34,14 @@
 //// of it: a `bash` failure's output carries timestamps and pids, so a
 //// loop on one would never repeat byte for byte.
 ////
-//// A streak is the run of the model's most recent turns in which the
-//// call appeared and every copy of it failed. It ends at the first turn
-//// without the call, at a turn in which it succeeded, and at any user
-//// message: an operator's reply, a steer or an advisor's nudge is new
+//// A streak is the run of the model's most recent turns that made this
+//// call and nothing else, every copy of it failing. It ends at the first
+//// turn that did anything besides the call, at a turn in which it
+//// succeeded, and at any user message. A turn that edited a file beside
+//// re-running a failing test changed the world the test runs in, so it
+//// is progress rather than a loop; it is also a batch the planner could
+//// not end, since a run ends only when every call in its batch says so.
+//// And at any user message: an operator's reply, a steer or an advisor's nudge is new
 //// input, and new input is a reason to let the model try again. The
 //// guard's own refusals are failed results, so they extend the streak
 //// that caused them, which is what lets the third step be reached.
@@ -150,12 +154,13 @@ fn count(
         // The batch being cleared: its results are not in the tree yet.
         True, _ -> count(rest, current, key, failed, total)
 
-        // A turn that did something else breaks the streak.
-        False, [] -> total
-
-        False, [_, ..] ->
+        // A turn that did anything besides this call breaks the streak,
+        // as does one where any copy of it succeeded.
+        False, _ ->
           case
-            list.all(matching, fn(made) {
+            matching != []
+            && list.length(matching) == list.length(calls)
+            && list.all(matching, fn(made) {
               dict.get(failed, made.id) == Ok(True)
             })
           {
@@ -187,10 +192,10 @@ fn warned(call: ToolCall, count: Int) -> String {
   <> call.name
   <> "` has failed "
   <> int.to_string(count)
-  <> " times in a row with exactly these arguments, and it will fail the "
-  <> "same way again. Read the last error: it says what is wrong with the "
-  <> "arguments. Change them, or take a different step. Sending this same "
-  <> "call again ends the run."
+  <> " times in a row with exactly these arguments, and repeating it "
+  <> "unchanged tells you nothing new. Read the last error, then change the "
+  <> "arguments or take a different step. Sending this same call again ends "
+  <> "the run."
 }
 
 fn ended(call: ToolCall, count: Int) -> String {
