@@ -1364,6 +1364,19 @@ fn advisor_preview(value: AdvisorMessage) -> String {
   }
 }
 
+/// One advisor body cut to the row a collapsed view shows: its opening line,
+/// compacted to the same bound the delivered rows use.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.advisor_body_preview("check\nmore") == "check"
+/// ```
+@internal
+pub fn advisor_body_preview(body: String) -> String {
+  compact(opening_line(body), advisor_preview_limit)
+}
+
 fn opening_line(body: String) -> String {
   case string.split_once(body, "\n") {
     Ok(#(first, _rest)) -> first
