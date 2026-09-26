@@ -55,7 +55,7 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` (`tui.gleam:1311`) is three steps:
+`update` (`tui.gleam:1355`) is three steps:
 
 1. `recording.note_input` writes the raw event to the `--record` file, if one
    is open, before anything interprets it.
