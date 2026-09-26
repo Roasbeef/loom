@@ -368,16 +368,16 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1218` (`drain_connection`)) and the tick
-  (`tui/tick.gleam:160` (`drain_connection`)). The attachment's reads:
+  key drain (`tui/interaction.gleam:1224` (`drain_connection`)) and the tick
+  (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:496` (`prepare`),
   `tui/attachment.gleam:550` (`drain`) and
   `tui/attachment.gleam:609` (`settle`). The replay drain:
-  `tui/tick.gleam:201` (`drain_replay`).
+  `tui/tick.gleam:172` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
-  (`tui/tick.gleam:46` (`drain_reconnect`)), the control reply
-  (`tui/tick.gleam:61` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:1163` (`drain_activity`)), and the session
+  (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
+  (`tui/tick.gleam:127` (`drain_control`)), the picker's activity reply
+  (`tui/session_control.gleam:930` (`drain_activity`)), and the session
   switch, which reads through `sessions.receive` and `weft.pull`
   (`tui/sessions.gleam:256` (`weft.pull`)). Each answers a job the step
   started, and they move when job starts become keyed effects.
@@ -524,3 +524,184 @@ and 0.128 s; `tui@interaction` 2.59 s and 0.189 s, 2.56 s and 0.172 s;
 `tui@runtime` 0.26 s and 0.007 s, 0.26 s and 0.007 s; `tui@recording`
 0.25 s and 0.008 s, unchanged; `tui@attachment` 0.25 s and 0.008 s, 0.26 s
 and 0.009 s; `tui@session_channel` 0.37 s and 0.018 s, unchanged.
+
+## Addendum: phase 2 S4, jobs as data (2026-09-26)
+
+The fourth slice of phase 2 takes the daemon control job, the relaunch
+after a daemon death and the session picker's activity poll out of the
+step. It carries out, for those three jobs, the line under "Later phases"
+that job starts become effects carrying reducer-allocated keys. The
+session switch and the attachment attempt follow in S5. Nothing above is
+changed by it.
+
+**Jobs are effect values.** A reducer allocates a `job.Key` from
+`Model.next_job`, a counter that never reuses a key, and queues
+`effect.StartJob(key, spec)` through `tui_model.start_job`. The slot that
+waits for the job holds the key. `job.Spec` is data:
+`Control(host, request)`, where `job.ControlJob` has one variant for each
+of the seven requests the picker and the peer manager make (`LoadPage`,
+`Rename`, `Remove`, `LoadPeerWorkspace`, `InspectPeers`,
+`LoadPeerSessions`, `MutatePeers`); `Reconnect(options)`; and
+`Activity(host, ids)`. The worker bodies moved from the reducers into the
+new `tui/job_runner`, which the runtime calls to turn a spec into a
+one-task weft run. The old workers were closures built in the reducer,
+and each had a comment about binding scalars outside the closure so that
+weft would not copy the whole model into the task. A spec variant cannot
+capture the model at all, so those comments are gone with the closures.
+`effect.CancelJob(key)` replaces `CancelTask(signal)`.
+
+**The key is the handle.** Phase 1 ruled that every effect carries the
+handle it acts on and that the runtime never looks a target up in the
+model, because an adoption or a quit changes the model's handles during a
+step and a lookup at perform time could find the new one. `CancelJob`
+carries a key and the runtime looks the key up, but not in anything a
+reducer writes: the table is the runtime's own, and a key is never
+reused, so it names at perform time the same job it named when the
+reducer decided. The ruling's concern cannot arise.
+
+**Where the handles live.** `Model.running` holds the runtime's table,
+`job_runner.Running`, which maps each key to the job's cancel signal and
+a selector over its reply subject that tags each reply with the key. The
+type is opaque and no reducer imports `job_runner`; `tui/model` names the
+type and `tui/runtime` is its only caller. `runtime.perform(effects,
+running)` now threads the table through the effects in order and returns
+it, and `runtime.settle` performs a step's effects and stores the table on
+the model the step returned, so `tui.update` is
+`settle(step(event, receive(stamp(model))))` and `runtime.flush` is
+`settle(take(model))`. Two alternatives were rejected. Having `perform`
+return each new job's handles for the runtime to write into the reducers'
+slots would put Subjects and Cancels back into types the reducers read,
+which is what this slice removes. A separate registry process holding the
+table would own the reply subjects in another process, and the terminal
+would have to ask it for replies by message, a cross-process protocol
+where a field is enough. The loop keeps no state beside the model, so the
+table is on the model.
+
+**How replies reach a reducer.** `runtime.receive` reads every message
+every running job has sent. A one-task run's relay sends at most two, its
+outcome and then `AllDelivered` or `RunLost`, so this is bounded without a
+per-job cap. Each goes to `runtime.hold`, which removes the job from the
+table once its last message has been read, then admits the reply into the
+slot of its kind when that slot holds the reply's key, and drops it
+otherwise. The replies live inside the slot (`job.Awaiting`), as S2 put
+received messages inside an inbox value, so a reducer that clears or
+replaces a slot drops what it held, and no reply can reach a slot that
+stopped waiting for it. The drains take from the slot at the points they
+took from the mailbox: the tick's `drain_reconnect` and `drain_control`
+became `session_control.drain_reconnect` and `drain_control`, beside
+`drain_activity`, and `update_tick` calls all three where it called them
+before (`tui/tick.gleam:127` (`drain_control`)). `accept_control_event`,
+`accept_reconnect_event`, `ControlEvent` and `ReconnectEvent` are gone,
+and so are the two comparisons of subjects they made. In the shipped loop
+neither comparison could fail, because the tick only ever read the
+subject the slot named; a stale reply could reach a reducer only through
+the client test driver.
+
+**Orderings kept.**
+
+- *Quit.* It still queues the adopted lane's close, the session switch's
+  cancel and the attempt's `Abandon` first, in that order. Then it queues
+  `CancelJob` for the control job and the relaunch, in the order their
+  `CancelTask`s had, then for the activity poll, which had no cancel
+  signal and used to run on to its own nine-second deadline, and then the
+  control close. It clears each job's slot in the same step. The cancels
+  that block at quit are the switch's and the attempt's, which this slice
+  does not touch; the job cancels were `weft.cancel` before and are now,
+  and do not block. `effects_test` pins the list.
+- *A cancelled job delivers nothing.* The reducer clears the slot in the
+  step that queues the cancel, so `hold` finds no slot with that key. The
+  runner keeps the job in its table until its relay's last message, so
+  the cancelled outcome is read and dropped rather than left in the
+  mailbox.
+- *Tick drain order.* The replay, strip, session switch, control,
+  candidate, relaunch, activity and connection drains run in the order
+  they did.
+- *Same process.* The runtime performs `StartJob` inside `update`, in the
+  process that created the model, so each reply subject belongs to the
+  process whose `receive` reads it. The launch paths, `tui.connect_remote`
+  and `attach_daemon`, flush the `StartJob` their first catalogue load
+  queues, so that job still starts before the loop does. A job now starts
+  at the end of the step that asked for it instead of during it; nothing
+  later in that step could have read its reply.
+
+**Two leaks, fixed.** The survey for this slice found two places where a
+job's reply went unread.
+
+- A spent reconnect left a message in the terminal's mailbox for the life
+  of the process. The tick read the relaunch's subject only while the
+  attempt was `ReconnectAttempting`, and the attempt's outcome makes it
+  `ReconnectSpent`, so the relay's `AllDelivered` that follows was never
+  received, and every later selective receive scanned past it. The
+  runner now reads every job to its last message whatever its slot
+  holds. `a_spent_reconnect_leaves_nothing_in_the_mailbox_test` runs a
+  terminal in a process of its own whose relaunch slot is spent while its
+  relay is still sending, ticks it until its job table is empty, and
+  asserts an empty mailbox. The same scenario written against the old
+  API at the commit S4 started from left one message in the mailbox and
+  failed.
+- The client test driver selected only the control job's subject. An
+  actor discards a message its selector does not match, so a relaunch or
+  activity reply that arrived while the driver waited between scripts was
+  lost. The driver now selects `job_runner.selector(model.running)`, every
+  running job's replies, and hands each to `runtime.hold`, where a reply
+  the runtime received also goes.
+
+**Callers outside `update`.** A test that stands a slot in for a running
+job allocates its key with `tui_model.allocate_job`, gives it replies with
+`runtime.hold`, and calls the drain or `step`. A test that performs
+effects passes a table to `runtime.perform` and gets one back, and
+`runtime.no_jobs()` is an empty one. A test that needs a real worker
+starts one with `job_runner.start_task`, which takes the work as a
+function; `job_runner.start` is that function applied to a spec. A test
+that waits for a real reply selects on `job_runner.selector`.
+
+**What the step still does itself.** It starts the local session switch
+(`sessions.start`) and the attachment attempt (`attachment.start_recorded`)
+and pulls the switch's run, which S5 moves. Adoption calls
+`connection.adopt` (`tui/inbound.gleam:971` (`connection.adopt`),
+`tui/attachment.gleam:657` (`connection.adopt`)), which creates nothing
+but reads whether the replacement socket's actor is alive. That read
+stays in the step until phase 3, which replaces etui's events with a
+domain message type; the runtime can then read the liveness when it
+delivers the message that carries the socket, and hand the answer to the
+reducer with it.
+
+**Sites.**
+
+| Job | Start, before | Start, after | Reply read, before | Reply read, after |
+|---|---|---|---|---|
+| control, seven kinds | seven closures in `session_control`, each with its own `cancel_signal`, `new_subject` and `start_relayed` | `session_control.start_control` queues `StartJob(key, Control(host, request))` | `tick.drain_control`, `process.receive` on the slot's subject | `runtime.hold` admits into `ControlRequest.job`; `session_control.drain_control` takes |
+| relaunch | `inbound.begin_reconnect` spawned the relay | `inbound.begin_reconnect` queues `StartJob(key, Reconnect(options))` | `tick.drain_reconnect` | `runtime.hold` admits into `ReconnectAttempting`; `session_control.drain_reconnect` takes |
+| activity poll | `session_control.start_activity` spawned the relay, with no cancel | `session_control.start_activity` queues `StartJob(key, Activity(host, ids))` | `session_control.drain_activity`, `process.receive` | `runtime.hold` admits into `ActivityAsking`; `drain_activity` takes |
+| quit's cancels | `CancelTask(run.cancel)` and `CancelTask(cancel)` | `CancelJob(key)` for all three jobs, slots cleared | | |
+
+**Tests and mutations.** `jobs_test` pins the slice: a picker key queues
+exactly one `StartJob` under the key its slot holds and the step starts
+nothing; a reply under another key is not admitted; a late message from an
+earlier job does not finish the job that took its slot; a quit cancels a
+running job before it answers and nothing it sends reaches a slot; the
+spent reconnect above; and one tick takes the control reply before the
+relaunch's. Each mutation below was applied alone, and the named tests
+failed; each was then reverted.
+
+| Mutation | Tests that failed |
+|---|---|
+| `job.admit` admits a reply under any key | `a_reply_for_another_key_is_not_admitted_test`, `a_late_reply_from_an_earlier_job_does_not_reach_its_successor_test`, `reconnect_test.a_reply_for_another_attempt_is_not_admitted_test` |
+| `job.allocate` hands out the same key every time | the same three |
+| `job_runner.cancel` cancels a new signal instead of the job's | `a_cancelled_job_never_delivers_a_reply_test` |
+| quit cancels the relaunch before the control job | `effects_test.quit_with_a_channel_queues_every_close_and_cancel_test` |
+| the tick drains the relaunch before the control job | `a_tick_drains_the_jobs_in_their_fixed_order_test` |
+| `runtime.receive` stops reading jobs once no slot waits | `a_spent_reconnect_leaves_nothing_in_the_mailbox_test` |
+
+**Compile time.** The drains the tick now calls are cross-module calls,
+and `update` applies `settle` to the step's result, so the slice adds no
+local step for the inliner to revisit (`docs/execution.md` §8). Measured
+with `erlc +time` on the generated modules, median of three, before and
+after: `tui` 0.46 s and 0.022 s before, 0.47 s and 0.023 s after;
+`tui@tick` 0.47 s and 0.020 s, 0.47 s and 0.021 s; `tui@session_control`
+0.92 s and 0.061 s, 0.91 s and 0.059 s; `tui@inbound` 2.46 s and 0.126 s,
+2.53 s and 0.128 s; `tui@interaction` 2.48 s and 0.165 s, 2.56 s and
+0.168 s; `tui@submit` 1.17 s and 0.058 s, 1.25 s and 0.059 s; `tui@model`
+0.32 s and 0.012 s, 0.32 s and 0.013 s. `tui@runtime` grew with the
+routing it now does, from 0.21 s and 0.006 s to 0.33 s and 0.012 s. The
+new `tui@job` compiles in 0.15 s and `tui@job_runner` in 0.17 s.
