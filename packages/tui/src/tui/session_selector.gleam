@@ -391,8 +391,8 @@ pub fn resident_ids(state: State) -> List(String) {
 /// Adopts one activity reply for the identities it was asked about.
 ///
 /// The reply is a fresh observation of exactly the `asked` identities: one
-/// that is absent from it is no longer resident, so its old answer is
-/// dropped rather than kept. Answers about identities not on this page are
+/// that is absent from it was not running when the daemon's registry was
+/// asked, so its old answer is dropped rather than kept. Answers about identities not on this page are
 /// ignored. The highlighted identity stays highlighted if the filter still
 /// shows it, since an answer arriving must not move the row under the
 /// operator's cursor to a different session.
@@ -1184,12 +1184,11 @@ fn status_text(
       Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
     -> "Needs you · last run failed"
     NeedsYou, _ -> "Needs you"
-    Working, Some(protocol.Activity(strands:, working:, ..)) if strands > 1 ->
-      "Working · "
-      <> int.to_string(working)
-      <> " of "
-      <> plural(strands, "agent")
-      <> " running"
+
+    // `strands` counts every strand the session has ever held, finished
+    // sub-agents included, so only the running count is worth printing.
+    Working, Some(protocol.Activity(working:, ..)) if working > 1 ->
+      "Working · " <> plural(working, "agent") <> " running"
     Working, _ -> "Working"
     Idle,
       Some(protocol.Activity(last_outcome: Some(protocol.LastCompleted), ..))

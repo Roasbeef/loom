@@ -1236,9 +1236,10 @@ fn render_compact_footer(
 /// Names the key that opens the session picker, while that key would.
 ///
 /// Left opens the picker only from an empty composer with no pending paste
-/// and with daemon control, so the hint is shown under exactly those
-/// conditions and vanishes the moment Left goes back to moving the cursor.
-/// It is the last footer piece, and so the first a narrow terminal drops.
+/// and with daemon control, so the hint needs all three and vanishes the
+/// moment Left goes back to moving the cursor. It is drawn in the compact
+/// footer only, as its last piece and so the first a narrow terminal drops;
+/// the Ctrl+G footer spends its row on accounting.
 /// The attachments and control are generic because only their presence is
 /// read.
 ///

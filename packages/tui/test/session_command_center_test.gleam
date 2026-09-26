@@ -215,9 +215,7 @@ pub fn a_drained_answer_marks_the_open_picker_test() {
         fn() { -5000 },
       ),
       overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
-      activity_poll: tui_model.ActivityAsking(weft.cancel_signal(), replies, [
-        "busy",
-      ]),
+      activity_poll: tui_model.ActivityAsking(replies, ["busy"]),
     )
   process.send(
     replies,
@@ -242,9 +240,7 @@ pub fn a_closed_picker_ignores_a_late_answer_test() {
   let model =
     tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-      activity_poll: tui_model.ActivityAsking(weft.cancel_signal(), replies, [
-        "busy",
-      ]),
+      activity_poll: tui_model.ActivityAsking(replies, ["busy"]),
     )
   process.send(
     replies,

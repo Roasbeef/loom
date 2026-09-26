@@ -1099,7 +1099,6 @@ fn start_activity(
   host: daemon_selection.Host,
   ids: List(String),
 ) -> Model {
-  let cancel = weft.cancel_signal()
   let replies = process.new_subject()
 
   // Only the route and the identities cross into the worker, bound here for
@@ -1132,9 +1131,12 @@ fn start_activity(
       },
     ])
     |> weft.deadline(9000)
-    |> weft.cancel_with(cancel)
     |> weft.start_relayed(replies)
-  Model(..model, activity_poll: ActivityAsking(cancel, replies, ids))
+
+  // Closing the picker does not stop this worker: its deadline and its
+  // own connection bound what it can hold, and its answer is dropped by
+  // `drain_activity` when no picker is open to take it.
+  Model(..model, activity_poll: ActivityAsking(replies, ids))
 }
 
 /// Takes the activity worker's next relayed message, if one has arrived.
@@ -1156,7 +1158,7 @@ fn start_activity(
 pub fn drain_activity(model: Model) -> Model {
   case model.activity_poll {
     ActivityDue | ActivityResting(..) -> model
-    ActivityAsking(replies:, asked:, ..) ->
+    ActivityAsking(replies:, asked:) ->
       case process.receive(replies, 0) {
         Error(Nil) -> model
         Ok(weft.PulledOutcome(weft.Completed(value:, ..))) ->

@@ -403,8 +403,6 @@ pub type ActivityPoll {
 
   /// One request is in flight for exactly these identities.
   ActivityAsking(
-    /// Stops the worker if it must be abandoned.
-    cancel: weft.Cancel,
     /// The worker's relayed outcome.
     replies: Subject(weft.Pulled(List(control_protocol.Activity), String)),
     /// The identities the request named, which `observe` needs to tell an
