@@ -140,6 +140,9 @@ live summary nothing the next frame does not restate.
 
 A client that does not know `block_summary` ignores it (§1.5). A client
 that knows the event and receives an unknown `subject` ignores that frame.
+This obligation binds clients. The daemon's own reference decoder in
+`client/protocol`, which serves the golden fixtures and tests, refuses an
+unknown `subject` as a malformed body.
 
 ### Command `block_summaries`
 
