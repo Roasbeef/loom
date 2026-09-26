@@ -325,10 +325,22 @@ func TestCancelTermCompliant(t *testing.T) {
 // It is also the test that would notice the opposite mistake: if TERM
 // stopped reaching the payload at all, the handler would never run, the
 // grace would expire, and SIGKILL would report a signal rather than 7.
+//
+// The payload waits in short sleeps rather than one long one because a
+// shell runs a trap only between commands: a TERM that arrives while it
+// waits on a foreground child stays pending until that child exits. The
+// TERM rung signals the processes its scan found, so a child the shell
+// forks after the scan, or one caught between fork and exec while it is
+// still a copy of the shell with the trap's handler installed, never
+// dies of it. With `sleep 30` that child held the trap for thirty
+// seconds and the KILL rung ended the payload at the grace, which a
+// loaded runner hit often. With sleeps of 0.1s the shell reaches a
+// command boundary within 0.1s wherever the TERM landed, and its handler
+// still decides the status.
 func TestCancelHonoursThePayloadsTermHandler(t *testing.T) {
 	c := newCollector()
 	ex := start(t, testPolicy(t),
-		[]string{"/bin/sh", "-c", `trap 'exit 7' TERM; echo ready; sleep 30`},
+		[]string{"/bin/sh", "-c", `trap 'exit 7' TERM; echo ready; while :; do sleep 0.1; done`},
 		c.sink)
 	_ = ex.WriteStdin(nil, true)
 	waitFor(t, 10*time.Second, func() bool { return strings.Contains(c.out(), "ready") })
