@@ -917,7 +917,7 @@ boundaries and the split's measurements under Invariants.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `1b5ff5e6719566e034afa7727d405281562af3cb` with bounded input bursts,
+  `7443b5c1edd2a1b9390261ace50a57ed80b6dad4` (the fork's `main`) with bounded input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF, and
   scrollback-safe styled lines (`buffer.to_ansi_lines`); Mork
