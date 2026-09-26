@@ -909,8 +909,10 @@ pub type Model {
     herdr_published: Option(herdr.Publication),
     /// Effects this step has decided on, newest first, and the only queue a
     /// step has. The reducer only appends here, through `emit`, `record` and
-    /// `hold_channel`; `runtime.take` empties it at the end of every step
-    /// and performs what it held, so between two steps it is always empty.
+    /// `hold_channel`; `runtime.take` empties it at the end of every step,
+    /// so between two `update` calls it is empty. A caller that runs a
+    /// reducer outside `update` leaves its effects here until it calls
+    /// `runtime.flush` or the next step collects them.
     outbox: List(effect.Effect),
   )
 }
