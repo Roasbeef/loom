@@ -1110,8 +1110,16 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
           )
         }
       }
+
+    // Left with nothing to move through has no editing meaning, so it opens
+    // the session picker, the way Down from an idle composer enters the
+    // strip. A draft or a pending paste keeps Left as a cursor key: the
+    // picker must never be one stray arrow away from text being edited.
     keys.Left, False, False ->
-      Model(..model, input: text_area.move_cursor_left(model.input))
+      case text_area.value(model.input), model.attachments {
+        "", [] -> submit.open_session_selector(model)
+        _, _ -> Model(..model, input: text_area.move_cursor_left(model.input))
+      }
     keys.Right, False, False ->
       Model(..model, input: text_area.move_cursor_right(model.input))
     keys.Home, False, False ->

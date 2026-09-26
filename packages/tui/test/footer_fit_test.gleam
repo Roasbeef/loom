@@ -127,3 +127,12 @@ pub fn the_compact_footer_drops_whole_pieces_test() {
   assert !string.contains(text, "est $4…")
   assert string.contains(text, "steer captured")
 }
+
+// The Left hint appears only where Left would open the picker: an empty
+// composer, no pending paste, and a daemon to ask.
+pub fn sessions_hint_tracks_the_left_binding_test() {
+  assert render.sessions_hint("", [], Some(Nil)) == "← sessions"
+  assert render.sessions_hint("draft", [], Some(Nil)) == ""
+  assert render.sessions_hint("", [Nil], Some(Nil)) == ""
+  assert render.sessions_hint("", [], None) == ""
+}

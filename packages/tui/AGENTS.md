@@ -873,7 +873,9 @@ boundaries and the split's measurements under Invariants.
   <name> [target]` retires one a strand created (the target defaults to
   the active strand, and an operator `[[schedule]]` comes back as a
   `conflict` naming the configuration file),
-  `/sessions` opens the daemon's authorized metadata selector. `/peers` inspects
+  `/sessions`, or Left from an empty composer with no pending paste, opens
+  the daemon's authorized metadata selector; the footer's `← sessions` hint
+  is shown exactly while Left would do so. `/peers` inspects
 the active strand's owner-managed directional links; press `l` to choose a resident
 session and enter its exact strand, `d` to revoke the selected direction, and `v`
 to propose a separately confirmed reverse link. `busy_only` is the default wake

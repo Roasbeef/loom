@@ -1197,6 +1197,11 @@ fn render_compact_footer(
       text_hygiene.single_line(model.current_model),
       context_view.footer(model.context),
       "est $" <> transcript_lines.money(model.usage.cost.total),
+      sessions_hint(
+        text_area.value(model.input),
+        model.attachments,
+        model.daemon_host,
+      ),
     ]
     |> list.filter(fn(piece) { piece != "" })
   let status = agents.summary_rows(layout.displayed_agents(model))
@@ -1225,6 +1230,33 @@ fn render_compact_footer(
         span.line_new([span.span_styled(row, theme.footer_text())]),
       ])
     }
+  }
+}
+
+/// Names the key that opens the session picker, while that key would.
+///
+/// Left opens the picker only from an empty composer with no pending paste
+/// and with daemon control, so the hint is shown under exactly those
+/// conditions and vanishes the moment Left goes back to moving the cursor.
+/// It is the last footer piece, and so the first a narrow terminal drops.
+/// The attachments and control are generic because only their presence is
+/// read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert render.sessions_hint("", [], Some(host)) == "← sessions"
+/// assert render.sessions_hint("draft", [], Some(host)) == ""
+/// ```
+@internal
+pub fn sessions_hint(
+  draft: String,
+  attachments: List(attachment),
+  control: Option(host),
+) -> String {
+  case draft, attachments, control {
+    "", [], Some(_) -> "← sessions"
+    _, _, _ -> ""
   }
 }
 
