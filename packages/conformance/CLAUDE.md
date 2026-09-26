@@ -205,6 +205,21 @@ them from their own test mains.
   that legitimately changes the outcome (a provider that refuses, a user
   who aborts) is scripted into *both* runs so it cannot be mistaken for
   damage.
+- **A provider request is never parked on the logical clock** (#335). It
+  runs inside the runtime's provider deadline (`surface.provider_timeout_ms`,
+  60 ms) and two-second cancellation grace, and both are real time. A
+  `SlowEffect` park ends only after the runner has advanced the clock
+  through every earlier deadline, so its real length is the host's: about
+  165 ms idle and four to seven seconds under load for a 2000 ms park. The
+  loaded case outlived the grace, settled the attempt as
+  `CancellationUnconfirmed`, and folded a steer into the retry, one turn
+  short of the fault-free run (seed 14, `convergence/ledger`).
+  `surface.request` therefore applies only the survival faults; a
+  `SlowEffect` drawn on a provider index does nothing, while tool
+  executions, which have no runtime deadline, are still slowed. A live
+  intervention's rendezvous still runs inside the deadline, and a
+  settlement that misses it arrives inside the grace and is forwarded
+  unchanged.
 - **Starved provider owners end with their consumers.** A starved provider
   effect is a weft witnessed run (`weft.new_prepared([weft.managed(...)])
   |> weft.cancel_when_exits(consumer) |> weft.start_witnessed`), and its

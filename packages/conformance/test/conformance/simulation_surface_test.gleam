@@ -9,9 +9,11 @@
 //// turn from, which is the one failure mode the whole runner exists to
 //// rule out.
 ////
-//// One test here holds the runner's retry pacing, which reaches into a
-//// tree that may be restarting, to waiting for the writer to return rather
-//// than for a fixed pause.
+//// Two tests here hold the harness's real-time exposure to the places it
+//// is documented. A provider request runs inside the runtime's real-time
+//// deadline, so a slow fault must not park it on the logical clock. The
+//// runner's retry pacing reaches into a tree that may be restarting, so it
+//// must wait for the writer to return rather than for a fixed pause.
 
 import conformance/simulation/control
 import conformance/simulation/fault
@@ -19,6 +21,8 @@ import conformance/simulation/runner
 import conformance/simulation/script
 import conformance/simulation/surface
 import conformance/simulation/vclock
+import core/clock
+import core/ids
 import core/json
 import core/message.{UserMessage, UserText}
 import core/register
@@ -30,7 +34,9 @@ import gleam/otp/system
 import gleam/result
 import gleam/string
 import machine/operation.{ReplaySafe}
+import provider/stream
 import runtime/api
+import runtime/effects
 import runtime/supervisor
 import session/session
 import storage/storage
@@ -206,6 +212,63 @@ pub fn durable_admission_marker_settles_a_lost_reply_test() {
       "intervened@follow-up-during-effect",
     ]
     as "the durable marker must close the claimed intervention debt"
+}
+
+/// A `SlowEffect` aimed at a provider request must not park it on the
+/// logical clock. The request runs inside the runtime's provider deadline
+/// and cancellation grace, which are real milliseconds, while a park ends
+/// only once the runner has advanced the clock through every deadline before
+/// it. On a loaded host that turned a slow request into a failed attempt
+/// and cost the faulted run a turn (seed 14). Nothing advances the clock in
+/// this test, so a request that parked would never settle.
+pub fn a_slow_fault_never_parks_a_provider_request_test() {
+  let vc = vclock.start(from: 1_700_000_000_000)
+  let ctl = control.start()
+  let assert Ok(raw) = session.open_memory(vclock.clock(vc))
+    as "the memory session must open"
+  let schedule =
+    fault.Schedule(faults: [fault.SlowEffect(index: 1, delay_ms: 2000)])
+  let surfaces =
+    surface.build(ctl, vc, idle_script(), schedule, raw, strand: "main")
+  let assert effects.ProviderSurface(request:, ..) = surfaces.provider
+    as "the simulated provider is the immediate surface"
+
+  // The request runs on a process of its own so that a park cannot hang the
+  // suite, and that process reads the stream because the request made the
+  // events subject there.
+  let answered = process.new_subject()
+  let requester =
+    process.spawn_unlinked(fn() {
+      let handle = request(generation_request())
+      process.send(answered, process.receive(handle.events, 0))
+    })
+  let outcome = process.receive(answered, 1000)
+  process.kill(requester)
+  let now = vclock.now(vc)
+  let _closed = session.close(raw)
+  vclock.stop(vc)
+  control.stop(ctl)
+
+  let assert Ok(Ok(stream.Settled(..))) = outcome
+    as "a slow provider request must settle without the clock moving"
+  assert now == 1_700_000_000_000 as "nothing may advance the clock here"
+}
+
+// A main-strand generation request at phase zero, which the idle script
+// answers with its default settlement.
+fn generation_request() -> effects.RequestSpec {
+  let generator = ids.generator(clock.fixed(at: 0), seed: 14)
+  let #(operation, generator) = ids.mint_op(generator)
+  let #(response_entry, _generator) = ids.mint_entry(generator)
+  effects.GenerationRequest(
+    operation:,
+    step_id: "turn-0",
+    attempt: 1,
+    response_entry:,
+    configuration: runner.configuration(),
+    context: [],
+    stream_options: json.Object([]),
+  )
 }
 
 /// The runner's retry pacing waits until the tree has registered a writer
