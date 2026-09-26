@@ -688,9 +688,11 @@ fn final_message(
 ) -> JsonValue {
   case last {
     Some(operation.RunLastResult(final_assistant: Some(id), ..)) ->
-      case assistant_text(runtime, id) {
+      // Clipping collapses whitespace first, so a message of only
+      // whitespace is null here rather than an empty string.
+      case glance.clip(assistant_text(runtime, id), overview_message_bytes) {
         "" -> json.Null
-        text -> json.String(glance.clip(text, overview_message_bytes))
+        text -> json.String(text)
       }
     Some(operation.RunLastResult(final_assistant: None, ..))
     | Some(operation.CompactionLastResult(..))

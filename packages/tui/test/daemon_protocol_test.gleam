@@ -1,4 +1,5 @@
 import core/json
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -195,7 +196,13 @@ pub fn session_activity_request_names_distinct_bounded_sessions_test() {
     )
 
   // Each of these is a request the daemon refuses whole.
-  let too_many = list.repeat(first, protocol.activity_limit + 1)
+  // Distinct identities, so the count bound is tested apart from the
+  // duplicate rule.
+  let too_many =
+    list.repeat(Nil, protocol.activity_limit + 1)
+    |> list.index_map(fn(_, index) {
+      "00000000-0000-7000-8000-0000000001" <> pad(index)
+    })
   list.each([[], [first, first], ["not-a-session"], too_many], fn(sessions) {
     let assert Error(_) =
       protocol.encode(1, protocol.SessionActivity(sessions), epoch)
@@ -329,4 +336,11 @@ pub fn archive_controls_encode_with_their_authority_fields_test() {
     == Ok(
       "{\"v\":2,\"id\":7,\"cmd\":\"sessions.archived\",\"body\":{\"after\":\"\"}}",
     )
+}
+
+fn pad(index: Int) -> String {
+  case index < 10 {
+    True -> "0" <> int.to_string(index)
+    False -> int.to_string(index)
+  }
 }

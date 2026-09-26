@@ -71,9 +71,11 @@ The response body is `{"activity":[row, ...]}`, with rows in request order:
   boundary. It is `null` when that run has no final assistant entry.
 - `model` is main's configured model identity, at most 64 bytes, or `null`
   when main has no configuration.
-- `glances` holds at most four sub-agent glances, newest first. A glance is
+- `glances` holds at most four strand glances, newest first. A glance is
   included only while its operation is still its strand's current operation,
-  as `core/glance` requires. `strand` is cut to 96 bytes, `title` to 60, and
+  as `core/glance` requires. The glance loop does not write one for `main`
+  or the advisor today, but a `main` glance that exists is reported like any
+  other. `strand` is cut to 96 bytes, `title` to 60, and
   `summary` to 160.
 
 The recipient bounds its own row to 2,300 encoded bytes: when the row is

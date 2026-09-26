@@ -820,7 +820,7 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, and `sessions.activity`. Every mutating control command
-is refused. Source: (`client/daemon/server.gleam:443-463`).
+is refused. Source: (`client/daemon/server.gleam:475-492`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -939,7 +939,7 @@ opens a saved session and never reads its database.
 | `last_outcome` | string or null | optional | How main's last run ended: `completed`, `failed`, or `aborted`. `null` when main has not finished a run, or its latest terminal result is a compaction or navigation. |
 | `last_message` | string or null | optional | Main's final assistant text for that run, on one line, at most 280 bytes. |
 | `model` | string or null | optional | Main's configured model identity, at most 64 bytes. |
-| `glances` | array | optional | At most four sub-agent glances, newest first, each with `strand` (at most 96 bytes), `title` (at most 60), and `summary` (at most 160, possibly empty). |
+| `glances` | array | optional | At most four glances of strands whose operation is still current (`main` included), newest first, each with `strand` (at most 96 bytes), `title` (at most 60), and `summary` (at most 160, possibly empty). |
 
 `state` is `needs_you` when an approval is pending, or when main's last run
 failed and main has no current operation; otherwise `working` when any strand
