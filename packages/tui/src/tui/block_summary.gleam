@@ -1,11 +1,12 @@
 //// Summarizer labels for long reasoning blocks and delivered advisor
 //// messages, as this terminal holds them (protocol 050).
 ////
-//// A reasoning block renders collapsed to one row. For a long block the
-//// daemon's summarizer writes a one- or two-sentence label, and the row
-//// shows that label, marked as the summarizer's, in place of the block's
-//// first line. The full text is still the durable entry and still one
-//// Ctrl+G away. The same labels shorten long advice and nudges messages.
+//// A reasoning block renders collapsed. For a long block the daemon's
+//// summarizer writes a one- or two-sentence label, and the collapsed block
+//// becomes a header row naming it as summarized, with the label drawn
+//// beneath as dim secondary text of up to three rows. The full text is
+//// still the durable entry and still one Ctrl+G away. The same labels
+//// shorten long advice and nudges messages.
 ////
 //// Labels reach the terminal two ways, and this module holds both.
 //// **Stored labels** belong to committed blocks, keyed by entry id and the
@@ -44,10 +45,6 @@ pub const floor_bytes = 512
 /// The most blocks one `block_summaries` read may name. A copy of the
 /// protocol's bound, pinned the same way.
 pub const max_blocks = 32
-
-/// How a label is introduced wherever it is drawn. It is the summarizer's
-/// text, not the agent's or the advisor's, and the row says so.
-pub const label_prefix = "summary: "
 
 /// One committed block: an entry id in canonical text form and the block's
 /// index in that entry's message content.

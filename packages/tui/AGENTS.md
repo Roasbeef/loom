@@ -444,8 +444,9 @@ boundaries and the split's measurements under Invariants.
   its opening line and the expand hint once it settles — and `Ctrl+G` shows
   the block itself; a redacted block is its one-line marker in either mode.
   A block of at least 512 bytes may carry a summarizer label (protocol 050):
-  the settled row then shows `summary: <label>` in place of the opening
-  line, and the live row appends the newest live label.
+  it then renders as a `SummarizedReasoning` header row, `∴ Reasoning
+  (summarized)` with the hint or with its line count and elapsed time
+  while live, and the label beneath as dim text of at most three rows.
   Compact tool rows retain every call while folding arguments and results.
   Unresolved code-mode calls retain a syntax-highlighted preview of six
   submitted source lines, with an omission marker. Confirmed success replaces
@@ -824,7 +825,7 @@ boundaries and the split's measurements under Invariants.
   joins the worker before the caller sees the timeout. It performs no path
   expansion or shell evaluation.
 - `tui/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
-  label_prefix, new, stored, live, carried, receive, receive_board, want,
+  new, stored, live, carried, receive, receive_board, want,
   next_read, refused, retain_live, decode_board}` — summarizer labels for
   long blocks (protocol 050), held per attachment in `Model.summaries`:
   stored labels by `Key(entry, block)`, live labels by stream
@@ -837,12 +838,14 @@ boundaries and the split's measurements under Invariants.
   `max_blocks` (32) are copies of the server's constants, pinned by the
   gateway's `the_terminal_copies_the_summary_bounds_test`.
   `transcript_lines.{summarizable_blocks, labels_for, summary_keys,
-  live_summary_digest, summarized_reasoning_digest,
-  labelled_advisor_lines}` draw them: `labels_for` resolves one entry's
+  live_summary_digest, live_summary_header, summarized_reasoning_line,
+  summary_rows, labelled_advisor_lines}` and `render.summarized_mark`
+  draw them: `labels_for` resolves one entry's
   labels by block index and is part of the compact entry cache's key, so
   a label arriving re-projects only its own entry. A long advice or
-  nudges message collapses in compact mode to its heading and the label,
-  or its first line while none exists; a short one keeps its full body in
+  nudges message collapses in compact mode to a `SummarizedAdvice` line:
+  its heading and, beneath it, the label or its first line while none
+  exists; a short one keeps its full body in
   both modes, and advisor commentary rows (`tui/advisor_history`) are
   never summarized.
 - `tui/advisor_pending.{Board, decode, lines, primary_strand,
@@ -1246,20 +1249,29 @@ untouched.
   clipped to the pane rather than wrapped, and `markdown.wrap_lines`
   recognises it by `markdown.digest_mark` and leaves it fixed. A character
   limit on the digest text alone would only move the width at which the mark
-  and the expand hint pushed it onto a second row. The same holds for the
-  labelled forms: a summarizer label changes the row's words, never its
-  count, so a label arriving and the live-to-settled hand-off keep the
-  transcript's height. The live row's elapsed time is
-  `Model.generation_elapsed_s`, read from `generation_started_ms` on the
-  tick (`tick.advance_generation_clock`); a change repaints only while a
-  reasoning row is on screen and leaves the record cache valid.
-- **A summary never re-attributes text.** Every label is drawn after
-  `block_summary.label_prefix` (`summary: `), so a reader can tell the
-  summarizer's words from the agent's and the advisor's. A label arriving
-  clears `record_cache_valid` when it rewrites a cached row (a settled
-  label, or a live one whose response is already recorded); other live
-  labels touch only the transient tail. A refused `block_summaries` read is
-  silent and ends the reads for the attachment.
+  and the expand hint pushed it onto a second row. The rule holds for a
+  block without a summary. A summarized block (`SummarizedReasoning`) is
+  deliberately taller: a clipped header row plus at most
+  `transcript_lines.summary_rows` (3) dim rows, laid out by
+  `render.summarized_rows` and exempt from the outer wrap. A settled block
+  borrows its stream's live label until its own arrives, so a block that
+  showed a summary while live settles into the same rows; a label arriving
+  later adds rows once, and the anchor projection is built from the same
+  lines, so it stays parallel and the reading view relocates the reader
+  (`a_summarized_block_keeps_anchors_parallel_to_rows_test`,
+  `a_summary_off_screen_leaves_the_reader_in_place_test`). The live
+  row's elapsed time is `Model.generation_elapsed_s`, read from
+  `generation_started_ms` on the tick (`tick.advance_generation_clock`); a
+  change repaints only while a reasoning row is on screen and leaves the
+  record cache valid.
+- **A summary never re-attributes text.** The header above a label names
+  it as summarized (`∴ Reasoning (summarized)`, or an advice heading marked
+  `(summarized)`), so a reader can tell the summarizer's words from the
+  agent's and the advisor's. A label arriving clears `record_cache_valid`
+  when it rewrites a cached row (a settled label, or a live one whose
+  response is already recorded); other live labels touch only the
+  transient tail. A refused `block_summaries` read is silent and ends the
+  reads for the attachment.
 - **Reasoning is collapsed unless details are expanded.** A digest is drawn
   literally rather than through the Markdown renderer, so a fence or a list
   marker in the model's own prose cannot turn a one-row indicator into

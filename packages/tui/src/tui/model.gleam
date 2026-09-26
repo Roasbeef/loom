@@ -97,6 +97,18 @@ pub type Speaker {
   /// from its first live fragment through to its settle.
   ReasoningDigest
 
+  /// A collapsed reasoning block that has a summarizer label (protocol
+  /// 050). The text is a header, a newline, and the label: the header row
+  /// names the block as summarized, and the label is drawn beneath it as
+  /// dim secondary text of at most three rows, so the summary is readable
+  /// rather than clipped to what is left of one row.
+  SummarizedReasoning
+
+  /// A collapsed long advice or nudges message: the heading row, a
+  /// newline, then the summarizer's label or the body's opening line, drawn
+  /// the way `SummarizedReasoning` draws its label.
+  SummarizedAdvice
+
   ToolCall
   ToolResult
   ToolDetail

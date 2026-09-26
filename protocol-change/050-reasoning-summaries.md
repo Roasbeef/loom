@@ -174,20 +174,25 @@ answers `unsupported`.
 ### What a client does with them
 
 A client MUST present a summary as the summarizer's text and never as the
-agent's or the advisor's own words. The reference terminal prefixes it with
-`summary: `.
+agent's or the advisor's own words. The reference terminal says so in the
+row above it: `∴ Reasoning (summarized)`, or the advice heading followed by
+`(summarized)`.
 
 The reference terminal behaves as follows. In compact mode, a long
-reasoning block's single collapsed row shows its summary in place of the
-first-line digest and keeps the expand hint. The live row of a streaming
-reasoning block shows its line count, the time the generation has run, and
-the newest live summary when one exists. Both stay exactly one row, so the
-arrival of a summary and the hand-off from live to settled change the
-row's words and not the transcript's height. When a response commits
-before its own summary arrives, its first long reasoning block shows the
-stream's live summary until the stored one replaces it. A long advice or
-nudges message collapses in compact mode to its heading and its summary,
-or to its heading and first line while no summary exists. Detail mode
+reasoning block with a summary renders as a header row, `∴ Reasoning
+(summarized)` with the expand hint when settled, or with its line count
+and the time the generation has run while it streams, and the summary
+beneath it as dim secondary text wrapped to at most three rows, cut with an
+ellipsis beyond that. A block without a summary keeps its single digest
+row. A summarized block therefore takes more rows than the digest it
+replaces, and a summary that arrives after its block is on screen adds
+those rows once; a reader scrolled back into history keeps the rows on
+screen in place. When a response commits before its own summary arrives,
+its first long reasoning block shows the stream's live summary until the
+stored one replaces it, so a block that showed a summary while streaming
+settles into the same number of rows. A long advice or nudges message
+collapses in compact mode to its heading and, beneath it in the same dim
+form, its summary, or its first line while no summary exists. Detail mode
 (Ctrl+G) shows every block's full text, unchanged.
 
 The terminal reads stored summaries for long blocks of the records it

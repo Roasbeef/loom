@@ -732,13 +732,13 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui/transcript_lines.gleam:1221`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1578`) renders
+`advisor_payload` (`tui/transcript_lines.gleam:1243`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1600`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
-collapses in compact mode to its heading and one line: the summarizer's
-summary, prefixed `summary: `, or the body's first line while no summary
-exists ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
+collapses in compact mode to its heading and, beneath it as dim text of
+at most three rows, the summarizer's summary, with the heading marked
+`(summarized)`, or the body's first line while no summary exists ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
 Detail mode shows its whole body. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.
 The advisor's own commentary rows (`tui/advisor_history`) are not

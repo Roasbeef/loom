@@ -38,8 +38,8 @@ import tui/file_read_view
 import tui/model.{
   type CacheNotice, type Line, type Model, type Speaker, type Stream,
   type Submission, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
-  ReasoningDigest, Spacer, Stream, System, ToolCall, ToolDetail, ToolFailure,
-  ToolPatch, ToolResult, User,
+  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 }
 import tui/notes_view
 import tui/protocol
@@ -326,20 +326,25 @@ pub fn stream_lines(
 // code paths a few hundred milliseconds apart — this one from the stream
 // the provider is still writing, the other from the record the daemon has
 // committed — so the two functions below are deliberately the same shape.
-// Collapsed, each is exactly one `ReasoningDigest` row — clipped to the pane
-// rather than wrapped, so the count holds at every width — and the settle
-// therefore changes the row's words and not the transcript's height. A
-// summarizer label changes the words of that one row too, never its count.
+// Collapsed without a summary, each is exactly one `ReasoningDigest` row —
+// clipped to the pane rather than wrapped, so the count holds at every width
+// — and the settle therefore changes the row's words and not the
+// transcript's height. With a summary each is one `SummarizedReasoning`
+// line: a header row and the summary beneath it. The settled block borrows
+// the stream's summary until its own arrives (`labels_for`), so a block that
+// showed a summary while streaming settles into the same number of rows.
 fn live_reasoning_line(
   text: String,
   extent: notes_view.Extent,
   label: Option(String),
   elapsed_s: Int,
 ) -> Line {
-  case extent {
-    notes_view.Complete -> Line(Reasoning, text)
-    notes_view.Excerpt ->
-      Line(ReasoningDigest, live_summary_digest(text, elapsed_s, label))
+  case extent, label {
+    notes_view.Complete, _ -> Line(Reasoning, text)
+    notes_view.Excerpt, None ->
+      Line(ReasoningDigest, live_summary_digest(text, elapsed_s))
+    notes_view.Excerpt, Some(label) ->
+      summarized_reasoning_line(live_summary_header(text, elapsed_s), label)
   }
 }
 
@@ -353,73 +358,84 @@ fn settled_reasoning_line(
     notes_view.Excerpt, None ->
       Line(ReasoningDigest, settled_reasoning_digest(text))
     notes_view.Excerpt, Some(label) ->
-      Line(ReasoningDigest, summarized_reasoning_digest(label))
+      summarized_reasoning_line(expand_hint, label)
   }
 }
 
-/// The collapsed stand-in for a reasoning block still streaming, with how
-/// long the generation has run and the newest summarizer label.
+/// The collapsed stand-in for a reasoning block still streaming and not
+/// yet summarized: how much of it has arrived and how long the generation
+/// has run. With no clock reading it is exactly `live_reasoning_digest`'s.
 ///
-/// The count and the clock come first because they are what change while
-/// the block streams, and the label last, because a narrow pane cuts a row
-/// from its end. With neither a clock reading nor a label the row is
-/// exactly `live_reasoning_digest`'s. The label is introduced as the
-/// summarizer's (`block_summary.label_prefix`), so it cannot be read as
-/// the agent's own words.
+/// The count and the clock are what change while the block streams, and a
+/// counter that climbs is easier to ignore than an excerpt rewritten under
+/// the reader.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.live_summary_digest("one\ntwo", 64, None)
-///   == "2 lines · 1m 04s so far"
+/// assert tui.live_summary_digest("one\ntwo", 64) == "2 lines · 1m 04s so far"
 /// ```
 ///
 /// ```gleam
-/// assert tui.live_summary_digest("one", 0, Some("The agent reads."))
-///   == "1 line so far · summary: The agent reads."
+/// assert tui.live_summary_digest("one", 0) == "1 line so far"
 /// ```
 @internal
-pub fn live_summary_digest(
-  text: String,
-  elapsed_s: Int,
-  label: Option(String),
-) -> String {
-  let count = text |> string.split("\n") |> list.length
-  let lines =
-    int.to_string(count)
-    <> case count {
-      1 -> " line"
-      _ -> " lines"
-    }
-  let so_far = case elapsed_s > 0 {
+pub fn live_summary_digest(text: String, elapsed_s: Int) -> String {
+  let lines = line_count(text)
+  case elapsed_s > 0 {
     True -> lines <> " · " <> elapsed_words(elapsed_s) <> " so far"
     False -> lines <> " so far"
   }
-  case label {
-    None -> so_far
-    Some(label) ->
-      so_far
-      <> " · "
-      <> block_summary.label_prefix
-      <> compact(label, summary_digest_limit)
-  }
 }
 
-/// The collapsed stand-in for a committed reasoning block that has a
-/// summarizer label: the label, introduced as the summarizer's, and the key
-/// that opens the block itself.
+/// The header of a summarized reasoning block still streaming: its line
+/// count and how long the generation has run, after the
+/// `∴ Reasoning (summarized)` mark the renderer draws.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.summarized_reasoning_digest("The agent weighs two fixes.")
-///   == "summary: The agent weighs two fixes.  [Ctrl+G to expand]"
+/// assert tui.live_summary_header("one\ntwo", 13) == " · 2 lines · 13s"
 /// ```
 @internal
-pub fn summarized_reasoning_digest(label: String) -> String {
-  block_summary.label_prefix
-  <> compact(label, summary_digest_limit)
-  <> expand_hint
+pub fn live_summary_header(text: String, elapsed_s: Int) -> String {
+  let lines = " · " <> line_count(text)
+  case elapsed_s > 0 {
+    True -> lines <> " · " <> elapsed_words(elapsed_s)
+    False -> lines
+  }
+}
+
+/// One collapsed reasoning block that has a summary: `header` for its
+/// first row, after the renderer's `∴ Reasoning (summarized)` mark, and
+/// the summary as the dim secondary lines beneath it (at most
+/// `summary_rows` of them).
+///
+/// The header names the text as summarized, so the summary itself carries
+/// no prefix and is never read as the agent's own words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.summarized_reasoning_line("  [Ctrl+G to expand]", "Found it.")
+///   == Line(SummarizedReasoning, "  [Ctrl+G to expand]\nFound it.")
+/// ```
+@internal
+pub fn summarized_reasoning_line(header: String, label: String) -> Line {
+  Line(SummarizedReasoning, header <> "\n" <> label)
+}
+
+/// The most rows a summary's secondary lines take beneath their header.
+/// A longer summary is cut with an ellipsis at the end of the last row.
+pub const summary_rows = 3
+
+fn line_count(text: String) -> String {
+  let count = text |> string.split("\n") |> list.length
+  int.to_string(count)
+  <> case count {
+    1 -> " line"
+    _ -> " lines"
+  }
 }
 
 // Seconds as the row reads them: `45s`, `1m 04s`. The seconds are padded
@@ -437,13 +453,6 @@ fn elapsed_words(seconds: Int) -> String {
     }
   }
 }
-
-/// How much of a summarizer label a collapsed row keeps.
-///
-/// A label is already bounded by the daemon to two short sentences. The row
-/// is clipped to the pane in any case; this only stops an unusually long
-/// label from making every cached row key carry it whole.
-pub const summary_digest_limit = 240
 
 /// The collapsed stand-in for a reasoning block the provider is still
 /// writing: how much of it has arrived, and nothing of what it says.
@@ -877,9 +886,20 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
-    ToolCall | ToolResult | ToolFailure | ToolPatch | ReasoningDigest -> True
-    System | User | Assistant | Reasoning | ToolDetail | Failure | Spacer ->
-      False
+    ToolCall
+    | ToolResult
+    | ToolFailure
+    | ToolPatch
+    | ReasoningDigest
+    | SummarizedReasoning -> True
+    System
+    | User
+    | Assistant
+    | Reasoning
+    | ToolDetail
+    | Failure
+    | Spacer
+    | SummarizedAdvice -> False
   }
 }
 
@@ -893,12 +913,14 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
+    [Line(speaker: SummarizedReasoning, ..), ..] -> True
 
     // A harness row, such as advisor commentary, a notice or a tool group's
     // own heading, draws its blank below itself like every other speaker, so
     // under a call's bare last row it would sit welded to that call without a
     // gap of its own.
     [Line(speaker: System, ..), ..] -> True
+    [Line(speaker: SummarizedAdvice, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
     // `GroupOpening`.
@@ -1615,7 +1637,7 @@ pub fn labelled_advisor_lines(
   // would say the operator typed it.
   case value, extent {
     Advice(..), notes_view.Excerpt | Nudges(..), notes_view.Excerpt if long -> [
-      Line(System, heading <> delivered_preview(value, label) <> expand_hint),
+      delivered_summary_line(heading, value, label),
     ]
     Advice(..), _ | Nudges(..), _ -> [
       Line(System, heading),
@@ -1675,14 +1697,25 @@ pub fn advisor_body_preview(body: String) -> String {
   compact(opening_line(body), advisor_preview_limit)
 }
 
-// What a collapsed delivered message shows beside its heading: the
-// summarizer's label when there is one, marked as the summarizer's, and the
-// body's opening line otherwise.
-fn delivered_preview(value: AdvisorMessage, label: Option(String)) -> String {
+// A collapsed long advice or nudges message: its heading, marked as
+// summarized when the summarizer's label is what follows, and then that
+// label or the body's opening line as the secondary text beneath it.
+fn delivered_summary_line(
+  heading: String,
+  value: AdvisorMessage,
+  label: Option(String),
+) -> Line {
   case label {
     Some(label) ->
-      ": " <> block_summary.label_prefix <> compact(label, summary_digest_limit)
-    None -> ": " <> compact(opening_line(value.body), advisor_preview_limit)
+      Line(
+        SummarizedAdvice,
+        heading <> " (summarized)" <> expand_hint <> "\n" <> label,
+      )
+    None ->
+      Line(
+        SummarizedAdvice,
+        heading <> expand_hint <> "\n" <> opening_line(value.body),
+      )
   }
 }
 

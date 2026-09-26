@@ -1,13 +1,16 @@
 //// Summarizer labels in the transcript (protocol 050): which blocks show
-//// one, what a collapsed row reads in compact and detail mode, that every
-//// form of a reasoning row stays one row, how a live label carries over to
-//// the committed block, how long advisor messages collapse, and how a
-//// reattaching terminal reads stored labels back.
+//// one, what a collapsed block reads in compact and detail mode, how many
+//// rows a summarized block takes, how a live label carries over to the
+//// committed block, how long advisor messages collapse, that the anchor and
+//// row projections stay parallel and the reader stays in place when a
+//// summary adds rows, and how a reattaching terminal reads labels back.
 
 import core/ids
 import core/json
 import etui/backend
 import etui/geometry
+import etui/span
+import etui/text
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -27,7 +30,7 @@ import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
 
-const label = "The agent weighs two fixes and picks the bounded retry."
+const label = "Found four bugs: touching intervals are not merged and exact-length gaps are dropped."
 
 // --- which blocks, and what their rows read ------------------------------------
 
@@ -50,9 +53,10 @@ pub fn a_short_block_keeps_its_first_line_digest_test() {
     ]
 }
 
-// A long block shows its label, marked as the summarizer's, in place of its
-// opening line, and only in compact mode: detail mode is the full text.
-// Without a label it is exactly today's digest.
+// A long block with a label becomes a summarized block in compact mode: a
+// header naming it as summarized, with the expand hint, and the label as
+// its secondary text. Without a label it is exactly today's digest, and
+// detail mode is the full text either way.
 pub fn a_long_block_shows_its_label_in_compact_mode_only_test() {
   let text = long_thinking()
   let record = thinking_record(text, 2)
@@ -67,8 +71,8 @@ pub fn a_long_block_shows_its_label_in_compact_mode_only_test() {
   assert transcript_lines.entry_lines(record.entry, False, None, labels)
     == [
       tui_model.Line(
-        tui_model.ReasoningDigest,
-        "summary: " <> label <> "  [Ctrl+G to expand]",
+        tui_model.SummarizedReasoning,
+        "  [Ctrl+G to expand]\n" <> label,
       ),
     ]
   assert transcript_lines.entry_lines(
@@ -87,32 +91,82 @@ pub fn a_long_block_shows_its_label_in_compact_mode_only_test() {
     == [tui_model.Line(tui_model.Reasoning, text)]
 }
 
-// The live row counts lines, then how long the generation has run, then the
-// newest label; with neither a clock reading nor a label it is exactly the
-// row it was before labels existed.
-pub fn the_live_row_reads_lines_time_and_label_test() {
-  assert transcript_lines.live_summary_digest("a\nb", 64, None)
+// Unsummarized, the live row is the count and the clock on one row, and
+// with no clock reading it is exactly the row it was before labels. The
+// summarized header carries the same figures without "so far".
+pub fn the_live_row_reads_lines_and_time_test() {
+  assert transcript_lines.live_summary_digest("a\nb", 64)
     == "2 lines · 1m 04s so far"
-  assert transcript_lines.live_summary_digest("a\nb", 9, None)
+  assert transcript_lines.live_summary_digest("a\nb", 9)
     == "2 lines · 9s so far"
-  assert transcript_lines.live_summary_digest("a\nb", 0, None)
+  assert transcript_lines.live_summary_digest("a\nb", 0)
     == transcript_lines.live_reasoning_digest("a\nb")
-  assert transcript_lines.live_summary_digest("a", 0, Some(label))
-    == "1 line so far · summary: " <> label
+  assert transcript_lines.live_summary_header("a\nb", 13) == " · 2 lines · 13s"
+  assert transcript_lines.live_summary_header("a", 0) == " · 1 line"
 }
 
-// Every collapsed form of a reasoning row is one row at every width, which
-// is what keeps the live-to-settled handoff and a label's arrival from
-// moving the transcript.
-pub fn every_reasoning_row_is_one_row_test() {
-  let long_label = string.repeat("The agent weighs another option. ", 12)
+// A summarized block paints as its header row and then at most three dim
+// secondary rows, each within the pane; a longer summary ends in an
+// ellipsis. The header carries the attribution, and the summary no prefix.
+pub fn a_summarized_block_is_a_header_and_three_rows_at_most_test() {
+  let long = string.repeat("Checked the merge of touching intervals. ", 20)
+  list.each([30, 60, 120], fn(width) {
+    let rows =
+      render.render_line(
+        transcript_lines.summarized_reasoning_line(
+          transcript_lines.expand_hint,
+          long,
+        ),
+        width,
+      )
+      |> list.map(row_text)
+    let assert [header, ..summary] = rows as "a header row comes first"
+    assert string.starts_with(header, render.summarized_mark)
+    assert list.length(summary) == transcript_lines.summary_rows
+    assert list.all(rows, fn(row) { text.cell_width(row) <= width })
+    let assert Ok(last) = list.last(summary) as "the summary has rows"
+    assert string.ends_with(last, "…")
+    assert !list.any(summary, string.contains(_, "summary:"))
+  })
+
+  let short =
+    render.render_line(
+      transcript_lines.summarized_reasoning_line(
+        transcript_lines.expand_hint,
+        "Found it.",
+      ),
+      80,
+    )
+    |> list.map(row_text)
+  assert short
+    == [render.summarized_mark <> "  [Ctrl+G to expand]", "  Found it."]
+}
+
+// The live block that shows a summary and the settled block that borrows it
+// paint the same number of rows, so the settle does not move the
+// transcript.
+pub fn live_and_settled_summarized_blocks_have_equal_height_test() {
+  let live =
+    transcript_lines.summarized_reasoning_line(
+      transcript_lines.live_summary_header(long_thinking(), 3725),
+      label,
+    )
+  let settled =
+    transcript_lines.summarized_reasoning_line(
+      transcript_lines.expand_hint,
+      label,
+    )
+  list.each([30, 60, 120], fn(width) {
+    assert list.length(render.render_line(live, width))
+      == list.length(render.render_line(settled, width))
+  })
+}
+
+// Every unsummarized collapsed form of a reasoning block stays one row at
+// every width.
+pub fn an_unsummarized_reasoning_row_is_one_row_test() {
   let rows = [
-    transcript_lines.live_summary_digest(
-      long_thinking(),
-      3725,
-      Some(long_label),
-    ),
-    transcript_lines.summarized_reasoning_digest(long_label),
+    transcript_lines.live_summary_digest(long_thinking(), 3725),
     transcript_lines.settled_reasoning_digest(long_thinking()),
   ]
   list.each([24, 40, 80, 200], fn(width) {
@@ -142,10 +196,10 @@ pub fn a_live_label_carries_over_until_the_stored_one_arrives_test() {
     block_summary.receive(
       block_summary.new(),
       block_summary.LiveStream("main", "op-1", generation),
-      "The agent is reading the test.",
+      "Reading the failing test.",
     )
   assert transcript_lines.labels_for(record.entry, live)
-    == [#(0, "The agent is reading the test.")]
+    == [#(0, "Reading the failing test.")]
 
   let settled =
     block_summary.receive(
@@ -156,9 +210,9 @@ pub fn a_live_label_carries_over_until_the_stored_one_arrives_test() {
   assert transcript_lines.labels_for(record.entry, settled) == [#(0, label)]
 }
 
-// The tick reads the generation clock into the model, and the live row
-// built from the model carries the count, that reading and the label on
-// one row.
+// The tick reads the generation clock into the model, and the live block
+// built from the model carries the count and that reading in its header
+// and the label beneath.
 pub fn the_tick_times_the_live_row_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
@@ -182,7 +236,7 @@ pub fn the_tick_times_the_live_row_test() {
   // The clock is the real one, so the reading is 64 seconds plus however
   // long the test took to reach its tick.
   assert ticked.generation_elapsed_s >= 64
-  let assert [tui_model.Line(tui_model.ReasoningDigest, row)] =
+  let assert [tui_model.Line(tui_model.SummarizedReasoning, block)] =
     transcript_lines.stream_lines(
       ticked.streams,
       "main",
@@ -190,14 +244,14 @@ pub fn the_tick_times_the_live_row_test() {
       ticked.summaries,
       ticked.generation_elapsed_s,
     )
-    as "the live stream is one reasoning row"
-  assert string.starts_with(row, "3 lines · 1m ")
-  assert string.ends_with(row, "s so far · summary: " <> label)
+    as "the live stream is one summarized block"
+  assert string.starts_with(block, " · 3 lines · 1m ")
+  assert string.ends_with(block, "s\n" <> label)
 }
 
-// A pushed label rewrites a row the record cache already holds: the frame
+// A pushed label rewrites rows the record cache already holds: the frame
 // painted before it shows the block's first line, and the frame after it
-// shows the label on the same single row, without a new record arriving.
+// shows the summarized header and the label, without a new record.
 pub fn a_pushed_label_repaints_a_cached_row_test() {
   let record = thinking_record(long_thinking(), 5)
   let base =
@@ -206,25 +260,48 @@ pub fn a_pushed_label_repaints_a_cached_row_test() {
     tui_model.Model(..base, records: [record]) |> tui.update(backend.Tick, _)
   assert string.contains(paint(before), "Opening line.  [Ctrl+G to expand]")
 
-  let pushed =
-    protocol.BlockSummarized(
-      subject: block_summary.SettledBlock(Key(entry: id_of(record), block: 0)),
-      text: label,
-    )
   let after =
     before
-    |> inbound.apply_channel_update(session_channel.Auxiliary(pushed))
+    |> inbound.apply_channel_update(
+      session_channel.Auxiliary(settled_push(record, label)),
+    )
     |> tui.update(backend.Tick, _)
   let painted = paint(after)
-  assert string.contains(painted, "summary: The agent weighs two fixes")
+  assert string.contains(painted, render.summarized_mark)
+  assert string.contains(painted, "Found four bugs: touching intervals")
   assert !string.contains(painted, "Opening line.")
+}
+
+// A summarized block adds rows, so the anchor projection the reading view
+// keeps has to add the same rows: with a summarized block in the history
+// and the reader scrolled back, there is one anchor per record row.
+pub fn a_summarized_block_keeps_anchors_parallel_to_rows_test() {
+  let records = history_with_thought(30)
+  let summarized = summarize(reading(records), thought_of(records))
+  assert !list.is_empty(summarized.rendered_anchors)
+    as "scrolling back must freeze anchors"
+  assert list.length(summarized.rendered_anchors)
+    == list.length(summarized.record_rows)
+}
+
+// A summary that arrives while the reader is scrolled back adds rows to a
+// block off screen, above or below the viewport, and the rows on screen do
+// not move.
+pub fn a_summary_off_screen_leaves_the_reader_in_place_test() {
+  list.each([2, 58], fn(at) {
+    let records = history_with_thought(at)
+    let before = reading(records)
+    let after = summarize(before, thought_of(records))
+    assert paint(after) == paint(before)
+  })
 }
 
 // --- advisor messages ------------------------------------------------------------
 
-// Long advice collapses in compact mode to its heading and the label; with
-// no label yet, to its opening line. Detail mode shows the whole body.
-// Short advice keeps its full body in both modes, as before.
+// Long advice collapses in compact mode to its heading and, beneath it, the
+// label with the heading marked as summarized, or the opening line with no
+// label yet. Detail mode shows the whole body. Short advice keeps its full
+// body in both modes, as before.
 pub fn long_advice_collapses_to_its_heading_and_label_test() {
   let body = "Rerun the verifier first.\n" <> string.repeat("Detail. ", 80)
   let advice = transcript_lines.Advice(body)
@@ -232,12 +309,12 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
   assert transcript_lines.labelled_advisor_lines(
       advice,
       notes_view.Excerpt,
-      Some("The advisor asks for a rerun."),
+      Some("Asks for a rerun."),
     )
     == [
       tui_model.Line(
-        tui_model.System,
-        "Advisor · block delivered: summary: The advisor asks for a rerun.  [Ctrl+G to expand]",
+        tui_model.SummarizedAdvice,
+        "Advisor · block delivered (summarized)  [Ctrl+G to expand]\nAsks for a rerun.",
       ),
     ]
   assert transcript_lines.labelled_advisor_lines(
@@ -247,14 +324,14 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
     )
     == [
       tui_model.Line(
-        tui_model.System,
-        "Advisor · block delivered: Rerun the verifier first.  [Ctrl+G to expand]",
+        tui_model.SummarizedAdvice,
+        "Advisor · block delivered  [Ctrl+G to expand]\nRerun the verifier first.",
       ),
     ]
   assert transcript_lines.labelled_advisor_lines(
       advice,
       notes_view.Complete,
-      Some("The advisor asks for a rerun."),
+      Some("Asks for a rerun."),
     )
     == [
       tui_model.Line(tui_model.System, "Advisor · block delivered"),
@@ -271,6 +348,22 @@ pub fn long_advice_collapses_to_its_heading_and_label_test() {
       tui_model.Line(tui_model.System, "Advisor · block delivered"),
       tui_model.Line(tui_model.ToolDetail, "Looks fine."),
     ]
+
+  let rows =
+    render.render_line(
+      tui_model.Line(
+        tui_model.SummarizedAdvice,
+        "Advisor · block delivered (summarized)  [Ctrl+G to expand]\n"
+          <> string.repeat("Asks for a rerun. ", 30),
+      ),
+      60,
+    )
+    |> list.map(row_text)
+  let assert ["◇ Advisor · block delivered (summarized)" <> _, ..rest] = rows
+    as "the heading is the first row"
+
+  // Three summary rows and the blank every system row closes with.
+  assert list.length(rest) == transcript_lines.summary_rows + 1
 }
 
 // A long nudges message collapses the same way and keeps its count.
@@ -286,12 +379,12 @@ pub fn long_nudges_collapse_with_their_count_test() {
   assert transcript_lines.labelled_advisor_lines(
       transcript_lines.Nudges(body),
       notes_view.Excerpt,
-      Some("The advisor asks for three checks."),
+      Some("Asks for three checks."),
     )
     == [
       tui_model.Line(
-        tui_model.System,
-        "Advisor · nudges delivered (10): summary: The advisor asks for three checks.  [Ctrl+G to expand]",
+        tui_model.SummarizedAdvice,
+        "Advisor · nudges delivered (10) (summarized)  [Ctrl+G to expand]\nAsks for three checks.",
       ),
     ]
 }
@@ -453,6 +546,79 @@ fn thinking_record(thinking: String, seq: Int) -> protocol.EntryRecord {
     protocol.decode_event(gateway.thinking_entry("main", thinking, seq))
     as "the thinking fixture must decode"
   record
+}
+
+// Forty tool calls around one long reasoning block at position `at`, so a
+// scrolled-back viewport can hold the block above it, below it or on it.
+fn history_with_thought(at: Int) -> List(protocol.EntryRecord) {
+  int.range(1, 61, [], fn(acc, n) {
+    let seq = n * 10
+    let id = "c" <> int.to_string(n)
+    let wires = case n == at {
+      True -> [gateway.thinking_entry("main", long_thinking(), seq + 5)]
+      False -> []
+    }
+    list.append(wires, [
+      gateway.identified_tool_result_ok_entry("main", id, "ok", seq + 1),
+      gateway.identified_tool_call_entry(
+        "main",
+        id,
+        "bash",
+        "echo " <> int.to_string(n),
+        seq,
+      ),
+      ..acc
+    ])
+  })
+  |> list.reverse
+  |> list.map(fn(wire) {
+    let assert Ok(protocol.EntryAdded(record)) = protocol.decode_event(wire)
+      as "the fixture decodes"
+    record
+  })
+  |> list.reverse
+}
+
+fn thought_of(records: List(protocol.EntryRecord)) -> protocol.EntryRecord {
+  let assert Ok(record) =
+    list.find(records, fn(record) {
+      transcript_lines.summarizable_blocks(record.entry) != []
+    })
+    as "the history holds one long reasoning block"
+  record
+}
+
+// The history on screen, scrolled back into the middle.
+fn reading(records: List(protocol.EntryRecord)) -> tui_model.Model {
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  tui_model.Model(..base, records:)
+  |> tui.update(backend.Resize(100, 20), _)
+  |> tui.update(backend.MouseScroll(5, 5, True), _)
+  |> tui.update(backend.MouseScroll(5, 5, True), _)
+  |> tui.update(backend.MouseScroll(5, 5, True), _)
+}
+
+fn summarize(
+  model: tui_model.Model,
+  record: protocol.EntryRecord,
+) -> tui_model.Model {
+  model
+  |> inbound.apply_channel_update(
+    session_channel.Auxiliary(settled_push(record, label)),
+  )
+  |> tui.update(backend.Tick, _)
+}
+
+fn settled_push(record: protocol.EntryRecord, text: String) -> protocol.Event {
+  protocol.BlockSummarized(
+    subject: block_summary.SettledBlock(Key(entry: id_of(record), block: 0)),
+    text:,
+  )
+}
+
+fn row_text(row: span.Line) -> String {
+  row.spans |> list.map(fn(value) { value.content }) |> string.concat
 }
 
 fn paint(model: tui_model.Model) -> String {

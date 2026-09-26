@@ -25,8 +25,8 @@ import tui/layout
 import tui/markdown
 import tui/model.{
   type Line, type Model, Assistant, Failure, Line, Model, Reasoning,
-  ReasoningDigest, Spacer, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
-  ToolResult, User,
+  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 } as tui_model
 import tui/notes_view
 import tui/render
@@ -670,6 +670,9 @@ fn rendered_lines(
 fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   case line.speaker {
     Assistant | Reasoning if index > 1 -> 2
+
+    // A summary's rows sit under its header behind a two-cell indent.
+    SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
     User if index == 1 -> 1
     User if index > 1 && index < row_count - 1 -> 3
     ToolDetail -> 2
@@ -678,6 +681,8 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | Assistant
     | Reasoning
     | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
     | ToolCall
     | ToolResult
     | ToolPatch

@@ -539,24 +539,39 @@ reasoning block and each delivered advice or nudges message of at least
 512 bytes ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
 `tui/block_summary` holds them per attachment: stored summaries keyed by
 entry id and block index, and live summaries keyed by the `generation` of
-the stream they describe. Every summary is drawn after `summary: `, so it
-reads as the summarizer's and not the agent's.
+the stream they describe.
 
-In compact mode a long reasoning block's digest row shows its summary in
-place of the first line, keeping the expand hint. The live row shows the
-line count, the time the generation has run, and the newest live summary:
-`3 lines · 1m 04s so far · summary: …`. The time is `Model.generation_elapsed_s`,
-a whole-second reading of the generation clock (`generation_started_ms`)
+In compact mode a long reasoning block with a summary is one
+`SummarizedReasoning` line: a header row, `∴ Reasoning (summarized)` and
+the expand hint once settled, or `∴ Reasoning (summarized) · 62 lines ·
+13s` while it streams, and the summary beneath it as dim secondary text,
+indented and wrapped to at most three rows, cut with `…` beyond that. The
+header carries the attribution, so the summary has no prefix and is never
+read as the agent's own words. A block without a summary keeps the single
+`ReasoningDigest` row: its first line once settled, `3 lines · 1m 04s so
+far` while streaming. The time is `Model.generation_elapsed_s`, a
+whole-second reading of the generation clock (`generation_started_ms`)
 taken on the tick; a change repaints only while a reasoning row is on
 screen, and the repaint rebuilds the transient rows while the durable row
-cache stays valid. All three forms are one clipped row, so a summary
-arriving and the live-to-settled hand-off change a row's words and never
-the transcript's height. When a response commits before its own summary
-arrives, its first long reasoning block shows the stream's live summary
-until the stored one replaces it. A long advice or nudges message
-collapses to its heading and the summary, or its first line while none
-exists. Detail mode is unchanged: full text everywhere. A block under the
-floor renders exactly as it did before summaries existed.
+cache stays valid. A long advice or nudges message collapses the same way
+to a `SummarizedAdvice` line: its heading, marked `(summarized)` when a
+summary follows, and the summary or the body's first line beneath it.
+Detail mode is unchanged: full text everywhere. A block under the floor
+renders exactly as it did before summaries existed.
+
+The one-row rule for a collapsed reasoning block holds only for a block
+without a summary. A summarized block takes its header and up to three
+more rows, deliberately: a summary clipped to one row said too little to
+be worth reading. Two things keep that from moving the transcript under
+the reader. A response that commits before its own summary arrives lends
+the stream's live summary to its first long reasoning block
+(`transcript_lines.labels_for`), so a block that showed a summary while
+streaming settles into the same number of rows. And a summary that
+arrives for a block already on screen adds rows once; the anchor
+projection (`projection.record_anchors_for`) is built from the same lines
+as the rows, so it stays parallel to them, and a reader scrolled back into
+history is relocated by those anchors and keeps the rows on screen in
+place.
 
 A summary arriving changes rows the record cache holds, so it clears
 `record_cache_valid`; the compact entry cache keys each entry by the
