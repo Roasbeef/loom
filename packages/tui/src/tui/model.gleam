@@ -43,6 +43,7 @@ import tui/approval_panel
 import tui/attachment
 import tui/attempt
 import tui/attempt_replay
+import tui/block_summary
 import tui/bootstrap
 import tui/cache_miss
 import tui/command
@@ -620,6 +621,10 @@ pub type Model {
     nudges_awaiting: Option(String),
     /// Actual lane request ID, so an unrelated refusal cannot settle it.
     nudges_request: Option(Int),
+    /// Summarizer labels for long reasoning blocks and delivered advisor
+    /// messages, stored and live, and the exact-key reads this attachment
+    /// still owes (protocol 050). Cleared with the attachment.
+    summaries: block_summary.Labels,
     /// The session goal as the server last rendered it. `None` is "nothing
     /// observed", never "no goal is pinned" — that claim is a `NoGoal`
     /// board, and only the server can make it.
@@ -773,6 +778,10 @@ pub type Model {
     /// tick and shown beside the phase so a long think reads as time
     /// passing rather than as a stall.
     activity_elapsed_s: Int,
+    /// Whole seconds since `generation_started_ms`, recomputed on the tick
+    /// and shown on a live reasoning row. A reading of the generation clock
+    /// rather than a clock of its own: zero while no generation runs.
+    generation_elapsed_s: Int,
     streams: List(Stream),
     /// Transient rows captured when leaving the live tail. Durable history has
     /// its own frozen ancestry; this keeps in-flight reasoning stationary too.
@@ -801,8 +810,10 @@ pub type Model {
     /// Rebuilds retain only calls in the current projection.
     compact_call_cache: Dict(tool_activity.Call, List(Line)),
     /// Narrative presentation retains only the current entries and owner.
+    /// The key carries the summarizer labels the entry's rows show, so a
+    /// label arriving misses the cache for that entry alone.
     compact_entry_cache: Dict(
-      #(entry.Entry, Option(message.Origin)),
+      #(entry.Entry, Option(message.Origin), List(#(Int, String))),
       List(Line),
     ),
     pending_records: List(protocol.EntryRecord),

@@ -13,6 +13,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import tui/advisor_pending
+import tui/block_summary
 import tui/context_view
 import tui/goal_view
 import tui/live_jobs
@@ -138,6 +139,15 @@ pub type Event {
   /// The advisor's undelivered nudge queue, observed while the primary is
   /// idle. Not a transcript row: nothing here has reached the model.
   AdvisorPendingSnapshot(board: advisor_pending.Board)
+
+  /// The stored summarizer labels a `block_summaries` read found
+  /// (protocol 050). A block the read named and did not return has none.
+  BlockSummariesSnapshot(labels: List(#(block_summary.Key, String)))
+
+  /// A summarizer label the daemon pushed for a committed block or a
+  /// reasoning stream (protocol 050). It is the summarizer's text, and the
+  /// transcript draws it as such.
+  BlockSummarized(subject: block_summary.Subject, text: String)
 
   /// The session goal, observed without touching it (protocol 044). It
   /// answers `goal_get` and every goal mutation alike: the server renders
@@ -598,6 +608,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ContextSnapshot(_)
     | LiveJobsSnapshot(_)
     | AdvisorPendingSnapshot(_)
+    | BlockSummariesSnapshot(_)
     | GoalSnapshot(_)
     | SchedulesSnapshot(_)
     | Resumed(_)
@@ -614,6 +625,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | UsageChanged(..)
     | EscalationPending(..)
     | HeldInputReturned(..)
+    | BlockSummarized(..)
     | Ignored(_) -> Error("unexpected live presentation response")
   }
 }
@@ -699,6 +711,7 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "escalation" -> decode_escalation(body)
     "error" -> decode_error(body)
     "held_input_returned" -> decode_held_input_returned(body)
+    "block_summary" -> decode_block_summary(body)
     other -> Ok(Ignored(other))
   }
 }
@@ -715,6 +728,33 @@ fn decode_held_input_returned(body: JsonValue) -> Result(Event, String) {
   use text <- result.try(required_string(fields, "text"))
   use attachment_count <- result.try(required_int(fields, "attachment_count"))
   Ok(HeldInputReturned(strand:, id:, kind:, text:, attachment_count:))
+}
+
+// A pushed label. A subject this client does not know decodes to `Ignored`
+// rather than an error, for the reason an unknown event name does: a push
+// the terminal cannot read must not close its socket. A known subject with
+// a malformed field is an error, because it claims to name a block.
+fn decode_block_summary(body: JsonValue) -> Result(Event, String) {
+  use fields <- result.try(object_fields(body, "block_summary body"))
+  use subject <- result.try(required_string(fields, "subject"))
+  case subject {
+    "block" -> {
+      use entry <- result.try(required_string(fields, "entry"))
+      use block <- result.try(required_int(fields, "block"))
+      use text <- result.try(required_string(fields, "text"))
+      let key = block_summary.Key(entry:, block:)
+      Ok(BlockSummarized(subject: block_summary.SettledBlock(key:), text:))
+    }
+    "stream" -> {
+      use strand <- result.try(required_string(fields, "strand"))
+      use operation <- result.try(required_string(fields, "op"))
+      use generation <- result.try(required_string(fields, "generation"))
+      use text <- result.try(required_string(fields, "text"))
+      let subject = block_summary.LiveStream(strand:, operation:, generation:)
+      Ok(BlockSummarized(subject:, text:))
+    }
+    other -> Ok(Ignored("block_summary." <> other))
+  }
 }
 
 fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
@@ -749,6 +789,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "advisor_pending" -> {
       use board <- result.try(required_value(fields, "board"))
       advisor_pending.decode(board) |> result.map(AdvisorPendingSnapshot)
+    }
+    "block_summaries" -> {
+      use board <- result.try(required_value(fields, "board"))
+      block_summary.decode_board(board) |> result.map(BlockSummariesSnapshot)
     }
     "goal" -> {
       use board <- result.try(required_value(fields, "board"))
@@ -1214,6 +1258,30 @@ pub fn live_jobs(id: Int, strand: String) -> String {
 /// ```
 pub fn advisor_pending(id: Int) -> String {
   command(id, "advisor_pending", [])
+}
+
+/// Reads the stored summarizer labels of up to `block_summary.max_blocks`
+/// committed blocks, each named by entry id and block index.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.block_summaries(12, [block_summary.Key("0198c0de-…", 0)])
+/// ```
+pub fn block_summaries(id: Int, keys: List(block_summary.Key)) -> String {
+  command(id, "block_summaries", [
+    #(
+      "blocks",
+      json.Array(
+        list.map(keys, fn(key) {
+          json.Object([
+            #("entry", json.String(key.entry)),
+            #("block", json.Int(key.block)),
+          ])
+        }),
+      ),
+    ),
+  ])
 }
 
 /// Reads the session goal without touching it.

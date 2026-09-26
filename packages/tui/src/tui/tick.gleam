@@ -181,6 +181,7 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     |> surfaces.service_advisor_nudges_read
     |> surfaces.service_goal_read
     |> session_control.service_activity
+    |> surfaces.service_block_summaries
     |> inbound.tick_channel
     |> advance_cache_outlook
   let quiet_for_ms =
@@ -284,6 +285,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
 // model. Going idle clears the clock, so the next activity starts from
 // zero rather than from wherever the last one stopped.
 fn advance_activity_indicator(model: Model) -> Model {
+  let model = advance_generation_clock(model)
   case tui_model.active_strand_live(model) {
     False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
     True -> {
@@ -307,6 +309,34 @@ fn advance_activity_indicator(model: Model) -> Model {
         False -> tui_model.invalidate_frame(advanced)
       }
     }
+  }
+}
+
+// A live reasoning row shows how long the generation has run, read from the
+// generation clock `tui/inbound` starts and stops. The reading moves once a
+// second, and only a change repaints; the repaint rebuilds the transient
+// rows and reuses every durable one, because the record cache's inputs have
+// not moved. A generation with no reasoning row on screen is read but not
+// repainted, since nothing drawn depends on the figure.
+fn advance_generation_clock(model: Model) -> Model {
+  let elapsed = case model.generation_started_ms {
+    None -> 0
+    Some(started) -> int.max({ model.monotonic_time_ms() - started } / 1000, 0)
+  }
+  use <- bool.guard(when: elapsed == model.generation_elapsed_s, return: model)
+
+  let advanced = Model(..model, generation_elapsed_s: elapsed)
+  let reasoning_shown =
+    !model.details_expanded
+    && list.any(model.streams, fn(stream) {
+      stream.strand == model.active_strand && stream.kind == "thinking"
+    })
+  case reasoning_shown {
+    False -> advanced
+    True ->
+      advanced
+      |> tui_model.invalidate_transcript
+      |> tui_model.invalidate_frame
   }
 }
 
