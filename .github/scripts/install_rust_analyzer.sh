@@ -15,7 +15,7 @@
 #     ~/.cargo/bin/rust-analyzer, so the toolchain has to be exactly there.
 #     The runner's own rustup is used when it already lives there; a
 #     fresh one is installed otherwise, from a pinned rustup-init checked
-#     against its published SHA-256 rather than a script piped to sh.
+#     against a SHA-256 recorded here rather than a script piped to sh.
 #   - A pinned toolchain, 1.94.1. It is the version the lsp_rust profile
 #     and the manager fixture were measured with (ADR-014 §7: the
 #     readiness wait, the registry grant, the println! reference), as
@@ -47,6 +47,27 @@ toolchain=1.94.1
 # a fixed URL, with the SHA-256 beside it.
 rustup_version=1.29.0
 
+# The SHA-256 of that rustup-init, one per host this script names. They are
+# recorded here rather than fetched because a digest served by the same
+# origin as the binary only proves the download was not truncated: whoever
+# could replace the one could replace the other. These were computed on
+# 2026-09-25 from the versioned archive URL
+# (static.rust-lang.org/rustup/archive/1.29.0/<triple>/rustup-init) and
+# cross-checked once against the `.sha256` published beside each; all four
+# agreed. Bumping rustup_version means recomputing all four.
+rustup_init_sha256() {
+	case "$1" in
+	x86_64-unknown-linux-gnu) echo 4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 ;;
+	aarch64-unknown-linux-gnu) echo 9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792 ;;
+	x86_64-apple-darwin) echo 33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7 ;;
+	aarch64-apple-darwin) echo aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1 ;;
+	*)
+		echo "install_rust_analyzer.sh: no pinned rustup-init digest for $1" >&2
+		return 1
+		;;
+	esac
+}
+
 # The host's Rust target triple, from uname alone: there is no rustc to
 # ask yet. Only the hosts CI runs this on, and the developer machines it
 # is likely to meet, are named; anything else stops here rather than
@@ -72,21 +93,21 @@ sha256_of() {
 	fi
 }
 
-# Downloads the pinned rustup-init and its published digest, refuses a
-# binary that does not match, and runs it with no toolchain: the pinned
-# one is installed below, the same way as on a runner that had rustup.
+# Downloads the pinned rustup-init, refuses a binary whose digest is not
+# the one recorded above, and runs it with no toolchain: the pinned one is
+# installed below, the same way as on a runner that had rustup.
+# --proto-redir keeps a redirect from downgrading the fetch off HTTPS.
 install_rustup() {
 	local triple url expected actual
 	triple="$(host_triple)"
+	expected="$(rustup_init_sha256 "$triple")"
 	url="https://static.rust-lang.org/rustup/archive/$rustup_version/$triple/rustup-init"
 	work="$(mktemp -d)"
 	trap 'rm -rf "$work"' EXIT
-	curl --proto '=https' --tlsv1.2 -sSfL -o "$work/rustup-init" "$url"
-	curl --proto '=https' --tlsv1.2 -sSfL -o "$work/rustup-init.sha256" "$url.sha256"
-	expected="$(cut -d' ' -f1 "$work/rustup-init.sha256")"
+	curl --proto '=https' --proto-redir '=https' --tlsv1.2 -sSfL -o "$work/rustup-init" "$url"
 	actual="$(sha256_of "$work/rustup-init")"
-	if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-		echo "install_rustup: rustup-init $rustup_version for $triple has SHA-256 $actual, published $expected" >&2
+	if [ "$expected" != "$actual" ]; then
+		echo "install_rustup: rustup-init $rustup_version for $triple has SHA-256 $actual, pinned $expected" >&2
 		return 1
 	fi
 	chmod +x "$work/rustup-init"
