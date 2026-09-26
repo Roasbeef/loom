@@ -94,8 +94,8 @@ numeric gap does not by itself mean an event was lost.
 Source: (`client/gateway.gleam:103-108`).
 
 `snapshot`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`,
-`stream_delta`, `tool_output`, `mutation_outcome`, `presence` and `error`
-carry no `seq`.
+`stream_delta`, `tool_output`, `block_summary`, `mutation_outcome`,
+`presence` and `error` carry no `seq`.
 
 ### 1.5 Forward compatibility
 
@@ -1933,6 +1933,32 @@ counters: those are the harness's own bookkeeping, and an observer has no
 transition for them. See [protocol
 044](../protocol-change/044-session-goals.md) for the loop these fields
 report and the bounds that trip `budget_limited`.
+
+#### 4.9.28 `block_summaries`
+
+A subscribed, read-only command that observers may send. It reads the
+stored summaries of up to 32 committed blocks by exact key.
+
+```json
+{"v":2,"id":61,"cmd":"block_summaries","body":{"blocks":[{"entry":"0198c0de-0000-7000-8000-000000000006","block":0},{"entry":"0198c0de-0000-7000-8000-000000000009","block":2}]}}
+{"v":2,"reply_to":61,"event":"snapshot","body":{"mode":"block_summaries","board":{"summaries":[{"entry":"0198c0de-0000-7000-8000-000000000006","block":0,"text":"The agent traces the retry path and settles on a bounded backoff around the fetch."}]}}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `blocks` | array | required | One to 32 blocks. |
+| `blocks[].entry` | string | required | An entry id in canonical form. |
+| `blocks[].block` | integer | required | The block's zero-based index in the entry's message `content`. |
+
+A body outside these bounds is `bad_request`; duplicates collapse. The
+reply's `board.summaries` holds `{entry, block, text}` for each named block
+that has a stored summary, in the order asked. A block with none is absent;
+its absence claims nothing. A failed storage read is `unavailable`. A
+server that does not know the command answers `unsupported`, and a client
+SHOULD stop asking for the rest of the attachment. See
+[protocol 050](../protocol-change/050-reasoning-summaries.md) and
+section 5.19.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -1942,9 +1968,11 @@ Over the authenticated session transport a client sees:
 - transfer frames: `snapshot_begin`, `snapshot_chunk`, `snapshot_end`;
 - mutation replies: `mutation_outcome`;
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
-  `queued_input`, `live_jobs`, or pending `worktree_diff` / `context`;
-- pushed frames: `committed`, `stream_delta`, `tool_output`, `presence`,
-  `snapshot` with mode `config` or final `worktree_diff` / `context`, and `error`;
+  `queued_input`, `live_jobs`, `block_summaries`, or pending `worktree_diff` /
+  `context`;
+- pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`,
+  `presence`, `snapshot` with mode `config` or final `worktree_diff` /
+  `context`, and `error`;
 - refusals: `error` with `reply_to`.
 
 `snapshot` with mode `full`, `resume` or `strands`, and the durable
@@ -2592,6 +2620,35 @@ dropped frame cost nothing the next one does not restate. `total_bytes`
 beside a short `tail` is how a client tells a window that is the whole
 output from one that is its last few kilobytes.
 
+### 5.19 `block_summary`
+
+```json
+{"v":2,"event":"block_summary","body":{"subject":"block","entry":"0198c0de-0000-7000-8000-000000000006","block":0,"text":"The agent traces the retry path and settles on a bounded backoff around the fetch."}}
+{"v":2,"event":"block_summary","body":{"subject":"stream","strand":"main","op":"op-1","generation":"[\"generation\",\"step-3\",1,\"0198c0de-0000-7000-8000-000000000006\"]","text":"The agent is comparing two places to add the retry."}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `subject` | string | required | `block` or `stream`. |
+| `entry` | string | `block` only | The committed entry the summarized block belongs to. |
+| `block` | integer | `block` only | The block's zero-based index in the entry's message `content`. |
+| `strand` | string | `stream` only | Strand whose provider request is streaming reasoning. |
+| `op` | string | `stream` only | Operation the request belongs to. |
+| `generation` | string | `stream` only | The request identity the stream's `stream_delta` frames carry. |
+| `text` | string | required | The summary, at most 320 bytes. |
+
+A one- or two-sentence summary the daemon's `summarize` role wrote for a
+long reasoning block or a long delivered advice or nudges message
+([protocol 050](../protocol-change/050-reasoning-summaries.md)). Pushed to
+every subscribed connection; never seq'd and never replayed. A `block`
+summary is also stored and can be read back with `block_summaries`. A
+`stream` summary describes reasoning still being written, is stored
+nowhere, and is replaced by the next `stream` summary for the same
+`generation` and, once the response commits, by the `block` summary. A
+client MUST present `text` as the summarizer's and never as the agent's or
+the advisor's own words. A client MUST ignore a frame whose `subject` it
+does not know.
+
 ---
 
 ## 6. Pushed frames and client obligations
@@ -2599,7 +2656,7 @@ output from one that is its last few kilobytes.
 ### 6.1 What may arrive uncorrelated
 
 On the session endpoint: `committed`, `stream_delta`, `tool_output`,
-`presence`, `snapshot` with mode `config`, and `error`.
+`block_summary`, `presence`, `snapshot` with mode `config`, and `error`.
 Source: (`client/protocol.gleam:475-482`).
 
 On the control endpoint: `hello`, once, before anything else.
@@ -2779,6 +2836,8 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Held priority inputs per strand | 4 | `steer` |
 | Stream delta text | 24576 bytes | `stream_delta` |
 | Tool output tail | 4096 bytes per stream | `tool_output.tail` |
+| Summary lookup | 32 blocks | `block_summaries` |
+| Summary text | 320 bytes | `block_summary.text`, `block_summaries` rows |
 | Escalation preview | 2048 bytes | `escalation.preview` |
 | Session listing page | 60000 bytes | `sessions.list` |
 | Simultaneous connections | 64 by default; `daemon.max_connections` | The daemon |
