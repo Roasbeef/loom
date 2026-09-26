@@ -6,6 +6,13 @@
 //// into terminal-owned inboxes, selected by its actor between scripts.
 //// An already selected event is reduced directly before later queued traffic;
 //// requeueing it into a concurrently written inbox could reverse wire order.
+////
+//// The actor selects on the mailboxes, which never return what the shipped
+//// loop's runtime already received into the model's inboxes. Those held
+//// messages are older than anything selected, so they are reduced first:
+//// here for the connection inbox, and inside `attachment.accept` for the
+//// candidate's.
+////
 //// A sample is not a server barrier: the test must wait for the condition
 //// it needs, under a real deadline, before asserting convergence.
 
@@ -16,6 +23,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import tui
 import tui/attachment
+import tui/buffered
 import tui/connection
 import tui/frame
 import tui/inbound
@@ -149,7 +157,10 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
     // driver may have idled since the last script.
     Inbound(message) -> {
       let model = runtime.stamp(model)
-      let run = run(inbound.accept_connection_message(model, message), [])
+      let model =
+        reduce_held(model)
+        |> inbound.accept_connection_message(message)
+      let run = run(model, [])
       continue(Driver(..driver, model: run.final))
     }
     Candidate(message) -> {
@@ -179,7 +190,7 @@ fn selector(driver: Driver) {
   let selector =
     process.new_selector()
     |> process.select(driver.commands)
-    |> process.select_map(driver.model.inbox, Inbound)
+    |> process.select_map(buffered.sender(driver.model.inbox), Inbound)
     |> fn(selector) {
       attachment.select(driver.model.candidate, selector, Candidate)
     }
@@ -189,6 +200,20 @@ fn selector(driver: Driver) {
       process.select_map(selector, run.replies, fn(reply) {
         Catalogue(tui_model.ControlEvent(run.replies, reply))
       })
+  }
+}
+
+// Reduces what the last script's runtime received and its steps left in the
+// connection inbox. It takes only held messages and reads no mailbox: the
+// message the actor just selected is newer than all of them and older than
+// everything still queued, so it must go between the two.
+fn reduce_held(model: tui_model.Model) -> tui_model.Model {
+  case buffered.take(model.inbox) {
+    #(_, Error(Nil)) -> model
+    #(inbox, Ok(held)) ->
+      tui_model.Model(..model, inbox:)
+      |> inbound.accept_connection_message(held)
+      |> reduce_held
   }
 }
 
@@ -204,7 +229,7 @@ fn run(
     virtual_backend.script(
       backend.TerminalSize(width: model.width, height: model.height),
       steps,
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
     as "the real virtual terminal loop must complete its input script"

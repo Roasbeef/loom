@@ -16,6 +16,7 @@ import host/bootstrap as host_bootstrap
 import support/tui_driver
 import tui
 import tui/attempt
+import tui/buffered
 import tui/connection
 import tui/daemon
 import tui/daemon/selection
@@ -111,7 +112,8 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let assert Ok(_) = process.receive(issued, 1000)
       as "exactly one prompt was issued after the completed cut"
     assert process.receive(issued, 0) == Error(Nil)
-    let assert Ok(connection.Incoming(reply)) = process.receive(inbox, 2000)
+    let assert #(_, Ok(connection.Incoming(reply))) =
+      buffered.receive(admitted.inbox, 2000)
       as "the real server acknowledges the transmitted mutation"
     let assert Ok(json.Object(fields)) = json.parse(reply) as "response is JSON"
     assert list.key_find(fields, "event") == Ok(json.String("mutation_outcome"))
@@ -122,8 +124,9 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
 
 fn hold_snapshot_end(model: tui_model.Model, remaining: Int) {
   assert remaining > 0 as "fixture transfers have a finite frame budget"
-  let assert Ok(incoming) = process.receive(model.inbox, 1000)
+  let assert #(inbox, Ok(incoming)) = buffered.receive(model.inbox, 1000)
     as "each credited response arrives within its deadline"
+  let model = tui_model.Model(..model, inbox:)
   let ended = case incoming {
     connection.Incoming(text) -> {
       let assert Ok(json.Object(fields)) = json.parse(text)

@@ -29,6 +29,7 @@ import tui/agents
 import tui/approval
 import tui/approval_panel
 import tui/attachment
+import tui/buffered
 import tui/command
 import tui/composer
 import tui/context_panel
@@ -275,7 +276,14 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // retirement is entitled to reduce. The flush itself runs after the
       // step, which is safe because the model stops reading that inbox at
       // the swap below and nothing selects on it again.
-      let model = tui_model.emit(model, effect.Discard(model.inbox))
+      //
+      // The swap replaces the whole `buffered.Inbox`, so the messages the
+      // runtime had already received from the old socket leave the model
+      // with it, and no later drain in this step or any other can reduce
+      // one into the adopted lane. The adopted inbox arrives with the
+      // frames the candidate received and left for it.
+      let model =
+        tui_model.emit(model, effect.Discard(buffered.sender(model.inbox)))
       let adopted =
         Model(
           ..model,
@@ -1207,7 +1215,7 @@ pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
     Some(_), keys.Ctrl("c") ->
       submit.quit(inbound.cancel_pending(model, "terminal closed"))
     _, _ -> {
-      let model = inbound.drain_connection(model, 64)
+      let model = inbound.drain_connection(model, tui_model.connection_batch)
       case model.pending_submission, key {
         None, _ -> update_key_over_selection(key, model)
         Some(_), keys.PageUp -> scroll_transcript(model, True, 10)

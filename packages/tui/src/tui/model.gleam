@@ -45,6 +45,7 @@ import tui/attempt
 import tui/attempt_replay
 import tui/block_summary
 import tui/bootstrap
+import tui/buffered
 import tui/cache_miss
 import tui/command
 import tui/completion_summary
@@ -738,7 +739,10 @@ pub type Model {
     /// One catalogue display name, paired with the identity that owns it.
     session_label: Option(#(String, String)),
     local_options: Option(bootstrap.Options),
-    inbox: Subject(connection.Message),
+    /// The adopted connection's socket traffic, with what the runtime already
+    /// received from it for the next step. An adoption replaces the whole
+    /// value, so the old socket's held messages leave the model with it.
+    inbox: buffered.Inbox(connection.Message),
     peer: Peer,
     session_switch: sessions.SwitchStatus,
     /// One provisional replacement, whose original deadline includes capture.
@@ -786,7 +790,8 @@ pub type Model {
     next_attempt: Int,
     /// Two-slot effect-free replay state and its terminal-owned delivery lane.
     replay_state: attempt_replay.State,
-    replay_inbox: Subject(attempt.Event),
+    /// Filled one event at a time, since a tick applies at most one.
+    replay_inbox: buffered.Inbox(attempt.Event),
     /// A malformed local recording stops replay rather than skipping a frame.
     replay_error: Option(String),
     next_id: Int,
@@ -909,6 +914,12 @@ pub type Model {
     outbox: List(effect.Effect),
   )
 }
+
+/// The most connection messages one step reduces: a tick's drain, and the
+/// drain a key, a wheel notch or a drag runs before it acts. The runtime
+/// tops `Model.inbox` up to this many before each step, so the step can
+/// always reach its full batch and the buffer never holds more.
+pub const connection_batch = 64
 
 /// Whether this terminal may reconnect itself to a restarted daemon.
 ///

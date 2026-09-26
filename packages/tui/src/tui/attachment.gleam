@@ -6,12 +6,14 @@
 //// writes. A normal acknowledged task exit permits guardian adoption. Failure
 //// leaves the old connection untouched and cancels only this attempt.
 
+import gleam/bool
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tui/attempt
+import tui/buffered.{type Inbox}
 import tui/connection
 import tui/protocol
 import tui/session_channel as channel
@@ -66,10 +68,14 @@ pub opaque type Event {
 type Run {
   Run(
     cancel: weft.Cancel,
-    outcomes: Subject(weft.Pulled(Nil, String)),
+    outcomes: Inbox(weft.Pulled(Nil, String)),
     trace: Option(attempt.Trace),
   )
 }
+
+// A candidate's frames are drained at most this many per step, and the
+// runtime receives no more than this many ahead of the step.
+const frame_batch = 40
 
 type Candidate {
   Candidate(
@@ -84,12 +90,16 @@ type Candidate {
 }
 
 /// One provisional lifetime, with terminal-owned mailboxes and no extra actor.
+///
+/// Each mailbox is held as a `buffered.Inbox`, so what the runtime received
+/// for the attempt before a step stays with the attempt: it is adopted with
+/// the frames inbox, or dropped with the status when the attempt fails.
 pub opaque type Status {
   Idle
   Opening(
     run: Run,
-    prepared: Subject(Prepared),
-    frames: Subject(connection.Message),
+    prepared: Inbox(Prepared),
+    frames: Inbox(connection.Message),
     candidate: Option(Candidate),
   )
 }
@@ -101,7 +111,9 @@ pub type Outcome {
     channel: channel.Channel,
     cut: snapshot.Captured,
     view: snapshot_view.View,
-    inbox: Subject(connection.Message),
+    /// The frames inbox together with the frames already received from it
+    /// and not reduced, which are older than anything still in its mailbox.
+    inbox: Inbox(connection.Message),
     workspace: workspace.Context,
     /// Display name from the authorized catalogue, adopted with this identity.
     session_name: String,
@@ -199,7 +211,12 @@ pub fn start_recorded(
     |> weft.deadline(within_ms)
     |> weft.cancel_with(cancel)
     |> weft.start_relayed(outcomes)
-  Opening(Run(cancel, outcomes, trace), prepared, frames, None)
+  Opening(
+    Run(cancel, buffered.new(outcomes), trace),
+    buffered.new(prepared),
+    buffered.new(frames),
+    None,
+  )
 }
 
 /// Binds the recorder after launch but before any terminal poll can consume data.
@@ -222,12 +239,12 @@ pub fn with_trace(status: Status, trace: Option(attempt.Trace)) -> Status {
 
 /// Advances at most forty credited messages during one terminal tick.
 ///
-/// The poll still receives from the attempt's own mailboxes, but it performs
-/// nothing it decided: the worker's acknowledgement and a failed attempt's
-/// cleanup come back as outputs, oldest first, for the caller to queue. The
-/// provisional channel's writes stay on it until `take_outputs`. `now` is
-/// the transport reading the candidate channel's deadlines are measured
-/// against, as for the adopted channel.
+/// The poll reads only what `top_up` received before the step, and it
+/// performs nothing it decided: the worker's acknowledgement and a failed
+/// attempt's cleanup come back as outputs, oldest first, for the caller to
+/// queue. The provisional channel's writes stay on it until `take_outputs`.
+/// `now` is the transport reading the candidate channel's deadlines are
+/// measured against, as for the adopted channel.
 ///
 /// ## Examples
 ///
@@ -241,11 +258,11 @@ pub fn poll(
   case status {
     Idle -> #(Idle, None, [])
     Opening(run, prepared, frames, candidate) -> {
-      let candidate = prepare(prepared, candidate, run.trace, now)
+      let #(prepared, candidate) = prepare(prepared, candidate, run.trace, now)
       case progress(candidate, frames, now) {
         Error(reason) ->
           failed(Opening(run, prepared, frames, candidate), reason)
-        Ok(advanced) ->
+        Ok(#(advanced, frames)) ->
           settle(Opening(run, prepared, frames, advanced))
           |> acknowledging(candidate, advanced)
       }
@@ -253,7 +270,55 @@ pub fn poll(
   }
 }
 
+/// Receives what this attempt's mailboxes hold, up to what the next step
+/// can consume, without blocking.
+///
+/// `runtime.receive` calls it before every step. The bounds are the step's
+/// own: one `Prepared`, and only while no candidate exists to take it; up to
+/// forty frames, the poll's batch, until the initial cut is captured; and
+/// one worker outcome, which is all a poll settles. Frames that arrive
+/// after the capture stay in the mailbox for the adopted lane, as they
+/// always have.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let pending = attachment.top_up(pending)
+/// ```
+pub fn top_up(status: Status) -> Status {
+  case status {
+    Idle -> Idle
+    Opening(run, prepared, frames, candidate) -> {
+      let run = Run(..run, outcomes: buffered.top_up(run.outcomes, up_to: 1))
+      case candidate {
+        None ->
+          Opening(
+            run,
+            buffered.top_up(prepared, up_to: 1),
+            buffered.top_up(frames, up_to: frame_batch),
+            None,
+          )
+        Some(Candidate(captured: None, ..)) ->
+          Opening(
+            run,
+            prepared,
+            buffered.top_up(frames, up_to: frame_batch),
+            candidate,
+          )
+        Some(Candidate(captured: Some(_), ..)) ->
+          Opening(run, prepared, frames, candidate)
+      }
+    }
+  }
+}
+
 /// Adds only this attempt's terminal-owned inputs to an existing selector.
+///
+/// The selector reads the mailboxes, so it cannot return what the runtime
+/// already received. `accept` makes up for that: before it applies a
+/// selected frame or outcome it applies the ones held for the same inbox,
+/// which were received earlier. A held `Prepared` is taken by the next poll;
+/// an attempt publishes only one, so no later one can overtake it.
 ///
 /// ## Examples
 ///
@@ -267,15 +332,19 @@ pub fn select(
 ) -> Selector(a) {
   case status {
     Idle -> selector
-    Opening(run, prepared, frames, _) ->
+    Opening(run, prepared, frames, _) -> {
+      let prepared = buffered.sender(prepared)
+      let frames = buffered.sender(frames)
+      let outcomes = buffered.sender(run.outcomes)
       selector
       |> process.select_map(prepared, fn(message) {
         tag(Preparation(prepared, message))
       })
       |> process.select_map(frames, fn(message) { tag(Frame(frames, message)) })
-      |> process.select_map(run.outcomes, fn(outcome) {
-        tag(Settled(run.outcomes, outcome))
+      |> process.select_map(outcomes, fn(outcome) {
+        tag(Settled(outcomes, outcome))
       })
+    }
   }
 }
 
@@ -295,12 +364,22 @@ pub fn accept(
   now now: Int,
 ) -> #(Status, Option(Outcome), List(Out)) {
   case status, event {
-    Opening(run, _, _, _), Settled(source, outcome) if source == run.outcomes ->
-      apply_outcome(status, outcome)
+    // An outcome the runtime already received is older than the selected
+    // one, so it is settled first; the selected one applies only if the
+    // held one left the attempt open.
+    Opening(run, ..), Settled(source, outcome) -> {
+      use <- bool.lazy_guard(!buffered.is_sender(run.outcomes, source), fn() {
+        ignore(status, event)
+      })
+      settle(status) |> and_then(apply_outcome(_, outcome))
+    }
+
     Opening(run, prepared, frames, None),
       Preparation(source, Prepared(socket, expected, workspace, name, key, ack))
-      if prepared == source
-    ->
+    -> {
+      use <- bool.lazy_guard(!buffered.is_sender(prepared, source), fn() {
+        ignore(status, event)
+      })
       settle(Opening(
         run,
         prepared,
@@ -314,14 +393,17 @@ pub fn accept(
           key,
         )),
       ))
+    }
 
-    // The same guard `progress` and `drain` apply: once the initial cut is
-    // captured the channel is `Ready`, and handing it another frame makes it
-    // answer "unsolicited conversation response" and abort an attempt the
-    // interactive loop would have adopted. The interactive loop leaves such a
-    // frame queued for the adopted terminal; a driver has already taken it out
-    // of the mailbox, so here it is dropped instead — the adopted channel's
-    // 250 ms credited `catch_up` is what makes that lossless.
+    // Frames the runtime already received are older than the selected one
+    // and are reduced first. The same guard `progress` and `drain` apply
+    // then decides the selected frame: once the initial cut is captured the
+    // channel is `Ready`, and handing it another frame makes it answer
+    // "unsolicited conversation response" and abort an attempt the
+    // interactive loop would have adopted. The interactive loop leaves such
+    // a frame queued for the adopted terminal; a driver has already taken it
+    // out of the mailbox, so here it is dropped instead — the adopted
+    // channel's 250 ms credited `catch_up` is what makes that lossless.
     Opening(
       run,
       prepared,
@@ -329,20 +411,67 @@ pub fn accept(
       Some(Candidate(captured: None, ..) as candidate),
     ),
       Frame(source, message)
-      if frames == source
     -> {
-      let #(next, updates) = channel.receive(candidate.channel, message, now:)
-      case apply_updates(Candidate(..candidate, channel: next), updates) {
-        Ok(advanced) ->
+      use <- bool.lazy_guard(!buffered.is_sender(frames, source), fn() {
+        ignore(status, event)
+      })
+      let advanced =
+        drain(candidate, frames, frame_batch, now)
+        |> result.try(receive_selected(_, message, now))
+      case advanced {
+        Ok(#(advanced, frames)) ->
           settle(Opening(run, prepared, frames, Some(advanced)))
           |> acknowledging(Some(candidate), Some(advanced))
         Error(reason) -> failed(status, reason)
       }
     }
-    _, Preparation(_, Prepared(socket, _, _, _, _, _)) -> #(status, None, [
+
+    _, _ -> ignore(status, event)
+  }
+}
+
+// An event for an inbox this status does not hold, or one it no longer
+// needs. A `Prepared` still carries an open socket, which must be closed.
+fn ignore(
+  status: Status,
+  event: Event,
+) -> #(Status, Option(Outcome), List(Out)) {
+  case event {
+    Preparation(_, Prepared(socket, _, _, _, _, _)) -> #(status, None, [
       CloseStray(socket),
     ])
-    _, Frame(_, _) | _, Settled(_, _) -> #(status, None, [])
+    Frame(_, _) | Settled(_, _) -> #(status, None, [])
+  }
+}
+
+// Continues with a second advance only while the first left the attempt
+// open and undecided; the outputs of both keep their order.
+fn and_then(
+  settled: #(Status, Option(Outcome), List(Out)),
+  next: fn(Status) -> #(Status, Option(Outcome), List(Out)),
+) -> #(Status, Option(Outcome), List(Out)) {
+  case settled {
+    #(Opening(..) as status, None, outputs) -> {
+      let #(status, outcome, more) = next(status)
+      #(status, outcome, list.append(outputs, more))
+    }
+    #(Opening(..), Some(_), _) | #(Idle, _, _) -> settled
+  }
+}
+
+// The selected frame, after the held ones: dropped if they completed the
+// capture, reduced otherwise.
+fn receive_selected(
+  drained: #(Candidate, Inbox(connection.Message)),
+  message: connection.Message,
+  now: Int,
+) -> Result(#(Candidate, Inbox(connection.Message)), String) {
+  let #(candidate, frames) = drained
+  case candidate.captured {
+    Some(_) -> Ok(drained)
+    None ->
+      receive_frame(candidate, message, now)
+      |> result.map(fn(candidate) { #(candidate, frames) })
   }
 }
 
@@ -370,13 +499,22 @@ fn acknowledging(
   }
 }
 
-fn prepare(prepared, candidate, trace, now: Int) {
+fn prepare(
+  prepared: Inbox(Prepared),
+  candidate: Option(Candidate),
+  trace: Option(attempt.Trace),
+  now: Int,
+) -> #(Inbox(Prepared), Option(Candidate)) {
   case candidate {
-    Some(_) -> candidate
+    Some(_) -> #(prepared, candidate)
     None ->
-      case process.receive(prepared, 0) {
-        Error(Nil) -> None
-        Ok(Prepared(socket, expected, workspace, name, key, acknowledgement)) ->
+      case buffered.take(prepared) {
+        #(prepared, Error(Nil)) -> #(prepared, None)
+        #(
+          prepared,
+          Ok(Prepared(socket, expected, workspace, name, key, acknowledgement)),
+        ) -> #(
+          prepared,
           Some(Candidate(
             channel.start_recorded(socket, expected, trace, now:),
             acknowledgement,
@@ -384,41 +522,63 @@ fn prepare(prepared, candidate, trace, now: Int) {
             workspace,
             name,
             key,
-          ))
+          )),
+        )
       }
   }
 }
 
-fn progress(candidate, frames, now: Int) {
+fn progress(
+  candidate: Option(Candidate),
+  frames: Inbox(connection.Message),
+  now: Int,
+) -> Result(#(Option(Candidate), Inbox(connection.Message)), String) {
   case candidate {
-    None -> Ok(None)
-    Some(Candidate(captured: Some(_), ..)) -> Ok(candidate)
+    None -> Ok(#(None, frames))
+    Some(Candidate(captured: Some(_), ..)) -> Ok(#(candidate, frames))
     Some(candidate) -> {
-      use candidate <- result.try(drain(candidate, frames, 40, now))
+      use #(candidate, frames) <- result.try(drain(
+        candidate,
+        frames,
+        frame_batch,
+        now,
+      ))
       let #(next, updates) = channel.tick(candidate.channel, now:)
       apply_updates(Candidate(..candidate, channel: next), updates)
-      |> result.map(Some)
+      |> result.map(fn(candidate) { #(Some(candidate), frames) })
     }
   }
 }
 
-fn drain(candidate: Candidate, frames, remaining, now: Int) {
+// Takes held frames until the cut is captured, and no further: a frame
+// after the capture belongs to the adopted lane and stays in the inbox,
+// which the adoption hands over whole.
+fn drain(
+  candidate: Candidate,
+  frames: Inbox(connection.Message),
+  remaining: Int,
+  now: Int,
+) -> Result(#(Candidate, Inbox(connection.Message)), String) {
   case remaining <= 0, candidate.captured {
-    True, _ | _, Some(_) -> Ok(candidate)
+    True, _ | _, Some(_) -> Ok(#(candidate, frames))
     False, None ->
-      case process.receive(frames, 0) {
-        Error(Nil) -> Ok(candidate)
-        Ok(message) -> {
-          let #(next, updates) =
-            channel.receive(candidate.channel, message, now:)
-          use candidate <- result.try(apply_updates(
-            Candidate(..candidate, channel: next),
-            updates,
-          ))
+      case buffered.take(frames) {
+        #(_, Error(Nil)) -> Ok(#(candidate, frames))
+        #(frames, Ok(message)) -> {
+          use candidate <- result.try(receive_frame(candidate, message, now))
           drain(candidate, frames, remaining - 1, now)
         }
       }
   }
+}
+
+fn receive_frame(
+  candidate: Candidate,
+  message: connection.Message,
+  now: Int,
+) -> Result(Candidate, String) {
+  let #(next, updates) = channel.receive(candidate.channel, message, now:)
+  apply_updates(Candidate(..candidate, channel: next), updates)
 }
 
 fn apply_updates(candidate: Candidate, updates) {
@@ -452,10 +612,14 @@ fn apply_updates(candidate: Candidate, updates) {
 fn settle(status: Status) -> #(Status, Option(Outcome), List(Out)) {
   case status {
     Idle -> #(Idle, None, [])
-    Opening(run, _, _, _) ->
-      case process.receive(run.outcomes, 0) {
-        Error(Nil) -> #(status, None, [])
-        Ok(outcome) -> apply_outcome(status, outcome)
+    Opening(run, prepared, frames, candidate) ->
+      case buffered.take(run.outcomes) {
+        #(_, Error(Nil)) -> #(status, None, [])
+        #(outcomes, Ok(outcome)) ->
+          apply_outcome(
+            Opening(Run(..run, outcomes:), prepared, frames, candidate),
+            outcome,
+          )
       }
   }
 }
@@ -593,6 +757,10 @@ pub fn perform(output: Out) -> Nil {
 
 /// Cancels only this attempt; the terminal retains its previously adopted peer.
 ///
+/// It runs as an effect after the step, and it reads a `Prepared` through
+/// `buffered.receive`: one the runtime already received is in the status,
+/// not the mailbox, and its socket must be closed all the same.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -605,17 +773,18 @@ pub fn cancel(status: Status) -> Nil {
       weft.cancel(run.cancel)
       case candidate {
         None ->
-          case process.receive(prepared, 0) {
-            Ok(Prepared(socket, _, _, _, _, _)) -> connection.close(socket)
-            Error(Nil) -> Nil
+          case buffered.receive(prepared, 0) {
+            #(_, Ok(Prepared(socket, _, _, _, _, _))) ->
+              connection.close(socket)
+            #(_, Error(Nil)) -> Nil
           }
         Some(candidate) ->
           channel.close(candidate.channel)
           |> channel.take_outputs
           |> fn(closed) { list.each(closed.1, channel.perform) }
       }
-      sessions.discard(frames)
-      sessions.discard(prepared)
+      sessions.discard(buffered.sender(frames))
+      sessions.discard(buffered.sender(prepared))
     }
   }
 }

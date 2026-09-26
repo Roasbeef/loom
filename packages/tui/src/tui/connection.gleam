@@ -152,7 +152,12 @@ pub fn owner(connection: Connection) -> Result(process.Pid, Nil) {
   websocket.owner(connection)
 }
 
-/// Receives one queued event without blocking the terminal.
+/// Receives one queued event from a raw inbox subject without blocking.
+///
+/// The terminal's step never calls this: it reads `Model.inbox` through
+/// `tui/buffered`, whose held messages are older than anything this would
+/// return. It is for a subject nothing has buffered, such as a session
+/// switch's frames before adoption.
 ///
 /// ## Examples
 ///

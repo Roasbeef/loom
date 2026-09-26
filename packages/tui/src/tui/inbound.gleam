@@ -44,6 +44,7 @@ import tui/approval
 import tui/approval_panel
 import tui/block_summary
 import tui/bootstrap
+import tui/buffered
 import tui/cache_miss
 import tui/command
 import tui/completion_summary
@@ -1021,7 +1022,8 @@ fn adopt_session(
   // close notice it sends after this point is the only residue, one frame.
   // The flush is queued behind the close, as the two used to run, and runs
   // after the step; the model stops reading this inbox at the swap below.
-  let model = tui_model.emit(model, effect.Discard(model.inbox))
+  let model =
+    tui_model.emit(model, effect.Discard(buffered.sender(model.inbox)))
   Model(
     ..model,
     help_open: False,
@@ -1032,7 +1034,7 @@ fn adopt_session(
     overlay: NoOverlay,
     session: target.session,
     local_options: Some(options),
-    inbox:,
+    inbox: buffered.new(inbox),
     peer: Attached(socket:),
     session_switch: sessions.Idle,
     next_id: 4,
@@ -1079,19 +1081,26 @@ fn adopt_session(
   |> tui_model.invalidate_frame
 }
 
-/// Applies at most `remaining` messages from the connection inbox.
+/// Applies at most `remaining` of the messages the runtime received into
+/// the connection inbox before this step.
+///
+/// It reads no mailbox. A message that arrived during the step waits for
+/// the next one, whose top-up receives it behind anything still held.
+/// Each message is taken from whatever inbox the model holds at that
+/// moment, so a drain that follows an adoption in the same step reads the
+/// adopted inbox and never the one it replaced.
 @internal
 pub fn drain_connection(model: Model, remaining: Int) -> Model {
-  // The budget is checked before receiving: an eager second case subject
-  // would remove and discard the first message belonging to the next batch.
+  // The budget is checked before taking, so a message beyond it stays held
+  // for the next step rather than being taken and lost.
   case remaining <= 0 {
     True -> model
     False ->
-      case connection.receive(model.inbox) {
-        Error(Nil) -> model
-        Ok(message) ->
+      case buffered.take(model.inbox) {
+        #(_, Error(Nil)) -> model
+        #(inbox, Ok(message)) ->
           drain_connection(
-            handle_connection_message(model, message),
+            handle_connection_message(Model(..model, inbox:), message),
             remaining - 1,
           )
       }

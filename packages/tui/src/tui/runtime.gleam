@@ -22,6 +22,12 @@
 //// time from the model instead of calling a clock, and every reducer in a
 //// step sees the same instant.
 ////
+//// It also receives the step's traffic. `receive` runs before the step and
+//// tops up every inbox the model holds from its mailbox, each to the most
+//// the step can consume from it, and the reducers take from those buffers
+//// instead of reading a mailbox. What arrives during the step waits for
+//// the next one.
+////
 //// This module is the only impure half of the step. Nothing in the reducer
 //// imports it.
 
@@ -33,11 +39,12 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as host_bootstrap
 import tui/attachment
+import tui/buffered
 import tui/connection
 import tui/daemon
 import tui/effect.{type Effect}
 import tui/herdr
-import tui/model.{type Model, type Stamp, Model, Stamp}
+import tui/model.{type Model, type Stamp, Model, Stamp} as tui_model
 import tui/session_channel
 import tui/sessions
 import weft
@@ -58,6 +65,33 @@ pub fn stamp(model: Model) -> Model {
   Model(
     ..model,
     stamp: read_stamp(model.monotonic_time_ms, model.transport_time_ms),
+  )
+}
+
+/// Receives the traffic for one event, before the step, into the inboxes
+/// the model holds.
+///
+/// Each inbox is topped up to what the step can take from it: the
+/// connection inbox to `connection_batch`, the drain a tick or a key runs;
+/// the replay inbox to one event, which is all a tick applies; and the
+/// provisional attachment's inboxes through `attachment.top_up`. An inbox
+/// the step did not drain keeps what it holds and receives nothing more, so
+/// no buffer grows past its bound.
+///
+/// `tui.update` calls this once per event, after `stamp`. A caller that
+/// runs `tui.step` itself and expects it to see traffic calls it first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = runtime.receive(runtime.stamp(model))
+/// ```
+pub fn receive(model: Model) -> Model {
+  Model(
+    ..model,
+    inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
+    replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
+    candidate: attachment.top_up(model.candidate),
   )
 }
 

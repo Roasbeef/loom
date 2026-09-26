@@ -20,6 +20,7 @@ import gleam/option.{None, Some}
 import host/bootstrap as host_bootstrap
 import tui/attachment
 import tui/attempt_replay
+import tui/buffered
 import tui/cache_miss
 import tui/effect
 import tui/herdr
@@ -156,7 +157,7 @@ pub fn update_tick(model: Model) -> Model {
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let switched = drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
-  let drained = inbound.drain_connection(switched, 64)
+  let drained = inbound.drain_connection(switched, tui_model.connection_batch)
   settle_tick(model, drained)
 }
 
@@ -193,8 +194,14 @@ fn settle_tick(model: Model, drained: Model) -> Model {
   Model(..drained, quiet_for_ms:)
 }
 
+// One recorded attempt event per tick, taken from what the runtime received
+// before the step. An event that arrives outside replay is taken and
+// dropped, as it always was, so it cannot wait in the inbox for a later
+// replay to apply.
 fn drain_replay(model: Model) -> Model {
-  case model.peer, process.receive(model.replay_inbox, 0) {
+  let #(replay_inbox, next) = buffered.take(model.replay_inbox)
+  let model = Model(..model, replay_inbox:)
+  case model.peer, next {
     Replaying, Ok(event) ->
       case attempt_replay.apply(model.replay_state, event) {
         Error(reason) ->

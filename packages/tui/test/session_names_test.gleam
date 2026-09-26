@@ -9,6 +9,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import tui
+import tui/buffered
 import tui/connection
 import tui/daemon/protocol
 import tui/frame
@@ -143,7 +144,7 @@ fn header(model: tui_model.Model) -> String {
     virtual_backend.script(
       backend.TerminalSize(width: 100, height: 12),
       [],
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) =
     tui.run_script(tui_model.Model(..model, peer: tui_model.Replaying), script)

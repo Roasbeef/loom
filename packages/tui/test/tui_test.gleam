@@ -22,6 +22,7 @@ import tui
 import tui/agent_view
 import tui/agents
 import tui/bootstrap
+import tui/buffered
 import tui/command
 import tui/composer
 import tui/connection
@@ -64,15 +65,16 @@ pub fn keyboard_socket_drain_retains_message_beyond_its_budget_test() {
   let model =
     tui.new_model(connection.new_inbox(), workspace.Context("test", None))
   int.range(from: 0, to: 64, with: Nil, run: fn(_, _) {
-    process.send(model.inbox, connection.Connected)
+    process.send(buffered.sender(model.inbox), connection.Connected)
   })
   let retained = connection.Incoming("message sixty-five must remain queued")
-  process.send(model.inbox, retained)
+  process.send(buffered.sender(model.inbox), retained)
   let updated = tui.update(backend.KeyPress("a"), model)
   assert text_area.value(updated.input) == "a"
-  assert connection.receive(model.inbox) == Ok(retained)
+  let #(rest, next) = buffered.receive(updated.inbox, 0)
+  assert next == Ok(retained)
     as "the input path consumes at most64 messages and never discards message65"
-  assert connection.receive(model.inbox) == Error(Nil)
+  assert buffered.receive(rest, 0).1 == Error(Nil)
 }
 
 pub fn websocket_startup_panic_becomes_an_error_test() {
@@ -2415,7 +2417,7 @@ fn last_frame(
     virtual_backend.script(
       backend.TerminalSize(width:, height:),
       steps,
-      model.inbox,
+      buffered.sender(model.inbox),
     )
   let assert Ok(run) = tui.run_script(model, script)
   let assert Ok(last) = list.last(run.frames)
