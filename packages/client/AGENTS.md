@@ -348,6 +348,12 @@ catalogue without opening runtimes. Explicit admission invokes
   forwarder binds a reclaimable Weft reference address. The writer's
   `Routed` subscription resolves it for each hint, so a restart neither
   requires resubscription nor interrupts the writer.
+  `tap_provider_with(surface, to:, also:)` is `tap_provider` with a second
+  observer factory on the same relay: `also(spec, generation)` is asked
+  once per request with the hub's own request identity, and its callback
+  sees every stream event after the hub's. `client/serve` passes
+  `blocksummary.observer`, so the live summary feed costs a callback and
+  no extra relay processes.
 - Provider observation layers retain the inner preparation capability and its
   timeout. `provider_relay.observing` and `previewing` build both outward
   facades from that capability, so adding a layer does not recursively copy
@@ -714,8 +720,56 @@ catalogue without opening runtimes. Explicit admission invokes
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
+- `client/blocksummary.{Route, Wiring, Message, route, key, encode,
+  decode, jobs, request, parse, read, observer, start, supervised,
+  request_timeout_ms, max_answer_tokens, request_deadline_ms,
+  max_summary_bytes, source_limit_bytes, scan_limit}` — the block
+  summarizer (protocol 050), one **`weft/state_machine`** per session
+  that asks the `summarize` role for a one- or two-sentence summary of
+  each long reasoning block and each long delivered advice or nudges
+  message. `route` resolves the `summarize` role's first identity and
+  pins it (`ForResolved`, thinking off, `max_answer_tokens`) with **no
+  fallback** to another role or provider; a catalogue that routes none
+  gets no machine. `Route.provider` is the confidentiality check:
+  `jobs(entry, provider:, floor:)` admits a reasoning block only from a
+  message whose `provider` equals it, and `observer(name, provider)`
+  returns a no-op callback for any request whose strand configuration
+  names another provider, so another provider's reasoning never reaches
+  the machine or the summarizer. Advice and nudges bodies
+  (`advisorslice.delivered_body`) are exempt. The machine has two
+  addresses: `Wiring.name` for the tap's `Streamed`/`StreamEnded` casts,
+  and `Wiring.commits`, a `writer.Event` address it binds itself in its
+  initialiser with `registry.register_self`, which the runtime writer
+  names as a `Routed` subscriber — so no forwarder process sits between
+  them. A commit hint scans message entries above an **in-memory**
+  high-water (set below the first hint's oldest seq, so a restart never
+  summarizes history) up to the hint's newest seq, at most `scan_limit`.
+  `client/blocksummarybook` paces the work; each launch is a one-task
+  `weft` run under `request_deadline_ms` relayed into a per-flight sink,
+  cleared only on the run's last word. A settled task asks, bounds the
+  answer with `parse` (whitespace collapsed, `Summary:` and quotes
+  stripped, `max_summary_bytes` at a word boundary), writes
+  `summary/<entry>/<block>` through `Wiring.write`, then publishes
+  `bus.BlockSummary(SettledBlock)`. A live task publishes
+  `bus.BlockSummary(LiveStream)` and stores nothing. Every failure writes
+  and pushes nothing; the first is logged `block_summary.unusable` at
+  warning level, later ones at debug. `read(session, blocks)` is the
+  `block_summaries` command's exact-key read.
+- `client/blocksummarybook.{Pace, default_pace, Source, Job, Launch, Book,
+  new, streams, tracks, waiting, grow, ended, landed, admit,
+  settled_landed}` — the summarizer's pacing as pure functions. Settled
+  jobs launch oldest first up to `settled_concurrency` (2) with at most
+  `settled_backlog` (16) waiting, dropping the oldest past it. A live
+  stream is due when it has no request out, has carried `floor_bytes`
+  (512) and has grown `every_bytes` (4096) or `every_lines` (40) since
+  its last request began; growth during a request coalesces into at most
+  one more request, launched by `landed` with the newest text. A stream's
+  retained text is trimmed to its newest `window_bytes` (32 KiB) once it
+  reaches twice that. A stream that `ended` with a request out is
+  forgotten when that request lands.
 - `client/advisorslice.{Bounds, Slice, Moment, default_bounds, render,
-  feed_message, advice_message, nudges_message, is_advice, advice_header,
+  feed_message, advice_message, nudges_message, is_advice, delivered_body,
+  advice_header,
   advice_footer, feed_header, feed_footer, nudges_header, nudges_fence}` —
   what the advisor strand is shown of the primary's branch, and the frames
   that carry text both ways. `Moment` is `RunEnded | RunOpen(steps)` and
@@ -2798,8 +2852,17 @@ these forks because they define the same modules.
   (`bus.key(of: api.session_id(runtime))`), never by the caller-supplied
   display name (`protocol-change/008`). Under network delivery the hub
   joins the `Outputs` topic alone and turns each `ToolOutput` into a
-  pushed `tool_output` frame without pulling; every other `BusHint` is a
-  pull. The host fixture joins every topic.
+  pushed `tool_output` frame without pulling, and each `BlockSummary` into
+  a pushed `block_summary` frame the same way (protocol 050); every other
+  `BusHint` is a pull. The host fixture joins every topic.
+- `blocksummary.Message` (opaque) — `Streamed(operation, generation,
+  chunk)` and `StreamEnded(generation)` (casts from the provider relay's
+  observer process, per reasoning fragment and per stream end),
+  `Committed(seqs)` (mapped from the `writer.Event` the writer sends to
+  the machine's own commits address) and `Relayed(flight, pulled)` (a
+  request's relay, on its per-flight sink). A lost cast costs one live
+  summary, which the stream's next growth offers again; a lost hint is
+  covered by the next hint's scan from the high-water.
 - `gateway.DrainHeld(flushed, reply)` fences mutations, returns held items,
   queues each transport's flush marker, and replies with the acknowledgement
   count. `daemon/session_socket.Flush` follows `Push` from the same gateway
@@ -3172,6 +3235,16 @@ these forks because they define the same modules.
   retain their actual `started_by` operation, command excerpt, age, and
   deadline. A missing or unresponsive actor is unavailable, never an empty
   roster. This explicit read adds no historical jobs to ordinary captures.
+- **Summaries are presentation and degrade to nothing.** `block_summaries`
+  (`BlockSummariesGet`, 1–32 `{entry, block}` pairs, entry ids checked by
+  the decoder) is read-only and observer-safe; the gateway reads one exact
+  `fact.custom` key per block through `blocksummary.read`, answers a
+  `snapshot` in mode `block_summaries` with `{summaries: [{entry, block,
+  text}]}` holding only the blocks that have one, treats an undecodable
+  cell as absent, and reports a failed reader as it reports any capture.
+  The `summary/` cells are never in a capture plan: the capture copies the
+  whole `client/` prefix, and one cell per long block there would push
+  long sessions past the capture's 1024-cell and 1 MiB bounds.
 - **The advisor's pending-nudge queue is a read-only observation that
   never drains.** `AdvisorPendingGet` (wire `advisor_pending`, empty
   body, unscoped: a session has one advisor and one primary) answers a

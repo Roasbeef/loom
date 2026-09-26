@@ -440,9 +440,12 @@ boundaries and the split's measurements under Invariants.
 - User messages have a warm shaded, labelled block. Assistant prose has a
   restrained cold background and the blue diamond mark; reasoning retains its
   explicit label. In compact mode a reasoning block is one `ReasoningDigest`
-  row — the line count while it streams, its opening line and the expand hint
-  once it settles — and `Ctrl+G` shows the block itself; a redacted block is
-  its one-line marker in either mode.
+  row — the line count and the generation's elapsed time while it streams,
+  its opening line and the expand hint once it settles — and `Ctrl+G` shows
+  the block itself; a redacted block is its one-line marker in either mode.
+  A block of at least 512 bytes may carry a summarizer label (protocol 050):
+  the settled row then shows `summary: <label>` in place of the opening
+  line, and the live row appends the newest live label.
   Compact tool rows retain every call while folding arguments and results.
   Unresolved code-mode calls retain a syntax-highlighted preview of six
   submitted source lines, with an omission marker. Confirmed success replaces
@@ -820,6 +823,28 @@ boundaries and the split's measurements under Invariants.
   descriptor opens and reads to one second, and its cancellation kills and
   joins the worker before the caller sees the timeout. It performs no path
   expansion or shell evaluation.
+- `tui/block_summary.{Key, Subject, Reads, Labels, floor_bytes, max_blocks,
+  label_prefix, new, stored, live, carried, receive, receive_board, want,
+  next_read, refused, retain_live, decode_board}` — summarizer labels for
+  long blocks (protocol 050), held per attachment in `Model.summaries`:
+  stored labels by `Key(entry, block)`, live labels by stream
+  `generation` (with the response entry `stream_identity.response_entry`
+  names, so `carried` can lend a live label to the committed block until
+  its own arrives), and the exact-key reads still owed. `want` marks keys
+  not held, asked or waiting; `next_read` hands out at most `max_blocks`
+  and records them asked, so each block is read once per attachment;
+  `refused` ends the reads for the attachment. `floor_bytes` (512) and
+  `max_blocks` (32) are copies of the server's constants, pinned by the
+  gateway's `the_terminal_copies_the_summary_bounds_test`.
+  `transcript_lines.{summarizable_blocks, labels_for, summary_keys,
+  live_summary_digest, summarized_reasoning_digest,
+  labelled_advisor_lines}` draw them: `labels_for` resolves one entry's
+  labels by block index and is part of the compact entry cache's key, so
+  a label arriving re-projects only its own entry. A long advice or
+  nudges message collapses in compact mode to its heading and the label,
+  or its first line while none exists; a short one keeps its full body in
+  both modes, and advisor commentary rows (`tui/advisor_history`) are
+  never summarized.
 - `tui/advisor_pending.{Board, decode, lines, primary_strand,
   advisor_strand}` validates an observation of undelivered advice. The composer
   uses the count/recipient heading from `lines`; `pending_nudge_lines` exposes
@@ -894,7 +919,8 @@ boundaries and the split's measurements under Invariants.
   standalone `compact`, `schedules`, `schedule_cancel`, `snapshot_next`,
   `catch_up`, `history`, `escalations_get`, `approve`, `deny`, and the six
   goal commands `goal_get`, `goal_set`, `goal_check`, `goal_clear`,
-  `goal_pause` and `goal_resume`.
+  `goal_pause` and `goal_resume`, and the automatic `block_summaries` read
+  (protocol 050), at most 32 exact keys, once per block per attachment.
 - **Live events in**: correlated `snapshot_begin`, `snapshot_chunk`,
   `snapshot_end`, `mutation_outcome` (`admitted`, `committed` or `queued`),
   bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
@@ -907,7 +933,9 @@ boundaries and the split's measurements under Invariants.
   earlier; `presence` and `attachment` are the same trigger; `stream_delta`
   is the live answer in order; `usage_observation` is a bounded per-operation reading;
   `tool_output` is a running command's tail,
-  whole each time; a pushed `error` is a daemon-side failure
+  whole each time; `block_summary` is a summarizer label for a committed
+  block or a live reasoning stream, and an unknown `subject` is dropped;
+  a pushed `error` is a daemon-side failure
   reported without closing the socket. An event name this client does not
   know is dropped. A daemon that predates live delivery pushes none of
   these, and the terminal behaves exactly as it did.
@@ -1124,7 +1152,8 @@ untouched.
   controls therefore remain inspectable in the compact busy layout.
 - **A new observation command must be taught to every command-name table
   by hand — the compiler checks none of them.** `advisor_pending` needed
-  three, and missing one is not cosmetic: `tui/session_channel`'s
+  three (and `block_summaries` needed the same three), and missing one is
+  not cosmetic: `tui/session_channel`'s
   `matching_presentation` and `outbound` both switch on the literal
   command string, and an unlisted name in `outbound` defaults to the
   `Mutation` lane — which held the composer lane forever and hung every
@@ -1217,7 +1246,20 @@ untouched.
   clipped to the pane rather than wrapped, and `markdown.wrap_lines`
   recognises it by `markdown.digest_mark` and leaves it fixed. A character
   limit on the digest text alone would only move the width at which the mark
-  and the expand hint pushed it onto a second row.
+  and the expand hint pushed it onto a second row. The same holds for the
+  labelled forms: a summarizer label changes the row's words, never its
+  count, so a label arriving and the live-to-settled hand-off keep the
+  transcript's height. The live row's elapsed time is
+  `Model.generation_elapsed_s`, read from `generation_started_ms` on the
+  tick (`tick.advance_generation_clock`); a change repaints only while a
+  reasoning row is on screen and leaves the record cache valid.
+- **A summary never re-attributes text.** Every label is drawn after
+  `block_summary.label_prefix` (`summary: `), so a reader can tell the
+  summarizer's words from the agent's and the advisor's. A label arriving
+  clears `record_cache_valid` when it rewrites a cached row (a settled
+  label, or a live one whose response is already recorded); other live
+  labels touch only the transient tail. A refused `block_summaries` read is
+  silent and ends the reads for the attachment.
 - **Reasoning is collapsed unless details are expanded.** A digest is drawn
   literally rather than through the Markdown renderer, so a fence or a list
   marker in the model's own prose cannot turn a one-row indicator into

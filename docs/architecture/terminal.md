@@ -302,8 +302,8 @@ at a time. A snapshot arrives as `snapshot_begin`, a chunk per credit, then
 `snapshot_end`, and the cut becomes visible only at the end, so partial
 metadata never repaints the view. While idle the channel issues a credited
 `catch_up` every 250 ms. A `committed` or `presence` push moves that catch-up
-earlier. `stream_delta`, `tool_output` and `usage_observation` pushes are
-applied directly. Pushes are accepted in every phase except `Closed` and
+earlier. `stream_delta`, `tool_output`, `usage_observation` and
+`block_summary` pushes are applied directly. Pushes are accepted in every phase except `Closed` and
 consume no credit.
 [Multiplayer](multiplayer.md#what-the-terminal-does-with-a-pushed-frame) has
 the phase diagram and the push rules; this document does not repeat them.
@@ -317,8 +317,8 @@ name and request ID, so a refusal settles only the request it answers.
 
 Commands take one of two lanes. The channel classifies an outgoing frame by its
 command name: `models`, `skills`, `schedules`, `notes`, `queued_input`,
-`context`, `worktree_diff`, `live_jobs`, `advisor_pending` and `goal_get` are
-reads, and every other name is a mutation. A read waits for the lane to be
+`context`, `worktree_diff`, `live_jobs`, `advisor_pending`, `block_summaries`
+and `goal_get` are reads, and every other name is a mutation. A read waits for the lane to be
 free. A mutation may also wait: after the first cut, the channel can hold one
 unsent mutation behind a capture in progress, and sends it exactly once when
 the capture completes. `Disposition` reports which happened (`Waiting`, `Sent`
@@ -530,7 +530,42 @@ reformatted. `markdown.diff` renders patches with addition and removal colours.
 `tui/tool_activity` groups consecutive tool calls and joins results by call
 ID, a reasoning block is one `ReasoningDigest` row, and a successful settle
 keeps the same row count as the live region it replaces, so the transcript
-does not jump when a call completes. `Ctrl+G` expands all of it. Harness-written
+does not jump when a call completes. `Ctrl+G` expands all of it.
+
+### Summaries of long blocks
+
+The daemon's summarizer writes a one- or two-sentence summary of each
+reasoning block and each delivered advice or nudges message of at least
+512 bytes ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
+`tui/block_summary` holds them per attachment: stored summaries keyed by
+entry id and block index, and live summaries keyed by the `generation` of
+the stream they describe. Every summary is drawn after `summary: `, so it
+reads as the summarizer's and not the agent's.
+
+In compact mode a long reasoning block's digest row shows its summary in
+place of the first line, keeping the expand hint. The live row shows the
+line count, the time the generation has run, and the newest live summary:
+`3 lines · 1m 04s so far · summary: …`. The time is `Model.generation_elapsed_s`,
+a whole-second reading of the generation clock (`generation_started_ms`)
+taken on the tick; a change repaints only while a reasoning row is on
+screen, and the repaint rebuilds the transient rows while the durable row
+cache stays valid. All three forms are one clipped row, so a summary
+arriving and the live-to-settled hand-off change a row's words and never
+the transcript's height. When a response commits before its own summary
+arrives, its first long reasoning block shows the stream's live summary
+until the stored one replaces it. A long advice or nudges message
+collapses to its heading and the summary, or its first line while none
+exists. Detail mode is unchanged: full text everywhere. A block under the
+floor renders exactly as it did before summaries existed.
+
+A summary arriving changes rows the record cache holds, so it clears
+`record_cache_valid`; the compact entry cache keys each entry by the
+summaries its rows show, so only entries whose summaries moved are
+projected again. A cut whose records changed marks the long blocks it
+holds no summary for as wanted, and `surfaces.service_block_summaries`
+reads them by exact key on the read lane, 32 to a read, once per block per
+attachment. A refused read stops the reads for the attachment and draws
+no error row. Harness-written
 user turns (advisor frames, goal continuations, the notes digest) are
 recognized by both their header and footer tokens and drawn in the system
 voice; the advisor and goals docs cover the details.
@@ -713,6 +748,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/completion_summary`, `tui/summary_panel`, `tui/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
 | `tui/context_view`, `tui/context_panel` | The context observation and inspector. |
 | `tui/advisor_pending` | The pending-nudge observation. |
+| `tui/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
 | `tui/goal_view`, `tui/focused_goal_panel` | The goal board, composer row and inspector. |
 | `tui/model_selector` | The `/model` overlay. |
 | `tui/cache_miss` | Prompt-cache miss detection and TTL outlook from usage rows. |

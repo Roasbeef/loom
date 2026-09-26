@@ -257,6 +257,23 @@ reasoning is reviewing the wrong artifact. The redacted marker is
 withheld too, because a marker still discloses that the turn reasoned
 and roughly how much.
 
+The same confidentiality rule governs the block summarizer
+(`client/blocksummary`, [protocol
+050](../../protocol-change/050-reasoning-summaries.md)), which writes a
+short label for each long reasoning block so the terminal's collapsed row
+says what the block works through. **A reasoning block is sent to the
+summarizer only when the `summarize` route's first identity belongs to
+the provider that produced the block**, and the request is pinned to that
+identity with no fallback, so a retryable failure cannot carry the text
+to another provider's model. A block from any other provider is skipped
+without a request and keeps the terminal's first-line digest. The check
+reads the provider the settled assistant message names; for a stream
+still being written, the provider of the generation request's strand
+configuration, compared at the provider tap so a fragment from another
+provider never leaves the relay. Advice and nudges are text the harness
+wrote and already sends to every provider in the session, so the
+summarizer may label them whichever provider it belongs to.
+
 **A tool result is clipped from the middle**, by `middle_clip`
 (`client/advisorslice.gleam:423`), because both ends carry signal. A
 build says what it was doing at the top and whether it failed at the
@@ -707,11 +724,17 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui/transcript_lines.gleam:1207`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1312`) renders
-them. Delivered advice and nudges show their complete bodies even in
-compact mode, with a delivery label. Feeds and goal continuations
+`advisor_payload` (`tui/transcript_lines.gleam:1215`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1569`) renders
+them. Delivered advice and nudges shorter than 512 bytes show their
+complete bodies even in compact mode, with a delivery label. A longer one
+collapses in compact mode to its heading and one line: the summarizer's
+summary, prefixed `summary: `, or the body's first line while no summary
+exists ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
+Detail mode shows its whole body. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.
+The advisor's own commentary rows (`tui/advisor_history`) are not
+summarized and always render in full.
 Expanded bodies keep their heading but drop the frame delimiters, which
 address the model rather than the operator. Captured advisor-only
 commentary is shown separately from delivered frames; a verdict

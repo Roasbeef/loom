@@ -29,7 +29,12 @@ WP-K.
   same standing as `OpTransition`'s phase label, complete in every event
   so a subscriber replaces rather than appends. `OutputStream` (`Stdout` |
   `Stderr`) mirrors the broker's type because this package may not import
-  it. `Published(session, event)` is what a subscriber selects, so a
+  it. `Outputs` also carries `BlockSummary(subject, text)`
+  (`protocol-change/050`): a summarizer's label for a long reasoning block
+  or delivered advisor message, where `SummarySubject` is
+  `SettledBlock(entry, block)` for a committed block (whose label is also
+  in the reserved `summary/` cell) or `LiveStream(strand, op, generation)`
+  for reasoning still streaming (stored nowhere). `Published(session, event)` is what a subscriber selects, so a
   subscriber joined to several sessions can tell them apart.
 - `events/bus.{all_topics, hint_topics, subscribe_all, subscribe_hints}` —
   `subscribe_all` joins all seven; `subscribe_hints` joins the six hint
@@ -93,9 +98,10 @@ these forks because they define the same modules.
   generated module imports at runtime), `gleam_erlang` + `gleam_otp`.
   `session` is declared in `gleam.toml` — the spec DAG's `K → A,B,C` — but
   nothing in `src` imports it today.
-- **Depended on by**: `client` — `client/serve` is the one production
-  publisher (`gateway.tool_output_observer` publishes `ToolOutput` on the
-  `Outputs` topic, entered through the idempotent `bus.start`), the
+- **Depended on by**: `client` — `client/serve` wires the two production
+  publishers (`gateway.tool_output_observer` publishes `ToolOutput` and
+  `client/blocksummary` publishes `BlockSummary` on the `Outputs` topic,
+  entered through the idempotent `bus.start`), the
   gateway joins `Outputs` under network delivery and every topic as the
   host fixture, and `client/history` is the search service's one consumer:
   a named holder actor owning one `Search`, synced from the runtime
@@ -142,7 +148,9 @@ these forks because they define the same modules.
   assert exactly that. `ToolOutput` keeps the rule by carrying display
   state only: the whole bounded window every time, so a lost event is
   restated by the next, and the durable tool result is the truth once the
-  call settles.
+  call settles. `BlockSummary` is display state of the same kind: a settled
+  label's truth is its reserved cell, which a terminal can read back, and a
+  live label is replaced by the next one.
 - **A projection is rebuildable and carries no authority.** `apply` is
   pure and total, folding unknown shapes as no-ops, so folding the same
   changes in the same order from `initial` always yields the same state —
