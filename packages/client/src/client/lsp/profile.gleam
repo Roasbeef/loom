@@ -631,8 +631,17 @@ fn one_path(at: String, written: String) -> Result(LspPath, String) {
   case written {
     "/" <> _beneath -> Ok(AbsolutePath(written))
     "~/" <> rest -> beneath_place(at, written, rest, "~", "home", HomePath)
-    "<cache>/" <> rest ->
-      beneath_place(at, written, rest, "<cache>", "cache", CachePath)
+    "<cache>/" <> rest -> {
+      use path <- result.try(beneath_place(
+        at,
+        written,
+        rest,
+        "<cache>",
+        "cache",
+        CachePath,
+      ))
+      outside_private_cache(at, written, rest) |> result.replace(path)
+    }
     _relative ->
       Error(
         at
@@ -672,6 +681,162 @@ fn beneath_place(
         at <> " entry \"" <> written <> "\" has a doubled slash after " <> form,
       )
     _beneath -> Ok(make(rest))
+  }
+}
+
+// `<cache>/loom` is Loom's own, and the private caches `cache_env` names
+// live beneath it at `<cache>/loom/lsp/<server>/<dir>`. The harness makes
+// each one with `mkdir -p` before a start and binds it writable, and both
+// steps follow a link where a directory should be. So a table that could
+// name any part of that tree could grant a server the power to swap one of
+// those directories — its own or another server's — for a link, and the
+// next start would bind a host directory nobody approved. It is refused in
+// every spelling a written `<cache>/` path has: the components are judged
+// with the empty and `.` ones dropped, since `<cache>/./loom` names the
+// same directory. An absolute or `~/` root that lands there is refused at
+// boot, once the daemon's places say where the cache is
+// (`private_cache_fault`).
+fn outside_private_cache(
+  at: String,
+  written: String,
+  rest: String,
+) -> Result(Nil, String) {
+  case components(rest) {
+    [first, ..] if first == private_cache_top ->
+      Error(
+        at
+        <> " entry \""
+        <> written
+        <> "\" is under <cache>/"
+        <> private_cache_top
+        <> ": "
+        <> private_cache_refusal,
+      )
+    _elsewhere -> Ok(Nil)
+  }
+}
+
+// The directory under `<cache>` that is Loom's, and the words every
+// refusal of a root inside it ends with.
+const private_cache_top = "loom"
+
+const private_cache_refusal = "Loom's private cache is not a root a table may name; a server's private caches are granted through cache_env"
+
+// A path's components, without the empty ones a doubled or trailing slash
+// leaves or the `.` that names the directory it is in. `..` is refused
+// before anything reaches here, so what is left compares by component.
+fn components(path: String) -> List(String) {
+  string.split(path, "/")
+  |> list.filter(fn(component) { component != "" && component != "." })
+}
+
+// Whether `path` is `root` or lies beneath it, by component, so `/a/bc` is
+// not beneath `/a/b`.
+fn at_or_beneath(root: String, path: String) -> Bool {
+  is_prefix(components(root), components(path))
+}
+
+fn is_prefix(prefix: List(String), of: List(String)) -> Bool {
+  case prefix, of {
+    [], _ -> True
+    [head, ..rest], [other, ..more] if head == other -> is_prefix(rest, more)
+    [_, ..], _ -> False
+  }
+}
+
+/// Refuses a `readable` or `writable` root of `server` that resolves, under
+/// the daemon's `places`, into Loom's private cache `<cache>/loom` — or,
+/// for a `writable` one, to a directory that holds it.
+///
+/// The decoder already refuses a root written `<cache>/loom[/...]`; this
+/// is the same rule for an absolute or `~/` root, which only the daemon's
+/// places can place. A root inside the private cache is refused either
+/// way, since a server that could read another's cache could read what
+/// that server's tools wrote there, and a server that could write one
+/// could replace a directory with a link the next start would bind. A
+/// writable root *above* it — `~/.cache` on Linux — grants the same swap,
+/// so it is refused too; a readable one reaches nothing it could change.
+/// With no cache place, or an unresolvable root, there is nothing to decide
+/// here, and `expand_path` refuses the root where one is needed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let places = profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+/// let assert Error(_) =
+///   profile.private_cache_fault(
+///     LspServer(..go, writable: [profile.HomePath(".cache")]),
+///     places,
+///   )
+/// assert profile.private_cache_fault(go, places) == Ok(Nil)
+/// ```
+///
+pub fn private_cache_fault(
+  server: LspServer,
+  places: Places,
+) -> Result(Nil, String) {
+  case expand_path(CachePath(private_cache_top), places) {
+    Error(_unplaced) -> Ok(Nil)
+    Ok(private) -> {
+      let place = "lsp." <> server.name
+      use Nil <- result.try(
+        list.try_each(server.readable, fn(path) {
+          root_clear_of(place <> ".readable", path, places, private, [])
+        }),
+      )
+      list.try_each(server.writable, fn(path) {
+        root_clear_of(place <> ".writable", path, places, private, [
+          private,
+        ])
+      })
+    }
+  }
+}
+
+// One root against the private cache. `holding` is what the root may not
+// be at or above: the private cache itself for a writable root, nothing
+// for a readable one.
+fn root_clear_of(
+  at: String,
+  path: LspPath,
+  places: Places,
+  private: String,
+  holding: List(String),
+) -> Result(Nil, String) {
+  case expand_path(path, places) {
+    Error(_unresolvable) -> Ok(Nil)
+    Ok(host) ->
+      case
+        at_or_beneath(private, host),
+        list.any(holding, at_or_beneath(host, _))
+      {
+        True, _ ->
+          Error(
+            at
+            <> " entry \""
+            <> path_text(path)
+            <> "\" resolves to "
+            <> host
+            <> ", inside "
+            <> private
+            <> ": "
+            <> private_cache_refusal,
+          )
+        False, True ->
+          Error(
+            at
+            <> " entry \""
+            <> path_text(path)
+            <> "\" resolves to "
+            <> host
+            <> ", which holds Loom's private cache "
+            <> private
+            <> "; a server that could write there could swap a private cache"
+            <> " for a link before the next start binds it, so name a"
+            <> " directory that does not hold it",
+          )
+        False, False -> Ok(Nil)
+      }
   }
 }
 
@@ -1318,7 +1483,9 @@ pub fn encode_server(server: LspServer) -> Json {
 ///
 /// A missing field, a wrong type, an unknown `project` or `module_case`
 /// word, or a root that is neither absolute nor `~/` nor `<cache>/` is a
-/// decode failure naming where it was found, never a crash. The table's
+/// decode failure naming where it was found, never a crash. The one
+/// field that may be absent is `cache_env`, read as `[]`, because a
+/// format-3 record written before the key existed carries none. The table's
 /// other rules are not re-judged here; see the module documentation for
 /// why the comparison at load is what holds them.
 ///
@@ -1337,8 +1504,14 @@ pub fn server_decoder() -> Decoder(LspServer) {
   use readable <- decode.field("readable", decode.list(path_decoder()))
   use writable <- decode.field("writable", decode.list(path_decoder()))
   use env <- decode.field("env", decode.list(decode.string))
-  use cache_env <- decode.field(
+
+  // Absent reads as no private caches: the key is younger than format 3,
+  // so a format-3 record written before it existed holds a profile that
+  // had none, and loading it must not turn on a field it never carried.
+  // Present, it is read in full and every directory is re-judged.
+  use cache_env <- decode.optional_field(
     "cache_env",
+    dict.new(),
     decode.dict(decode.string, cache_directory_decoder()),
   )
   let cache_env =

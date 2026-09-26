@@ -366,8 +366,9 @@ pub fn connect_jailed(
   )
 }
 
-// Locates the executable, composes the jail, and makes the directories the
-// jail binds that may not exist yet. This is where a jail's impure
+// Locates the executable, composes the jail, judges the real paths of the
+// spellings a link could redirect, and makes the directories the jail
+// binds that may not exist yet. This is where a jail's impure
 // preparation lives, and the private caches belong with it rather than at
 // boot: the probe, a search and the server all clear through here, so a
 // directory made here exists before any policy that binds it is cleared,
@@ -393,6 +394,18 @@ fn jail_for(
     jailed.session_base,
     reading: jailed.reading,
   ))
+
+  // The policy was built from spellings; the helper will bind them by
+  // following whatever links they pass through. Two of those spellings
+  // lie where a link could be planted — the executable's directory under
+  // a path the server writes, and a private cache — so their real paths
+  // are judged here, from the disk, before anything is made or cleared.
+  use Nil <- result.try(jail.directory_unlinked(
+    server.name,
+    executable,
+    built.requirements.writable_roots,
+  ))
+  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
   use Nil <- result.try(
     simplifile.create_directory_all(built.scratch <> "/tmp")
     |> result.map_error(fn(error) {
@@ -416,6 +429,11 @@ fn jail_for(
       })
     }),
   )
+
+  // Judged again now the directories exist: the first read proved no
+  // link would be followed to make them, and this one proves the
+  // directories the helper is about to bind are the ones Loom made.
+  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
   Ok(built)
 }
 
