@@ -37,14 +37,6 @@ import tui/daemon/protocol
 import tui/text_hygiene
 import tui/theme
 
-/// The most resident sessions one `sessions.activity` request may name.
-///
-/// The daemon refuses a larger request, which is what keeps the reply under
-/// the control protocol's frame budget. A page holds at most one hundred
-/// rows, and more than this many of them being resident at once is not a
-/// case worth batching for: the rows past it stay `Unobserved`.
-pub const activity_limit = 24
-
 /// The selected metadata collection, independent of runtime status.
 pub type Collection {
   /// Sessions available for explicit opening.
@@ -369,10 +361,12 @@ fn index_of(rows: List(protocol.Session), session_id: String) -> Option(Int) {
 }
 
 /// The resident identities worth asking the daemon about, in page order and
-/// at most `activity_limit` of them.
+/// at most `protocol.activity_limit` of them.
 ///
-/// The page is prioritized, so the rows cut by the limit are the ones
-/// farthest from this workspace.
+/// The daemon refuses a larger request, which keeps its reply inside the
+/// control frame budget. The page is prioritized, so the rows cut by the
+/// limit are the ones farthest from this workspace; they stay `Unobserved`.
+/// More than that many resident sessions at once is not worth batching for.
 ///
 /// ## Examples
 ///
@@ -391,7 +385,7 @@ pub fn resident_ids(state: State) -> List(String) {
       | protocol.RecoveryBlocked -> Error(Nil)
     }
   })
-  |> list.take(activity_limit)
+  |> list.take(protocol.activity_limit)
 }
 
 /// Adopts one activity reply for the identities it was asked about.

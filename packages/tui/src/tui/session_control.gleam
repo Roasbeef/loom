@@ -27,9 +27,10 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/inbound
 import tui/model.{
-  type ControlEvent, type Model, AgentInspector, ApprovalInspector,
-  ControlRequest, DaemonSelector, GoalInspector, Model, ModelSelector, NoOverlay,
-  PageLoaded, PeerInspectionLoaded, PeerLinkManager, PeerOperationCompleted,
+  type ControlEvent, type Model, ActivityAsking, ActivityDue, ActivityResting,
+  AgentInspector, ApprovalInspector, ControlRequest, DaemonSelector,
+  GoalInspector, Model, ModelSelector, NoOverlay, PageLoaded,
+  PeerInspectionLoaded, PeerLinkManager, PeerOperationCompleted,
   PeerSessionsLoaded, PeerWorkspaceLoaded, ReconnectAttempting, ReconnectIdle,
   ReconnectSpent, SessionArchived, SessionDeleted, SessionRenamed,
   SessionRestored, SessionSelector,
@@ -443,6 +444,10 @@ fn finish_control(model: Model, result) {
       Model(
         ..model,
         overlay: DaemonSelector(selector),
+        activity_poll: case model.activity_poll {
+          ActivityAsking(..) -> model.activity_poll
+          ActivityDue | ActivityResting(..) -> ActivityDue
+        },
         notice: case collection {
           session_selector.Active ->
             "Enter opens · d archives · a shows archived sessions"
@@ -1044,5 +1049,142 @@ fn finish_control_failure(model: Model, reason: String) {
     | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> tui_model.append_error(model, reason)
+  }
+}
+
+/// How long the picker waits after one activity answer before asking again.
+///
+/// Three seconds is often enough that a session which just started or
+/// finished work changes tab while the operator is looking, and rare enough
+/// that an open picker costs the daemon one small request, and one
+/// authenticated handshake, every few seconds.
+const activity_interval_ms = 3000
+
+/// Starts one activity request when the picker is open on resident rows and
+/// the last answer has rested long enough.
+///
+/// Nothing is asked while the picker is closed, on the archive, or when its
+/// page holds no resident row, so an idle terminal sends nothing. The request
+/// runs on a control connection the worker opens and closes itself: the
+/// terminal's borrowed control has one outstanding slot, which an operator's
+/// page turn must never find occupied by a poll.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.service_activity(model)
+/// ```
+@internal
+pub fn service_activity(model: Model) -> Model {
+  case model.overlay, model.daemon_host {
+    DaemonSelector(selector), Some(host) ->
+      case activity_due(model), session_selector.resident_ids(selector) {
+        True, [_, ..] as ids -> start_activity(model, host, ids)
+        _, _ -> model
+      }
+    _, _ -> model
+  }
+}
+
+fn activity_due(model: Model) -> Bool {
+  case model.activity_poll {
+    ActivityDue -> True
+    ActivityResting(until_ms:) -> model.monotonic_time_ms() >= until_ms
+    ActivityAsking(..) -> False
+  }
+}
+
+fn start_activity(
+  model: Model,
+  host: daemon_selection.Host,
+  ids: List(String),
+) -> Model {
+  let cancel = weft.cancel_signal()
+  let replies = process.new_subject()
+
+  // Only the route and the identities cross into the worker, bound here for
+  // the reason the catalogue job gives: a closure over a model field would
+  // copy the whole presentation state into it.
+  let _relay =
+    weft.new([
+      fn() {
+        use owned <- result.try(daemon_selection.reconnect(host, process.self()))
+        let control = daemon_selection.control(owned)
+        let reply =
+          daemon.request(control, control_protocol.SessionActivity(ids), 5000)
+        daemon.close(control)
+        use reply <- result.try(result.map_error(
+          reply,
+          daemon_selection.failure,
+        ))
+        case reply {
+          control_protocol.ActivityReply(rows) -> Ok(rows)
+          control_protocol.StatusReply(_)
+          | control_protocol.SessionsReply(_)
+          | control_protocol.SessionReply(_)
+          | control_protocol.LifecycleReply(_)
+          | control_protocol.DeletedReply(_)
+          | control_protocol.PeersInspectionReply(_)
+          | control_protocol.PeersMutationReply(_)
+          | control_protocol.ShutdownReply ->
+            Error("activity returned an unexpected control reply")
+        }
+      },
+    ])
+    |> weft.deadline(9000)
+    |> weft.cancel_with(cancel)
+    |> weft.start_relayed(replies)
+  Model(..model, activity_poll: ActivityAsking(cancel, replies, ids))
+}
+
+/// Takes the activity worker's next relayed message, if one has arrived.
+///
+/// An answer is applied only to a picker that is still open, and `observe`
+/// applies it only to rows still on its page, so an answer that outlived its
+/// page or its picker changes nothing. A refusal or a lost worker is not an
+/// operator error: the rows stay as they were, marked by whatever the last
+/// answer said, and the poll rests before asking again. An older daemon that
+/// does not know `sessions.activity` is therefore asked once per interval
+/// while the picker is open and costs nothing more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.drain_activity(model)
+/// ```
+@internal
+pub fn drain_activity(model: Model) -> Model {
+  case model.activity_poll {
+    ActivityDue | ActivityResting(..) -> model
+    ActivityAsking(replies:, asked:, ..) ->
+      case process.receive(replies, 0) {
+        Error(Nil) -> model
+        Ok(weft.PulledOutcome(weft.Completed(value:, ..))) ->
+          observe_activity(model, asked, value)
+        Ok(weft.AllDelivered) | Ok(weft.RunLost(_)) ->
+          Model(
+            ..model,
+            activity_poll: ActivityResting(
+              model.monotonic_time_ms() + activity_interval_ms,
+            ),
+          )
+        Ok(weft.NotYet) | Ok(weft.PulledOutcome(_)) -> model
+      }
+  }
+}
+
+fn observe_activity(
+  model: Model,
+  asked: List(String),
+  rows: List(control_protocol.Activity),
+) -> Model {
+  case model.overlay {
+    DaemonSelector(selector) ->
+      Model(
+        ..model,
+        overlay: DaemonSelector(session_selector.observe(selector, asked, rows)),
+      )
+      |> tui_model.invalidate_frame
+    _ -> model
   }
 }

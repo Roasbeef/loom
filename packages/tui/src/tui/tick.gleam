@@ -144,6 +144,7 @@ pub fn update_tick(model: Model) -> Model {
     inbound.tick_strip(advance_activity_indicator(drain_replay(model)))
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let switched = drain_reconnect(switched)
+  let switched = session_control.drain_activity(switched)
   let drained = inbound.drain_connection(switched, 64)
   settle_tick(model, drained)
 }
@@ -168,6 +169,7 @@ fn settle_tick(model: Model, drained: Model) -> Model {
     |> surfaces.service_context_read
     |> surfaces.service_advisor_nudges_read
     |> surfaces.service_goal_read
+    |> session_control.service_activity
     |> inbound.tick_channel
     |> advance_cache_outlook
   let quiet_for_ms =

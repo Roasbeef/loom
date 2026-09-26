@@ -677,7 +677,15 @@ boundaries and the split's measurements under Invariants.
   collection. At an inner width of 96 or more a details pane shows the
   highlighted row's status and reason, last message, agent glances,
   workspace, model and identity; narrower pickers put status and short
-  identity on a second row line instead.
+  identity on a second row line instead. `Model.activity_poll` fills
+  `State.activity`: while the picker is open on the active collection with
+  resident rows, `session_control.service_activity` (from the tick) asks
+  `sessions.activity` for at most `protocol.activity_limit` of them, on a
+  control connection the worker opens and closes itself so the borrowed
+  control's single slot stays free for paging, renames and opens.
+  `drain_activity` applies an answer only to a still-open picker and rests
+  the poll three seconds after each delivery; a page load makes it due at
+  once. A refusal changes nothing on screen.
   `/sessions` does not scan workspace launch records. `tui/daemon/selection`
   resolves the selected row and canonical workspace, attaches directly when
   resident, or explicitly opens and observes the returned operation.

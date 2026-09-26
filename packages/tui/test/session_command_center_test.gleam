@@ -4,11 +4,18 @@
 
 import etui/keys
 import gleam/dict
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import tui
+import tui/connection
 import tui/daemon/protocol
+import tui/model as tui_model
+import tui/session_control
 import tui/session_selector
+import tui/workspace
+import weft
 
 fn session(id: String, workspace: String, status) -> protocol.Session {
   protocol.Session(id, workspace, id, 1, status)
@@ -191,7 +198,66 @@ pub fn resident_ids_are_bounded_by_the_request_limit_test() {
       "",
     )
   let asked = session_selector.resident_ids(state)
-  assert list.length(asked) == session_selector.activity_limit
+  assert list.length(asked) == protocol.activity_limit
   assert list.first(asked) == Ok("r1")
   assert !list.contains(asked, "saved")
+}
+
+// The poll's answer reaches an open picker through the tick's drain, and the
+// poll rests once the worker has delivered everything.
+pub fn a_drained_answer_marks_the_open_picker_test() {
+  let replies = process.new_subject()
+  let model =
+    tui_model.Model(
+      ..tui.new_model_with_clock(
+        connection.new_inbox(),
+        workspace.Context("/work", None),
+        fn() { -5000 },
+      ),
+      overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+      activity_poll: tui_model.ActivityAsking(weft.cancel_signal(), replies, [
+        "busy",
+      ]),
+    )
+  process.send(
+    replies,
+    weft.PulledOutcome(weft.Completed(0, [activity("busy", protocol.Working)])),
+  )
+  process.send(replies, weft.AllDelivered)
+  let answered = session_control.drain_activity(model)
+  let assert tui_model.DaemonSelector(selector) = answered.overlay
+    as "the picker stays open"
+  let assert Ok(busy) =
+    list.find(page().sessions, fn(row) { row.session_id == "busy" })
+    as "the fixture has a busy row"
+  assert session_selector.presence(selector, busy) == session_selector.Working
+  let settled = session_control.drain_activity(answered)
+  assert settled.activity_poll == tui_model.ActivityResting(-2000)
+}
+
+// An answer that outlived its picker changes nothing, and with no daemon the
+// service never starts a poll.
+pub fn a_closed_picker_ignores_a_late_answer_test() {
+  let replies = process.new_subject()
+  let model =
+    tui_model.Model(
+      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
+      activity_poll: tui_model.ActivityAsking(weft.cancel_signal(), replies, [
+        "busy",
+      ]),
+    )
+  process.send(
+    replies,
+    weft.PulledOutcome(weft.Completed(0, [activity("busy", protocol.Working)])),
+  )
+  let after = session_control.drain_activity(model)
+  assert after.overlay == tui_model.NoOverlay
+  let idle =
+    tui_model.Model(
+      ..model,
+      overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+      activity_poll: tui_model.ActivityDue,
+    )
+  assert session_control.service_activity(idle).activity_poll
+    == tui_model.ActivityDue
 }
