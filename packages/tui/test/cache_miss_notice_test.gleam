@@ -81,11 +81,16 @@ fn re_read_prefix() -> message.Usage {
 
 const expected_row = "Cache miss after 10m idle: 250k tokens re-billed (~$1.00)"
 
+// `adopt_session` puts a socketless replay lane on this model, so the
+// transport clock is frozen with it rather than left on the host's.
 fn initial(now: Int) -> tui_model.Model {
-  tui.new_model_with_clock(
-    connection.new_inbox(),
-    workspace.Context(path: "/work", branch: None),
-    fn() { now },
+  tui_model.Model(
+    ..tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context(path: "/work", branch: None),
+      fn() { now },
+    ),
+    transport_time_ms: fn() { 0 },
   )
 }
 
@@ -535,7 +540,7 @@ fn adopt_session(model: tui_model.Model, session: String) -> tui_model.Model {
       transfer_for(session, 1, "1:1", 10),
       #(channel, []),
       fn(acc, incoming) {
-        let #(next, changes) = session_channel.receive(acc.0, incoming)
+        let #(next, changes) = session_channel.receive(acc.0, incoming, now: 0)
         #(next, list.append(acc.1, changes))
       },
     )

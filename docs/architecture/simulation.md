@@ -148,18 +148,23 @@ terminal result. A commit is durable, and its terminal result readable,
 *before* the writer runs the post-commit seam that a crash schedule fires
 from. A runner that took the terminal result the moment it appeared could
 therefore end a run while the fault armed on its last commit was still
-queued. A crash closes the killed writer's seam, and every recovered
-writer must close each new seam it opens. Waiting for the seam keeps a
+queued. The control actor records the seam against the writer that
+opened it, so a writer killed inside its seam releases it by dying, and
+every recovered writer must close each new seam it opens. Waiting for the
+seam keeps a
 commit-indexed fault's chance to fire inside the run rather than in a race
 against the observer.
 
-Two wall-clock waits remain in a simulated session, and both are named
-where they live. The first is the provider surface's own settlement
-timeout, which only a scripted timeout fault reaches. The second is
-`control.attempt`'s budget, which bounds every call into a tree that may
-be mid-restart. Its own doc comment marks it **not simulation-safe**, and
-"What this does not cover" below discusses it. Neither wait is part of a
-seed.
+Three wall-clock waits remain in a simulated session, and each is named
+where it lives. The first is the provider surface's own settlement
+timeout, which only a scripted timeout fault is meant to reach; that is
+why a provider request is never parked on the logical clock (see the
+fault taxonomy below). The second is `control.attempt`'s budget, which
+bounds every call into a tree that may be mid-restart. Its own doc
+comment marks it **not simulation-safe**, and "What this does not cover"
+below discusses it. The third is the backstop on the runner's retry
+pacing, which waits for a restarting root to register its writer. None
+of the three is part of a seed.
 
 ## The fault taxonomy
 
@@ -172,19 +177,39 @@ seed.
 | `StealLease(n)` | Fails the writer's next lease renewal after commit `n`, once | anything |
 | `DropDoorbell(n)` | Loses doorbell `n` entirely | anything (the checkpoint poll finds the work) |
 | `DelayDoorbell(n, ms)` | Delivers doorbell `n` after `ms` of logical time | anything |
-| `SlowEffect(n, ms)` | Effect `n` settles only after `ms` of logical time | anything |
+| `SlowEffect(n, ms)` | Effect `n` settles only after `ms` of logical time; a provider request is never slowed | anything |
 | `ProviderEffectDies(n)` | Provider effect `n`'s process dies without settling | anything |
 | `ProviderEffectTimesOut(n)` | Provider effect `n` never settles; the surface's timeout settles it in band | anything |
 
-Two limits on the taxonomy follow from the system's structure rather than
-from preference. First, effect loss (the last two rows) is transparent
-only where a retry ladder stands behind it, so the schedule skips it on a
-deferred poll. pi §3.2 gives every poll error a response-provenance
-failure drain, with no retry, so losing a poll is a semantic change and
-belongs in a script if it belongs anywhere. Second, the run's retry ladder
-is deliberately generous (six attempts against a backoff the clock skips),
-so that a schedule cannot turn a completed run into a failed one by
-exhausting the attempt count.
+Three limits on the taxonomy follow from the system's structure rather
+than from preference. First, effect loss (the last two rows) is
+transparent only where a retry ladder stands behind it, so the schedule
+skips it on a deferred poll. pi §3.2 gives every poll error a
+response-provenance failure drain, with no retry, so losing a poll is a
+semantic change and belongs in a script if it belongs anywhere. Second,
+the run's retry ladder is deliberately generous (six attempts against a
+backoff the clock skips), so that a schedule cannot turn a completed run
+into a failed one by exhausting the attempt count.
+
+Third, a slow effect is transparent only where no real clock is timing
+it, so the surface applies `SlowEffect` to tool executions and ignores it
+on a provider request. The request runs inside the runtime's provider
+deadline (60 ms here) and its two-second cancellation grace, and both are
+real time. A park ends only once the runner has advanced the logical
+clock through every earlier deadline, one per quiet pass, so how long it
+takes in real time depends on the host. Releasing a 2000 ms park took
+about 165 ms on an idle machine and four to seven seconds under load. The
+loaded case outlived the grace, the attempt settled as
+`CancellationUnconfirmed`, and a steer admitted during the park was
+folded into the retry, which left seed 14's faulted run one turn short of
+its fault-free run (`convergence/ledger`). The park was transparent only
+while the runtime called the request before arming its deadline; the
+provider custodian moved the call behind the begin permit. Making a slow
+provider transparent again would need the runtime's deadline and grace
+to read the effects timer seam, which is a runtime change. A live
+intervention's rendezvous still runs inside the deadline. The longest
+measured under heavy load was 312 ms, so a settlement that misses the
+deadline arrives inside the grace and is forwarded unchanged.
 
 Crash faults are capped at one per schedule. Two nested tree kills
 exercise nothing that single kills do not, and they multiply run time.
@@ -463,6 +488,22 @@ failed. An admission whose reply was lost may already be durable, and the
 retry paths query the durable state rather than assuming (the same
 ambiguity the steer-drop work records).
 
+**A retry waits for the writer to come back.** The runner's admission
+ladders count attempts: an operation's acceptance, the subagent's
+creation and brief, and the cross-strand send. A request to a writer
+that is not registered is refused as unavailable before it is sent, so
+an attempt spent while the root is still restarting its writer teaches
+the runner nothing. The ladders used to pause one real millisecond
+between attempts, which made their real budget a few milliseconds. On a
+loaded host, seed 1's crash on the commit before the subagent's creation
+left all six creation attempts to meet an unregistered writer, and the
+run ended as `run/terminated` with a clean timing line, because an
+in-band refusal is not a recorded wait. The pacing now polls until the
+root has registered a writer again or has died. A live root must do one
+of the two, so the tree bounds the wait; the 3000 ms bound behind it is
+a deadlock backstop, and reaching it is recorded as
+`expired@writer-restart`.
+
 **A scripted intervention survives both sides of a lost reply.** A live
 trigger registers with the control actor and blocks. The runner's own
 drive loop, which no simulated fault can reap, takes the decision and
@@ -517,6 +558,30 @@ after the raw commit becomes visible, where the old ordering
 deterministically reported quiet, and checks both the success and error
 paths. The fix leaves the production terminal transaction unchanged and
 keeps the exact once oracle intact.
+
+**A killed writer releases its fence and its seam** (issue #335). A
+`CrashDuringEffect` kills the writer from the effect's process, so the kill
+lands wherever the writer happens to be. When it landed between
+`commit_started` and `commit_succeeded`, the in-flight count stayed at one
+for the rest of the run: `seam_quiet` never turned true, and the runner
+waited out its whole idle budget on a terminal result that was already
+visible, reporting `run/terminated` with clean timing and an unstable
+verdict. A second shape had the same effect: the crash note closed the open
+seam, but it is sent before the kill, so the writer could open a new seam
+between the two and die inside it. The control actor now keys each fence
+and the open seam by the process that opened it, and `seam_quiet` counts
+only holders that are still alive. A dead writer's hold is released at the
+moment of death rather than by a message that has to race the kill, and a
+late message from the dead writer names a pid that no longer counts. The
+bookkeeping that writer had not yet done is lost with it, so a commit that
+became durable in that window is absent from the commit ordinal and the
+side counters. That is the same account a commit-boundary crash has always
+given. A terminal commit is not expected in the window, because a strand's
+terminal transaction cannot overlap a dispatch of that strand's own effect;
+if one ever were, it would surface as `terminal/last-result-once` rather
+than as a stall. `simulation_store_test` parks a writer after its inner
+commit lands, kills it, and requires the fence to release. It also kills a
+writer inside a seam opened after the crash note.
 
 **One backend, one strand, one session.** Every simulated session is an
 in-memory store with a synthetic lease. The SQLite backend's own crash

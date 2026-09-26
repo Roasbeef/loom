@@ -428,6 +428,7 @@ pub fn a_label_read_back_by_exact_key_labels_the_block_test() {
     session_channel.submit(
       channel,
       protocol.block_summaries(999, [Key(entry: id, block: 0)]),
+      now: 0,
     )
   let assert session_channel.Sent("block_summaries", request) = disposition
     as "the label read is issued with the lane's request id"
@@ -454,7 +455,11 @@ pub fn a_label_read_back_by_exact_key_labels_the_block_test() {
       ),
     ])
   let #(channel, updates) =
-    session_channel.receive(channel, pushed.reply(request, "snapshot", body))
+    session_channel.receive(
+      channel,
+      pushed.reply(request, "snapshot", body),
+      now: 0,
+    )
   let assert [session_channel.Auxiliary(event)] = updates
     as "the reply is an auxiliary answer, not an answer to no command"
   assert session_channel.ready_for_read(channel)

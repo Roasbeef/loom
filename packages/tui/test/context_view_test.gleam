@@ -151,7 +151,7 @@ pub fn ready_push_can_precede_its_pending_acknowledgement_test() {
   let assert Some(channel) = pushed.attached().channel
     as "fixture has a synchronized channel"
   let #(channel, sent) =
-    session_channel.submit(channel, protocol.context(500, "main"))
+    session_channel.submit(channel, protocol.context(500, "main"), now: 0)
   let assert session_channel.Sent("context", id) = sent
     as "the command lane allocates the read id"
   let #(channel, updates) =
@@ -161,6 +161,7 @@ pub fn ready_push_can_precede_its_pending_acknowledgement_test() {
         #("event", json.String("snapshot")),
         #("body", body(raw_board(id))),
       ]),
+      now: 0,
     )
   let assert [
     session_channel.Auxiliary(protocol.ContextSnapshot(context.Ready(found))),
@@ -180,6 +181,7 @@ pub fn ready_push_can_precede_its_pending_acknowledgement_test() {
           ]),
         ),
       ),
+      now: 0,
     )
   let assert [session_channel.Auxiliary(protocol.ContextSnapshot(pending))] =
     updates

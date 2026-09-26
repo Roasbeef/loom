@@ -89,7 +89,8 @@ fn captured(model, data) {
       pushed.transfer_with_metadata(1, "1:1", "recent", 10, data),
       #(channel, model),
       fn(acc, incoming) {
-        let #(channel, changes) = session_channel.receive(acc.0, incoming)
+        let #(channel, changes) =
+          session_channel.receive(acc.0, incoming, now: 0)
         #(channel, list.fold(changes, acc.1, inbound.apply_channel_update))
       },
     )

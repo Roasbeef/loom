@@ -3,6 +3,12 @@
 //// These tests drive the shipped event handler, not just its arithmetic.
 //// Negative epochs catch accidental comparisons with the host clock; no
 //// sleep or scheduling tolerance determines a frame or throughput result.
+////
+//// The clocks are read once per event, by `runtime.stamp` inside
+//// `tui.update`, and the step itself reads none of them. The last group of
+//// tests pins that split: the step works with a presentation clock that
+//// panics when called, `update` calls it exactly once per event, and the
+//// session lane's refresh and deadline follow the reading it is passed.
 
 import etui/backend
 import gleam/erlang/process
@@ -14,9 +20,12 @@ import tui/connection
 import tui/frame
 import tui/model as tui_model
 import tui/pacing
+import tui/session_channel
+import tui/snapshot
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
+import tui_test/pushed
 
 fn initial(now: Int) -> tui_model.Model {
   tui.new_model_with_clock(
@@ -210,4 +219,172 @@ fn scripted_frames() -> List(String) {
   assert list.length(run.frames) == 6
   assert run.final.last_frame_ms == -10_000
   list.map(run.frames, frame.buffer_to_text)
+}
+
+const assistant_phase = "{\"v\":1,\"event\":\"op_transition\",\"body\":{\"strand\":\"main\",\"phase\":\"assistant\"}}"
+
+// Moves the event's presentation reading without touching the clock, which
+// is what a caller of `tui.step` does to choose the time.
+fn stamped_at(model: tui_model.Model, now: Int) -> tui_model.Model {
+  tui_model.Model(..model, stamp: tui_model.Stamp(..model.stamp, now_ms: now))
+}
+
+pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
+  let model =
+    tui_model.Model(..initial(-10_000), monotonic_time_ms: fn() {
+      panic as "a step called the presentation clock"
+    })
+
+  // The first tick drains the transition, which starts the generation
+  // clock from the stamp; the second finds the strand live and starts the
+  // activity count from it.
+  process.send(model.inbox, connection.Incoming(assistant_phase))
+  let #(started, _) = tui.step(backend.Tick, model)
+  assert started.generation_started_ms == Some(-10_000)
+  let #(live, _) = tui.step(backend.Tick, started)
+  assert live.activity_started_ms == Some(-10_000)
+
+  // Three seconds of stamp are three seconds of activity, with the clock
+  // still refusing every call.
+  let #(later, _) = tui.step(backend.Tick, stamped_at(live, -7000))
+  assert later.activity_elapsed_s == 3
+
+  // The frame decision, a delta, a usage settlement and the input events
+  // that drain traffic ahead of their own work all run at the stamp too.
+  process.send(
+    later.inbox,
+    connection.Incoming(gateway.stream_delta("main", "text", "answer")),
+  )
+  process.send(
+    later.inbox,
+    connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
+  )
+  let #(settled, _) = tui.step(backend.Tick, stamped_at(later, -8000))
+  assert settled.output_rate_tps == Some(150)
+  let #(resized, _) = tui.step(backend.Resize(100, 30), settled)
+  assert resized.last_frame_ms == -8000
+  let #(typed, _) = tui.step(backend.KeyPress("a"), resized)
+  let #(_, _) = tui.step(backend.MouseScroll(5, 5, True), typed)
+}
+
+pub fn update_reads_the_presentation_clock_once_per_event_test() {
+  let calls = process.new_subject()
+  let model =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context(path: "/test/workspace", branch: None),
+      fn() {
+        process.send(calls, Nil)
+        -10_000
+      },
+    )
+  assert count(calls, 0) == 1 as "creation stamps the model once"
+
+  // A live strand and a settled usage row put every presentation reader in
+  // the path of these events.
+  process.send(model.inbox, connection.Incoming(assistant_phase))
+  process.send(
+    model.inbox,
+    connection.Incoming(gateway.stream_delta("main", "text", "answer")),
+  )
+  let events = [
+    backend.Resize(80, 24),
+    backend.Tick,
+    backend.Tick,
+    backend.KeyPress("a"),
+    backend.Paste("b"),
+    backend.MouseScroll(5, 5, True),
+    backend.Tick,
+  ]
+  let model =
+    list.fold(events, model, fn(model, event) { tui.update(event, model) })
+  assert count(calls, 0) == list.length(events)
+    as "update stamps each event with exactly one presentation reading"
+
+  process.send(
+    model.inbox,
+    connection.Incoming(gateway.usage("main", 10, 300, 0.0)),
+  )
+  let _ = tui.update(backend.Tick, model)
+  assert count(calls, 0) == 1
+}
+
+fn count(calls: process.Subject(Nil), seen: Int) -> Int {
+  case process.receive(calls, 0) {
+    Ok(Nil) -> count(calls, seen + 1)
+    Error(Nil) -> seen
+  }
+}
+
+pub fn a_lane_refreshes_and_expires_at_the_time_it_is_passed_test() {
+  let lane =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, _) =
+    list.fold(
+      pushed.transfer(1, "1:1", "recent", 10),
+      #(lane, []),
+      fn(acc, frame) { session_channel.receive(acc.0, frame, now: 1000) },
+    )
+  assert !session_channel.in_flight(ready)
+    as "premise: the initial capture completed at 1000"
+
+  // The idle refresh is due 250 ms after the capture that completed at the
+  // reading the lane was handed, and not a millisecond before.
+  let #(early, _) = session_channel.tick(ready, now: 1249)
+  assert !session_channel.in_flight(early)
+  let #(refreshing, _) = session_channel.tick(ready, now: 1250)
+  assert session_channel.in_flight(refreshing)
+
+  // The catch-up issued at 1250 has thirty seconds, measured from 1250.
+  let #(waiting, updates) = session_channel.tick(refreshing, now: 31_249)
+  assert updates == []
+  assert session_channel.in_flight(waiting)
+  let #(expired, updates) = session_channel.tick(refreshing, now: 31_250)
+  assert updates == [session_channel.Failed("conversation request timed out")]
+  assert !session_channel.in_flight(expired)
+}
+
+pub fn a_step_ticks_the_lane_at_the_stamped_transport_reading_test() {
+  // The attached fixture's lane captured at zero, so its refresh is due at
+  // 250 on the transport reading, whatever the presentation clock says.
+  let model = pushed.attached()
+  let at = fn(model: tui_model.Model, transport: Int) {
+    tui_model.Model(
+      ..model,
+      stamp: tui_model.Stamp(..model.stamp, transport_ms: transport),
+    )
+  }
+  let assert Some(lane) = model.channel
+  assert !session_channel.in_flight(lane)
+
+  let #(early, _) = tui.step(backend.Tick, at(model, 249))
+  let assert Some(lane) = early.channel
+  assert !session_channel.in_flight(lane)
+  let #(due, _) = tui.step(backend.Tick, at(model, 250))
+  let assert Some(lane) = due.channel
+  assert session_channel.in_flight(lane)
+    as "the step's lane tick runs at the stamp, not at a clock it reads"
+}
+
+// The transport clock is the model's, not the host's. A fixture that holds
+// a socketless replay lane freezes it, so the lane's refresh and deadline
+// cannot depend on where the host's arbitrary monotonic origin sits; the
+// same fixture read at a large positive transport time refreshes at once.
+// If `runtime.stamp` read the host clock instead, the two runs would agree
+// with each other, whatever the host said.
+pub fn update_reads_the_model_transport_clock_test() {
+  let frozen = pushed.attached()
+  let idle =
+    list.fold([1, 2, 3], frozen, fn(model, _) {
+      tui.update(backend.Tick, model)
+    })
+  let assert Some(lane) = idle.channel
+  assert !session_channel.in_flight(lane)
+    as "a frozen transport clock keeps the replay lane idle"
+
+  let late = tui_model.Model(..frozen, transport_time_ms: fn() { 10_000_000 })
+  let refreshed = tui.update(backend.Tick, late)
+  let assert Some(lane) = refreshed.channel
+  assert session_channel.in_flight(lane)
+    as "the lane is ticked at the injected transport clock"
 }

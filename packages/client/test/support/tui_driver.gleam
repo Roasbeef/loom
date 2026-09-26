@@ -21,6 +21,7 @@ import tui/frame
 import tui/inbound
 import tui/interaction
 import tui/model as tui_model
+import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/virtual_backend
@@ -143,15 +144,21 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
     // unexpected-message handler discards real frames before a TUI tick.
     // Re-deliver the selected message through the virtual loop so decoding
     // and recording still happen at the shipped client's normal boundary.
+    // Each is applied outside `tui.update`, so the model is stamped first,
+    // as `update` would: a reducer reads the time from the stamp, and the
+    // driver may have idled since the last script.
     Inbound(message) -> {
+      let model = runtime.stamp(model)
       let run = run(inbound.accept_connection_message(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Candidate(message) -> {
+      let model = runtime.stamp(model)
       let run = run(interaction.accept_candidate_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
     Catalogue(message) -> {
+      let model = runtime.stamp(model)
       let run = run(session_control.accept_control_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
