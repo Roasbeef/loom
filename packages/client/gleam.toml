@@ -35,6 +35,6 @@ gleam_regexp = ">= 1.1.1 and < 2.0.0"
 gleamy_bench = ">= 0.6.0 and < 1.0.0"
 sqlight_loom = "== 1.2.0"
 tui = { path = "../tui" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "b286b0cd7aa477f5289f76eabdeca33c7b574343" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "1b5ff5e6719566e034afa7727d405281562af3cb" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
