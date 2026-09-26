@@ -81,7 +81,7 @@ fn range_loop(current: Int, stop: Int, acc: List(Int)) -> List(Int) {
 type CallPlan {
   ClearThenSettle(terminate: Bool)
   ClearThenOrphan
-  Refuse
+  Refuse(ending: planner.RefusalEnding)
 }
 
 type Script {
@@ -94,12 +94,13 @@ fn script_from(seed: Seed) -> Script {
     range(from: 1, to: call_count)
     |> list.fold(#([], seed), fn(acc, _index) {
       let #(plans, seed) = acc
-      let #(kind, seed) = int_between(seed, 0, 3)
+      let #(kind, seed) = int_between(seed, 0, 4)
       let plan = case kind {
         0 -> ClearThenSettle(terminate: False)
         1 -> ClearThenSettle(terminate: True)
         2 -> ClearThenOrphan
-        _ -> Refuse
+        3 -> Refuse(ending: planner.RefusalEndsRun)
+        _ -> Refuse(ending: planner.RefusalContinues)
       }
       #([plan, ..plans], seed)
     })
@@ -154,10 +155,11 @@ fn respond(world: World, key: EffectKey, script: Script) -> Observation {
     planner.OverflowPreparationKey(..) -> NoObservation
     planner.ToolClearanceKey(source_index:, ..) ->
       case plan_at(script, source_index) {
-        Refuse ->
+        Refuse(ending:) ->
           ObservedToolRefused(
             source_index:,
             result: error_result(source_index, "unknown tool"),
+            ending:,
           )
         ClearThenSettle(..) ->
           ObservedToolCleared(
@@ -184,7 +186,7 @@ fn respond(world: World, key: EffectKey, script: Script) -> Observation {
             ),
             terminate:,
           )
-        ClearThenOrphan | Refuse ->
+        ClearThenOrphan | Refuse(..) ->
           ObservedToolOrphaned(
             source_index:,
             replay_still_safe: False,
@@ -216,7 +218,7 @@ fn plan_at(script: Script, source_index: Int) -> CallPlan {
     |> list.first
   {
     Ok(plan) -> plan
-    Error(Nil) -> Refuse
+    Error(Nil) -> Refuse(ending: planner.RefusalContinues)
   }
 }
 

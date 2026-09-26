@@ -351,6 +351,16 @@ the other side.
    the same dead route on every later boundary of that run. Settings are
    captured per operation, so the next run asks the summarizer again.
    `docs/architecture/compaction.md` carries the reasoning.
+8. **A clearance refusal may end the run.** pi's clearance refusal stages
+   a synthetic error and the run always continues. Loom's
+   `ObservedToolRefused` carries a `RefusalEnding`, and `RefusalEndsRun`
+   stages the error with the same `terminate` a settled result carries,
+   so a batch whose every call ends the run completes as
+   `CompletedByTerminatedTools`. The runtime's repeated-failure guard is
+   its one user: a model that repeats a call, arguments and all, after
+   the harness has already refused it for repeating would otherwise loop
+   until its fuel runs out. A refusal under cancelled control never ends
+   the run, which is the settled result's rule.
 
 ## From WP-E (`runtime`, `session`)
 
