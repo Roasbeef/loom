@@ -204,6 +204,18 @@ pub fn tracks(book: Book, generation: String) -> Bool {
   dict.has_key(book.streams, generation)
 }
 
+/// The committed blocks waiting for a request slot, oldest first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert blocksummarybook.queued(blocksummarybook.new()) == []
+/// ```
+///
+pub fn queued(book: Book) -> List(Job) {
+  book.waiting
+}
+
 /// How many committed blocks are waiting for a request slot.
 ///
 /// ## Examples

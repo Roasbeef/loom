@@ -579,7 +579,10 @@ summaries its rows show, so only entries whose summaries moved are
 projected again. A cut whose records changed marks the long blocks it
 holds no summary for as wanted, and `surfaces.service_block_summaries`
 reads them by exact key on the read lane, 32 to a read, once per block per
-attachment. A refused read stops the reads for the attachment and draws
+attachment. The daemon summarizes the primary strand's blocks as they
+commit and other strands' blocks on demand, so a read for a sub-agent's or
+the advisor's block that finds nothing also asks the daemon to summarize
+it, and the summary arrives later as a push. A refused read stops the reads for the attachment and draws
 no error row. Harness-written
 user turns (advisor frames, goal continuations, the notes digest) are
 recognized by both their header and footer tokens and drawn in the system

@@ -25,11 +25,17 @@
 //// so a restarted daemon does not summarize a session's history: a block
 //// committed while no machine was listening keeps the first-line digest.
 //// A durable cursor would close that gap at the cost of one more commit
-//// behind every hint, for a label the terminal can live without.
+//// behind every hint, for a label the terminal can live without. Only
+//// blocks on the primary strand's branch are summarized as they commit
+//// (`on_primary`). The advisor and sub-agents write as much reasoning and
+//// are read far less, so their blocks are summarized **on demand**: when a
+//// terminal's `block_summaries` read finds no summary for a block, the
+//// gateway casts it here (`ask_for`), and an eligible block not already
+//// waiting or out joins the same bounded queue a commit's would.
 ////
 //// **Streaming reasoning** arrives from the provider tap `observer`
 //// builds, which casts each thinking fragment of a generation request to
-//// this machine. `client/blocksummarybook` paces both feeds: a committed
+//// this machine. Only the primary strand's streams are summarized live. `client/blocksummarybook` paces both feeds: a committed
 //// block is asked about once, a live stream again each time it has grown
 //// enough, with at most one request out per stream.
 ////
@@ -75,6 +81,7 @@
 //// and later ones at debug level. The machine never touches the strand it
 //// describes, and a restart forgets only the requests it had out.
 
+import client/advisor
 import client/advisorslice
 import client/blocksummarybook.{
   type Job, type Launch, type Pace, type Source, AdvisorMessage, Job, LiveAsk,
@@ -142,6 +149,15 @@ pub const max_summary_bytes = 320
 /// clipped from the middle, so the request keeps both how the block starts
 /// and what it concludes.
 pub const source_limit_bytes = 32_768
+
+/// How far back from the primary strand's leaf a commit hint looks to
+/// decide whether a committed block is on the primary's branch. Twice a
+/// scan, so a hint's whole range fits even when the leaf has moved on.
+pub const primary_window = 128
+
+// How many non-primary live streams the machine remembers as ignored before
+// it forgets them all.
+const ignored_limit = 32
 
 /// The most message entries one commit hint scans. Anything past it stays
 /// above the high-water and is scanned by the next hint.
@@ -455,7 +471,7 @@ fn bounded(text: String) -> String {
 /// Reads the stored labels of the named blocks, for the `block_summaries`
 /// command, as the board a `snapshot` reply carries: `{summaries: [{entry,
 /// block, text}]}`, in the order asked, holding only the blocks that have
-/// one.
+/// one, together with the blocks that have none.
 ///
 /// One exact key per block and never a prefix, so the read costs what was
 /// asked and cannot enumerate the namespace. A missing cell is a block
@@ -476,7 +492,7 @@ fn bounded(text: String) -> String {
 pub fn read(
   opened: Session,
   blocks: List(#(String, Int)),
-) -> Result(JsonValue, snapshot.Error) {
+) -> Result(Read, snapshot.Error) {
   let wanted = list.map(blocks, fn(pair) { #(key_of(pair.0, pair.1), pair) })
   let plan =
     snapshot.Plan(
@@ -506,7 +522,25 @@ pub fn read(
         #("text", json.String(text)),
       ])
     })
-  json.Object([#("summaries", json.Array(rows))])
+  let missing =
+    list.filter_map(wanted, fn(pair) {
+      case dict.has_key(found, pair.0) {
+        True -> Error(Nil)
+        False -> Ok(pair.1)
+      }
+    })
+  Read(board: json.Object([#("summaries", json.Array(rows))]), missing:)
+}
+
+/// What one `block_summaries` read found.
+pub type Read {
+  Read(
+    /// The reply's board, `{summaries: [{entry, block, text}]}`.
+    board: JsonValue,
+    /// The blocks asked for that have no stored summary, which the caller
+    /// may hand to `ask_for`.
+    missing: List(#(String, Int)),
+  )
 }
 
 // --- the provider tap -------------------------------------------------------------
@@ -782,6 +816,10 @@ pub opaque type Message {
   /// The generation request `generation` settled or failed.
   StreamEnded(generation: String)
 
+  /// A terminal asked for the stored summaries of these blocks and found
+  /// none; each is an entry id in text form and a block index.
+  Asked(blocks: List(#(String, Int)))
+
   /// One request's run said something, on the sink numbered `flight`.
   Relayed(flight: Int, pulled: weft.Pulled(Nil, String))
 }
@@ -801,6 +839,7 @@ type Data {
     flights: Dict(Int, Flight),
     next_flight: Int,
     high_water: Option(Seq),
+    ignored: set.Set(String),
     reported: Reported,
   )
 }
@@ -815,7 +854,7 @@ type Flight {
 }
 
 type FlightKind {
-  SettledFlight
+  SettledFlight(entry: EntryId, block: Int)
 
   LiveFlight(generation: String)
 }
@@ -879,6 +918,7 @@ fn builder(
         flights: dict.new(),
         next_flight: 1,
         high_water: None,
+        ignored: set.new(),
         reported: Quiet,
       )
 
@@ -902,9 +942,14 @@ fn handle(
       streamed(data, operation, generation, chunk)
     Watching, StreamEnded(generation:) ->
       settle(
-        Data(..data, book: blocksummarybook.ended(data.book, generation)),
+        Data(
+          ..data,
+          book: blocksummarybook.ended(data.book, generation),
+          ignored: set.delete(data.ignored, generation),
+        ),
         [],
       )
+    Watching, Asked(blocks:) -> asked(data, blocks)
     Watching, Relayed(flight:, pulled:) -> relayed(data, flight, pulled)
   }
 }
@@ -945,6 +990,7 @@ fn committed(data: Data, seqs: List(Seq)) -> sm.Next(Phase, Data, Message) {
           admits: data.wiring.settled,
           floor: data.wiring.pace.floor_bytes,
         ))
+        |> on_primary(data, _)
       let #(book, launches) =
         blocksummarybook.admit(data.book, data.wiring.pace, admitted)
       settle(Data(..data, book:, high_water: Some(reached)), launches)
@@ -952,22 +998,127 @@ fn committed(data: Data, seqs: List(Seq)) -> sm.Next(Phase, Data, Message) {
   }
 }
 
+// Only the primary strand's blocks are summarized as they commit. The
+// advisor and sub-agents produce as much reasoning as the primary and are
+// read far less, so theirs are summarized when a terminal asks (`asked`).
+// An entry does not name its strand, so the jobs are kept when their entry
+// lies on the primary's branch, read back from its leaf over a window wider
+// than one scan; the read happens only when a commit brought a long block.
+fn on_primary(data: Data, admitted: List(Job)) -> List(Job) {
+  use <- bool.guard(when: admitted == [], return: [])
+  let store = data.wiring.session
+  case session.strand_leaf(store, advisor.primary) {
+    Ok(Some(session.Cell(value: Some(leaf), ..))) -> {
+      let scan =
+        storage.branch_scan(from: leaf)
+        |> storage.branch_limit(primary_window)
+      case storage.scan_branch(store.store, scan) {
+        Ok(branch) -> {
+          let on_branch = set.from_list(list.map(branch, fn(row) { row.id }))
+          list.filter(admitted, fn(job) { set.contains(on_branch, job.entry) })
+        }
+        Error(_unreadable) -> []
+      }
+    }
+    Ok(Some(session.Cell(value: None, ..))) | Ok(None) | Error(_) -> []
+  }
+}
+
+// A terminal asked for blocks it found no summary for. Each is summarized
+// if it is eligible — long enough, not redacted, and from the summarizer's
+// endpoint, the same `jobs` test a commit makes — and not already waiting
+// or out, so asking again while a block is queued queues nothing more. The
+// jobs join the bounded settled queue, and each result is stored and
+// pushed as a commit's would be.
+fn asked(
+  data: Data,
+  blocks: List(#(String, Int)),
+) -> sm.Next(Phase, Data, Message) {
+  let busy =
+    data.book
+    |> blocksummarybook.queued
+    |> list.map(fn(job) { #(job.entry, job.block) })
+    |> list.append(
+      dict.values(data.flights)
+      |> list.filter_map(fn(flight) {
+        case flight.kind {
+          SettledFlight(entry:, block:) -> Ok(#(entry, block))
+          LiveFlight(..) -> Error(Nil)
+        }
+      }),
+    )
+    |> set.from_list
+  let wanted =
+    blocks
+    |> list.filter_map(fn(pair) {
+      ids.parse_entry_id(pair.0)
+      |> result.map(fn(id) { #(id, pair.1) })
+      |> result.replace_error(Nil)
+    })
+    |> list.unique
+    |> list.filter(fn(key) { !set.contains(busy, key) })
+  use <- bool.lazy_guard(when: wanted == [], return: fn() { settle(data, []) })
+
+  case
+    storage.get_entries(
+      data.wiring.session.store,
+      list.map(wanted, fn(key) { key.0 }),
+    )
+  {
+    Error(_unreadable) -> settle(data, [])
+    Ok(found) -> {
+      let admitted =
+        list.flat_map(wanted, fn(key) {
+          case dict.get(found, key.0) {
+            Ok(value) ->
+              jobs(
+                value,
+                admits: data.wiring.settled,
+                floor: data.wiring.pace.floor_bytes,
+              )
+              |> list.filter(fn(job) { job.block == key.1 })
+            Error(Nil) -> []
+          }
+        })
+      let #(book, launches) =
+        blocksummarybook.admit(data.book, data.wiring.pace, admitted)
+      settle(Data(..data, book:), launches)
+    }
+  }
+}
+
 // A reasoning fragment. The first fragment of a stream resolves the strand
 // its operation runs on, once, from `op.meta`; a stream whose operation has
-// no metadata yet is not tracked, and its next fragment asks again.
+// no metadata yet is not tracked, and its next fragment asks again. Only
+// the primary's streams are summarized live. Another strand's generation
+// is remembered as ignored, so its later fragments cost no read; the set
+// is emptied when it reaches `ignored_limit`, because a stream's end is not
+// always observed, and a forgotten stream costs one more read.
 fn streamed(
   data: Data,
   operation: OpId,
   generation: String,
   chunk: String,
 ) -> sm.Next(Phase, Data, Message) {
-  let strand = case blocksummarybook.tracks(data.book, generation) {
-    True -> Ok("")
+  let tracked = blocksummarybook.tracks(data.book, generation)
+  use <- bool.lazy_guard(
+    when: !tracked && set.contains(data.ignored, generation),
+    return: fn() { settle(data, []) },
+  )
+  let strand = case tracked {
+    True -> Ok(advisor.primary)
     False -> notes.strand_of(data.wiring.session, operation)
   }
 
   case strand {
     Error(Nil) -> settle(data, [])
+    Ok(strand) if strand != advisor.primary -> {
+      let ignored = case set.size(data.ignored) >= ignored_limit {
+        True -> set.new()
+        False -> data.ignored
+      }
+      settle(Data(..data, ignored: set.insert(ignored, generation)), [])
+    }
     Ok(strand) -> {
       let #(book, launches) =
         blocksummarybook.grow(
@@ -1013,7 +1164,10 @@ fn launch(data: Data, launch: Launch) -> Data {
   let sink = process.new_subject()
   let wiring = data.wiring
   let #(kind, task) = case launch {
-    SettledAsk(job:) -> #(SettledFlight, fn() { summarize_settled(wiring, job) })
+    SettledAsk(job:) -> #(
+      SettledFlight(entry: job.entry, block: job.block),
+      fn() { summarize_settled(wiring, job) },
+    )
     LiveAsk(generation:, strand:, operation:, text:) -> #(
       LiveFlight(generation:),
       fn() { summarize_live(wiring, generation, strand, operation, text) },
@@ -1074,7 +1228,7 @@ fn finished(
   let pace = data.wiring.pace
 
   let #(book, launches) = case flight.kind {
-    SettledFlight -> blocksummarybook.settled_landed(data.book, pace)
+    SettledFlight(..) -> blocksummarybook.settled_landed(data.book, pace)
     LiveFlight(generation:) ->
       blocksummarybook.landed(data.book, pace, generation)
   }
@@ -1154,6 +1308,25 @@ fn summarize_live(
     text: label,
   ))
   Ok(Nil)
+}
+
+/// Asks the machine at `name` to summarize blocks a terminal found no
+/// stored summary for. A cast: the terminal's read has already answered
+/// with what was stored, and this only makes a later push possible. A send
+/// to an absent machine is dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // blocksummary.ask_for(name, [#("0198c0de-…", 0)])
+/// ```
+///
+pub fn ask_for(
+  name: address.Address(Message),
+  blocks: List(#(String, Int)),
+) -> Nil {
+  let _sent = address.send(name, Asked(blocks:))
+  Nil
 }
 
 fn ask(wiring: Wiring, source: Source, text: String) -> Result(String, String) {

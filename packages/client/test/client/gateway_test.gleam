@@ -260,6 +260,30 @@ fn start_harness_reserved_goal(
   on_bus: Option(bus.Bus),
   goal: Option(goalcommand.Seam),
 ) -> Harness {
+  start_harness_adjusted(
+    catalogue,
+    registry,
+    schedules,
+    reserved,
+    provider,
+    on_bus,
+    goal,
+    fn(options) { options },
+  )
+}
+
+// The same harness with a last word on the hub's options, for a test whose
+// seam no other builder supplies.
+fn start_harness_adjusted(
+  catalogue,
+  registry,
+  schedules,
+  reserved,
+  provider: Provider,
+  on_bus: Option(bus.Bus),
+  goal: Option(goalcommand.Seam),
+  adjust: fn(gateway.Options) -> gateway.Options,
+) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
   case reserved {
@@ -398,6 +422,7 @@ fn start_harness_reserved_goal(
     Some(seam) -> gateway.with_goal_control(options, seam)
     None -> options
   }
+  let options = adjust(options)
   let assert Ok(_started) = case reserved {
     None -> gateway.start_host_fixture(options, name)
     Some(_) -> gateway.start(options, name)
@@ -1089,6 +1114,50 @@ pub fn the_terminal_copies_the_summary_bounds_test() {
   assert terminal_summaries.floor_bytes
     == blocksummarybook.default_pace.floor_bytes
   assert terminal_summaries.max_blocks == protocol.max_summary_blocks
+}
+
+/// A read answers with what is stored, and afterwards hands the blocks it
+/// found no summary for, and only those, to the summarizer to be summarized
+/// on demand.
+pub fn block_summaries_hands_missing_blocks_to_the_summarizer_test() {
+  let demanded = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_summary_demand(_, fn(blocks) {
+        process.send(demanded, blocks)
+      }),
+    )
+  subscribe(harness)
+  let #(entry_id, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1), seed: 23))
+  let id = ids.entry_id_to_string(entry_id)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      blocksummary.key(entry_id, 1),
+      blocksummary.encode("Found it."),
+    )
+    as "the summarizer's reserved door writes the label"
+
+  send(
+    harness,
+    872,
+    protocol.BlockSummariesGet(blocks: [
+      protocol.SummaryBlock(entry: id, block: 0),
+      protocol.SummaryBlock(entry: id, block: 1),
+    ]),
+  )
+  let assert protocol.SnapshotEvent(protocol.BlockSummariesSnapshot(_raw)) =
+    next(harness).event
+    as "the read answers with what is stored"
+  assert process.receive(demanded, 1000) == Ok([#(id, 0)])
 }
 
 /// The read is gated like every other observation: an attachment that has

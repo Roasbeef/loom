@@ -40,6 +40,15 @@ eight times the terminal's 64-cell digest. Two kinds of block qualify:
 A block below the floor produces no request, and the terminal renders it
 exactly as before this change.
 
+Blocks on the primary strand's branch (`main`) are summarized when they
+commit. Blocks of other strands — the advisor's and sub-agents' — are
+summarized on demand: when a `block_summaries` read names a block that has
+no stored summary, the daemon checks that block against the rules above
+and, if it qualifies and is not already waiting or being summarized,
+queues it behind the same bounded concurrency and backlog as committed
+work. Its summary is then stored and pushed like any other. Live summaries
+are produced only for the primary strand's streams.
+
 ### Confidentiality
 
 Reasoning text must not leave the service that produced it. The rule
@@ -173,6 +182,13 @@ in the order asked, holding only the blocks that have a stored summary. A
 cell that does not decode is treated as absent. A storage read that fails
 is refused with `unavailable`, as other bounded reads are. An older server
 answers `unsupported`.
+
+The reply is a pure read of what is stored and never waits on the
+summarizer. After replying, the server may hand the named blocks that had
+no summary to the summarizer (see "Which blocks are summarized"); a summary
+produced that way arrives later as a `block_summary` push. A block that
+does not qualify is never summarized, and asking again for a block already
+queued queues nothing more.
 
 ### What a client does with them
 

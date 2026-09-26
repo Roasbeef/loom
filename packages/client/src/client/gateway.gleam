@@ -326,6 +326,9 @@ pub type Options {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// Where the blocks a `block_summaries` read found no summary for are
+    /// sent to be summarized on demand (protocol 050). `None` asks nothing.
+    summary_demand: Option(fn(List(#(String, Int))) -> Nil),
   )
 }
 
@@ -357,7 +360,25 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     worktree_diff: None,
     live_jobs: None,
     context: None,
+    summary_demand: None,
   )
+}
+
+/// Supplies where blocks a `block_summaries` read found no summary for are
+/// sent to be summarized on demand: in `client/serve`,
+/// `blocksummary.ask_for` on the session's summarizer. The read's reply
+/// never waits for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_summary_demand(options, blocksummary.ask_for(name, _))
+/// ```
+pub fn with_summary_demand(
+  options: Options,
+  demand: fn(List(#(String, Int))) -> Nil,
+) -> Options {
+  Options(..options, summary_demand: Some(demand))
 }
 
 /// Supplies the authenticated session directory administration door.
@@ -690,6 +711,8 @@ type State {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// On-demand summarization of blocks a read found unsummarized.
+    summary_demand: Option(fn(List(#(String, Int))) -> Nil),
     delivery: Delivery,
     health: Health,
     admission: Admission,
@@ -930,6 +953,7 @@ fn start_with_delivery(
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
         context: options.context,
+        summary_demand: options.summary_demand,
         delivery:,
         health: Reading,
         admission: Accepting,
@@ -4096,13 +4120,22 @@ fn read_block_summaries(
 ) -> State {
   let wanted = list.map(blocks, fn(block) { #(block.entry, block.block) })
   case blocksummary.read(state.runtime.session, wanted) {
-    Ok(board) -> {
+    Ok(blocksummary.Read(board:, missing:)) -> {
       reply(
         state,
         connection,
         id,
         protocol.SnapshotEvent(protocol.BlockSummariesSnapshot(board)),
       )
+
+      // The reply is only what is stored. A block with no summary is handed
+      // to the summarizer afterwards, as a cast, so a block from a strand
+      // that is not summarized as it commits can still be summarized when a
+      // terminal shows it; the result arrives as an ordinary push.
+      case state.summary_demand, missing {
+        Some(demand), [_, ..] -> demand(missing)
+        Some(_demand), [] | None, _ -> Nil
+      }
       state
     }
 

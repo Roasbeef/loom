@@ -3536,6 +3536,7 @@ fn assemble_in(
               base_policy,
             ))
             |> hub.with_bus(event_bus)
+            |> with_summary_demand(summary_route, summary_name)
             |> hub.with_worktree_diff(fn() {
               worktree_diff.capture_since(worktree_wiring, git_start)
               |> result.map(worktree_diff.to_json)
@@ -6124,6 +6125,20 @@ fn summary_tap(
         blocksummary.live_admission(catalogue, route.provider),
       )
     None -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+}
+
+// A terminal's read of a block with no stored summary asks the summarizer
+// for one, when the session has a summarizer at all.
+fn with_summary_demand(
+  options: hub.Options,
+  route: Option(blocksummary.Route),
+  name: address.Address(blocksummary.Message),
+) -> hub.Options {
+  case route {
+    Some(_route) ->
+      hub.with_summary_demand(options, blocksummary.ask_for(name, _))
+    None -> options
   }
 }
 

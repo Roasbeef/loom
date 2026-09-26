@@ -763,7 +763,16 @@ catalogue without opening runtimes. Explicit admission invokes
   `bus.BlockSummary(LiveStream)` and stores nothing. Every failure writes
   and pushes nothing; the first is logged `block_summary.unusable` at
   warning level, later ones at debug. `read(session, blocks)` is the
-  `block_summaries` command's exact-key read.
+  `block_summaries` command's exact-key read and returns `Read(board,
+  missing)`. **Only the primary strand is summarized eagerly**: a commit's
+  jobs are kept when their entry lies within `primary_window` (128)
+  entries of `main`'s leaf, and live streams on any other strand are
+  ignored (resolved once, then remembered in a set emptied at 32). Other
+  strands' blocks are summarized on demand: the gateway, after replying to
+  a `block_summaries` read, passes `missing` to `ask_for`, and the machine
+  queues each eligible block (the same `jobs` test) that is not already
+  waiting or out (`blocksummarybook.queued` plus the settled flights), so
+  repeated reads queue nothing more.
 - `client/blocksummarybook.{Pace, default_pace, Source, Job, Launch, Book,
   new, streams, tracks, waiting, grow, ended, landed, admit,
   settled_landed}` — the summarizer's pacing as pure functions. Settled
@@ -3256,6 +3265,10 @@ these forks because they define the same modules.
   `snapshot` in mode `block_summaries` with `{summaries: [{entry, block,
   text}]}` holding only the blocks that have one, treats an undecodable
   cell as absent, and reports a failed reader as it reports any capture.
+  After replying it hands the blocks with no summary to
+  `Options.summary_demand` (`with_summary_demand`, which `client/serve`
+  fills with `blocksummary.ask_for`) as a cast, so the reply never waits on
+  the summarizer.
   The `summary/` cells are never in a capture plan: the capture copies the
   whole `client/` prefix, and one cell per long block there would push
   long sessions past the capture's 1024-cell and 1 MiB bounds.

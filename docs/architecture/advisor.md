@@ -694,7 +694,7 @@ effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2801`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2830`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That visibility is deliberate: the isolation is
 between the two models, not between the harness and the person running

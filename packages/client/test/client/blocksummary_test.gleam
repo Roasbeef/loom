@@ -289,8 +289,10 @@ pub fn a_stored_label_reads_back_by_exact_key_test() {
     as "the fixture stores the written cell"
 
   let id = ids.entry_id_to_string(reasoned.id)
-  let assert Ok(board) = blocksummary.read(rig.opened, [#(id, 0), #(id, 1)])
+  let assert Ok(blocksummary.Read(board:, missing:)) =
+    blocksummary.read(rig.opened, [#(id, 0), #(id, 1)])
     as "the read must answer"
+  assert missing == [#(id, 1)]
   assert board
     == json.Object([
       #(
@@ -304,6 +306,107 @@ pub fn a_stored_label_reads_back_by_exact_key_test() {
         ]),
       ),
     ])
+  stop(rig)
+}
+
+// --- other strands, on demand ---------------------------------------------------
+
+// A long block on a strand other than the primary is not summarized when it
+// commits; the primary's is. The primary commits first, so its leaf exists
+// and the side block is judged against a real branch.
+pub fn only_the_primarys_blocks_are_summarized_at_commit_test() {
+  let rig = a_rig(answering("Found it."))
+  let primary =
+    an_entry(61, assistant("acme", [thinking(string.repeat("p", 600))]))
+  commit_entries(rig, [primary])
+  let assert [#(cell, _value)] = receive_all(rig.written, 1)
+    as "the primary's block is summarized"
+  assert cell == blocksummary.key(primary.id, 0)
+  let _asked = requests(rig)
+
+  let side =
+    an_entry(60, assistant("acme", [thinking(string.repeat("s", 600))]))
+  commit_aside(rig, [side])
+  assert process.receive(rig.asked, 300) == Error(Nil)
+  stop(rig)
+}
+
+// A terminal asking for a block with no summary queues exactly one request
+// for it, whose result is stored and pushed. Asking again while that request
+// is out queues nothing more.
+pub fn an_asked_block_is_queued_once_and_pushed_test() {
+  let rig = a_rig(held("Found it."))
+  let side =
+    an_entry(62, assistant("acme", [thinking(string.repeat("s", 600))]))
+  commit_aside(rig, [side])
+  let id = ids.entry_id_to_string(side.id)
+
+  blocksummary.ask_for(rig.name, [#(id, 0)])
+  let assert Ok(#(_request, release)) = process.receive(rig.held, 2000)
+    as "the asked block is summarized"
+  blocksummary.ask_for(rig.name, [#(id, 0), #(id, 0)])
+  assert process.receive(rig.held, 300) == Error(Nil)
+
+  process.send(release, Nil)
+  let assert [#(cell, _value)] = receive_all(rig.written, 1)
+    as "the summary is stored"
+  assert cell == blocksummary.key(side.id, 0)
+  let assert Ok(bus.BlockSummary(
+    subject: bus.SettledBlock(entry:, block: 0),
+    ..,
+  )) = process.receive(rig.published, 2000)
+    as "the summary is pushed"
+  assert entry == side.id
+  assert process.receive(rig.held, 300) == Error(Nil)
+  stop(rig)
+}
+
+// A block that is not eligible is never queued, however it is asked for:
+// a short block, a redacted one, one from another endpoint, a block index
+// that holds no reasoning, and an entry that does not exist.
+pub fn an_ineligible_block_asked_for_is_never_queued_test() {
+  let rig = a_rig(answering("unused"))
+  let short = an_entry(63, assistant("acme", [thinking("brief")]))
+  let redacted =
+    an_entry(
+      64,
+      assistant("acme", [
+        message.AssistantThinking(
+          thinking: string.repeat("r", 600),
+          thinking_signature: None,
+          redacted: True,
+        ),
+      ]),
+    )
+  let foreign =
+    an_entry(65, assistant("other", [thinking(string.repeat("o", 600))]))
+  let texted = an_entry(66, assistant("acme", [text()]))
+  commit_aside(rig, [short, redacted, foreign, texted])
+
+  blocksummary.ask_for(rig.name, [
+    #(ids.entry_id_to_string(short.id), 0),
+    #(ids.entry_id_to_string(redacted.id), 0),
+    #(ids.entry_id_to_string(foreign.id), 0),
+    #(ids.entry_id_to_string(texted.id), 0),
+    #(ids.entry_id_to_string(an_entry_id(99)), 0),
+  ])
+  assert process.receive(rig.asked, 300) == Error(Nil)
+  stop(rig)
+}
+
+// Only the primary's reasoning is summarized live: a stream on another
+// strand is observed, resolved to its strand once, and asks nothing.
+pub fn another_strands_stream_is_not_summarized_live_test() {
+  let rig = a_rig(held("unused"))
+  let operation = an_operation(rig.opened, "sub:main/audit", 8)
+  let tap =
+    blocksummary.observer(rig.name, single_provider())(
+      a_request("acme", operation),
+      "g-4",
+    )
+  tap(reasoning(string.repeat("a", 8192)))
+  tap(reasoning(string.repeat("b", 8192)))
+  assert process.receive(rig.held, 300) == Error(Nil)
   stop(rig)
 }
 
@@ -520,14 +623,38 @@ fn option_answer(
   }
 }
 
-// Commits the entries in one transaction and hands the machine the hint the
-// writer would have sent for it.
+// Commits the entries on the primary strand's branch: chained parent to
+// child, with `main`'s leaf moved to the last, in one transaction, and hands
+// the machine the hint the writer would have sent for it.
 fn commit_entries(rig: Rig, entries: List(entry.Entry)) -> Nil {
-  let assert Ok(committed) =
-    storage.commit(
-      rig.opened.store,
-      Tx(writes: list.map(entries, InsertEntry), expected: []),
+  let #(chained, leaf) =
+    list.fold(entries, #([], None), fn(acc, value) {
+      let assert entry.MessageEntry(..) as placed = value
+        as "the fixtures are message entries"
+      let linked = entry.MessageEntry(..placed, parent: acc.1)
+      #([linked, ..acc.0], Some(placed.id))
+    })
+  let leaf_write =
+    SetRegister(
+      ns: register.StrandLeaf,
+      key: "main",
+      value: register.leaf_value(leaf),
     )
+  commit_writes(rig, [
+    leaf_write,
+    ..list.map(list.reverse(chained), InsertEntry)
+  ])
+}
+
+// Commits the entries on no strand the primary's branch reaches, as a
+// sub-agent's or the advisor's are.
+fn commit_aside(rig: Rig, entries: List(entry.Entry)) -> Nil {
+  commit_writes(rig, list.map(entries, InsertEntry))
+}
+
+fn commit_writes(rig: Rig, writes: List(tx.Write)) -> Nil {
+  let assert Ok(committed) =
+    storage.commit(rig.opened.store, Tx(writes:, expected: []))
     as "the fixture entries must commit"
   let assert Ok(Nil) =
     address.send(
