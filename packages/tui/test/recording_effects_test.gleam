@@ -14,8 +14,9 @@ import core/register
 import etui/backend
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/codec
 import machine/strand
@@ -23,13 +24,19 @@ import simplifile
 import tui
 import tui/attachment
 import tui/attempt
+import tui/buffered
 import tui/connection
+import tui/effect
+import tui/inbound
 import tui/model as tui_model
 import tui/recording
+import tui/runtime
 import tui/session_channel
 import tui/snapshot
+import tui/virtual_backend
 import tui/workspace
 import tui_test/pushed
+import weft
 import weft/poll
 
 const golden = "test/recordings/scripted-session.golden.jsonl"
@@ -48,6 +55,225 @@ pub fn a_scripted_session_records_the_golden_bytes_test() {
     as "the session is one well-formed local format-two log"
   let assert Ok(Nil) = simplifile.delete(path)
     as "the generated recording is removed"
+}
+
+// A step decides its recording lines and writes none. The prompt's own key
+// is the first effect, ahead of anything the reducer queued for it, and the
+// lane notes the request it issued before the frame that carries it, so the
+// recording can never hold a frame on the wire that it has no request for.
+pub fn a_prompt_queues_its_input_then_its_request_then_its_frame_test() {
+  let sink = process.new_subject()
+  let recorder = recording.observed(sink)
+  let model = captured_session(recorder)
+  let model = tui.update(backend.Paste("one prompt"), model)
+  let _ = drain(sink)
+
+  let #(_, effects) = tui.step(backend.KeyPress("enter"), model)
+  let assert [first, ..] = effects as "the step decided something"
+  assert first == effect.Record(recorder, recording.Key("enter"))
+    as "the input's line is the first effect of its step"
+  assert list.filter_map(effects, prompt_traffic)
+    == ["input enter", "issued prompt", "sent prompt"]
+  assert drain(sink) == [] as "the step itself recorded nothing"
+
+  // Performing them is what writes the lines, in the same order.
+  runtime.perform(effects)
+  let assert [recording.Key("enter"), ..rest] = drain(sink)
+    as "the key is recorded first"
+  let assert [recording.Attempt(attempt.Issued(_, request))] =
+    list.filter(rest, fn(recorded) {
+      case recorded {
+        recording.Attempt(attempt.Issued(..)) -> True
+        _ -> False
+      }
+    })
+    as "one request was recorded, after the key"
+  assert request.kind == "prompt"
+}
+
+// An adoption replaces the adopted lane in the middle of a step. The lane it
+// retires queues its close and its recorded close as it is retired, and they
+// go into the step's queue there, before the new lane is stored over it, so
+// both survive the replacement and the retirement is noted before the
+// adoption. Storing the retired lane without moving its outputs would lose
+// its socket close and leave the recording without its `Closed`, which is
+// the loss `release_channel` used to guard against one site at a time.
+pub fn an_adoption_queues_the_retired_lanes_close_before_the_adoption_test() {
+  let sink = process.new_subject()
+  let recorder = recording.observed(sink)
+  let model = captured_session(recorder)
+  let assert Some(retired) = model.channel as "premise: a lane is adopted"
+  let assert Some(old_socket) = session_channel.socket(retired)
+    as "premise: the adopted lane has a socket"
+
+  // The replacement plays its worker's part: a prepared socket and one
+  // complete transfer, then the worker's completion.
+  let status =
+    attachment.start_recorded(
+      fn() {
+        process.sleep(60_000)
+        Error("the test plays the worker")
+      },
+      120_000,
+      recording.trace(Some(recorder), attempt.Id(2)),
+    )
+  let #(prepared, frames, outcomes) = attempt_subjects(status)
+  process.send(
+    prepared,
+    prepared_message(
+      socket_on(process.new_subject()),
+      snapshot.Expected("A", "epoch", "incarnation"),
+      workspace.Context("/w/demo", None),
+      "Session A",
+      None,
+      process.new_subject(),
+    ),
+  )
+  list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
+  let captured =
+    tui.update(backend.Tick, tui_model.Model(..model, candidate: status))
+  process.send(outcomes, weft.AllDelivered)
+  let _ = drain(sink)
+
+  let #(adopted, effects) =
+    tui.step(backend.Tick, runtime.receive(runtime.stamp(captured)))
+  assert !attachment.busy(adopted.candidate) as "premise: the step adopted"
+  assert list.filter_map(effects, lifecycle(_, old_socket))
+    == ["closed 1", "shut old socket", "adopted 2"]
+    as "the retired lane's close is queued before the adoption and kept"
+  attachment.cancel(status)
+}
+
+// A replacement whose lane fails part way through a poll is discarded as it
+// stood before that poll's advance: the credit and the close the failing
+// advance decided are dropped, and `Abandon` closes the socket once. What
+// the advance received is still recorded, ahead of the failure, because the
+// recording has always held it.
+pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
+  let sink = process.new_subject()
+  let recorder = recording.observed(sink)
+  let status =
+    attachment.start_recorded(
+      fn() {
+        process.sleep(60_000)
+        Error("the test plays the worker")
+      },
+      120_000,
+      recording.trace(Some(recorder), attempt.Id(2)),
+    )
+  let #(prepared, frames, _) = attempt_subjects(status)
+  process.send(
+    prepared,
+    prepared_message(
+      socket_on(process.new_subject()),
+      snapshot.Expected("A", "epoch", "incarnation"),
+      workspace.Context("/w/demo", None),
+      "Session A",
+      None,
+      process.new_subject(),
+    ),
+  )
+  let assert [begin, ..] = pushed.transfer(1, "1:1", "recent", 10)
+    as "the transfer opens with its begin frame"
+  process.send(frames, begin)
+  process.send(frames, connection.Incoming("not a frame"))
+  let model =
+    tui_model.Model(
+      ..tui.new_model(
+        connection.new_inbox(),
+        workspace.Context(path: "/w/demo", branch: None),
+      ),
+      candidate: status,
+    )
+
+  let #(failed, effects) =
+    tui.step(backend.Tick, runtime.receive(runtime.stamp(model)))
+  assert !attachment.busy(failed.candidate) as "premise: the attempt failed"
+  assert list.filter_map(effects, attempt_traffic)
+    == [
+      "note started", "note issued subscribe", "write", "note received",
+      "note issued snapshot_next", "note received", "note closed", "note failed",
+      "abandon",
+    ]
+    as "the failing advance's notes are kept and its writes are not"
+
+  // The abandon cancels the waiting worker and records the attempt's close.
+  let _ = drain(sink)
+  runtime.perform(effects)
+  assert list.contains(
+    drain(sink),
+    recording.Attempt(attempt.Closed(attempt.Id(2))),
+  )
+    as "the abandoned attempt's close is recorded when it is performed"
+}
+
+fn attempt_traffic(decided: effect.Effect) -> Result(String, Nil) {
+  case decided {
+    effect.Attachment(attachment.FromChannel(output)) ->
+      case output {
+        session_channel.Note(_, event) -> Ok("note " <> note_name(event))
+        session_channel.Transmit(..) -> Ok("write")
+        session_channel.Shut(..) -> Ok("shut")
+      }
+    effect.Attachment(attachment.Note(_, event)) ->
+      Ok("note " <> note_name(event))
+    effect.Attachment(attachment.Abandon(..)) -> Ok("abandon")
+    _ -> Error(Nil)
+  }
+}
+
+fn note_name(event: attempt.Event) -> String {
+  case event {
+    attempt.Started(..) -> "started"
+    attempt.Issued(_, request) -> "issued " <> request.kind
+    attempt.Received(..) -> "received"
+    attempt.Adopted(..) -> "adopted"
+    attempt.Closed(..) -> "closed"
+    attempt.Failed(..) -> "failed"
+  }
+}
+
+// The lane lifecycle effects of an adoption step, named in queue order.
+fn lifecycle(
+  decided: effect.Effect,
+  old_socket: connection.Connection,
+) -> Result(String, Nil) {
+  case decided {
+    effect.Channel(session_channel.Note(_, attempt.Closed(attempt.Id(id)))) ->
+      Ok("closed " <> int.to_string(id))
+    effect.Channel(session_channel.Note(_, attempt.Adopted(attempt.Id(id)))) ->
+      Ok("adopted " <> int.to_string(id))
+    effect.Channel(session_channel.Shut(socket)) if socket == old_socket ->
+      Ok("shut old socket")
+    _ -> Error(Nil)
+  }
+}
+
+// A replay opens no recorder, and its lanes carry no trace, so replaying a
+// whole recorded session through the shipped step queues no recording
+// effect of any kind. This is the behaviour replay had before recording
+// joined the effect stream, when both sources wrote nothing for the same
+// two reasons.
+pub fn replaying_a_recording_queues_no_recording_effect_test() {
+  let assert Ok(moments) = recording.decode_file(golden)
+    as "the golden recording decodes"
+  let model =
+    tui_model.Model(
+      ..tui.new_model(
+        connection.new_inbox(),
+        workspace.Context(path: "replay", branch: None),
+      ),
+      peer: tui_model.Replaying,
+      session: "replay",
+    )
+  let #(_, effects) =
+    list.fold(recording.to_steps(moments), #(model, []), fn(acc, step) {
+      let #(model, effects) = acc
+      let #(model, decided) = replay_step(model, step)
+      #(model, list.append(effects, decided))
+    })
+  assert list.filter(effects, records) == []
+    as "a replay queues no recording line and no attempt note"
 }
 
 fn scripted_session(path: String) -> String {
@@ -124,6 +350,94 @@ fn scripted_session(path: String) -> String {
   |> string.split("\n")
   |> list.map(without_offset)
   |> string.join("\n")
+}
+
+// A lane that has captured its first cut, with its one request slot free for
+// a prompt. The frames are handed to the reducer directly rather than on a
+// tick, so none of the reads a tick services goes out ahead of the prompt.
+// Everything the lane recorded on the way is performed into `recorder`.
+fn captured_session(recorder: recording.Recorder) {
+  let owner: Subject(Dynamic) = process.new_subject()
+  let socket = socket_on(owner)
+  let channel =
+    session_channel.start_recorded(
+      socket,
+      snapshot.Expected("A", "epoch", "incarnation"),
+      recording.trace(Some(recorder), attempt.Id(1)),
+      now: 0,
+    )
+  let model =
+    tui_model.Model(
+      ..tui.new_model(
+        connection.new_inbox(),
+        workspace.Context(path: "/w/demo", branch: None),
+      ),
+      recorder: Some(recorder),
+      peer: tui_model.Attached(socket),
+      session: "A",
+      transport_time_ms: fn() { 0 },
+    )
+    |> tui_model.hold_channel(channel)
+  let model =
+    pushed.transfer_with_metadata(1, "1:1", "recent", 10, main_strand())
+    |> list.fold(model, inbound.accept_connection_message)
+    |> runtime.flush
+  let assert Some(lane) = model.channel as "the lane is still attached"
+  assert session_channel.mutation_available(lane)
+    && !session_channel.in_flight(lane)
+    as "premise: the lane is synchronized with its request slot free"
+  model
+}
+
+// One step of a replay, as the virtual backend drives it: an attempt event
+// goes to the replay inbox and is applied on the next tick, and an input is
+// stepped as it was recorded.
+fn replay_step(model: tui_model.Model, step: virtual_backend.Step) {
+  case step {
+    virtual_backend.Attempt(event) -> {
+      process.send(buffered.sender(model.replay_inbox), event)
+      tui.step(backend.Tick, runtime.receive(model))
+    }
+    virtual_backend.Input(event) -> tui.step(event, runtime.receive(model))
+    virtual_backend.Deliver(message) -> {
+      process.send(buffered.sender(model.inbox), message)
+      tui.step(backend.Tick, runtime.receive(model))
+    }
+  }
+}
+
+fn records(decided: effect.Effect) -> Bool {
+  case decided {
+    effect.Record(..) -> True
+    effect.Channel(session_channel.Note(..)) -> True
+    effect.Attachment(attachment.Note(..)) -> True
+    effect.Attachment(attachment.FromChannel(session_channel.Note(..))) -> True
+    _ -> False
+  }
+}
+
+// The effects that carry the prompt, named in the order they were queued.
+fn prompt_traffic(decided: effect.Effect) -> Result(String, Nil) {
+  case decided {
+    effect.Record(_, recording.Key(key)) -> Ok("input " <> key)
+    effect.Channel(session_channel.Note(
+      _,
+      attempt.Issued(_, attempt.Request(kind: "prompt", ..)),
+    )) -> Ok("issued prompt")
+    effect.Channel(session_channel.Transmit(_, frame)) ->
+      case string.contains(frame, "\"prompt\"") {
+        True -> Ok("sent prompt")
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+fn drain(sink: Subject(recording.Recorded)) -> List(recording.Recorded) {
+  case process.receive(sink, 0) {
+    Ok(recorded) -> [recorded, ..drain(sink)]
+    Error(Nil) -> []
+  }
 }
 
 // The capture's metadata names the `main` strand, so the prompt has a
@@ -217,3 +531,25 @@ fn without_offset(line: String) -> String {
 
 @external(erlang, "effects_test_ffi", "socket_on")
 fn socket_on(owner: Subject(Dynamic)) -> connection.Connection
+
+// The attempt's own inboxes and the worker's `Prepared`, which the test
+// plays in the worker's place; `runtime_receive_test_ffi` says why they are
+// reached this way.
+@external(erlang, "runtime_receive_test_ffi", "attempt_subjects")
+fn attempt_subjects(
+  status: attachment.Status,
+) -> #(
+  Subject(Dynamic),
+  Subject(connection.Message),
+  Subject(weft.Pulled(Nil, String)),
+)
+
+@external(erlang, "runtime_receive_test_ffi", "prepared")
+fn prepared_message(
+  socket: connection.Connection,
+  expected: snapshot.Expected,
+  workspace: workspace.Context,
+  name: String,
+  creation_key: Option(String),
+  acknowledgement: Subject(Nil),
+) -> Dynamic
