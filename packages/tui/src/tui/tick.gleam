@@ -21,6 +21,7 @@ import host/bootstrap as host_bootstrap
 import tui/attachment
 import tui/attempt_replay
 import tui/cache_miss
+import tui/effect
 import tui/herdr
 import tui/history_view
 import tui/inbound
@@ -93,7 +94,9 @@ pub fn start_herdr_reporter(model: Model) -> Model {
   }
 }
 
-/// Reports the pane state to Herdr when — and only when — it changed.
+/// Queues a report of the pane state to Herdr when — and only when — it
+/// changed. The runtime sends it after the step; `herdr_published` records
+/// the decision here, so the next step compares against what was queued.
 ///
 /// Nothing is published before a session is attached. The terminal reaches
 /// this function at the session picker, where `model.session` is still
@@ -113,7 +116,7 @@ pub fn publish_herdr(model: Model) -> Model {
   case model.herdr_reporter, model.session {
     None, _ -> model
     Some(_), "" -> model
-    Some(_), session -> {
+    Some(reporter), session -> {
       let next =
         herdr.Publication(
           state: herdr.state_for(model.strands, model.approvals),
@@ -122,12 +125,20 @@ pub fn publish_herdr(model: Model) -> Model {
       case herdr.changed(model.herdr_published, next) {
         False -> model
         True -> {
-          case herdr.announces(model.herdr_published, next) {
-            True -> herdr.announce(model.herdr_reporter, session)
-            False -> Nil
+          // The announcement is queued ahead of the report, so Herdr knows
+          // which session a state belongs to before it hears the state.
+          let model = case herdr.announces(model.herdr_published, next) {
+            True ->
+              tui_model.emit(model, effect.AnnounceHerdr(reporter, session))
+            False -> model
           }
-          herdr.report(model.herdr_reporter, next.state, next.session, "")
           Model(..model, herdr_published: Some(next))
+          |> tui_model.emit(effect.ReportHerdr(
+            reporter,
+            next.state,
+            next.session,
+            "",
+          ))
         }
       }
     }
@@ -472,8 +483,7 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
 }
 
 fn drain_candidate(model: Model) -> Model {
-  let #(candidate, outcome) = attachment.poll(model.candidate)
-  interaction.candidate_outcome(model, candidate, outcome)
+  interaction.advance_candidate(model, attachment.poll(model.candidate))
 }
 
 fn drain_session_switch(model: Model) -> Model {

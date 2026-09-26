@@ -7,8 +7,9 @@
 //// surface that asked records its request ID, a composer submission
 //// clears the draft only once it was sent, and a frame that was
 //// definitely not sent restores the draft with an error. Without a
-//// channel, the frame goes straight to the socket when the peer is
-//// attached, and nowhere otherwise.
+//// channel, the frame is queued as an `effect.Send` to the socket when
+//// the peer is attached, and goes nowhere otherwise. Either way the write
+//// itself happens after the step, in `tui/runtime`.
 ////
 //// `mutation_refusal` is the check made before encoding a command that
 //// changes session state, so a read-only or unsynchronized attachment
@@ -19,8 +20,8 @@ import gleam/bool
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import tui/command
-import tui/connection
 import tui/context_view
+import tui/effect
 import tui/model.{
   type Model, Attached, ComposerSubmission, ConfirmGoal, Disconnected,
   HoldGoalReport, Model, OverlaySubmission, Preview, PromptNext, Replaying,
@@ -139,8 +140,9 @@ pub fn discard_own_turn(model: Model) -> Model {
 }
 
 /// Sends one encoded command frame. With a session channel the channel
-/// decides whether it is sent, queued or refused; without one it goes
-/// straight to the preview peer, if that peer has a socket.
+/// decides whether it is sent, queued or refused; without one it is queued
+/// as a write to the preview peer, if that peer has a socket. Nothing
+/// reaches the wire until the runtime performs the step's effects.
 @internal
 pub fn send_frame(model: Model, frame: String) -> Model {
   case model.channel {
@@ -287,10 +289,9 @@ pub fn clear_composer_text(model: Model) -> Model {
 
 fn send_preview_frame(model: Model, frame: String) -> Model {
   case model.peer {
-    Attached(socket:) -> {
-      connection.send(socket, frame)
+    Attached(socket:) ->
       Model(..model, next_id: model.next_id + 1)
-    }
+      |> tui_model.emit(effect.Send(socket, frame))
 
     // Neither peer has anywhere to write, and neither may pretend it does.
     Preview | Replaying | Disconnected -> model

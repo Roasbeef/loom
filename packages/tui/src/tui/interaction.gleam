@@ -18,7 +18,6 @@ import etui/widgets/textarea as text_area
 import gleam/bool
 import gleam/dict
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -32,10 +31,10 @@ import tui/approval_panel
 import tui/attachment
 import tui/command
 import tui/composer
-import tui/connection
 import tui/context_panel
 import tui/context_view
 import tui/daemon/protocol as control_protocol
+import tui/effect
 import tui/focused_goal_panel
 import tui/frame
 import tui/history_view
@@ -43,11 +42,11 @@ import tui/image_drop
 import tui/inbound
 import tui/layout
 import tui/model.{
-  type Clipboard, type Model, type ScrollDirection, AgentInspector,
-  ApprovalInspector, Attached, DaemonSelector, DiffHidden, DiffVisible,
-  Disconnected, FrameCache, GoalInspector, Model, ModelSelector, Newer,
-  NoClipboard, NoOverlay, Older, OverlaySubmission, PeerLinkManager, Preview,
-  ReconnectIdle, Replaying, SessionSelector, TerminalClipboard,
+  type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
+  DaemonSelector, DiffHidden, DiffVisible, Disconnected, FrameCache,
+  GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
+  OverlaySubmission, PeerLinkManager, Preview, ReconnectIdle, Replaying,
+  SessionSelector, TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -167,7 +166,35 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
 /// ```
 @internal
 pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
-  let #(candidate, outcome) = attachment.accept(model.candidate, event)
+  advance_candidate(model, attachment.accept(model.candidate, event))
+}
+
+/// Applies one advance of the provisional attachment: a poll's or an
+/// accepted event's next status, its outcome, and the outputs it decided on.
+///
+/// The outputs are queued before the outcome is applied. They belong to the
+/// attempt, which an adoption or a failure is about to take off the model,
+/// so this is the last point at which the step still holds them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // interaction.advance_candidate(model, attachment.poll(model.candidate))
+/// ```
+@internal
+pub fn advance_candidate(
+  model: Model,
+  advanced: #(
+    attachment.Status,
+    Option(attachment.Outcome),
+    List(attachment.Out),
+  ),
+) -> Model {
+  let #(candidate, outcome, outputs) = advanced
+  let model =
+    list.fold(outputs, model, fn(model, output) {
+      tui_model.emit(model, effect.Attachment(output))
+    })
   candidate_outcome(model, candidate, outcome)
 }
 
@@ -236,13 +263,16 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       let model =
         Model(..model, scrollback: history_view.cancel(model.scrollback))
 
-      // Only then is the old inbox drained. Draining first would discard
-      // frames the retirement is entitled to reduce.
-      sessions.discard(model.inbox)
-
       // The retired channel's close is still queued on it, and this is
       // the last moment the step holds it.
       let model = tui_model.release_channel(model)
+
+      // Only then is the old inbox's flush decided, queued behind that
+      // close. Deciding it before the retirement would discard frames the
+      // retirement is entitled to reduce. The flush itself runs after the
+      // step, which is safe because the model stops reading that inbox at
+      // the swap below and nothing selects on it again.
+      let model = tui_model.emit(model, effect.Discard(model.inbox))
       let adopted =
         Model(
           ..model,
@@ -337,13 +367,12 @@ fn retire_previous(model: Model) -> Model {
         inbound.apply_channel_update,
       )
     }
-    None -> {
+    None ->
       case model.peer {
-        Attached(previous) -> connection.close(previous)
-        Disconnected | Preview | Replaying -> Nil
+        Attached(previous) ->
+          tui_model.emit(model, effect.CloseSocket(previous))
+        Disconnected | Preview | Replaying -> model
       }
-      model
-    }
   }
 }
 
@@ -1292,9 +1321,8 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
               )
             False -> selection.text(shown, selected)
           }
-          write_clipboard(model.clipboard, text)
           Model(
-            ..model,
+            ..write_clipboard(model, text),
             selection: Some(selected),
             notice: selection.copied_notice(
               list.length(selection.rows(selected)),
@@ -1392,12 +1420,18 @@ fn selection_display(model: Model) -> #(buffer.Buffer, List(#(Int, Int))) {
   }
 }
 
-// Etui draws its frames with `io:put_chars`, so a sequence printed the same
-// way lands on the same terminal in order with them.
-fn write_clipboard(clipboard: Clipboard, text: String) -> Nil {
-  case clipboard {
-    TerminalClipboard -> io.print(selection.clipboard_sequence(text))
-    NoClipboard -> Nil
+// The copy is queued as an OSC 52 sequence rather than printed here, so a
+// step that copies decides the write without making it; the runtime prints
+// it in line with etui's own frames. A terminal with no clipboard gets
+// nothing, not an escape sequence it would draw as text.
+fn write_clipboard(model: Model, text: String) -> Model {
+  case model.clipboard {
+    TerminalClipboard ->
+      tui_model.emit(
+        model,
+        effect.WriteClipboard(selection.clipboard_sequence(text)),
+      )
+    NoClipboard -> model
   }
 }
 

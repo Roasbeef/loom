@@ -22,10 +22,9 @@ import tui/attachment
 import tui/bootstrap
 import tui/command
 import tui/composer
-import tui/connection
 import tui/context_view
-import tui/daemon
 import tui/daemon/selection as daemon_selection
+import tui/effect
 import tui/image_drop
 import tui/inbound
 import tui/layout
@@ -47,7 +46,6 @@ import tui/sessions
 import tui/surfaces
 import tui/text_hygiene
 import tui/worktree_view
-import weft
 
 /// Opens the agent workspace on the active strand.
 @internal
@@ -913,27 +911,40 @@ pub fn toggle_details(model: Model) -> Model {
   )
 }
 
-/// Cancels every background worker and request, closes the attachment,
-/// and marks the model as quitting.
+/// Queues the cancellation of every background worker and request and the
+/// close of the attachment, and marks the model as quitting.
+///
+/// Nothing is cancelled or closed during the step. The cancels keep the order
+/// they were once performed in; the channel's own close is collected with
+/// the channel and so leaves ahead of them, which is harmless because they
+/// act on unrelated resources. The runtime runs all of them after the step,
+/// before the loop sees `quit` and exits.
 @internal
 pub fn quit(model: Model) -> Model {
-  sessions.cancel(model.session_switch)
-  attachment.cancel(model.candidate)
-  case model.control_request {
-    None -> Nil
-    Some(run) -> weft.cancel(run.cancel)
+  // The attempt moves into its cancel effect. Leaving it on the model would
+  // let the runtime also collect the outputs its channel still queues, and
+  // the cancel performs those itself before its close.
+  let model =
+    Model(..model, candidate: attachment.idle())
+    |> tui_model.emit(effect.CancelSessionSwitch(model.session_switch))
+    |> tui_model.emit(effect.Attachment(attachment.Abandon(model.candidate)))
+  let model = case model.control_request {
+    None -> model
+    Some(run) -> tui_model.emit(model, effect.CancelTask(run.cancel))
   }
 
   // A relaunch may be mid-start when the operator quits. Cancelling it stops
   // spawning a daemon nobody will talk to, and the close below covers the
   // control owner it may already have minted.
-  case model.reconnect {
-    ReconnectIdle | ReconnectSpent -> Nil
-    ReconnectAttempting(cancel:, ..) -> weft.cancel(cancel)
+  let model = case model.reconnect {
+    ReconnectIdle | ReconnectSpent -> model
+    ReconnectAttempting(cancel:, ..) ->
+      tui_model.emit(model, effect.CancelTask(cancel))
   }
-  case model.daemon_host {
-    None -> Nil
-    Some(host) -> daemon.close(daemon_selection.control(host))
+  let model = case model.daemon_host {
+    None -> model
+    Some(host) ->
+      tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
   }
 
   // The channel queues its own close, which the runtime performs after
@@ -941,13 +952,11 @@ pub fn quit(model: Model) -> Model {
   let model = case model.channel {
     Some(channel) ->
       Model(..model, channel: Some(session_channel.close(channel)))
-    None -> {
+    None ->
       case model.peer {
-        Attached(socket:) -> connection.close(socket)
-        Preview | Replaying | Disconnected -> Nil
+        Attached(socket:) -> tui_model.emit(model, effect.CloseSocket(socket))
+        Preview | Replaying | Disconnected -> model
       }
-      model
-    }
   }
   Model(..model, quit: True)
 }

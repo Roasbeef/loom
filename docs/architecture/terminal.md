@@ -68,7 +68,7 @@ and `view` draws a frame from it.
    determines whether to paint a fresh frame.
 
 `Tick` is the event etui delivers when a poll times out with no input, so it
-is where socket traffic enters the model. `update_tick` (`tui/tick.gleam:142`)
+is where socket traffic enters the model. `update_tick` (`tui/tick.gleam:153`)
 drains, in order, the replay inbox, the session-switch and candidate
 attachment results, control replies, the reconnect outcome, and up to 64
 messages from the conversation socket. `settle_tick` then services the

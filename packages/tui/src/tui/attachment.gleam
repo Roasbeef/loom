@@ -222,20 +222,27 @@ pub fn with_trace(status: Status, trace: Option(attempt.Trace)) -> Status {
 
 /// Advances at most forty credited messages during one terminal tick.
 ///
+/// The poll still receives from the attempt's own mailboxes, but it performs
+/// nothing it decided: the worker's acknowledgement and a failed attempt's
+/// cleanup come back as outputs, oldest first, for the caller to queue. The
+/// provisional channel's writes stay on it until `take_outputs`.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // let #(pending, outcome) = attachment.poll(pending)
+/// // let #(pending, outcome, outputs) = attachment.poll(pending)
 /// ```
-pub fn poll(status: Status) -> #(Status, Option(Outcome)) {
+pub fn poll(status: Status) -> #(Status, Option(Outcome), List(Out)) {
   case status {
-    Idle -> #(Idle, None)
+    Idle -> #(Idle, None, [])
     Opening(run, prepared, frames, candidate) -> {
       let candidate = prepare(prepared, candidate, run.trace)
       case progress(candidate, frames) {
         Error(reason) ->
           failed(Opening(run, prepared, frames, candidate), reason)
-        Ok(candidate) -> settle(Opening(run, prepared, frames, candidate))
+        Ok(advanced) ->
+          settle(Opening(run, prepared, frames, advanced))
+          |> acknowledging(candidate, advanced)
       }
     }
   }
@@ -269,12 +276,17 @@ pub fn select(
 
 /// Applies already selected traffic before draining any later mailbox message.
 ///
+/// Like `poll`, it returns what it decided rather than performing it.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // attachment.accept(pending, selected_event)
+/// // let #(pending, outcome, outputs) = attachment.accept(pending, event)
 /// ```
-pub fn accept(status: Status, event: Event) -> #(Status, Option(Outcome)) {
+pub fn accept(
+  status: Status,
+  event: Event,
+) -> #(Status, Option(Outcome), List(Out)) {
   case status, event {
     Opening(run, _, _, _), Settled(source, outcome) if source == run.outcomes ->
       apply_outcome(status, outcome)
@@ -314,15 +326,40 @@ pub fn accept(status: Status, event: Event) -> #(Status, Option(Outcome)) {
     -> {
       let #(next, updates) = channel.receive(candidate.channel, message)
       case apply_updates(Candidate(..candidate, channel: next), updates) {
-        Ok(candidate) -> settle(Opening(run, prepared, frames, Some(candidate)))
+        Ok(advanced) ->
+          settle(Opening(run, prepared, frames, Some(advanced)))
+          |> acknowledging(Some(candidate), Some(advanced))
         Error(reason) -> failed(status, reason)
       }
     }
-    _, Preparation(_, Prepared(socket, _, _, _, _, _)) -> {
-      connection.close(socket)
-      #(status, None)
-    }
-    _, Frame(_, _) | _, Settled(_, _) -> #(status, None)
+    _, Preparation(_, Prepared(socket, _, _, _, _, _)) -> #(status, None, [
+      CloseStray(socket),
+    ])
+    _, Frame(_, _) | _, Settled(_, _) -> #(status, None, [])
+  }
+}
+
+// The worker waits for exactly one reply: that the terminal holds its
+// initial cut. It is owed at the advance where the cut is first captured, so
+// it is read off that transition rather than off the `Captured` update, and
+// it goes ahead of whatever the same advance then settled. An advance that
+// captured and failed at once owes nothing, since its cleanup cancels the
+// worker that was waiting.
+fn acknowledging(
+  settled: #(Status, Option(Outcome), List(Out)),
+  before: Option(Candidate),
+  after: Option(Candidate),
+) -> #(Status, Option(Outcome), List(Out)) {
+  let #(status, outcome, outputs) = settled
+  case before, after {
+    Some(Candidate(captured: None, ..)),
+      Some(Candidate(captured: Some(_), acknowledgement:, ..))
+    -> #(status, outcome, [Acknowledge(acknowledgement), ..outputs])
+    None, _
+    | Some(Candidate(captured: Some(_), ..)), _
+    | Some(Candidate(captured: None, ..)), None
+    | Some(Candidate(captured: None, ..)), Some(Candidate(captured: None, ..))
+    -> settled
   }
 }
 
@@ -379,10 +416,8 @@ fn drain(candidate: Candidate, frames, remaining) {
 fn apply_updates(candidate: Candidate, updates) {
   case updates {
     [] -> Ok(candidate)
-    [channel.Captured(cut, view, _), ..rest] -> {
-      process.send(candidate.acknowledgement, Nil)
+    [channel.Captured(cut, view, _), ..rest] ->
       apply_updates(Candidate(..candidate, captured: Some(#(cut, view))), rest)
-    }
     [channel.Failed(reason), ..] -> Error(reason)
 
     // A candidate has no view to stream into yet, and a fragment pushed
@@ -406,24 +441,27 @@ fn apply_updates(candidate: Candidate, updates) {
   }
 }
 
-fn settle(status: Status) {
+fn settle(status: Status) -> #(Status, Option(Outcome), List(Out)) {
   case status {
-    Idle -> #(Idle, None)
+    Idle -> #(Idle, None, [])
     Opening(run, _, _, _) ->
       case process.receive(run.outcomes, 0) {
-        Error(Nil) -> #(status, None)
+        Error(Nil) -> #(status, None, [])
         Ok(outcome) -> apply_outcome(status, outcome)
       }
   }
 }
 
-fn apply_outcome(status: Status, outcome) {
+fn apply_outcome(
+  status: Status,
+  outcome,
+) -> #(Status, Option(Outcome), List(Out)) {
   case status {
-    Idle -> #(Idle, None)
+    Idle -> #(Idle, None, [])
     Opening(_, _, frames, candidate) ->
       case outcome {
-        weft.NotYet -> #(status, None)
-        weft.PulledOutcome(weft.Completed(..)) -> #(status, None)
+        weft.NotYet -> #(status, None, [])
+        weft.PulledOutcome(weft.Completed(..)) -> #(status, None, [])
         weft.AllDelivered -> adopt(status, candidate, frames)
         weft.PulledOutcome(weft.Failed(error: reason, ..)) ->
           failed(status, reason)
@@ -452,6 +490,7 @@ fn adopt(status, candidate, frames) {
         Ok(Nil) -> #(
           Idle,
           Some(Adopted(channel, cut, view, frames, workspace, name, key)),
+          [],
         )
         Error(reason) -> failed(status, reason)
       }
@@ -460,27 +499,43 @@ fn adopt(status, candidate, frames) {
   }
 }
 
-fn failed(status, reason) {
+// The failure's trace note is written now, because a recording orders it
+// among the channel traces this step already wrote. The cleanup is only
+// decided: the status it cancels travels in the output, and `cancel` closes
+// the channel it holds. A write the failing advance itself decided is not
+// in that status and is dropped, which is right: the attempt is over and
+// its socket is closed exactly once.
+fn failed(status, reason) -> #(Status, Option(Outcome), List(Out)) {
   case status {
     Opening(Run(trace: Some(trace), ..), _, _, _) ->
       trace.note(attempt.Failed(trace.id, reason))
     Idle | Opening(Run(trace: None, ..), _, _, _) -> Nil
   }
-  cancel(status)
-  #(Idle, Some(Failed(reason)))
+  #(Idle, Some(Failed(reason)), [Abandon(status)])
 }
 
 /// What an attachment attempt asks the runtime to do.
 ///
-/// The provisional channel's writes and closes pass through unchanged, and
+/// The provisional channel's writes and closes pass through unchanged,
 /// `Acknowledge` is the reply that tells the preparing worker its initial
-/// capture has landed.
+/// capture has landed, and the other two clean up after an attempt the
+/// terminal will not adopt.
 pub type Out {
   /// An output of the candidate's own channel.
   FromChannel(channel.Out)
 
   /// Releases the worker waiting on its acknowledgement subject.
   Acknowledge(to: Subject(Nil))
+
+  /// Cancels an attempt the terminal will not adopt, one that failed or one
+  /// abandoned at quit, and closes what it opened, as `cancel` does. The
+  /// status carries the attempt's channel, so `cancel` performs what that
+  /// channel had queued before its close.
+  Abandon(status: Status)
+
+  /// Closes a prepared socket that arrived for an attempt this status no
+  /// longer holds.
+  CloseStray(socket: connection.Connection)
 }
 
 /// Hands over the outputs the provisional channel has queued, oldest first.
@@ -523,6 +578,8 @@ pub fn perform(output: Out) -> Nil {
   case output {
     FromChannel(output) -> channel.perform(output)
     Acknowledge(to) -> process.send(to, Nil)
+    Abandon(status) -> cancel(status)
+    CloseStray(socket) -> connection.close(socket)
   }
 }
 
