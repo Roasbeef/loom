@@ -182,7 +182,7 @@ pub fn new() -> State {
 /// ## Examples
 ///
 /// ```gleam
-/// // agent_strip.observe(state, view, model.monotonic_time_ms())
+/// // agent_strip.observe(state, view, model.stamp.now_ms)
 /// ```
 @internal
 pub fn observe(state: State, view: snapshot_view.View, now_ms: Int) -> State {

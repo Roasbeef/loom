@@ -76,7 +76,7 @@ fn drain_control(model: Model) -> Model {
 /// the pane around the terminal, and the session must never learn it
 /// exists by failing.
 ///
-/// The sequence seed is the wall clock rather than `model.monotonic_time_ms`,
+/// The sequence seed is the wall clock rather than the presentation clock,
 /// which every other timing in the loop uses. Herdr's `seq` is an unsigned
 /// integer, and the BEAM monotonic clock is an arbitrary-offset counter that
 /// is negative on this platform, so a monotonic seed would make the daemon
@@ -279,15 +279,15 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
   }
 }
 
-// The tick is the one place the clock is read, so the elapsed count and
-// the glyph advance together and rendering stays a pure function of the
-// model. Going idle clears the clock, so the next activity starts from
-// zero rather than from wherever the last one stopped.
+// The tick is the one place the elapsed count moves, so it and the glyph
+// advance together and rendering stays a pure function of the model. The
+// time is the event's stamp. Going idle clears the start, so the next
+// activity starts from zero rather than from wherever the last one stopped.
 fn advance_activity_indicator(model: Model) -> Model {
   case tui_model.active_strand_live(model) {
     False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
     True -> {
-      let now = model.monotonic_time_ms()
+      let now = model.stamp.now_ms
       let started = option.unwrap(model.activity_started_ms, now)
       let activity_elapsed_s = { now - started } / 1000
       let activity_frame = model.activity_frame + 1
@@ -310,9 +310,10 @@ fn advance_activity_indicator(model: Model) -> Model {
   }
 }
 
-// The tick is also where the cache outlook's clock is read, for the same
-// reason the elapsed count lives here: rendering stays a pure function of
-// the model, and the label repaints only when the reading actually moved.
+// The tick is also where the cache outlook is recomputed from the stamp,
+// for the same reason the elapsed count lives here: rendering stays a pure
+// function of the model, and the label repaints only when the reading
+// actually moved.
 //
 // The reading is suppressed while the active strand is running. A request
 // in flight re-writes the prefix whatever the label says, so a countdown
@@ -325,7 +326,7 @@ fn advance_cache_outlook(model: Model) -> Model {
       model.cache_watch
       |> dict.get(model.active_strand)
       |> option.from_result
-      |> cache_miss.outlook(model.monotonic_time_ms())
+      |> cache_miss.outlook(model.stamp.now_ms)
       |> option.map(cache_miss.outlook_label)
       |> option.unwrap("")
     True -> ""
@@ -367,9 +368,10 @@ pub fn refresh_frame_cache(
       }
   }
 
-  // The clock is read once per event and only compared against itself, so a
-  // wall-clock step cannot stretch or collapse the interval.
-  let now = model.monotonic_time_ms()
+  // The event's stamp is compared only against earlier stamps of the same
+  // monotonic clock, so a wall-clock step cannot stretch or collapse the
+  // interval.
+  let now = model.stamp.now_ms
   case pacing.frame_decision(boundary, freshness, now - model.last_frame_ms) {
     pacing.KeepCachedFrame -> model
     pacing.DeferFrame -> Model(..model, frame_debt: pacing.FrameDeferred)

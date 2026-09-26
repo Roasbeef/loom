@@ -17,7 +17,6 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import host/bootstrap as host_bootstrap
 import tui/agents
 import tui/attachment
 import tui/attempt
@@ -560,13 +559,15 @@ fn create_session_configured(model: Model, config: String) -> Model {
     None, Some(_), True ->
       tui_model.append_error(model, "a session switch is already in progress")
     None, Some(host), False -> {
+      // The terminal's identity and the wall-clock reading make the key
+      // unique across terminals and restarts, and `next_id` across
+      // attempts within one terminal. Both are read before the step, so
+      // building the key reads no clock and no process identity.
       let key =
         "tui-"
-        <> int.to_string(host_bootstrap.current_process_id())
+        <> model.terminal
         <> "-"
-        <> string.inspect(process.self())
-        <> "-"
-        <> int.to_string(host_bootstrap.system_time_ms())
+        <> int.to_string(model.stamp.wall_ms)
         <> "-"
         <> int.to_string(model.next_id)
 
@@ -1089,7 +1090,7 @@ pub fn service_activity(model: Model) -> Model {
 fn activity_due(model: Model) -> Bool {
   case model.activity_poll {
     ActivityDue -> True
-    ActivityResting(until_ms:) -> model.monotonic_time_ms() >= until_ms
+    ActivityResting(until_ms:) -> model.stamp.now_ms >= until_ms
     ActivityAsking(..) -> False
   }
 }
@@ -1167,7 +1168,7 @@ pub fn drain_activity(model: Model) -> Model {
           Model(
             ..model,
             activity_poll: ActivityResting(
-              model.monotonic_time_ms() + activity_interval_ms,
+              model.stamp.now_ms + activity_interval_ms,
             ),
           )
         Ok(weft.NotYet) | Ok(weft.PulledOutcome(_)) -> model

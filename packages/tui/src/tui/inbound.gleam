@@ -688,7 +688,7 @@ fn render_cut(
     agent_summary: agents.summary_rows(rows),
     reviewer_rows: reviewers,
     agent_rows: rows,
-    strip: agent_strip.observe(model.strip, view, model.monotonic_time_ms()),
+    strip: agent_strip.observe(model.strip, view, model.stamp.now_ms),
     agent_messages: captured_messages,
     advisor_history:,
     todo_boards: boards,
@@ -2030,7 +2030,7 @@ fn receive_usage_observation(
               seq:,
               operation:,
               usage: settled,
-              at: model.monotonic_time_ms(),
+              at: model.stamp.now_ms,
             ),
           )
       },
@@ -2132,10 +2132,7 @@ fn settle_usage(
     True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
 
     True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
-      transcript_lines.output_rate(
-        settled.output,
-        model.monotonic_time_ms() - started,
-      ),
+      transcript_lines.output_rate(settled.output, model.stamp.now_ms - started),
       None,
     )
     True, Attached(..), None | True, Preview, None -> #(
@@ -2155,7 +2152,7 @@ fn settle_usage(
 // file far faster than the session originally ran, so the gaps it would
 // measure are not the gaps that happened; it observes nothing.
 fn watch_cache(model: Model, strand: String, settled: message.Usage) -> Model {
-  watch_cache_at(model, strand, settled, model.monotonic_time_ms())
+  watch_cache_at(model, strand, settled, model.stamp.now_ms)
 }
 
 fn watch_cache_at(
@@ -2375,7 +2372,7 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 /// the first fragment as a fallback — and whichever comes first wins.
 fn generation_clock(model: Model, strand: String) -> Option(Int) {
   case model.generation_started_ms, strand == model.active_strand {
-    None, True -> Some(model.monotonic_time_ms())
+    None, True -> Some(model.stamp.now_ms)
     started, _ -> started
   }
 }
@@ -3131,8 +3128,7 @@ pub fn tick_strip(model: Model) -> Model {
   case layout.strip_height(model) > 0 {
     False -> model
     True -> {
-      let #(strip, repaint) =
-        agent_strip.tick(model.strip, model.monotonic_time_ms())
+      let #(strip, repaint) = agent_strip.tick(model.strip, model.stamp.now_ms)
       case repaint {
         agent_strip.Changed ->
           tui_model.invalidate_frame(Model(..model, strip:))

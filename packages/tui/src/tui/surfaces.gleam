@@ -797,7 +797,7 @@ pub fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
             ..model,
             jobs: Some(board),
             summary_job_selected: selected,
-            jobs_observed_ms: Some(model.monotonic_time_ms()),
+            jobs_observed_ms: Some(model.stamp.now_ms),
             jobs_awaiting: None,
             jobs_request: None,
             jobs_notice: "Live jobs observed separately from operation completion",

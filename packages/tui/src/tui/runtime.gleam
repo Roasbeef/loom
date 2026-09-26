@@ -17,21 +17,73 @@
 //// channel the step has already let go of, so they cannot interleave with
 //// a live channel's writes to the same socket.
 ////
+//// It also reads the clocks the step is applied at. `stamp` runs before
+//// the step and writes one `Stamp` onto the model, so the reducers read the
+//// time from the model instead of calling a clock, and every reducer in a
+//// step sees the same instant.
+////
 //// This module is the only impure half of the step. Nothing in the reducer
 //// imports it.
 
+import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
+import host/bootstrap as host_bootstrap
 import tui/attachment
 import tui/connection
 import tui/daemon
 import tui/effect.{type Effect}
 import tui/herdr
-import tui/model.{type Model, Model}
+import tui/model.{type Model, type Stamp, Model, Stamp}
 import tui/session_channel
 import tui/sessions
 import weft
+
+/// Reads the clocks for one event and writes them onto the model.
+///
+/// `tui.update` calls this once per event, before the step. A caller that
+/// drives a reducer outside `update`, such as a test driver handing a
+/// selected socket message to `inbound.accept_connection_message`, stamps
+/// first, or the reducer runs at the time of the previous event.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = runtime.stamp(model)
+/// ```
+pub fn stamp(model: Model) -> Model {
+  Model(..model, stamp: read_stamp(model.monotonic_time_ms))
+}
+
+/// Reads the presentation clock it is given and the host's wall clock,
+/// once each.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let stamp = runtime.read_stamp(host_bootstrap.monotonic_time_ms)
+/// ```
+pub fn read_stamp(presentation: fn() -> Int) -> Stamp {
+  Stamp(now_ms: presentation(), wall_ms: host_bootstrap.system_time_ms())
+}
+
+/// Names this terminal for a session creation key: the OS process and the
+/// calling BEAM process. It is read once, when the model is created, since
+/// neither changes while the terminal runs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let terminal = runtime.terminal_identity()
+/// ```
+pub fn terminal_identity() -> String {
+  int.to_string(host_bootstrap.current_process_id())
+  <> "-"
+  <> string.inspect(process.self())
+}
 
 /// Takes every effect a step queued, oldest first, and empties the queues.
 ///

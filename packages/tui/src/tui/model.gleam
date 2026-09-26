@@ -507,6 +507,25 @@ pub type StrandWorkspace {
   )
 }
 
+/// The clock readings one event is applied at.
+///
+/// `tui.update` takes them through `runtime.stamp` before it steps, and
+/// every reducer reads them here instead of calling a clock. A step
+/// therefore reads no presentation or wall clock, every reducer in one
+/// step sees the same instant, and a test that calls `tui.step` directly
+/// chooses the time by setting this field.
+@internal
+pub type Stamp {
+  Stamp(
+    /// The presentation clock, `Model.monotonic_time_ms`: frame pacing,
+    /// activity elapsed time, generation throughput, the cache outlook and
+    /// the jobs and activity-poll ages.
+    now_ms: Int,
+    /// The host's wall clock, which only a session creation key reads.
+    wall_ms: Int,
+  )
+}
+
 /// The immutable presentation state.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
@@ -814,8 +833,15 @@ pub type Model {
     frame_cache: Option(FrameCache),
     frame_debt: pacing.FrameDebt,
     /// The presentation clock, shared by pacing, activity, and throughput.
-    /// Scripts inject this clock without changing transport deadlines.
+    /// Scripts inject this clock without changing transport deadlines. Only
+    /// `runtime.stamp` calls it, once per event, before the step.
     monotonic_time_ms: fn() -> Int,
+    /// The clock readings the current event is applied at. Every reducer
+    /// that needs the time reads it here, so a step reads no clock.
+    stamp: Stamp,
+    /// This terminal's identity in a session creation key: the OS process
+    /// and the BEAM process that created the model, read once at creation.
+    terminal: String,
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
