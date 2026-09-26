@@ -1150,6 +1150,36 @@ pub fn is_nudges(message: AgentMessage) -> Bool {
   }
 }
 
+/// The body of a delivered advisor message — an advice frame or a
+/// queued-nudges frame — or `None` for anything else.
+///
+/// These are the two frames the advisor addresses to the primary, and the
+/// two the block summarizer labels (protocol 050). The shape is the one
+/// the terminal's recognizer accepts: a user message of exactly one text
+/// block, recognized by both of its frame tokens, so a message the
+/// terminal would draw as the operator's is never summarized as the
+/// advisor's. The feed, the goal feed and a goal continuation are
+/// harness context rather than advice, and none of them has a body here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // advisorslice.delivered_body(advisorslice.advice_message("x", 1))
+/// //   == option.Some("x")
+/// ```
+///
+pub fn delivered_body(message: AgentMessage) -> Option(String) {
+  case message {
+    message.UserMessage(content: [message.UserText(text:, ..)], ..) ->
+      option.lazy_or(advice_body(text), fn() { nudges_body(text) })
+
+    message.UserMessage(..)
+    | message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> None
+  }
+}
+
 fn user_message(text: String, now: Int) -> AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],

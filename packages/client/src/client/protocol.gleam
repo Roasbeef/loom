@@ -195,6 +195,12 @@ pub type Command {
   /// Reads the bounded live job roster of one strand.
   LiveJobsGet(strand: String)
 
+  /// Reads the stored summarizer labels of up to thirty-two named blocks
+  /// (protocol 050). Each block is an entry id and the block's index in
+  /// that entry's message content; a block with no stored label is simply
+  /// absent from the reply.
+  BlockSummariesGet(blocks: List(SummaryBlock))
+
   /// Reads the advisor's undelivered nudge queue without draining it.
   ///
   /// Deliberately empty-bodied. A session has one advisor and one primary
@@ -263,6 +269,18 @@ pub type Command {
   UnknownCommand(cmd: String, body: JsonValue)
 }
 
+/// One block a `block_summaries` read names.
+///
+/// Constructor invariants: `entry` is an entry id in canonical text form,
+/// which the decoder checks with `core/ids.parse_entry_id`; `block` is a
+/// nonnegative index into that entry's message content.
+pub type SummaryBlock {
+  SummaryBlock(entry: String, block: Int)
+}
+
+/// The most blocks one `block_summaries` read may name.
+pub const max_summary_blocks = 32
+
 /// One command envelope: the client-assigned id plus the command.
 ///
 /// Constructor invariants: `id` is non-zero and unique per connection
@@ -314,6 +332,10 @@ pub type Snapshot {
 
   /// The advisor's queued nudges, observed without delivering them.
   AdvisorPendingSnapshot(board: JsonValue)
+
+  /// The stored summarizer labels a `block_summaries` read found
+  /// (protocol 050): `{summaries: [{entry, block, text}]}`.
+  BlockSummariesSnapshot(board: JsonValue)
 
   /// The session's goal, observed without touching it (protocol 044).
   GoalSnapshot(board: JsonValue)
@@ -593,6 +615,12 @@ pub type Event {
     total_bytes: Int,
   )
 
+  /// A summarizer label for a long reasoning block or a delivered advisor
+  /// message (protocol 050). Pushed, never correlated. `text` is the
+  /// summarizer's words, which a client shows as the summarizer's and
+  /// never as the agent's.
+  BlockSummaryEvent(subject: SummarySubject, text: String)
+
   /// One usage-ledger append.
   UsageEvent(strand: String, op: Option(String), usage: Usage)
 
@@ -628,6 +656,19 @@ pub type OutputStream {
 
   /// The command's standard error.
   Stderr
+}
+
+/// What a `block_summary` frame describes — `"block"` or `"stream"` in
+/// the body's `subject` field.
+pub type SummarySubject {
+  /// Block `block` of the committed entry `entry`, whose label is also
+  /// stored and can be read back with `block_summaries`.
+  SummarizedBlock(entry: String, block: Int)
+
+  /// The reasoning stream of the provider request `generation` — the
+  /// identity a `stream_delta` carries — on `strand` in operation `op`.
+  /// Nothing about it is stored.
+  SummarizedStream(strand: String, op: String, generation: String)
 }
 
 /// The `{code, message}` of a failed strand result.
@@ -830,6 +871,22 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       json.Object([#("strand", json.String(strand))]),
     )
     AdvisorPendingGet -> #("advisor_pending", json.Object([]))
+    BlockSummariesGet(blocks:) -> #(
+      "block_summaries",
+      json.Object([
+        #(
+          "blocks",
+          json.Array(
+            list.map(blocks, fn(block) {
+              json.Object([
+                #("entry", json.String(block.entry)),
+                #("block", json.Int(block.block)),
+              ])
+            }),
+          ),
+        ),
+      ]),
+    )
     GoalSet(objective:, token_budget:, check:) -> #(
       "goal_set",
       json.Object([
@@ -877,11 +934,58 @@ fn command_body(command: Command) -> #(String, JsonValue) {
   }
 }
 
+// The read's whole bound is enforced here, before the gateway sees it: a
+// nonempty list of at most `max_summary_blocks` blocks, each a canonical
+// entry id and a nonnegative index. Duplicates collapse, because the reply
+// would carry one row for them anyway.
+fn decode_block_summaries(body: JsonValue) -> Result(Command, String) {
+  use fields <- result.try(body_fields(body))
+  use values <- result.try(case list.key_find(fields, "blocks") {
+    Ok(json.Array(values)) if values != [] -> Ok(values)
+    Ok(_) | Error(Nil) -> Error("blocks must be a nonempty array")
+  })
+  use Nil <- result.try(case list.drop(values, max_summary_blocks) == [] {
+    True -> Ok(Nil)
+    False -> Error("at most thirty-two blocks are allowed")
+  })
+  use blocks <- result.try(list.try_map(values, decode_summary_block))
+  Ok(BlockSummariesGet(list.unique(blocks)))
+}
+
+fn decode_summary_block(value: JsonValue) -> Result(SummaryBlock, String) {
+  use fields <- result.try(body_fields(value))
+  use entry <- result.try(required_string(fields, "entry"))
+  use _id <- result.try(
+    ids.parse_entry_id(entry)
+    |> result.replace_error("entry must be an entry id"),
+  )
+  use block <- result.try(nonnegative_field(fields, "block"))
+  Ok(SummaryBlock(entry:, block:))
+}
+
 fn strand_text(strand: String, text: String) -> JsonValue {
   json.Object([
     #("strand", json.String(strand)),
     #("text", json.String(text)),
   ])
+}
+
+// The subject's fields lead the body, discriminated by `subject`, so the
+// two shapes share one event name and a client reads `subject` first.
+fn summary_subject(subject: SummarySubject) -> List(#(String, JsonValue)) {
+  case subject {
+    SummarizedBlock(entry:, block:) -> [
+      #("subject", json.String("block")),
+      #("entry", json.String(entry)),
+      #("block", json.Int(block)),
+    ]
+    SummarizedStream(strand:, op:, generation:) -> [
+      #("subject", json.String("stream")),
+      #("strand", json.String(strand)),
+      #("op", json.String(op)),
+      #("generation", json.String(generation)),
+    ]
+  }
 }
 
 fn scope_to_string(scope: ForkScope) -> String {
@@ -1095,6 +1199,8 @@ fn decode_command_body(
       use strand <- result.try(required_string(fields, "strand"))
       Ok(LiveJobsGet(strand:))
     }
+
+    "block_summaries" -> decode_block_summaries(body)
 
     // Empty today, and read tolerantly for the reason `worktree_diff` is:
     // a later field must not turn an older client's frame into a refusal.
@@ -1325,6 +1431,14 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         #("total_bytes", json.Int(total_bytes)),
       ]),
     )
+    BlockSummaryEvent(subject:, text:) -> #(
+      "block_summary",
+      json.Object(
+        list.append(summary_subject(subject), [
+          #("text", json.String(text)),
+        ]),
+      ),
+    )
     UsageEvent(strand:, op:, usage:) -> #(
       "usage",
       usage_body(strand, op, usage),
@@ -1421,6 +1535,11 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
     AdvisorPendingSnapshot(board:) ->
       json.Object([
         #("mode", json.String("advisor_pending")),
+        #("board", board),
+      ])
+    BlockSummariesSnapshot(board:) ->
+      json.Object([
+        #("mode", json.String("block_summaries")),
         #("board", board),
       ])
     GoalSnapshot(board:) ->
@@ -1737,6 +1856,26 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         total_bytes:,
       ))
     }
+    "block_summary" -> {
+      use fields <- result.try(body_fields(body))
+      use subject_text <- result.try(required_string(fields, "subject"))
+      use subject <- result.try(case subject_text {
+        "block" -> {
+          use entry <- result.try(required_string(fields, "entry"))
+          use block <- result.try(nonnegative_field(fields, "block"))
+          Ok(SummarizedBlock(entry:, block:))
+        }
+        "stream" -> {
+          use strand <- result.try(required_string(fields, "strand"))
+          use op <- result.try(required_string(fields, "op"))
+          use generation <- result.try(required_string(fields, "generation"))
+          Ok(SummarizedStream(strand:, op:, generation:))
+        }
+        other -> Error("unknown summary subject: " <> other)
+      })
+      use text <- result.try(required_string(fields, "text"))
+      Ok(BlockSummaryEvent(subject:, text:))
+    }
     "usage" -> {
       use #(strand, op, usage) <- result.try(decode_usage_body(body))
       Ok(UsageEvent(strand:, op:, usage:))
@@ -2003,6 +2142,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing advisor_pending board"),
       )
       Ok(SnapshotEvent(AdvisorPendingSnapshot(board:)))
+    }
+    "block_summaries" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing block_summaries board"),
+      )
+      Ok(SnapshotEvent(BlockSummariesSnapshot(board:)))
     }
     "goal" -> {
       use board <- result.try(

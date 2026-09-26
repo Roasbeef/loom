@@ -7,6 +7,8 @@ import broker/internal/call
 import broker/policy.{type Grant}
 import client/advisor
 import client/advisorguard
+import client/blocksummary
+import client/blocksummarybook
 import client/catalog
 import client/directories
 import client/gateway
@@ -53,6 +55,7 @@ import support/tool_registry
 import tools/directory_access
 import tools/tool
 import tui/advisor_pending as terminal_nudges
+import tui/block_summary as terminal_summaries
 import tui/notes_view as terminal_notes
 import weft
 import weft/actor
@@ -965,6 +968,144 @@ pub fn a_network_hub_pushes_tool_output_from_its_outputs_subscription_test() {
   // also push nothing — but the frame's exact shape above already does
   // the load-bearing work: only the `ToolOutput` arm can produce it.
   assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+// --- block summaries (protocol 050) ------------------------------------------
+
+/// A summarizer label published on the session's `Outputs` topic reaches a
+/// subscribed network peer as a pushed `block_summary` frame, with no
+/// `reply_to` and no `seq`, both for a committed block and for a stream.
+/// Nothing follows it: a label moves nothing a pull could find.
+pub fn a_network_hub_pushes_block_summaries_from_the_bus_test() {
+  let events_bus = bus.start()
+  let harness =
+    start_harness_reserved(
+      None,
+      None,
+      None,
+      Some(network_fixture_id()),
+      SettlingProvider,
+      Some(events_bus),
+    )
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let key = bus.key(of: api.session_id(harness.runtime))
+  let #(entry_id, generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1), seed: 21))
+  let #(op, _generator) = ids.mint_op(generator)
+
+  bus.publish(
+    events_bus,
+    session: key,
+    event: bus.BlockSummary(
+      subject: bus.SettledBlock(entry: entry_id, block: 2),
+      text: "The agent weighs two fixes.",
+    ),
+  )
+  let settled = next_on(inbox)
+  assert settled.reply_to == None
+  assert settled.seq == None
+  assert settled.event
+    == protocol.BlockSummaryEvent(
+      subject: protocol.SummarizedBlock(
+        entry: ids.entry_id_to_string(entry_id),
+        block: 2,
+      ),
+      text: "The agent weighs two fixes.",
+    )
+
+  bus.publish(
+    events_bus,
+    session: key,
+    event: bus.BlockSummary(
+      subject: bus.LiveStream(strand: "main", op:, generation: "g-1"),
+      text: "The agent reads the failing test.",
+    ),
+  )
+  assert next_on(inbox).event
+    == protocol.BlockSummaryEvent(
+      subject: protocol.SummarizedStream(
+        strand: "main",
+        op: ids.op_id_to_string(op),
+        generation: "g-1",
+      ),
+      text: "The agent reads the failing test.",
+    )
+  assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+/// A reattaching terminal reads stored labels by exact key: a stored label
+/// comes back in the order asked, a block with none is absent, and the
+/// board decodes with the terminal's own decoder.
+pub fn block_summaries_reads_stored_labels_by_exact_key_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let #(entry_id, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1), seed: 22))
+  let id = ids.entry_id_to_string(entry_id)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      blocksummary.key(entry_id, 1),
+      blocksummary.encode("The agent weighs two fixes."),
+    )
+    as "the summarizer's reserved door writes the label"
+
+  send(
+    harness,
+    870,
+    protocol.BlockSummariesGet(blocks: [
+      protocol.SummaryBlock(entry: id, block: 0),
+      protocol.SummaryBlock(entry: id, block: 1),
+    ]),
+  )
+  let assert protocol.SnapshotEvent(protocol.BlockSummariesSnapshot(raw)) =
+    next(harness).event
+    as "the read answers with its own snapshot mode"
+  let assert Ok(labels) = terminal_summaries.decode_board(raw)
+    as "the independent terminal decoder accepts the board"
+  assert labels
+    == [
+      #(
+        terminal_summaries.Key(entry: id, block: 1),
+        "The agent weighs two fixes.",
+      ),
+    ]
+}
+
+/// The terminal links no server package, so it copies the floor that decides
+/// which blocks are long, the read's bound and the label's introduction. A
+/// change on either side fails here rather than leaving the terminal asking
+/// about blocks the daemon never labels, or collapsing advice the daemon
+/// never summarizes.
+pub fn the_terminal_copies_the_summary_bounds_test() {
+  assert terminal_summaries.floor_bytes
+    == blocksummarybook.default_pace.floor_bytes
+  assert terminal_summaries.max_blocks == protocol.max_summary_blocks
+}
+
+/// The read is gated like every other observation: an attachment that has
+/// not subscribed is refused before the store is touched.
+pub fn block_summaries_requires_a_subscription_test() {
+  let harness = start_harness()
+  send(
+    harness,
+    871,
+    protocol.BlockSummariesGet(blocks: [
+      protocol.SummaryBlock(
+        entry: "0198c0de-0000-7000-8000-000000000006",
+        block: 0,
+      ),
+    ]),
+  )
+  expect_error(harness, 871, "bad_request")
 }
 
 // The first `tool_output` frame, skipping whatever the subscribe left

@@ -59,6 +59,7 @@ const command_fixtures = [
   "cmd_advisor_pending.json", "cmd_goal_set.json", "cmd_goal_set_checked.json",
   "cmd_goal_get.json", "cmd_goal_check.json", "cmd_goal_check_clear.json",
   "cmd_goal_clear.json", "cmd_goal_pause.json", "cmd_goal_resume.json",
+  "cmd_block_summaries.json",
 ]
 
 const event_fixtures = [
@@ -75,7 +76,8 @@ const event_fixtures = [
   "event_snapshot_worktree_ready.json", "event_snapshot_worktree_failed.json",
   "event_snapshot_live_jobs.json", "event_tool_output.json",
   "event_snapshot_context_pending.json", "event_snapshot_advisor_pending.json",
-  "event_snapshot_goal.json",
+  "event_snapshot_goal.json", "event_snapshot_block_summaries.json",
+  "event_block_summary_block.json", "event_block_summary_stream.json",
 ]
 
 pub fn command_fixtures_roundtrip_test() {
@@ -104,7 +106,7 @@ pub fn corpus_is_complete_test() {
     list.append(command_fixtures, event_fixtures)
     |> list.sort(string.compare)
   assert covered == json_files
-  assert list.length(json_files) == 62
+  assert list.length(json_files) == 66
 }
 
 // --- strictness and tolerance ----------------------------------------------
@@ -231,5 +233,60 @@ pub fn prompt_content_refuses_unknown_and_wrong_typed_blocks_test() {
       "{\"v\":2,\"id\":12,\"cmd\":\"prompt_content\",\"body\":{"
       <> "\"strand\":\"main\",\"content\":["
       <> "{\"type\":\"image\",\"data\":7,\"mimeType\":\"image/png\"}]}}",
+    )
+}
+
+// --- block summaries (protocol 050) --------------------------------------------
+
+// The read's bound is the decoder's to enforce: an empty list, a
+// thirty-third block, a malformed entry id and a negative index are each a
+// refused frame, never a read the gateway has to cut down.
+pub fn block_summaries_bounds_are_refused_test() {
+  let entry = "0198c0de-0000-7000-8000-000000000006"
+  let block = "{\"entry\":\"" <> entry <> "\",\"block\":0}"
+  let frame = fn(blocks: String) {
+    "{\"v\":2,\"id\":3,\"cmd\":\"block_summaries\",\"body\":{\"blocks\":"
+    <> blocks
+    <> "}}"
+  }
+
+  let assert Error(protocol.BadBody(cmd: "block_summaries", ..)) =
+    protocol.decode_command(frame("[]"))
+  let assert Error(protocol.BadBody(cmd: "block_summaries", ..)) =
+    protocol.decode_command(frame(
+      "[" <> string.join(list.repeat(block, 33), ",") <> "]",
+    ))
+  let assert Error(protocol.BadBody(reason: "entry must be an entry id", ..)) =
+    protocol.decode_command(frame("[{\"entry\":\"x/../y\",\"block\":0}]"))
+  let assert Error(protocol.BadBody(cmd: "block_summaries", ..)) =
+    protocol.decode_command(frame(
+      "[{\"entry\":\"" <> entry <> "\",\"block\":-1}]",
+    ))
+
+  // Thirty-two is the bound and is admitted, and a repeated block collapses.
+  let assert Ok(protocol.CommandEnvelope(
+    command: protocol.BlockSummariesGet(blocks: [only]),
+    ..,
+  )) = protocol.decode_command(frame("[" <> block <> "," <> block <> "]"))
+  assert only == protocol.SummaryBlock(entry:, block: 0)
+  let assert Ok(_admitted) =
+    protocol.decode_command(frame(
+      "[" <> string.join(list.repeat(block, 32), ",") <> "]",
+    ))
+}
+
+// A pushed label with a subject this build does not know is a refused body,
+// not a guess: a later daemon's third subject must not be drawn as one of
+// these two.
+pub fn block_summary_subject_is_total_test() {
+  let assert Error(protocol.BadEnvelope(..)) =
+    protocol.decode_event(
+      "{\"v\":2,\"event\":\"block_summary\",\"body\":{"
+      <> "\"subject\":\"session\",\"text\":\"x\"}}",
+    )
+  let assert Error(protocol.BadEnvelope(..)) =
+    protocol.decode_event(
+      "{\"v\":2,\"event\":\"block_summary\",\"body\":{"
+      <> "\"subject\":\"block\",\"entry\":\"e\",\"text\":\"x\"}}",
     )
 }
