@@ -38,9 +38,8 @@ pub opaque type Inbox(a) {
     /// created it, can receive from it.
     subject: Subject(a),
     /// Messages moved out of the mailbox and not yet taken, oldest first.
+    /// Every top-up is bounded, so the list is short.
     held: List(a),
-    /// The length of `held`, kept so a top-up does not measure the list.
-    count: Int,
   )
 }
 
@@ -52,7 +51,7 @@ pub opaque type Inbox(a) {
 /// let inbox = buffered.new(connection.new_inbox())
 /// ```
 pub fn new(subject: Subject(a)) -> Inbox(a) {
-  Inbox(subject:, held: [], count: 0)
+  Inbox(subject:, held: [])
 }
 
 /// The subject producers send to.
@@ -94,7 +93,7 @@ pub fn is_sender(inbox: Inbox(a), subject: Subject(a)) -> Bool {
 /// assert buffered.held(buffered.new(process.new_subject())) == 0
 /// ```
 pub fn held(inbox: Inbox(a)) -> Int {
-  inbox.count
+  list.length(inbox.held)
 }
 
 /// Moves waiting messages out of the mailbox until the inbox holds
@@ -110,16 +109,8 @@ pub fn held(inbox: Inbox(a)) -> Int {
 /// let inbox = buffered.top_up(inbox, up_to: 64)
 /// ```
 pub fn top_up(inbox: Inbox(a), up_to limit: Int) -> Inbox(a) {
-  let fresh = receive_waiting(inbox.subject, limit - inbox.count, [])
-  case fresh {
-    [] -> inbox
-    _ ->
-      Inbox(
-        ..inbox,
-        held: list.append(inbox.held, list.reverse(fresh)),
-        count: inbox.count + list.length(fresh),
-      )
-  }
+  let fresh = receive_waiting(inbox.subject, limit - held(inbox), [])
+  Inbox(..inbox, held: list.append(inbox.held, list.reverse(fresh)))
 }
 
 // The budget is checked before each receive, because a message received
@@ -149,10 +140,7 @@ fn receive_waiting(subject: Subject(a), remaining: Int, newest_first: List(a)) {
 pub fn take(inbox: Inbox(a)) -> #(Inbox(a), Result(a, Nil)) {
   case inbox.held {
     [] -> #(inbox, Error(Nil))
-    [message, ..rest] -> #(
-      Inbox(..inbox, held: rest, count: inbox.count - 1),
-      Ok(message),
-    )
+    [message, ..rest] -> #(Inbox(..inbox, held: rest), Ok(message))
   }
 }
 
