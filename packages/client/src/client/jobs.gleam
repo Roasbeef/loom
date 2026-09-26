@@ -2976,9 +2976,9 @@ fn utf8_from(bytes: BitArray, skipped: Int) -> String {
 // --- the idle heartbeat ---------------------------------------------------
 
 // One heartbeat sample. Every owner of a live job that asked for the
-// heartbeat is asked whether its
-// strand has an open run, and one that has been idle for the whole
-// interval is woken with a listing of what it is still running.
+// heartbeat is asked whether its strand has an open run, and one that has
+// been idle for the whole interval is woken with a listing of the jobs
+// that asked.
 //
 // A job a caller is waiting on counts as live work too. Its owner is busy
 // by definition while the caller waits, so it never produces a beat on
