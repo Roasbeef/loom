@@ -28,20 +28,26 @@ which rules are left to them.
 
 The terminal's inboxes are integers standing for terminal-created `Subject`s.
 `attachment.start_recorded` creates the prepared, frames and outcomes inboxes
-before the worker starts, and the model does the same. The runtime buffers
-what arrives for a live inbox and drops what arrives for one that was never
-created or has been discarded. The reducer reads those buffers where the code
-reads its mailbox today: `tick.update_tick` polls the candidate
-(`attachment.poll`) before it drains `Model.inbox`
+before the worker starts, and the model does the same. Each inbox's buffer
+stands for its mailbox together with what `runtime.receive` has already moved
+into its `tui/buffered.Inbox` before the step (`buffered.top_up`, called
+through `attachment.top_up` for the candidate's three); the model drops what
+arrives for an inbox that was never created or has been discarded. The
+reducer reads those buffers where the code takes from its buffered inboxes
+(`buffered.take`): `tick.update_tick` polls the candidate (`attachment.poll`,
+through `prepare`, `drain` and `settle`) before it drains `Model.inbox`
 (`inbound.drain_connection`), and a key drains ready traffic before it acts
-(`interaction.update_ready_key`).
+(`interaction.update_ready_key`). The code bounds each top-up by what one step
+can consume (64 connection messages, 40 candidate frames, one of each other
+kind); the model does not, and a step here takes everything that has
+arrived, which covers every ordering a bounded top-up allows.
 
 ### Events and the code they stand for
 
 | Event | Code |
 |---|---|
 | `eWrite`, `eShut` | `session_channel.Transmit` / `Shut` performed by `session_channel.perform`; also the close inside `attachment.cancel` |
-| `eFrame` | a `connection.Message` delivered to a frames inbox |
+| `eFrame` | a `connection.Message` delivered to a frames inbox, later moved into its `buffered.Inbox` by `runtime.receive` |
 | `ePrepared`, `eOutcome`, `eAck`, `eCancel` | `attachment.Prepared`, the weft relay's outcome (`AllDelivered` or a failure), `attachment.Acknowledge`, `weft.cancel` |
 | `eWorkerClose`, `eGuardianKill` | the worker's own `connection.close` when its acknowledgement wait times out; the guardian killing a socket after its startup worker exits abnormally |
 | `eOpOpen`, `eOpSubmit`, `eOpEscape`, `eOpQuit` | `session_control.begin_open`, Enter through `outbound.send_frame`, Escape through `inbound.cancel_pending`, Ctrl-C through `submit.quit` |
@@ -82,12 +88,12 @@ Each spec is in `PSpec/Specs.p`, named after the code rule it encodes.
 | Spec | Rule | Code |
 |---|---|---|
 | S1 `ReplacementIsFailPreserving` | The visible session changes only for an attempt whose initial cut was validated, whose worker completed after the acknowledgement, and whose adoption check passed. A failed attempt never becomes visible. | `attachment.poll`, `attachment.adopt`, `interaction.candidate_outcome`; tui CLAUDE.md "Session replacement is fail-preserving" |
-| S2 `NoStaleRepaint` | Every message reduced into the visible lane came from the socket that lane was adopted with. | `interaction.candidate_outcome` (the swap of `Model.inbox`), `tick.update_tick`; "Every inbox the terminal reads is created by the terminal" |
+| S2 `NoStaleRepaint` | Every message reduced into the visible lane came from the socket that lane was adopted with. | `interaction.candidate_outcome` (the swap of the whole buffered `Model.inbox`, with `attachment.Adopted.inbox` carrying the frames the candidate left held), `inbound.drain_connection`, `tick.update_tick`; "Every inbox the terminal reads is created by the terminal" |
 | S3 `MutationCustody` | A mutation is written once and applied by the daemon at most once. A lost reply is reported `UnknownOutcome` exactly once, on the attachment that sent it. A waiting command is sent exactly once or reported `DefinitelyNotSent` exactly once, and never crosses to another attachment. Liveness: while the terminal runs, no command stays waiting or sent and unresolved forever. | ADR-010; `session_channel.admit`, `flush_queued`, `fail`, `retire`, `cancel_unsent`; "Uncertainty survives attachment replacement" |
 | S4 `NoWriteAfterShut` | No write reaches a socket after the terminal closed it. | `session_channel.close`, `runtime.take` |
 | S4b `ShutAtMostOnce` | The terminal closes each socket at most once. | `session_channel.close`, `session_channel.receive` (finding F1) |
 | S5 `WorkerNeverStranded` | A worker that published `Prepared` is eventually acknowledged, cancelled, or ended by its own deadline. | `attachment.acknowledging`, `attachment.cancel` |
-| S6 `QuitReleasesEverything` | After quit, every socket and worker the terminal owned eventually stops. | `submit.quit`, `attachment.cancel`, `session_channel.close` |
+| S6 `QuitReleasesEverything` | After quit, every socket and worker the terminal owned eventually stops. | `submit.quit`, `attachment.cancel` (which reads a held `Prepared` through `buffered.receive`), `session_channel.close` |
 | S7 `OneRequestInFlight` | Per socket, a request is written only after the daemon answered the previous one, and request ids strictly increase. | `session_channel.admit`, `send`, `credit`, `capture_again`, `send_queued`; "A commit notice is idempotent and order-free" |
 
 S5 and S6 are liveness specs, and S3 has a liveness half. P reports a
@@ -146,6 +152,15 @@ Against the model as committed, which matches `session_channel` after PR #536:
 | `tcQuitEarly` | 30,000 | 0 |
 | `tcShutOnceReplace` | 30,000 | 0 |
 | `tcShutOnceAtQuit` | 30,000 | 0 |
+
+The same six, and `tcWriteAfterShutOnly`, `tcCustodyQuitLate` and
+`tcCustodyQuitEarly`, were rerun at 30,000 schedules each after phase 2 S2
+moved the connection, replay and attachment reads into `runtime.receive`
+(ADR-013, "Addendum: phase 2 S2"), with no bugs, and M2 below was still
+caught by S2 within 11 schedules. The model needed no change for S2: its
+per-inbox buffers already stood for mailbox and buffer together, read only
+while the model holds the inbox, which is the rule the code now keeps by
+construction.
 
 All nine probes find a witness within 230 schedules: a lost reply reported
 `UnknownOutcome`, a retained command sent, a retained command reported not
@@ -259,3 +274,9 @@ that keeps delivering a replaced inbox's queued messages, even for one step,
 is M2, and S2 fails within a few hundred schedules. A runtime that stops
 selecting on it at the swap is correct whether or not the queued messages are
 ever flushed.
+
+Phase 2 S2 keeps the rule by where it puts the buffer. Each
+`tui/buffered.Inbox` carries the messages `runtime.receive` already took
+from its mailbox, so the swap in `interaction.candidate_outcome` replaces the
+old inbox and its buffer in one assignment, and no drain can reach either
+afterwards.

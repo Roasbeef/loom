@@ -9,14 +9,18 @@
 //
 // Every inbox is created by the terminal (attachment.start_recorded makes
 // the prepared, frames and outcomes subjects before the worker starts) and
-// named here by an integer. The runtime buffers what arrives in `framesBox`,
-// `preparedBox` and `outcomesBox`; a message for an inbox that was never
-// created or has been discarded is dropped, which is what a discarded
+// named here by an integer. `framesBox`, `preparedBox` and `outcomesBox`
+// stand for each inbox's mailbox together with what runtime.receive has
+// already moved into its tui/buffered.Inbox; a message for an inbox that was
+// never created or has been discarded is dropped, which is what a discarded
 // `Subject` amounts to once nothing selects on it again. The reducer reads
 // those buffers the way tick.update_tick and interaction.update_ready_key
-// drain the mailbox today; phase 2 of issue #530 turns the same reads into
-// runtime-delivered messages, and the discipline modelled here (read an
-// inbox only while the model holds it) is what that change must keep.
+// take from the buffered inboxes (buffered.take), and the discipline
+// modelled here, read an inbox only while the model holds it, is what the
+// code keeps by carrying each buffer inside the inbox value the adoption
+// swap replaces. The per-step bounds the code applies to a top-up are not
+// modelled: a step here takes everything that has arrived, which includes
+// every ordering a bounded top-up allows.
 
 type tArrived = (sock: machine, msg: tMsg);
 type tPrep = (attempt: int, sock: machine, worker: machine);
@@ -361,7 +365,7 @@ machine Terminal {
     }
   }
 
-  // inbound.drain_connection over Model.inbox.
+  // inbound.drain_connection, taking from the buffered Model.inbox.
   fun drainLane() {
     var q: seq[tArrived];
     var a: tArrived;
