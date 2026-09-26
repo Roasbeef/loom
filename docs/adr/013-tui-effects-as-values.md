@@ -370,9 +370,9 @@ The survey of mailbox reads, at the commit this slice started from:
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
   key drain (`tui/interaction.gleam:1218` (`drain_connection`)) and the tick
   (`tui/tick.gleam:160` (`drain_connection`)). The attachment's reads:
-  `tui/attachment.gleam:484` (`prepare`),
-  `tui/attachment.gleam:538` (`drain`) and
-  `tui/attachment.gleam:594` (`settle`). The replay drain:
+  `tui/attachment.gleam:496` (`prepare`),
+  `tui/attachment.gleam:550` (`drain`) and
+  `tui/attachment.gleam:609` (`settle`). The replay drain:
   `tui/tick.gleam:201` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:46` (`drain_reconnect`)), the control reply
@@ -401,3 +401,126 @@ moved by less than the run-to-run noise: `tui` 0.49 s and 0.023 s before,
 0.137 s, 2.59 s and 0.133 s; `tui@interaction` 2.55 s and 0.169 s, 2.52 s
 and 0.167 s; `tui@runtime` 0.26 s and 0.007 s, unchanged. The new
 `tui@buffered` compiles in 0.20 s.
+
+## Addendum: phase 2 S3, recording joins the effect stream (2026-09-26)
+
+The third slice of phase 2 takes the recording writes out of the step. It
+settles the paragraph above that kept recording appends and attempt trace
+notes synchronous in phase 1, and it replaces two mechanisms phase 1
+introduced: the three queues `runtime.take` collected, and
+`tui_model.release_channel`. What it means for the recording's bytes and
+timestamps is in [ADR-009](009-record-terminal-attempt-custody.md), in its
+addendum on recording as effects.
+
+**Recording writes are effect values.** `tui.step` queues the input's line
+through `tui_model.record_input` before the reducer runs, so it is the
+first effect of its step. A line is `effect.Record(recorder, event)`. An
+attempt event is `session_channel.Note(recorder, event)`, an output of the
+lane that decided it, or `attachment.Note` for the failure the attachment
+records itself. `attempt.Trace`, a closure, is gone: `recording.Trace` is
+the recorder handle and the attempt identity, as data, and every note
+carries the recorder it was decided under. `recording.append` is the
+perform half, and `session_channel.perform`, `attachment.perform` and
+`runtime.perform` call it.
+
+**One queue.** The model outbox is the only queue a step has, and
+`runtime.take` is its reversal. Two changes made that possible. Every
+reducer that transitions the adopted lane stores the result through
+`tui_model.hold_channel`, which moves the lane's queued outputs into the
+outbox at that point: `inbound.tick_channel`, `inbound.handle_connection_message`,
+`inbound.cancel_pending`, `inbound.service_history`, `inbound.request_decisions`,
+`outbound.send_frame`, `submit.quit` and `interaction.retire_previous`, and
+the adoption stores the `Adopted` note the same way after the cut. And
+`attachment.poll` and `accept` move the candidate lane's outputs into the
+list they return after each advance (`release`), so the candidate holds none
+between calls and `attachment.take_outputs` is gone. Nothing is left on a
+lane when a step ends, so `runtime.take` has nothing to collect from the
+channels.
+
+**`release_channel` is gone.** Phase 1 needed it because a lane kept its
+outputs until the end of the step, and a reducer that replaced the lane
+first had to move them out or lose them. Now they leave the lane when the
+transition that decided them is stored, so replacing the lane later in the
+step finds it empty. The rule moved rather than vanished: a site that
+stores a lane without `hold_channel` strands its outputs where nothing
+collects them, and the compiler does not check it. The retirement in an
+adoption is the case with the most to lose, and
+`an_adoption_queues_the_retired_lanes_close_before_the_adoption_test`
+fails if `retire_previous` stores the retired lane directly: the old
+socket's close and its `attempt_closed` disappear. The quit's lane close is
+pinned by `effects_test` and by the golden recording.
+
+**What the attachment keeps from a failed advance.** An advance that fails
+part way through a poll returns the lane as it left it (`Broken`), and
+`discard` keeps that lane's notes and drops its writes, then fails the
+attempt from the status as it stood before the advance, whose `Abandon`
+closes the socket once. That is what the terminal did when notes were
+synchronous and writes were queued, and
+`a_failing_replacement_keeps_its_notes_and_drops_its_writes_test` pins it.
+
+**The effect list is in decision order.** Phase 1 returned the adopted
+lane's outputs, then the candidate's, then the outbox. Now the list is the
+order the step decided things in. For a socket nothing changes, since one
+lane's outputs keep their order either way. Across resources the order
+changes, and one site was reordered to keep the recording the same: a quit
+queues the adopted lane's close ahead of the attempt's cancel, as the old
+collection order had it, and the preview peer's close moves with it.
+
+**Sites.** Every recording write, where it was and where it is:
+
+| Write | Site | Before S3 | After S3 |
+|---|---|---|---|
+| input line | `tui.step` | `recording.note_input`, in the step | `tui_model.record_input`, the step's first effect |
+| message with no lane | `inbound.handle_connection_message` | `recording.note_message`, in the step | `tui_model.record`, an `effect.Record` |
+| `attempt_started` | `session_channel.start_recorded`, `start_resumed` | trace callback | `Note`, ahead of the subscribe |
+| `attempt_requested` | `session_channel.emit` | trace callback | `Note`, ahead of its `Transmit` |
+| `attempt_frame` and the lifecycle messages | `session_channel.receive` | trace callback | `Note`, ahead of anything the message queues |
+| `attempt_closed` of a lane the step closes | `session_channel.close`, through `fail`, `retire` and quit | trace callback | `Note`, ahead of its `Shut` |
+| `attempt_adopted` | `session_channel.adopted`, from `interaction.candidate_outcome` | trace callback | `Note`, stored after the cut |
+| `attempt_failed` | `attachment.failed` | trace callback | `attachment.Note`, ahead of `Abandon` |
+| `attempt_closed` of an abandoned attempt | `attachment.cancel`, performing `Abandon` | after the step, after every other line | after the step, at the `Abandon`'s place |
+| the format header | `recording.start`, from `tui.open_recording` | at launch, before the loop | unchanged |
+| the teardown close in the client test driver | `tui_driver.disconnect` | outside the loop | unchanged, performed through `session_channel.perform` |
+
+`recording.trace`, in `tui.open_recording` and `session_control`'s open
+and create, binds a recorder to an attempt and writes nothing.
+
+**Replay.** A replay queues no recording effect, as it wrote nothing
+before, and for the same two reasons: `loom replay` opens no recorder, so
+`Model.recorder` is `None`, and replay lanes are `session_channel.replay`
+lanes with no trace. `replaying_a_recording_queues_no_recording_effect_test`
+steps the golden recording through the shipped step and checks it.
+
+**Callers outside `update`.** `runtime.flush` now empties only the outbox,
+so a caller that builds a lane and puts it on a model stores it through
+`tui_model.hold_channel` before flushing (the live `tui_v2_test` does). A
+bare channel is still drained with `take_outputs` and `perform`, and its
+notes are among the outputs. A caller polling a bare attachment performs
+what `poll` returns, which now includes the lane's outputs
+(`bootstrap_test`). Tests that watched a lane through a trace closure
+either read the `Note` outputs (`session_pushed_test`) or pass
+`recording.observed(subject)`, a test-only recorder that sends each
+event to a subject when the runtime performs it (`queue_editor_test`,
+`tui_v2_test`). The client test driver needed no change: it reduces
+selected messages through `inbound.accept_connection_message`, which
+queues their notes, and the next step performs them.
+
+**Model.** The protocol model does not model recording, and it keeps
+phase 1's three-queue collection in `finishStep`. Its README now says why
+every spec reads the same under the one queue: within one socket both
+orders are the lane's, both put a candidate's lane outputs ahead of its
+`Abandon`, and both put a quitting lane's close ahead of the attempt's
+cancel. The Terminal machine is still one reducer step followed by a
+separate effect step. `p check -tc tcReplace -s 30000` found no bug.
+
+**Compile time.** `record_input` and `hold_channel` are cross-module calls,
+and the step's new first statement applies to its parameter, so the slice
+adds no local step for the inliner to revisit (`docs/execution.md` §8).
+Measured with `erlc +time` on the generated modules before and after, wall
+time and `core_inline_module` moved by less than the run-to-run noise:
+`tui` 0.55 s and 0.024 s before, 0.53 s and 0.024 s after; `tui@tick` 0.53 s
+and 0.022 s, 0.54 s and 0.021 s; `tui@inbound` 2.63 s and 0.133 s, 2.50 s
+and 0.128 s; `tui@interaction` 2.59 s and 0.189 s, 2.56 s and 0.172 s;
+`tui@runtime` 0.26 s and 0.007 s, 0.26 s and 0.007 s; `tui@recording`
+0.25 s and 0.008 s, unchanged; `tui@attachment` 0.25 s and 0.008 s, 0.26 s
+and 0.009 s; `tui@session_channel` 0.37 s and 0.018 s, unchanged.
