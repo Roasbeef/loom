@@ -269,19 +269,22 @@ them may import `tui`, so a module may import only those above it in the
 list:
 
 - `tui/effect`: `Effect`, the closed vocabulary of fire-and-forget effects a
-  step decides on. It imports the modules whose handles its variants carry
-  (`attachment`, `connection`, `daemon`, `herdr`, `session_channel`,
-  `sessions`) and nothing that imports the model.
+  step decides on, recording appends among them (`Record`). It imports the
+  modules whose handles its variants carry (`attachment`, `connection`,
+  `daemon`, `herdr`, `recording`, `session_channel`, `sessions`) and nothing
+  that imports the model.
 - `tui/model`: the `Model` record, the types it names, and the helpers every
   reducer shares (`append_system`, `append_error`, `invalidate_frame`,
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`
   is the local variable in nearly every function and would shadow the module
-  name. Constructors stay unqualified. It also owns the effect outbox:
-  `emit` queues an effect, and `release_channel` moves a channel's queued
-  outputs into the outbox before a step replaces or drops the channel.
-- `tui/runtime`: `take`, `perform` and `flush`, which collect a step's
-  effects from the two channels and the outbox and perform them; `stamp`,
+  name. Constructors stay unqualified. It also owns the effect outbox, the
+  step's one queue: `emit` queues an effect, `record` and `record_input`
+  queue a recording line when the terminal is recording, and
+  `hold_channel` stores a transitioned adopted lane and moves what it
+  queued into the outbox.
+- `tui/runtime`: `take`, `perform` and `flush`, which empty a step's outbox
+  and perform what it held, in the order it was decided; `stamp`,
   which reads the clocks for one event before the step; and `receive`,
   which tops up the model's inboxes before the step. `tui.gleam` and test
   drivers import it; no reducer module does.
@@ -555,9 +558,12 @@ boundaries and the split's measurements under Invariants.
   keys, pastes, resizes, wheel notches, button presses, drags, releases and
   inbox messages — and
   `tui/recording.Moment` pairs one with its monotonic offset. `Recorder` is
-  the open `--record` file, held in the `Model` because the inbox is drained
-  inside `update_tick` and there is no other point at which both a websocket
-  message and the recording are in scope.
+  a handle on the open `--record` file, held in the `Model` so the reducers
+  can name it in the effects they queue; `recording.append` is the only
+  write after `start`, and the runtime calls it. `recording.Trace` binds a
+  recorder to an attempt identity, and a lane that holds one queues
+  `session_channel.Note` outputs. `recording.observed` is a test-only
+  recorder that delivers each event to a subject.
 - `tui/herdr` is the Herdr multiplexer integration, compiled in because this
   terminal is a single binary with no hook directory for Herdr's installer
   to drop a script into. `configure` gates on `HERDR_ENV=1` plus
@@ -1676,22 +1682,37 @@ untouched.
   model and a `List(Effect)`; `tui.update` performs that list through
   `runtime.perform` after the step, and nothing in a reducer writes to a
   socket, closes a connection, cancels a worker, discards an inbox, prints
-  the clipboard sequence or reports to Herdr. `session_channel` and
-  `attachment` queue their writes and closes as outputs, and a reducer that
-  replaces or drops the adopted channel calls `release_channel` first, or
-  the channel's queued writes are lost with it. A caller that runs a reducer
-  or a channel outside `update` must flush what it queued: `runtime.flush`
-  on a model, or `take_outputs` then `perform` for a bare channel or
-  attachment. The next `update` also performs anything left queued. One
-  consequence is that a send leaves at the end of its step, so a
-  zero-timeout drain later in that step cannot see its reply. Recording
-  appends and attempt trace notes are the deliberate exception and stay
-  synchronous, because the recording orders an input before the channel
-  traces it caused (ADR-009); job starts, file reads and the switch,
-  reconnect, control and activity reply reads also remain in the step
-  until later slices of phase 2 of issue #530. Clock reads left the step in
-  phase 2's first slice and the connection, replay and attachment drains in
-  its second: see the clock and traffic invariants above.
+  the clipboard sequence, reports to Herdr or appends to the recording.
+  `session_channel` queues its writes, closes and recording notes as
+  outputs; every reducer that transitions the adopted lane stores it through
+  `tui_model.hold_channel`, which moves those outputs into the outbox at
+  that point, and `attachment.poll` and `accept` return everything the
+  candidate's lane queued with the rest of what they decided. The outbox is
+  therefore the step's one queue, in the order the step decided things, and
+  a lane stored any other way keeps outputs nothing collects: a later
+  replacement loses its writes and its recorded close. A caller that runs a
+  reducer outside `update` flushes it with `runtime.flush`, after storing
+  any lane it built through `hold_channel`; a bare channel is drained with
+  `take_outputs` then `perform`. The next `update` also performs anything
+  left in the outbox. One consequence is that a send leaves at the end of
+  its step, so a zero-timeout drain later in that step cannot see its
+  reply. Job starts, file reads and the switch, reconnect, control and
+  activity reply reads remain in the step until later slices of phase 2 of
+  issue #530. Clock reads left the step in phase 2's first slice, the
+  connection, replay and attachment drains in its second, and recording
+  writes in its third: see the clock and traffic invariants above and the
+  recording invariant below.
+- **The recording is written in the order its causes were decided.**
+  `tui.step` queues the input's own line first, before the reducer runs,
+  and every attempt note is queued where its cause was decided, in the
+  same queue as the lane's writes: a request's `Issued` before its frame, a
+  frame's `Received` before anything it made the lane send. Event N's lines
+  therefore all precede event N+1's (ADR-009). Offsets are read when the
+  runtime appends, not from `Model.stamp`. An attempt's failure note is
+  queued ahead of its `Abandon`, and the `Closed` that `attachment.cancel`
+  decides is written when the runtime performs the `Abandon`, at its place
+  in the queue. An advance that fails part way through a poll keeps its
+  notes and loses its writes, as it did when notes were synchronous.
 - **A replay reproduces inbound traffic and rendering, never an outbound
   effect.** No websocket write, no daemon start, no local catalogue read,
   and no line the live client would have been *sent*. Submitting under

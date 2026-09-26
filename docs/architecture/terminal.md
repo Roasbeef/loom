@@ -62,8 +62,9 @@ the event, `runtime.receive` moves waiting traffic into the model's inboxes,
 fire-and-forget effects itself; "Effects are values" below describes that
 split. `step` has three stages:
 
-1. `recording.note_input` writes the raw event to the `--record` file, if one
-   is open, before anything interprets it.
+1. `tui_model.record_input` queues the raw event's recording line, if a
+   `--record` file is open, before anything interprets it, so it is the
+   step's first effect.
 2. `apply_input` dispatches on the event: a key, a paste, a resize, a mouse
    wheel notch, a drag, or `Tick`.
 3. `settle_update` does everything that follows any event. It requests a
@@ -130,54 +131,62 @@ modules divide the work:
 - `tui/effect` is the vocabulary: a closed data type, not closures, so a test
   can assert on the effects a step produced and a second runtime can interpret
   the same values against its own transport.
-- `tui/session_channel` is a pure transition system. Its `emit` and `close`
-  queue `Transmit` and `Shut` outputs on the channel itself, and
-  `session_channel.perform` is the only place the channel touches its socket.
-  `tui/attachment` exposes its candidate channel's outputs the same way, plus
-  the `Acknowledge` that releases its worker. Both have a `take_outputs` and a
-  `perform`.
+- `tui/session_channel` is a pure transition system. Its `emit`, `close`
+  and receive queue `Transmit`, `Shut` and `Note` outputs on the channel
+  itself, a `Note` being one attempt event for the recording, and
+  `session_channel.perform` is the only place the channel touches its socket
+  or its recorder. Every reducer that transitions the adopted lane stores it
+  through `tui_model.hold_channel`, which moves those outputs into the model
+  outbox at that point. `tui/attachment` returns its candidate channel's
+  outputs from `poll` and `accept` with the rest of what they decided: the
+  `Acknowledge` that releases its worker, the attempt's failure `Note`, and
+  its cleanup.
 - `tui/runtime` owns collection and performance. `runtime.take` empties the
-  adopted channel's queue, the candidate's queue and the model outbox, in that
-  order, and returns them as one list, so all three are empty between steps.
+  model outbox, which is the step's one queue, and returns it oldest first.
   `runtime.perform` carries the list out. Nothing in the reducer imports it.
 
 Every effect names the handle it acts on, and the runtime never looks a target
 up in the model. An adoption replaces the socket partway through a step, and a
 write decided before the adoption must still reach the socket it was decided
-for. For the same reason, a reducer that replaces or drops the adopted channel
-calls `tui_model.release_channel` first, which moves the channel's queued
-outputs into the outbox; otherwise those writes would be discarded with the
-old channel value.
+for. A recording note names its recorder for the same reason. Because each
+lane's outputs join the outbox as soon as the transition that decided them is
+stored, replacing or dropping the adopted lane later in the step cannot lose
+them; a lane stored without `hold_channel` would keep outputs that nothing
+collects.
 
-The order that matters is the order within one socket, and each channel's
-queue keeps the order its lane decided on. The order across the three queues
-does not matter, because a channel never writes after its own close and the
-outbox holds closes and cancels of resources the channels are not writing to.
+The effects come out in the order the step decided them. For a socket that is
+the order its lane issued frames in, and a lane in its `Closed` phase queues
+nothing, so no channel writes after its own close. For the recording it is
+the order ADR-009 requires: the input's line first, then each attempt note
+where its cause was decided, a request's `Issued` ahead of its frame and a
+frame's `Received` ahead of anything it made the lane send.
 
 A consequence is that a send decided mid-step leaves at the end of the step. A
 zero-timeout drain later in the same step cannot see its reply, which it never
 reliably could.
 
-Two kinds of I/O still happen inside the step in this phase. Job starts, file
-reads and the remaining mailbox reads (the session switch, reconnect, control
-and activity replies) produce values the step goes on to use, so they wait
-until the runtime can deliver results as messages; clock reads and the
-connection, replay and attachment drains have already moved before the step,
-as described above. Recording
-appends and attempt trace notes stay synchronous, because the recording orders
-an input before the channel traces it caused, and splitting those writes
-between the inline path and the post-step queues would reorder the file.
+Some I/O still happens inside the step in this phase. Job starts, file reads
+and the remaining mailbox reads (the session switch, reconnect, control and
+activity replies) produce values the step goes on to use, so they wait until
+the runtime can deliver results as messages; clock reads and the connection,
+replay and attachment drains have already moved before the step, as
+described above. Recording appends are effects: each line's offset is read
+when the runtime appends it, and the file's bytes are the ones the terminal
+wrote when the appends were synchronous
+([ADR-009](../adr/009-record-terminal-attempt-custody.md) has the addendum).
 
-A caller that runs a reducer or a channel outside `update`, such as a test
-driver that hands a socket message to `inbound.accept_connection_message`,
-passes the resulting model through `runtime.flush`. A caller holding a bare
-channel or attachment against a live socket calls its `take_outputs` and
-performs each output. The next `update` also performs anything left queued, so
-a missing flush delays an effect rather than losing it.
+A caller that runs a reducer outside `update`, such as a test driver that
+hands a socket message to `inbound.accept_connection_message`, passes the
+resulting model through `runtime.flush`; a lane it builds itself goes onto
+the model through `tui_model.hold_channel`. A caller holding a bare channel
+against a live socket calls `session_channel.take_outputs` and performs each
+output, and one polling a bare attachment performs the outputs `poll`
+returns. The next `update` also performs anything left in the outbox, so a
+missing flush delays an effect rather than losing it.
 [ADR-013](../adr/013-tui-effects-as-values.md) records this design, and
 [issue #530](https://github.com/Roasbeef/loom/issues/530) describes the later
-phases, which turn drains, job starts and recording into messages and effects
-as well.
+phases, which turn the remaining drains and job starts into messages and
+effects as well.
 
 ### Frames are cached, then paced
 
@@ -648,10 +657,12 @@ Herdr's `seq` is unsigned and the BEAM monotonic clock can be negative.
 `loom --record <path>` writes one JSON line per event the client received:
 keys, pastes, resizes, wheel notches, mouse presses, drags and releases, and
 every socket message, each with its monotonic offset. Ticks and plain mouse
-motion are left out because they do not change the model. `step` records an
-input before interpreting it, and the channel records a frame before decoding
-it, so a recording reproduces a decoding bug rather than hiding it. A failed
-append is silent, since etui owns the screen.
+motion are left out because they do not change the model. `step` queues an
+input's line before interpreting it, and the channel queues a frame's note
+before decoding it, so a recording reproduces a decoding bug rather than
+hiding it. The lines are effects: the runtime appends them after the step, in
+the order the step decided them, and reads each offset as it appends. A
+failed append is silent, since etui owns the screen.
 
 The current format (local format 2) tags each request credit, raw frame and
 adoption with a terminal-local attempt identity (`tui/attempt`), so a replay
@@ -713,9 +724,9 @@ the module named.
 - **A decision echoes exactly what was displayed** (`approval`,
   `approval_panel`).
 - **A step performs no fire-and-forget I/O.** Writes, closes, cancels,
-  discards, the clipboard sequence and Herdr reports are returned as effects
-  and performed by the runtime; recording appends and trace notes are the
-  deliberate exception (`tui/effect`, `tui/runtime`).
+  discards, the clipboard sequence, Herdr reports and recording appends are
+  returned as effects and performed by the runtime, in the order the step
+  decided them (`tui/effect`, `tui/runtime`, `tui_model.hold_channel`).
 - **A replay performs no outbound effect** (`Peer.Replaying`).
 
 The main failure behaviours follow from those. A socket failure closes the
@@ -755,7 +766,7 @@ Paths are relative to `packages/tui/src`.
 |---|---|
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
-| `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `release_channel`) and the other types every reducer shares. |
+| `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `record`, `hold_channel`) and the other types every reducer shares. |
 | `tui/runtime` | `stamp` and `receive`, which read the clocks and top up the inboxes before a step; `take`, `perform` and `flush`, which collect a step's effects and perform them. |
 | `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `top_up` before the step, `take` in it, `receive` outside it. |
 | `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
