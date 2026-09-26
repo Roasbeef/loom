@@ -771,7 +771,12 @@ catalogue without opening runtimes. Explicit admission invokes
   one more request, launched by `landed` with the newest text. A stream's
   retained text is trimmed to its newest `window_bytes` (32 KiB) once it
   reaches twice that. A stream that `ended` with a request out is
-  forgotten when that request lands.
+  forgotten when that request lands. Across streams, at most
+  `live_concurrency` (2) live requests are out, and a stream refused a
+  slot is considered again on its next fragment; at most `max_streams`
+  (8) streams are tracked, and a new one evicts the oldest with no request
+  out, because the relay does not report every stream's end to its
+  observers.
 - `client/advisorslice.{Bounds, Slice, Moment, default_bounds, render,
   feed_message, advice_message, nudges_message, is_advice, delivered_body,
   advice_header,

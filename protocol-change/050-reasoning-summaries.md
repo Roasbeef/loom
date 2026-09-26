@@ -108,7 +108,11 @@ A summary of a block still being written is never stored.
 While a generation request streams reasoning, the daemon summarizes the
 accumulated text once it reaches 4 KiB or 40 lines, and again each time it
 has grown by 4 KiB or 40 lines since the last request began. A stream has
-at most one summary request outstanding. Growth that arrives while one is
+at most one summary request outstanding, and at most two live requests
+are outstanding across all streams; a stream refused a slot is considered
+again on its next fragment. At most eight live streams are tracked; a new
+one evicts the oldest with no request outstanding, so a stream whose end
+the daemon never observed cannot hold its text indefinitely. Growth that arrives while one is
 outstanding does not queue another request; when the outstanding request
 ends, the daemon starts one more if the stream has grown past the
 threshold since that request began, with the stream's newest text. The

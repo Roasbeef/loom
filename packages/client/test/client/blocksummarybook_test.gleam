@@ -18,6 +18,8 @@ const pace = Pace(
   window_bytes: 32_768,
   settled_concurrency: 2,
   settled_backlog: 3,
+  live_concurrency: 2,
+  max_streams: 4,
 )
 
 // --- live streams ------------------------------------------------------------
@@ -145,6 +147,43 @@ pub fn a_long_stream_keeps_its_newest_window_test() {
   assert string.ends_with(text, marker(40))
 }
 
+// However many streams are due at once, only `live_concurrency` requests
+// are out; a stream refused a slot is asked about on its next fragment
+// once a slot has freed.
+pub fn live_requests_are_bounded_across_streams_test() {
+  let due = string.repeat("a", 4096)
+  let #(book, first) = grow_on(blocksummarybook.new(), "g-1", due)
+  let #(book, second) = grow_on(book, "g-2", due)
+  let #(book, third) = grow_on(book, "g-3", due)
+  assert list.length(first) == 1
+  assert list.length(second) == 1
+  assert third == []
+
+  let #(book, _none) = blocksummarybook.landed(book, pace, "g-1")
+  let #(_book, retried) = grow_on(book, "g-3", "more")
+  let assert [LiveAsk(generation: "g-3", ..)] = retried
+    as "the refused stream is asked about once a slot frees"
+}
+
+// A stream whose end is never observed cannot hold its text for the life
+// of the session: past `max_streams` the oldest stream with no request out
+// is forgotten, and a stream with a request out is kept.
+pub fn the_tracked_streams_are_bounded_test() {
+  let assert #(book, [LiveAsk(..)]) =
+    grow_on(blocksummarybook.new(), "g-0", string.repeat("a", 4096))
+    as "the first stream has a request out"
+  let book =
+    int.range(from: 1, to: 6, with: book, run: fn(book, index) {
+      grow_on(book, "g-" <> int.to_string(index), "short").0
+    })
+
+  assert blocksummarybook.streams(book) == pace.max_streams
+  assert blocksummarybook.tracks(book, "g-0")
+  assert !blocksummarybook.tracks(book, "g-1")
+  assert !blocksummarybook.tracks(book, "g-2")
+  assert blocksummarybook.tracks(book, "g-5")
+}
+
 // --- committed blocks ----------------------------------------------------------
 
 // Two requests at once; the third waits for a slot and starts when one
@@ -186,6 +225,21 @@ fn grow(
     book,
     pace,
     generation: "g-1",
+    strand: "main",
+    operation: an_op(),
+    chunk: text,
+  )
+}
+
+fn grow_on(
+  book: blocksummarybook.Book,
+  generation: String,
+  text: String,
+) -> #(blocksummarybook.Book, List(Launch)) {
+  blocksummarybook.grow(
+    book,
+    pace,
+    generation:,
     strand: "main",
     operation: an_op(),
     chunk: text,

@@ -24,6 +24,17 @@
 //// request per summarizer round trip at most, and the newest text is what
 //// the next request is sent.
 ////
+//// Two bounds hold across streams. At most `Pace.live_concurrency` live
+//// requests are out at once, because every generation the summarize
+//// provider serves is observed, sub-agents and the advisor included; a
+//// stream refused a slot is considered again on its next fragment. And at
+//// most `Pace.max_streams` streams are tracked. A stream is forgotten when
+//// its end is observed, but the provider relay does not report every end
+//// to its observers — a worker failure or an abandoned request can finish
+//// a stream silently — so without the bound a lost end would hold up to
+//// twice the window of text for the life of the session. A new stream past
+//// the bound evicts the oldest one with no request out.
+////
 //// Nothing here performs I/O or reads a clock. The machine applies each
 //// plan's launches and reports each request's end back as an event, which
 //// is what makes the pacing testable without a process or a provider.
@@ -32,6 +43,7 @@ import core/ids.{type EntryId, type OpId}
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 
 /// The knobs the book paces by. `default_pace` in production.
@@ -56,12 +68,17 @@ pub type Pace {
     settled_concurrency: Int,
     /// How many committed blocks may wait for a request slot.
     settled_backlog: Int,
+    /// How many live requests may be out at once, across every stream.
+    live_concurrency: Int,
+    /// How many live streams the book tracks at once.
+    max_streams: Int,
   )
 }
 
 /// The shipped pacing: a 512-byte floor (eight times the terminal's
 /// 64-cell digest), a new live request per 4 KiB or 40 lines of growth, a
-/// 32 KiB live window, two settled requests at once and sixteen waiting.
+/// 32 KiB live window, two settled requests at once and sixteen waiting,
+/// two live requests at once and eight streams tracked.
 pub const default_pace = Pace(
   floor_bytes: 512,
   every_bytes: 4096,
@@ -69,6 +86,8 @@ pub const default_pace = Pace(
   window_bytes: 32_768,
   settled_concurrency: 2,
   settled_backlog: 16,
+  live_concurrency: 2,
+  max_streams: 8,
 )
 
 /// What a block's text is, which decides how the summarizer is asked
@@ -103,15 +122,22 @@ pub type Launch {
 
 /// Everything the book knows between events.
 pub opaque type Book {
-  Book(streams: Dict(String, Live), waiting: List(Job), asking: Int)
+  Book(
+    streams: Dict(String, Live),
+    next_stream: Int,
+    waiting: List(Job),
+    asking: Int,
+  )
 }
 
 // One live stream. `chunks` holds its newest text, newest chunk first, and
 // `retained` their byte count; `bytes` and `lines` count everything the
 // stream has carried, and `asked_bytes` and `asked_lines` what it had
-// carried when its last request began.
+// carried when its last request began. `order` is when the book first saw
+// it, which is what eviction ranks by.
 type Live {
   Live(
+    order: Int,
     strand: String,
     operation: OpId,
     chunks: List(String),
@@ -150,7 +176,7 @@ type Ending {
 /// ```
 ///
 pub fn new() -> Book {
-  Book(streams: dict.new(), waiting: [], asking: 0)
+  Book(streams: dict.new(), next_stream: 0, waiting: [], asking: 0)
 }
 
 /// How many live streams the book is tracking.
@@ -219,10 +245,12 @@ pub fn grow(
   operation operation: OpId,
   chunk chunk: String,
 ) -> #(Book, List(Launch)) {
-  let live = case dict.get(book.streams, generation) {
-    Ok(live) -> live
-    Error(Nil) ->
+  let #(book, live) = case dict.get(book.streams, generation) {
+    Ok(live) -> #(book, live)
+    Error(Nil) -> #(
+      Book(..evict(book, pace), next_stream: book.next_stream + 1),
       Live(
+        order: book.next_stream,
         strand:,
         operation:,
         chunks: [],
@@ -233,7 +261,8 @@ pub fn grow(
         asked_lines: 0,
         flight: Idle,
         ending: Open,
-      )
+      ),
+    )
   }
   let size = string.byte_size(chunk)
   let live =
@@ -315,7 +344,9 @@ fn consider(
   let grown =
     live.bytes - live.asked_bytes >= pace.every_bytes
     || live.lines - live.asked_lines >= pace.every_lines
-  let due = live.flight == Idle && live.bytes >= pace.floor_bytes && grown
+  let slot = asking_live(book) < pace.live_concurrency
+  let due =
+    live.flight == Idle && live.bytes >= pace.floor_bytes && grown && slot
 
   case due {
     False -> #(
@@ -340,6 +371,42 @@ fn consider(
         )
       let streams = dict.insert(book.streams, generation, asked)
       #(Book(..book, streams:), [launch])
+    }
+  }
+}
+
+// How many live requests are out, counting a stream that has ended with
+// its request still out: that request still occupies a slot.
+fn asking_live(book: Book) -> Int {
+  dict.fold(book.streams, 0, fn(count, _generation, live) {
+    case live.flight {
+      Asking -> count + 1
+      Idle -> count
+    }
+  })
+}
+
+// Makes room for one more stream when the book is full, by forgetting the
+// oldest stream with no request out. While fewer requests may be out than
+// streams may be tracked there is always such a stream; the oldest of all
+// is the fallback that keeps the bound if the pace says otherwise, and
+// its request's end then finds nothing and launches nothing.
+fn evict(book: Book, pace: Pace) -> Book {
+  case dict.size(book.streams) < pace.max_streams {
+    True -> book
+    False -> {
+      let ranked =
+        book.streams
+        |> dict.to_list
+        |> list.sort(fn(left, right) {
+          int.compare({ left.1 }.order, { right.1 }.order)
+        })
+      let idle = list.find(ranked, fn(pair) { { pair.1 }.flight == Idle })
+      case result.lazy_or(idle, fn() { list.first(ranked) }) {
+        Ok(#(generation, _live)) ->
+          Book(..book, streams: dict.delete(book.streams, generation))
+        Error(Nil) -> book
+      }
     }
   }
 }
