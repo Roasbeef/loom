@@ -558,7 +558,7 @@ pub fn record_lines(
     False -> {
       let #(reversed, calls, narratives) =
         entries
-        |> tool_activity.project
+        |> tool_activity.project_split(advisor_splits(advisor))
         |> splice_notices(notices, item_holds, item_sequence(_, sequences))
         |> list.fold(#([], dict.new(), dict.new()), fn(acc, spliced) {
           case spliced {
@@ -774,6 +774,11 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
+
+    // A harness row, such as advisor commentary or a notice, draws its blank
+    // below itself like every other speaker, so under a call's bare last row
+    // it would sit welded to that call without a gap of its own.
+    [Line(speaker: System, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
     // `GroupOpening`.
@@ -2250,6 +2255,13 @@ pub fn merge_sequence_blocks(
         False -> [next, ..merge_sequence_blocks(primary, advisor_rest)]
       }
   }
+}
+
+// The sequences commentary is merged at, oldest first: the places a tool
+// group must end for the commentary to land between its calls rather than
+// below all of them.
+fn advisor_splits(board: advisor_history.Board) -> List(Int) {
+  list.map(board.items, fn(item) { item.seq })
 }
 
 /// The heading travels with the first captured block, so a long advisor
