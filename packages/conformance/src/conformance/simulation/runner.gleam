@@ -56,6 +56,8 @@ import runtime/supervisor
 import runtime/writer
 import session/session.{type Session}
 import storage/storage
+import weft/poll
+import weft/registry as address
 
 /// The strand every simulated session runs on.
 pub const strand = "main"
@@ -1118,22 +1120,59 @@ fn drive_ops(
 }
 
 // A retry that follows an unobserved reply is a retry into a tree that
-// may still be rebooting, and addressing a process that is not yet
-// registered raises again — spending an attempt off a finite ladder
-// without learning anything. So the runner lets the world move first:
-// one logical step, which releases anything parked on a deadline, and
-// one real millisecond, which is the supervisor's chance to put the tree
-// back.
+// may still be rebooting, and a request to a writer that is not yet
+// registered is refused as unavailable before it is sent — spending an
+// attempt off a finite ladder without learning anything. So the runner
+// lets the world move first: one logical step, which releases anything
+// parked on a deadline, and then however long the root takes to register
+// a writer again.
 //
-// That millisecond is a wall clock and is named as one. It replaces a
-// far larger one: `attempt` used to learn about a dead carrier only by
-// letting a three-second budget expire, which gave the tree all the time
-// in the world by accident. Learning it from a monitor instead is what
-// makes the ladder's pacing something the runner has to state on purpose
-// rather than inherit from a timeout.
+// The ladder counts attempts, so a pause of a fixed length made its real
+// budget a handful of milliseconds. A crash on the commit before a
+// creation, an acceptance or a cross-strand send left all six attempts to
+// meet an unregistered writer on a loaded host, and the runner reported
+// the operation as refused and the run as `run/terminated` with a clean
+// timing line (seed 1). Waiting for the writer instead means an attempt is
+// spent only on a writer that could answer it.
 fn before_retrying(ctx: Context) -> Nil {
   let _advanced = vclock.advance(ctx.vc)
-  process.sleep(1)
+  await_writer(ctx.ctl, ctx.runtime)
+}
+
+// How long `await_writer` waits for a root that is alive but has not
+// registered a writer. It is a deadlock backstop: a live root either
+// restores its permanent writer or exhausts its restart intensity and dies,
+// and the wait ends at once on the second.
+const writer_backstop_ms = 3000
+
+/// Waits until the session tree has a registered writer, or its root has
+/// died. A root that is alive restores its permanent writer or fails, so
+/// the wait is bounded by the tree itself; `writer_backstop_ms` only stops
+/// a wedged root from hanging the run, and reaching it is recorded as
+/// `expired@writer-restart` so the failure report names the wall clock.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // runner.await_writer(ctl, runtime)
+/// ```
+///
+pub fn await_writer(ctl: Control, runtime: api.Runtime) -> Nil {
+  let outcome =
+    poll.until(within: writer_backstop_ms, every: 1, attempt: fn() {
+      case
+        address.lookup(runtime.tree.writer),
+        process.is_alive(runtime.tree.supervisor)
+      {
+        Ok(_writer), _ -> poll.Done(Nil)
+        Error(Nil), True -> poll.Retry
+        Error(Nil), False -> poll.Fail(Nil)
+      }
+    })
+  case outcome {
+    poll.Answered(Nil) | poll.Failed(Nil) -> Nil
+    poll.Expired -> control.note_wait(ctl, "expired@writer-restart")
+  }
 }
 
 // What became of an acceptance attempt.

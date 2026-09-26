@@ -8,6 +8,10 @@
 //// on to assert convergence over a transcript it had silently lost a
 //// turn from, which is the one failure mode the whole runner exists to
 //// rule out.
+////
+//// One test here holds the runner's retry pacing, which reaches into a
+//// tree that may be restarting, to waiting for the writer to return rather
+//// than for a fixed pause.
 
 import conformance/simulation/control
 import conformance/simulation/fault
@@ -19,14 +23,18 @@ import core/json
 import core/message.{UserMessage, UserText}
 import core/register
 import core/tx
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/system
+import gleam/result
 import gleam/string
 import machine/operation.{ReplaySafe}
 import runtime/api
 import runtime/supervisor
 import session/session
 import storage/storage
+import weft/registry as address
 
 // A script with no operations at all: the tree boots, the strand is
 // idle, and no run is ever open. Every queue admission against it is
@@ -198,4 +206,47 @@ pub fn durable_admission_marker_settles_a_lost_reply_test() {
       "intervened@follow-up-during-effect",
     ]
     as "the durable marker must close the claimed intervention debt"
+}
+
+/// The runner's retry pacing waits until the tree has registered a writer
+/// again, not for a fixed pause. Counting one-millisecond pauses gave the
+/// retry ladder a real budget of a few milliseconds, and a crash just before
+/// the subagent's creation spent all six attempts on an unregistered writer
+/// on a loaded host (seed 1, `run/terminated`). Here the root is suspended
+/// before its writer is killed, so no writer can return until the root is
+/// resumed fifty milliseconds later.
+pub fn retry_pacing_waits_for_the_restarted_writer_test() {
+  let #(ctl, vc, _raw, runtime) = idle_session()
+  let root = runtime.tree.supervisor
+  let assert Ok(writer) =
+    address.lookup(runtime.tree.writer)
+    |> result.try(process.subject_owner)
+    as "the booted tree must have a writer"
+
+  // A suspended root still receives its writer's exit but cannot act on it,
+  // which holds the address unbound for as long as the test decides. The
+  // lookup reads the writer's liveness, so it is unbound once the monitor
+  // reports the death.
+  system.suspend(root)
+  let watched = process.monitor(writer)
+  process.kill(writer)
+  let died =
+    process.new_selector()
+    |> process.select_specific_monitor(watched, fn(_down) { Nil })
+    |> process.selector_receive(1000)
+  assert died == Ok(Nil) as "the killed writer must die"
+  assert result.is_error(address.lookup(runtime.tree.writer))
+    as "a dead writer must not resolve"
+
+  let _resumer =
+    process.spawn_unlinked(fn() {
+      process.sleep(50)
+      system.resume(root)
+    })
+  runner.await_writer(ctl, runtime)
+  let registered = result.is_ok(address.lookup(runtime.tree.writer))
+  let waits = control.waits(ctl)
+  teardown(ctl, vc, runtime)
+  assert registered as "the pacing returned before the root replaced the writer"
+  assert waits == [] as "the restart must finish well inside the backstop"
 }
