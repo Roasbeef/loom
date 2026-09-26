@@ -1476,3 +1476,61 @@ pub fn recipes_are_advertised_only_with_their_required_imports_test() {
   assert string.contains(description, "Orchestration recipe")
   assert !string.contains(description, "Workspace recipe")
 }
+
+// A model fills fields from the schema, so a conditional requirement the
+// `required` list cannot express has to be in the property itself. With
+// the async modes, `program` is required for run and launch only and
+// `handle` for the other four; without them, `program` is simply required.
+pub fn the_schema_states_which_mode_needs_program_or_handle_test() {
+  let assert Ok(json.Object(sync)) =
+    schema_field(codemode.tool_for(echoing()).schema, "properties")
+  let assert Ok(json.Array(sync_required)) =
+    schema_field(codemode.tool_for(echoing()).schema, "required")
+  assert sync_required == [json.String("program")]
+  assert !string.starts_with(description_of(sync, "program"), "REQUIRED")
+
+  let background =
+    codemode.CodeMode(
+      ..echoing(),
+      background: option.Some(
+        codemode.Background(
+          launch: fn(_request) { Error("unused") },
+          interact: fn(_, _, _, _) { Error("unused") },
+        ),
+      ),
+    )
+  let assert Ok(json.Array([])) =
+    schema_field(codemode.tool_for(background).schema, "required")
+    as "with the async modes nothing is required outright"
+  let assert Ok(json.Object(async)) =
+    schema_field(codemode.tool_for(background).schema, "properties")
+  assert string.starts_with(
+    description_of(async, "program"),
+    "REQUIRED for mode=run (the default) and mode=launch",
+  )
+  assert string.starts_with(
+    description_of(async, "handle"),
+    "REQUIRED for mode=send, check, join and cancel",
+  )
+}
+
+fn schema_field(
+  value: json.JsonValue,
+  key: String,
+) -> Result(json.JsonValue, Nil) {
+  case value {
+    json.Object(fields:) -> list.key_find(fields, key)
+    _ -> Error(Nil)
+  }
+}
+
+fn description_of(
+  properties: List(#(String, json.JsonValue)),
+  name: String,
+) -> String {
+  let assert Ok(property) = list.key_find(properties, name)
+    as "the schema carries the property"
+  let assert Ok(json.String(text)) = schema_field(property, "description")
+    as "the property is described"
+  text
+}

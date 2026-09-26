@@ -478,13 +478,51 @@ fn async_properties(
           "run synchronously (default), or launch a fixed-lifetime background execution; check readiness before send",
         ),
       ),
-      #("handle", tool.string_property("execution handle returned by launch")),
+      #(
+        "handle",
+        tool.string_property(
+          "REQUIRED for mode=send, check, join and cancel: the execution "
+          <> "handle launch returned. Omit it for run and launch",
+        ),
+      ),
       #(
         "endpoint",
-        tool.string_property("registered endpoint targeted by send"),
+        tool.string_property(
+          "registered endpoint targeted by send; default `default`",
+        ),
       ),
-      #("value", json.Object([])),
+      #(
+        "value",
+        json.Object([
+          #(
+            "description",
+            json.String(
+              "REQUIRED for mode=send: the JSON value delivered to the "
+              <> "execution's endpoint",
+            ),
+          ),
+        ]),
+      ),
     ]
+  }
+}
+
+// With the async modes present `program` cannot sit in the schema's
+// `required` list, since send, check, join and cancel name a handle
+// instead, so the property states the rule itself. A model filling fields
+// from the schema reads the properties, not the description, and a
+// requirement stated only in prose is how `history_search` came to be
+// called twenty times without its query.
+fn program_text(background: Option(Background)) -> String {
+  let program =
+    "the Gleam program. It must define `pub fn main() -> report.Outcome` "
+    <> "and import `cap/report` to build one"
+  case background {
+    None -> program
+    Some(_) ->
+      "REQUIRED for mode=run (the default) and mode=launch: "
+      <> program
+      <> ". Omit it for send, check, join and cancel"
   }
 }
 
@@ -564,13 +602,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
       list.flatten([
         [
           #("permissions", permissions.schema()),
-          #(
-            "program",
-            tool.string_property(
-              "the Gleam program. It must define `pub fn main() -> "
-              <> "report.Outcome` and import `cap/report` to build one",
-            ),
-          ),
+          #("program", tool.string_property(program_text(mode.background))),
         ],
         seam_properties(mode.seams),
         async_properties(mode.background),

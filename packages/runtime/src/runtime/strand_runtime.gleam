@@ -1436,7 +1436,7 @@ fn tool_clearance_key(
   // `runtime/repeat_guard` has the counts and why the harness owns them.
   case repeat_guard.judge(call, recent_messages(state, loaded)) {
     repeat_guard.Proceed ->
-      clear_tool_call(
+      clear_or_refuse_malformed(
         state,
         loaded,
         operation,
@@ -1451,6 +1451,39 @@ fn tool_clearance_key(
         result: synthetic_tool_error(call, reason, now),
         ending:,
       ))
+  }
+}
+
+// A call whose arguments never parsed carries a sentinel, not the model's
+// arguments, so it is refused here with the machine's own words and never
+// reaches a tool's clearance, its hooks or the escalation plane. It comes
+// this far at all only so the guard above can count it.
+fn clear_or_refuse_malformed(
+  state: State,
+  loaded: Loaded,
+  operation: OpId,
+  step_id: String,
+  source_index: Int,
+  call: ToolCall,
+  now: Int,
+) -> KeyResolution {
+  case planner.malformed_refusal(call) {
+    Some(reason) ->
+      KeyObservation(planner.ObservedToolRefused(
+        source_index:,
+        result: synthetic_tool_error(call, reason, now),
+        ending: planner.RefusalContinues,
+      ))
+    None ->
+      clear_tool_call(
+        state,
+        loaded,
+        operation,
+        step_id,
+        source_index,
+        call,
+        now,
+      )
   }
 }
 

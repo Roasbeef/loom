@@ -503,7 +503,11 @@ extended by the M3 runtime wave.
   fresh start. The count is read from write-once entries, so recovery
   judges from the same entries the first incarnation did, and a read that
   fails reads as no history rather than halting the strand: the guard is
-  a brake on a loop, not a correctness condition.
+  a brake on a loop, not a correctness condition. A call whose arguments
+  never parsed comes through the same key: the guard judges it first, and
+  otherwise it is refused with `planner.malformed_refusal`'s text, never
+  handed to `clear_tool_call`, so a model repeating broken JSON is bounded
+  the same way.
 - **One writer, structurally.** All commits are calls into one actor, so
   "transactions on one session are serialized" is a property of the process
   topology, not a convention. Reads route through it too, keeping a single

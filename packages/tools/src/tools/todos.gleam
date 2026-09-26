@@ -184,7 +184,14 @@ fn schema() -> JsonValue {
           "a phase name: the target of `append`, or of a phase-wide op",
         ),
       ),
-      #("task", tool.string_property("a task's exact text")),
+      #(
+        "task",
+        tool.string_property(
+          "a task's exact text. REQUIRED for `start`; `block` and `unblock` "
+          <> "need it or a `phase`; `done`, `drop` and `remove` act on "
+          <> "everything when neither is given",
+        ),
+      ),
       #("reason", tool.string_property("for `block`: what the task waits on")),
     ],
     ["op"],
