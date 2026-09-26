@@ -127,6 +127,24 @@ fn receive_waiting(subject: Subject(a), remaining: Int, newest_first: List(a)) {
   }
 }
 
+/// Appends a message behind everything held.
+///
+/// This is for a reader outside the step that selected the message from the
+/// mailbox itself, as a test driver does. The runtime took every held
+/// message out of that mailbox earlier, so the selected one is newer than
+/// all of them and its place is at the tail. Appending it there lets the
+/// caller advance with the same `take` the step uses, rather than a second
+/// path that handles the selected message on its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let frames = buffered.push(frames, selected)
+/// ```
+pub fn push(inbox: Inbox(a), message: a) -> Inbox(a) {
+  Inbox(..inbox, held: list.append(inbox.held, [message]))
+}
+
 /// Takes the oldest held message, reading no mailbox.
 ///
 /// This is how a reducer reads an inbox: it sees what the runtime received

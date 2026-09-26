@@ -315,10 +315,9 @@ pub fn top_up(status: Status) -> Status {
 /// Adds only this attempt's terminal-owned inputs to an existing selector.
 ///
 /// The selector reads the mailboxes, so it cannot return what the runtime
-/// already received. `accept` makes up for that: before it applies a
-/// selected frame or outcome it applies the ones held for the same inbox,
-/// which were received earlier. A held `Prepared` is taken by the next poll;
-/// an attempt publishes only one, so no later one can overtake it.
+/// already received. `accept` makes up for that: it appends the selected
+/// message behind the ones held for the same inbox, which were received
+/// earlier, and then advances exactly as the poll does.
 ///
 /// ## Examples
 ///
@@ -364,46 +363,27 @@ pub fn accept(
   now now: Int,
 ) -> #(Status, Option(Outcome), List(Out)) {
   case status, event {
-    // An outcome the runtime already received is older than the selected
-    // one, so it is settled first; the selected one applies only if the
-    // held one left the attempt open.
-    Opening(run, ..), Settled(source, outcome) -> {
+    Opening(run, prepared, frames, candidate), Settled(source, outcome) -> {
       use <- bool.lazy_guard(!buffered.is_sender(run.outcomes, source), fn() {
         ignore(status, event)
       })
-      settle(status) |> and_then(apply_outcome(_, outcome))
+      let outcomes = buffered.push(run.outcomes, outcome)
+      settle_held(Opening(Run(..run, outcomes:), prepared, frames, candidate))
     }
 
-    Opening(run, prepared, frames, None),
-      Preparation(source, Prepared(socket, expected, workspace, name, key, ack))
-    -> {
+    Opening(run, prepared, frames, None), Preparation(source, message) -> {
       use <- bool.lazy_guard(!buffered.is_sender(prepared, source), fn() {
         ignore(status, event)
       })
-      settle(Opening(
-        run,
-        prepared,
-        frames,
-        Some(Candidate(
-          channel.start_recorded(socket, expected, run.trace, now:),
-          ack,
-          None,
-          workspace,
-          name,
-          key,
-        )),
-      ))
+      let prepared = buffered.push(prepared, message)
+      let #(prepared, candidate) = prepare(prepared, None, run.trace, now)
+      settle(Opening(run, prepared, frames, candidate))
     }
 
-    // Frames the runtime already received are older than the selected one
-    // and are reduced first. The same guard `progress` and `drain` apply
-    // then decides the selected frame: once the initial cut is captured the
-    // channel is `Ready`, and handing it another frame makes it answer
-    // "unsolicited conversation response" and abort an attempt the
-    // interactive loop would have adopted. The interactive loop leaves such
-    // a frame queued for the adopted terminal; a driver has already taken it
-    // out of the mailbox, so here it is dropped instead — the adopted
-    // channel's 250 ms credited `catch_up` is what makes that lossless.
+    // The selected frame joins the held ones and the same drain the poll
+    // runs takes them in order, stopping at the capture. A frame after the
+    // capture, held or selected, stays in the inbox for the adopted lane,
+    // exactly as in the interactive loop.
     Opening(
       run,
       prepared,
@@ -415,10 +395,8 @@ pub fn accept(
       use <- bool.lazy_guard(!buffered.is_sender(frames, source), fn() {
         ignore(status, event)
       })
-      let advanced =
-        drain(candidate, frames, frame_batch, now)
-        |> result.try(receive_selected(_, message, now))
-      case advanced {
+      let frames = buffered.push(frames, message)
+      case drain(candidate, frames, buffered.held(frames), now) {
         Ok(#(advanced, frames)) ->
           settle(Opening(run, prepared, frames, Some(advanced)))
           |> acknowledging(Some(candidate), Some(advanced))
@@ -432,6 +410,12 @@ pub fn accept(
 
 // An event for an inbox this status does not hold, or one it no longer
 // needs. A `Prepared` still carries an open socket, which must be closed.
+//
+// A frame selected once the candidate has already captured its cut is
+// dropped rather than held: it is not taken out of the mailbox while the
+// attempt waits for its worker, so nothing would bound what a driver
+// accumulates here. The adopted channel's 250 ms credited `catch_up` is
+// what makes the drop lossless.
 fn ignore(
   status: Status,
   event: Event,
@@ -441,6 +425,20 @@ fn ignore(
       CloseStray(socket),
     ])
     Frame(_, _) | Settled(_, _) -> #(status, None, [])
+  }
+}
+
+// Settles held outcomes oldest first until one decides the attempt or none
+// is left. A driver's selected outcome may sit behind one the runtime
+// already received, so there can be two.
+fn settle_held(status: Status) -> #(Status, Option(Outcome), List(Out)) {
+  case status {
+    Opening(run, ..) ->
+      case buffered.held(run.outcomes) {
+        0 -> #(status, None, [])
+        _ -> settle(status) |> and_then(settle_held)
+      }
+    Idle -> #(Idle, None, [])
   }
 }
 
@@ -456,22 +454,6 @@ fn and_then(
       #(status, outcome, list.append(outputs, more))
     }
     #(Opening(..), Some(_), _) | #(Idle, _, _) -> settled
-  }
-}
-
-// The selected frame, after the held ones: dropped if they completed the
-// capture, reduced otherwise.
-fn receive_selected(
-  drained: #(Candidate, Inbox(connection.Message)),
-  message: connection.Message,
-  now: Int,
-) -> Result(#(Candidate, Inbox(connection.Message)), String) {
-  let #(candidate, frames) = drained
-  case candidate.captured {
-    Some(_) -> Ok(drained)
-    None ->
-      receive_frame(candidate, message, now)
-      |> result.map(fn(candidate) { #(candidate, frames) })
   }
 }
 
