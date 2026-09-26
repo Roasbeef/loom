@@ -499,7 +499,9 @@ fn record_anchors_for(
     // gaps between items.
     False ->
       entries
-      |> tool_activity.project
+      |> tool_activity.project_split(
+        transcript_lines.advisor_splits(visible_advisor_history(model)),
+      )
       |> transcript_lines.splice_notices(
         notices,
         transcript_lines.item_holds,

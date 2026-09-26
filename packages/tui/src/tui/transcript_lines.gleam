@@ -894,9 +894,10 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
 
-    // A harness row, such as advisor commentary or a notice, draws its blank
-    // below itself like every other speaker, so under a call's bare last row
-    // it would sit welded to that call without a gap of its own.
+    // A harness row, such as advisor commentary, a notice or a tool group's
+    // own heading, draws its blank below itself like every other speaker, so
+    // under a call's bare last row it would sit welded to that call without a
+    // gap of its own.
     [Line(speaker: System, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
@@ -2574,10 +2575,18 @@ pub fn merge_sequence_blocks(
   }
 }
 
-// The sequences commentary is merged at, oldest first: the places a tool
-// group must end for the commentary to land between its calls rather than
-// below all of them.
-fn advisor_splits(board: advisor_history.Board) -> List(Int) {
+/// The sequences commentary is merged at, oldest first: the places a tool
+/// group must end for the commentary to land between its calls rather than
+/// below all of them. The row projection and the anchor projection must both
+/// split here, or their row counts part at every split.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.advisor_splits(advisor_history.Board([], None)) == []
+/// ```
+@internal
+pub fn advisor_splits(board: advisor_history.Board) -> List(Int) {
   list.map(board.items, fn(item) { item.seq })
 }
 

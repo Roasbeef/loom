@@ -732,8 +732,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui/transcript_lines.gleam:1215`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1569`) renders
+`advisor_payload` (`tui/transcript_lines.gleam:1221`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1578`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
 collapses in compact mode to its heading and one line: the summarizer's
