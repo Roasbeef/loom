@@ -13,10 +13,11 @@
 //// drains the connection.
 
 import etui/backend
-import gleam/erlang/process
+import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import tui
 import tui/attachment
@@ -30,6 +31,7 @@ import tui/session_channel
 import tui/snapshot
 import tui/workspace
 import tui_test/pushed
+import weft
 
 pub fn a_top_up_holds_at_most_its_bound_in_arrival_order_test() {
   let inbox = buffered.new(process.new_subject())
@@ -142,6 +144,57 @@ pub fn adoption_leaves_the_old_inbox_buffer_behind_test() {
   let ticked = tui.update(backend.Tick, drained)
   assert ticked.notices == before + 1
     as "no notice from the replaced inbox is reduced after the swap"
+}
+
+// The frames a candidate received after its initial cut are not the
+// candidate's to reduce. They stay in its frames inbox, and `attachment.adopt`
+// hands that inbox to the model with them still held, so the adopted lane
+// reduces them in the adoption's own tick.
+pub fn adoption_hands_frames_held_after_capture_to_the_adopted_lane_test() {
+  let status =
+    attachment.start(
+      fn() {
+        process.sleep(60_000)
+        Error("the test plays the worker")
+      },
+      120_000,
+    )
+  let #(prepared, frames, outcomes) = attempt_subjects(status)
+
+  // The worker's part: a prepared socket, one complete transfer and two
+  // commit notices after its end.
+  let acknowledgement = process.new_subject()
+  process.send(
+    prepared,
+    prepared_message(
+      socket_on(process.new_subject()),
+      snapshot.Expected("A", "epoch", "incarnation"),
+      workspace.Context("test", None),
+      "Session A",
+      None,
+      acknowledgement,
+    ),
+  )
+  list.each(pushed.transfer(1, "1:1", "recent", 10), process.send(frames, _))
+  process.send(frames, pushed.notice("main", 11))
+  process.send(frames, pushed.notice("main", 12))
+  let model = tui_model.Model(..fresh(), candidate: status)
+  let before = model.notices
+
+  // One tick creates the candidate and captures its cut; the drain stops
+  // there, so both notices stay held and the worker is acknowledged.
+  let captured = tui.update(backend.Tick, model)
+  assert attachment.busy(captured.candidate)
+  assert process.receive(acknowledgement, 0) == Ok(Nil)
+  assert captured.notices == before
+
+  process.send(outcomes, weft.AllDelivered)
+  let adopted = tui.update(backend.Tick, captured)
+  assert !attachment.busy(adopted.candidate)
+  assert adopted.session == "A"
+  assert adopted.notices == before + 2
+    as "both notices held after the capture reach the adopted lane"
+  attachment.cancel(status)
 }
 
 // A tick settles the provisional attachment before it drains the connection.
@@ -258,3 +311,25 @@ fn captured_replacement() {
     as "the replacement's first transfer is a validated cut"
   #(ready, cut, view)
 }
+
+@external(erlang, "runtime_receive_test_ffi", "attempt_subjects")
+fn attempt_subjects(
+  status: attachment.Status,
+) -> #(
+  Subject(Dynamic),
+  Subject(connection.Message),
+  Subject(weft.Pulled(Nil, String)),
+)
+
+@external(erlang, "runtime_receive_test_ffi", "prepared")
+fn prepared_message(
+  socket: connection.Connection,
+  expected: snapshot.Expected,
+  workspace: workspace.Context,
+  name: String,
+  creation_key: Option(String),
+  acknowledgement: Subject(Nil),
+) -> Dynamic
+
+@external(erlang, "effects_test_ffi", "socket_on")
+fn socket_on(owner: Subject(Dynamic)) -> connection.Connection
