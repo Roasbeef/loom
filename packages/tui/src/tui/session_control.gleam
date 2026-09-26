@@ -3,36 +3,40 @@
 //// reattaching after a lost connection.
 ////
 //// These requests go to the daemon's control socket rather than a session
-//// channel, and each runs in a background worker so the terminal never
+//// channel, and each runs in a background job so the terminal never
 //// waits on the daemon. At most one catalogue request runs at a time; a
-//// second is refused with a transcript line rather than queued. The
-//// worker's result comes back as a `ControlEvent`, a `ReconnectEvent` or,
-//// for an opened session, an attachment candidate event, and the tick
-//// drains each. `accept_control_event` and `accept_reconnect_event` are
-//// the entry points a test drives directly.
+//// second is refused with a transcript line rather than queued.
+////
+//// This module decides which request to make and what its outcome means.
+//// It describes each request as a `job.Spec` and queues its start with a
+//// key (`tui_model.start_job`); `tui/job_runner` runs it after the step.
+//// The runtime admits each reply into the slot that names its key, and
+//// the tick takes it from there through `drain_control`, `drain_reconnect`
+//// and `drain_activity`, which are also what a test drives directly after
+//// handing the slot a reply with `runtime.hold`. An opened session comes
+//// back as an attachment candidate instead, through `tui/attachment`.
 
 import core/json
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import tui/agents
 import tui/attachment
 import tui/attempt
 import tui/bootstrap
-import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/inbound
+import tui/job.{
+  PageLoaded, PeerInspectionLoaded, PeerOperationCompleted, PeerSessionsLoaded,
+  PeerWorkspaceLoaded, SessionArchived, SessionDeleted, SessionRenamed,
+  SessionRestored,
+}
 import tui/model.{
-  type ControlEvent, type Model, ActivityAsking, ActivityDue, ActivityResting,
-  AgentInspector, ApprovalInspector, ControlRequest, DaemonSelector,
-  GoalInspector, Model, ModelSelector, NoOverlay, PageLoaded,
-  PeerInspectionLoaded, PeerLinkManager, PeerOperationCompleted,
-  PeerSessionsLoaded, PeerWorkspaceLoaded, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, SessionArchived, SessionDeleted, SessionRenamed,
-  SessionRestored, SessionSelector,
+  type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
+  ApprovalInspector, ControlRequest, DaemonSelector, GoalInspector, Model,
+  ModelSelector, NoOverlay, PeerLinkManager, ReconnectAttempting, ReconnectIdle,
+  ReconnectSpent, SessionSelector,
 } as tui_model
 import tui/peer_links
 import tui/recording
@@ -40,16 +44,8 @@ import tui/session_selector
 import tui/workspace
 import weft
 
-/// One relayed relaunch outcome, selected by the terminal and its driver.
-@internal
-pub type ReconnectEvent {
-  ReconnectEvent(
-    source: Subject(weft.Pulled(daemon_selection.Host, String)),
-    reply: weft.Pulled(daemon_selection.Host, String),
-  )
-}
-
-/// Applies one relaunch outcome, bounded to the attempt which produced it.
+/// Takes the relaunch's next reply, if the runtime has admitted one, and
+/// applies it.
 ///
 /// A success reattaches the same session through the shipped open path, which
 /// is what gives the operator a working channel again; the transcript it
@@ -59,40 +55,53 @@ pub type ReconnectEvent {
 /// Every `weft.Pulled` variant is named rather than swept up, because each is a
 /// different fact about the attempt and a catch-all would hide a new one.
 ///
+/// Only replies to the attempt in the slot reach it: the runtime admits a
+/// reply only when its key is the slot's, so this compares nothing.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.accept_reconnect_event(model, event)
+/// // session_control.drain_reconnect(runtime.hold(model, arrival))
 /// ```
 @internal
-pub fn accept_reconnect_event(model: Model, event: ReconnectEvent) -> Model {
+pub fn drain_reconnect(model: Model) -> Model {
   case model.reconnect {
     ReconnectIdle | ReconnectSpent -> model
-    ReconnectAttempting(replies: source, ..) if source != event.source -> model
-    ReconnectAttempting(..) ->
-      case event.reply {
-        weft.NotYet -> model
-        weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
-          let model = Model(..model, reconnect: ReconnectSpent)
-          let model = Model(..model, daemon_host: Some(host))
-          reattach_after_reconnect(model)
-        }
-        weft.PulledOutcome(weft.Failed(error:, ..)) ->
-          reconnect_failed(model, error)
-        weft.PulledOutcome(weft.Crashed(reason:, ..))
-        | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
-          reconnect_failed(model, string.inspect(reason))
-        weft.PulledOutcome(weft.Abandoned(..))
-        | weft.PulledOutcome(weft.NeverStarted(..))
-        | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
-          reconnect_failed(model, "the daemon relaunch did not complete")
-        weft.RunLost(reason) -> reconnect_failed(model, string.inspect(reason))
-        weft.AllDelivered ->
-          reconnect_failed(
-            model,
-            "the daemon relaunch ended without an outcome",
+    ReconnectAttempting(job: awaiting) ->
+      case job.take(awaiting) {
+        #(_, Error(Nil)) -> model
+        #(awaiting, Ok(reply)) ->
+          apply_reconnect_reply(
+            Model(..model, reconnect: ReconnectAttempting(awaiting)),
+            reply,
           )
       }
+  }
+}
+
+// Once the attempt has an outcome the slot is spent, so the relay's
+// `AllDelivered` that follows finds no slot naming its key and the runtime
+// drops it.
+fn apply_reconnect_reply(model: Model, reply: job.ReconnectReply) -> Model {
+  case reply {
+    weft.NotYet -> model
+    weft.PulledOutcome(weft.Completed(value: host, ..)) -> {
+      let model = Model(..model, reconnect: ReconnectSpent)
+      let model = Model(..model, daemon_host: Some(host))
+      reattach_after_reconnect(model)
+    }
+    weft.PulledOutcome(weft.Failed(error:, ..)) ->
+      reconnect_failed(model, error)
+    weft.PulledOutcome(weft.Crashed(reason:, ..))
+    | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+      reconnect_failed(model, string.inspect(reason))
+    weft.PulledOutcome(weft.Abandoned(..))
+    | weft.PulledOutcome(weft.NeverStarted(..))
+    | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+      reconnect_failed(model, "the daemon relaunch did not complete")
+    weft.RunLost(reason) -> reconnect_failed(model, string.inspect(reason))
+    weft.AllDelivered ->
+      reconnect_failed(model, "the daemon relaunch ended without an outcome")
   }
 }
 
@@ -183,61 +192,31 @@ pub fn load_catalogue_collection(
     None, None ->
       tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-
-      // The two scalars the worker needs are bound here rather than read off
-      // `model` inside the closure. A closure over a field captures the whole
-      // record, and weft copies a fun's environment into the worker: that
-      // would send the transcript, the row caches and the cached frame — an
-      // 8 MiB retained window at its bound — to a process that wants a
-      // session id and a path.
-      let session = model.session
-      let workspace = model.workspace.path
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            use reply <- result.try(
-              daemon.request(daemon_selection.control(host), command, 5000)
-              |> result.map_error(daemon_selection.failure),
-            )
-            use page <- result.try(case reply {
-              control_protocol.SessionsReply(page) -> Ok(page)
-              control_protocol.StatusReply(_)
-              | control_protocol.SessionReply(_)
-              | control_protocol.LifecycleReply(_)
-              | control_protocol.DeletedReply(_)
-              | control_protocol.PeersInspectionReply(_)
-              | control_protocol.PeersMutationReply(_)
-              | control_protocol.ActivityReply(_)
-              | control_protocol.ShutdownReply ->
-                Error("catalogue returned an unexpected control reply")
-            })
-            let selected = case session {
-              "" -> default_selection(host, workspace)
-              id -> id
-            }
-            Ok(PageLoaded(page, selected, collection))
-          },
-        ])
-        |> weft.deadline(12_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
-      Model(
-        ..model,
-        control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "loading authorized session metadata",
-      )
+      let model =
+        start_control(
+          model,
+          host,
+          job.LoadPage(command, collection, model.session, model.workspace.path),
+        )
+      Model(..model, notice: "loading authorized session metadata")
     }
   }
 }
 
-/// Deletion shares the picker's one control job slot with paging, so a delete
-/// while a page is in flight is refused rather than queued behind it. The
-/// identity is bound outside the closure for the same reason the page job
-/// binds its two scalars: weft copies the fun's environment, and a reference
-/// to a model field would copy the whole presentation state with it.
+// Starts one control job in the picker's slot. Every caller has already
+// checked that the slot is free and that control is connected, so the job
+// replaces nothing.
+fn start_control(
+  model: Model,
+  host: daemon_selection.Host,
+  request: job.ControlJob,
+) -> Model {
+  let #(model, key) = tui_model.start_job(model, job.Control(host, request))
+  Model(..model, control_request: Some(ControlRequest(job.awaiting(key), None)))
+}
+
+/// A rename shares the picker's one control job slot with paging, so a
+/// rename while a page is in flight is refused rather than queued behind it.
 /// The reply owns the displayed name. A timeout leaves the outcome unknown
 /// and never causes the metadata mutation to be sent a second time.
 @internal
@@ -248,35 +227,8 @@ pub fn begin_rename(model: Model, session: String, name: String) -> Model {
     None, None ->
       tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            use reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.RenameSession(session, name),
-                5000,
-              )
-              |> result.map_error(daemon_selection.failure),
-            )
-            case reply {
-              control_protocol.SessionReply(row) if row.session_id == session ->
-                Ok(SessionRenamed(row))
-              _ -> Error("rename returned an unexpected control reply")
-            }
-          },
-        ])
-        |> weft.deadline(12_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
-      Model(
-        ..model,
-        control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "renaming session",
-      )
+      let model = start_control(model, host, job.Rename(session, name))
+      Model(..model, notice: "renaming session")
     }
   }
 }
@@ -284,142 +236,103 @@ pub fn begin_rename(model: Model, session: String, name: String) -> Model {
 /// Permanently deletes a catalogue session through daemon control.
 @internal
 pub fn begin_delete(model: Model, session: String) -> Model {
-  begin_removal(model, session, PermanentlyDelete)
-}
-
-/// The ADT keeps a confirmed permanent deletion distinct from reversible
-/// archive and restore requests while they share one bounded job slot.
-@internal
-pub type Removal {
-  Archive
-  Restore
-  PermanentlyDelete
+  begin_removal(model, session, job.PermanentlyDelete)
 }
 
 /// Starts one archive or delete request against daemon control. Only one
 /// catalogue request runs at a time; a second is refused with a transcript
 /// error rather than queued.
 @internal
-pub fn begin_removal(model: Model, session: String, removal: Removal) -> Model {
+pub fn begin_removal(
+  model: Model,
+  session: String,
+  removal: job.Removal,
+) -> Model {
   case model.control_request, model.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "a catalogue request is already running")
     None, None ->
       tui_model.append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            case removal {
-              Archive ->
-                result.map(
-                  daemon_selection.archive(host, session),
-                  SessionArchived,
-                )
-              Restore ->
-                result.map(
-                  daemon_selection.restore(host, session),
-                  SessionRestored,
-                )
-              PermanentlyDelete ->
-                result.map(
-                  daemon_selection.delete(host, session),
-                  SessionDeleted,
-                )
-            }
-          },
-        ])
-        |> weft.deadline(85_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
-      Model(
-        ..model,
-        control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: case removal {
-          Archive -> "stopping and archiving session " <> session
-          Restore -> "restoring session " <> session
-          PermanentlyDelete ->
-            "stopping and permanently deleting session " <> session
-        },
-      )
+      let model = start_control(model, host, job.Remove(session, removal))
+      Model(..model, notice: case removal {
+        job.Archive -> "stopping and archiving session " <> session
+        job.Restore -> "restoring session " <> session
+        job.PermanentlyDelete ->
+          "stopping and permanently deleting session " <> session
+      })
     }
   }
 }
 
-fn default_selection(host, workspace) {
-  case
-    daemon.request(
-      daemon_selection.control(host),
-      control_protocol.WorkspaceDefault(workspace),
-      5000,
-    )
-  {
-    Ok(control_protocol.SessionReply(row)) -> row.session_id
-    _ -> ""
-  }
-}
-
-/// Applies a selected control job response before later terminal messages.
+/// Takes the control job's next reply, if the runtime has admitted one,
+/// and applies it.
+///
+/// The outcome is staged on the slot and applied only at the relay's
+/// `AllDelivered`, which is what proves the worker is gone. Only replies to
+/// the job in the slot reach it: the runtime admits a reply only when its
+/// key is the slot's, so this compares nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.accept_control_event(model, event)
+/// // session_control.drain_control(runtime.hold(model, arrival))
 /// ```
 @internal
-pub fn accept_control_event(model: Model, event: ControlEvent) -> Model {
+pub fn drain_control(model: Model) -> Model {
   case model.control_request {
     None -> model
-    Some(run) if run.replies != event.source -> model
     Some(run) ->
-      case event.reply {
-        weft.NotYet -> model
-        weft.PulledOutcome(weft.Completed(value:, ..)) ->
-          Model(
-            ..model,
-            control_request: Some(
-              ControlRequest(..run, result: Some(Ok(value))),
-            ),
+      case job.take(run.job) {
+        #(_, Error(Nil)) -> model
+        #(awaiting, Ok(reply)) ->
+          apply_control_reply(
+            model,
+            ControlRequest(..run, job: awaiting),
+            reply,
           )
-        weft.PulledOutcome(weft.Failed(error:, ..)) ->
-          Model(
-            ..model,
-            control_request: Some(
-              ControlRequest(..run, result: Some(Error(error))),
-            ),
-          )
-        weft.PulledOutcome(weft.Crashed(reason:, ..))
-        | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
-          Model(
-            ..model,
-            control_request: Some(
-              ControlRequest(..run, result: Some(Error(string.inspect(reason)))),
-            ),
-          )
-        weft.PulledOutcome(weft.Abandoned(..))
-        | weft.PulledOutcome(weft.NeverStarted(..))
-        | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
-          Model(
-            ..model,
-            control_request: Some(
-              ControlRequest(
-                ..run,
-                result: Some(Error("control request did not complete")),
-              ),
-            ),
-          )
-        weft.RunLost(reason) ->
-          tui_model.append_error(
-            Model(..model, control_request: None),
-            string.inspect(reason),
-          )
-        weft.AllDelivered ->
-          finish_control(Model(..model, control_request: None), run.result)
       }
   }
+}
+
+fn apply_control_reply(
+  model: Model,
+  run: tui_model.ControlRequest,
+  reply: job.ControlReply,
+) -> Model {
+  case reply {
+    weft.NotYet -> Model(..model, control_request: Some(run))
+    weft.PulledOutcome(weft.Completed(value:, ..)) ->
+      staged(model, run, Ok(value))
+    weft.PulledOutcome(weft.Failed(error:, ..)) ->
+      staged(model, run, Error(error))
+    weft.PulledOutcome(weft.Crashed(reason:, ..))
+    | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+      staged(model, run, Error(string.inspect(reason)))
+    weft.PulledOutcome(weft.Abandoned(..))
+    | weft.PulledOutcome(weft.NeverStarted(..))
+    | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+      staged(model, run, Error("control request did not complete"))
+    weft.RunLost(reason) ->
+      tui_model.append_error(
+        Model(..model, control_request: None),
+        string.inspect(reason),
+      )
+    weft.AllDelivered ->
+      finish_control(Model(..model, control_request: None), run.result)
+  }
+}
+
+// Keeps an outcome on the slot until the relay reports that it is done.
+fn staged(
+  model: Model,
+  run: tui_model.ControlRequest,
+  result: Result(job.ControlOutcome, String),
+) -> Model {
+  Model(
+    ..model,
+    control_request: Some(ControlRequest(..run, result: Some(result))),
+  )
 }
 
 fn finish_control(model: Model, result) {
@@ -710,50 +623,15 @@ fn begin_peer_workspace_state(model: Model, state: peer_links.State) {
     _, _, Some(_) ->
       tui_model.append_error(model, "another daemon control request is running")
     _session, Some(host), None -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            use sessions_reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.ListSessions("", None),
-                5000,
-              )
-              |> result.map_error(daemon_selection.failure),
-            )
-            use page <- result.try(case sessions_reply {
-              control_protocol.SessionsReply(page) -> Ok(page)
-              _ -> Error("peer catalogue returned an unexpected reply")
-            })
-            use inspection_reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.InspectPeers(
-                  state.source_session,
-                  state.source_strand,
-                  None,
-                ),
-                5000,
-              )
-              |> result.map_error(daemon_selection.failure),
-            )
-            use document <- result.try(case inspection_reply {
-              control_protocol.PeersInspectionReply(document) -> Ok(document)
-              _ -> Error("peer inspection returned an unexpected reply")
-            })
-            Ok(PeerWorkspaceLoaded(page, document))
-          },
-        ])
-        |> weft.deadline(15_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
+      let model =
+        start_control(
+          model,
+          host,
+          job.LoadPeerWorkspace(state.source_session, state.source_strand),
+        )
       Model(
         ..model,
         overlay: PeerLinkManager(state),
-        control_request: Some(ControlRequest(cancel, replies, None)),
         notice: "loading owner-authorized peer grants",
       )
       |> tui_model.invalidate_frame
@@ -775,38 +653,12 @@ fn begin_peer_inspection(
     None, None ->
       tui_model.append_error(model, "daemon owner control is unavailable")
     None, Some(host) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            use reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.InspectPeers(session, strand, after),
-                5000,
-              )
-              |> result.map_error(daemon_selection.failure),
-            )
-            case reply {
-              control_protocol.PeersInspectionReply(document) ->
-                Ok(PeerInspectionLoaded(document, after))
-              _ -> Error("peer inspection returned an unexpected reply")
-            }
-          },
-        ])
-        |> weft.deadline(12_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
-      Model(
-        ..model,
-        control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: case after {
-          None -> "refreshing peer grants"
-          Some(_) -> "loading next peer page"
-        },
-      )
+      let model =
+        start_control(model, host, job.InspectPeers(session, strand, after))
+      Model(..model, notice: case after {
+        None -> "refreshing peer grants"
+        Some(_) -> "loading next peer page"
+      })
     }
   }
 }
@@ -819,35 +671,9 @@ fn begin_peer_sessions(model: Model, after: String, revision: Int) {
     None, None ->
       tui_model.append_error(model, "daemon owner control is unavailable")
     None, Some(host) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            use reply <- result.try(
-              daemon.request(
-                daemon_selection.control(host),
-                control_protocol.ListSessions(after, Some(revision)),
-                5000,
-              )
-              |> result.map_error(daemon_selection.failure),
-            )
-            case reply {
-              control_protocol.SessionsReply(page) ->
-                Ok(PeerSessionsLoaded(page))
-              _ -> Error("peer catalogue returned an unexpected reply")
-            }
-          },
-        ])
-        |> weft.deadline(12_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
-      Model(
-        ..model,
-        control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "loading more target sessions",
-      )
+      let model =
+        start_control(model, host, job.LoadPeerSessions(after, revision))
+      Model(..model, notice: "loading more target sessions")
     }
   }
 }
@@ -884,31 +710,8 @@ fn run_peer_mutation(model: Model, command: control_protocol.Command) {
     None, None ->
       tui_model.append_error(model, "daemon owner control is unavailable")
     None, Some(host) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-      let _relay =
-        weft.new([
-          fn() {
-            use host <- daemon_selection.with_live_control(host)
-            use reply <- result.try(
-              daemon.request(daemon_selection.control(host), command, 5000)
-              |> result.map_error(daemon_selection.failure),
-            )
-            case reply {
-              control_protocol.PeersMutationReply(document) ->
-                Ok(PeerOperationCompleted(document))
-              _ -> Error("peer mutation returned an unexpected reply")
-            }
-          },
-        ])
-        |> weft.deadline(12_000)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
-      Model(
-        ..model,
-        control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "sending one directional peer operation",
-      )
+      let model = start_control(model, host, job.MutatePeers(command))
+      Model(..model, notice: "sending one directional peer operation")
     }
   }
 }
@@ -1100,47 +903,15 @@ fn start_activity(
   host: daemon_selection.Host,
   ids: List(String),
 ) -> Model {
-  let replies = process.new_subject()
+  let #(model, key) = tui_model.start_job(model, job.Activity(host, ids))
 
-  // Only the route and the identities cross into the worker, bound here for
-  // the reason the catalogue job gives: a closure over a model field would
-  // copy the whole presentation state into it.
-  let _relay =
-    weft.new([
-      fn() {
-        use owned <- result.try(daemon_selection.reconnect(host, process.self()))
-        let control = daemon_selection.control(owned)
-        let reply =
-          daemon.request(control, control_protocol.SessionActivity(ids), 5000)
-        daemon.close(control)
-        use reply <- result.try(result.map_error(
-          reply,
-          daemon_selection.failure,
-        ))
-        case reply {
-          control_protocol.ActivityReply(rows) -> Ok(rows)
-          control_protocol.StatusReply(_)
-          | control_protocol.SessionsReply(_)
-          | control_protocol.SessionReply(_)
-          | control_protocol.LifecycleReply(_)
-          | control_protocol.DeletedReply(_)
-          | control_protocol.PeersInspectionReply(_)
-          | control_protocol.PeersMutationReply(_)
-          | control_protocol.ShutdownReply ->
-            Error("activity returned an unexpected control reply")
-        }
-      },
-    ])
-    |> weft.deadline(9000)
-    |> weft.start_relayed(replies)
-
-  // Closing the picker does not stop this worker: its deadline and its
-  // own connection bound what it can hold, and its answer is dropped by
-  // `drain_activity` when no picker is open to take it.
-  Model(..model, activity_poll: ActivityAsking(replies, ids))
+  // Closing the picker does not cancel this job: its deadline and its own
+  // connection bound what it can hold, and its answer is dropped by
+  // `drain_activity` when no picker is open to take it. A quit cancels it.
+  Model(..model, activity_poll: ActivityAsking(job.awaiting(key), ids))
 }
 
-/// Takes the activity worker's next relayed message, if one has arrived.
+/// Takes the activity job's next reply, if the runtime has admitted one.
 ///
 /// An answer is applied only to a picker that is still open, and `observe`
 /// applies it only to rows still on its page, so an answer that outlived its
@@ -1159,20 +930,35 @@ fn start_activity(
 pub fn drain_activity(model: Model) -> Model {
   case model.activity_poll {
     ActivityDue | ActivityResting(..) -> model
-    ActivityAsking(replies:, asked:) ->
-      case process.receive(replies, 0) {
-        Error(Nil) -> model
-        Ok(weft.PulledOutcome(weft.Completed(value:, ..))) ->
-          observe_activity(model, asked, value)
-        Ok(weft.AllDelivered) | Ok(weft.RunLost(_)) ->
-          Model(
-            ..model,
-            activity_poll: ActivityResting(
-              model.stamp.now_ms + activity_interval_ms,
-            ),
+    ActivityAsking(job: awaiting, asked:) ->
+      case job.take(awaiting) {
+        #(_, Error(Nil)) -> model
+        #(awaiting, Ok(reply)) ->
+          apply_activity_reply(
+            Model(..model, activity_poll: ActivityAsking(awaiting, asked)),
+            asked,
+            reply,
           )
-        Ok(weft.NotYet) | Ok(weft.PulledOutcome(_)) -> model
       }
+  }
+}
+
+fn apply_activity_reply(
+  model: Model,
+  asked: List(String),
+  reply: job.ActivityReply,
+) -> Model {
+  case reply {
+    weft.PulledOutcome(weft.Completed(value:, ..)) ->
+      observe_activity(model, asked, value)
+    weft.AllDelivered | weft.RunLost(_) ->
+      Model(
+        ..model,
+        activity_poll: ActivityResting(
+          model.stamp.now_ms + activity_interval_ms,
+        ),
+      )
+    weft.NotYet | weft.PulledOutcome(_) -> model
   }
 }
 

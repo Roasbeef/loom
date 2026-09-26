@@ -8,16 +8,15 @@
 
 import etui/backend
 import etui/keys
-import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import tui
 import tui/connection
 import tui/daemon/protocol
+import tui/job
 import tui/model as tui_model
 import tui/session_selector
 import tui/workspace
-import weft
 
 fn row(id: String) -> protocol.Session {
   protocol.Session(id, "/work", "Session " <> id, 0, protocol.Saved)
@@ -128,25 +127,21 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   // The picker owns one control job slot, and paging holds it first. A
   // forged request stands in for the page load: what matters to
   // `begin_delete` is that the slot is taken, not what took it.
-  let replies = process.new_subject()
+  let #(model, key) = tui_model.allocate_job(picker(blank()))
   let loading =
     tui_model.Model(
-      ..picker(blank()),
-      control_request: Some(tui_model.ControlRequest(
-        weft.cancel_signal(),
-        replies,
-        None,
-      )),
+      ..model,
+      control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
     )
   let asking = tui.update(backend.KeyPress("d"), loading)
   let refused = tui.update(backend.KeyPress("y"), asking)
 
-  // The in-flight job keeps the slot it already had, so its reply subject is
-  // still the one the frame loop selects on.
-  let assert Some(tui_model.ControlRequest(replies: kept, ..)) =
+  // The in-flight job keeps the slot it already had, so its key is still
+  // the one its replies are admitted under.
+  let assert Some(tui_model.ControlRequest(job: kept, ..)) =
     refused.control_request
     as "the page load still owns the control slot"
-  assert kept == replies
+  assert job.key(kept) == key
   assert refused.notice == "a catalogue request is already running"
 
   // A refusal removes no row: only the daemon's confirmation drops one, and

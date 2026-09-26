@@ -27,13 +27,15 @@ import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/image_drop
 import tui/inbound
+import tui/job
 import tui/layout
 import tui/model.{
-  type Model, type Submission, AgentInspector, Assistant, Attached,
-  ComposerSubmission, DiffHidden, DiffVisible, Disconnected, HeldPrompt,
-  Interjection, Interrupt, Line, Model, ModelSelector, NoOverlay,
-  OverlaySubmission, Preview, PromptNext, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, Replaying, SessionSelector, SteerNow, User,
+  type Model, type Submission, ActivityAsking, ActivityDue, ActivityResting,
+  AgentInspector, Assistant, Attached, ComposerSubmission, DiffHidden,
+  DiffVisible, Disconnected, HeldPrompt, Interjection, Interrupt, Line, Model,
+  ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionSelector,
+  SteerNow, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -938,9 +940,17 @@ pub fn quit(model: Model) -> Model {
     Model(..model, candidate: attachment.idle())
     |> tui_model.emit(effect.CancelSessionSwitch(model.session_switch))
     |> tui_model.emit(effect.Attachment(attachment.Abandon(model.candidate)))
+
+  // Every running job is cancelled by its key, and its slot is cleared in
+  // the same step, so nothing a cancelled job sends afterwards is admitted
+  // into a slot. The control job goes first and the relaunch after it, in
+  // the order they were once cancelled; the activity poll, which used to
+  // run on to its own deadline, is cancelled last.
   let model = case model.control_request {
     None -> model
-    Some(run) -> tui_model.emit(model, effect.CancelTask(run.cancel))
+    Some(run) ->
+      Model(..model, control_request: None)
+      |> tui_model.emit(effect.CancelJob(job.key(run.job)))
   }
 
   // A relaunch may be mid-start when the operator quits. Cancelling it stops
@@ -948,8 +958,15 @@ pub fn quit(model: Model) -> Model {
   // control owner it may already have minted.
   let model = case model.reconnect {
     ReconnectIdle | ReconnectSpent -> model
-    ReconnectAttempting(cancel:, ..) ->
-      tui_model.emit(model, effect.CancelTask(cancel))
+    ReconnectAttempting(job: awaiting) ->
+      Model(..model, reconnect: ReconnectSpent)
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+  }
+  let model = case model.activity_poll {
+    ActivityDue | ActivityResting(..) -> model
+    ActivityAsking(job: awaiting, ..) ->
+      Model(..model, activity_poll: ActivityDue)
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.daemon_host {
     None -> model

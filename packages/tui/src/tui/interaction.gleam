@@ -41,6 +41,7 @@ import tui/frame
 import tui/history_view
 import tui/image_drop
 import tui/inbound
+import tui/job
 import tui/layout
 import tui/model.{
   type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
@@ -60,7 +61,7 @@ import tui/queue_panel
 import tui/render
 import tui/selection
 import tui/session_channel
-import tui/session_control.{Archive, Restore}
+import tui/session_control
 import tui/session_selector
 import tui/sessions
 import tui/snapshot_view
@@ -515,9 +516,9 @@ fn update_daemon_selector(
     session_selector.Delete(session_id) ->
       session_control.begin_delete(model, session_id)
     session_selector.Archive(session_id) ->
-      session_control.begin_removal(model, session_id, Archive)
+      session_control.begin_removal(model, session_id, job.Archive)
     session_selector.Restore(session_id) ->
-      session_control.begin_removal(model, session_id, Restore)
+      session_control.begin_removal(model, session_id, job.Restore)
     session_selector.ShowCollection(collection) ->
       session_control.load_catalogue_collection(model, "", None, collection)
     session_selector.Rename(session_id, name) ->

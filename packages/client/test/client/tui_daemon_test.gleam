@@ -28,7 +28,10 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/effect
+import tui/job
 import tui/model as tui_model
+import tui/runtime
 import tui/session_selector
 import tui/workspace
 import weft
@@ -76,7 +79,8 @@ pub fn tui_daemon_catalogue_recovery_keeps_frames_live_and_cancels_hello_test() 
       assert advanced.height == 37
       assert advanced.daemon_host == model.daemon_host
       assert process.receive(incoming, 0) == Error(Nil)
-      weft.cancel(run.cancel)
+      let _running =
+        runtime.perform([effect.CancelJob(job.key(run.job))], advanced.running)
       assert process.receive(closed, 1000) == Ok(Nil)
         as "worker cancellation closes the socket even before hello"
 

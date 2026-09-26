@@ -13,6 +13,11 @@
 //// here for the connection inbox, and inside `attachment.accept` for the
 //// candidate's.
 ////
+//// It also selects every running job's replies, because an actor discards
+//// a message its selector does not match. A selected reply goes to
+//// `runtime.hold`, exactly as a reply the runtime received would, and the
+//// settling ticks of the next run take it from its slot.
+////
 //// A sample is not a server barrier: the test must wait for the condition
 //// it needs, under a real deadline, before asserting convergence.
 
@@ -28,10 +33,11 @@ import tui/connection
 import tui/frame
 import tui/inbound
 import tui/interaction
+import tui/job
+import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/session_channel
-import tui/session_control
 import tui/virtual_backend
 import tui/workspace
 import weft/actor
@@ -41,7 +47,7 @@ pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
   Inbound(message: connection.Message)
   Candidate(message: attachment.Event)
-  Catalogue(message: tui_model.ControlEvent)
+  Job(arrival: job.Arrival)
   Stop
 }
 
@@ -168,9 +174,9 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
       let run = run(interaction.accept_candidate_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
-    Catalogue(message) -> {
-      let model = runtime.stamp(model)
-      let run = run(session_control.accept_control_event(model, message), [])
+    Job(arrival) -> {
+      let model = runtime.hold(runtime.stamp(model), arrival)
+      let run = run(model, [])
       continue(Driver(..driver, model: run.final))
     }
 
@@ -187,20 +193,16 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
 }
 
 fn selector(driver: Driver) {
-  let selector =
-    process.new_selector()
-    |> process.select(driver.commands)
-    |> process.select_map(buffered.sender(driver.model.inbox), Inbound)
-    |> fn(selector) {
-      attachment.select(driver.model.candidate, selector, Candidate)
-    }
-  case driver.model.control_request {
-    None -> selector
-    Some(run) ->
-      process.select_map(selector, run.replies, fn(reply) {
-        Catalogue(tui_model.ControlEvent(run.replies, reply))
-      })
+  process.new_selector()
+  |> process.select(driver.commands)
+  |> process.select_map(buffered.sender(driver.model.inbox), Inbound)
+  |> fn(selector) {
+    attachment.select(driver.model.candidate, selector, Candidate)
   }
+  |> process.merge_selector(process.map_selector(
+    job_runner.selector(driver.model.running),
+    Job,
+  ))
 }
 
 // Reduces what the last script's runtime received and its steps left in the

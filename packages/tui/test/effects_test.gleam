@@ -22,6 +22,7 @@ import tui/attachment
 import tui/connection
 import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
+import tui/job
 import tui/model as tui_model
 import tui/protocol
 import tui/runtime
@@ -30,7 +31,6 @@ import tui/sessions
 import tui/snapshot
 import tui/workspace
 import tui_test/pushed
-import weft
 
 // A copy asks the runtime for exactly one clipboard write, and only when the
 // terminal has a clipboard to write to. The notice is set either way, which
@@ -54,13 +54,14 @@ pub fn a_mouse_copy_queues_one_clipboard_write_test() {
 // close or cancel per resource, in the order they were once performed, and
 // performs none of them. The channel's close is queued first, ahead of the
 // provisional attempt's cancel, so a recording notes the adopted lane's
-// close before the attempt's, as it always has.
+// close before the attempt's, as it always has. Each job is cancelled by
+// the key its slot held, the control job first, then the relaunch, then
+// the activity poll, and each slot is cleared in the same step so nothing
+// the cancelled jobs send afterwards is admitted.
 pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
   let host = host_on(owner)
-  let request = weft.cancel_signal()
-  let relaunch = weft.cancel_signal()
   let #(channel, _subscribe) =
     session_channel.start(
       socket,
@@ -68,21 +69,21 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       now: 0,
     )
     |> session_channel.take_outputs
+  let #(model, request) = tui_model.allocate_job(quiet_model())
+  let #(model, relaunch) = tui_model.allocate_job(model)
+  let #(model, poll) = tui_model.allocate_job(model)
   let model =
     tui_model.Model(
-      ..quiet_model(),
+      ..model,
       peer: tui_model.Attached(socket),
       channel: Some(channel),
       daemon_host: Some(host),
       control_request: Some(tui_model.ControlRequest(
-        cancel: request,
-        replies: process.new_subject(),
+        job: job.awaiting(request),
         result: None,
       )),
-      reconnect: tui_model.ReconnectAttempting(
-        cancel: relaunch,
-        replies: process.new_subject(),
-      ),
+      reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+      activity_poll: tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
     )
 
   let #(quit, effects) = tui.step(backend.KeyPress("ctrl+c"), model)
@@ -93,16 +94,20 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       effect.Channel(session_channel.Shut(socket)),
       effect.CancelSessionSwitch(sessions.Idle),
       effect.Attachment(attachment.Abandon(attachment.idle())),
-      effect.CancelTask(request),
-      effect.CancelTask(relaunch),
+      effect.CancelJob(request),
+      effect.CancelJob(relaunch),
+      effect.CancelJob(poll),
       effect.CloseControl(daemon_selection.control(host)),
     ]
+  assert quit.control_request == None
+  assert quit.reconnect == tui_model.ReconnectSpent
+  assert quit.activity_poll == tui_model.ActivityDue
   assert process.receive(owner, 0) == Error(Nil)
     as "the step closed nothing itself"
 
   // Performing them is what reaches the handles: one socket close and one
   // control close, both addressed to the handles the step was given.
-  runtime.perform(effects)
+  let _running = runtime.perform(effects, runtime.no_jobs())
   let assert Ok(_) = process.receive(owner, 100)
   let assert Ok(_) = process.receive(owner, 100)
   assert process.receive(owner, 0) == Error(Nil)
@@ -168,7 +173,7 @@ pub fn a_channelless_socket_queues_one_direct_write_test() {
   assert process.receive(owner, 0) == Error(Nil)
     as "the step wrote nothing itself"
 
-  runtime.perform(effects)
+  let _running = runtime.perform(effects, runtime.no_jobs())
   let assert Ok(_) = process.receive(owner, 100)
     as "performing the effect is what reaches the socket"
 }

@@ -26,7 +26,6 @@ import etui/geometry.{type Rect}
 import etui/span
 import etui/widgets/textarea as text_area
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -53,13 +52,14 @@ import tui/completion_summary
 import tui/composer
 import tui/connection
 import tui/context_view
-import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/focused_goal_panel
 import tui/goal_view
 import tui/herdr
 import tui/history_view
+import tui/job
+import tui/job_runner
 import tui/live_jobs
 import tui/model_selector
 import tui/note_panel
@@ -81,7 +81,6 @@ import tui/tool_activity
 import tui/transcript_anchor
 import tui/workspace
 import tui/worktree_view
-import weft
 
 /// Who a transcript line belongs to, which is the whole of its styling.
 @internal
@@ -351,52 +350,19 @@ pub type Interrupt {
   )
 }
 
-/// What a finished daemon control job produced.
+/// The picker's one daemon control job: the slot that waits for its
+/// replies, and the outcome received before its relay said it was done.
 ///
-/// Catalogue and peer requests share one job slot. The outcome identifies
-/// which requested operation completed without adding overlapping pending
-/// fields to the model.
-@internal
-pub type ControlOutcome {
-  /// One authorized page and the identity to highlight in it.
-  PageLoaded(
-    page: control_protocol.Page,
-    selected: String,
-    collection: session_selector.Collection,
-  )
-
-  /// The daemon removed this registration and its database.
-  SessionDeleted(session_id: String)
-
-  /// Acknowledged archive preserves files while removing the active row.
-  SessionArchived(session_id: String)
-
-  /// Acknowledged restoration removes the row from the archive page.
-  SessionRestored(session_id: String)
-
-  /// The daemon acknowledged a rename with its canonical catalogue row.
-  SessionRenamed(row: control_protocol.Session)
-
-  /// One session catalogue and exact peer inspection for the modal.
-  PeerWorkspaceLoaded(page: control_protocol.Page, document: json.JsonValue)
-
-  /// One more revision-fenced target-session catalogue page.
-  PeerSessionsLoaded(page: control_protocol.Page)
-
-  /// One refreshed grant document after a request or mutation.
-  PeerInspectionLoaded(document: json.JsonValue, after: Option(String))
-
-  /// A link or unlink acknowledgement whose body preserves partial results.
-  PeerOperationCompleted(document: json.JsonValue)
-}
-
-/// One relayed control job, selected by the terminal and its actor-backed driver.
+/// A control job's relay sends the outcome and then `AllDelivered`, and
+/// the outcome is applied only at `AllDelivered`, so it is kept here in
+/// between.
 @internal
 pub type ControlRequest {
   ControlRequest(
-    cancel: weft.Cancel,
-    replies: Subject(weft.Pulled(ControlOutcome, String)),
-    result: Option(Result(ControlOutcome, String)),
+    /// The job's key and the replies received for it.
+    job: job.Awaiting(job.ControlReply),
+    /// The outcome already received, applied when the relay finishes.
+    result: Option(Result(job.ControlOutcome, String)),
   )
 }
 
@@ -419,20 +385,11 @@ pub type ActivityPoll {
 
   /// One request is in flight for exactly these identities.
   ActivityAsking(
-    /// The worker's relayed outcome.
-    replies: Subject(weft.Pulled(List(control_protocol.Activity), String)),
+    /// The job's key and the replies received for it.
+    job: job.Awaiting(job.ActivityReply),
     /// The identities the request named, which `observe` needs to tell an
     /// omitted identity from one that was never asked about.
     asked: List(String),
-  )
-}
-
-/// An already selected control job message retains its original source tag.
-@internal
-pub type ControlEvent {
-  ControlEvent(
-    source: Subject(weft.Pulled(ControlOutcome, String)),
-    reply: weft.Pulled(ControlOutcome, String),
   )
 }
 
@@ -914,6 +871,14 @@ pub type Model {
     /// reducer outside `update` leaves its effects here until it calls
     /// `runtime.flush` or the next step collects them.
     outbox: List(effect.Effect),
+    /// The key the next background job is given. Keys are never reused,
+    /// so a reply tagged with one belongs to exactly one job.
+    next_job: job.Key,
+    /// The runtime's table of running jobs, by key. No reducer reads or
+    /// writes it: `runtime.perform` changes it after the step and
+    /// `runtime.receive` reads it before the next one. It is on the model
+    /// because the model is the only state the loop keeps between events.
+    running: job_runner.Running,
   )
 }
 
@@ -937,12 +902,10 @@ pub type Reconnect {
   ReconnectIdle
 
   /// One bounded relaunch is in flight; its outcome is drained by the tick.
+  /// The terminal cancels it by its key when it quits.
   ReconnectAttempting(
-    /// The signal that stops a relaunch whose outcome outlives the operator's
-    /// patience, cancelled when the terminal quits.
-    cancel: weft.Cancel,
-    /// Terminal-owned mailbox for the relayed outcome.
-    replies: Subject(weft.Pulled(daemon_selection.Host, String)),
+    /// The job's key and the replies received for it.
+    job: job.Awaiting(job.ReconnectReply),
   )
 
   /// This daemon death has had its one attempt. Nothing runs again until an
@@ -1043,6 +1006,41 @@ pub fn record_input(model: Model, event: backend.InputEvent) -> Model {
 @internal
 pub fn emit(model: Model, requested: effect.Effect) -> Model {
   Model(..model, outbox: [requested, ..model.outbox])
+}
+
+/// Allocates the next job key without starting anything.
+///
+/// `start_job` is this followed by queuing the start. A test that stands a
+/// slot in for a running job allocates its key here and admits replies to
+/// it through `runtime.hold`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(model, key) = tui_model.allocate_job(model)
+/// ```
+@internal
+pub fn allocate_job(model: Model) -> #(Model, job.Key) {
+  let #(key, next_job) = job.allocate(model.next_job)
+  #(Model(..model, next_job:), key)
+}
+
+/// Allocates a key and queues the start of the job `spec` describes under
+/// it, returning the key for the slot that will wait for its replies.
+///
+/// The step starts nothing: the runtime starts the job after the step,
+/// when it performs the `StartJob` this queues.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(model, key) = tui_model.start_job(model, job.Reconnect(options))
+/// let model = Model(..model, reconnect: ReconnectAttempting(job.awaiting(key)))
+/// ```
+@internal
+pub fn start_job(model: Model, spec: job.Spec) -> #(Model, job.Key) {
+  let #(model, key) = allocate_job(model)
+  #(emit(model, effect.StartJob(key, spec)), key)
 }
 
 /// Marks the cached frame stale so the next paint redraws it.

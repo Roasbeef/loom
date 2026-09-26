@@ -22,7 +22,10 @@ import tui/daemon/protocol as control
 import tui/daemon/selection
 import tui/inbound
 import tui/interaction
+import tui/job
+import tui/job_runner
 import tui/model as tui_model
+import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/session_selector
@@ -627,18 +630,23 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   // Drive the shipped loss transition without first waiting for VM exit.
   // The bounded observation must bridge that interval and publish one new
   // host. The actual successful event then starts the normal adoption path.
+  // The flush performs the relaunch the loss queued, as the loop would
+  // after the step that saw the loss.
   let reconnecting =
     inbound.apply_channel_update(
       adopted,
       session_channel.Failed("daemon exited"),
     )
-  let assert tui_model.ReconnectAttempting(replies:, ..) =
-    reconnecting.reconnect
+    |> runtime.flush
+  let assert tui_model.ReconnectAttempting(_) = reconnecting.reconnect
     as "the attached local terminal owns one reconnect attempt"
-  let assert Ok(reconnected) = process.receive(replies, 40_000)
+  let assert Ok(reconnected) =
+    process.selector_receive(job_runner.selector(reconnecting.running), 40_000)
     as "the bounded relaunch produces an outcome"
-  let assert weft.PulledOutcome(weft.Completed(value: restarted_host, ..)) =
-    reconnected
+  let assert job.ReconnectArrived(
+    reply: weft.PulledOutcome(weft.Completed(value: restarted_host, ..)),
+    ..,
+  ) = reconnected
     as "native retirement permits a replacement daemon"
   let assert Ok(Some(record)) = endpoint.load(first.paths)
     as "the replacement publishes its own native fence and epoch"
@@ -660,10 +668,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert saved.session_id == target.expected.session
   assert saved.status == control.Saved
   let reattaching =
-    session_control.accept_reconnect_event(
-      reconnecting,
-      session_control.ReconnectEvent(replies, reconnected),
-    )
+    runtime.hold(reconnecting, reconnected)
+    |> session_control.drain_reconnect
   let reopened = wait_for_attachment(reattaching.candidate, 20_000)
   let assert attachment.Adopted(
     reopened_channel,

@@ -56,6 +56,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/history_view
+import tui/job
 import tui/layout
 import tui/model.{
   type Interrupt, type Line, type Model, type Peer, type Reconnect,
@@ -86,7 +87,6 @@ import tui/todo_panel
 import tui/transcript_lines
 import tui/workspace
 import tui/worktree_view
-import weft
 
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
@@ -123,11 +123,6 @@ fn build_mismatch_lines(build: Option(control_protocol.Build)) -> List(Line) {
     }
   }
 }
-
-// The bounded relaunch budget. It is the same ninety seconds the initial
-// local launch is allowed, because the work is the same: a launch lock, a
-// daemon start, and two authenticated probes.
-const reconnect_timeout_ms = 90_000
 
 /// Decides whether one unexpected daemon death earns a reconnect.
 ///
@@ -191,28 +186,13 @@ fn begin_reconnect(model: Model) -> Model {
   case reconnect_decision(model) {
     ReconnectRefused(_) -> model
     ReconnectWanted(session, options) -> {
-      let cancel = weft.cancel_signal()
-      let replies = process.new_subject()
-
-      // The relaunch runs in its own bounded task because it blocks: it may
-      // take the launch lock, start a daemon, and authenticate two sockets.
-      // Nothing but the two scalars it needs is captured, because weft copies
-      // a fun's environment into the worker — and a closure over a model
-      // field would copy the transcript, the row caches and the cached frame
-      // with it.
-      let owner = process.self()
-      let _relay =
-        weft.new([
-          fn() {
-            daemon_selection.relaunch(options, owner, reconnect_timeout_ms)
-          },
-        ])
-        |> weft.deadline(reconnect_timeout_ms)
-        |> weft.cancel_with(cancel)
-        |> weft.start_relayed(replies)
+      // The relaunch runs as a job because it blocks: it may take the
+      // launch lock, start a daemon, and authenticate two sockets. The
+      // spec carries the launch options and nothing else of the model.
+      let #(model, key) = tui_model.start_job(model, job.Reconnect(options))
       Model(
         ..model,
-        reconnect: ReconnectAttempting(cancel, replies),
+        reconnect: ReconnectAttempting(job.awaiting(key)),
         notice: "reconnecting to session " <> session,
       )
       |> tui_model.invalidate_frame

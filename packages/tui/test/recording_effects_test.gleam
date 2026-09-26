@@ -77,7 +77,7 @@ pub fn a_prompt_queues_its_input_then_its_request_then_its_frame_test() {
   assert drain(sink) == [] as "the step itself recorded nothing"
 
   // Performing them is what writes the lines, in the same order.
-  runtime.perform(effects)
+  let _running = runtime.perform(effects, runtime.no_jobs())
   let assert [recording.Key("enter"), ..rest] = drain(sink)
     as "the key is recorded first"
   let assert [recording.Attempt(attempt.Issued(_, request))] =
@@ -202,7 +202,7 @@ pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
 
   // The abandon cancels the waiting worker and records the attempt's close.
   let _ = drain(sink)
-  runtime.perform(effects)
+  let _running = runtime.perform(effects, runtime.no_jobs())
   assert list.contains(
     drain(sink),
     recording.Attempt(attempt.Closed(attempt.Id(2))),

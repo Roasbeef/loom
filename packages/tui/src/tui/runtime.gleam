@@ -29,14 +29,20 @@
 //// instead of reading a mailbox. What arrives during the step waits for
 //// the next one.
 ////
-//// This module is the only impure half of the step. Nothing in the reducer
-//// imports it.
+//// And it runs the background jobs the reducers ask for. `perform` starts
+//// and cancels them in `Model.running`, a table no reducer reads, and
+//// `settle` stores the table back on the model after the step. `receive`
+//// reads every running job's replies and `hold` admits each into the slot
+//// that names its key, or drops it when no slot does.
+////
+//// This module and `tui/job_runner`, which it calls, are the impure half
+//// of the step. Nothing in the reducer imports either.
 
 import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as host_bootstrap
 import tui/attachment
@@ -45,11 +51,16 @@ import tui/connection
 import tui/daemon
 import tui/effect.{type Effect}
 import tui/herdr
-import tui/model.{type Model, type Stamp, Model, Stamp} as tui_model
+import tui/job
+import tui/job_runner
+import tui/model.{
+  type Model, type Stamp, ActivityAsking, ActivityDue, ActivityResting,
+  ControlRequest, Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
+  Stamp,
+} as tui_model
 import tui/recording
 import tui/session_channel
 import tui/sessions
-import weft
 
 /// Reads the clocks for one event and writes them onto the model.
 ///
@@ -80,6 +91,11 @@ pub fn stamp(model: Model) -> Model {
 /// the step did not drain keeps what it holds and receives nothing more, so
 /// no buffer grows past its bound.
 ///
+/// Every running job's replies are received in full and passed to `hold`.
+/// A job's relay sends at most two messages, so that is bounded too, and
+/// reading a job's messages even after its slot was cleared is what keeps
+/// them from staying in the mailbox.
+///
 /// `tui.update` calls this once per event, after `stamp`. A caller that
 /// runs `tui.step` itself and expects it to see traffic calls it first.
 ///
@@ -89,12 +105,100 @@ pub fn stamp(model: Model) -> Model {
 /// let model = runtime.receive(runtime.stamp(model))
 /// ```
 pub fn receive(model: Model) -> Model {
-  Model(
-    ..model,
-    inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
-    replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
-    candidate: attachment.top_up(model.candidate),
-  )
+  let model =
+    Model(
+      ..model,
+      inbox: buffered.top_up(model.inbox, up_to: tui_model.connection_batch),
+      replay_inbox: buffered.top_up(model.replay_inbox, up_to: 1),
+      candidate: attachment.top_up(model.candidate),
+    )
+  list.fold(job_runner.receive(model.running), model, hold)
+}
+
+/// Admits one job reply into the slot that waits for it, and forgets the
+/// job once the reply is the last its relay sends.
+///
+/// A reply goes to the slot of its kind only when that slot names the
+/// reply's key. Otherwise it belongs to a job no reducer waits for any
+/// more, one that was cancelled or whose slot moved on, and it is dropped
+/// here; that comparison of keys is the only fence a job reply passes.
+/// `receive` calls this for everything it read. It reads no mailbox, so a
+/// test calls it to hand a step a reply without running a job, and a test
+/// driver calls it with a reply its actor selected.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = runtime.hold(model, job.ControlArrived(key, weft.AllDelivered))
+/// ```
+pub fn hold(model: Model, arrival: job.Arrival) -> Model {
+  let model =
+    Model(..model, running: job_runner.observed(model.running, arrival))
+  case arrival {
+    job.ControlArrived(key:, reply:) -> hold_control(model, key, reply)
+    job.ReconnectArrived(key:, reply:) -> hold_reconnect(model, key, reply)
+    job.ActivityArrived(key:, reply:) -> hold_activity(model, key, reply)
+  }
+}
+
+fn hold_control(model: Model, key: job.Key, reply: job.ControlReply) -> Model {
+  case model.control_request {
+    None -> model
+    Some(run) ->
+      case job.admit(run.job, key, reply) {
+        Ok(awaiting) ->
+          Model(
+            ..model,
+            control_request: Some(ControlRequest(..run, job: awaiting)),
+          )
+        Error(Nil) -> model
+      }
+  }
+}
+
+fn hold_reconnect(
+  model: Model,
+  key: job.Key,
+  reply: job.ReconnectReply,
+) -> Model {
+  case model.reconnect {
+    ReconnectIdle | ReconnectSpent -> model
+    ReconnectAttempting(job: awaiting) ->
+      case job.admit(awaiting, key, reply) {
+        Ok(awaiting) -> Model(..model, reconnect: ReconnectAttempting(awaiting))
+        Error(Nil) -> model
+      }
+  }
+}
+
+fn hold_activity(
+  model: Model,
+  key: job.Key,
+  reply: job.ActivityReply,
+) -> Model {
+  case model.activity_poll {
+    ActivityDue | ActivityResting(..) -> model
+    ActivityAsking(job: awaiting, asked:) ->
+      case job.admit(awaiting, key, reply) {
+        Ok(awaiting) ->
+          Model(..model, activity_poll: ActivityAsking(awaiting, asked))
+        Error(Nil) -> model
+      }
+  }
+}
+
+/// The job table of a model that has started nothing.
+///
+/// A model is built with this, so the only module that names the job
+/// runner is the runtime.
+///
+/// ## Examples
+///
+/// ```gleam
+/// Model(..model, running: runtime.no_jobs())
+/// ```
+pub fn no_jobs() -> job_runner.Running {
+  job_runner.new()
 }
 
 /// Reads the presentation and transport clocks it is given and the host's
@@ -147,15 +251,38 @@ pub fn take(model: Model) -> #(Model, List(Effect)) {
   #(Model(..model, outbox: []), list.reverse(model.outbox))
 }
 
-/// Performs effects in order.
+/// Performs effects in order, starting and cancelling jobs in `running`,
+/// and returns the table as the effects left it.
+///
+/// The table is threaded through in the order the step decided, so a job
+/// started and cancelled in the same step is started first.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// runtime.perform(effects)
+/// let running = runtime.perform(effects, model.running)
 /// ```
-pub fn perform(effects: List(Effect)) -> Nil {
-  list.each(effects, perform_one)
+pub fn perform(
+  effects: List(Effect),
+  running: job_runner.Running,
+) -> job_runner.Running {
+  list.fold(effects, running, perform_one)
+}
+
+/// Performs what a step returned and stores the job table on its model.
+///
+/// `tui.update` is `settle(step(event, receive(stamp(model))))`. The step
+/// never touches `Model.running`, so the table `perform` starts from is the
+/// one the previous event left.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = runtime.settle(tui.step(event, model))
+/// ```
+pub fn settle(stepped: #(Model, List(Effect))) -> Model {
+  let #(model, effects) = stepped
+  Model(..model, running: perform(effects, model.running))
 }
 
 /// Takes and performs everything a model has queued.
@@ -171,19 +298,42 @@ pub fn perform(effects: List(Effect)) -> Nil {
 /// let model = runtime.flush(inbound.accept_connection_message(model, message))
 /// ```
 pub fn flush(model: Model) -> Model {
-  let #(model, effects) = take(model)
-  perform(effects)
-  model
+  settle(take(model))
 }
 
-fn perform_one(requested: Effect) -> Nil {
+// Starts and cancels change the job table; every other effect is one call
+// that leaves it as it was.
+fn perform_one(
+  running: job_runner.Running,
+  requested: Effect,
+) -> job_runner.Running {
+  case requested {
+    effect.StartJob(key, spec) -> job_runner.start(running, key, spec)
+    effect.CancelJob(key) -> job_runner.cancel(running, key)
+    effect.Channel(_)
+    | effect.Attachment(_)
+    | effect.Send(..)
+    | effect.CloseSocket(_)
+    | effect.CloseControl(_)
+    | effect.CancelSessionSwitch(_)
+    | effect.Discard(_)
+    | effect.Record(..)
+    | effect.WriteClipboard(_)
+    | effect.AnnounceHerdr(..)
+    | effect.ReportHerdr(..) -> {
+      perform_io(requested)
+      running
+    }
+  }
+}
+
+fn perform_io(requested: Effect) -> Nil {
   case requested {
     effect.Channel(output) -> session_channel.perform(output)
     effect.Attachment(output) -> attachment.perform(output)
     effect.Send(socket, frame) -> connection.send(socket, frame)
     effect.CloseSocket(socket) -> connection.close(socket)
     effect.CloseControl(control) -> daemon.close(control)
-    effect.CancelTask(signal) -> weft.cancel(signal)
     effect.CancelSessionSwitch(status) -> sessions.cancel(status)
     effect.Discard(inbox) -> sessions.discard(inbox)
     effect.Record(recorder, event) -> recording.append(recorder, event)
@@ -195,5 +345,8 @@ fn perform_one(requested: Effect) -> Nil {
       herdr.announce(Some(reporter), session)
     effect.ReportHerdr(reporter, state, session, message) ->
       herdr.report(Some(reporter), state, session, message)
+
+    // `perform_one` handles these two before it gets here.
+    effect.StartJob(..) | effect.CancelJob(_) -> Nil
   }
 }

@@ -71,6 +71,7 @@ import tui/history_view
 import tui/inbound
 import tui/interaction
 import tui/internal/ffi_terminal
+import tui/job
 import tui/layout
 import tui/model.{
   type Model, Assistant, DiffAutomatic, Disconnected, HoldGoalReport, Line,
@@ -599,6 +600,8 @@ pub fn new_model_with_clock(
     herdr_reporter: None,
     herdr_published: None,
     outbox: [],
+    next_job: job.first(),
+    running: runtime.no_jobs(),
     selection: None,
     selection_frame: None,
     selection_gutters: [],
@@ -1300,10 +1303,15 @@ pub fn connect_remote(
     Error(reason) -> tui_model.append_error(base, reason)
     Ok(host) -> {
       let model = Model(..base, daemon_host: Some(host))
+
+      // The first request starts before the loop does, as it did when the
+      // reducer started jobs itself: the flush performs the `StartJob` the
+      // catalogue load queued rather than leaving it for the first event.
       case session {
         "" -> session_control.load_catalogue(model, "", None)
         id -> session_control.begin_open(model, id)
       }
+      |> runtime.flush
     }
   }
 }
@@ -1357,10 +1365,14 @@ fn attach_daemon(
           daemon_host: Some(host),
           transcript: inbound.daemon_build_lines(Some(host)),
         )
+
+      // Flushed for the reason `connect_remote` gives: the first request
+      // starts at launch rather than at the loop's first event.
       case selected {
         "" -> session_control.load_catalogue(model, "", None)
         id -> session_control.begin_open(model, id)
       }
+      |> runtime.flush
     }
   }
 }
@@ -1369,9 +1381,10 @@ fn attach_daemon(
 ///
 /// This is the function etui and the virtual backend call: `runtime.stamp`,
 /// which reads the clocks once for this event, `runtime.receive`, which
-/// moves the waiting traffic into the model's inboxes, then `step`, then
-/// `runtime.perform` on what the step returned. Everything that inspects a
-/// transition without acting on it calls `step` instead.
+/// moves the waiting traffic and job replies into the model, then `step`,
+/// then `runtime.settle`, which performs what the step returned and stores
+/// the job table it leaves. Everything that inspects a transition without
+/// acting on it calls `step` instead.
 ///
 /// ## Examples
 ///
@@ -1380,9 +1393,7 @@ fn attach_daemon(
 /// ```
 @internal
 pub fn update(event: backend.InputEvent, model: Model) -> Model {
-  let #(model, effects) = step(event, runtime.receive(runtime.stamp(model)))
-  runtime.perform(effects)
-  model
+  runtime.settle(step(event, runtime.receive(runtime.stamp(model))))
 }
 
 /// Applies one terminal event and returns the effects it decided on,
@@ -1393,14 +1404,17 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// from a caller that drove a reducer outside the loop. The returned model
 /// has an empty outbox. Recording appends are effects like the rest: the
 /// input's own line comes first in the list, and every line it caused
-/// follows in the order it was decided. Job starts and file reads still
-/// happen during the step.
+/// follows in the order it was decided. The control, reconnect and
+/// activity jobs are started and cancelled by `StartJob` and `CancelJob`
+/// effects; the session switch and attachment workers, and file reads,
+/// still happen during the step.
 ///
-/// The step reads the connection, replay and attachment inboxes only
-/// through what `runtime.receive` put in them, so a test that calls `step`
-/// directly and wants it to see queued traffic receives first. The session
-/// switch, reconnect, control and activity replies are still read from
-/// their mailboxes during the step.
+/// The step reads the connection, replay and attachment inboxes, and the
+/// control, reconnect and activity replies, only through what
+/// `runtime.receive` put in the model, so a test that calls `step` directly
+/// and wants it to see queued traffic receives first, or hands it a job
+/// reply with `runtime.hold`. The session switch is still pulled from its
+/// run during the step.
 ///
 /// The step reads no clock. It applies the event at `model.stamp`, which
 /// `update` writes before calling it; a test calling `step` directly gets
