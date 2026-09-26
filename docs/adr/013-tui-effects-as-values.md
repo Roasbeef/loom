@@ -203,8 +203,8 @@ The first slice of phase 2 takes clock reads out of the step. Nothing above
 is changed by it; this records how the step now gets the time.
 
 `tui.update` calls `runtime.stamp` before `step`. It reads the presentation
-clock (`Model.monotonic_time_ms`), the host's monotonic clock and the wall
-clock once each and stores them on the model as `Model.stamp`, and every
+clock (`Model.monotonic_time_ms`), the transport clock
+(`Model.transport_time_ms`) and the wall clock once each and stores them on the model as `Model.stamp`, and every
 reducer that read a clock reads the stamp instead. A step therefore reads no
 clock, and every reducer in one step sees the same instant. The OS and BEAM
 process identity in a session creation key is read once, when the model is
@@ -216,11 +216,17 @@ modules measured the same before and after.
 
 `tui/session_channel` no longer stores a clock. Every transition that sets
 or checks a deadline or the idle refresh takes `now` as a parameter. The
-terminal passes the stamp's host monotonic reading, which is the clock the
-lane used before, rather than the presentation clock, because a test driver
-fixes the presentation clock to pin frames while its live socket still needs
-real deadlines. A replay lane's time starts at zero and `tui/attempt_replay`
-passes zero, which is what its stored clock returned.
+terminal passes the stamp's transport reading rather than the presentation
+clock, because a test driver fixes the presentation clock to pin frames
+while its live socket still needs real deadlines. The transport clock is
+the host's monotonic clock in the shipped client, which is the clock the
+lane used before, and it is injected on the model like the presentation
+clock. That matters for tests: a replay lane's time starts at zero, and a
+fixture that puts one on a model freezes the transport clock at zero too.
+Read from the host instead, the lane's refresh would stay quiet only
+because ERTS starts its monotonic clock at a large negative value, which
+is not something a test should depend on. `tui/attempt_replay` passes zero,
+which is what its stored clock returned.
 
 Two cases are the caller's to handle. A test that calls `step` directly runs
 at whatever stamp the model carries, which for a fresh model is the reading

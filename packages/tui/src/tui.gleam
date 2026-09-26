@@ -414,7 +414,8 @@ pub fn new_model_with_clock(
   monotonic_time_ms: fn() -> Int,
 ) -> Model {
   let strands = interaction.demo_strands()
-  let stamp = runtime.read_stamp(monotonic_time_ms)
+  let stamp =
+    runtime.read_stamp(monotonic_time_ms, host_bootstrap.monotonic_time_ms)
   Model(
     quit: False,
     width: 80,
@@ -567,6 +568,7 @@ pub fn new_model_with_clock(
     frame_cache: None,
     frame_debt: pacing.FrameSettled,
     monotonic_time_ms:,
+    transport_time_ms: host_bootstrap.monotonic_time_ms,
     stamp:,
     terminal: runtime.terminal_identity(),
     last_frame_ms: stamp.now_ms,

@@ -1388,7 +1388,7 @@ untouched.
 - **Presentation uses one caller-owned clock, read once per event.**
   `new_model` supplies the host's monotonic clock; `new_model_with_clock`
   lets a test supply its own. `tui.update` calls `runtime.stamp` before
-  `step`, which reads `Model.monotonic_time_ms`, the host's monotonic clock
+  `step`, which reads `Model.monotonic_time_ms`, `Model.transport_time_ms`
   and the wall clock once each into `Model.stamp`, and the step reads no
   clock: frame pacing, generation throughput, activity elapsed time, the
   cache outlook, the jobs and activity-poll ages and the strip all read
@@ -1399,7 +1399,10 @@ untouched.
   `tui.gleam`, for the inliner reason above. The two monotonic readings are
   separate because a test may fix the presentation clock to pin frames
   while its live socket still needs real deadlines; in the shipped client
-  they read the same clock. A test that calls `step` directly runs at
+  both are the host's monotonic clock. The transport clock is injected
+  like the presentation clock: a fixture that puts a socketless replay lane
+  on a model freezes it at zero, so that lane's refresh and deadline cannot
+  depend on where the host's arbitrary monotonic origin sits. A test that calls `step` directly runs at
   whatever stamp the model carries (the creation-time reading for a fresh
   model) and sets `stamp` to choose another, and a driver that runs a
   reducer outside `update` calls `runtime.stamp` first. Daemon bootstrap

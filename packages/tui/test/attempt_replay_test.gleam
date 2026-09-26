@@ -970,6 +970,9 @@ fn waiting_model(source) {
     tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
       peer: tui_model.Replaying,
+      // A socketless replay lane keeps the frozen transport clock its
+      // timers were written against, whatever the host's monotonic origin.
+      transport_time_ms: fn() { 0 },
       channel: Some(channel),
       pending_submission: Some(source),
       input: textarea.state_from_string("visible draft"),
@@ -1176,6 +1179,9 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
       ..tui.new_model(connection.new_inbox(), workspace.Context("A", None)),
       session: "A",
       peer: tui_model.Replaying,
+      // A socketless replay lane keeps the frozen transport clock its
+      // timers were written against, whatever the host's monotonic origin.
+      transport_time_ms: fn() { 0 },
       channel: Some(sent),
     )
   let #(replacement, updates) =
@@ -1651,10 +1657,13 @@ fn split_history_data(data, collected) {
 pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
   let #(busy, remaining) = waiting_capture()
   let base =
-    tui.new_model_with_clock(
-      connection.new_inbox(),
-      workspace.Context("/work", None),
-      fn() { 0 },
+    tui_model.Model(
+      ..tui.new_model_with_clock(
+        connection.new_inbox(),
+        workspace.Context("/work", None),
+        fn() { 0 },
+      ),
+      transport_time_ms: fn() { 0 },
     )
   let empty = history_view.empty()
   let history =

@@ -365,3 +365,26 @@ pub fn a_step_ticks_the_lane_at_the_stamped_transport_reading_test() {
   assert session_channel.in_flight(lane)
     as "the step's lane tick runs at the stamp, not at a clock it reads"
 }
+
+// The transport clock is the model's, not the host's. A fixture that holds
+// a socketless replay lane freezes it, so the lane's refresh and deadline
+// cannot depend on where the host's arbitrary monotonic origin sits; the
+// same fixture read at a large positive transport time refreshes at once.
+// If `runtime.stamp` read the host clock instead, the two runs would agree
+// with each other, whatever the host said.
+pub fn update_reads_the_model_transport_clock_test() {
+  let frozen = pushed.attached()
+  let idle =
+    list.fold([1, 2, 3], frozen, fn(model, _) {
+      tui.update(backend.Tick, model)
+    })
+  let assert Some(lane) = idle.channel
+  assert !session_channel.in_flight(lane)
+    as "a frozen transport clock keeps the replay lane idle"
+
+  let late = tui_model.Model(..frozen, transport_time_ms: fn() { 10_000_000 })
+  let refreshed = tui.update(backend.Tick, late)
+  let assert Some(lane) = refreshed.channel
+  assert session_channel.in_flight(lane)
+    as "the lane is ticked at the injected transport clock"
+}

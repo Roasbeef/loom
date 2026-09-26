@@ -268,6 +268,9 @@ pub fn attached() -> tui_model.Model {
   tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
     peer: tui_model.Replaying,
+    // A socketless replay lane keeps the frozen transport clock its
+    // timers were written against, whatever the host's monotonic origin.
+    transport_time_ms: fn() { 0 },
     channel: Some(ready),
   )
 }

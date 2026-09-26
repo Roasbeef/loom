@@ -841,6 +841,13 @@ pub type Model {
     /// Scripts inject this clock without changing transport deadlines. Only
     /// `runtime.stamp` calls it, once per event, before the step.
     monotonic_time_ms: fn() -> Int,
+    /// The transport clock the session channel's deadlines and refresh are
+    /// measured on. It is the host's monotonic clock in a live terminal and
+    /// a test driver holding a live socket; a fixture that puts a socketless
+    /// replay lane on a model freezes it, so the lane's timers cannot depend
+    /// on where the host's arbitrary monotonic origin happens to sit. Only
+    /// `runtime.stamp` calls it.
+    transport_time_ms: fn() -> Int,
     /// The clock readings the current event is applied at. Every reducer
     /// that needs the time reads it here, so a step reads no clock.
     stamp: Stamp,

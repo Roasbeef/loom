@@ -116,6 +116,9 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
     tui_model.Model(
       ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
       peer: tui_model.Replaying,
+      // A socketless replay lane keeps the frozen transport clock its
+      // timers were written against, whatever the host's monotonic origin.
+      transport_time_ms: fn() { 0 },
       channel: Some(channel),
       input: textarea.state_from_string("ordinary composer draft"),
       attachments: [composer.Attachment("retained pasted context", 10)],

@@ -55,21 +55,28 @@ import weft
 /// let model = runtime.stamp(model)
 /// ```
 pub fn stamp(model: Model) -> Model {
-  Model(..model, stamp: read_stamp(model.monotonic_time_ms))
+  Model(
+    ..model,
+    stamp: read_stamp(model.monotonic_time_ms, model.transport_time_ms),
+  )
 }
 
-/// Reads the presentation clock it is given and the host's transport and
-/// wall clocks, once each.
+/// Reads the presentation and transport clocks it is given and the host's
+/// wall clock, once each.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let stamp = runtime.read_stamp(host_bootstrap.monotonic_time_ms)
+/// let stamp =
+///   runtime.read_stamp(
+///     host_bootstrap.monotonic_time_ms,
+///     host_bootstrap.monotonic_time_ms,
+///   )
 /// ```
-pub fn read_stamp(presentation: fn() -> Int) -> Stamp {
+pub fn read_stamp(presentation: fn() -> Int, transport: fn() -> Int) -> Stamp {
   Stamp(
     now_ms: presentation(),
-    transport_ms: host_bootstrap.monotonic_time_ms(),
+    transport_ms: transport(),
     wall_ms: host_bootstrap.system_time_ms(),
   )
 }
