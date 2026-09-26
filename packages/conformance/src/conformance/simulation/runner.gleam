@@ -1020,8 +1020,9 @@ fn post_commit(
   // Closed on every path: the runner treats an open seam as a commit
   // whose schedule has not had its turn yet, so a seam that never
   // closed would park the run rather than end it. The one path that
-  // does not reach here is the crash itself, which kills this process
-  // — and that is recorded separately.
+  // does not reach here is a crash, which kills this process; the
+  // control actor names the seam by its writer, so the writer's death
+  // is what releases it.
   control.seam_done(ctl)
 }
 

@@ -52,10 +52,10 @@ pub opaque type Message {
   Bump(key: String, reply: Subject(Int))
   Read(key: String, reply: Subject(Int))
   Once(key: String, reply: Subject(Bool))
-  CommitStarted(reply: Subject(Nil))
-  CommitSucceeded(reply: Subject(Int))
-  CommitFailed(reply: Subject(Nil))
-  NoteCommit(reply: Subject(Int))
+  CommitStarted(committer: Pid, reply: Subject(Nil))
+  CommitSucceeded(committer: Pid, reply: Subject(Int))
+  CommitFailed(committer: Pid, reply: Subject(Nil))
+  NoteCommit(committer: Pid, reply: Subject(Int))
   SeamDone
   SeamQuiet(reply: Subject(Bool))
   Arm(reply: Subject(Nil))
@@ -82,18 +82,36 @@ type State {
   State(
     counters: Dict(String, Int),
     claimed: Set(String),
-    commits_in_flight: Int,
+    accounting: Accounting,
     commits: Int,
     events: Int,
     runtime: Option(api.Runtime),
     armed: Bool,
-    seam_open: Bool,
+    // The process running the post-commit seam that is still open, if any.
+    // Naming the writer rather than recording a flag is what lets a writer
+    // killed inside its seam release it: nothing else would ever close it.
+    seam: Option(Pid),
     crashed: Bool,
     notes: List(String),
     waits: List(String),
     marks: Set(String),
     pending_interventions: List(#(Trigger, Subject(Nil))),
   )
+}
+
+// Commit accounting fences, each held by the process whose commit opened it.
+//
+// A crash fault kills the writer wherever it happens to be, including between
+// opening a fence and recording the commit it guards (issue #335). Counting
+// fences per committer lets the answer to `seam_quiet` ignore every fence
+// whose owner is dead, so a killed writer cannot hold the run open forever and
+// no message has to race the kill to release it.
+type Accounting {
+  Fenced(in_flight: Dict(Pid, Int))
+
+  // A process closed a fence it had not opened. That is a harness bug, so
+  // the run is kept from ever reading as quiet and a note names it.
+  Poisoned
 }
 
 /// A running control actor.
@@ -115,12 +133,12 @@ pub fn start() -> Control {
       State(
         counters: dict.new(),
         claimed: set.new(),
-        commits_in_flight: 0,
+        accounting: Fenced(in_flight: dict.new()),
         commits: 0,
         events: 0,
         runtime: None,
         armed: False,
-        seam_open: False,
+        seam: None,
         crashed: False,
         notes: [],
         waits: [],
@@ -164,41 +182,49 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
         }
       }
-    CommitStarted(reply:) -> {
-      let next = case state.commits_in_flight < 0 {
-        True -> state
-        False -> State(..state, commits_in_flight: state.commits_in_flight + 1)
+    CommitStarted(committer:, reply:) -> {
+      let next = case state.accounting {
+        Poisoned -> state
+        Fenced(in_flight:) ->
+          State(
+            ..state,
+            accounting: Fenced(in_flight: dict.insert(
+              in_flight,
+              committer,
+              fences_held(in_flight, committer) + 1,
+            )),
+          )
       }
       process.send(reply, Nil)
       actor.continue(next)
     }
-    CommitSucceeded(reply:) -> {
+    CommitSucceeded(committer:, reply:) -> {
       let commits = state.commits + 1
-      let next = case state.commits_in_flight > 0 {
-        True ->
+      let next = case release_fence(state.accounting, committer) {
+        Ok(accounting) ->
           State(
             ..state,
-            commits_in_flight: state.commits_in_flight - 1,
+            accounting:,
             commits:,
             events: state.events + 1,
             // Hand the accounting fence directly to the writer's
             // post-commit seam. No observer can see both as closed.
-            seam_open: state.armed,
+            seam: seam_for(state, committer),
           )
-        False -> poison_accounting(state)
+        Error(Nil) -> poison_accounting(state)
       }
       process.send(reply, commits)
       actor.continue(next)
     }
-    CommitFailed(reply:) -> {
-      let next = case state.commits_in_flight > 0 {
-        True -> State(..state, commits_in_flight: state.commits_in_flight - 1)
-        False -> poison_accounting(state)
+    CommitFailed(committer:, reply:) -> {
+      let next = case release_fence(state.accounting, committer) {
+        Ok(accounting) -> State(..state, accounting:)
+        Error(Nil) -> poison_accounting(state)
       }
       process.send(reply, Nil)
       actor.continue(next)
     }
-    NoteCommit(reply:) -> {
+    NoteCommit(committer:, reply:) -> {
       let commits = state.commits + 1
       process.send(reply, commits)
       actor.continue(
@@ -209,13 +235,21 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           // The writer runs its post-commit seam between applying this
           // commit and replying for it. Until that seam finishes, a
           // schedule aimed at this commit has not had its chance.
-          seam_open: state.armed,
+          seam: seam_for(state, committer),
         ),
       )
     }
-    SeamDone -> actor.continue(State(..state, seam_open: False))
+    SeamDone -> actor.continue(State(..state, seam: None))
+
+    // Liveness is read at the moment of asking rather than tracked. A dead
+    // committer's fence and seam can never be released by the committer, and
+    // a message of its that is still queued here names a pid that is already
+    // dead, so reading liveness now makes the late message harmless too.
     SeamQuiet(reply:) -> {
-      process.send(reply, state.commits_in_flight == 0 && !state.seam_open)
+      process.send(
+        reply,
+        accounting_quiet(state.accounting) && seam_closed(state.seam),
+      )
       actor.continue(state)
     }
     Arm(reply:) -> {
@@ -224,9 +258,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         State(
           ..state,
           armed: True,
-          commits_in_flight: 0,
+          accounting: Fenced(in_flight: dict.new()),
           commits: 0,
-          seam_open: False,
+          seam: None,
         ),
       )
     }
@@ -249,10 +283,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, state.runtime)
       actor.continue(state)
     }
-    NoteCrash ->
-      // The killed writer cannot close its seam. Close that specific seam
-      // here, while leaving later commits responsible for closing their own.
-      actor.continue(State(..state, seam_open: False, crashed: True))
+
+    // The note only records that the crash fired. It does not release the
+    // killed writer's fence or seam: an effect-started crash sends this note
+    // before its kill lands, so the writer can open a new seam in between.
+    // A dead committer's hold is released by `seam_quiet` reading liveness.
+    NoteCrash -> actor.continue(State(..state, crashed: True))
     Note(text:) -> actor.continue(State(..state, notes: [text, ..state.notes]))
     Notes(reply:) -> {
       process.send(reply, list.reverse(state.notes))
@@ -334,11 +370,62 @@ fn current(state: State, key: String) -> Int {
   }
 }
 
+fn fences_held(in_flight: Dict(Pid, Int), committer: Pid) -> Int {
+  case dict.get(in_flight, committer) {
+    Ok(count) -> count
+    Error(Nil) -> 0
+  }
+}
+
+// A committer closes only a fence it opened itself. A process with no open
+// fence is an underflow, which the caller turns into poisoned accounting.
+fn release_fence(
+  accounting: Accounting,
+  committer: Pid,
+) -> Result(Accounting, Nil) {
+  case accounting {
+    Poisoned -> Error(Nil)
+    Fenced(in_flight:) ->
+      case fences_held(in_flight, committer) {
+        0 -> Error(Nil)
+        1 -> Ok(Fenced(in_flight: dict.delete(in_flight, committer)))
+        held ->
+          Ok(Fenced(in_flight: dict.insert(in_flight, committer, held - 1)))
+      }
+  }
+}
+
+// Before the schedule is armed there is no post-commit seam a fault can
+// fire from, so a commit opens one only once the run has armed.
+fn seam_for(state: State, committer: Pid) -> Option(Pid) {
+  case state.armed {
+    True -> Some(committer)
+    False -> None
+  }
+}
+
+fn accounting_quiet(accounting: Accounting) -> Bool {
+  case accounting {
+    Poisoned -> False
+    Fenced(in_flight:) ->
+      in_flight
+      |> dict.keys
+      |> list.all(fn(committer) { !process.is_alive(committer) })
+  }
+}
+
+fn seam_closed(seam: Option(Pid)) -> Bool {
+  case seam {
+    None -> True
+    Some(writer) -> !process.is_alive(writer)
+  }
+}
+
 fn poison_accounting(state: State) -> State {
-  case state.commits_in_flight < 0 {
-    True -> state
-    False ->
-      State(..state, commits_in_flight: -1, notes: [
+  case state.accounting {
+    Poisoned -> state
+    Fenced(..) ->
+      State(..state, accounting: Poisoned, notes: [
         "commit accounting underflow",
         ..state.notes
       ])
@@ -390,6 +477,11 @@ pub fn claim(ctl: Control, key: String) -> Bool {
 /// answers. The fence prevents the runner from accepting a terminal result in
 /// the interval between that answer and the corresponding counter updates.
 ///
+/// The fence belongs to the calling process, which must be the one that later
+/// closes it. If that process dies first, as a writer killed mid-commit by a
+/// crash fault does, the fence stops counting: its bookkeeping will never
+/// arrive, and waiting for it would stall the run on a visible result.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -397,7 +489,7 @@ pub fn claim(ctl: Control, key: String) -> Bool {
 /// ```
 ///
 pub fn commit_started(ctl: Control) -> Nil {
-  process.call_forever(ctl.subject, CommitStarted)
+  process.call_forever(ctl.subject, CommitStarted(process.self(), _))
 }
 
 /// Atomically hands a successful commit's accounting fence to its seam.
@@ -413,7 +505,7 @@ pub fn commit_started(ctl: Control) -> Nil {
 /// ```
 ///
 pub fn commit_succeeded(ctl: Control) -> Int {
-  process.call_forever(ctl.subject, CommitSucceeded)
+  process.call_forever(ctl.subject, CommitSucceeded(process.self(), _))
 }
 
 /// Closes one accounting fence after the inner backend refuses a commit.
@@ -425,7 +517,7 @@ pub fn commit_succeeded(ctl: Control) -> Int {
 /// ```
 ///
 pub fn commit_failed(ctl: Control) -> Nil {
-  process.call_forever(ctl.subject, CommitFailed)
+  process.call_forever(ctl.subject, CommitFailed(process.self(), _))
 }
 
 /// Records one successful commit and returns the session-wide ordinal.
@@ -437,7 +529,7 @@ pub fn commit_failed(ctl: Control) -> Nil {
 /// ```
 ///
 pub fn note_commit(ctl: Control) -> Int {
-  process.call_forever(ctl.subject, NoteCommit)
+  process.call_forever(ctl.subject, NoteCommit(process.self(), _))
 }
 
 /// The number of commits that have landed in this session.
@@ -904,6 +996,11 @@ pub fn seam_done(ctl: Control) -> Nil {
 }
 
 /// Whether no commit accounting or post-commit seam is still running.
+///
+/// Only a live process can hold either one open. A writer killed between
+/// opening its fence and recording its commit, or inside its post-commit seam,
+/// releases what it held at the moment it dies, because it will never finish
+/// the bookkeeping the fence waits for.
 ///
 /// A commit becomes visible in the store before the writer runs the seam
 /// that a crash schedule fires from, so a runner that took the terminal

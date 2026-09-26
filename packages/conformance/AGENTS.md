@@ -406,6 +406,16 @@ them from their own test mains.
   The production terminal transaction and the exact once oracle are
   unchanged. See `docs/architecture/simulation.md`, "What this does not
   cover".
+- **A fence or seam is held by a live process, never by a flag** (#335).
+  A `CrashDuringEffect` kills the writer from another process, so the kill
+  can land between `commit_started` and `commit_succeeded`, or inside a
+  seam the writer opened after the crash note was sent. The control actor
+  keys each fence and the open seam by the committing pid, and
+  `seam_quiet` counts only holders that are alive. A dead writer's hold is
+  released by its death, with no message racing the kill, so the runner
+  cannot wait out its idle budget on a visible terminal result. The
+  bookkeeping the dead writer had not done is lost with it, as it is for
+  any crash. `note_crash` records only that the crash fired.
 - **The perf smoke asserts, it does not merely print.** `storage_suite_test`
   holds the `scan_branch` p50 to `perf_p50_ceiling_us` (15 ms) rather than
   to the 5 ms M0 target it reports against — shared CI hardware has
