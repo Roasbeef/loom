@@ -189,6 +189,9 @@ pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
   let #(failed, effects) =
     tui.step(backend.Tick, runtime.receive(runtime.stamp(model)))
   assert !attachment.busy(failed.candidate) as "premise: the attempt failed"
+
+  // The lane's own close here and the abandon's second one below are a
+  // known wart that predates recording as effects; fixing it changes this.
   assert list.filter_map(effects, attempt_traffic)
     == [
       "note started", "note issued subscribe", "write", "note received",
@@ -264,12 +267,22 @@ pub fn replaying_a_recording_queues_no_recording_effect_test() {
       peer: tui_model.Replaying,
       session: "replay",
     )
-  let #(_, effects) =
-    list.fold(recording.to_steps(moments), #(model, []), fn(acc, step) {
+  let steps = recording.to_steps(moments)
+  let #(replayed, effects) =
+    list.fold(steps, #(model, []), fn(acc, step) {
       let #(model, effects) = acc
       let #(model, decided) = replay_step(model, step)
       #(model, list.append(effects, decided))
     })
+
+  // The premises that keep the check from passing on an empty run: every
+  // recorded line was stepped without a replay error, the recorded quit was
+  // reached, and the steps did decide effects, just none that record.
+  assert list.length(steps) == list.length(moments) && steps != []
+  assert replayed.replay_error == None
+    as "premise: the replay applied every attempt event"
+  assert replayed.quit as "premise: the replay reached the recorded quit"
+  assert effects != [] as "premise: the replayed steps decided effects"
   assert list.filter(effects, records) == []
     as "a replay queues no recording line and no attempt note"
 }
