@@ -1,0 +1,10 @@
+<!-- The terminal attachment and mutation protocol model. See README.md. -->
+<Project>
+<ProjectName>TerminalAttachment</ProjectName>
+<InputFiles>
+	<PFile>./PSrc/</PFile>
+	<PFile>./PSpec/</PFile>
+	<PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>
