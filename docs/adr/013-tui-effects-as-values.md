@@ -302,8 +302,7 @@ still sent after `apply_cut`, and quit still blocks on the candidate's
 cancel.
 
 The buffers live inside the inbox values. `tui/buffered.Inbox(a)` holds the
-subject, the messages already received from it oldest first, and their
-count. `Model.inbox`, `Model.replay_inbox` and the candidate's `prepared`,
+subject and the messages already received from it, oldest first. `Model.inbox`, `Model.replay_inbox` and the candidate's `prepared`,
 `frames` and `outcomes` are `Inbox` values, and `attachment.Adopted.inbox`
 carries the frames inbox together with the frames the candidate received and
 left for the adopted lane. The protocol-model addendum above states the rule
@@ -314,7 +313,11 @@ inbox leaves the model together with everything it had received, and there
 is no second place a stale buffer could outlive it, so a stale delivery
 cannot be expressed rather than being prevented by a check. A test that
 carries the old buffer across the swap sees three commit notices reach the
-adopted lane instead of one.
+adopted lane instead of one. The other half is that `attachment.adopt`
+hands the frames inbox on with what the candidate held after its capture;
+a test that plays the worker sees both notices held past the capture
+reduced by the adopted lane, and none if the adoption starts a fresh
+inbox.
 
 A message leaves the mailbox exactly once, so whatever an inbox holds is
 older than anything still in its mailbox. Code outside the step that waits
@@ -323,10 +326,16 @@ held head first and only then waits on the mailbox. `attachment.cancel`,
 which runs as an effect, reads a `Prepared` that way, so a socket the runtime
 already received is still closed at quit. A test driver that selects on the
 mailboxes cannot see the held messages, so the client driver reduces the
-held connection messages before a selected one, and `attachment.accept`
-reduces the held frames and outcomes of its inbox before the selected one.
-A held `Prepared` is left for the next poll, since an attempt publishes only
-one. `buffered.sender` is the send side; reading from it bypasses the
+held connection messages before a selected one. `attachment.accept` uses
+`buffered.push`, which appends the selected message behind the held ones
+(its place, since it is newer than all of them), and then advances exactly
+as the poll does: frames are drained up to the capture, outcomes are settled
+in order, and a `Prepared` is taken by `prepare`. A selected frame and a
+held one therefore meet the same rule: before the capture the candidate
+reduces it, after the capture it stays in the inbox for the adopted lane. A
+frame selected once the candidate has already captured is still dropped,
+because nothing would bound what a driver held while the attempt waits for
+its worker, and the adopted lane's credited catch-up recovers it. `buffered.sender` is the send side; reading from it bypasses the
 buffer, and tests use it only to inject messages.
 
 Each top-up is bounded by what the step can consume, so nothing buffers
@@ -361,9 +370,9 @@ The survey of mailbox reads, at the commit this slice started from:
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
   key drain (`tui/interaction.gleam:1218` (`drain_connection`)) and the tick
   (`tui/tick.gleam:160` (`drain_connection`)). The attachment's reads:
-  `tui/attachment.gleam:502` (`prepare`),
-  `tui/attachment.gleam:556` (`drain`) and
-  `tui/attachment.gleam:612` (`settle`). The replay drain:
+  `tui/attachment.gleam:484` (`prepare`),
+  `tui/attachment.gleam:538` (`drain`) and
+  `tui/attachment.gleam:594` (`settle`). The replay drain:
   `tui/tick.gleam:201` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:46` (`drain_reconnect`)), the control reply
@@ -374,7 +383,7 @@ The survey of mailbox reads, at the commit this slice started from:
   started, and they move when job starts become keyed effects.
 - **Outside the step, and staying there.** The worker's acknowledgement wait
   (`tui/attachment.gleam:202` (`acknowledged`)) runs in the worker, and
-  `attachment.cancel` (`tui/attachment.gleam:776` (`buffered.receive`)) runs
+  `attachment.cancel` (`tui/attachment.gleam:758` (`buffered.receive`)) runs
   as an effect. `sessions.discard` (`tui/sessions.gleam:328`
   (`discard_up_to`)) is the `Discard` effect. The bootstrap snapshot wait
   (`tui/bootstrap.gleam:1355` (`await_snapshot`)) runs before the loop, the

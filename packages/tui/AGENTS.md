@@ -288,8 +288,9 @@ list:
 - `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
   already received from it, oldest first. `top_up` is the only read of the
   mailbox for a step, `take` is pure, `receive` is the held-first read for
-  code outside the step, and `sender` is the send side, whose direct reads
-  bypass the buffer.
+  code outside the step, `push` appends a message a reader outside the step
+  selected, and `sender` is the send side, whose direct reads bypass the
+  buffer.
 - `tui/transcript_lines`: `Line`s from durable entries, streams and tool
   calls. A new kind of transcript row starts in `entry_lines`,
   `message_lines`, `assistant_block_lines`, `record_lines`,
@@ -1503,11 +1504,11 @@ untouched.
   inside the inbox value, so the adoption swap is one assignment and the
   old socket's held messages leave the model with it; that is the rule the
   terminal-attachment P model checks as S2. Anything that reads an inbox
-  outside the step goes through `buffered.receive`, which returns held
-  messages first: `attachment.cancel` for a `Prepared` at quit,
-  `attachment.accept` for the held frames and outcomes before a selected
-  one, and the client test driver, which reduces held connection messages
-  before a selected one. A test that calls `step` directly and wants it to
+  outside the step keeps held messages first: `attachment.cancel` reads a
+  `Prepared` at quit through `buffered.receive`, `attachment.accept`
+  appends a selected message behind the held ones with `buffered.push`
+  and then advances as the poll does, and the client test driver reduces
+  held connection messages before a selected one. A test that calls `step` directly and wants it to
   see queued traffic calls `runtime.receive` first, and a test injects
   traffic through `buffered.sender`. The session switch, reconnect, control
   and activity replies are still read inside the step, for later slices of
