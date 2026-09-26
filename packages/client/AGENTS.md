@@ -1757,7 +1757,12 @@ catalogue without opening runtimes. Explicit admission invokes
   the jobs it just declared lost, never from the session-stop drain. An
   owner's kill, an operation abort and a session stop are silent. A
   `Beat` tick every minute samples owners of live jobs for the idle
-  heartbeat under `JobsPolicy.heartbeat_ms` (`[jobs].heartbeat_s`).
+  heartbeat under `JobsPolicy.heartbeat_ms` (`[jobs].heartbeat_s`). Only
+  a job whose `Request.idle_wake` is `tools/job.WakeWhenIdle` counts, and
+  the listing names only those jobs: the heartbeat is opt-in per job, via
+  `bash`'s `heartbeat` argument, so a passive watcher never wakes its
+  owner. The choice is held on the actor's in-memory `Held` rather than
+  the durable record, since no job is live across a restart.
 - `client/jobseam.{Wiring, Door, max_wait_ms, ask_timeout_ms,
   start_margin_ms, first_slice_ms, max_slice_ms, door, none, real_rest}`
   — the host side of the model-facing jobs door, mirroring

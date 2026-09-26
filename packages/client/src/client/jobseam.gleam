@@ -77,6 +77,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/option.{type Option}
 import gleam/result
+import tools/job.{type IdleWake}
 import weft/poll
 import weft/registry as address
 
@@ -160,7 +161,8 @@ pub type Door {
     /// The caller's strand, the operation the job clears under, the
     /// command, the wall it asked for in milliseconds — `None` for the
     /// default hour — the invocation's captured policy when available, and
-    /// who is told when it ends. Returns once the clearance has answered,
+    /// who is told when it ends, and whether the idle heartbeat counts it.
+    /// Returns once the clearance has answered,
     /// so a policy refusal reaches the caller rather than the next poll.
     ///
     /// The audience also decides stdin. A `CallerWaiting` job stands in
@@ -174,6 +176,7 @@ pub type Door {
       Option(Int),
       Option(policy.SandboxPolicy),
       jobs.Audience,
+      IdleWake,
     ) -> Result(Started, jobs.Refusal),
     /// The caller's strand and the job's id: gives up waiting on a
     /// `CallerWaiting` job, so its owner is told when it ends. See
@@ -214,7 +217,15 @@ pub fn door(wiring: Wiring) -> Door {
   let name = wiring.name
   let clearance_ms = wiring.clearance_ms
   Door(
-    start: fn(strand, operation, command, wall_ms, captured_policy, audience) {
+    start: fn(
+      strand,
+      operation,
+      command,
+      wall_ms,
+      captured_policy,
+      audience,
+      idle_wake,
+    ) {
       let stdin = case audience {
         jobs.CallerWaiting -> jobs.CloseStdin
         jobs.NotifyOwner | jobs.ProgramWatches -> jobs.KeepStdinOpen
@@ -229,6 +240,7 @@ pub fn door(wiring: Wiring) -> Door {
           captured_policy:,
           audience:,
           stdin:,
+          idle_wake:,
         ),
         waiting: clearance_ms + start_margin_ms,
       )
@@ -270,7 +282,7 @@ pub fn door(wiring: Wiring) -> Door {
 pub fn none() -> Door {
   let absent = jobs.Unavailable(reason: "this session runs no background jobs")
   Door(
-    start: fn(_strand, _operation, _command, _wall, _policy, _audience) {
+    start: fn(_strand, _operation, _command, _wall, _policy, _audience, _wake) {
       Error(absent)
     },
     release: fn(_strand, _id) { Error(absent) },

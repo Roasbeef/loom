@@ -120,8 +120,10 @@
 ////
 //// The same actor samples its owners once a minute for the idle
 //// heartbeat: an owner whose strand has been idle for
-//// `JobsPolicy.heartbeat_ms` while jobs it owns are still live is woken
-//// with a listing of them. A minute is slower than
+//// `JobsPolicy.heartbeat_ms` while jobs it owns are still live, and
+//// started with `tools/job.WakeWhenIdle`, is woken with a listing of
+//// them. The heartbeat is opt-in per job: a passive watcher left running
+//// is not a reason to spend a turn. A minute is slower than
 //// `runtime/residency.hibernate_after_ms`, so the tick does not keep an
 //// idle session's actor awake. `client/notice` has the idle clock, and
 //// `docs/design-notes/async-completion-wake.md` the whole design.
@@ -168,6 +170,7 @@ import tom
 import tools/bash
 import tools/blob
 import tools/fs
+import tools/job.{type IdleWake}
 import tools/tail.{type Tail}
 import tools/tool
 import weft
@@ -276,6 +279,9 @@ pub type Request {
     /// reads stdin ends instead of waiting an hour for bytes nobody will
     /// send; `KeepStdinOpen` is what makes `job_send` possible.
     stdin: StdinEnd,
+    /// Whether the idle heartbeat counts this job as a reason to wake its
+    /// owner. See `tools/job.IdleWake`.
+    idle_wake: IdleWake,
   )
 }
 
@@ -823,8 +829,17 @@ type Custody {
   Detached(streams: Streams)
 }
 
+// The idle-wake preference lives here rather than in the durable record
+// because it only matters while the job is live, and no job is live across
+// a restart: the sweep makes every surviving record terminal, so a stored
+// preference would be a field no reader could use.
 type Held {
-  Held(record: JobRecord, custody: Custody, listener: Listener)
+  Held(
+    record: JobRecord,
+    custody: Custody,
+    listener: Listener,
+    idle_wake: IdleWake,
+  )
 }
 
 // Who is told about this job's end, as the actor holds it: `Audience`'s
@@ -1365,6 +1380,7 @@ fn admitted(
       record:,
       custody: Dispatching(reports:, reply_with:),
       listener: listening(request.audience, caller),
+      idle_wake: request.idle_wake,
     )
   Ok(State(..state, generator:, jobs: dict.insert(state.jobs, id, held)))
 }
@@ -2649,7 +2665,12 @@ fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
   dict.insert(
     jobs,
     record.id,
-    Held(record:, custody: Detached(streams: no_streams()), listener: Owner),
+    Held(
+      record:,
+      custody: Detached(streams: no_streams()),
+      listener: Owner,
+      idle_wake: job.QuietUntilDone,
+    ),
   )
 }
 
@@ -2954,9 +2975,10 @@ fn utf8_from(bytes: BitArray, skipped: Int) -> String {
 
 // --- the idle heartbeat ---------------------------------------------------
 
-// One heartbeat sample. Every owner of a live job is asked whether its
-// strand has an open run, and one that has been idle for the whole
-// interval is woken with a listing of what it is still running.
+// One heartbeat sample. Every owner of a live job that asked for the
+// heartbeat is asked whether its strand has an open run, and one that has
+// been idle for the whole interval is woken with a listing of the jobs
+// that asked.
 //
 // A job a caller is waiting on counts as live work too. Its owner is busy
 // by definition while the caller waits, so it never produces a beat on
@@ -2968,7 +2990,7 @@ fn beat(state: State) -> State {
     Error(Nil) -> state
     Ok(runtime) -> {
       let #(now, _clock) = clock.read(state.wiring.clock)
-      let owners = live_by_owner(state.jobs)
+      let owners = wakeful_by_owner(state.jobs)
       let idle = notice.retain(state.idle, dict.keys(owners))
       let idle =
         dict.fold(owners, idle, fn(idle, owner, records) {
@@ -2986,12 +3008,16 @@ fn beat(state: State) -> State {
   }
 }
 
-// Every live job, grouped by the strand that owns it.
-fn live_by_owner(jobs: Dict(JobId, Held)) -> Dict(String, List(JobRecord)) {
+// Every live job that asked for the heartbeat, grouped by the strand that
+// owns it. A quiet job is left out entirely rather than listed beside a
+// loud one: an owner whose only live work is a watcher is never woken,
+// and one that is woken is told about exactly the work it asked to hear
+// about.
+fn wakeful_by_owner(jobs: Dict(JobId, Held)) -> Dict(String, List(JobRecord)) {
   dict.fold(jobs, dict.new(), fn(owners, _id, held) {
-    case jobstate.is_terminal(held.record.state) {
-      True -> owners
-      False ->
+    case jobstate.is_terminal(held.record.state), held.idle_wake {
+      True, _wake | False, job.QuietUntilDone -> owners
+      False, job.WakeWhenIdle ->
         dict.upsert(owners, held.record.owner, fn(existing) {
           [held.record, ..option.unwrap(existing, [])]
         })

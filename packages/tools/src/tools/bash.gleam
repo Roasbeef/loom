@@ -213,6 +213,17 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
               <> "once, leaving it running after this call ends",
           ),
         ),
+        #(
+          "heartbeat",
+          tool.boolean_property(
+            "whether to wake you periodically while you are idle and this "
+            <> "command is still running as a background job (default "
+            <> "false). You are always sent a notice when a job ends; set "
+            <> "this only for long work you may need to check on, such as "
+            <> "a build that could hang, never for a watcher or server that "
+            <> "is meant to run until it has news",
+          ),
+        ),
       ],
       ["command"],
     ),
@@ -245,6 +256,7 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use command <- tool.with_arg(tool.required_string(args, "command"))
   use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   use mode <- tool.with_arg(requested_mode(args))
+  use wake <- tool.with_arg(requested_wake(args))
 
   // The floor is shared and the ceiling is not: a timeout under a
   // millisecond is nonsense in either mode, while the ceiling belongs to
@@ -258,8 +270,8 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     outcome
   })
   case mode {
-    Auto -> attended(jobs, ctx, command, requested)
-    Background -> background(jobs, ctx, command, requested)
+    Auto -> attended(jobs, ctx, command, requested, wake)
+    Background -> background(jobs, ctx, command, requested, wake)
     Foreground -> foreground(ctx, command, requested)
   }
 }
@@ -285,6 +297,18 @@ fn requested_mode(args: JsonValue) -> Result(Mode, String) {
   }
 }
 
+// The heartbeat is opt-in. A job wakes its owner when it ends whatever
+// this says, so the only thing quiet costs is a reminder about a job that
+// hangs, and the job's wall still bounds that. Waking by default spent a
+// model turn per interval on every passive watcher to learn nothing.
+fn requested_wake(args: JsonValue) -> Result(job.IdleWake, String) {
+  use asked <- result.map(tool.optional_bool(args, "heartbeat"))
+  case asked {
+    Some(True) -> job.WakeWhenIdle
+    Some(False) | None -> job.QuietUntilDone
+  }
+}
+
 // --- auto -------------------------------------------------------------------
 
 // An auto call: the command starts as a job this call attends, and the
@@ -305,13 +329,14 @@ fn attended(
   ctx: Ctx,
   command: String,
   requested: Option(Int),
+  wake: job.IdleWake,
 ) -> ToolOutcome {
   let window =
     int.min(option.unwrap(requested, default_timeout_ms), max_timeout_ms)
   use <- bool.lazy_guard(when: outgrows_the_wall(ctx, window), return: fn() {
     foreground(ctx, command, requested)
   })
-  case jobs.attend(ctx, command) {
+  case jobs.attend(ctx, command, wake) {
     Ok(started) -> {
       let #(now, _clock) = clock.read(ctx.clock)
       look(jobs, ctx, started, fresh_watch(until: now + window))
@@ -601,9 +626,10 @@ fn background(
   ctx: Ctx,
   command: String,
   requested: Option(Int),
+  wake: job.IdleWake,
 ) -> ToolOutcome {
   use started <- tool.or_outcome(
-    jobs.start(ctx, command, requested),
+    jobs.start(ctx, command, requested, wake),
     job.refusal_outcome,
   )
   tool.success(

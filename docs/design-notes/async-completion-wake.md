@@ -200,3 +200,36 @@ argument, and the notice and the heartbeat are harness messages rather than
 tools. No frozen interface moves: the messages ride the existing queue
 admission, the marks are reserved `fact.custom` cells, and the job record's
 codec is unchanged because the attended flag is volatile.
+
+## Addendum: the job heartbeat is opt-in
+
+The heartbeat as first shipped woke the owner of any live job. That was
+wrong for the most common long job a model starts on purpose: a passive
+watcher. A mail watcher, a log tail or a dev server runs until it has news
+or until it is stopped, and its owner is supposed to sit idle beside it.
+Each heartbeat woke the model to read a listing it already knew, and the
+model's only sensible answer was to end its turn again. With a ten-minute
+interval that is six paid turns an hour for nothing, and it was seen doing
+exactly this in a live session.
+
+A job now counts for the heartbeat only if the call that started it asked:
+`bash` takes a `heartbeat` boolean, default false, honoured for
+`mode: "background"` and for an `auto` call that outlives its window. The
+choice is carried as `tools/job.IdleWake` into `client/jobs.Request` and
+kept on the actor's in-memory record of the job. It is not stored in the
+durable record because no job is live across a restart, so a stored value
+could never be read. An owner is woken only when a job that asked is
+still running, and the listing names only those jobs.
+
+The default is quiet rather than loud because the two failures are not the
+same size. Every job still sends its completion notice, and every job still
+dies at its wall, so a quiet job that hangs costs a late discovery bounded
+by that wall. A loud watcher costs a model turn per interval for as long as
+it runs. A model that starts a build it suspects may hang can ask for the
+reminder. Code-mode jobs never heartbeat, since the program that started
+one is its reader. `[jobs].heartbeat_s` still sets the interval and `0`
+still turns the heartbeat off for every job.
+
+Async code-mode executions keep the heartbeat as described in section 3.
+An execution is bounded by its own deadline, and it is not the passive
+watcher this addendum is about.

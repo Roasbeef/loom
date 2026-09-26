@@ -66,7 +66,8 @@ the foreground path on `CeilingReached`, `NoJobsPlane` (what
 already clearing; `ClearanceRefused` keeps the foreground clearance's structured
 refusal, which is what an escalation reads. `mode: "foreground"` is the
 old kill-at-timeout behaviour and `mode: "background"` still answers with
-a handle at once.
+a handle at once. `heartbeat: true` asks for the idle heartbeat on a job
+started either way; without it a job is silent until it ends.
 
 And `history_search`, through which a model asks the repository's
 full-text index what it once knew. Same shape, same reason: `events`
@@ -345,7 +346,8 @@ was asked.
   a replayed create would silently replace a schedule the model believes
   it already has, and two in one batch would race for the same ceiling.
 - `tools/job.{Jobs, Started, Cursors, Streamed, Polled, Listed, JobState,
-  StopCause, LostReason, JobSpill, StdinEnd, Refusal, tools, unavailable,
+  StopCause, LostReason, JobSpill, StdinEnd, IdleWake, Refusal, tools,
+  unavailable,
   poll_tool_name, kill_tool_name, send_tool_name, is_pending, state_name,
   cursor_to_string, parse_cursor, refusal_outcome, refusal_code,
   refusal_reason}` — the model's door onto background jobs, a value over
@@ -372,6 +374,10 @@ was asked.
   could not have been minted is refused rather than rewound to the start
   of the stream. `StdinEnd` (`CloseStdin | KeepStdinOpen`) is the
   no-naked-`Bool` shape of the `eof` enum.
+  `IdleWake` (`WakeWhenIdle | QuietUntilDone`) is `bash`'s `heartbeat`
+  boolean after the same translation, carried by `Jobs.start` and
+  `Jobs.attend`: only a job that asked wakes its idle owner, so a passive
+  watcher costs no turns while it waits.
   `refusal_code` is half of a contract `codemode/workspace.job_denial`
   and `cap/job.map_error` complete: the same five strings reach a model
   in a tool result and a program in a denial. `unavailable()` is the

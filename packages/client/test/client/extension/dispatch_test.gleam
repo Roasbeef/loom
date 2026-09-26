@@ -787,7 +787,7 @@ fn idle_broker() -> broker.Broker {
 fn ceilinged_jobs() -> jobseam.Door {
   let unreached = jobs.Invalid(reason: "this test asks only for a start")
   jobseam.Door(
-    start: fn(_strand, _operation, _command, _wall, _policy, _audience) {
+    start: fn(_strand, _operation, _command, _wall, _policy, _audience, _wake) {
       Error(jobs.CeilingReached(limit: 4))
     },
     release: fn(_strand, _id) { Error(unreached) },

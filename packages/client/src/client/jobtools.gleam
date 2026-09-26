@@ -74,7 +74,7 @@ pub fn seam(door: jobseam.Door) -> job.Jobs {
   let kill = door.kill
   let send = door.send
   job.Jobs(
-    start: fn(ctx: Ctx, command, wall_ms) {
+    start: fn(ctx: Ctx, command, wall_ms, idle_wake) {
       start(
         ctx.strand,
         ctx.op_id,
@@ -82,10 +82,11 @@ pub fn seam(door: jobseam.Door) -> job.Jobs {
         wall_ms,
         Some(captured(ctx)),
         jobs.NotifyOwner,
+        idle_wake,
       )
       |> translate(started)
     },
-    attend: fn(ctx: Ctx, command) {
+    attend: fn(ctx: Ctx, command, idle_wake) {
       start(
         ctx.strand,
         ctx.op_id,
@@ -93,6 +94,7 @@ pub fn seam(door: jobseam.Door) -> job.Jobs {
         None,
         Some(captured(ctx)),
         jobs.CallerWaiting,
+        idle_wake,
       )
       |> translate(started)
     },
@@ -158,6 +160,8 @@ pub fn capability_door_with_policy(
         wall_ms,
         captured_policy,
         jobs.ProgramWatches,
+        // A program is its job's reader, so there is nobody idle to wake.
+        job.QuietUntilDone,
       )
       |> translate(started)
     },

@@ -19,7 +19,7 @@ import tools/job
 fn padded_jobs(padding_words: Int) -> job.Jobs {
   let padding = list.repeat(0, padding_words)
   job.Jobs(
-    start: fn(_ctx, _command, _wall) {
+    start: fn(_ctx, _command, _wall, _wake) {
       Ok(job.Started(id: "job", deadline_ms: 0, wall_ms: 0))
     },
     poll: fn(_ctx, _id, _wait, _cursors) {
@@ -42,7 +42,7 @@ fn padded_jobs(padding_words: Int) -> job.Jobs {
       }
     },
     kill: fn(_ctx, _id) { Ok(Nil) },
-    attend: fn(_ctx, _command) {
+    attend: fn(_ctx, _command, _wake) {
       Ok(job.Started(id: "job", deadline_ms: 0, wall_ms: 0))
     },
     release: fn(_ctx, _id) { Ok(job.Released) },

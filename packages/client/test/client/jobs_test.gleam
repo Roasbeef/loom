@@ -114,6 +114,7 @@ import support/addresses
 import tools/bash
 import tools/blob
 import tools/directory_access
+import tools/job
 import tools/tool
 import weft/actor
 import weft/poll
@@ -766,6 +767,7 @@ fn started_or_refused(
       captured_policy: None,
       audience: jobs.ProgramWatches,
       stdin: jobs.KeepStdinOpen,
+      idle_wake: job.WakeWhenIdle,
     ),
     waiting: 10_000,
   )
@@ -792,6 +794,7 @@ fn start_job_under(
         captured_policy: None,
         audience: jobs.ProgramWatches,
         stdin: jobs.KeepStdinOpen,
+        idle_wake: job.WakeWhenIdle,
       ),
       waiting: 10_000,
     )
@@ -1141,6 +1144,7 @@ fn start_over(
       captured_policy: None,
       audience: jobs.ProgramWatches,
       stdin: jobs.KeepStdinOpen,
+      idle_wake: job.WakeWhenIdle,
     ),
     waiting: 10_000,
   )
@@ -1247,6 +1251,7 @@ pub fn a_starter_whose_runner_died_first_is_answered_test() {
         captured_policy: None,
         audience: jobs.ProgramWatches,
         stdin: jobs.KeepStdinOpen,
+        idle_wake: job.WakeWhenIdle,
       ),
       waiting: 5000,
     )
@@ -1870,6 +1875,7 @@ pub fn invocation_policy_reaches_background_job_without_changing_later_jobs_test
         captured_policy: Some(captured),
         audience: jobs.ProgramWatches,
         stdin: jobs.KeepStdinOpen,
+        idle_wake: job.WakeWhenIdle,
       ),
       waiting: 10_000,
     )
@@ -1907,6 +1913,16 @@ fn start_heard(
   command: String,
   audience: jobs.Audience,
 ) -> jobs.Started {
+  start_waking(harness, strand, command, audience, job.WakeWhenIdle)
+}
+
+fn start_waking(
+  harness: Harness,
+  strand: String,
+  command: String,
+  audience: jobs.Audience,
+  idle_wake: job.IdleWake,
+) -> jobs.Started {
   let assert Ok(started) =
     jobs.start_job(
       harness.name,
@@ -1918,6 +1934,7 @@ fn start_heard(
         captured_policy: None,
         audience:,
         stdin: jobs.KeepStdinOpen,
+        idle_wake:,
       ),
       waiting: 10_000,
     )
@@ -2173,6 +2190,40 @@ pub fn an_idle_owner_of_live_work_is_woken_with_a_listing_test() {
   assert string.contains(text, "[loom] idle heartbeat")
   assert string.contains(text, jobstate.job_id_to_string(started.id))
   assert string.contains(text, "make soak")
+}
+
+pub fn a_quiet_job_never_wakes_its_idle_owner_test() {
+  let harness = start_heartbeat_harness(1)
+  let started =
+    start_waking(
+      harness,
+      "main",
+      "substrate watch",
+      jobs.NotifyOwner,
+      job.QuietUntilDone,
+    )
+  sample(harness, started)
+  sample(harness, started)
+  sample(harness, started)
+  assert !string.contains(context_text(harness, "main"), "idle heartbeat")
+}
+
+pub fn a_wake_lists_only_the_jobs_that_asked_for_it_test() {
+  let harness = start_heartbeat_harness(1)
+  let _quiet =
+    start_waking(
+      harness,
+      "main",
+      "substrate watch",
+      jobs.NotifyOwner,
+      job.QuietUntilDone,
+    )
+  let loud = start_heard(harness, "main", "make soak", jobs.NotifyOwner)
+  sample(harness, loud)
+  sample(harness, loud)
+  let text = context_text(harness, "main")
+  assert string.contains(text, "make soak")
+  assert !string.contains(text, "substrate watch")
 }
 
 pub fn a_zero_interval_turns_the_heartbeat_off_test() {
@@ -2466,6 +2517,7 @@ pub fn a_default_wall_honours_the_captured_grant_test() {
         captured_policy: Some(granted),
         audience: jobs.CallerWaiting,
         stdin: jobs.CloseStdin,
+        idle_wake: job.WakeWhenIdle,
       ),
       waiting: 10_000,
     )
