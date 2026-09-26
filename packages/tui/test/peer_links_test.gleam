@@ -2,6 +2,7 @@ import core/json
 import etui/buffer
 import etui/geometry.{Position}
 import etui/keys
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -29,6 +30,8 @@ pub fn session_link_keeps_target_across_catalogue_refresh_test() {
       "source-id",
       session_selector.Active,
       session_selector.Browsing,
+      session_selector.AllSessions,
+      dict.new(),
     )
   let state = peer_links.from_session("source-id", "builder", selector, target)
   let state = peer_links.loaded(state, [], peer_links.Inspection([], []), None)

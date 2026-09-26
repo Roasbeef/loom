@@ -3,6 +3,7 @@ import etui/buffer
 import etui/geometry
 import etui/keys
 import etui/text
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{None}
@@ -41,6 +42,8 @@ fn selector(selected: Int) -> session_selector.State {
     first.session_id,
     session_selector.Active,
     session_selector.Browsing,
+    session_selector.AllSessions,
+    dict.new(),
   )
 }
 
@@ -94,6 +97,11 @@ fn line_at(painted: buffer.Buffer, row: Int) -> String {
   line
 }
 
+// Narrow pickers give each row a second line for its status and short
+// identity; wide ones keep a row to one line and put the rest in the details
+// pane. At every width the name, the lifecycle, the workspace tail and a
+// distinguishing identity for each row stay on screen, and the enclosing
+// directories do not crowd them out.
 pub fn session_selector_preserves_markers_labels_and_distinct_ids_test() {
   list.each([44, 80, 96, 292], fn(width) {
     let screen = geometry.rect_new(0, 0, width, 24)
@@ -101,37 +109,45 @@ pub fn session_selector_preserves_markers_labels_and_distinct_ids_test() {
       session_selector.render(buffer.buffer_new(screen), screen, selector(0))
     let selected = row_with(painted, "▸")
     let title = line_at(painted, selected)
-    let detail = line_at(painted, selected + 1)
-    assert row_with(painted, "●") == selected
+    let header = line_at(painted, selected - 1)
+    assert row_with(painted, "current") == selected
     assert string.contains(title, "loom · main")
-    assert string.contains(title, "[recovery blocked]")
-    assert !string.contains(title, "long-parent-directory")
-    assert string.contains(detail, "loom-worktree")
-    assert string.contains(detail, "01a07d71-e1fb")
-    assert row_with(painted, "01a07d74-272d") == selected + 3
+    assert string.contains(header, "loom-worktree")
     assert list.all(frame.buffer_to_lines(painted), fn(line) {
       text.cell_width(line) <= width
     })
     case width == 292 {
       True -> {
+        assert string.contains(title, "[recovery blocked]")
+        assert string.contains(title, "01a07d71-e1fb")
+        assert row_with(painted, "01a07d74-272d") == selected + 1
         assert string.contains(
-          detail,
-          string.repeat("long-parent-directory/", 4),
+          frame.buffer_to_lines(painted) |> string.join("\n"),
+          "01a07d71-e1fb-7cc1-beeb-8da1658eec67",
         )
       }
-      False -> Nil
+      False -> {
+        let detail = line_at(painted, selected + 1)
+        assert !string.contains(title, "long-parent-directory")
+        assert string.contains(detail, "recovery blocked")
+        assert string.contains(detail, "01a07d71-e1fb")
+        assert row_with(painted, "01a07d74-272d") == selected + 3
+      }
     }
   })
 }
 
+// The picker is as tall as its content, not the screen: the tabs, one group
+// header and two rows, beside a details pane of about the same height.
 pub fn two_session_picker_fits_its_content_test() {
   let screen = geometry.rect_new(0, 0, 116, 38)
   let painted =
     session_selector.render(buffer.buffer_new(screen), screen, selector(1))
   let title = row_with(painted, "SESSIONS · active")
-  let help = row_with(painted, "Enter open · l link")
-  assert help - title < 10
-  assert row_with(painted, "▸") == title + 4
+  let help = row_with(painted, "Enter open · Tab filter")
+  assert help - title < 24
+  assert row_with(painted, "All 2") == title + 2
+  assert row_with(painted, "▸") == title + 6
 }
 
 pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
@@ -153,11 +169,13 @@ pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
       "session-11",
       session_selector.Active,
       session_selector.Browsing,
+      session_selector.AllSessions,
+      dict.new(),
     )
   let screen = geometry.rect_new(0, 0, 80, 16)
   let painted =
     session_selector.render(buffer.buffer_new(screen), screen, state)
-  assert row_with(painted, "●") == row_with(painted, "▸")
+  assert row_with(painted, "current") == row_with(painted, "▸")
   assert row_with(painted, "session-11") == row_with(painted, "▸") + 1
   assert row_with(painted, "↑↓ select") > row_with(painted, "session-11")
 }
@@ -178,7 +196,7 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
   let down = tui.update(backend.Tick, down)
   let #(second, _) = render.view(down, screen)
   assert row_with(second, "▸") == row_with(first, "▸") + 2
-  assert row_with(second, "●") == row_with(first, "●")
+  assert row_with(second, "current") == row_with(first, "current")
   assert first != second
 
   // A clock that does not advance exercises the deferred frame flush, not

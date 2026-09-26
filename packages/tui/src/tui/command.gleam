@@ -652,7 +652,7 @@ pub fn help_text() -> String {
   <> "/model <name>     switch the active strand model\n"
   <> "/agents           inspect agents and sub-agents\n"
   <> "/peers            manage directional agent links\n"
-  <> "/sessions         switch locally managed sessions\n"
+  <> "/sessions         switch locally managed sessions (← on an empty prompt)\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"
   <> "/context          inspect current context usage\n"

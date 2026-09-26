@@ -3,17 +3,35 @@
 //// Enter explicitly selects one row. Listing, highlighting a default, and
 //// navigating pages cannot start execution. The caller carries the revision
 //// when requesting the next page and replaces this page instead of accumulating.
+////
+//// The picker is also the operator's view across sessions. It answers "which
+//// of my sessions needs me, and which are still working" without opening any
+//// of them. Two observations feed it, and they stay separate. The catalogue
+//// page says what each registration is: its workspace, name and lifecycle.
+//// The daemon's `sessions.activity` reply says what each *resident* session
+//// is doing, and it is asked of resident sessions only, because a saved
+//// session has no running actor to ask and discovery must never open one.
+//// A row's `Presence` joins the two, and the filter tabs, the glyph beside
+//// each row and the details pane all read that one join.
+////
+//// Rows are drawn grouped by workspace in the order the page gives them, so
+//// the prioritized page (this workspace first) still leads. The highlight is
+//// an index into that drawn order, `visible`, never into the raw page, so
+//// what Enter opens is always the row the marker is on.
 
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
 import etui/span
+import etui/style
 import etui/text
 import etui/widgets/block
 import etui/widgets/paragraph
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import tui/daemon/protocol
 import tui/text_hygiene
@@ -26,6 +44,49 @@ pub type Collection {
 
   /// Preserved sessions that must be restored before opening.
   Archived
+}
+
+/// Which rows the picker draws, chosen with Tab and Shift+Tab.
+///
+/// Each variant but `AllSessions` admits exactly one `Presence`, so a tab's
+/// count and the rows it shows cannot disagree. `Unobserved` rows appear
+/// only under `AllSessions`: until the daemon has answered, the picker does
+/// not know which of the other tabs they belong to.
+pub type Filter {
+  /// Every row on the page.
+  AllSessions
+
+  /// Resident sessions with a pending approval or a failed last run.
+  NeedsYouSessions
+
+  /// Resident sessions with at least one strand running.
+  WorkingSessions
+
+  /// Resident sessions with nothing running and nothing pending.
+  IdleSessions
+
+  /// Registrations with no running session behind them.
+  InactiveSessions
+}
+
+/// What the picker knows a row's session is doing.
+pub type Presence {
+  /// A resident session is waiting on the operator.
+  NeedsYou
+
+  /// A resident session has work running.
+  Working
+
+  /// A resident session is quiet.
+  Idle
+
+  /// A resident session the daemon has not yet described, or which did not
+  /// answer when asked.
+  Unobserved
+
+  /// A saved, reserved, opening, stopping or blocked registration. Nothing
+  /// is running behind it that could be asked.
+  Inactive
 }
 
 /// Whether the picker is navigating, editing a name, or confirming removal.
@@ -69,7 +130,7 @@ pub type State {
   State(
     /// Server revision, continuation and at most one hundred authorized rows.
     page: protocol.Page,
-    /// Highlighted row; it does not imply an open.
+    /// Highlighted position in `visible`; it does not imply an open.
     selected: Int,
     /// Currently attached session or the saved default before attachment.
     current: String,
@@ -77,6 +138,10 @@ pub type State {
     collection: Collection,
     /// Navigation, or an open question about one identity.
     prompt: Prompt,
+    /// Which rows are drawn.
+    filter: Filter,
+    /// The latest activity reply for each resident identity on this page.
+    activity: Dict(String, protocol.Activity),
   )
 }
 
@@ -141,14 +206,11 @@ pub type Action {
 /// // session_selector.new(page, default_id)
 /// ```
 pub fn new(page: protocol.Page, current: String) -> State {
-  let selected =
-    list.index_fold(page.sessions, 0, fn(found, row, index) {
-      case row.session_id == current {
-        True -> index
-        False -> found
-      }
-    })
-  State(page, selected, current, Active, Browsing)
+  let state = State(page, 0, current, Active, Browsing, AllSessions, dict.new())
+  State(
+    ..state,
+    selected: index_of(visible(state), current) |> option.unwrap(0),
+  )
 }
 
 /// Moves this workspace's sessions first without changing order within groups.
@@ -192,6 +254,219 @@ fn workspace_rank(path: String, workspace: String) -> Int {
   }
 }
 
+/// What a row's session is doing, joining its lifecycle with the latest
+/// activity reply.
+///
+/// Only a resident row is ever `NeedsYou`, `Working` or `Idle`, and only on
+/// the daemon's word; every other lifecycle is `Inactive`, whatever an old
+/// reply said, because a session that stopped since cannot still be working.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.presence(state, saved_row) == session_selector.Inactive
+/// ```
+pub fn presence(state: State, row: protocol.Session) -> Presence {
+  case row.status {
+    protocol.Resident(_) ->
+      case dict.get(state.activity, row.session_id) {
+        Ok(protocol.Activity(state: protocol.NeedsYou, ..)) -> NeedsYou
+        Ok(protocol.Activity(state: protocol.Working, ..)) -> Working
+        Ok(protocol.Activity(state: protocol.Idle, ..)) -> Idle
+        Ok(protocol.Activity(state: protocol.Unknown, ..)) | Error(Nil) ->
+          Unobserved
+      }
+    protocol.Reserved
+    | protocol.Saved
+    | protocol.Opening(_)
+    | protocol.Stopping(_)
+    | protocol.RecoveryBlocked -> Inactive
+  }
+}
+
+/// Reports whether a filter admits a presence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_selector.admits(session_selector.AllSessions, session_selector.Idle)
+/// ```
+pub fn admits(filter: Filter, presence: Presence) -> Bool {
+  case filter, presence {
+    AllSessions, _ -> True
+    NeedsYouSessions, NeedsYou -> True
+    WorkingSessions, Working -> True
+    IdleSessions, Idle -> True
+    InactiveSessions, Inactive -> True
+    _, _ -> False
+  }
+}
+
+/// The rows the filter admits, grouped by workspace.
+///
+/// Groups appear in the order their first row appears on the page, and rows
+/// keep page order within a group, so the prioritized page's own ordering
+/// survives grouping.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.groups(state) == [#("/work/loom", [first, second])]
+/// ```
+pub fn groups(state: State) -> List(#(String, List(protocol.Session))) {
+  state.page.sessions
+  |> list.filter(fn(row) { admits(state.filter, presence(state, row)) })
+  |> list.fold([], fn(groups, row) {
+    let workspace = trim_slash(row.workspace)
+    case list.key_find(groups, workspace) {
+      Ok(rows) -> list.key_set(groups, workspace, [row, ..rows])
+      Error(Nil) -> [#(workspace, [row]), ..groups]
+    }
+  })
+  |> list.reverse
+  |> list.map(fn(group) { #(group.0, list.reverse(group.1)) })
+}
+
+/// The rows in the order they are drawn, which is the order `selected`
+/// indexes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // list.length(session_selector.visible(state)) <= list.length(state.page.sessions)
+/// ```
+pub fn visible(state: State) -> List(protocol.Session) {
+  state |> groups |> list.flat_map(fn(group) { group.1 })
+}
+
+/// The highlighted row, if the filter leaves any.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.selected_row(state) == Some(row)
+/// ```
+pub fn selected_row(state: State) -> Option(protocol.Session) {
+  visible(state)
+  |> list.drop(state.selected)
+  |> list.first
+  |> option.from_result
+}
+
+fn index_of(rows: List(protocol.Session), session_id: String) -> Option(Int) {
+  rows
+  |> list.index_map(fn(row, index) { #(row.session_id, index) })
+  |> list.key_find(session_id)
+  |> option.from_result
+}
+
+/// The resident identities worth asking the daemon about, in page order and
+/// at most `protocol.activity_limit` of them.
+///
+/// The daemon refuses a larger request, which keeps its reply inside the
+/// control frame budget. The page is prioritized, so the rows cut by the
+/// limit are the ones farthest from this workspace; they stay `Unobserved`.
+/// More than that many resident sessions at once is not worth batching for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.resident_ids(state) == ["resident-a", "resident-b"]
+/// ```
+pub fn resident_ids(state: State) -> List(String) {
+  state.page.sessions
+  |> list.filter_map(fn(row) {
+    case row.status {
+      protocol.Resident(_) -> Ok(row.session_id)
+      protocol.Reserved
+      | protocol.Saved
+      | protocol.Opening(_)
+      | protocol.Stopping(_)
+      | protocol.RecoveryBlocked -> Error(Nil)
+    }
+  })
+  |> list.take(protocol.activity_limit)
+}
+
+/// Adopts one activity reply for the identities it was asked about.
+///
+/// The reply is a fresh observation of exactly the `asked` identities: one
+/// that is absent from it was not running when the daemon's registry was
+/// asked, so its old answer is dropped rather than kept. Answers about identities not on this page are
+/// ignored. The highlighted identity stays highlighted if the filter still
+/// shows it, since an answer arriving must not move the row under the
+/// operator's cursor to a different session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.observe(state, asked, reply_rows)
+/// ```
+pub fn observe(
+  state: State,
+  asked: List(String),
+  rows: List(protocol.Activity),
+) -> State {
+  let on_page = list.map(state.page.sessions, fn(row) { row.session_id })
+  let activity =
+    rows
+    |> list.filter(fn(row) {
+      list.contains(asked, row.session_id)
+      && list.contains(on_page, row.session_id)
+    })
+    |> list.fold(dict.drop(state.activity, asked), fn(activity, row) {
+      dict.insert(activity, row.session_id, row)
+    })
+  reselect(state, State(..state, activity:))
+}
+
+/// Applies a filter, keeping the highlighted identity if it is still drawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.with_filter(state, session_selector.WorkingSessions)
+/// ```
+pub fn with_filter(state: State, filter: Filter) -> State {
+  reselect(state, State(..state, filter:))
+}
+
+/// Carries the operator's filter and the last activity answers onto a fresh
+/// page of the same collection.
+///
+/// A reload or a page turn replaces the rows, but it is the same view to
+/// the operator: the tab they chose stays chosen, and a resident row that
+/// is still on the page keeps its last answer until the next one arrives
+/// rather than flickering back to unobserved. Answers for identities no
+/// longer on the page are dropped with them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.carry(open_picker, freshly_loaded)
+/// ```
+pub fn carry(previous: State, next: State) -> State {
+  let on_page = list.map(next.page.sessions, fn(row) { row.session_id })
+  let activity = dict.take(previous.activity, on_page)
+  let carried = State(..next, activity:)
+  reselect(carried, State(..carried, filter: previous.filter))
+}
+
+// Keeps the highlighted identity when the drawn rows change underneath it,
+// and otherwise clamps the index into the new rows.
+fn reselect(before: State, after: State) -> State {
+  let rows = visible(after)
+  let selected = case selected_row(before) {
+    Some(row) -> index_of(rows, row.session_id)
+    None -> None
+  }
+  let selected = case selected {
+    Some(index) -> index
+    None -> int.max(0, int.min(before.selected, list.length(rows) - 1))
+  }
+  State(..after, selected:)
+}
+
 /// Drops the named row from a page after the daemon confirmed its removal.
 ///
 /// The picker does not re-list: the reply proves this identity is gone, and
@@ -207,13 +482,16 @@ fn workspace_rank(path: String, workspace: String) -> Int {
 pub fn without(state: State, session_id: String) -> State {
   let sessions =
     list.filter(state.page.sessions, fn(row) { row.session_id != session_id })
-  let selected = int.min(state.selected, int.max(0, list.length(sessions) - 1))
-  State(
-    ..state,
-    page: protocol.Page(..state.page, sessions:),
-    selected:,
-    prompt: Browsing,
-  )
+  let after =
+    State(
+      ..state,
+      page: protocol.Page(..state.page, sessions:),
+      activity: dict.delete(state.activity, session_id),
+      prompt: Browsing,
+    )
+  let selected =
+    int.min(state.selected, int.max(0, list.length(visible(after)) - 1))
+  State(..after, selected:)
 }
 
 /// Handles a key without any I/O or implicit selection.
@@ -293,13 +571,13 @@ fn browsing(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape -> Close
     keys.Enter ->
-      case list.first(list.drop(state.page.sessions, state.selected)) {
-        Ok(row) ->
+      case selected_row(state) {
+        Some(row) ->
           case state.collection {
             Active -> Choose(row)
             Archived -> Restore(row.session_id)
           }
-        Error(Nil) -> Continue(state)
+        None -> Continue(state)
       }
     keys.Char("l") -> link_selected(state)
     keys.Up ->
@@ -310,10 +588,15 @@ fn browsing(key: keys.Key, state: State) -> Action {
           ..state,
           selected: int.max(
             0,
-            int.min(list.length(state.page.sessions) - 1, state.selected + 1),
+            int.min(list.length(visible(state)) - 1, state.selected + 1),
           ),
         ),
       )
+
+    // The filter only narrows what is drawn, so it is local state: no page
+    // is fetched and the activity already observed is kept.
+    keys.Tab -> Continue(with_filter(state, next(state)))
+    keys.BackTab -> Continue(with_filter(state, previous(state)))
     keys.Char("a") ->
       case state.collection {
         Active -> ShowCollection(Archived)
@@ -321,21 +604,21 @@ fn browsing(key: keys.Key, state: State) -> Action {
       }
     keys.Char("n") -> NewSession
     keys.Char("r") ->
-      case list.first(list.drop(state.page.sessions, state.selected)) {
-        Ok(row) ->
+      case selected_row(state) {
+        Some(row) ->
           Continue(State(..state, prompt: Renaming(row.session_id, row.name)))
-        Error(Nil) -> Continue(state)
+        None -> Continue(state)
       }
     keys.Char("d") ->
-      case list.first(list.drop(state.page.sessions, state.selected)) {
-        Ok(row) -> {
+      case selected_row(state) {
+        Some(row) -> {
           let prompt = case state.collection {
             Active -> ConfirmingArchive(row.session_id)
             Archived -> ConfirmingDelete(row.session_id)
           }
           Continue(State(..state, prompt:))
         }
-        Error(Nil) -> Continue(state)
+        None -> Continue(state)
       }
     keys.Right ->
       case state.page.after {
@@ -347,10 +630,34 @@ fn browsing(key: keys.Key, state: State) -> Action {
   }
 }
 
+// An archived page holds only inactive rows, so its tabs would all be empty
+// but one; Tab leaves it on `AllSessions`.
+fn next(state: State) -> Filter {
+  case state.collection, state.filter {
+    Archived, _ -> AllSessions
+    Active, AllSessions -> NeedsYouSessions
+    Active, NeedsYouSessions -> WorkingSessions
+    Active, WorkingSessions -> IdleSessions
+    Active, IdleSessions -> InactiveSessions
+    Active, InactiveSessions -> AllSessions
+  }
+}
+
+fn previous(state: State) -> Filter {
+  case state.collection, state.filter {
+    Archived, _ -> AllSessions
+    Active, AllSessions -> InactiveSessions
+    Active, NeedsYouSessions -> AllSessions
+    Active, WorkingSessions -> NeedsYouSessions
+    Active, IdleSessions -> WorkingSessions
+    Active, InactiveSessions -> IdleSessions
+  }
+}
+
 // A saved or archived row cannot become a peer target through selection.
 fn link_selected(state: State) -> Action {
-  case list.first(list.drop(state.page.sessions, state.selected)) {
-    Ok(row) ->
+  case selected_row(state) {
+    Some(row) ->
       case state.collection {
         Active ->
           case row.status {
@@ -359,8 +666,44 @@ fn link_selected(state: State) -> Action {
           }
         Archived -> Continue(state)
       }
-    Error(Nil) -> Continue(state)
+    None -> Continue(state)
   }
+}
+
+/// How many rows on the page each filter would show, in tab order.
+///
+/// Counts are of this page, not of the whole catalogue: the picker holds
+/// one page and never accumulates, so a count past it would be a guess.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.counts(state)
+/// //   == [#(AllSessions, 3), #(NeedsYouSessions, 1), ...]
+/// ```
+pub fn counts(state: State) -> List(#(Filter, Int)) {
+  let presences =
+    list.map(state.page.sessions, fn(row) { presence(state, row) })
+  [
+    AllSessions,
+    NeedsYouSessions,
+    WorkingSessions,
+    IdleSessions,
+    InactiveSessions,
+  ]
+  |> list.map(fn(filter) {
+    #(filter, list.count(presences, fn(presence) { admits(filter, presence) }))
+  })
+}
+
+/// The narrowest inner width that gets a details pane beside the list.
+const details_width = 96
+
+// Whether the highlighted row's details have a pane of their own. Without
+// one, each row carries its status and identity on a second line.
+type Arrangement {
+  ListOnly
+  WithDetails
 }
 
 /// Renders only one bounded page and its explicit action hints.
@@ -371,13 +714,40 @@ fn link_selected(state: State) -> Action {
 /// // session_selector.render(buffer, screen, selector)
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
-  // Small catalogues need no empty scroll area; full pages retain seven rows.
-  let row_count = int.min(7, list.length(state.page.sessions))
-  let desired_height = int.max(7, row_count * 2 + 7)
+  let width = int.max(1, int.min(160, screen.size.width - 4))
+
+  // The inner width is the frame's less its border and padding. Knowing it
+  // before the frame is placed is what lets the height fit the content.
+  let inner_width = int.max(0, width - 4)
+  let arrangement = case inner_width >= details_width {
+    True -> WithDetails
+    False -> ListOnly
+  }
+  let #(list_width, detail_width) = case arrangement {
+    WithDetails -> {
+      let detail = int.min(56, inner_width * 2 / 5)
+      #(inner_width - detail - 3, detail)
+    }
+    ListOnly -> #(inner_width, 0)
+  }
+
+  // Both columns are laid out before the frame is placed, since the taller
+  // of the two decides the frame's height.
+  let list_lines = list_lines(state, list_width, arrangement)
+  let detail_lines = case arrangement, selected_row(state) {
+    WithDetails, Some(row) -> detail_lines(state, row, detail_width)
+    WithDetails, None | ListOnly, _ -> []
+  }
+
+  // Small catalogues need no empty scroll area. Six rows are chrome: the
+  // tabs, their rule, the blank line and help below the body, and the top
+  // and bottom padding; the border adds two more.
+  let body_rows =
+    int.max(1, int.max(list.length(list_lines), list.length(detail_lines)))
   let area =
     geometry.centered_rect(
-      int.max(1, int.min(144, screen.size.width - 4)),
-      int.max(1, int.min(desired_height, screen.size.height - 4)),
+      width,
+      int.max(1, int.min(body_rows + 8, screen.size.height - 4)),
       screen,
     )
   let frame =
@@ -398,80 +768,450 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       block.Top,
     )
     |> block.with_padding(1, 1, 1, 1)
-  let inside = block.inner(area, frame)
-  let count = int.max(1, { inside.size.height - 3 } / 2)
-  let start = int.max(0, state.selected - count + 1)
-  let rows =
-    state.page.sessions
-    |> list.drop(start)
-    |> list.take(count)
-    |> list.index_map(fn(row, offset) {
-      let #(marker, selected_style) = case start + offset == state.selected {
-        True -> #("▸ ", theme.overlay_signal())
-        False -> #("  ", theme.overlay_plain())
-      }
-      let current = case row.session_id == state.current {
-        True -> "● "
-        False -> "  "
-      }
 
-      // Reserve the markers before sizing fields. Two fixed lines keep a long
-      // workspace from erasing the name, lifecycle or navigation indicator.
-      let width = int.max(0, inside.size.width - 4)
-      let status =
-        text.truncate(
-          " [" <> lifecycle(row.status) <> "]",
-          int.max(0, width - 8),
-          "…",
+  // The tabs and their rule take the top two rows of the inside, and the
+  // blank line and help the bottom two; the body is what is left between.
+  let inside = block.inner(area, frame)
+  let body_height = int.max(0, inside.size.height - 4)
+  let body_y = inside.position.y + 2
+  let list_area =
+    geometry.rect_new(inside.position.x, body_y, list_width, body_height)
+  let rule =
+    span.line_new([
+      span.span_styled(
+        string.repeat("─", inside.size.width),
+        style.new(theme.divider, theme.graphite, style.none()),
+      ),
+    ])
+  let footer =
+    geometry.rect_new(
+      inside.position.x,
+      body_y + body_height,
+      inside.size.width,
+      2,
+    )
+  let painted =
+    buf
+    |> buffer.clear(area)
+    |> block.render(area, frame)
+    |> paragraph.render_styled(inside, [
+      tabs_line(state, inside.size.width),
+      rule,
+    ])
+    |> paragraph.render_styled(
+      list_area,
+      window(list_lines, state, body_height),
+    )
+    |> paragraph.render_styled(footer, [
+      span.line_new([]),
+      help_line(state, inside.size.width),
+    ])
+
+  // An empty page has no row to describe, so it gets no pane and no divider
+  // beside its one line of advice.
+  case arrangement, detail_lines {
+    ListOnly, _ | WithDetails, [] -> painted
+    WithDetails, [_, ..] -> {
+      let divider =
+        geometry.rect_new(
+          inside.position.x + list_width + 1,
+          body_y,
+          1,
+          body_height,
         )
-      let name =
-        text.truncate(
-          text_hygiene.single_line(row.name),
-          width - text.cell_width(status),
-          "…",
+      let details =
+        geometry.rect_new(
+          inside.position.x + list_width + 3,
+          body_y,
+          detail_width,
+          body_height,
         )
-      let identity =
-        text.truncate(" · " <> short_identity(row.session_id), width, "…")
-      let workspace =
-        fit_workspace(row.workspace, width - text.cell_width(identity))
-      [
-        span.line_new([
-          span.span_styled(marker, selected_style),
-          span.span_styled(current, theme.overlay_current()),
-          span.span_styled(name <> status, selected_style),
-        ]),
+      painted
+      |> paragraph.render_styled(
+        divider,
+        list.repeat(
+          span.line_new([
+            span.span_styled(
+              "│",
+              style.new(theme.divider, theme.graphite, style.none()),
+            ),
+          ]),
+          body_height,
+        ),
+      )
+      |> paragraph.render_styled(details, list.take(detail_lines, body_height))
+    }
+  }
+}
+
+// A drawn list line, tagged with the visible-row index it draws, if any, so
+// the window can keep the highlighted row on screen.
+type ListLine {
+  ListLine(row: Option(Int), line: span.Line)
+}
+
+// Group headers, rows and the blank lines between groups, in drawn order.
+fn list_lines(
+  state: State,
+  width: Int,
+  arrangement: Arrangement,
+) -> List(ListLine) {
+  let groups = groups(state)
+  case groups {
+    [] -> [
+      ListLine(
+        None,
         span.line_new([
           span.span_styled(
-            "    " <> workspace <> identity,
+            text.truncate(empty_message(state), width, "…"),
             theme.overlay_quiet(),
           ),
         ]),
-      ]
-    })
-    |> list.flatten
-  let rows = case rows {
-    [] -> [
+      ),
+    ]
+    _ -> {
+      let #(lines, _) =
+        list.fold(groups, #([], 0), fn(acc, group) {
+          let #(lines, first) = acc
+          let #(workspace, rows) = group
+          let count = " " <> int.to_string(list.length(rows))
+          let header =
+            ListLine(
+              None,
+              span.line_new([
+                span.span_styled(
+                  fit_workspace(workspace, width - text.cell_width(count))
+                    <> count,
+                  theme.overlay_quiet(),
+                ),
+              ]),
+            )
+          let drawn =
+            rows
+            |> list.index_map(fn(row, offset) {
+              row_lines(state, row, first + offset, width, arrangement)
+              |> list.map(ListLine(Some(first + offset), _))
+            })
+            |> list.flatten
+          let gap = case lines {
+            [] -> []
+            _ -> [ListLine(None, span.line_new([]))]
+          }
+          #(
+            list.flatten([lines, gap, [header], drawn]),
+            first + list.length(rows),
+          )
+        })
+      lines
+    }
+  }
+}
+
+fn empty_message(state: State) -> String {
+  case state.page.sessions, state.filter {
+    [], _ -> "No saved sessions. Press n to create one explicitly."
+    _, _ -> "No sessions match this filter. Tab shows the next one."
+  }
+}
+
+// One row. The first line is the marker, the presence glyph, the name and
+// the current-session tag. A wide picker adds the lifecycle tag and short
+// identity on the same line and leaves the rest to the details pane. A
+// narrow one has no pane, so it gives them a second line of their own:
+// two sessions can share a name, and a row that cut its identity to keep
+// the name, or the reverse, would leave the operator unable to tell them
+// apart.
+fn row_lines(
+  state: State,
+  row: protocol.Session,
+  index: Int,
+  width: Int,
+  arrangement: Arrangement,
+) -> List(span.Line) {
+  let #(marker, name_style) = case index == state.selected {
+    True -> #("▸ ", theme.overlay_signal())
+    False -> #("  ", theme.overlay_plain())
+  }
+  let presence = presence(state, row)
+  let identity = short_identity(row.session_id)
+  let tag = case row.status {
+    protocol.Resident(_) -> ""
+    status -> " [" <> lifecycle(status) <> "]"
+  }
+  let suffix = case arrangement {
+    WithDetails -> tag <> " · " <> identity
+    ListOnly -> ""
+  }
+  let current = case row.session_id == state.current {
+    True -> " current"
+    False -> ""
+  }
+
+  // The name gets whatever the fixed pieces leave, and the current tag is
+  // pushed to the right edge by padding after it.
+  let fixed =
+    text.cell_width(marker)
+    + 2
+    + text.cell_width(suffix)
+    + text.cell_width(current)
+  let name =
+    text.truncate(
+      text_hygiene.single_line(row.name),
+      int.max(0, width - fixed),
+      "…",
+    )
+  let used = fixed + text.cell_width(name)
+  let first =
+    span.line_new([
+      span.span_styled(marker, name_style),
+      span.span_styled(glyph(presence) <> " ", presence_style(presence)),
+      span.span_styled(name, name_style),
+      span.span_styled(suffix, theme.overlay_quiet()),
+      span.span_styled(string.repeat(" ", int.max(0, width - used)), name_style),
+      span.span_styled(current, theme.overlay_current()),
+    ])
+  case arrangement {
+    WithDetails -> [first]
+    ListOnly -> [
+      first,
       span.line_new([
         span.span_styled(
           text.truncate(
-            "No saved sessions. Press n to create one explicitly.",
-            inside.size.width,
+            "    " <> short_status(presence, row) <> " · " <> identity,
+            width,
             "…",
           ),
           theme.overlay_quiet(),
         ),
       ]),
     ]
-    rows -> rows
   }
-  let help = help_line(state, inside.size.width)
-  buf
-  |> buffer.clear(area)
-  |> block.render(area, frame)
-  |> paragraph.render_styled(
-    inside,
-    list.append(rows, [span.line_new([]), help]),
-  )
+}
+
+// The one or two words a narrow row has room for.
+fn short_status(presence: Presence, row: protocol.Session) -> String {
+  case presence {
+    NeedsYou -> "needs you"
+    Working -> "working"
+    Idle -> "idle"
+    Unobserved -> "resident"
+    Inactive -> lifecycle(row.status)
+  }
+}
+
+// Scrolls so every line of the highlighted row is on screen, by bringing
+// its last line to the bottom when it would otherwise fall below.
+fn window(lines: List(ListLine), state: State, height: Int) -> List(span.Line) {
+  let position =
+    lines
+    |> list.index_map(fn(line, index) { #(line.row, index) })
+    |> list.filter(fn(pair) { pair.0 == Some(state.selected) })
+    |> list.last
+    |> result.map(fn(pair) { pair.1 })
+    |> result.unwrap(0)
+  let start = int.max(0, position - height + 1)
+  lines
+  |> list.drop(start)
+  |> list.take(height)
+  |> list.map(fn(line) { line.line })
+}
+
+// The tab row. A narrow picker drops the Tab hint before it drops a tab.
+fn tabs_line(state: State, width: Int) -> span.Line {
+  case state.collection {
+    Archived ->
+      span.line_new([
+        span.span_styled(
+          text.truncate(
+            "Archived sessions are restored before they can be opened.",
+            width,
+            "…",
+          ),
+          theme.overlay_quiet(),
+        ),
+      ])
+    Active -> {
+      let tabs =
+        list.map(counts(state), fn(pair) {
+          let #(filter, count) = pair
+          let label = filter_label(filter) <> " " <> int.to_string(count)
+          case filter == state.filter {
+            True ->
+              span.span_styled(
+                " " <> label <> " ",
+                style.new(theme.graphite, theme.signal, style.bold()),
+              )
+            False ->
+              span.span_styled(" " <> label <> " ", theme.overlay_quiet())
+          }
+        })
+      let hint = "Tab filter"
+      let used =
+        list.fold(tabs, 0, fn(total, tab) {
+          total + text.cell_width(tab.content)
+        })
+      let hint_spans = case used + text.cell_width(hint) + 2 <= width {
+        True -> [
+          span.span_styled(
+            string.repeat(" ", width - used - text.cell_width(hint)),
+            theme.overlay_quiet(),
+          ),
+          span.span_styled(hint, theme.overlay_quiet()),
+        ]
+        False -> []
+      }
+      span.line_new(list.append(tabs, hint_spans))
+    }
+  }
+}
+
+fn filter_label(filter: Filter) -> String {
+  case filter {
+    AllSessions -> "All"
+    NeedsYouSessions -> "Needs you"
+    WorkingSessions -> "Working"
+    IdleSessions -> "Idle"
+    InactiveSessions -> "Inactive"
+  }
+}
+
+// Every presence has a glyph as well as a color, so the list reads without
+// color.
+fn glyph(presence: Presence) -> String {
+  case presence {
+    NeedsYou -> "!"
+    Working -> "●"
+    Idle -> "○"
+    Unobserved -> "◌"
+    Inactive -> "·"
+  }
+}
+
+fn presence_style(presence: Presence) -> style.Style {
+  case presence {
+    NeedsYou -> style.new(theme.danger, theme.graphite, style.bold())
+    Working -> theme.overlay_current()
+    Idle -> style.new(theme.added, theme.graphite, style.none())
+    Unobserved | Inactive -> theme.overlay_quiet()
+  }
+}
+
+// The details pane for the highlighted row: what it is doing and why, the
+// daemon's last word from it and its agents, then where it lives. Every
+// line is pre-wrapped to the pane, because an overlay row never wraps.
+fn detail_lines(
+  state: State,
+  row: protocol.Session,
+  width: Int,
+) -> List(span.Line) {
+  let presence = presence(state, row)
+  let activity = option.from_result(dict.get(state.activity, row.session_id))
+  let plain = theme.overlay_plain()
+  let quiet = theme.overlay_quiet()
+
+  // The name and the status line say what the row is doing; the sections
+  // below appear only when the daemon's answer carries them.
+  let heading =
+    wrapped(text_hygiene.single_line(row.name), width, theme.overlay_signal())
+  let status = [
+    span.line_new([
+      span.span_styled(glyph(presence) <> " ", presence_style(presence)),
+      span.span_styled(
+        text.truncate(status_text(presence, row, activity), width - 2, "…"),
+        presence_style(presence),
+      ),
+    ]),
+  ]
+
+  let message = case activity {
+    Some(protocol.Activity(last_message: Some(message), ..)) ->
+      section("Last message", wrapped(message, width, plain) |> list.take(8))
+    _ -> []
+  }
+  let agents = case activity {
+    Some(protocol.Activity(glances: [_, ..] as glances, ..)) ->
+      section(
+        "Agents",
+        list.flat_map(glances, fn(glance) {
+          list.append(
+            wrapped(glance.strand <> " · " <> glance.title, width, plain)
+              |> list.take(1),
+            wrapped(glance.summary, width, quiet) |> list.take(2),
+          )
+        }),
+      )
+    _ -> []
+  }
+  let model = case activity {
+    Some(protocol.Activity(model: Some(model), ..)) ->
+      section("Model", wrapped(model, width, plain))
+    _ -> []
+  }
+  list.flatten([
+    heading,
+    status,
+    message,
+    agents,
+    section("Workspace", wrapped(row.workspace, width, plain)),
+    model,
+    section("Session", wrapped(row.session_id, width, plain)),
+  ])
+}
+
+fn section(label: String, body: List(span.Line)) -> List(span.Line) {
+  [
+    span.line_new([]),
+    span.line_new([span.span_styled(label, theme.overlay_quiet())]),
+    ..body
+  ]
+}
+
+fn wrapped(value: String, width: Int, style: style.Style) -> List(span.Line) {
+  value
+  |> text_hygiene.single_line
+  |> text.wrap(int.max(1, width))
+  |> list.map(fn(line) { span.line_new([span.span_styled(line, style)]) })
+}
+
+// Says why a row is where it is. The reason for `NeedsYou` comes first
+// because it is what the operator has to act on.
+fn status_text(
+  presence: Presence,
+  row: protocol.Session,
+  activity: Option(protocol.Activity),
+) -> String {
+  case presence, activity {
+    NeedsYou, Some(protocol.Activity(approvals:, ..)) if approvals > 0 ->
+      "Needs you · " <> plural(approvals, "approval") <> " pending"
+    NeedsYou,
+      Some(protocol.Activity(last_outcome: Some(protocol.LastFailed), ..))
+    -> "Needs you · last run failed"
+    NeedsYou, _ -> "Needs you"
+
+    // `strands` counts every strand the session has ever held, finished
+    // sub-agents included, so only the running count is worth printing.
+    Working, Some(protocol.Activity(working:, ..)) if working > 1 ->
+      "Working · " <> plural(working, "agent") <> " running"
+    Working, _ -> "Working"
+    Idle,
+      Some(protocol.Activity(last_outcome: Some(protocol.LastCompleted), ..))
+    -> "Idle · last run completed"
+    Idle, Some(protocol.Activity(last_outcome: Some(protocol.LastAborted), ..))
+    -> "Idle · last run aborted"
+    Idle, _ -> "Idle"
+    Unobserved, Some(_) -> "Resident · did not answer"
+    Unobserved, None -> "Resident · activity not yet observed"
+    Inactive, _ -> "Inactive · " <> lifecycle(row.status) <> " · Enter opens"
+  }
+}
+
+fn plural(count: Int, noun: String) -> String {
+  int.to_string(count)
+  <> " "
+  <> case count == 1 {
+    True -> noun
+    False -> noun <> "s"
+  }
 }
 
 // The timestamp fields distinguish catalogue UUIDs whose random suffix is
@@ -501,7 +1241,7 @@ fn help_line(state: State, width: Int) {
           text.truncate(
             case state.collection {
               Active ->
-                "↑↓ select · Enter open · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close"
+                "↑↓ select · Enter open · Tab filter · l link · n new · r rename · d archive · a archived · ←→ pages · Esc close"
               Archived ->
                 "↑↓ select · Enter restore · r rename · d delete · a active · ←→ pages · Esc close"
             },

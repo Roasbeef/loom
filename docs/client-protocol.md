@@ -441,7 +441,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:992`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1012`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -819,8 +819,8 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
-`sessions.default`, `operations.get`, and `peers.inspect`. Every mutating control command
-is refused. Source: (`client/daemon/server.gleam:443-463`).
+`sessions.default`, `operations.get`, `peers.inspect`, and `sessions.activity`. Every mutating control command
+is refused. Source: (`client/daemon/server.gleam:475-492`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -902,6 +902,58 @@ saved source is refused. The command never opens a saved target, and it
 remains readable on an existing control socket during daemon drain. The result
 is an observation; subsequent sends still check the current grant. See
 [Protocol 049](../protocol-change/049-peer-inspection.md) for the decision.
+
+### 3.21 `sessions.activity`
+
+An owner reads what a set of resident sessions are doing. The request carries
+the current `epoch` and `sessions`, an array of 1 to 24 distinct canonical
+session ids:
+
+```json
+{"v":2,"id":11,"cmd":"sessions.activity","body":{"sessions":["0198c0de-0000-7000-8000-000000000001","0198c0de-0000-7000-8000-000000000002"],"epoch":"ep-7f3a"}}
+```
+
+An empty array, more than 24 ids, a repeated id, or an id that is not
+canonical is refused with `bad_request`. A member credential is refused with
+`forbidden`, and an old epoch with `stale_epoch`, before any session is
+resolved.
+
+Reply:
+
+```json
+{"v":2,"reply_to":11,"event":"sessions.activity","body":{"activity":[{"session_id":"0198c0de-0000-7000-8000-000000000001","state":"working","strands":2,"working":1,"approvals":0,"last_outcome":"completed","last_message":"Merged the retry fix.","model":"glm-5.2","glances":[{"strand":"sub:main/audit-1a2b","title":"Audit","summary":"Reading manager.gleam"}]}]}}
+```
+
+`activity` holds one row per requested session that is resident, in request
+order. A session that is saved, archived, opening, stopping, blocked, or not
+registered is absent; a client treats absence as inactive. The server never
+opens a saved session and never reads its database.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `session_id` | string | required | Canonical session identity. |
+| `state` | string | required | `needs_you`, `working`, `idle`, or `unknown`. |
+| `strands` | integer | optional | Number of strands in the session. |
+| `working` | integer | optional | Number of strands with a current operation. |
+| `approvals` | integer | optional | Number of pending escalation records. |
+| `last_outcome` | string or null | optional | How main's last run ended: `completed`, `failed`, or `aborted`. `null` when main has not finished a run, or its latest terminal result is a compaction or navigation. |
+| `last_message` | string or null | optional | Main's final assistant text for that run, on one line, at most 280 bytes. |
+| `model` | string or null | optional | Main's configured model identity, at most 64 bytes. |
+| `glances` | array | optional | At most four glances of strands whose operation is still current (`main` included), newest first, each with `strand` (at most 96 bytes), `title` (at most 60), and `summary` (at most 160, possibly empty). |
+
+`state` is `needs_you` when an approval is pending, or when main's last run
+failed and main has no current operation; otherwise `working` when any strand
+has a current operation; otherwise `idle`. A session that does not answer
+within 2,000 ms, or that fails to answer, is reported as a row with only
+`session_id` and `state: "unknown"`. A client MUST treat a `state` value it
+does not recognize as `unknown`, and a missing optional field as empty.
+
+Each row is at most 2,400 encoded bytes, so the reply stays within 60,000
+bytes; the server refuses with `metadata_too_large` if it would not. Each
+reply is a fresh observation; the server does not cache or push activity.
+The command is a read, so it remains available on an existing control socket
+during daemon drain. See
+[Protocol 050](../protocol-change/050-session-activity.md) for the decision.
 
 ---
 
@@ -2996,7 +3048,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:317`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:332`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
 

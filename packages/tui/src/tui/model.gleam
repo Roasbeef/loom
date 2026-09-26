@@ -384,6 +384,33 @@ pub type ControlRequest {
   )
 }
 
+/// The session picker's activity poll, which asks the daemon what each
+/// resident session on the open page is doing.
+///
+/// It is its own slot rather than a `ControlRequest` because the picker's one
+/// control job is what paging, renames and deletes wait on, and a poll that
+/// held it through a slow resident would turn an operator's keypress into a
+/// "catalogue action is already running" refusal. Each poll also runs on a
+/// control connection of its own for the same reason: the borrowed control
+/// has one outstanding request.
+@internal
+pub type ActivityPoll {
+  /// Ask at the next tick that finds the picker open on resident rows.
+  ActivityDue
+
+  /// The last poll settled; the next is not asked before this monotonic time.
+  ActivityResting(until_ms: Int)
+
+  /// One request is in flight for exactly these identities.
+  ActivityAsking(
+    /// The worker's relayed outcome.
+    replies: Subject(weft.Pulled(List(control_protocol.Activity), String)),
+    /// The identities the request named, which `observe` needs to tell an
+    /// omitted identity from one that was never asked about.
+    asked: List(String),
+  )
+}
+
 /// An already selected control job message retains its original source tag.
 @internal
 pub type ControlEvent {
@@ -696,6 +723,8 @@ pub type Model {
     daemon_host: Option(daemon_selection.Host),
     /// One bounded metadata page request; no catalogue accumulation.
     control_request: Option(ControlRequest),
+    /// The session picker's activity poll, separate from the control job.
+    activity_poll: ActivityPoll,
     /// The one reconnect an unexpected daemon death is allowed, and whether it
     /// has already been spent. Kept in the model rather than beside the loop so
     /// the decision not to reconnect twice is made from the state the operator

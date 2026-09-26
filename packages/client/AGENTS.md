@@ -4210,9 +4210,26 @@ grants confer no lineage or custody.
 `peer_mail.Link` enforces 64 outgoing links per source strand before writing the
 source index. Replacing an exact link at the limit remains idempotent.
 
+Owner-only, epoch-checked `sessions.activity` (`protocol.SessionActivity`)
+takes 1 to 24 distinct canonical ids and reports what each resident is doing.
+`server.activity` resolves each id through `manager.resolve`, which answers only
+for `Running` slots, so saved or unknown ids are omitted and no saved store is
+opened. It then calls the read-only `peer_mail.Overview` command on every
+resident concurrently from the control socket's process, in one `weft` run
+under a 2,000 ms deadline; any outcome other than an answer becomes a
+`{"session_id","state":"unknown"}` row. `Overview` runs in the recipient Agency
+actor and derives `state` (`needs_you` for a pending escalation or a failed,
+stopped main; else `working` when any strand has a current operation; else
+`idle`), counts, main's last run outcome, final assistant text, model, and at
+most four glances whose operation is still current. The recipient bounds its
+row to `peer_mail.overview_row_bytes` (2,300) by shedding glances, then the
+message; the server re-checks 2,400 bytes per row and 60,000 per reply.
+
 See [async collaboration](../../docs/async-collaboration.md) for bounds and
-recovery semantics, and [Protocol 049](../../protocol-change/049-peer-inspection.md)
-for the read-only owner inspection extension.
+recovery semantics, [Protocol 049](../../protocol-change/049-peer-inspection.md)
+for the read-only owner inspection extension, and
+[Protocol 050](../../protocol-change/050-session-activity.md) for session
+activity.
 
 Input readiness is separate from the execution phase. `Ready` publishes an
 immutable endpoint set and idle interval; `SendTo` journals a named value only

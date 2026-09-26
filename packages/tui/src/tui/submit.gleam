@@ -105,7 +105,15 @@ fn submit_admitted(model: Model) -> Model {
   }
 }
 
-fn open_session_selector(model: Model) -> Model {
+/// Opens the session picker, as `/sessions` does, without touching the draft.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // submit.open_session_selector(model)
+/// ```
+@internal
+pub fn open_session_selector(model: Model) -> Model {
   case model.daemon_host {
     Some(_) -> session_control.load_catalogue(model, "", None)
     None ->

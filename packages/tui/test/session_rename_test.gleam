@@ -66,3 +66,28 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
   assert after.session == row.session_id
   assert after.control_request == None
 }
+
+// Left from an empty composer asks for the session picker, as `/sessions`
+// does. Without daemon control that request is refused in the notice, which
+// is the witness that Left reached the picker's path rather than the cursor.
+pub fn left_from_an_empty_composer_opens_sessions_test() {
+  let model =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
+  let after = tui.update(backend.KeyPress("left"), model)
+  assert after.notice == "daemon control is unavailable; reconnect explicitly"
+  assert textarea.value(after.input) == ""
+}
+
+// A draft keeps Left as a cursor key, so browsing text never opens the
+// picker over it.
+pub fn left_inside_a_draft_moves_the_cursor_test() {
+  let model =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
+  let model =
+    tui_model.Model(..model, input: textarea.state_from_string("draft"))
+  let after = tui.update(backend.KeyPress("left"), model)
+  assert after.notice == model.notice
+  assert after.overlay == tui_model.NoOverlay
+  assert textarea.value(after.input) == "draft"
+  assert after.input != model.input
+}

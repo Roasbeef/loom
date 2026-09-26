@@ -379,6 +379,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.DeletedReply(_), _
     | protocol.PeersInspectionReply(_), _
     | protocol.PeersMutationReply(_), _
+    | protocol.ActivityReply(_), _
     | protocol.ShutdownReply, _
     -> True
   }

@@ -637,6 +637,12 @@ boundaries and the split's measurements under Invariants.
   `tui/daemon/protocol` is the independent, total control codec:
   `Page` is bounded to 100 authorized records, lifecycle requests use the hello
   epoch, and `GetOperation` refuses an operation from another epoch locally.
+  `SessionActivity(sessions)` encodes owner-only `sessions.activity`
+  (`protocol-change/050`), refusing locally an empty, duplicated, or
+  over-24 list; its `ActivityReply` holds one `Activity` row per resident, in
+  request order, and a requested id missing from it is not resident. The row
+  decoder requires only `session_id`: an unrecognized `state` reads as
+  `Unknown`, and a missing or malformed optional field as `None`, `0`, or `[]`.
   Metadata/default reads never imply an open. Cleartext credentials are allowed
   only for literal loopback endpoints — `127.0.0.1` and `[::1]`, bracketed
   because that is the form `uri.parse` leaves in a parsed URI's host; remote
@@ -656,6 +662,30 @@ boundaries and the split's measurements under Invariants.
   daemons bypass executable/config discovery. Default startup highlights a
   catalogue row and waits for Enter; an explicit `--session` selects it.
 - `tui/session_selector.State` retains one authorized, revision-fenced page.
+  It is also the cross-session view: rows are grouped by workspace in page
+  order, each carries a `Presence` glyph (`!` needs you, `●` working, `○`
+  idle, `◌` resident but unobserved, `·` inactive), and Tab/Shift+Tab cycle
+  a `Filter` over All, Needs you, Working, Idle and Inactive whose counts are
+  of the page on screen. `presence` joins the row's lifecycle with
+  `State.activity`, the latest `sessions.activity` answer per resident
+  identity; only a resident row can be anything but `Inactive`, whatever an
+  older answer said. `selected` indexes `visible` (grouped, filtered order),
+  never the raw page, and `with_filter`, `observe` and `carry` keep the
+  highlighted identity when it is still drawn. `observe` treats an asked
+  identity absent from the reply as no longer resident. `carry` keeps the
+  tab and the answers for rows still on a reloaded page of the same
+  collection. At an inner width of 96 or more a details pane shows the
+  highlighted row's status and reason, last message, agent glances,
+  workspace, model and identity; narrower pickers put status and short
+  identity on a second row line instead. `Model.activity_poll` fills
+  `State.activity`: while the picker is open on the active collection with
+  resident rows, `session_control.service_activity` (from the tick) asks
+  `sessions.activity` for at most `protocol.activity_limit` of them, on a
+  control connection the worker opens and closes itself so the borrowed
+  control's single slot stays free for paging, renames and opens.
+  `drain_activity` applies an answer only to a still-open picker and rests
+  the poll three seconds after each delivery; a page load makes it due at
+  once. A refusal changes nothing on screen.
   `/sessions` does not scan workspace launch records. `tui/daemon/selection`
   resolves the selected row and canonical workspace, attaches directly when
   resident, or explicitly opens and observes the returned operation.
@@ -873,7 +903,9 @@ boundaries and the split's measurements under Invariants.
   <name> [target]` retires one a strand created (the target defaults to
   the active strand, and an operator `[[schedule]]` comes back as a
   `conflict` naming the configuration file),
-  `/sessions` opens the daemon's authorized metadata selector. `/peers` inspects
+  `/sessions`, or Left from an empty composer with no pending paste, opens
+  the daemon's authorized metadata selector; the footer's `← sessions` hint
+  is shown exactly while Left would do so. `/peers` inspects
 the active strand's owner-managed directional links; press `l` to choose a resident
 session and enter its exact strand, `d` to revoke the selected direction, and `v`
 to propose a separately confirmed reverse link. `busy_only` is the default wake
