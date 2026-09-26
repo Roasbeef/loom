@@ -732,10 +732,15 @@ catalogue without opening runtimes. Explicit admission invokes
   fallback** to another role or provider; a catalogue that routes none
   gets no machine. `Route.provider` is the confidentiality check:
   `jobs(entry, provider:, floor:)` admits a reasoning block only from a
-  message whose `provider` equals it, and `observer(name, provider)`
-  returns a no-op callback for any request whose strand configuration
-  names another provider, so another provider's reasoning never reaches
-  the machine or the summarizer. Advice and nudges bodies
+  message whose `provider` equals it. A stream names no provider and a
+  role's chain may fall back across providers, so `observer(name,
+  admits)` observes a request only when `admits` accepts its strand
+  identity; production passes `live_admission(catalogue, provider)`, the
+  set of catalogue identities for which `admits_live` holds: the identity
+  is the route's provider, every chain it heads stays on that provider,
+  and a text-only identity's `vision` chain does too. Any other request
+  gets a no-op callback, so reasoning that could have come from another
+  provider never reaches the machine or the summarizer. Advice and nudges bodies
   (`advisorslice.delivered_body`) are exempt. The machine has two
   addresses: `Wiring.name` for the tap's `Streamed`/`StreamEnded` casts,
   and `Wiring.commits`, a `writer.Event` address it binds itself in its

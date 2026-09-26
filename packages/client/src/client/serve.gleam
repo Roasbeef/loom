@@ -3231,7 +3231,7 @@ fn assemble_in(
       provider: hub.tap_provider_with(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
-        also: summary_tap(summary_route, summary_name),
+        also: summary_tap(summary_route, settings.catalog, summary_name),
       ),
       // The only work this adds on the driver process is one
         // `process.spawn_unlinked`; everything a reap actually does
@@ -6107,14 +6107,21 @@ fn summary_route(
 }
 
 // The live feed's observer, or one that observes nothing when no route
-// exists. The route's provider is what the tap compares each request with,
-// which is the confidentiality check for text still streaming.
+// exists. Which strand identities it observes is decided once here, from
+// the catalogue's chains: only an identity every one of whose possible
+// answering targets is the route's provider, which is the confidentiality
+// check for text still streaming.
 fn summary_tap(
   route: Option(blocksummary.Route),
+  catalogue: catalog.Catalog,
   name: address.Address(blocksummary.Message),
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
   case route {
-    Some(route) -> blocksummary.observer(name, route.provider)
+    Some(route) ->
+      blocksummary.observer(
+        name,
+        blocksummary.live_admission(catalogue, route.provider),
+      )
     None -> fn(_spec, _generation) { fn(_event) { Nil } }
   }
 }

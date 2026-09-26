@@ -41,10 +41,14 @@
 //// and the request is pinned to that identity (`ForResolved`), so a
 //// retryable failure cannot fall back to another provider's model. A block
 //// from any other provider is skipped without a request; the terminal
-//// keeps its first-line digest. Advisor messages are harness-written text
+//// keeps its first-line digest. A stream still being written names no
+//// provider, and the strand's configured identity may not be the one
+//// that answers, because a role's chain can fall back across providers;
+//// `admits_live` therefore observes a stream only when every target that
+//// could answer it is the summarize provider's. Advisor messages are harness-written text
 //// that every provider in the session is already sent, so they carry no
 //// such restriction. `route` and `jobs` hold the check for committed
-//// blocks, and `observer` holds it for streams.
+//// blocks, and `admits_live` and `observer` hold it for streams.
 ////
 //// # How a request runs
 ////
@@ -72,6 +76,7 @@ import client/blocksummarybook.{
   type Job, type Launch, type Pace, type Source, AdvisorMessage, Job, LiveAsk,
   Reasoning, SettledAsk,
 }
+import client/catalog
 import client/distill.{type Distiller}
 import client/notes
 import core/entry.{type Entry}
@@ -88,7 +93,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
+import gleam/set
 import gleam/string
+import machine/strand.{type ModelIdentity}
 import provider/gateway as provider_gateway
 import provider/model
 import provider/stream
@@ -497,17 +504,120 @@ pub fn read(
 
 // --- the provider tap -------------------------------------------------------------
 
+/// Whether reasoning streamed for a strand configured with `identity` is
+/// certain to come from the summarize route's provider, `provider`, so its
+/// live text may be summarized.
+///
+/// The stream carries no provider of its own, and the strand's configured
+/// identity is not always the one that answers. A strand whose identity
+/// heads a role's chain is dispatched to that role, and the gateway walks
+/// the chain on a retryable failure, so a fallback may answer from another
+/// provider. A text-only identity with an image in the turn is dispatched
+/// to the `vision` chain instead. So the identity is admitted only when
+/// every target that could answer is the summarize provider's: the
+/// identity itself, every chain it heads, and, when it cannot read images,
+/// the `vision` chain. A chain that crosses providers turns live summaries
+/// off for every strand that could walk it. Settled blocks are unaffected:
+/// they are checked against the provider the committed message names.
+///
+/// A catalogue entry's name is its provider name in the gateway, so each
+/// entry is a provider here, and a chain of two entries on the same host
+/// still crosses providers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // blocksummary.admits_live(catalogue, "acme",
+/// //   strand.ModelIdentity(provider: "acme", model_id: "loom-1"))
+/// ```
+///
+pub fn admits_live(
+  catalogue: catalog.Catalog,
+  provider: String,
+  identity: ModelIdentity,
+) -> Bool {
+  let only_provider = fn(names: List(String)) {
+    names
+    |> list.filter(fn(name) { result.is_ok(catalog.find(catalogue, name)) })
+    |> list.all(fn(name) { name == provider })
+  }
+  let headed =
+    list.all(catalogue.roles, fn(route) {
+      let #(_role, names) = route
+      case chain_head(catalogue, names) {
+        Ok(head)
+          if head.name == identity.provider && head.model_id == identity.model_id
+        -> only_provider(names)
+        Ok(_other) | Error(Nil) -> True
+      }
+    })
+  let seen = case catalog.find(catalogue, identity.provider) {
+    Ok(catalog.CatalogModel(vision: catalog.TextOnly, ..)) ->
+      case list.key_find(catalogue.roles, model.Vision) {
+        Ok(names) -> only_provider(names)
+        Error(Nil) -> True
+      }
+    Ok(catalog.CatalogModel(vision: catalog.ReadsImages, ..)) | Error(Nil) ->
+      True
+  }
+
+  identity.provider == provider && headed && seen
+}
+
+/// `admits_live` answered once, at wiring time, for every identity the
+/// catalogue holds, as the predicate `observer` takes.
+///
+/// The answer depends only on the catalogue, so computing it per request
+/// would repeat the same walk and copy the catalogue into every relay's
+/// observer process. The set holds the admitted `(provider, model_id)`
+/// pairs. An identity outside the catalogue is not admitted: the route's
+/// provider is a catalogue entry, so no such identity can name it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // blocksummary.live_admission(catalogue, route.provider)
+/// ```
+///
+pub fn live_admission(
+  catalogue: catalog.Catalog,
+  provider: String,
+) -> fn(ModelIdentity) -> Bool {
+  let admitted =
+    catalogue.models
+    |> list.map(fn(entry) {
+      strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
+    })
+    |> list.filter(admits_live(catalogue, provider, _))
+    |> list.map(fn(identity) { #(identity.provider, identity.model_id) })
+    |> set.from_list
+
+  fn(identity: ModelIdentity) {
+    set.contains(admitted, #(identity.provider, identity.model_id))
+  }
+}
+
+// The first entry of a chain the gateway registered, which is the one a
+// role resolves to.
+fn chain_head(
+  catalogue: catalog.Catalog,
+  names: List(String),
+) -> Result(catalog.CatalogModel, Nil) {
+  list.find_map(names, catalog.find(catalogue, _))
+}
+
 /// The live feed's observer factory, for `client/gateway.tap_provider_with`.
 ///
 /// Given a request and the gateway's identity for it, it returns the
 /// callback the provider relay calls with every stream event. A
-/// generation or poll request dispatched to `provider` — the summarize
-/// route's own — casts each reasoning fragment and the stream's end to
-/// the machine at `name`. Every other request gets a callback that does
+/// generation or poll request whose strand identity `admits` — in
+/// production `live_admission` over the catalogue and the summarize
+/// route's provider — casts each reasoning fragment and the stream's end to the
+/// machine at `name`. Every other request gets a callback that does
 /// nothing, which is where the confidentiality rule is enforced for live
-/// text: a fragment from another provider never leaves the relay. A
-/// compaction's summary request is not an agent's reasoning and is not
-/// observed.
+/// text: a fragment that could have come from another provider never
+/// leaves the relay. A compaction's summary request is not an agent's
+/// reasoning and is not observed.
 ///
 /// The callback runs on the relay's observer process, so a cast is all it
 /// does; a send to an absent machine is dropped.
@@ -516,23 +626,23 @@ pub fn read(
 ///
 /// ```gleam
 /// // gateway.tap_provider_with(surface, to: hub,
-/// //   also: blocksummary.observer(name, route.provider))
+/// //   also: blocksummary.observer(name, live_admission(catalogue, provider)))
 /// ```
 ///
 pub fn observer(
   name: address.Address(Message),
-  provider: String,
+  admits: fn(ModelIdentity) -> Bool,
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
   fn(spec, generation) {
     case spec {
       effects.GenerationRequest(operation:, configuration:, ..)
-        | effects.PollRequest(operation:, configuration:, ..)
-        if configuration.model.provider == provider
-      -> fn(event) { observe(name, operation, generation, event) }
+      | effects.PollRequest(operation:, configuration:, ..) ->
+        case admits(configuration.model) {
+          True -> fn(event) { observe(name, operation, generation, event) }
+          False -> fn(_event) { Nil }
+        }
 
-      effects.GenerationRequest(..)
-      | effects.PollRequest(..)
-      | effects.SummaryRequest(..) -> fn(_event) { Nil }
+      effects.SummaryRequest(..) -> fn(_event) { Nil }
     }
   }
 }

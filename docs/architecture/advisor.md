@@ -267,10 +267,15 @@ the provider that produced the block**, and the request is pinned to that
 identity with no fallback, so a retryable failure cannot carry the text
 to another provider's model. A block from any other provider is skipped
 without a request and keeps the terminal's first-line digest. The check
-reads the provider the settled assistant message names; for a stream
-still being written, the provider of the generation request's strand
-configuration, compared at the provider tap so a fragment from another
-provider never leaves the relay. Advice and nudges are text the harness
+reads the provider the settled assistant message names. A stream still
+being written names no provider, and a role's chain can fall back across
+providers, so a strand's live reasoning is observed only when every
+target that could answer it is the summarize provider's: its own
+identity, every chain it heads, and the `vision` chain when it cannot read
+images (`blocksummary.admits_live`, computed once from the catalogue).
+The test runs at the provider tap, so a fragment that could have come
+from another provider never leaves the relay. A catalogue entry's name is
+its provider name, so the rule compares entries. Advice and nudges are text the harness
 wrote and already sends to every provider in the session, so the
 summarizer may label them whichever provider it belongs to.
 

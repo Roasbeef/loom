@@ -12,6 +12,7 @@
 import client/advisorslice
 import client/blocksummary
 import client/blocksummarybook
+import client/catalog
 import client/distill
 import core/clock
 import core/entry
@@ -282,7 +283,10 @@ pub fn live_requests_coalesce_behind_the_one_out_test() {
   let rig = a_rig(held("The agent compares two fixes."))
   let operation = an_operation(rig.opened, "main", 5)
   let tap =
-    blocksummary.observer(rig.name, "acme")(a_request("acme", operation), "g-1")
+    blocksummary.observer(rig.name, single_provider())(
+      a_request("acme", operation),
+      "g-1",
+    )
 
   tap(reasoning(string.repeat("a", 4096)))
   let assert Ok(#(first, release)) = process.receive(rig.held, 2000)
@@ -317,7 +321,7 @@ pub fn another_providers_stream_is_not_observed_test() {
   let rig = a_rig(held("unused"))
   let operation = an_operation(rig.opened, "main", 6)
   let tap =
-    blocksummary.observer(rig.name, "acme")(
+    blocksummary.observer(rig.name, single_provider())(
       a_request("other", operation),
       "g-2",
     )
@@ -325,6 +329,54 @@ pub fn another_providers_stream_is_not_observed_test() {
   tap(reasoning(string.repeat("a", 8192)))
   assert process.receive(rig.held, 300) == Error(Nil)
   stop(rig)
+}
+
+// A strand configured with the summarize route's own provider can still be
+// answered by another one when its role's chain falls back. With `main`
+// heading `acme` and falling back to `other`, the stream names nothing that
+// says which one answered, so it is not observed; settled blocks, checked
+// against the provider the committed message names, are unaffected.
+pub fn a_cross_provider_fallback_chain_is_not_observed_test() {
+  let crossing =
+    a_catalogue([#(model.Main, ["acme", "other"]), #(model.Summarize, ["acme"])])
+  let admits = blocksummary.live_admission(crossing, "acme")
+  assert !admits(identity("acme"))
+  assert !admits(identity("other"))
+
+  let rig = a_rig(held("unused"))
+  let operation = an_operation(rig.opened, "main", 7)
+  let tap =
+    blocksummary.observer(rig.name, admits)(a_request("acme", operation), "g-3")
+  tap(reasoning(string.repeat("a", 8192)))
+  assert process.receive(rig.held, 300) == Error(Nil)
+  stop(rig)
+}
+
+// A chain that stays on the summarize provider admits the strands it
+// serves. A text-only identity can also be rerouted to the `vision` chain,
+// so a `vision` chain on another provider turns its live text off, while a
+// strand that reads images is never rerouted and stays admitted.
+pub fn only_single_provider_routes_are_observed_test() {
+  let staying =
+    a_catalogue([#(model.Main, ["acme"]), #(model.Summarize, ["acme"])])
+  assert blocksummary.live_admission(staying, "acme")(identity("acme"))
+
+  let seeing =
+    a_catalogue([
+      #(model.Main, ["acme"]),
+      #(model.Summarize, ["acme"]),
+      #(model.Vision, ["other"]),
+    ])
+  assert blocksummary.live_admission(seeing, "acme")(identity("acme"))
+
+  let blind =
+    catalog.Catalog(
+      ..seeing,
+      models: list.map(seeing.models, fn(entry) {
+        catalog.CatalogModel(..entry, vision: catalog.TextOnly)
+      }),
+    )
+  assert !blocksummary.live_admission(blind, "acme")(identity("acme"))
 }
 
 // --- the rig -------------------------------------------------------------------
@@ -598,4 +650,41 @@ fn routing(roles: List(model.Role)) -> provider_gateway.Gateway {
   list.fold(roles, gateway, fn(gateway, role) {
     provider_gateway.route(gateway, role, [identity])
   })
+}
+
+// A catalogue of two entries, `acme` and `other`, both reading images,
+// routed as given.
+fn a_catalogue(roles: List(#(model.Role, List(String)))) -> catalog.Catalog {
+  catalog.Catalog(
+    models: list.map(["acme", "other"], an_entry_named),
+    roles:,
+    mcp_servers: [],
+  )
+}
+
+fn an_entry_named(name: String) -> catalog.CatalogModel {
+  catalog.CatalogModel(
+    name:,
+    dialect: catalog.Anthropic,
+    base_url: "https://" <> name <> ".invalid",
+    api_key_env: "KEY",
+    model_id: "loom-1",
+    context_window: 100_000,
+    max_output_tokens: 4096,
+    thinking: model.ThinkingHigh,
+    pricing: None,
+    vision: catalog.ReadsImages,
+    max_images: 8,
+  )
+}
+
+fn identity(provider: String) -> machine_strand.ModelIdentity {
+  machine_strand.ModelIdentity(provider:, model_id: "loom-1")
+}
+
+fn single_provider() -> fn(machine_strand.ModelIdentity) -> Bool {
+  blocksummary.live_admission(
+    a_catalogue([#(model.Main, ["acme"]), #(model.Summarize, ["acme"])]),
+    "acme",
+  )
 }
