@@ -2,15 +2,19 @@
 //// with the daemon's activity reply, filters narrow the drawn rows, and the
 //// highlight follows an identity rather than a position when either moves.
 
+import etui/buffer
+import etui/geometry
 import etui/keys
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import tui
 import tui/connection
 import tui/daemon/protocol
+import tui/frame
 import tui/model as tui_model
 import tui/session_control
 import tui/session_selector
@@ -256,4 +260,18 @@ pub fn a_closed_picker_ignores_a_late_answer_test() {
     )
   assert session_control.service_activity(idle).activity_poll
     == tui_model.ActivityDue
+}
+
+// A wide picker with nothing to show draws its advice alone, with no
+// details divider beside it.
+pub fn an_empty_wide_picker_draws_no_divider_test() {
+  let screen = geometry.rect_new(0, 0, 150, 30)
+  let state = session_selector.new(protocol.Page(1, [], None), "")
+  let lines =
+    session_selector.render(buffer.buffer_new(screen), screen, state)
+    |> frame.buffer_to_lines
+  let assert Ok(advice) =
+    list.find(lines, fn(line) { string.contains(line, "No saved sessions") })
+    as "the empty picker explains itself"
+  assert string.split(advice, "│") |> list.length == 3
 }

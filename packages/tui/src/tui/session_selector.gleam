@@ -806,9 +806,12 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
       span.line_new([]),
       help_line(state, inside.size.width),
     ])
-  case arrangement {
-    ListOnly -> painted
-    WithDetails -> {
+
+  // An empty page has no row to describe, so it gets no pane and no divider
+  // beside its one line of advice.
+  case arrangement, detail_lines {
+    ListOnly, _ | WithDetails, [] -> painted
+    WithDetails, [_, ..] -> {
       let divider =
         geometry.rect_new(
           inside.position.x + list_width + 1,
