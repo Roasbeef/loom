@@ -572,6 +572,53 @@ fn located(path: String) -> Result(jail.Executable, String) {
   )
 }
 
+// A link *above* the path the server writes is the operator's, as a
+// workspace reached through `/var -> /private/var` is, and is admitted;
+// the same executable reached through a link *below* it is refused, since
+// the server could have put that link there.
+pub fn only_a_directory_link_below_a_write_is_refused_test() {
+  let directory = links_dir("spelled")
+  executable_file(directory <> "/real-work/app/bin/server")
+  executable_file(directory <> "/elsewhere/server")
+  link(at: directory <> "/work", to: directory <> "/real-work")
+  link(at: directory <> "/real-work/app/tools", to: directory <> "/elsewhere")
+  let write = directory <> "/work/app"
+  let at = fn(path) {
+    jail.directory_unlinked(
+      "gleam",
+      jail.Executable(path:, file: jail.PlainExecutable),
+      [write],
+    )
+  }
+
+  assert at(write <> "/bin/server") == Ok(Nil)
+  let assert Error(reason) = at(write <> "/tools/server")
+    as "a directory link below a write must be refused"
+  assert reason
+    == "lsp.gleam's executable "
+    <> write
+    <> "/tools/server is reached through a directory link under "
+    <> write
+    <> ", which the server can rewrite: "
+    <> write
+    <> "/tools resolves to "
+    <> directory
+    <> "/elsewhere; name the file it leads to in `command`"
+
+  // Outside every write the spelling is nobody's to change.
+  assert jail.directory_unlinked(
+      "gleam",
+      jail.Executable(
+        path: write <> "/tools/server",
+        file: jail.PlainExecutable,
+      ),
+      [directory <> "/unrelated"],
+    )
+    == Ok(Nil)
+  let _ = simplifile.delete_all([directory])
+  Nil
+}
+
 // rustup's shape: `bin/rust-analyzer -> rustup`, a relative link to a
 // sibling. The prefix above `bin` is where the credentials live, and it
 // must not be among the regions.

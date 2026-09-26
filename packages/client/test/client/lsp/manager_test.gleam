@@ -632,6 +632,143 @@ pub fn a_private_cache_is_made_before_the_probe_is_cleared_test() {
   Nil
 }
 
+// A server with one private cache, `XDG_CACHE_HOME = "xdg"`, jailed with
+// `cache` as the daemon's cache place and a runner that records each
+// clearance.
+fn cached_jailed(
+  workspace: String,
+  cache: String,
+  cleared: Subject(broker.CallSpec),
+) -> #(manager.Jailed, profile.LspServer) {
+  let jailed =
+    manager.Jailed(
+      ..probe_jailed(workspace, scripted_run(cleared, clean()), exec.BestEffort),
+      places: profile.Places(home: None, cache: Some(cache)),
+    )
+  let server =
+    profile.LspServer(..shell_server(), cache_env: [#("XDG_CACHE_HOME", "xdg")])
+  #(jailed, server)
+}
+
+fn symlink(at path: String, to target: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(dirname(path))
+    as "a link's directory must be made"
+  let assert Ok(Nil) = simplifile.create_symlink(to: target, from: path)
+    as "a link fixture must be made"
+  Nil
+}
+
+/// A private cache replaced by a link is refused before anything is
+/// cleared. `mkdir -p` and the helper's writable bind both follow a link,
+/// so without the real-path check the server would be granted the
+/// directory the link points at — here a sibling standing in for a
+/// credential directory — which no approval named.
+pub fn a_private_cache_replaced_by_a_link_is_refused_test() {
+  let workspace = scratch("cache-link")
+  let root = project(workspace, "app")
+  let cache = workspace <> "/host-cache"
+  let elsewhere = workspace <> "/elsewhere"
+  let assert Ok(Nil) = simplifile.create_directory_all(elsewhere)
+    as "the link's target must be made"
+  symlink(at: cache <> "/loom/lsp/shell/xdg", to: elsewhere)
+  let cleared = process.new_subject()
+  let #(jailed, server) = cached_jailed(workspace, cache, cleared)
+
+  let assert Error(reason) =
+    manager.connect_jailed(jailed, resolve.Identity(server:, root:))
+    as "a private cache that is a link must be refused"
+  assert string.starts_with(
+    reason,
+    "lsp.shell's private cache " <> cache <> "/loom/lsp/shell/xdg resolves to ",
+  )
+  assert string.contains(reason, "a link below the cache place leads it out")
+  assert drain(cleared, []) == []
+
+  // A link higher up, at Loom's own directory, is refused the same way,
+  // and `mkdir -p` has not followed it to make anything where it points.
+  let _ = simplifile.delete_all([cache])
+  symlink(at: cache <> "/loom", to: elsewhere)
+  let assert Error(reason) =
+    manager.connect_jailed(jailed, resolve.Identity(server:, root:))
+    as "a link above the private cache must be refused"
+  assert string.contains(reason, "a link below the cache place leads it out")
+  assert simplifile.read_directory(elsewhere) == Ok([])
+  assert drain(cleared, []) == []
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+/// The cache place itself may be a link — an operator whose `~/.cache`
+/// lives on another disk — because it is canonicalised before the private
+/// cache is compared with it. Only what lies below it is Loom's.
+pub fn a_linked_cache_place_is_admitted_test() {
+  let workspace = scratch("cache-place-link")
+  let root = project(workspace, "app")
+  let real_cache = workspace <> "/other-disk/cache"
+  let assert Ok(Nil) = simplifile.create_directory_all(real_cache)
+    as "the cache place's target must be made"
+  let cache = workspace <> "/host-cache"
+  symlink(at: cache, to: real_cache)
+  let cleared = process.new_subject()
+  let #(jailed, server) = cached_jailed(workspace, cache, cleared)
+
+  let assert Ok(_transport) =
+    manager.connect_jailed(jailed, resolve.Identity(server:, root:))
+    as "a private cache under a linked cache place must be admitted"
+  assert simplifile.is_directory(real_cache <> "/loom/lsp/shell/xdg")
+    == Ok(True)
+  let assert [spec] = drain(cleared, []) as "only the probe is cleared"
+  assert list.key_find(spec.env, "XDG_CACHE_HOME")
+    == Ok(cache <> "/loom/lsp/shell/xdg")
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+/// A directory of the executable's spelled path that is a link inside a
+/// project the server writes is refused. The file at the end is ordinary,
+/// so no link-file check sees it, but the jail mounts `node_modules/.bin`
+/// by its spelling and the helper's bind follows the link, so whoever
+/// writes the project would choose which host directory is mounted.
+pub fn a_directory_link_on_the_executables_path_is_refused_test() {
+  let workspace = scratch("dir-link")
+  let root = project(workspace, "app")
+  let elsewhere = workspace <> "/elsewhere/bin"
+  write(elsewhere <> "/server", "#!/bin/sh\n")
+  symlink(at: root <> "/node_modules/.bin", to: elsewhere)
+  let command = root <> "/node_modules/.bin/server"
+  let server =
+    profile.LspServer(
+      ..shell_server(),
+      command: [command],
+      project: profile.ProjectWritable,
+    )
+  let cleared = process.new_subject()
+  let jailed =
+    probe_jailed(workspace, scripted_run(cleared, clean()), exec.BestEffort)
+
+  let assert Error(reason) =
+    manager.connect_jailed(jailed, resolve.Identity(server:, root:))
+    as "a directory link under a writable project must be refused"
+  assert string.starts_with(
+    reason,
+    "lsp.shell's executable "
+      <> command
+      <> " is reached through a directory link under "
+      <> root
+      <> ", which the server can rewrite: ",
+  )
+  assert drain(cleared, []) == []
+
+  // The same layout in a project the server only reads chooses nothing
+  // the operator did not, and is admitted.
+  let read_only = profile.LspServer(..server, project: profile.ProjectReadOnly)
+  let assert Ok(_transport) =
+    manager.connect_jailed(jailed, resolve.Identity(server: read_only, root:))
+    as "a directory link in a read-only project must be admitted"
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 // --- (c) the manager over a fake server ------------------------------------------
 
 pub fn one_start_serves_every_caller_who_asked_during_it_test() {
@@ -1938,8 +2075,10 @@ fn run_rust_analyzer(live: Live, home: String) -> Nil {
   // empty Cargo home, offline, cannot resolve them (measured: "no matching
   // package named `hashbrown`"), std loads without them, and the call
   // inside `println!` — a std macro — is then never found. The home's
-  // registry is the host's own, read through `~/.cargo`'s read-only
-  // region; only the home itself is writable.
+  // registry is the host's own, granted read-only by name as the lsp_rust
+  // profile grants it: the jail mounts only `~/.cargo/bin` for rustup's
+  // link, never `~/.cargo` itself, so nothing else would reach it. Only
+  // the home itself is writable.
   let assert Ok(Nil) =
     simplifile.create_symlink(
       to: home <> "/.cargo/registry",
@@ -1953,7 +2092,10 @@ fn run_rust_analyzer(live: Live, home: String) -> Nil {
       extensions: [".rs"],
       root_markers: ["Cargo.toml"],
       project: profile.ProjectReadOnly,
-      readable: [profile.AbsolutePath(home <> "/.rustup")],
+      readable: [
+        profile.AbsolutePath(home <> "/.rustup"),
+        profile.AbsolutePath(home <> "/.cargo/registry"),
+      ],
       writable: [profile.AbsolutePath(target), profile.AbsolutePath(cargo_home)],
       env: [
         "RUSTUP_HOME",

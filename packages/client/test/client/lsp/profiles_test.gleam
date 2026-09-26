@@ -215,6 +215,17 @@ pub fn a_malformed_profile_is_refused_test() {
   refused("\"cache_env\":{}", "\"cache_env\":[]")
 }
 
+// `cache_env` is younger than record format 3, so a format-3 record
+// written before it existed has no such field. It reads as no private
+// caches rather than as an unreadable record.
+pub fn a_profile_without_cache_env_reads_as_none_test() {
+  let bare = server("go", [".go"], "gopls")
+  let text = json.to_string(profile.encode_server(bare))
+  let older = replace(text, "\"cache_env\":{},", "")
+  assert !string.contains(older, "cache_env")
+  assert json.parse(older, profile.server_decoder()) == Ok(bare)
+}
+
 // --- helpers --------------------------------------------------------------------
 
 fn server(

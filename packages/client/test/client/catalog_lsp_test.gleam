@@ -7,6 +7,7 @@
 
 import client/catalog
 import client/lsp/profile
+import client/serve
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
@@ -488,6 +489,96 @@ pub fn a_cache_root_meets_the_home_root_rules_test() {
       "readable = [\"<cache>/a\"]\nwritable = [\"<cache>/a\"]",
     ))
     == "lsp.x lists <cache>/a as both readable and writable; list it under one of them"
+}
+
+// Loom's private cache, `<cache>/loom`, holds the directories `cache_env`
+// makes and binds writable; a table that could name any part of it could
+// let a server swap one for a link before the next start. Every spelling
+// of it is refused, `.` and doubled slashes included, and a sibling whose
+// name only begins with `loom` is not it.
+pub fn a_root_inside_the_private_cache_is_refused_test() {
+  let refused = fn(key, written) {
+    refusal(one_server(key <> " = [\"" <> written <> "\"]"))
+  }
+  let words =
+    ": Loom's private cache is not a root a table may name; a server's"
+    <> " private caches are granted through cache_env"
+  assert refused("writable", "<cache>/loom")
+    == "lsp.x.writable entry \"<cache>/loom\" is under <cache>/loom" <> words
+  assert refused("writable", "<cache>/loom/lsp/go")
+    == "lsp.x.writable entry \"<cache>/loom/lsp/go\" is under <cache>/loom"
+    <> words
+  assert refused("readable", "<cache>/./loom/lsp")
+    == "lsp.x.readable entry \"<cache>/./loom/lsp\" is under <cache>/loom"
+    <> words
+  assert refused("writable", "<cache>/loom//lsp")
+    == "lsp.x.writable entry \"<cache>/loom//lsp\" is under <cache>/loom"
+    <> words
+  let assert Ok(parsed) =
+    catalog.parse(one_server("writable = [\"<cache>/loomish\"]"))
+  let assert [server] = parsed.lsp_servers
+  assert server.writable == [profile.CachePath("loomish")]
+}
+
+// The same rule for a root only the daemon's places can put there: an
+// absolute or `~/` root inside `<cache>/loom` is refused, readable or
+// writable, and so is a writable root that holds it, since writing there
+// is the same power to swap a private cache for a link. A readable root
+// above it changes nothing and is admitted.
+pub fn a_root_resolving_into_the_private_cache_is_refused_test() {
+  let places =
+    profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+  let base = profile.LspServer(..decoded_x(), readable: [], writable: [])
+  let with = fn(readable, writable) {
+    profile.private_cache_fault(
+      profile.LspServer(..base, readable:, writable:),
+      places,
+    )
+  }
+  assert with([profile.HomePath(".cache/loomish")], [
+      profile.AbsolutePath("/home/o/work"),
+    ])
+    == Ok(Nil)
+  assert with([profile.HomePath(".cache")], []) == Ok(Nil)
+  assert with([profile.AbsolutePath("/home/o/.cache/loom/lsp/go")], [])
+    == Error(
+      "lsp.x.readable entry \"/home/o/.cache/loom/lsp/go\" resolves to"
+      <> " /home/o/.cache/loom/lsp/go, inside /home/o/.cache/loom: Loom's"
+      <> " private cache is not a root a table may name; a server's private"
+      <> " caches are granted through cache_env",
+    )
+  let assert Error("lsp.x.writable entry \"~/.cache/./loom\" resolves to" <> _) =
+    with([], [profile.HomePath(".cache/./loom")])
+  assert with([], [profile.HomePath(".cache")])
+    == Error(
+      "lsp.x.writable entry \"~/.cache\" resolves to /home/o/.cache, which"
+      <> " holds Loom's private cache /home/o/.cache/loom; a server that could"
+      <> " write there could swap a private cache for a link before the next"
+      <> " start binds it, so name a directory that does not hold it",
+    )
+
+  // Boot resolves every root through `serve.lsp_server_roots`, and that
+  // is where the refusal has to reach an operator.
+  let assert Error("lsp.x.writable entry \"~/.cache\" resolves to" <> _) =
+    serve.lsp_server_roots(
+      profile.LspServer(..base, writable: [profile.HomePath(".cache")]),
+      places,
+    )
+
+  // Without a cache place there is nothing for the root to land in.
+  assert profile.private_cache_fault(
+      profile.LspServer(..base, writable: [profile.HomePath(".cache")]),
+      profile.Places(home: Some("/home/o"), cache: None),
+    )
+    == Ok(Nil)
+}
+
+// `[lsp.x]` as `one_server` writes it, decoded, for a test that builds on
+// a real record rather than restating every field.
+fn decoded_x() -> profile.LspServer {
+  let assert Ok(parsed) = catalog.parse(one_server(""))
+  let assert [server] = parsed.lsp_servers
+  server
 }
 
 // --- the profile keys ----------------------------------------------------------

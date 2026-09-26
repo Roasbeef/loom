@@ -2298,6 +2298,12 @@ fn lsp_plane_wiring(
 /// makes the refusal an operator-visible boot line rather than a
 /// `no_server` answer the model meets on its first query.
 ///
+/// A root that resolves into Loom's private cache, `<cache>/loom`, or a
+/// writable one that holds it, is refused here too
+/// (`profile.private_cache_fault`): the decoder can refuse one written
+/// `<cache>/loom` but not an absolute or `~/` root, which only these
+/// places can put there.
+///
 /// The private caches `cache_env` names are resolved here for the same
 /// refusal and then left as written: their host paths are the jail's to
 /// derive (`profile.cache_env_paths`), and the directories are made by the
@@ -2326,6 +2332,11 @@ pub fn lsp_server_roots(
   }
   use readable <- result.try(absolute(server.readable))
   use writable <- result.try(absolute(server.writable))
+
+  // Only here are the daemon's places known, so only here can an absolute
+  // or `~/` root be found to land in Loom's private cache; the decoder
+  // has already refused one written `<cache>/loom`.
+  use Nil <- result.try(profile.private_cache_fault(server, places))
   use _caches <- result.try(
     list.try_map(profile.cache_env_paths(server), fn(entry) {
       profile.expand_path(entry.1, places)

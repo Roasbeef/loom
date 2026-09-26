@@ -467,6 +467,194 @@ fn unreadable(
   <> reason
 }
 
+// --- what the disk says before a start ----------------------------------
+
+/// Refuses an executable whose spelled directory passes through a link at
+/// or under a path the server writes.
+///
+/// `unrewritable` judges every link *file* on the way to the executable,
+/// but a link can also be a directory component of the path `command`
+/// spells: `node_modules/.bin` replaced by a link to a directory beside a
+/// credential leaves `node_modules/.bin/server` an ordinary file, and
+/// `regions` mounts `node_modules/.bin` by its spelling, which the helper's
+/// bind follows. So when a path in `writes` holds the executable's
+/// directory, the part of that directory below it must have no link in
+/// it: its real path must be the write's own real path with the same
+/// components after it. Links *above* the write — a workspace reached
+/// through `/var -> /private/var` — are the operator's and are admitted.
+/// `writes` is the requirements' `writable_roots`.
+///
+/// It reads the disk, so it is not part of `policy_for`, which stays a
+/// pure function of its inputs; the manager calls it with a jail's other
+/// preparation, before any clearance. It resolves with
+/// `tools/fs.resolve_real` rooted at `/`, the walker `locate` follows
+/// links with, and a component that does not exist is kept as written.
+/// The answer is point-in-time, as `resolve_real`'s always is: it closes
+/// the link a start would otherwise bind, not one swapped in between this
+/// read and the helper's bind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /w/app/node_modules/.bin -> /home/o/.ssh on disk:
+/// // jail.directory_unlinked(
+/// //   "ts",
+/// //   jail.Executable("/w/app/node_modules/.bin/server", jail.PlainExecutable),
+/// //   ["/w/app"],
+/// // )
+/// // -> Error("lsp.ts's executable ... is reached through a directory link ...")
+/// ```
+///
+pub fn directory_unlinked(
+  name: String,
+  executable: Executable,
+  writes: List(String),
+) -> Result(Nil, String) {
+  let directory = filepath.directory_name(executable.path)
+  let holding =
+    list.filter(writes, fn(write) {
+      policy.covers(root: write, path: directory)
+    })
+  list.try_each(holding, fn(write) {
+    use real_write <- result.try(real_path(name, write))
+    use real_directory <- result.try(real_path(name, directory))
+    let expected = join_below(real_write, below(write, directory))
+    case real_directory == expected {
+      True -> Ok(Nil)
+      False ->
+        Error(
+          "lsp."
+          <> name
+          <> "'s executable "
+          <> executable.path
+          <> " is reached through a directory link under "
+          <> write
+          <> ", which the server can rewrite: "
+          <> directory
+          <> " resolves to "
+          <> real_directory
+          <> "; name the file it leads to in `command`",
+        )
+    }
+  })
+}
+
+/// Refuses a private cache whose directory is not where Loom put it: its
+/// real path must be the cache place's own real path joined with
+/// `loom/lsp/<server>/<dir>`, so no component below the cache place is a
+/// link.
+///
+/// The decoder refuses a table that names Loom's private cache, and
+/// `profile.unnested` a cache inside another, but a link can still reach
+/// one of these directories some other way — a daemon whose cache place
+/// lies inside the session's workspace, or a host process — and both
+/// `mkdir -p` and the helper's writable bind follow it. This is the check
+/// that holds whatever the route, which is why it is kept although the
+/// decoder's refusals close the ones a table could open. The cache place
+/// itself is canonicalised first, so an operator whose `~/.cache` is a link
+/// to another disk is admitted: only what lies below it is Loom's.
+///
+/// The manager runs it both before `mkdir -p`, so a planted link is not
+/// followed to make a directory where it points, and after, so the
+/// directory the helper binds is the one judged. Resolution is
+/// `tools/fs.resolve_real` rooted at `/`, as `locate`'s; a component that
+/// does not exist yet is kept as written, which is what makes the first
+/// run meaningful. A server with no `cache_env` passes untouched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /home/o/.cache/loom/lsp/go/xdg -> /home/o/.ssh on disk:
+/// // jail.caches_unlinked(go, Places(home: Some("/home/o"), cache: Some("/home/o/.cache")))
+/// // -> Error("lsp.go's private cache /home/o/.cache/loom/lsp/go/xdg resolves to /home/o/.ssh, ...")
+/// ```
+///
+pub fn caches_unlinked(
+  server: LspServer,
+  places: Places,
+) -> Result(Nil, String) {
+  use caches <- result.try(private_caches(server, places))
+  case caches, places.cache {
+    [], _ -> Ok(Nil)
+
+    // `private_caches` has already refused a cache with no place to be in,
+    // so this arm answers only for totality.
+    [_, ..], None ->
+      Error("lsp." <> server.name <> "'s private caches have no cache place")
+    [_, ..], Some(place) -> {
+      use real_place <- result.try(real_path(server.name, place))
+      list.try_each(profile.cache_env_paths(server), fn(entry) {
+        cache_where_placed(server.name, entry.1, places, real_place)
+      })
+    }
+  }
+}
+
+// One private cache against the real cache place: its spelled path, its
+// real path, and the real path it must have.
+fn cache_where_placed(
+  name: String,
+  path: profile.LspPath,
+  places: Places,
+  real_place: String,
+) -> Result(Nil, String) {
+  use spelled <- result.try(profile.expand_path(path, places))
+  use real <- result.try(real_path(name, spelled))
+  let expected = case path {
+    profile.CachePath(rest) -> join_below(real_place, "/" <> rest)
+    profile.AbsolutePath(_) | profile.HomePath(_) -> spelled
+  }
+  case real == expected {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s private cache "
+        <> spelled
+        <> " resolves to "
+        <> real
+        <> ", not "
+        <> expected
+        <> ": a link below the cache place leads it out of the directory"
+        <> " Loom owns, and binding it would grant the server a host"
+        <> " directory nobody approved; remove the link",
+      )
+  }
+}
+
+// What `path` adds to `root`, which covers it: empty for the root itself,
+// and otherwise beginning with `/`, whether or not `root` is `/`.
+fn below(root: String, path: String) -> String {
+  case string.drop_start(path, string.length(root)) {
+    "" -> ""
+    "/" <> _rest as tail -> tail
+    tail -> "/" <> tail
+  }
+}
+
+// `below` is empty or begins with `/`; the root `/` is not doubled.
+fn join_below(real: String, below: String) -> String {
+  case real, below {
+    _, "" -> real
+    "/", _ -> below
+    _, _ -> real <> below
+  }
+}
+
+// A path with every link in it resolved, or the refusal naming it.
+fn real_path(name: String, path: String) -> Result(String, String) {
+  fs.resolve_real(fs.real_filesystem(), workspace: "/", path:)
+  |> result.map_error(fn(error) {
+    "lsp."
+    <> name
+    <> "'s jail could not resolve "
+    <> path
+    <> ": "
+    <> unresolved(error)
+  })
+}
+
 /// The host regions the jail must bind for `executable` to run: its own
 /// directory, and for a link the directory of every file the link leads
 /// through. Never an install prefix.
