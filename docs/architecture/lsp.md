@@ -193,7 +193,15 @@ The requirements ask for:
   `command`. The file the chain ends at may still sit there, as a plain
   `node_modules/.bin` executable does, since its own directory widens
   nothing; and judging at resolution is enough, since a link rewritten
-  later points outside what was mounted and fails to execute. Each region is an explicit read-only mount, and the helper
+  later points outside what was mounted and fails to execute. A link can
+  also be a *directory* on the spelled path — `node_modules/.bin`
+  replaced by a link beside a credential — and the region is mounted by
+  that spelling, which the helper's bind follows, so before a start the
+  manager refuses one too (`jail.directory_unlinked`): where a path the
+  server writes holds the executable's directory, the part below it must
+  resolve to itself, the real path being the write's real path with the
+  same components after it. A link above the write, such as a workspace
+  under `/var -> /private/var`, is the operator's and is admitted. Each region is an explicit read-only mount, and the helper
   lays explicit mounts over every root, so a region at or above a path
   the server writes — the link's own directory or a target's — is refused
   by name rather than left to turn that path read-only. `/bin/sh` is the
@@ -687,6 +695,11 @@ is its `HOME`, and `<cache>/` is its per-user cache directory, which is
 the daemon was started with an absolute one, else `$HOME/.cache`. A
 form whose place is unknown (no `HOME`) refuses that server at boot, as
 does a relative path, a `..` component, or a bare `~/` or `<cache>/`.
+`<cache>/loom` and anything beneath it is refused however it is spelled
+("Loom's private cache is not a root a table may name"), and at boot
+(`profile.private_cache_fault`, from `serve.lsp_server_roots`) so is an
+absolute or `~/` root that resolves there, or a `writable` one that
+holds it, such as `~/.cache` on Linux.
 
 `cache_env` is the one key that sets an environment *value*, and the
 value can only be a directory Loom owns: `cache_env = { XDG_CACHE_HOME
@@ -701,7 +714,16 @@ project can write. A name also in `env`, a name the harness owns, and a
 directory that is absolute, has an empty, `.` or `..` component, or lies
 inside another entry's (which the server could swap for a link before
 the next start binds it) are each refused as
-`lsp.<name>.cache_env.<VAR>`.
+`lsp.<name>.cache_env.<VAR>`. Those rules, and the refusal of any root in
+`<cache>/loom`, close the routes a table could open; the manager closes
+the rest from the disk. Both before `mkdir -p` and after it,
+`jail.caches_unlinked` resolves each private cache and refuses the start
+unless its real path is the cache place's real path joined with
+`loom/lsp/<server>/<dir>`, so no link below the cache place is followed
+whoever planted it; the cache place is resolved first, so a `~/.cache`
+that is itself a link still works. The check reads the disk once per
+start, before any clearance, so it closes a planted link but not one
+swapped in between that read and the helper's bind.
 
 Four optional keys carry what a language spells differently. They make
 the table a **language profile** (ADR-014), and each default is what

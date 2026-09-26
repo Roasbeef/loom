@@ -4324,7 +4324,8 @@ language profile; these are the pieces that carry both in this package.
 
 - `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
   Places, decode_servers, decode_server, claim_extensions, expand_path,
-  cache_place, cache_env_paths, mangling_fault, not_server_owned}` — the one
+  cache_place, cache_env_paths, private_cache_fault, mangling_fault,
+  not_server_owned}` — the one
   `[lsp.<name>]` decoder, pure (no I/O, no external). `client/catalog`
   hands `decode_servers` the `[lsp]` table's entries, and so does
   `client/extension/manifest` for a profile extension, so the two can
@@ -4340,7 +4341,8 @@ language profile; these are the pieces that carry both in this package.
   `<cache>/loom/lsp/<server>/<dir>`, the one value-carrying environment a
   profile may set; a name follows the `env` rules and is not also in
   `env`, a directory has no empty, `.` or `..` component and no leading
-  `/` and lies inside no other entry's, and the record decoder re-reads it under the same rule), plus four
+  `/` and lies inside no other entry's, and the record decoder re-reads it under the same rule; an absent
+  `cache_env` in a record reads as `[]`, since format 3 predates the key), plus four
   profile keys, each defaulting to the behaviour it replaced: `language_id: String` (always filled; default the first
   extension without its dot; written, `[a-z0-9][a-z0-9+._-]*` in at most
   40 characters), `qualifier_separators: List(String)` (default `["."]`;
@@ -4349,6 +4351,14 @@ language profile; these are the pieces that carry both in this package.
   `"snake"`), and `hint: Option(String)` (one line, no control character,
   at most 200 bytes). `LspPath` is `AbsolutePath` | `HomePath(rest)` |
   `CachePath(rest)`, the last written `<cache>/rest` under the `~/` rules.
+  **Invariant: no root names Loom's private cache.** A `readable` or
+  `writable` root written `<cache>/loom[/...]` (compared by component, so
+  `<cache>/./loom` too) is refused at decode, record decode included, and
+  `private_cache_fault(server, places)` — called from
+  `serve.lsp_server_roots` at boot and by `loom ext check` — refuses an
+  absolute or `~/` root that resolves inside `<cache>/loom`, or a
+  `writable` one that holds it (`~/.cache`): each would let a server swap
+  a private cache for a link.
   `expand_path(path, Places(home:, cache:))` resolves both relative forms
   and refuses a missing or relative place; `cache_place(os, home,
   xdg_cache_home)` is the pure platform rule (`darwin`:
@@ -4443,7 +4453,8 @@ language profile; these are the pieces that carry both in this package.
   answers from its previous state as it does for any editor.
 - `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
   max_link_hops, operation, step_id, locate, regions, policy_for,
-  call_spec, launch, transport}` — one server's jail and its transport.
+  directory_unlinked, caches_unlinked, call_spec, launch, transport}` —
+  one server's jail and its transport.
   `Placement.places` (and `manager.Jailed.places`) is the daemon's
   `profile.Places`: it expands `~/` and `<cache>/` roots, and its `home`
   is the server's `HOME`.
@@ -4478,6 +4489,21 @@ language profile; these are the pieces that carry both in this package.
   only its own directory. One check at resolution suffices, because
   nothing re-reads the chain; a link rewritten later points outside what
   was mounted and fails to execute.
+- **Invariant: what the helper binds by spelling resolves to where the
+  policy said.** `policy_for` stays pure; two disk reads run in
+  `manager.jail_for` before anything is made or cleared, both through
+  `tools/fs.resolve_real` rooted at `/`. `directory_unlinked(name,
+  executable, writes)` refuses an executable whose spelled directory
+  lies at or under a path the server writes and does not resolve to that
+  write's real path plus the same components (a `node_modules/.bin`
+  replaced by a directory link); a link above the write is admitted.
+  `caches_unlinked(server, places)` refuses a private cache whose real
+  path is not the cache place's real path joined with
+  `loom/lsp/<server>/<dir>`, and runs both before `mkdir -p` (so a planted
+  link is not followed to make a directory) and after (so the bound
+  directory is the one judged). The cache place itself is resolved first,
+  so a linked `~/.cache` is admitted. Both are point-in-time: they close a
+  planted link, not one swapped between the read and the helper's bind.
 - `client/lsp/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
   release, stop}` — the per-session cap on session-lived helper leases,
   `pool_size - reserved_helpers`.

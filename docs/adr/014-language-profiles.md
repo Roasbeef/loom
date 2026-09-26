@@ -99,6 +99,13 @@ existing table means what it meant.
   `$XDG_CACHE_HOME` when the daemon was started with an absolute one,
   else `$HOME/.cache`. On macOS it is `$HOME/Library/Caches`. It is
   expanded where `~/` is, against the daemon's own environment, once.
+  `<cache>/loom` and everything beneath it is refused, in any spelling
+  (`<cache>/./loom/lsp` included): it is Loom's private cache, the tree
+  `cache_env` makes, and a root there would let a server swap a private
+  cache for a link. An absolute or `~/` root that resolves there is
+  refused at boot, once the daemon's places say where the cache is, and
+  so is a `writable` root that holds it (`~/.cache` on Linux), since
+  writing there is the same power.
 - **`cache_env`** — a table of environment variable name to a relative
   directory name, e.g. `cache_env = { XDG_CACHE_HOME = "xdg" }`. Each
   variable is set to `<cache>/loom/lsp/<server>/<dir>`, a directory
@@ -123,6 +130,17 @@ existing table means what it meant.
   server can write the outer one and could swap the inner for a link
   before the next start binds it. Each refusal names
   `lsp.<name>.cache_env.<VAR>`.
+  Those rules close the routes a table could open; the jail closes the
+  rest. Before it makes a private cache, and again after, the harness
+  resolves the directory's real path and refuses the start unless it is
+  the cache place's own real path joined with `loom/lsp/<server>/<dir>`:
+  no component below the cache place may be a link, whoever planted it
+  (a daemon whose cache place lies inside the workspace, say). The cache
+  place itself is resolved first, so an operator whose `~/.cache` is a
+  link to another disk is admitted. The same real-path rule holds the
+  executable: a directory on `command`'s spelled path that lies at or
+  under a path the server writes must not be a link, since the jail
+  mounts that directory by its spelling and the bind follows it.
 
 Nothing else is added. Code actions, formatting and completion are
 still not built (ADR-013). Server-specific `initializationOptions` are
@@ -241,6 +259,9 @@ the profile's server under the ordinary jail, the enforcement probe and
 the operator's demand included, and runs each check through the same
 door the tools use. An answer whose sites differ from `expect`
 as a set fails that check, naming both sets, and the verb exits 1.
+A fixture's files are written from the verified tree, which records
+files and their bytes, so empty directories and file modes are not
+reproduced, and a fixture must not depend on either.
 
 Checks are for authors and for CI. They are not run at install or at
 boot: an install is not a benchmark, and starting a server at boot is
