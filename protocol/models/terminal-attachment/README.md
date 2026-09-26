@@ -42,6 +42,21 @@ can consume (64 connection messages, 40 candidate frames, one of each other
 kind); the model does not, and a step here takes everything that has
 arrived, which covers every ordering a bounded top-up allows.
 
+The model collects a step's effects as phase 1 did: the adopted lane's
+outputs, then the candidate's, then the outbox (`finishStep`), with the
+retired lane's outputs moved into the outbox at an adoption. Since phase 2's
+third slice the code keeps one queue instead: each reducer moves a lane's
+outputs into the outbox as it stores the lane (`tui_model.hold_channel`),
+and `attachment.poll` returns its candidate lane's outputs with the rest of
+what it decided, so the effects leave in the order they were decided. The
+two orders differ only across sockets and between a socket's outputs and
+effects on other resources. Within one socket both keep the order its lane
+issued, both put a candidate's lane outputs ahead of its `Abandon`, and
+both put a quitting lane's close ahead of the attempt's cancel, so every
+spec below, all of which are per socket or per attempt, reads the same
+either way. The recording notes that join the same queue in the code are not
+modelled (see below).
+
 ### Events and the code they stand for
 
 | Event | Code |

@@ -243,7 +243,9 @@ machine Terminal {
   // Runtime: runtime.take and runtime.perform.
   // -------------------------------------------------------------------------
 
-  // The adopted lane's outputs, then the candidate's, then the outbox.
+  // The adopted lane's outputs, then the candidate's, then the outbox: the
+  // phase 1 collection. The code now keeps one queue in decision order; the
+  // README's "What is modelled" says why the specs read the same either way.
   fun finishStep() {
     var i: int;
     effects = default(seq[tEff]);
