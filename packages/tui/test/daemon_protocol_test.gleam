@@ -184,6 +184,84 @@ pub fn peer_inspection_reply_preserves_server_document_test() {
     ))
 }
 
+pub fn session_activity_request_names_distinct_bounded_sessions_test() {
+  let epoch = protocol.Epoch("current")
+  let first = "00000000-0000-7000-8000-000000000001"
+  let second = "00000000-0000-7000-8000-000000000002"
+  assert protocol.mutates(protocol.SessionActivity([first])) == False
+  assert protocol.encode(1, protocol.SessionActivity([first, second]), epoch)
+    == Ok(
+      "{\"v\":2,\"id\":1,\"cmd\":\"sessions.activity\",\"body\":{\"sessions\":[\"00000000-0000-7000-8000-000000000001\",\"00000000-0000-7000-8000-000000000002\"],\"epoch\":\"current\"}}",
+    )
+
+  // Each of these is a request the daemon refuses whole.
+  let too_many = list.repeat(first, protocol.activity_limit + 1)
+  list.each([[], [first, first], ["not-a-session"], too_many], fn(sessions) {
+    let assert Error(_) =
+      protocol.encode(1, protocol.SessionActivity(sessions), epoch)
+      as "an invalid identity list is refused before sending"
+  })
+}
+
+pub fn session_activity_reply_decodes_every_field_test() {
+  let frame =
+    "{\"v\":2,\"reply_to\":3,\"event\":\"sessions.activity\",\"body\":{\"activity\":[{\"session_id\":\"00000000-0000-7000-8000-000000000001\",\"state\":\"needs_you\",\"strands\":3,\"working\":1,\"approvals\":2,\"last_outcome\":\"failed\",\"last_message\":\"Tests fail on main.\",\"model\":\"glm-5.2\",\"glances\":[{\"strand\":\"sub:main/audit\",\"title\":\"Audit\",\"summary\":\"\"}]}]}}"
+  assert protocol.decode(frame)
+    == Ok(protocol.Answer(
+      3,
+      "sessions.activity",
+      protocol.ActivityReply([
+        protocol.Activity(
+          session_id: "00000000-0000-7000-8000-000000000001",
+          state: protocol.NeedsYou,
+          strands: 3,
+          working: 1,
+          approvals: 2,
+          last_outcome: Some(protocol.LastFailed),
+          last_message: Some("Tests fail on main."),
+          model: Some("glm-5.2"),
+          glances: [protocol.GlanceLine("sub:main/audit", "Audit", "")],
+        ),
+      ]),
+    ))
+}
+
+pub fn session_activity_reply_tolerates_unknown_and_missing_fields_test() {
+  // An unanswered session carries only its identity, and a later daemon may
+  // send a state or outcome this terminal has never heard of.
+  let frame =
+    "{\"v\":2,\"reply_to\":4,\"event\":\"sessions.activity\",\"body\":{\"activity\":[{\"session_id\":\"00000000-0000-7000-8000-000000000001\",\"state\":\"unknown\"},{\"session_id\":\"00000000-0000-7000-8000-000000000002\",\"state\":\"hibernating\",\"last_outcome\":\"paused\",\"glances\":[{\"strand\":\"\"},7],\"extra\":true}]}}"
+  let empty = fn(id) {
+    protocol.Activity(
+      session_id: id,
+      state: protocol.Unknown,
+      strands: 0,
+      working: 0,
+      approvals: 0,
+      last_outcome: None,
+      last_message: None,
+      model: None,
+      glances: [],
+    )
+  }
+  assert protocol.decode(frame)
+    == Ok(protocol.Answer(
+      4,
+      "sessions.activity",
+      protocol.ActivityReply([
+        empty("00000000-0000-7000-8000-000000000001"),
+        empty("00000000-0000-7000-8000-000000000002"),
+      ]),
+    ))
+
+  // A row the terminal cannot attribute to a session refuses the reply.
+  let assert Error(_) =
+    protocol.decode(
+      "{\"v\":2,\"reply_to\":5,\"event\":\"sessions.activity\",\"body\":{\"activity\":[{\"state\":\"idle\"}]}}",
+    )
+    as "a row without an identity is a daemon fault"
+}
+
 pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
   let epoch = protocol.Epoch("current")
   let assert Ok(encoded) =

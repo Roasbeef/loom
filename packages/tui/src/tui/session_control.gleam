@@ -210,6 +210,7 @@ pub fn load_catalogue_collection(
               | control_protocol.DeletedReply(_)
               | control_protocol.PeersInspectionReply(_)
               | control_protocol.PeersMutationReply(_)
+              | control_protocol.ActivityReply(_)
               | control_protocol.ShutdownReply ->
                 Error("catalogue returned an unexpected control reply")
             })

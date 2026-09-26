@@ -200,6 +200,82 @@ pub type Command {
     /// Exact recipient strand.
     target_strand: String,
   )
+
+  /// Asks what the named resident sessions are doing (`protocol-change/050`).
+  /// Owner-only. Sessions that are not resident are absent from the reply.
+  SessionActivity(
+    /// One to `activity_limit` distinct canonical identities; the reply
+    /// keeps their order.
+    sessions: List(String),
+  )
+}
+
+/// The most sessions one `SessionActivity` request may name.
+pub const activity_limit = 24
+
+/// What one resident session is doing, as `sessions.activity` reports it.
+pub type Activity {
+  Activity(
+    /// Canonical identity of the resident session this row describes.
+    session_id: String,
+    /// The session's overall state, derived by the daemon.
+    state: ActivityState,
+    /// How many strands the session has.
+    strands: Int,
+    /// How many strands have an operation open.
+    working: Int,
+    /// How many approvals are waiting on the operator.
+    approvals: Int,
+    /// How main's last run ended, when its last terminal result was a run.
+    last_outcome: Option(LastOutcome),
+    /// Main's final assistant text, collapsed to one line of at most 280
+    /// bytes.
+    last_message: Option(String),
+    /// Main's configured model identity.
+    model: Option(String),
+    /// Up to four sub-agent glances, newest first.
+    glances: List(GlanceLine),
+  )
+}
+
+/// The daemon's reading of a resident session.
+pub type ActivityState {
+  /// An approval is pending, or main's last run failed and main has stopped.
+  NeedsYou
+
+  /// Some strand has an operation open.
+  Working
+
+  /// Nothing is running and nothing is waiting on the operator.
+  Idle
+
+  /// The session did not answer in time, or reported a state this terminal
+  /// does not know.
+  Unknown
+}
+
+/// How a main-strand run ended.
+pub type LastOutcome {
+  /// The run finished normally.
+  LastCompleted
+
+  /// The run failed.
+  LastFailed
+
+  /// The run was cancelled.
+  LastAborted
+}
+
+/// One sub-agent's glance: what it is working on and what it is doing now.
+pub type GlanceLine {
+  GlanceLine(
+    /// The strand the glance describes.
+    strand: String,
+    /// A few words naming the task.
+    title: String,
+    /// One line on the latest activity; empty until first summarized.
+    summary: String,
+  )
 }
 
 /// Lifecycle observations are transient; only Saved means no resident runtime.
@@ -344,6 +420,13 @@ pub type Reply {
     /// Bounded JSON retaining the server's per-direction result.
     document: json.JsonValue,
   )
+
+  /// What each resident session named by `SessionActivity` is doing, in
+  /// request order. A requested session missing here is not resident.
+  ActivityReply(
+    /// One row per resident session.
+    activity: List(Activity),
+  )
 }
 
 /// One validated server envelope; uncorrelated hello is the only handshake.
@@ -401,6 +484,7 @@ pub fn name(command: Command) -> String {
     InspectPeers(..) -> "peers.inspect"
     LinkPeers(..) -> "peers.link"
     UnlinkPeers(..) -> "peers.unlink"
+    SessionActivity(..) -> "sessions.activity"
     Shutdown -> "daemon.shutdown"
   }
 }
@@ -420,7 +504,8 @@ pub fn mutates(command: Command) -> Bool {
     | GetSession(..)
     | WorkspaceDefault(..)
     | GetOperation(..)
-    | InspectPeers(..) -> False
+    | InspectPeers(..)
+    | SessionActivity(..) -> False
     SetDefault(..)
     | RenameSession(..)
     | CreateSession(..)
@@ -569,6 +654,13 @@ fn command_fields(command: Command, epoch: Epoch) {
         )
       ])
     }
+    SessionActivity(sessions) -> {
+      use Nil <- result.try(activity_sessions(sessions))
+      Ok([
+        #("sessions", json.Array(list.map(sessions, json.String))),
+        #("epoch", json.String(epoch_value)),
+      ])
+    }
     UnlinkPeers(source, from, target, to) -> {
       use source_fields <- result.try(peer_session_field(
         source,
@@ -588,6 +680,20 @@ fn command_fields(command: Command, epoch: Epoch) {
         )
       ])
     }
+  }
+}
+
+// The daemon refuses the whole request for any of these, so they are
+// refused here instead of spending a round trip on a known refusal.
+fn activity_sessions(sessions: List(String)) {
+  use Nil <- result.try(case sessions, list.drop(sessions, activity_limit) {
+    [_, ..], [] -> Ok(Nil)
+    [], _ | _, [_, ..] -> Error("activity names 1 to 24 sessions")
+  })
+  use Nil <- result.try(list.try_each(sessions, valid_id))
+  case list.length(list.unique(sessions)) == list.length(sessions) {
+    True -> Ok(Nil)
+    False -> Error("activity repeats a session")
   }
 }
 
@@ -713,6 +819,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.delete" -> result.map(deletion(body), DeletedReply)
     "peers.inspect" -> Ok(PeersInspectionReply(body))
     "peers.link" | "peers.unlink" -> Ok(PeersMutationReply(body))
+    "sessions.activity" -> result.map(activity(body), ActivityReply)
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)
@@ -781,6 +888,73 @@ fn session(body: json.JsonValue) {
   use status <- result.try(field(body, "status"))
   use status <- result.map(lifecycle(status))
   Session(id, workspace, name, created, status)
+}
+
+// The activity rows. Only the identity is required: a row the terminal
+// cannot attribute is a daemon fault, and the whole reply is refused. Every
+// other field is read tolerantly, because `protocol-change/050` lets a later
+// daemon add states and fields — an unknown state reads as `Unknown`, and a
+// missing or malformed field reads as its empty value.
+fn activity(body: json.JsonValue) {
+  case field(body, "activity") {
+    Ok(json.Array(rows)) -> list.try_map(rows, activity_row)
+    _ -> Error("invalid activity reply")
+  }
+}
+
+fn activity_row(row: json.JsonValue) {
+  use id <- result.try(text_at(row, "session_id", 64))
+  use Nil <- result.map(valid_id(id))
+  let state = case field(row, "state") {
+    Ok(json.String("needs_you")) -> NeedsYou
+    Ok(json.String("working")) -> Working
+    Ok(json.String("idle")) -> Idle
+    _ -> Unknown
+  }
+  let last_outcome = case field(row, "last_outcome") {
+    Ok(json.String("completed")) -> Some(LastCompleted)
+    Ok(json.String("failed")) -> Some(LastFailed)
+    Ok(json.String("aborted")) -> Some(LastAborted)
+    _ -> None
+  }
+  let glances = case field(row, "glances") {
+    Ok(json.Array(values)) -> list.filter_map(values, glance_line)
+    _ -> []
+  }
+  Activity(
+    session_id: id,
+    state:,
+    strands: count_or_zero(row, "strands"),
+    working: count_or_zero(row, "working"),
+    approvals: count_or_zero(row, "approvals"),
+    last_outcome:,
+    last_message: text_at(row, "last_message", 1024) |> option.from_result,
+    model: text_at(row, "model", 256) |> option.from_result,
+    glances:,
+  )
+}
+
+// A glance's summary is empty until its first refresh, so its text fields
+// may be empty, unlike the nonempty control text elsewhere in this module.
+fn glance_line(value: json.JsonValue) {
+  case field(value, "strand"), field(value, "title"), field(value, "summary") {
+    Ok(json.String(strand)), Ok(json.String(title)), Ok(json.String(summary))
+      if strand != ""
+    ->
+      case
+        string.byte_size(strand) <= 256
+        && string.byte_size(title) <= 256
+        && string.byte_size(summary) <= 512
+      {
+        True -> Ok(GlanceLine(strand:, title:, summary:))
+        False -> Error("glance text exceeds limit")
+      }
+    _, _, _ -> Error("invalid glance")
+  }
+}
+
+fn count_or_zero(value: json.JsonValue, key: String) -> Int {
+  number_at(value, key) |> result.unwrap(0)
 }
 
 fn deletion(body: json.JsonValue) {

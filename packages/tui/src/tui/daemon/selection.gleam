@@ -213,7 +213,8 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.DeletedReply(_)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
-    | protocol.PeersMutationReply(_) ->
+    | protocol.PeersMutationReply(_)
+    | protocol.ActivityReply(_) ->
       Error("open returned an unexpected control reply")
   })
   target(
@@ -267,7 +268,8 @@ pub fn create_named(
     | protocol.DeletedReply(_)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
-    | protocol.PeersMutationReply(_) ->
+    | protocol.PeersMutationReply(_)
+    | protocol.ActivityReply(_) ->
       Error("create returned an unexpected control reply")
   }
 }
@@ -371,7 +373,8 @@ fn remove_using(
     | protocol.DeletedReply(_)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
-    | protocol.PeersMutationReply(_) ->
+    | protocol.PeersMutationReply(_)
+    | protocol.ActivityReply(_) ->
       Error("stop returned an unexpected control reply; session kept")
   })
   use _ <- result.try(case status {
@@ -425,7 +428,8 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.DeletedReply(_))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
-        | Ok(protocol.PeersMutationReply(_)) ->
+        | Ok(protocol.PeersMutationReply(_))
+        | Ok(protocol.ActivityReply(_)) ->
           poll.Fail(
             "stop observation returned an unexpected reply; session kept",
           )
@@ -461,7 +465,8 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.DeletedReply(_)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
-    | protocol.PeersMutationReply(_) ->
+    | protocol.PeersMutationReply(_)
+    | protocol.ActivityReply(_) ->
       Error("listing returned an unexpected control reply")
   }
 }
@@ -503,7 +508,8 @@ fn selected_row(reply) {
     | protocol.DeletedReply(_)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
-    | protocol.PeersMutationReply(_) ->
+    | protocol.PeersMutationReply(_)
+    | protocol.ActivityReply(_) ->
       Error("selection returned an unexpected control reply")
   }
 }
@@ -538,7 +544,8 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.DeletedReply(_))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
-        | Ok(protocol.PeersMutationReply(_)) ->
+        | Ok(protocol.PeersMutationReply(_))
+        | Ok(protocol.ActivityReply(_)) ->
           poll.Fail("operation returned an unexpected control reply")
       }
     })
