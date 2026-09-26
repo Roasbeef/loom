@@ -281,9 +281,15 @@ list:
   `emit` queues an effect, and `release_channel` moves a channel's queued
   outputs into the outbox before a step replaces or drops the channel.
 - `tui/runtime`: `take`, `perform` and `flush`, which collect a step's
-  effects from the two channels and the outbox and perform them, and
-  `stamp`, which reads the clocks for one event before the step. `tui.gleam`
-  and test drivers import it; no reducer module does.
+  effects from the two channels and the outbox and perform them; `stamp`,
+  which reads the clocks for one event before the step; and `receive`,
+  which tops up the model's inboxes before the step. `tui.gleam` and test
+  drivers import it; no reducer module does.
+- `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
+  already received from it, oldest first. `top_up` is the only read of the
+  mailbox for a step, `take` is pure, `receive` is the held-first read for
+  code outside the step, and `sender` is the send side, whose direct reads
+  bypass the buffer.
 - `tui/transcript_lines`: `Line`s from durable entries, streams and tool
   calls. A new kind of transcript row starts in `entry_lines`,
   `message_lines`, `assistant_block_lines`, `record_lines`,
@@ -1430,7 +1436,9 @@ untouched.
   is still local and the boundary stays.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
   replay, control, reconnect and connection events before passing the result
-  to `settle_tick`. The helper applies the existing read-service chain to its
+  to `settle_tick`. The replay, candidate and connection drains take from
+  the buffers `runtime.receive` filled, so none of them adds a mailbox read
+  to the step. The helper applies the existing read-service chain to its
   `drained` parameter and retains the original model for quiet-time and activity
   comparisons. Adding the notes read to the former single body exposed another
   inliner blow-up: `core_inline_module` took 51.445 seconds. The boundary reduced
@@ -1478,6 +1486,33 @@ untouched.
   runs a step under a clock that panics when called, counts one reading
   per `update`, and fires a lane's refresh and deadline from the `now` it
   is passed.
+- **The step reads the traffic the runtime received before it.**
+  `tui.update` is `step(event, runtime.receive(runtime.stamp(model)))`
+  followed by `perform`. `runtime.receive` tops up each buffered inbox the
+  model holds to the most the step can take from it: `Model.inbox` to
+  `connection_batch` (64), `Model.replay_inbox` to one event, and through
+  `attachment.top_up` the candidate's `prepared` to one while no candidate
+  exists, its `frames` to forty until capture, and its `outcomes` to one.
+  `inbound.drain_connection`, `tick.drain_replay` and the attachment's
+  `prepare`, `drain` and `settle` take from those buffers and read no
+  mailbox; traffic that arrives during the step waits for the next one.
+  The orderings stay in the step and are unchanged: Escape with a waiting
+  command cancels before any traffic is reduced and leaves the batch held,
+  the tick settles the candidate before it drains the connection, and a
+  drain after a mid-tick adoption reads the adopted inbox. The buffer is
+  inside the inbox value, so the adoption swap is one assignment and the
+  old socket's held messages leave the model with it; that is the rule the
+  terminal-attachment P model checks as S2. Anything that reads an inbox
+  outside the step goes through `buffered.receive`, which returns held
+  messages first: `attachment.cancel` for a `Prepared` at quit,
+  `attachment.accept` for the held frames and outcomes before a selected
+  one, and the client test driver, which reduces held connection messages
+  before a selected one. A test that calls `step` directly and wants it to
+  see queued traffic calls `runtime.receive` first, and a test injects
+  traffic through `buffered.sender`. The session switch, reconnect, control
+  and activity replies are still read inside the step, for later slices of
+  issue #530. `test/runtime_receive_test.gleam` pins the bound, the Escape
+  exception, the held-first read, the swap and the candidate-first tick.
 - **Auxiliary panels draw borders, not interiors.** The ordinary conversation
   has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
@@ -1604,6 +1639,9 @@ untouched.
   only its acknowledgement subject. The shared socket guardian monitors the
   terminal owner through cancellation and adoption. Actor-backed native tests
   reduce already selected messages directly rather than requeueing them.
+  Because `update` tops up the model's inboxes on every event, even a
+  resize, it must run in the process that created the model; a test that
+  hands a model to an actor builds it in the actor's initialiser.
 - **Approval is an exact captured decision.** Approve echoes the displayed
   action, requested grant set and register seq; deny echoes the same seq. An
   observer cannot activate mutation controls. Disappearance triggers at most
@@ -1648,9 +1686,11 @@ untouched.
   zero-timeout drain later in that step cannot see its reply. Recording
   appends and attempt trace notes are the deliberate exception and stay
   synchronous, because the recording orders an input before the channel
-  traces it caused (ADR-009); mailbox drains, job starts and file reads
-  also remain in the step until phase 2 of issue #530. Clock reads left
-  the step in phase 2's first slice: see the clock invariant above.
+  traces it caused (ADR-009); job starts, file reads and the switch,
+  reconnect, control and activity reply reads also remain in the step
+  until later slices of phase 2 of issue #530. Clock reads left the step in
+  phase 2's first slice and the connection, replay and attachment drains in
+  its second: see the clock and traffic invariants above.
 - **A replay reproduces inbound traffic and rendering, never an outbound
   effect.** No websocket write, no daemon start, no local catalogue read,
   and no line the live client would have been *sent*. Submitting under

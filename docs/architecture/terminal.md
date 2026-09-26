@@ -55,10 +55,12 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` is `tui.step` followed by `runtime.perform`. `step` computes the next
-model and the effects it decided on, and performs none of the fire-and-forget
-ones itself; "Effects are values" below describes that split. `step` has three
-stages:
+`update` runs four calls in order. `runtime.stamp` reads the clocks once for
+the event, `runtime.receive` moves waiting traffic into the model's inboxes,
+`tui.step` computes the next model and the effects it decided on, and
+`runtime.perform` carries those effects out. The step performs none of the
+fire-and-forget effects itself; "Effects are values" below describes that
+split. `step` has three stages:
 
 1. `recording.note_input` writes the raw event to the `--record` file, if one
    is open, before anything interprets it.
@@ -83,6 +85,27 @@ channel, and updates the quiet timer. A key press,
 wheel notch or held drag also drains up to 64 socket messages before it is
 interpreted, because a fast gesture produces events faster than any timeout
 and no tick would arrive until the hand paused.
+
+None of those drains reads a mailbox for the conversation socket, the replay
+or the candidate attachment. Each of those inboxes is a `tui/buffered.Inbox`,
+a subject together with the messages already taken out of its mailbox.
+`runtime.receive` tops each one up before the step, to the most the step can
+consume from it: the connection inbox to `connection_batch` (64), the replay
+inbox to one event, the candidate's `Prepared` to one while no candidate
+exists, its frames to 40 until the initial cut is captured, and its worker
+outcome to one. The drains take from those buffers, and traffic that arrives
+during the step waits for the next one. An inbox the step did not drain keeps
+what it holds and receives nothing more, so every buffer stays within its
+bound. The session-switch, reconnect, control and activity replies are still
+read from their mailboxes during the step.
+
+Because an inbox's buffer lives inside the inbox value, an adoption that
+replaces `Model.inbox` drops what the old socket's inbox had received along
+with the inbox itself, and no later drain can reduce a message from it. Code
+outside the step that waits on an inbox, such as a test driver or the
+attachment cancel that runs as an effect, reads it through
+`buffered.receive`, which returns the held messages before anything still in
+the mailbox; they are always older.
 
 The split between dispatch and settling exists for the compiler, not for
 readers. The Erlang inliner re-visits the whole dispatched expression once per
@@ -135,9 +158,12 @@ A consequence is that a send decided mid-step leaves at the end of the step. A
 zero-timeout drain later in the same step cannot see its reply, which it never
 reliably could.
 
-Two kinds of I/O still happen inside the step in this phase. Mailbox drains,
-job starts, clock reads and file reads produce values the step goes on to use,
-so they wait until the runtime can deliver results as messages. Recording
+Two kinds of I/O still happen inside the step in this phase. Job starts, file
+reads and the remaining mailbox reads (the session switch, reconnect, control
+and activity replies) produce values the step goes on to use, so they wait
+until the runtime can deliver results as messages; clock reads and the
+connection, replay and attachment drains have already moved before the step,
+as described above. Recording
 appends and attempt trace notes stay synchronous, because the recording orders
 an input before the channel traces it caused, and splitting those writes
 between the inline path and the post-step queues would reorder the file.
@@ -350,7 +376,9 @@ provisional socket; the old session keeps running and stays on screen.
 Every inbox the terminal reads is created by the terminal process, because a
 `Subject` delivers to the process that created it and receiving on another
 process's subject panics. The attachment worker owns only the acknowledgement
-subject that the terminal writes to.
+subject that the terminal writes to. Since `update` tops up the model's
+inboxes on every event, it must run in the process that created the model.
+A test that hands a model to an actor builds the model inside the actor.
 
 `tui/sessions` and its `SessionSelector` overlay are an older, record-based
 switch path kept as a host-test seam. The live selector is `DaemonSelector`,
@@ -675,6 +703,9 @@ the module named.
   socket (`session_wire`, `session_channel`).
 - **Replacement preserves the old view until the new one validates**
   (`attachment`).
+- **No message from a replaced inbox reaches the reducer.** The adoption
+  swap replaces the whole buffered inbox, held messages included
+  (`buffered`, `interaction`).
 - **Durable and transient rows do not alias**, so an answer is not drawn twice
   at the moment it commits (`tui/inbound`, `tui/projection`).
 - **Every inbox the terminal reads, the terminal created** (`attachment`,
@@ -725,7 +756,8 @@ Paths are relative to `packages/tui/src`.
 | `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
 | `tui/effect` | The closed vocabulary of effects a step decides on. |
 | `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `release_channel`) and the other types every reducer shares. |
-| `tui/runtime` | `take`, `perform` and `flush`: collecting a step's effects and performing them. |
+| `tui/runtime` | `stamp` and `receive`, which read the clocks and top up the inboxes before a step; `take`, `perform` and `flush`, which collect a step's effects and perform them. |
+| `tui/buffered` | `Inbox`: a terminal-owned subject with the messages already received from it, `top_up` before the step, `take` in it, `receive` outside it. |
 | `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |

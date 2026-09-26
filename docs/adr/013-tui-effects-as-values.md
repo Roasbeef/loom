@@ -278,3 +278,117 @@ selected socket message to `inbound.accept_connection_message`, calls
 Recording timestamps and the launch, bootstrap and daemon waits stay on the
 real clock. They are outside the step: the recording is S3's subject, and
 the waits run before the loop or in their own processes.
+
+## Addendum: phase 2 S2, the runtime receives (2026-09-26)
+
+The second slice of phase 2 takes the connection, replay and attachment
+mailbox reads out of the step. Nothing above is changed by it; this records
+how the step now gets its traffic.
+
+`tui.update` is `step(event, runtime.receive(runtime.stamp(model)))`
+followed by `perform`. `runtime.receive` tops up every inbox the model holds
+from its mailbox, and the reducers take from those buffers exactly where they
+used to call `process.receive(subject, 0)`: `inbound.drain_connection`,
+`tick.drain_replay`, and the attachment's `prepare`, `drain` and `settle`.
+Etui's tick and key events are still the points where traffic is delivered,
+and every ordering that lived in the step is unchanged, because it is still
+the step that decides when to take. Escape with a waiting command still
+cancels before any traffic is reduced (ADR-010), and the batch the runtime
+received for that event stays held. The fixed drain order in
+`tick.update_tick` still settles the candidate before it drains the
+connection. An adoption in the middle of a tick still swaps the inbox before
+the connection drain, which then reads the adopted inbox. `models(1)` is
+still sent after `apply_cut`, and quit still blocks on the candidate's
+cancel.
+
+The buffers live inside the inbox values. `tui/buffered.Inbox(a)` holds the
+subject, the messages already received from it oldest first, and their
+count. `Model.inbox`, `Model.replay_inbox` and the candidate's `prepared`,
+`frames` and `outcomes` are `Inbox` values, and `attachment.Adopted.inbox`
+carries the frames inbox together with the frames the candidate received and
+left for the adopted lane. The protocol-model addendum above states the rule
+this slice had to keep: no message from a replaced inbox reaches the reducer
+after the swap. With the buffer inside the inbox, the swap in
+`interaction.candidate_outcome` is one assignment of a whole value. The old
+inbox leaves the model together with everything it had received, and there
+is no second place a stale buffer could outlive it, so a stale delivery
+cannot be expressed rather than being prevented by a check. A test that
+carries the old buffer across the swap sees three commit notices reach the
+adopted lane instead of one.
+
+A message leaves the mailbox exactly once, so whatever an inbox holds is
+older than anything still in its mailbox. Code outside the step that waits
+on an inbox therefore reads it through `buffered.receive`, which returns the
+held head first and only then waits on the mailbox. `attachment.cancel`,
+which runs as an effect, reads a `Prepared` that way, so a socket the runtime
+already received is still closed at quit. A test driver that selects on the
+mailboxes cannot see the held messages, so the client driver reduces the
+held connection messages before a selected one, and `attachment.accept`
+reduces the held frames and outcomes of its inbox before the selected one.
+A held `Prepared` is left for the next poll, since an attempt publishes only
+one. `buffered.sender` is the send side; reading from it bypasses the
+buffer, and tests use it only to inject messages.
+
+Each top-up is bounded by what the step can consume, so nothing buffers
+without limit:
+
+| Inbox | Fills to | When |
+|---|---|---|
+| `Model.inbox` | 64 (`connection_batch`, the drain cap) | every event |
+| `Model.replay_inbox` | 1 | every event |
+| candidate `prepared` | 1 | only while there is no candidate |
+| candidate `frames` | 40 (the poll's batch) | until the initial cut is captured |
+| candidate `outcomes` | 1 | every event |
+
+An inbox the step did not drain already holds its bound and reads nothing
+more. Frames are topped up before a candidate exists, as well as after,
+because the old poll read the frames mailbox in the same tick that it took
+the `Prepared`; without that the first frames would wait one tick longer.
+
+Two cases are the caller's to handle. A test that calls `step` directly and
+expects it to see queued traffic calls `runtime.receive` first, as it calls
+`runtime.stamp` to choose the time. And `update` now reads mailboxes on
+every event, including a resize, so it must run in the process that created
+the model's subjects. One test broke on this: the stream-bounds holder built
+its model in the test process and called `update` from an actor. It now
+builds the model in the actor's initialiser.
+
+The survey of mailbox reads, at the commit this slice started from:
+
+- **Moved into the runtime by this slice.** `inbound.drain_connection`,
+  which read through `connection.receive`, and the four places that call it:
+  the wheel and drag arms of `apply_input`
+  (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
+  key drain (`tui/interaction.gleam:1218` (`drain_connection`)) and the tick
+  (`tui/tick.gleam:160` (`drain_connection`)). The attachment's reads:
+  `tui/attachment.gleam:502` (`prepare`),
+  `tui/attachment.gleam:556` (`drain`) and
+  `tui/attachment.gleam:612` (`settle`). The replay drain:
+  `tui/tick.gleam:201` (`drain_replay`).
+- **Left for S4 and S5.** The reconnect outcome
+  (`tui/tick.gleam:46` (`drain_reconnect`)), the control reply
+  (`tui/tick.gleam:61` (`drain_control`)), the picker's activity reply
+  (`tui/session_control.gleam:1163` (`drain_activity`)), and the session
+  switch, which reads through `sessions.receive` and `weft.pull`
+  (`tui/sessions.gleam:256` (`weft.pull`)). Each answers a job the step
+  started, and they move when job starts become keyed effects.
+- **Outside the step, and staying there.** The worker's acknowledgement wait
+  (`tui/attachment.gleam:202` (`acknowledged`)) runs in the worker, and
+  `attachment.cancel` (`tui/attachment.gleam:776` (`buffered.receive`)) runs
+  as an effect. `sessions.discard` (`tui/sessions.gleam:328`
+  (`discard_up_to`)) is the `Discard` effect. The bootstrap snapshot wait
+  (`tui/bootstrap.gleam:1355` (`await_snapshot`)) runs before the loop, the
+  daemon control handshake in `tui/daemon.gleam` runs in its own process, and
+  the virtual backend's frame collection (`tui/virtual_backend.gleam:315`
+  (`drain`)) is test infrastructure outside the model.
+
+`buffered` and the new `runtime.receive` are cross-module calls on
+`update`'s parameter, so this slice adds no local step for the inliner to
+revisit (`docs/execution.md` §8). Measured with `erlc +time` on the
+generated modules, before and after, wall time and `core_inline_module`
+moved by less than the run-to-run noise: `tui` 0.49 s and 0.023 s before,
+0.52 s and 0.024 s after; `tui@tick` 0.52 s and 0.020 s, 0.53 s and 0.022 s;
+`tui@attachment` 0.25 s and 0.008 s, unchanged; `tui@inbound` 2.56 s and
+0.137 s, 2.59 s and 0.133 s; `tui@interaction` 2.55 s and 0.169 s, 2.52 s
+and 0.167 s; `tui@runtime` 0.26 s and 0.007 s, unchanged. The new
+`tui@buffered` compiles in 0.20 s.
