@@ -55,7 +55,10 @@ it four functions: `view`, `update`, a quit predicate, and
 process owns one immutable `Model`; each input event produces the next model,
 and `view` draws a frame from it.
 
-`update` (`tui.gleam:1321`) is three steps:
+`update` is `tui.step` followed by `runtime.perform`. `step` computes the next
+model and the effects it decided on, and performs none of the fire-and-forget
+ones itself; "Effects are values" below describes that split. `step` has three
+stages:
 
 1. `recording.note_input` writes the raw event to the `--record` file, if one
    is open, before anything interprets it.
@@ -63,17 +66,20 @@ and `view` draws a frame from it.
    wheel notch, a drag, or `Tick`.
 3. `settle_update` does everything that follows any event. It requests a
    worktree observation if a diff pane just appeared, runs the context, advisor
-   and goal refresh edges, publishes the Herdr pane state, rebuilds the row
+   and goal refresh edges, decides the Herdr pane report, rebuilds the row
    projection, snaps the viewport if the event addressed the transcript, and
    determines whether to paint a fresh frame.
 
+`runtime.take` then collects what those stages queued and returns it with the
+model.
+
 `Tick` is the event etui delivers when a poll times out with no input, so it
-is where socket traffic enters the model. `update_tick` (`tui/tick.gleam:153`)
-drains, in order, the replay inbox, the session-switch and candidate
-attachment results, control replies, the reconnect outcome, and up to 64
-messages from the conversation socket. `settle_tick` then services the
-auxiliary reads (queue, worktree, notes, jobs, context, advisor nudges, goal),
-ticks the conversation channel, and updates the quiet timer. A key press,
+is where socket traffic enters the model. `tui/tick.update_tick` drains, in
+order, the replay inbox, the session-switch and candidate attachment results,
+control replies, the reconnect outcome, and up to 64 messages from the
+conversation socket. `settle_tick` then services the auxiliary reads (queue,
+worktree, notes, jobs, context, advisor nudges, goal), ticks the conversation
+channel, and updates the quiet timer. A key press,
 wheel notch or held drag also drains up to 64 socket messages before it is
 interpreted, because a fast gesture produces events faster than any timeout
 and no tick would arrive until the hand paused.
@@ -89,6 +95,63 @@ folding the steps back into one body restores the blow-up.
 
 The name `tui/update` is unrelated to this function. It is the release
 installer behind `loom update`, described under "Release updates" below.
+
+### Effects are values
+
+A reducer does not write to a socket, close a connection, cancel a worker,
+discard an inbox, print a clipboard sequence or report to Herdr. It appends a
+`tui/effect.Effect` describing that action to the model's outbox through
+`tui_model.emit`, and `tui/runtime` performs the list after the step. Three
+modules divide the work:
+
+- `tui/effect` is the vocabulary: a closed data type, not closures, so a test
+  can assert on the effects a step produced and a second runtime can interpret
+  the same values against its own transport.
+- `tui/session_channel` is a pure transition system. Its `emit` and `close`
+  queue `Transmit` and `Shut` outputs on the channel itself, and
+  `session_channel.perform` is the only place the channel touches its socket.
+  `tui/attachment` exposes its candidate channel's outputs the same way, plus
+  the `Acknowledge` that releases its worker. Both have a `take_outputs` and a
+  `perform`.
+- `tui/runtime` owns collection and performance. `runtime.take` empties the
+  adopted channel's queue, the candidate's queue and the model outbox, in that
+  order, and returns them as one list, so all three are empty between steps.
+  `runtime.perform` carries the list out. Nothing in the reducer imports it.
+
+Every effect names the handle it acts on, and the runtime never looks a target
+up in the model. An adoption replaces the socket partway through a step, and a
+write decided before the adoption must still reach the socket it was decided
+for. For the same reason, a reducer that replaces or drops the adopted channel
+calls `tui_model.release_channel` first, which moves the channel's queued
+outputs into the outbox; otherwise those writes would be discarded with the
+old channel value.
+
+The order that matters is the order within one socket, and each channel's
+queue keeps the order its lane decided on. The order across the three queues
+does not matter, because a channel never writes after its own close and the
+outbox holds closes and cancels of resources the channels are not writing to.
+
+A consequence is that a send decided mid-step leaves at the end of the step. A
+zero-timeout drain later in the same step cannot see its reply, which it never
+reliably could.
+
+Two kinds of I/O still happen inside the step in this phase. Mailbox drains,
+job starts, clock reads and file reads produce values the step goes on to use,
+so they wait until the runtime can deliver results as messages. Recording
+appends and attempt trace notes stay synchronous, because the recording orders
+an input before the channel traces it caused, and splitting those writes
+between the inline path and the post-step queues would reorder the file.
+
+A caller that runs a reducer or a channel outside `update`, such as a test
+driver that hands a socket message to `inbound.accept_connection_message`,
+passes the resulting model through `runtime.flush`. A caller holding a bare
+channel or attachment against a live socket calls its `take_outputs` and
+performs each output. The next `update` also performs anything left queued, so
+a missing flush delays an effect rather than losing it.
+[ADR-013](../adr/013-tui-effects-as-values.md) records this design, and
+[issue #530](https://github.com/Roasbeef/loom/issues/530) describes the later
+phases, which turn drains, job starts and recording into messages and effects
+as well.
 
 ### Frames are cached, then paced
 
@@ -227,7 +290,9 @@ socket's work:
   `reply_to` must answer the one outstanding request exactly; a frame without
   it is a push from the daemon and is decoded as an event.
 - `tui/session_channel` is the credited request lane. It is terminal-owned
-  state, not a process.
+  state, not a process, and it performs no I/O during a transition: its
+  writes and its close are queued outputs that the runtime performs after the
+  step.
 - `tui/snapshot` and `tui/snapshot_view` assemble a transfer into a validated
   cut and project it into strands, operations, configuration and presence.
 
@@ -245,7 +310,7 @@ the phase diagram and the push rules; this document does not repeat them.
 
 The channel reports to the model as `session_channel.Update` values, and
 `apply_channel_update` folds each one in. `Captured` carries a new cut to
-`reconcile_cut` and then `render_cut` (`tui/inbound.gleam:536`). `Streamed` and
+`reconcile_cut` and then `tui/inbound.render_cut`. `Streamed` and
 `ToolStreamed` feed the transient region. `HistoryPage` feeds scrollback.
 `LookedUp` answers exact approval lookups. `RequestRefused` carries the command
 name and request ID, so a refusal settles only the request it answers.
@@ -364,8 +429,9 @@ conversation attached, is the recipient strand known, is the mutation slot
 free) and keeps the draft with a reason if the answer is no. Otherwise the
 command is encoded by a `tui/protocol` constructor and handed to `send_frame`,
 which calls `session_channel.submit`. Every send site switches on
-`tui.Peer`: `Attached` writes to the socket, `Preview` echoes locally for
-`--demo`, `Replaying` does only the local half, and `Disconnected` refuses.
+`tui.Peer`: `Attached` queues a write that the runtime performs at the end of
+the step, `Preview` echoes locally for `--demo`, `Replaying` does only the
+local half, and `Disconnected` refuses.
 
 On a busy strand, Enter sends `prompt`, which the daemon holds and runs after
 the current operation. Tab switches one draft to `steer`, which the gateway
@@ -488,8 +554,8 @@ when the terminal runs inside one of its panes. It is enabled only when
 `HERDR_ENV=1`, `HERDR_SOCKET_PATH` and `HERDR_PANE_ID` are all set.
 `herdr.state_for` maps the model onto three states: `blocked` while an
 approval is pending, `working` while any strand has a live phase, and `idle`
-otherwise. `publish_herdr` runs in `settle_update` and sends only when the
-state or the session changes, announcing the session ID when it first becomes
+otherwise. `publish_herdr` runs in `settle_update` and queues a report only
+when the state or the session changes, announcing the session ID when it first becomes
 known and on each switch, since `herdr session` resume keys on it. Nothing is
 sent until a session is attached. The sends go to a dedicated reporter process
 that retries each one once and then drops it, so a stale Herdr socket cannot
@@ -501,7 +567,7 @@ Herdr's `seq` is unsigned and the BEAM monotonic clock can be negative.
 `loom --record <path>` writes one JSON line per event the client received:
 keys, pastes, resizes, wheel notches, mouse presses, drags and releases, and
 every socket message, each with its monotonic offset. Ticks and plain mouse
-motion are left out because they do not change the model. `update` records an
+motion are left out because they do not change the model. `step` records an
 input before interpreting it, and the channel records a frame before decoding
 it, so a recording reproduces a decoding bug rather than hiding it. A failed
 append is silent, since etui owns the screen.
@@ -562,6 +628,10 @@ the module named.
   `daemon`, `sessions`).
 - **A decision echoes exactly what was displayed** (`approval`,
   `approval_panel`).
+- **A step performs no fire-and-forget I/O.** Writes, closes, cancels,
+  discards, the clipboard sequence and Herdr reports are returned as effects
+  and performed by the runtime; recording appends and trace notes are the
+  deliberate exception (`tui/effect`, `tui/runtime`).
 - **A replay performs no outbound effect** (`Peer.Replaying`).
 
 The main failure behaviours follow from those. A socket failure closes the
@@ -599,8 +669,10 @@ Paths are relative to `packages/tui/src`.
 
 | Module | What it owns |
 |---|---|
-| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`apply_input`/`settle_update` dispatch. |
-| `tui/model` | `Model`, the frame cache, the `Reconnect` state and the other types every reducer shares. |
+| `tui.gleam` | `main` and launch parsing, `new_model`, the loop, replay, and the `update`/`step`/`apply_input`/`settle_update` dispatch. |
+| `tui/effect` | The closed vocabulary of effects a step decides on. |
+| `tui/model` | `Model`, the frame cache, the `Reconnect` state, the effect outbox (`emit`, `release_channel`) and the other types every reducer shares. |
+| `tui/runtime` | `take`, `perform` and `flush`: collecting a step's effects and performing them. |
 | `tui/transcript_lines` | Transcript rows from durable entries, streams, tool calls and advisor frames. |
 | `tui/layout` | Screen rectangles for painting and hit-testing, including the todo panel's rows. |
 | `tui/render` | `view`, `cached_frame` and `render_frame`. |
