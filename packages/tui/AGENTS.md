@@ -662,6 +662,22 @@ boundaries and the split's measurements under Invariants.
   daemons bypass executable/config discovery. Default startup highlights a
   catalogue row and waits for Enter; an explicit `--session` selects it.
 - `tui/session_selector.State` retains one authorized, revision-fenced page.
+  It is also the cross-session view: rows are grouped by workspace in page
+  order, each carries a `Presence` glyph (`!` needs you, `●` working, `○`
+  idle, `◌` resident but unobserved, `·` inactive), and Tab/Shift+Tab cycle
+  a `Filter` over All, Needs you, Working, Idle and Inactive whose counts are
+  of the page on screen. `presence` joins the row's lifecycle with
+  `State.activity`, the latest `sessions.activity` answer per resident
+  identity; only a resident row can be anything but `Inactive`, whatever an
+  older answer said. `selected` indexes `visible` (grouped, filtered order),
+  never the raw page, and `with_filter`, `observe` and `carry` keep the
+  highlighted identity when it is still drawn. `observe` treats an asked
+  identity absent from the reply as no longer resident. `carry` keeps the
+  tab and the answers for rows still on a reloaded page of the same
+  collection. At an inner width of 96 or more a details pane shows the
+  highlighted row's status and reason, last message, agent glances,
+  workspace, model and identity; narrower pickers put status and short
+  identity on a second row line instead.
   `/sessions` does not scan workspace launch records. `tui/daemon/selection`
   resolves the selected row and canonical workspace, attaches directly when
   resident, or explicitly opens and observes the returned operation.

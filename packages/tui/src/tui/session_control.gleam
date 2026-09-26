@@ -430,9 +430,19 @@ fn finish_control(model: Model, result) {
           session_selector.prioritize(page, model.workspace.path),
           selected,
         )
+
+      // A new page of the same collection is the same view to the operator,
+      // so it keeps their filter and the last activity answers. A switch of
+      // collection starts over: the archive has no resident rows.
+      let selector = session_selector.State(..selector, collection:)
+      let selector = case model.overlay {
+        DaemonSelector(previous) if previous.collection == collection ->
+          session_selector.carry(previous, selector)
+        _ -> selector
+      }
       Model(
         ..model,
-        overlay: DaemonSelector(session_selector.State(..selector, collection:)),
+        overlay: DaemonSelector(selector),
         notice: case collection {
           session_selector.Active ->
             "Enter opens · d archives · a shows archived sessions"
