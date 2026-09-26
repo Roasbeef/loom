@@ -13,6 +13,28 @@
 //// source → fetch or copy → extract → manifest → vetting → compile → record
 //// ```
 ////
+//// # A profile extension skips the two steps it has no subject for
+////
+//// A `tier = "profile"` extension (ADR-014 §3) ships language profiles
+//// and runs nothing, so its install is
+////
+//// ```
+//// source → fetch or copy → extract → manifest → record
+//// ```
+////
+//// with no vetting, no compile, and no artifact directory. The build
+//// seam is never called, which is what lets `loom ext install` take a
+//// profile on a host with no code-mode toolchain. The tier is read from
+//// the fetched tree's `extension.toml` before anything else is done to
+//// the tree, because the two tiers keep different subsets of it: a jailed
+//// tree keeps its source (`codemode/vet/package.installed_subset`), and a
+//// profile tree keeps its manifest, its `README*` and `LICENSE*`, and the
+//// fixture directory each `[[check]]` names, since `loom ext check` runs
+//// against the installed copy. Everything else is pruned, so a `.gleam`
+//// file in a profile's repository is never kept, let alone vetted,
+//// compiled or loaded. Staging, the record written last and the atomic
+//// rename are the same for both tiers.
+////
 //// # The install is the one network-bound step, and it runs unjailed
 ////
 //// So it gets the treatment Decision 2 of the extension ruling gives an
@@ -173,6 +195,10 @@ pub type Failure {
 }
 
 /// What an install produced.
+///
+/// A profile install built nothing, so its `enforcement` is an
+/// `Unreported` saying so: there was no jailed stage to report on, and
+/// `Unreported` is never a claim that one was confined.
 pub type Installed {
   Installed(
     /// The record written into the extension's directory.
@@ -212,11 +238,69 @@ pub fn run(
   rev rev: Option(String),
 ) -> Result(Installed, Failure) {
   use fetched <- result.try(acquire(config, from, rev))
+  case declared_tier(fetched) {
+    manifest.Jailed -> jailed(config, from, rev, fetched)
+    manifest.Profile -> profiled(config, from, rev, fetched)
+  }
+}
+
+// The jailed pipeline, exactly as it was before profiles existed: prune,
+// decode, vet, then build inside the staging directory.
+fn jailed(
+  config: Config,
+  from: Source,
+  rev: Option(String),
+  fetched: Tree,
+) -> Result(Installed, Failure) {
   use tree <- result.try(installed_tree(fetched))
   use files <- result.try(text_files(tree))
   use decoded <- result.try(read_manifest(files))
   use vetted <- result.try(vet_source(files))
-  stage(config, from, rev, tree, decoded, vetted)
+  stage(config, from, rev, tree, decoded, fn(staging) {
+    compiled(config, decoded, vetted, staging)
+  })
+}
+
+// The profile pipeline: decode, prune to what the manifest needs, and
+// record. The manifest is decoded against the whole fetched tree's text,
+// because a `[[check]]`'s fixture has to exist before the prune can know
+// to keep it; the prune keeps every file the decode relied on, so the
+// installed tree decodes to the same manifest at every load.
+fn profiled(
+  config: Config,
+  from: Source,
+  rev: Option(String),
+  fetched: Tree,
+) -> Result(Installed, Failure) {
+  use decoded <- result.try(read_manifest(readable_files(fetched)))
+  let tree = profile_tree(fetched, decoded)
+  use _text <- result.try(text_files(tree))
+  stage(config, from, rev, tree, decoded, fn(_staging) {
+    Ok(Compiled(
+      manifest_hash: "",
+      artifact: "",
+      enforcement: enforcement.Unreported(
+        "a profile extension runs no code, so nothing was built",
+      ),
+    ))
+  })
+}
+
+// Only a manifest that parses and names `tier = "profile"` takes the
+// profile pipeline. Anything else, a missing or unreadable manifest
+// included, takes the jailed one, whose own steps refuse it with the
+// layer and the words they always used.
+fn declared_tier(tree: Tree) -> manifest.Tier {
+  let named =
+    list.find(tree.files, fn(file) { file.path == manifest_file })
+    |> result.try(fn(file) { bit_array.to_string(file.bytes) })
+    |> result.try(fn(text) {
+      manifest.declared_tier(text) |> result.replace_error(Nil)
+    })
+  case named {
+    Ok(manifest.Profile) -> manifest.Profile
+    Ok(manifest.Jailed) | Error(Nil) -> manifest.Jailed
+  }
 }
 
 /// Renders a failure as the sentence an operator reads, layer first.
@@ -392,6 +476,38 @@ fn text_files(tree: Tree) -> Result(List(#(String, String)), Failure) {
   })
 }
 
+// The files of a fetched tree that are text, for the profile decode to
+// look for fixtures in. A binary file is simply not seen here; if the
+// prune keeps one, `text_files` refuses it by name a step later, for the
+// reason it refuses one in a jailed tree.
+fn readable_files(tree: Tree) -> List(#(String, String)) {
+  list.filter_map(tree.files, fn(file) {
+    bit_array.to_string(file.bytes)
+    |> result.map(fn(text) { #(file.path, text) })
+  })
+}
+
+// A profile's installed tree: its manifest, its `README*` and
+// `LICENSE*` files at the root, and every file under a fixture one of its
+// checks names. The record's digest is over exactly this, and discovery
+// re-reads exactly this.
+//
+// The README and licence rule is for root-level *files*: a path holding a
+// `/` is inside a directory, and `README-assets/` or `LICENSES/` is a
+// directory of anything, which a prefix match would keep whole.
+fn profile_tree(tree: Tree, decoded: Manifest) -> Tree {
+  let fixtures =
+    list.map(decoded.checks, fn(check) { check.fixture <> "/" }) |> list.unique
+  let at_root = fn(path) { !string.contains(path, "/") }
+  let kept = fn(path) {
+    path == manifest_file
+    || { at_root(path) && string.starts_with(path, "README") }
+    || { at_root(path) && string.starts_with(path, "LICENSE") }
+    || list.any(fixtures, fn(fixture) { string.starts_with(path, fixture) })
+  }
+  Tree(..tree, files: list.filter(tree.files, fn(file) { kept(file.path) }))
+}
+
 // --- step 2: the manifest -------------------------------------------------
 
 fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
@@ -430,13 +546,15 @@ fn vet_source(
 
 // Everything from here writes to disk, so it all happens under one
 // staging directory that is removed on every path out but the last.
+// `artifact` is the tier's own step between writing the tree and writing
+// the record: the jailed build, or nothing at all for a profile.
 fn stage(
   config: Config,
   from: Source,
   rev: Option(String),
   tree: Tree,
   decoded: Manifest,
-  vetted: VettedPackage,
+  artifact: fn(String) -> Result(Compiled, Failure),
 ) -> Result(Installed, Failure) {
   // Asked before the build, because the build is the expensive step and
   // "you already have this installed" is knowable without it. `promote`
@@ -444,7 +562,7 @@ fn stage(
   // same name racing, where both pass here and the rename decides.
   use Nil <- result.try(untaken(config.root, decoded.name))
   let staging = record.staging(config.root, token(config))
-  case build_and_record(config, from, rev, tree, decoded, vetted, staging) {
+  case build_and_record(config, from, rev, tree, decoded, artifact, staging) {
     Ok(installed) -> Ok(installed)
     Error(failure) -> {
       let _removed = simplifile.delete_all([staging])
@@ -459,7 +577,7 @@ fn build_and_record(
   rev: Option(String),
   tree: Tree,
   decoded: Manifest,
-  vetted: VettedPackage,
+  artifact: fn(String) -> Result(Compiled, Failure),
   staging: String,
 ) -> Result(Installed, Failure) {
   use Nil <- result.try(fresh(staging))
@@ -467,12 +585,16 @@ fn build_and_record(
     staging <> "/" <> record.source_directory,
     tree,
   ))
-  use Compiled(manifest_hash:, enforcement:) <- result.try(compiled(
-    config,
-    decoded,
-    vetted,
+  use Compiled(manifest_hash:, artifact:, enforcement:) <- result.try(artifact(
     staging,
   ))
+
+  // A profile was vetted against nothing, so it records no allowlist:
+  // recording today's would claim a judgement that never happened.
+  let judged_against = case decoded.tier {
+    manifest.Jailed -> allowlist()
+    manifest.Profile -> []
+  }
   let written =
     record.for_install(
       decoded,
@@ -480,10 +602,10 @@ fn build_and_record(
       revision: revision(from, tree, rev),
       tree_digest: archive.digest(tree),
       manifest_hash:,
-      allowlist: allowlist(),
+      allowlist: judged_against,
       approved_at: now(config),
       approved_by: config.approved_by,
-      artifact: record.artifact_directory,
+      artifact:,
     )
   use Nil <- result.try(write_record(staging, written))
   use directory <- result.try(promote(config.root, decoded.name, staging))
@@ -507,13 +629,15 @@ fn revision(from: Source, tree: Tree, rev: Option(String)) -> String {
 }
 
 // What the compile produced that the record needs: the artifact's content
-// address, and what the kernel enforced on the jail that made it.
+// address, the directory it was copied to, and what the kernel enforced
+// on the jail that made it. A profile install produced none of them, and
+// says so with empty names and an `Unreported`.
 //
 // Not a `compile.Artifact`: that type's `build_root` and `beam_dir` name
 // directories this function has just deleted and moved, so filling it in
 // would be four fields of which three are lies to carry one that is not.
 type Compiled {
-  Compiled(manifest_hash: String, enforcement: Report)
+  Compiled(manifest_hash: String, artifact: String, enforcement: Report)
 }
 
 fn compiled(
@@ -539,7 +663,11 @@ fn compiled(
   // extension's directory and sit there for its lifetime. What is kept is
   // what the record describes: the source, the artifact, and the record.
   let _cleared = simplifile.delete_all([build_root])
-  Ok(Compiled(manifest_hash: products.manifest_hash, enforcement:))
+  Ok(Compiled(
+    manifest_hash: products.manifest_hash,
+    artifact: record.artifact_directory,
+    enforcement:,
+  ))
 }
 
 // The build root: the vetted modules under their own names, the generated

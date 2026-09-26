@@ -7,6 +7,7 @@
 
 import client/catalog
 import client/lsp/profile
+import client/serve
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
@@ -30,7 +31,8 @@ main = [\"one\"]
 
 // The two servers the documentation shows, verbatim: `gleam lsp`, which
 // writes its manifest and `build/` into the project, and `gopls`, which
-// writes nothing there but needs the module cache and the build cache.
+// writes nothing there but needs the module cache and a private build
+// cache.
 const documented = "
 [lsp.gleam]
 command = [\"gleam\", \"lsp\"]
@@ -44,7 +46,7 @@ command = [\"gopls\"]
 extensions = [\".go\"]
 root_markers = [\"go.mod\"]
 readable = [\"~/go/pkg/mod\"]
-writable = [\"<cache>/go-build\", \"<cache>/gopls\"]
+cache_env = { XDG_CACHE_HOME = \"xdg\", GOCACHE = \"go-build\", GOPLSCACHE = \"gopls\" }
 env = [\"GOFLAGS\"]
 hint = \"Qualify a name with its package name as imported: util.Greet\"
 "
@@ -88,6 +90,7 @@ pub fn documented_servers_parse_to_exact_records_test() {
         readable: [],
         writable: [],
         env: [],
+        cache_env: [],
         language_id: "gleam",
         qualifier_separators: ["."],
         module_case: profile.AsWritten,
@@ -103,8 +106,13 @@ pub fn documented_servers_parse_to_exact_records_test() {
         root_markers: ["go.mod"],
         project: profile.ProjectReadOnly,
         readable: [profile.HomePath("go/pkg/mod")],
-        writable: [profile.CachePath("go-build"), profile.CachePath("gopls")],
+        writable: [],
         env: ["GOFLAGS"],
+        cache_env: [
+          #("GOCACHE", "go-build"),
+          #("GOPLSCACHE", "gopls"),
+          #("XDG_CACHE_HOME", "xdg"),
+        ],
         language_id: "go",
         qualifier_separators: ["."],
         module_case: profile.AsWritten,
@@ -483,6 +491,96 @@ pub fn a_cache_root_meets_the_home_root_rules_test() {
     == "lsp.x lists <cache>/a as both readable and writable; list it under one of them"
 }
 
+// Loom's private cache, `<cache>/loom`, holds the directories `cache_env`
+// makes and binds writable; a table that could name any part of it could
+// let a server swap one for a link before the next start. Every spelling
+// of it is refused, `.` and doubled slashes included, and a sibling whose
+// name only begins with `loom` is not it.
+pub fn a_root_inside_the_private_cache_is_refused_test() {
+  let refused = fn(key, written) {
+    refusal(one_server(key <> " = [\"" <> written <> "\"]"))
+  }
+  let words =
+    ": Loom's private cache is not a root a table may name; a server's"
+    <> " private caches are granted through cache_env"
+  assert refused("writable", "<cache>/loom")
+    == "lsp.x.writable entry \"<cache>/loom\" is under <cache>/loom" <> words
+  assert refused("writable", "<cache>/loom/lsp/go")
+    == "lsp.x.writable entry \"<cache>/loom/lsp/go\" is under <cache>/loom"
+    <> words
+  assert refused("readable", "<cache>/./loom/lsp")
+    == "lsp.x.readable entry \"<cache>/./loom/lsp\" is under <cache>/loom"
+    <> words
+  assert refused("writable", "<cache>/loom//lsp")
+    == "lsp.x.writable entry \"<cache>/loom//lsp\" is under <cache>/loom"
+    <> words
+  let assert Ok(parsed) =
+    catalog.parse(one_server("writable = [\"<cache>/loomish\"]"))
+  let assert [server] = parsed.lsp_servers
+  assert server.writable == [profile.CachePath("loomish")]
+}
+
+// The same rule for a root only the daemon's places can put there: an
+// absolute or `~/` root inside `<cache>/loom` is refused, readable or
+// writable, and so is a writable root that holds it, since writing there
+// is the same power to swap a private cache for a link. A readable root
+// above it changes nothing and is admitted.
+pub fn a_root_resolving_into_the_private_cache_is_refused_test() {
+  let places =
+    profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+  let base = profile.LspServer(..decoded_x(), readable: [], writable: [])
+  let with = fn(readable, writable) {
+    profile.private_cache_fault(
+      profile.LspServer(..base, readable:, writable:),
+      places,
+    )
+  }
+  assert with([profile.HomePath(".cache/loomish")], [
+      profile.AbsolutePath("/home/o/work"),
+    ])
+    == Ok(Nil)
+  assert with([profile.HomePath(".cache")], []) == Ok(Nil)
+  assert with([profile.AbsolutePath("/home/o/.cache/loom/lsp/go")], [])
+    == Error(
+      "lsp.x.readable entry \"/home/o/.cache/loom/lsp/go\" resolves to"
+      <> " /home/o/.cache/loom/lsp/go, inside /home/o/.cache/loom: Loom's"
+      <> " private cache is not a root a table may name; a server's private"
+      <> " caches are granted through cache_env",
+    )
+  let assert Error("lsp.x.writable entry \"~/.cache/./loom\" resolves to" <> _) =
+    with([], [profile.HomePath(".cache/./loom")])
+  assert with([], [profile.HomePath(".cache")])
+    == Error(
+      "lsp.x.writable entry \"~/.cache\" resolves to /home/o/.cache, which"
+      <> " holds Loom's private cache /home/o/.cache/loom; a server that could"
+      <> " write there could swap a private cache for a link before the next"
+      <> " start binds it, so name a directory that does not hold it",
+    )
+
+  // Boot resolves every root through `serve.lsp_server_roots`, and that
+  // is where the refusal has to reach an operator.
+  let assert Error("lsp.x.writable entry \"~/.cache\" resolves to" <> _) =
+    serve.lsp_server_roots(
+      profile.LspServer(..base, writable: [profile.HomePath(".cache")]),
+      places,
+    )
+
+  // Without a cache place there is nothing for the root to land in.
+  assert profile.private_cache_fault(
+      profile.LspServer(..base, writable: [profile.HomePath(".cache")]),
+      profile.Places(home: Some("/home/o"), cache: None),
+    )
+    == Ok(Nil)
+}
+
+// `[lsp.x]` as `one_server` writes it, decoded, for a test that builds on
+// a real record rather than restating every field.
+fn decoded_x() -> profile.LspServer {
+  let assert Ok(parsed) = catalog.parse(one_server(""))
+  let assert [server] = parsed.lsp_servers
+  server
+}
+
 // --- the profile keys ----------------------------------------------------------
 
 // A table naming none of the four keys decodes to exactly what ADR-013
@@ -500,6 +598,7 @@ pub fn the_profile_keys_default_to_the_old_behaviour_test() {
   assert server.qualifier_separators == ["."]
   assert server.module_case == profile.AsWritten
   assert server.hint == None
+  assert server.cache_env == []
 }
 
 pub fn every_profile_key_is_accepted_test() {
@@ -617,11 +716,102 @@ pub fn the_profile_keys_are_known_keys_test() {
   let assert "unknown key `languageId` in lsp.x (allowed: " <> allowed =
     refusal(one_server("languageId = \"ts\""))
   list.each(
-    ["language_id", "qualifier_separators", "module_case", "hint"],
+    ["language_id", "qualifier_separators", "module_case", "hint", "cache_env"],
     fn(key) {
       assert string.contains(allowed, key)
     },
   )
+}
+
+// --- cache_env ----------------------------------------------------------------
+
+// Each entry is kept as written, and the set comes back sorted by name,
+// since a TOML table has no order and the install record compares it.
+pub fn a_cache_env_decodes_sorted_by_name_test() {
+  let assert Ok(parsed) =
+    catalog.parse(one_server(
+      "cache_env = { XDG_CACHE_HOME = \"xdg\", GOCACHE = \"go-build\" }",
+    ))
+  let assert [server] = parsed.lsp_servers
+  assert server.cache_env
+    == [#("GOCACHE", "go-build"), #("XDG_CACHE_HOME", "xdg")]
+  assert profile.cache_env_paths(server)
+    == [
+      #("GOCACHE", profile.CachePath("loom/lsp/x/go-build")),
+      #("XDG_CACHE_HOME", profile.CachePath("loom/lsp/x/xdg")),
+    ]
+
+  // A standard table is a table too.
+  let assert Ok(parsed) =
+    catalog.parse(one_server("\n[lsp.x.cache_env]\nXDG_CACHE_HOME = \"xdg\""))
+  let assert [server] = parsed.lsp_servers
+  assert server.cache_env == [#("XDG_CACHE_HOME", "xdg")]
+}
+
+pub fn a_cache_env_name_meets_the_env_rules_test() {
+  assert refusal(one_server("cache_env = { lower = \"x\" }"))
+    == "lsp.x.cache_env.lower is not an environment variable name"
+    <> " ([A-Z_][A-Z0-9_]*)"
+  let assert "lsp.x.cache_env.HOME may not name HOME: " <> _rest =
+    refusal(one_server("cache_env = { HOME = \"x\" }"))
+  let assert "lsp.x.cache_env.TMPDIR may not name TMPDIR: " <> _rest =
+    refusal(one_server("cache_env = { TMPDIR = \"x\" }"))
+}
+
+/// A cache inside another is one the server could swap for a link before
+/// the next start binds it, so nesting is refused in either order the
+/// names sort in; two names sharing one directory share one bind.
+pub fn a_cache_env_directory_inside_another_is_refused_test() {
+  assert refusal(one_server(
+      "cache_env = { XDG_CACHE_HOME = \"xdg\", GOCACHE = \"xdg/go-build\" }",
+    ))
+    == "lsp.x.cache_env.GOCACHE is \"xdg/go-build\", inside XDG_CACHE_HOME's"
+    <> " \"xdg\", which the server can write, so it could swap the inner"
+    <> " directory for a link before the next start binds it; name sibling"
+    <> " directories"
+  let assert "lsp.x.cache_env.Z is \"a/b\", inside A's \"a\"" <> _rest =
+    refusal(one_server("cache_env = { A = \"a\", Z = \"a/b\" }"))
+  let assert Ok(parsed) =
+    catalog.parse(one_server("cache_env = { A = \"ab\", B = \"a\", C = \"a\" }"))
+  let assert [server] = parsed.lsp_servers
+  assert server.cache_env == [#("A", "ab"), #("B", "a"), #("C", "a")]
+}
+
+// Two sources for one variable, the daemon's value and Loom's directory,
+// would leave which one the server sees to the order they were applied.
+pub fn a_cache_env_name_also_in_env_is_refused_test() {
+  assert refusal(one_server(
+      "env = [\"XDG_CACHE_HOME\"]\ncache_env = { XDG_CACHE_HOME = \"xdg\" }",
+    ))
+    == "lsp.x.cache_env.XDG_CACHE_HOME is also listed in lsp.x.env; one"
+    <> " variable has one source, so drop it from one of them"
+}
+
+/// The mutation this pins is the one the key's safety rests on: a `..`
+/// accepted would point a variable out of Loom's directory and into the
+/// operator's own cache, the sharing the key exists to prevent.
+pub fn a_cache_env_directory_stays_beneath_the_private_cache_test() {
+  let refused = fn(directory) {
+    refusal(one_server("cache_env = { XDG_CACHE_HOME = " <> directory <> " }"))
+  }
+  assert refused("\"\"")
+    == "lsp.x.cache_env.XDG_CACHE_HOME must name a directory, not be empty"
+  assert refused("\"/home/o/.cache\"")
+    == "lsp.x.cache_env.XDG_CACHE_HOME is \"/home/o/.cache\", an absolute"
+    <> " path; name a directory relative to Loom's private cache"
+  list.each(["\"..\"", "\"../go-build\"", "\"xdg/../../go-build\""], fn(dir) {
+    let assert "lsp.x.cache_env.XDG_CACHE_HOME is " <> rest = refused(dir)
+    assert string.contains(rest, "which has a .. component")
+  })
+  list.each(["\".\"", "\"./xdg\"", "\"xdg//go\"", "\"xdg/\""], fn(dir) {
+    let assert "lsp.x.cache_env.XDG_CACHE_HOME is " <> rest = refused(dir)
+    assert string.contains(rest, "which has an empty or . component")
+  })
+  assert refused("3")
+    == "lsp.x.cache_env.XDG_CACHE_HOME must be a string naming a directory"
+  assert refusal(one_server("cache_env = [\"XDG_CACHE_HOME\"]"))
+    == "lsp.x.cache_env must be a table of variable names to directory"
+    <> " names, such as { XDG_CACHE_HOME = \"xdg\" }"
 }
 
 // --- the decoder alone ---------------------------------------------------------

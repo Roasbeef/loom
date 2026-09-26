@@ -24,6 +24,17 @@
 ////   shows up as a record that no longer matches, and an operator is
 ////   asked rather than quietly given more.
 ////
+//// # A profile extension is checked for what it has
+////
+//// A `tier = "profile"` extension (ADR-014 §3) has no source to vet, no
+//// seam it was vetted against and no artifact, so its load skips those
+//// three and asks one question in their place: do the manifest's
+//// language profiles still equal the ones the record approved? The
+//// record, the directory's name, the tree digest and the re-decoded
+//// manifest are checked first exactly as for a jailed extension, and the
+//// manifest must name the tier the record approved, so a record edited to
+//// say "profile" cannot talk a jailed tree out of its vetting.
+////
 //// # Nothing is pruned here, and that is the point
 ////
 //// The install prunes a repository down to the extension's own tree
@@ -59,7 +70,10 @@ import simplifile
 /// One entry in the extensions root.
 pub type Discovered {
   /// The record decoded, the tree still matches it, and every file still
-  /// vets. Phase 2 registers this one's tools.
+  /// vets, or for a profile extension its profiles still match the
+  /// record's. Phase 2 registers a jailed one's tools; a profile's servers
+  /// join the session's language servers. `artifact` is the compiled beam
+  /// set's directory, and empty for a profile extension, which has none.
   Ready(record: Record, manifest: Manifest, artifact: String)
 
   /// Something did not hold. The name comes from the directory, because
@@ -100,14 +114,47 @@ pub fn discover(root: Root) -> List(Discovered) {
 /// ```
 ///
 pub fn one(root: Root, name: String) -> Discovered {
-  case named_extension(name) {
+  case verified(root, name) {
+    Ok(Verified(record: written, manifest: decoded, artifact:, tree: _)) ->
+      Ready(record: written, manifest: decoded, artifact:)
     Error(reason) -> Refused(name:, reason:)
-    Ok(Nil) ->
-      case check(root, name) {
-        Ok(ready) -> ready
-        Error(reason) -> Refused(name:, reason:)
-      }
   }
+}
+
+/// One extension that passed every check `one` makes, with the tree those
+/// checks read.
+pub type Verified {
+  Verified(
+    /// The install record, as `Ready` carries it.
+    record: Record,
+    /// The manifest, decoded again from `tree`.
+    manifest: Manifest,
+    /// The compiled beam set's directory, empty for a profile extension.
+    artifact: String,
+    /// The installed source exactly as it was read: every file, its bytes,
+    /// and nothing that was not there when the digest was computed over it.
+    tree: archive.Tree,
+  )
+}
+
+/// One extension checked exactly as `one` checks it, answered with the
+/// tree the digest was verified over, or the reason it was refused.
+///
+/// For a caller that goes on to use the installed files. `loom ext check`
+/// writes a fixture out of this tree rather than copying it from disk
+/// again: a second read would follow whatever a link planted since the
+/// check pointed at, and would run the server over files no digest
+/// covered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(installed.Verified(tree:, ..)) = installed.verified(root, "lsp_go")
+/// ```
+///
+pub fn verified(root: Root, name: String) -> Result(Verified, String) {
+  use Nil <- result.try(named_extension(name))
+  check(root, name)
 }
 
 /// Removes an installed extension, record and all.
@@ -169,13 +216,20 @@ pub fn named_extension(name: String) -> Result(Nil, String) {
   }
 }
 
-/// The one-line summary `loom ext list` prints per entry.
+/// The one-line summary `loom ext list` prints per entry: a jailed
+/// extension's tools, or a profile extension's servers each with the
+/// file extensions it claims.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert installed.summarise(installed.Refused("w", "gone"))
 ///   == "w  REFUSED  gone"
+/// ```
+///
+/// ```gleam
+/// installed.summarise(profile_extension)
+/// // -> "lsp_go  0.1.0  local  lsp: go (.go)"
 /// ```
 ///
 pub fn summarise(discovered: Discovered) -> String {
@@ -186,15 +240,31 @@ pub fn summarise(discovered: Discovered) -> String {
       <> written.version
       <> "  "
       <> written.revision
-      <> "  tools: "
-      <> string.join(list.map(decoded.tools, fn(tool) { tool.name }), ", ")
+      <> "  "
+      <> contents(decoded)
     Refused(name:, reason:) -> name <> "  REFUSED  " <> reason
+  }
+}
+
+fn contents(decoded: Manifest) -> String {
+  case decoded.tier {
+    manifest.Jailed ->
+      "tools: "
+      <> string.join(list.map(decoded.tools, fn(tool) { tool.name }), ", ")
+    manifest.Profile ->
+      "lsp: "
+      <> string.join(
+        list.map(decoded.lsp, fn(server) {
+          server.name <> " (" <> string.join(server.extensions, ", ") <> ")"
+        }),
+        ", ",
+      )
   }
 }
 
 // --- the four checks ------------------------------------------------------
 
-fn check(root: Root, name: String) -> Result(Discovered, String) {
+fn check(root: Root, name: String) -> Result(Verified, String) {
   use text <- result.try(
     simplifile.read(from: record.file(root, name))
     |> result.map_error(fn(error) {
@@ -207,11 +277,58 @@ fn check(root: Root, name: String) -> Result(Discovered, String) {
   use Nil <- result.try(digest_matches(tree, written))
   use files <- result.try(text_of(tree))
   use decoded <- result.try(remanifest(files))
+  use Nil <- result.try(tier_matches(decoded, written))
+  use artifact <- result.try(case written.tier {
+    manifest.Jailed -> jailed(root, name, written, files)
+    manifest.Profile -> profiled(written, decoded)
+  })
+  Ok(Verified(record: written, manifest: decoded, artifact:, tree:))
+}
+
+// The jailed tier's last three checks: the source still vets, the seam
+// is the one approved, and the bytes that run are the ones built. Answers
+// the artifact's directory.
+fn jailed(
+  root: Root,
+  name: String,
+  written: Record,
+  files: List(#(String, String)),
+) -> Result(String, String) {
   use Nil <- result.try(revet(files))
   use Nil <- result.try(allowlist_matches(written))
   let artifact = record.artifact_at(root, name)
   use Nil <- result.try(artifact_matches(artifact, written))
-  Ok(Ready(record: written, manifest: decoded, artifact:))
+  Ok(artifact)
+}
+
+// A profile's approval is its profiles, so the one check left is that
+// the manifest still says what the record approved. The digest already
+// refuses an edited manifest; this refuses the other half, a record whose
+// profiles were edited to grant something the manifest never asked for. A
+// profile has no artifact, so the directory answered is empty.
+fn profiled(written: Record, decoded: Manifest) -> Result(String, String) {
+  case decoded.lsp == written.lsp {
+    True -> Ok("")
+    False ->
+      Error(
+        "the manifest's language profiles no longer match the install "
+        <> "record; reinstall it to approve what is there now",
+      )
+  }
+}
+
+// The tier decides which checks run, so it has to be the one the tree
+// itself declares. Without this, a record edited to say `profile` would
+// skip the vetting and the artifact check of a tree that is jailed code.
+fn tier_matches(decoded: Manifest, written: Record) -> Result(Nil, String) {
+  case decoded.tier == written.tier {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "the manifest's tier no longer matches the install record; "
+        <> "reinstall it to approve what is there now",
+      )
+  }
 }
 
 // The bytes that actually run. Re-vetting the source says nothing about

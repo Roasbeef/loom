@@ -19,7 +19,9 @@
 ////    what is on disk and refuses the extension when they disagree, so an
 ////    install is content-addressed from the moment it is written —
 ////    whatever the remote does afterwards, and whatever edits the
-////    directory later.
+////    directory later. A profile extension (ADR-014 §3) has no allowlist,
+////    artifact or net policy to approve; what it has instead is the
+////    language profiles themselves, kept in full beside the tier.
 ////
 //// The allowlist and the net policy are *stored* rather than recomputed
 //// because they are the terms of the approval. Recomputing them at load
@@ -40,7 +42,7 @@
 //// ```
 //// <root>/<name>/install.json     the record
 //// <root>/<name>/src/…            the vetted tree, byte for byte
-//// <root>/<name>/artifact/        the compiled beam set
+//// <root>/<name>/artifact/        the compiled beam set (jailed tier only)
 //// <root>/.staging/<random>/      where an install happens
 //// ```
 ////
@@ -50,8 +52,9 @@
 //// directory; a rename is the one step that is not undoable, and it is
 //// last.
 
-import client/extension/manifest.{type Manifest}
+import client/extension/manifest.{type Manifest, type Tier}
 import client/extension/source.{type Source}
+import client/lsp/profile.{type LspServer}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/int
 import gleam/json.{type Json}
@@ -84,7 +87,17 @@ pub const staging_directory = ".staging"
 /// cannot say whether the operator approved any — the honest answer is
 /// to ask them again. The cost is one `loom ext install` per installed
 /// extension, and extensions have shipped in exactly one phase.
-pub const format_version = 2
+///
+/// Version 3 added `tier` and `lsp` (ADR-014 §3). A version-2 record is
+/// still read, as `legacy_format_version`, and the reasoning that refused
+/// version 1 is what admits it: a format-2 record cannot hold a profile,
+/// so reading it as a jailed extension with none loses nothing the
+/// operator approved and forces no reinstall.
+pub const format_version = 3
+
+/// The one older format this build still reads: a jailed extension's
+/// record from before profiles existed.
+pub const legacy_format_version = 2
 
 /// The revision a local path records: it has none, and saying so is a
 /// fact about the install rather than a missing value.
@@ -120,8 +133,12 @@ pub type NetTerms {
 /// One installed extension, as recorded at install.
 pub type Record {
   Record(
-    /// The record format's version (`format_version`).
+    /// The record format's version: `format_version` for a record this
+    /// build wrote, `legacy_format_version` for one read from before
+    /// profiles.
     format: Int,
+    /// Which tier was approved. `Jailed` for a format-2 record.
+    tier: Tier,
     /// The extension's name, which is also its directory.
     name: String,
     /// The version its manifest declared.
@@ -133,9 +150,11 @@ pub type Record {
     revision: String,
     /// A content address over the extracted tree.
     tree_digest: String,
-    /// A content address over the compiled artifact.
+    /// A content address over the compiled artifact. Empty for a
+    /// profile extension, which compiles nothing.
     manifest_hash: String,
-    /// The module names the source was vetted against.
+    /// The module names the source was vetted against. Empty for a
+    /// profile extension, which is not vetted.
     allowlist: List(String),
     /// The net policy the source was approved with.
     net: NetTerms,
@@ -147,11 +166,19 @@ pub type Record {
     /// an operator approved are part of the approval rather than
     /// something re-read from a file that may have changed.
     hooks: List(#(String, String)),
+    /// The language profiles a profile extension ships, in full and in
+    /// the manifest's (name) order. Stored for the reason the hooks are:
+    /// a profile names a binary the harness runs in a jail and the roots
+    /// that jail grants, so the grant is part of the approval rather than
+    /// something re-read from a file that may have changed. Empty for a
+    /// jailed extension and for a format-2 record.
+    lsp: List(LspServer),
     /// When the approval happened, RFC3339 UTC.
     approved_at: String,
     /// Who approved it: the `USER` environment, or `unknown`.
     approved_by: String,
-    /// The directory holding the compiled beam set.
+    /// The directory holding the compiled beam set. Empty for a profile
+    /// extension, which has none.
     artifact: String,
   )
 }
@@ -297,6 +324,7 @@ pub fn for_install(
 ) -> Record {
   Record(
     format: format_version,
+    tier: decoded.tier,
     name: decoded.name,
     version: decoded.version,
     source: source.describe(from),
@@ -307,6 +335,7 @@ pub fn for_install(
     net: terms(decoded.net),
     tools: list.map(decoded.tools, fn(tool) { tool.name }),
     hooks: list.map(decoded.hooks, fn(hook) { #(hook.event, hook.entry) }),
+    lsp: decoded.lsp,
     approved_at: instant(approved_at),
     approved_by:,
     artifact:,
@@ -325,6 +354,7 @@ pub fn for_install(
 pub fn encode(written: Record) -> Json {
   json.object([
     #("format", json.int(written.format)),
+    #("tier", json.string(tier_text(written.tier))),
     #("name", json.string(written.name)),
     #("version", json.string(written.version)),
     #("source", json.string(written.source)),
@@ -335,10 +365,20 @@ pub fn encode(written: Record) -> Json {
     #("net", encode_terms(written.net)),
     #("tools", json.array(written.tools, json.string)),
     #("hooks", json.array(written.hooks, encode_hook)),
+    #("lsp", json.array(written.lsp, profile.encode_server)),
     #("approved_at", json.string(written.approved_at)),
     #("approved_by", json.string(written.approved_by)),
     #("artifact", json.string(written.artifact)),
   ])
+}
+
+// The manifest's own words for the tier, so a record reads the way the
+// `extension.toml` it approved does.
+fn tier_text(tier: Tier) -> String {
+  case tier {
+    manifest.Jailed -> manifest.jailed_tier
+    manifest.Profile -> manifest.profile_tier
+  }
 }
 
 fn encode_hook(hook: #(String, String)) -> Json {
@@ -378,6 +418,7 @@ pub fn decode(text: String) -> Result(Record, String) {
 
 fn decoder() -> Decoder(Record) {
   use format <- decode.field("format", decode.int)
+  use #(tier, lsp) <- decode.then(profile_fields(format))
   use name <- decode.field("name", decode.string)
   use version <- decode.field("version", decode.string)
   use source <- decode.field("source", decode.string)
@@ -393,6 +434,7 @@ fn decoder() -> Decoder(Record) {
   use artifact <- decode.field("artifact", decode.string)
   decode.success(Record(
     format:,
+    tier:,
     name:,
     version:,
     source:,
@@ -403,10 +445,35 @@ fn decoder() -> Decoder(Record) {
     net:,
     tools:,
     hooks:,
+    lsp:,
     approved_at:,
     approved_by:,
     artifact:,
   ))
+}
+
+// The two fields format 3 added. A format-2 record has neither and is a
+// jailed extension with no profiles, which is exactly what it could have
+// held; every later format carries both, and a record missing them is a
+// decode failure naming the field.
+fn profile_fields(format: Int) -> Decoder(#(Tier, List(LspServer))) {
+  case format == legacy_format_version {
+    True -> decode.success(#(manifest.Jailed, []))
+    False -> {
+      use tier <- decode.field("tier", tier_decoder())
+      use lsp <- decode.field("lsp", decode.list(profile.server_decoder()))
+      decode.success(#(tier, lsp))
+    }
+  }
+}
+
+fn tier_decoder() -> Decoder(Tier) {
+  use written <- decode.then(decode.string)
+  case written {
+    "jailed" -> decode.success(manifest.Jailed)
+    "profile" -> decode.success(manifest.Profile)
+    _other -> decode.failure(manifest.Jailed, "jailed or profile")
+  }
 }
 
 fn hook_decoder() -> Decoder(#(String, String)) {
@@ -439,14 +506,14 @@ fn terms_decoder() -> Decoder(NetTerms) {
 /// reaches it before the version check does and reports the missing
 /// field — "the install record does not decode: expected List at
 /// .hooks" — when the fact an operator needs is "this record is format
-/// 1 and this server reads 2, so reinstall it". Same two failures as
+/// 1 and this server reads 2 or 3, so reinstall it". Same two failures as
 /// `decode` then `current`, in the order that names the right one.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert record.readable("{\"format\": 1}")
-///   == Error("the install record is format 1; this server reads 2")
+///   == Error("the install record is format 1; this server reads 2 or 3")
 /// ```
 ///
 pub fn readable(text: String) -> Result(Record, String) {
@@ -466,16 +533,22 @@ fn version_decoder() -> Decoder(Int) {
 }
 
 fn known_format(format: Int) -> Result(Nil, String) {
-  case format == format_version {
+  case is_known_format(format) {
     True -> Ok(Nil)
     False -> Error(skewed(format))
   }
+}
+
+fn is_known_format(format: Int) -> Bool {
+  format == format_version || format == legacy_format_version
 }
 
 fn skewed(format: Int) -> String {
   "the install record is format "
   <> int.to_string(format)
   <> "; this server reads "
+  <> int.to_string(legacy_format_version)
+  <> " or "
   <> int.to_string(format_version)
 }
 
@@ -490,11 +563,11 @@ fn skewed(format: Int) -> String {
 ///
 /// ```gleam
 /// assert record.current(Record(..written, format: 99))
-///   == Error("the install record is format 99; this server reads 2")
+///   == Error("the install record is format 99; this server reads 2 or 3")
 /// ```
 ///
 pub fn current(written: Record) -> Result(Record, String) {
-  case written.format == format_version {
+  case is_known_format(written.format) {
     True -> Ok(written)
     False -> Error(skewed(written.format))
   }

@@ -66,6 +66,21 @@
 //// answers `DeadlineExpired` with whatever arrived — never a claim that
 //// the code is clean.
 ////
+//// # Readiness is the server's own progress
+////
+//// A server may answer while it is still loading its project, and
+//// `rust-analyzer` does: an empty `definition`, references holding only
+//// the declaration, no hover — answers indistinguishable from true ones.
+//// The initialize request declares `window.workDoneProgress`, so a server
+//// reports that loading as `$/progress` tokens running `begin` → `report`
+//// … → `end`, and the actor keeps the set of tokens still active. `ready`
+//// answers `Quiet` once no token has been active for a caller-chosen quiet
+//// window, and `StillBusy` with the active titles if its deadline lapses
+//// first. It is built the way settlement is: a waiter plus timers in actor
+//// state, answered when the token set changes, never a blocked handler.
+//// A server that reports no progress is quiet from the start, and waits
+//// only the window.
+////
 //// Callers reach the actor only through `mcp/call.try_call`, the
 //// monitored call that answers a dead or wedged callee as a value rather
 //// than crashing the asker as `process.call` would.
@@ -121,6 +136,15 @@ pub const default_initialize_ms = 30_000
 /// The default per-request deadline a caller can read back with
 /// `request_deadline`.
 pub const default_request_ms = 10_000
+
+/// The most work-done progress tokens the client tracks at once. Past it,
+/// the token that began earliest is forgotten. A server runs a handful of
+/// concurrent tasks; a server that begins tokens and never ends them, or
+/// mints a fresh one per file, would otherwise grow the actor's state
+/// without end. The oldest is the one to drop because a genuinely long
+/// load keeps reporting under its token, and a report for an unknown
+/// token puts it back.
+pub const max_progress_tokens = 64
 
 /// How long a client that has closed its transport waits for the
 /// transport to report the close before it exits without that witness.
@@ -296,6 +320,19 @@ pub type Settlement {
   )
 }
 
+/// The answer to `ready`: whether the server has finished the work it
+/// reported through `$/progress`.
+pub type Readiness {
+  /// No work-done progress was active for the whole quiet window.
+  Quiet
+
+  /// The deadline lapsed while work was active, or before the quiet
+  /// window closed. `titles` are the active tokens' titles, oldest first,
+  /// for a message; empty when the window, not an active token, was the
+  /// wait.
+  StillBusy(titles: List(String))
+}
+
 /// How a `stop` ended.
 pub type StopReport {
   /// The server answered `shutdown`, was sent `exit`, and its transport
@@ -352,6 +389,21 @@ pub opaque type Msg {
 
   /// A settlement's deadline lapsed. Stale when it already settled.
   SettleExpired(token: Int)
+
+  /// Wait until no work-done progress has been active for `quiet_ms`.
+  Ready(
+    quiet_ms: Int,
+    deadline_ms: Int,
+    reply: Subject(Result(Readiness, RequestError)),
+  )
+
+  /// A readiness waiter's quiet window lapsed. Armed when the token set
+  /// was empty at `epoch`; stale when the set has changed since, or when
+  /// the waiter was already answered.
+  ReadyQuiet(token: Int, epoch: Int)
+
+  /// A readiness waiter's deadline lapsed. Stale when it was answered.
+  ReadyExpired(token: Int)
 
   /// A read of the actor's own state; never reaches the server.
   Read(reading: Reading)
@@ -455,6 +507,19 @@ type Target {
   Target(uri: String, version: Option(Int))
 }
 
+// One work-done progress token the server has begun and not ended.
+// `title` is what a caller still waiting at its deadline is told; `order`
+// is its arrival count, which the `max_progress_tokens` bound evicts by.
+type Activity {
+  Activity(title: String, order: Int)
+}
+
+// A caller waiting for `ready`. Its deadline timer is armed when it
+// arrives; its quiet timer whenever the token set is, or becomes, empty.
+type Readier {
+  Readier(reply: Subject(Result(Readiness, RequestError)), quiet_ms: Int)
+}
+
 type Waiter {
   Waiter(
     reply: Subject(Result(Settlement, RequestError)),
@@ -498,6 +563,13 @@ type Data {
     publications: Dict(String, Publication),
     next_token: Int,
     waiters: Dict(Int, Waiter),
+    progress: Dict(protocol.ProgressToken, Activity),
+    next_activity: Int,
+    // Moves on every change to the set of active tokens, so a quiet
+    // timer armed while the set was empty knows, when it fires, whether
+    // it has stayed empty since.
+    quiet_epoch: Int,
+    readiers: Dict(Int, Readier),
     stoppers: List(Subject(StopReport)),
   )
 }
@@ -944,6 +1016,38 @@ pub fn settle(
   |> result.flatten
 }
 
+/// Waits until the server has reported no active work-done progress for a
+/// continuous `quiet_ms`, measured from the later of this call and the
+/// end of the last active token, and answers `Quiet`; or answers
+/// `StillBusy` with the active titles once `deadline_ms` lapses first.
+/// With `quiet_ms` 0 it answers at once when nothing is active. Ask it
+/// before a query whose answer a loading server would get wrong: a server
+/// may answer while loading with empty results rather than errors.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // client.ready(client, quiet_ms: 300, deadline_ms: 60_000)
+/// // -> Ok(client.Quiet)
+/// // client.ready(client, quiet_ms: 0, deadline_ms: 50)
+/// // -> Ok(client.StillBusy(titles: ["Indexing"]))
+/// ```
+///
+pub fn ready(
+  client: Client,
+  quiet_ms quiet_ms: Int,
+  deadline_ms deadline_ms: Int,
+) -> Result(Readiness, RequestError) {
+  let deadline_ms = int.max(deadline_ms, 1)
+  let quiet_ms = int.max(quiet_ms, 0)
+  exchange(client, deadline_ms + reply_margin_ms, Ready(
+    quiet_ms,
+    deadline_ms,
+    _,
+  ))
+  |> result.flatten
+}
+
 /// The latest stored publication for `path`, or for every path the
 /// server has published about when `None`, sorted by path.
 ///
@@ -1139,6 +1243,10 @@ fn spawn(
         publications: dict.new(),
         next_token: 1,
         waiters: dict.new(),
+        progress: dict.new(),
+        next_activity: 0,
+        quiet_epoch: 0,
+        readiers: dict.new(),
         stoppers: [],
       )
     sm.initialised(Initializing, data)
@@ -1228,9 +1336,14 @@ fn initializing(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
     }
     Abandoned ->
       conclude(Initializing, abandon(data, "the lsp client was abandoned"))
-    Ask(..) | Sync(..) | Settle(..) | Read(..) -> sm.keep(data) |> sm.postpone
-    Expire(..) | SettleExpired(..) | GraceExpired | RetireExpired ->
-      sm.keep(data)
+    Ask(..) | Sync(..) | Settle(..) | Ready(..) | Read(..) ->
+      sm.keep(data) |> sm.postpone
+    Expire(..)
+    | SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
+    | GraceExpired
+    | RetireExpired -> sm.keep(data)
   }
 }
 
@@ -1244,6 +1357,10 @@ fn serving(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
       conclude(Serving, begin_settle(data, uris, deadline_ms, reply))
     SettleExpired(token:) ->
       conclude(Serving, settle_expired(Flow(Serving, data), token))
+    Ready(quiet_ms:, deadline_ms:, reply:) ->
+      sm.keep(begin_ready(data, quiet_ms, deadline_ms, reply))
+    ReadyQuiet(token:, epoch:) -> sm.keep(quiet_lapsed(data, token, epoch))
+    ReadyExpired(token:) -> sm.keep(ready_expired(data, token))
     Read(reading) -> {
       answer_read(data, reading)
       sm.keep(data)
@@ -1285,7 +1402,8 @@ fn shutting_down(
     Stop(reply:, ..) ->
       sm.keep(Data(..data, stoppers: [reply, ..data.stoppers]))
     Expire(id:) -> conclude(phase, expire(Flow(phase, data), id))
-    Ask(..) | Sync(..) | Settle(..) -> refuse(data, reply_of(msg), reason)
+    Ask(..) | Sync(..) | Settle(..) | Ready(..) ->
+      refuse(data, reply_of(msg), reason)
     Read(reading) -> {
       refuse_read(reading, reason)
       sm.keep(data)
@@ -1294,8 +1412,12 @@ fn shutting_down(
       process.send(reply, Error(TransportRefused(reason)))
       sm.keep(data)
     }
-    SettleExpired(..) | Abandoned | HandshakeExpired | RetireExpired ->
-      sm.keep(data)
+    SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
+    | Abandoned
+    | HandshakeExpired
+    | RetireExpired -> sm.keep(data)
   }
 }
 
@@ -1318,7 +1440,8 @@ fn retiring(
     }
     Stop(reply:, ..) ->
       sm.keep(Data(..data, stoppers: [reply, ..data.stoppers]))
-    Ask(..) | Sync(..) | Settle(..) -> refuse(data, reply_of(msg), reason)
+    Ask(..) | Sync(..) | Settle(..) | Ready(..) ->
+      refuse(data, reply_of(msg), reason)
     Read(reading) -> {
       refuse_read(reading, reason)
       sm.keep(data)
@@ -1330,23 +1453,28 @@ fn retiring(
     FromTransport(transport.TransportData(..))
     | Expire(..)
     | SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
     | GraceExpired
     | HandshakeExpired
     | Abandoned -> sm.keep(data)
   }
 }
 
-// The three caller messages share one refusal. Returned as a closure so
-// the refusing phase does not repeat the three shapes.
+// The four caller messages share one refusal. Returned as a closure so
+// the refusing phase does not repeat the four shapes.
 fn reply_of(msg: Msg) -> fn(RequestError) -> Nil {
   case msg {
     Ask(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Sync(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Settle(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
+    Ready(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
     Handshake(..)
     | HandshakeExpired
     | Expire(..)
     | SettleExpired(..)
+    | ReadyQuiet(..)
+    | ReadyExpired(..)
     | Read(..)
     | Stop(..)
     | GraceExpired
@@ -1670,13 +1798,16 @@ fn answer_server(
   }
 }
 
-// A malformed publication is dropped rather than fatal: its envelope was
-// well formed, so the stream is still trustworthy, and the next
-// publication for that file replaces it anyway.
+// A malformed publication or progress is dropped rather than fatal: its
+// envelope was well formed, so the stream is still trustworthy, and the
+// next publication for that file replaces it anyway. A dropped progress
+// costs at most a wait: a lost `end` holds readiness until the caller's
+// deadline, and a lost `begin` comes back with the token's next report.
 fn notification(data: Data, method: String, params: Option(JsonValue)) -> Data {
   case protocol.classify_notification(method, params) {
     Ok(protocol.Published(diagnostics:)) ->
       release_settled(record(data, diagnostics))
+    Ok(protocol.Progressed(progress:)) -> progressed(data, progress)
     Ok(protocol.Ignored(..)) | Ok(protocol.Unrecognised(..)) | Error(..) -> data
   }
 }
@@ -1986,6 +2117,168 @@ fn collect(
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
 
+// --- readiness ----------------------------------------------------------------------
+
+// A readiness waiter arrives. With nothing active and no window to wait,
+// it is answered now and arms nothing. Otherwise its deadline is armed,
+// and — when nothing is active — its quiet window too, from this call; if
+// something is active the window is armed later, when the set empties.
+fn begin_ready(
+  data: Data,
+  quiet_ms: Int,
+  deadline_ms: Int,
+  reply: Subject(Result(Readiness, RequestError)),
+) -> Data {
+  let idle = dict.is_empty(data.progress)
+  case idle && quiet_ms == 0 {
+    True -> {
+      process.send(reply, Ok(Quiet))
+      data
+    }
+    False -> {
+      let token = data.next_token
+      let readiers =
+        dict.insert(data.readiers, token, Readier(reply:, quiet_ms:))
+      process.send_after(data.commands, deadline_ms, ReadyExpired(token:))
+      case idle {
+        True -> arm_quiet(token, quiet_ms, data)
+        False -> Nil
+      }
+      Data(..data, next_token: token + 1, readiers:)
+    }
+  }
+}
+
+fn arm_quiet(token: Int, quiet_ms: Int, data: Data) -> Nil {
+  process.send_after(
+    data.commands,
+    quiet_ms,
+    ReadyQuiet(token:, epoch: data.quiet_epoch),
+  )
+  Nil
+}
+
+// A quiet window lapsed. The epoch it was armed under is the proof: the
+// window was armed only while the set was empty, and every change to the
+// set moves the epoch, so an unmoved epoch means nothing was active for
+// the whole window. A moved one means a later window, armed when the set
+// last emptied, is the one that counts.
+fn quiet_lapsed(data: Data, token: Int, epoch: Int) -> Data {
+  case dict.get(data.readiers, token), epoch == data.quiet_epoch {
+    Ok(readier), True -> {
+      process.send(readier.reply, Ok(Quiet))
+      Data(..data, readiers: dict.delete(data.readiers, token))
+    }
+    Ok(_), False | Error(Nil), _ -> data
+  }
+}
+
+// The deadline lapsed first. The caller hears what is still running, so
+// its refusal can name the work rather than guess at it.
+fn ready_expired(data: Data, token: Int) -> Data {
+  case dict.get(data.readiers, token) {
+    Error(Nil) -> data
+    Ok(readier) -> {
+      process.send(readier.reply, Ok(StillBusy(titles: active_titles(data))))
+      Data(..data, readiers: dict.delete(data.readiers, token))
+    }
+  }
+}
+
+fn active_titles(data: Data) -> List(String) {
+  dict.values(data.progress)
+  |> list.sort(fn(left, right) { int.compare(left.order, right.order) })
+  |> list.map(fn(activity) { activity.title })
+}
+
+// One work-done progress notification. A `begin` or an unknown token's
+// `report` adds the token, since a server may report before the `begin`
+// reaches us or never send one; an `end` removes it. Only a change to the
+// set moves the epoch, and a set that has just emptied starts every
+// waiter's quiet window from now.
+fn progressed(data: Data, progress: protocol.WorkDoneProgress) -> Data {
+  case progress {
+    protocol.ProgressBegin(token:, title:) ->
+      case dict.get(data.progress, token) {
+        Ok(activity) -> {
+          let activity = Activity(..activity, title:)
+          Data(..data, progress: dict.insert(data.progress, token, activity))
+        }
+        Error(Nil) -> activate(data, token, title)
+      }
+    protocol.ProgressReport(token:) ->
+      case dict.has_key(data.progress, token) {
+        True -> data
+        False -> activate(data, token, token_text(token))
+      }
+    protocol.ProgressEnd(token:) ->
+      case dict.has_key(data.progress, token) {
+        False -> data
+        True -> moved(Data(..data, progress: dict.delete(data.progress, token)))
+      }
+  }
+}
+
+// Adds a token under the `max_progress_tokens` bound, evicting the one
+// that began earliest when the set is full.
+fn activate(data: Data, token: protocol.ProgressToken, title: String) -> Data {
+  let order = data.next_activity
+  let room = case dict.size(data.progress) >= max_progress_tokens {
+    False -> data.progress
+    True -> evict_oldest(data.progress)
+  }
+  let progress = dict.insert(room, token, Activity(title:, order:))
+  moved(Data(..data, progress:, next_activity: order + 1))
+}
+
+fn evict_oldest(
+  progress: Dict(protocol.ProgressToken, Activity),
+) -> Dict(protocol.ProgressToken, Activity) {
+  let oldest =
+    dict.fold(progress, None, fn(oldest, token, activity) {
+      case oldest {
+        Some(#(_, order)) if order <= activity.order -> oldest
+        Some(_) | None -> Some(#(token, activity.order))
+      }
+    })
+  case oldest {
+    None -> progress
+    Some(#(token, _)) -> dict.delete(progress, token)
+  }
+}
+
+// The set of active tokens changed. The epoch moves, so every quiet
+// window armed before now fires stale; and if the set is now empty, each
+// waiter's window starts again from here — at once for one that asked
+// for no window at all.
+fn moved(data: Data) -> Data {
+  let data = Data(..data, quiet_epoch: data.quiet_epoch + 1)
+  case dict.is_empty(data.progress) {
+    False -> data
+    True ->
+      dict.fold(data.readiers, data, fn(data, token, readier) {
+        case readier.quiet_ms {
+          0 -> {
+            process.send(readier.reply, Ok(Quiet))
+            Data(..data, readiers: dict.delete(data.readiers, token))
+          }
+          quiet_ms -> {
+            arm_quiet(token, quiet_ms, data)
+            data
+          }
+        }
+      })
+  }
+}
+
+// A token named for a caller's message when no `begin` gave it a title.
+fn token_text(token: protocol.ProgressToken) -> String {
+  case token {
+    protocol.IntToken(value:) -> int.to_string(value)
+    protocol.StringToken(value:) -> value
+  }
+}
+
 fn answer_read(data: Data, reading: Reading) -> Nil {
   case reading {
     TextOf(uri:, reply:) -> {
@@ -2116,7 +2409,10 @@ fn settle_all(data: Data, reason: String) -> Data {
   dict.each(data.waiters, fn(_, waiter) {
     process.send(waiter.reply, Error(error))
   })
-  Data(..data, pending: dict.new(), waiters: dict.new())
+  dict.each(data.readiers, fn(_, readier) {
+    process.send(readier.reply, Error(error))
+  })
+  Data(..data, pending: dict.new(), waiters: dict.new(), readiers: dict.new())
 }
 
 // Closes the transport once: the connection is replaced by an inert one,

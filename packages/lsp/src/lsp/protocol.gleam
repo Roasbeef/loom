@@ -405,7 +405,13 @@ pub type WorkspaceFolder {
 ///   empty: versioned per-file edits are welcome, and file creation,
 ///   renaming and deletion are declared unsupported (they would be
 ///   refused anyway);
-/// - `workspace.applyEdit: false`: the server may not ask us to write.
+/// - `workspace.applyEdit: false`: the server may not ask us to write;
+/// - `window.workDoneProgress: true`: the server may report the work it
+///   has not finished — a project still loading — as `$/progress`, which
+///   is how the client learns it is not ready to answer. A server that
+///   answers while it is loading answers with empty results rather than
+///   errors (measured on `rust-analyzer`), so its readiness is the only
+///   thing that tells an empty answer from a true one.
 ///
 /// ## Examples
 ///
@@ -457,6 +463,7 @@ pub fn initialize_request(
           #("applyEdit", json.Bool(False)),
         ]),
       ),
+      #("window", json.Object([#("workDoneProgress", json.Bool(True))])),
     ])
   let params =
     json.Object([
@@ -1576,14 +1583,57 @@ fn decode_diagnostic(
   Ok(ServerDiagnostic(range:, severity:, message:, source:))
 }
 
+/// A work-done progress token, as the server minted it. The protocol
+/// allows an integer or a string, so the two are kept apart: `1` and
+/// `"1"` are different tokens, and a client that folded them together
+/// could let one progress's `end` close another's.
+pub type ProgressToken {
+  /// A token the server wrote as a JSON integer.
+  IntToken(value: Int)
+
+  /// A token the server wrote as a JSON string, such as
+  /// `rustAnalyzer/cachePriming`.
+  StringToken(value: String)
+}
+
+/// One `$/progress` notification about work-done progress, decoded to
+/// what the client's readiness needs: which token moved, and for a
+/// `begin`, the title a waiting caller is told. A `report`'s percentage
+/// and message are dropped; nobody reads them.
+pub type WorkDoneProgress {
+  /// The work named by `token` started.
+  ProgressBegin(
+    /// The server's token for this work.
+    token: ProgressToken,
+    /// The server's short name for the work, such as `Indexing`.
+    title: String,
+  )
+
+  /// The work named by `token` is still going.
+  ProgressReport(
+    /// The server's token for this work.
+    token: ProgressToken,
+  )
+
+  /// The work named by `token` finished.
+  ProgressEnd(
+    /// The server's token for this work.
+    token: ProgressToken,
+  )
+}
+
 /// A server notification, classified.
 pub type ServerNotification {
   /// `textDocument/publishDiagnostics`, decoded.
   Published(diagnostics: PublishDiagnostics)
 
-  /// `window/logMessage`, `window/showMessage` or `$/progress`: known,
-  /// and deliberately not acted on. Their text is the server's to say and
-  /// nobody's to read; stderr's ring is the restart message's source.
+  /// `$/progress` carrying work-done progress, decoded. The client tracks
+  /// the active tokens so a query waits until the server is ready.
+  Progressed(progress: WorkDoneProgress)
+
+  /// `window/logMessage` or `window/showMessage`: known, and deliberately
+  /// not acted on. Their text is the server's to say and nobody's to
+  /// read; stderr's ring is the restart message's source.
   Ignored(method: String)
 
   /// Any other notification. Also dropped, but distinguishable from the
@@ -1591,16 +1641,16 @@ pub type ServerNotification {
   Unrecognised(method: String)
 }
 
-/// Classifies a server notification, decoding the one the harness acts
-/// on. A malformed `publishDiagnostics` is a fault, which the caller may
-/// log and drop; it never poisons the transport, since the envelope
-/// around it was well-formed.
+/// Classifies a server notification, decoding the two the harness acts
+/// on. A malformed `publishDiagnostics` or `$/progress` is a fault, which
+/// the caller may log and drop; it never poisons the transport, since the
+/// envelope around it was well-formed.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert protocol.classify_notification("$/progress", None)
-///   == Ok(protocol.Ignored("$/progress"))
+/// assert protocol.classify_notification("window/logMessage", None)
+///   == Ok(protocol.Ignored("window/logMessage"))
 /// ```
 ///
 pub fn classify_notification(
@@ -1614,9 +1664,64 @@ pub fn classify_notification(
       )
       Ok(Published(diagnostics:))
     }
-    "window/logMessage" | "window/showMessage" | "$/progress" ->
-      Ok(Ignored(method:))
+    "$/progress" -> {
+      use progress <- result.try(
+        decode_work_done_progress(option.unwrap(params, json.Null)),
+      )
+      Ok(Progressed(progress:))
+    }
+    "window/logMessage" | "window/showMessage" -> Ok(Ignored(method:))
     _ -> Ok(Unrecognised(method:))
+  }
+}
+
+/// Decodes the params of a `$/progress` notification as work-done
+/// progress: `{token, value: {kind, ...}}`, where `kind` is `begin`
+/// (with a required `title`), `report` or `end`. Anything else — a
+/// partial-result stream, which this client never asks for, or a value
+/// with no known `kind` — is a fault, not a guess.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // {"token": "load", "value": {"kind": "begin", "title": "Loading"}}
+/// // -> Ok(protocol.ProgressBegin(protocol.StringToken("load"), "Loading"))
+/// ```
+///
+pub fn decode_work_done_progress(
+  value: JsonValue,
+) -> Result(WorkDoneProgress, ProtocolFault) {
+  use fields <- result.try(object_fields(value, "progress params"))
+  use token <- result.try(case list.key_find(fields, "token") {
+    Ok(json.Int(number)) -> Ok(IntToken(value: number))
+    Ok(json.String(text)) -> Ok(StringToken(value: text))
+    Ok(_) | Error(Nil) ->
+      Error(BadResult(reason: "progress.token must be an integer or a string"))
+  })
+  use progress <- result.try(case list.key_find(fields, "value") {
+    Ok(progress) -> object_fields(progress, "progress.value must be an object")
+    Error(Nil) -> Error(BadResult(reason: "progress.value is required"))
+  })
+
+  // `kind` is what makes a progress value work-done progress; its absence
+  // is the protocol's partial-result shape, which this client never
+  // requested.
+  use kind <- result.try(required_string(progress, "progress.value", "kind"))
+  case kind {
+    "begin" -> {
+      use title <- result.try(required_string(
+        progress,
+        "progress.value",
+        "title",
+      ))
+      Ok(ProgressBegin(token:, title:))
+    }
+    "report" -> Ok(ProgressReport(token:))
+    "end" -> Ok(ProgressEnd(token:))
+    _ ->
+      Error(BadResult(
+        reason: "progress.value.kind must be begin, report or end",
+      ))
   }
 }
 
@@ -1638,9 +1743,10 @@ pub const invalid_params_code = -32_602
 ///   are configured by their `[lsp.<name>]` table and command line, never
 ///   by settings pushed at runtime.
 /// - `window/workDoneProgress/create`, `client/registerCapability`,
-///   `client/unregisterCapability`: `null`, which accepts. Progress is
-///   ignored when it arrives, and a dynamic registration changes nothing,
-///   because requests are gated on the capabilities `initialize` returned.
+///   `client/unregisterCapability`: `null`, which accepts. A created
+///   token is tracked when its `begin` arrives, and a dynamic registration
+///   changes nothing, because requests are gated on the capabilities
+///   `initialize` returned.
 /// - `workspace/workspaceFolders`: the folders the server was started
 ///   with.
 /// - `workspace/applyEdit`: `{applied: false}` with a reason. The server

@@ -477,6 +477,14 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
 
+      # The language-server manager's live rust-analyzer fixture runs in
+      # the client bucket, and rustup's `rust-analyzer` link exists on the
+      # runner without the component, so without this the fixture skips
+      # and the gate's census refuses it. Same script as the jail lane's.
+      - name: Install rust-analyzer for the language-server fixture
+        if: matrix.bucket == 'client'
+        run: .github/scripts/install_rust_analyzer.sh
+
       - name: make check (${{ matrix.bucket }})
         # Set for every bucket, as the old single job set it for the whole
         # of `make check`: more than one package reads it (the client's
@@ -1336,6 +1344,15 @@ jobs:
           go install golang.org/x/tools/gopls@v0.23.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           "$(go env GOPATH)/bin/gopls" version
+
+      # rust-analyzer, rust-src and the standard library's dependencies for
+      # the first-party lsp_rust profile (ADR-014 §6), which `make e2e`
+      # checks in the jail beside lsp_gleam and lsp_go; without them it
+      # skips, and this lane's census refuses the skip. The script is
+      # shared with the Linux client bucket and says why each piece is
+      # there.
+      - name: Install rust-analyzer and the standard library's sources
+        run: .github/scripts/install_rust_analyzer.sh
 
       # Both end-to-end suites again — but this time over a helper that
       # has bwrap, Landlock and namespaces, so the enforcement they report

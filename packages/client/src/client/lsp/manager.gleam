@@ -60,6 +60,26 @@
 //// the harness print its first line, or have `references` send any
 //// harness-readable file into the jail.
 ////
+//// # The query that starts a server waits for its load
+////
+//// A server may answer while it loads its project, and `rust-analyzer`
+//// does, with empty results rather than errors: a `definition` of `[]`, a
+//// rename that edits one file of two. So the query that paid for a start
+//// asks the client whether the server is `ready` — whether its work-done
+//// progress has gone quiet for `Timing.quiet_ms`, a window that exists
+//// because a server may not have begun reporting yet when `initialized`
+//// is sent. A server still busy at `Timing.ready_ms` is answered
+//// `Unavailable`, worded as a server still loading, and left running.
+////
+//// A warm query never waits. The measured empty answers were a load-time
+//// problem; a warm server re-indexing after an edit answers from its
+//// previous state, which is what every editor's client sees too. And a
+//// server that begins a token and never ends it would otherwise stall
+//// every query for the whole deadline: this way it costs the one "still
+//// loading" answer at start, and the next query, warm, proceeds.
+//// Diagnostics never wait either: settlement has its own rules and bound,
+//// and reports an unsettled block honestly.
+////
 //// # A silent server costs one deadline, not one per request
 ////
 //// Resolving a bare name asks `definition` once per search hit, and
@@ -134,12 +154,23 @@ pub type Timing {
     /// The bound on the enforcement probe and on one symbol search, each
     /// from clearance to settlement.
     exec_ms: Int,
+    /// The longest the query that started a server waits for its
+    /// work-done progress to go quiet (`lsp/client.ready`) before it is
+    /// answered `Unavailable`. A cold `rust-analyzer` went quiet 3.75 s
+    /// after its handshake on a two-file crate, jailed; a real workspace
+    /// loads for far longer. Warm queries never wait.
+    ready_ms: Int,
+    /// The quiet window that query waits, with no progress active, before
+    /// it asks: a server may begin reporting its load only after
+    /// `initialized` is sent.
+    quiet_ms: Int,
   )
 }
 
 /// The production bounds: a minute to start, five seconds a request, the
-/// ADR's 1.5 s settlement, two seconds of shutdown grace, and ten seconds
-/// for the probe and for a search.
+/// ADR's 1.5 s settlement, two seconds of shutdown grace, ten seconds for
+/// the probe and for a search, a minute for a server to finish loading,
+/// and a 300 ms quiet window after a start.
 ///
 /// ## Examples
 ///
@@ -155,6 +186,8 @@ pub fn default_timing() -> Timing {
     stop_grace_ms: 2000,
     previous_ms: 2000 + lsp.retire_ms + 2000,
     exec_ms: 10_000,
+    ready_ms: 60_000,
+    quiet_ms: 300,
   )
 }
 
@@ -333,9 +366,15 @@ pub fn connect_jailed(
   )
 }
 
-// Locates the executable and composes the jail. The scratch directory's
-// `tmp` is made here too: the probe and a search clear under a policy that
-// binds it, and the relay makes it only for the server itself.
+// Locates the executable, composes the jail, judges the real paths of the
+// spellings a link could redirect, and makes the directories the jail
+// binds that may not exist yet. This is where a jail's impure
+// preparation lives, and the private caches belong with it rather than at
+// boot: the probe, a search and the server all clear through here, so a
+// directory made here exists before any policy that binds it is cleared,
+// and a server nobody queries costs no directory, which is ADR-013 §1's
+// laziness kept. The scratch directory's `tmp` is made for the same reason;
+// the relay makes it only for the server itself.
 fn jail_for(
   jailed: Jailed,
   server: LspServer,
@@ -355,6 +394,18 @@ fn jail_for(
     jailed.session_base,
     reading: jailed.reading,
   ))
+
+  // The policy was built from spellings; the helper will bind them by
+  // following whatever links they pass through. Two of those spellings
+  // lie where a link could be planted — the executable's directory under
+  // a path the server writes, and a private cache — so their real paths
+  // are judged here, from the disk, before anything is made or cleared.
+  use Nil <- result.try(jail.directory_unlinked(
+    server.name,
+    executable,
+    built.requirements.writable_roots,
+  ))
+  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
   use Nil <- result.try(
     simplifile.create_directory_all(built.scratch <> "/tmp")
     |> result.map_error(fn(error) {
@@ -362,6 +413,27 @@ fn jail_for(
       <> simplifile.describe_error(error)
     }),
   )
+
+  // `mkdir -p` over a directory that already exists is a no-op, so a cache
+  // a previous start filled is kept, and warm.
+  use Nil <- result.try(
+    list.try_each(built.caches, fn(cache) {
+      simplifile.create_directory_all(cache)
+      |> result.map_error(fn(error) {
+        "lsp."
+        <> server.name
+        <> "'s private cache "
+        <> cache
+        <> " could not be made: "
+        <> simplifile.describe_error(error)
+      })
+    }),
+  )
+
+  // Judged again now the directories exist: the first read proved no
+  // link would be followed to make them, and this one proves the
+  // directories the helper is about to bind are the ones Loom made.
+  use Nil <- result.try(jail.caches_unlinked(server, jailed.places))
   Ok(built)
 }
 
@@ -390,6 +462,62 @@ pub fn probe(
   now_ms now_ms: Int,
   waiting waiting: Int,
 ) -> Result(Nil, String) {
+  use outcome <- result.try(probe_outcome(
+    run,
+    built,
+    demand,
+    op_id,
+    now_ms:,
+    waiting:,
+  ))
+  judged(outcome)
+}
+
+/// Builds `server`'s jail over `root` exactly as a start would, clears the
+/// enforcement probe under it, and answers how the probe settled, before
+/// any verdict is drawn from it.
+///
+/// `probe` is the gate a start passes; this is the same clearance for a
+/// caller that has to *say* what the jail enforced rather than only
+/// refuse on a degraded one. `loom ext check` prints it, as an install
+/// prints its build's jail: an operator proving a profile is entitled to
+/// know whether the server it proved was actually confined. The `Error`
+/// is a jail that could not be built, or a probe that did not settle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.probe_server(jailed, gleam, "/work/app")
+/// // -> Ok(broker.CallExited(result: ..))
+/// ```
+///
+pub fn probe_server(
+  jailed: Jailed,
+  server: LspServer,
+  root: String,
+) -> Result(broker.CallOutcome, String) {
+  use built <- result.try(jail_for(jailed, server, root))
+  let #(now, _clock) = clock.read(jailed.clock)
+  probe_outcome(
+    jailed.run,
+    built,
+    jailed.demand,
+    jailed.op_id,
+    now_ms: now,
+    waiting: jailed.exec_ms,
+  )
+}
+
+// The probe's clearance and its settlement, with no verdict: `probe`
+// judges it, and `probe_server` hands it to a caller that reports it.
+fn probe_outcome(
+  run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
+  built: jail.Jail,
+  demand: exec.EnforcementDemand,
+  op_id: OpId,
+  now_ms now_ms: Int,
+  waiting waiting: Int,
+) -> Result(broker.CallOutcome, String) {
   let spec =
     broker.CallSpec(
       ..jail.call_spec(built, op_id, now_ms:, demand:),
@@ -412,7 +540,7 @@ pub fn probe(
         <> " ms",
       )
     }
-    Ok(collected) -> judged(collected.outcome)
+    Ok(collected) -> Ok(collected.outcome)
   }
 }
 
@@ -1563,7 +1691,7 @@ fn diagnostics(
 ) -> Result(Served(Diagnostics), QueryError) {
   case path {
     Some(path) -> {
-      use #(session, owned) <- result.try(session_for(manager, path))
+      use #(session, owned) <- result.try(synced_for(manager, path))
       settled(manager, session, [owned.path])
     }
 
@@ -1855,10 +1983,60 @@ fn session_for(
   manager: Manager,
   path: String,
 ) -> Result(#(Session, Owned), QueryError) {
+  use #(session, owned) <- result.try(synced_for(manager, path))
+  use Nil <- result.try(readied(session))
+  Ok(#(session, owned))
+}
+
+// `session_for` without the readiness wait, for diagnostics: settlement
+// is bounded by its own rules and deadline, and an unsettled block is an
+// honest answer where an empty query result is not.
+fn synced_for(
+  manager: Manager,
+  path: String,
+) -> Result(#(Session, Owned), QueryError) {
   use owned <- result.try(owned(manager, path))
   use session <- result.try(acquire(manager, owned.identity))
   use Nil <- result.try(resync(session, [owned.path]))
   Ok(#(session, owned))
+}
+
+// The query that paid for a start waits for the load it started: a quiet
+// window, since the server may begin reporting only after `initialized`,
+// then the end of every token it reported. It follows the pull, so the
+// documents the query opened are part of that load. A warm query passes
+// at once without asking, so a token a server never ends costs one
+// "still loading" answer at start rather than a deadline on every query.
+fn readied(session: Session) -> Result(Nil, QueryError) {
+  case session.warmth {
+    query.Warm -> Ok(Nil)
+    query.Started(..) -> {
+      let timing = session.manager.config.timing
+      let readiness =
+        lsp.ready(
+          session.client,
+          quiet_ms: timing.quiet_ms,
+          deadline_ms: timing.ready_ms,
+        )
+      case readiness {
+        Ok(lsp.Quiet) -> Ok(Nil)
+        Ok(lsp.StillBusy(titles:)) ->
+          Error(query.Unavailable(reason: still_loading(titles)))
+        Error(error) -> Error(request_error(session, error))
+      }
+    }
+  }
+}
+
+// A server still loading at the deadline, worded for the model: what it
+// is doing, when there is a title to say, and that asking again is the
+// remedy.
+fn still_loading(titles: List(String)) -> String {
+  let doing = case titles {
+    [] -> ""
+    _ -> " (" <> string.join(titles, ", ") <> ")"
+  }
+  "the language server is still loading" <> doing <> "; ask again in a moment"
 }
 
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
@@ -1973,6 +2151,7 @@ fn anywhere(
     session,
     list.unique(list.map(hits, fn(hit) { hit.path })),
   ))
+  use Nil <- result.try(readied(session))
   use found <- result.try(definitions(session, hits, symbol.identifier))
 
   // The qualifier narrows definitions, never hits: `probe.greet` is

@@ -57,12 +57,14 @@ The modules, in dependency order:
   WorkspaceEditFault(EditMalformed | ResourceOperationRefused),
   PrepareRename(CanRename | CanRenameDefault | CannotRename),
   CallHierarchyItem, IncomingCall, OutgoingCall, PublishDiagnostics,
-  ServerDiagnostic, ServerNotification(Published | Ignored |
-  Unrecognised), WorkspaceFolder, ProtocolFault, UriFault}` — decoded
-  answers, one type per question whatever dialect the server used.
+  ServerDiagnostic, ServerNotification(Published | Progressed | Ignored |
+  Unrecognised), ProgressToken(IntToken | StringToken),
+  WorkDoneProgress(ProgressBegin | ProgressReport | ProgressEnd),
+  WorkspaceFolder, ProtocolFault, UriFault}` — decoded answers, one type
+  per question whatever dialect the server used.
 - `lsp/protocol.{answer_server_request, classify_notification,
-  path_to_uri, uri_to_path, symbol_kind_name}` — pure policy the actor
-  sends without deciding anything.
+  decode_work_done_progress, path_to_uri, uri_to_path, symbol_kind_name}`
+  — pure policy the actor sends without deciding anything.
 - `lsp/client.{Client, Options, options, start, stop, pid,
   request_deadline, capabilities, feature_method}` — the opaque handle
   and its lifecycle. `start(Transport, Options) -> Result(Client,
@@ -85,6 +87,14 @@ The modules, in dependency order:
   the latest-publication store, both in the server's coordinates
   (`protocol.ServerDiagnostic`); converting to `query.Diagnostic` is the
   manager's, which holds the text.
+- `lsp/client.{ready, Readiness(Quiet | StillBusy(titles)),
+  max_progress_tokens}` — `ready(client, quiet_ms:, deadline_ms:) ->
+  Result(Readiness, RequestError)`: `Quiet` once no work-done progress
+  token has been active for a continuous `quiet_ms` (measured from the
+  later of the call and the last token's end), `StillBusy` with the
+  active titles, oldest first, when the deadline lapses first. The
+  manager asks it only for the query that started a server; warm queries
+  never wait.
 
 ## Relationships
 
@@ -109,14 +119,17 @@ The modules, in dependency order:
 - **Actor messages** (`lsp/client.Msg`, opaque): callers send
   `Handshake` (once, from `start`), `Ask(feature, build, deadline_ms,
   reply)`, `Sync(ops, reply)`, `Settle(uris, deadline_ms, reply)`,
-  `Read(TextOf | OpenPaths | PublishedFor | CapabilitiesOf)` and
-  `Stop(grace_ms, reply)`, every one through `mcp/call.try_call`. The
-  transport sends `FromTransport(TransportData | TransportClosed)`. The
-  actor sends itself `Expire(id)` and `SettleExpired(token)` (per-key
-  `send_after` timers, stale-checked against the pending tables — the
-  per-key deadline table `docs/weft.md` keeps hand-rolled) and the state
-  timeouts `HandshakeExpired`, `GraceExpired`, `RetireExpired`. The
-  owner's DOWN arrives as `Abandoned`.
+  `Ready(quiet_ms, deadline_ms, reply)`, `Read(TextOf | OpenPaths |
+  PublishedFor | CapabilitiesOf)` and `Stop(grace_ms, reply)`, every one
+  through `mcp/call.try_call`. The transport sends
+  `FromTransport(TransportData | TransportClosed)`. The actor sends
+  itself `Expire(id)`, `SettleExpired(token)`, `ReadyExpired(token)` and
+  `ReadyQuiet(token, epoch)` (per-key `send_after` timers, stale-checked
+  against the pending, waiter and readier tables — the per-key deadline
+  table `docs/weft.md` keeps hand-rolled; a quiet timer is also stale
+  once `quiet_epoch` has moved) and the state timeouts
+  `HandshakeExpired`, `GraceExpired`, `RetireExpired`. The owner's DOWN
+  arrives as `Abandoned`.
 - **Phases**: `Initializing → Serving → ShuttingDown(grace_ms) →
   Retiring(ending, reason)`; the actor exits from `Retiring` on the
   transport's `TransportClosed` (normal after a requested stop, abnormal
@@ -126,14 +139,15 @@ The modules, in dependency order:
 - **Wire**: LSP base protocol — `Content-Length: <bytes>\r\n\r\n<json>`
   — riding inside the broker's `exec_stdin`/`exec_out` (ADR-013 §1).
   `lsp/framing.frame` is the only place the outbound bytes are shaped.
-  Sent: `initialize`, `initialized`, `shutdown`, `exit`, `didOpen`,
+  Sent: `initialize` (declaring `window.workDoneProgress`),
+  `initialized`, `shutdown`, `exit`, `didOpen`,
   full-text `didChange`, `didClose`, `$/cancelRequest`, `definition`,
   `references` (declaration included), `hover`, `documentSymbol`,
   `prepareRename`, `rename`, `prepareCallHierarchy`,
   `callHierarchy/incomingCalls` and `outgoingCalls`, and answers to
-  server requests. Consumed: those answers, `publishDiagnostics`, and
-  `window/logMessage`, `window/showMessage`, `$/progress` (recognised and
-  ignored).
+  server requests. Consumed: those answers, `publishDiagnostics`,
+  `$/progress` (work-done progress, tracked for readiness), and
+  `window/logMessage`, `window/showMessage` (recognised and ignored).
 
 ## Invariants
 
@@ -201,6 +215,19 @@ The modules, in dependency order:
   changed document's last sync, plus each changed path's stored
   publication. A lapsed deadline answers `DeadlineExpired` and cancels
   the barrier.
+
+- **Readiness is standard work-done progress, never a per-server key.**
+  The actor holds the active tokens (`Data.progress`, token → title and
+  arrival order): `begin` adds, `end` removes, a `report` for an unknown
+  token adds it under the token's own text, and a malformed `$/progress`
+  is dropped. At most `max_progress_tokens` (64) are held, the earliest
+  begun evicted first. Every change to the set moves `quiet_epoch`; a
+  quiet timer armed while the set was empty answers `Quiet` only if the
+  epoch has not moved, and a set that empties re-arms every readier's
+  window from that moment (answering a `quiet_ms: 0` readier at once).
+  A server that reports no progress is `Quiet` after the window alone.
+  `rust-analyzer` answers loading queries with empty results, not
+  errors, which is why this exists.
 
 ## Deep Docs
 

@@ -35,3 +35,22 @@
 # the MCP exchange or shutdown runs. This declaration stops matching when the
 # fixture gains a Darwin process observation and the census demands removal.
 declared|darwin|no /proc on this host, so a stopped server's death cannot be observed by pid|Darwin has no procfs, so the prerequisite skips the whole real-MCP fixture before setup
+
+# The first-party language profiles on macOS (`conformance/lsp_profiles_test`,
+# ADR-014 §6). Two of the three cannot run as shipped on a hosted macOS
+# runner, for want of something the host lacks. Go comes from the runner's
+# tool cache under /Users, outside the Seatbelt system view, and the
+# lsp_go profile, like any table, cannot grant a GOROOT it does not know;
+# its README says to copy the table into loom.toml with GOROOT added. The
+# runner has no rust-analyzer component. lsp_gleam runs on both macOS lanes
+# without a waiver, and the jailed Linux lane runs all three for real.
+declared|darwin|SKIP lsp profile lsp_go: go's GOROOT|The runner's Go lives in its tool cache under /Users, outside the jail's system view the shipped profile relies on; the jailed Linux lane runs lsp_go's checks for real.
+declared|darwin|SKIP lsp profile lsp_rust: rust-analyzer|macOS runners carry no rust-analyzer component; the jailed Linux lane installs it and runs lsp_rust's checks for real.
+
+# The language-server manager's live rust-analyzer fixture
+# (`client/lsp/manager_test`) on the advisory macOS check. macOS runners
+# carry no rust-analyzer component, and rustup's link without it does not
+# run, so the fixture's prerequisite check skips it. The Linux client
+# bucket installs the component, rust-src and std's dependencies
+# (.github/scripts/install_rust_analyzer.sh) and runs it for real.
+declared|darwin|SKIP lsp manager rust-analyzer: rust-analyzer does not run|macOS runners carry no rust-analyzer component; the Linux client bucket installs it and runs the fixture for real.

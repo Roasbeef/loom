@@ -18,11 +18,13 @@
 //// judged under. The lease base is the session's own, with the three
 //// per-command limits zeroed (`broker/policy.session_lease`, `OutputIsWire`)
 //// and widened by exactly what the operator wrote in `loom.toml` — the extra
-//// roots, the environment names, and the mount the server's own executable
-//// needs. Nothing the model supplies widens it, and in particular the
-//// project root does not: a root the session base cannot already reach is
-//// refused, never granted. The requirements then ask for the root (writable
-//// only for `ProjectWritable`), those extra roots, a private scratch
+//// roots, the environment names, the private caches `cache_env` names
+//// under Loom's own `<cache>/loom/lsp/<server>/`, and the mount the
+//// server's own executable needs. Nothing the model supplies widens it,
+//// and in particular the project root does not: a root the session base
+//// cannot already reach is refused, never granted. The requirements then
+//// ask for the root (writable only for `ProjectWritable`), those extra
+//// roots and private caches, a private scratch
 //// directory for `TMPDIR`, the network off, and unlimited wall, CPU and
 //// output. The zeros are written into the requirements literally rather
 //// than derived from the base, so a base that kept a cap is a narrowing
@@ -465,6 +467,194 @@ fn unreadable(
   <> reason
 }
 
+// --- what the disk says before a start ----------------------------------
+
+/// Refuses an executable whose spelled directory passes through a link at
+/// or under a path the server writes.
+///
+/// `unrewritable` judges every link *file* on the way to the executable,
+/// but a link can also be a directory component of the path `command`
+/// spells: `node_modules/.bin` replaced by a link to a directory beside a
+/// credential leaves `node_modules/.bin/server` an ordinary file, and
+/// `regions` mounts `node_modules/.bin` by its spelling, which the helper's
+/// bind follows. So when a path in `writes` holds the executable's
+/// directory, the part of that directory below it must have no link in
+/// it: its real path must be the write's own real path with the same
+/// components after it. Links *above* the write — a workspace reached
+/// through `/var -> /private/var` — are the operator's and are admitted.
+/// `writes` is the requirements' `writable_roots`.
+///
+/// It reads the disk, so it is not part of `policy_for`, which stays a
+/// pure function of its inputs; the manager calls it with a jail's other
+/// preparation, before any clearance. It resolves with
+/// `tools/fs.resolve_real` rooted at `/`, the walker `locate` follows
+/// links with, and a component that does not exist is kept as written.
+/// The answer is point-in-time, as `resolve_real`'s always is: it closes
+/// the link a start would otherwise bind, not one swapped in between this
+/// read and the helper's bind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /w/app/node_modules/.bin -> /home/o/.ssh on disk:
+/// // jail.directory_unlinked(
+/// //   "ts",
+/// //   jail.Executable("/w/app/node_modules/.bin/server", jail.PlainExecutable),
+/// //   ["/w/app"],
+/// // )
+/// // -> Error("lsp.ts's executable ... is reached through a directory link ...")
+/// ```
+///
+pub fn directory_unlinked(
+  name: String,
+  executable: Executable,
+  writes: List(String),
+) -> Result(Nil, String) {
+  let directory = filepath.directory_name(executable.path)
+  let holding =
+    list.filter(writes, fn(write) {
+      policy.covers(root: write, path: directory)
+    })
+  list.try_each(holding, fn(write) {
+    use real_write <- result.try(real_path(name, write))
+    use real_directory <- result.try(real_path(name, directory))
+    let expected = join_below(real_write, below(write, directory))
+    case real_directory == expected {
+      True -> Ok(Nil)
+      False ->
+        Error(
+          "lsp."
+          <> name
+          <> "'s executable "
+          <> executable.path
+          <> " is reached through a directory link under "
+          <> write
+          <> ", which the server can rewrite: "
+          <> directory
+          <> " resolves to "
+          <> real_directory
+          <> "; name the file it leads to in `command`",
+        )
+    }
+  })
+}
+
+/// Refuses a private cache whose directory is not where Loom put it: its
+/// real path must be the cache place's own real path joined with
+/// `loom/lsp/<server>/<dir>`, so no component below the cache place is a
+/// link.
+///
+/// The decoder refuses a table that names Loom's private cache, and
+/// `profile.unnested` a cache inside another, but a link can still reach
+/// one of these directories some other way — a daemon whose cache place
+/// lies inside the session's workspace, or a host process — and both
+/// `mkdir -p` and the helper's writable bind follow it. This is the check
+/// that holds whatever the route, which is why it is kept although the
+/// decoder's refusals close the ones a table could open. The cache place
+/// itself is canonicalised first, so an operator whose `~/.cache` is a link
+/// to another disk is admitted: only what lies below it is Loom's.
+///
+/// The manager runs it both before `mkdir -p`, so a planted link is not
+/// followed to make a directory where it points, and after, so the
+/// directory the helper binds is the one judged. Resolution is
+/// `tools/fs.resolve_real` rooted at `/`, as `locate`'s; a component that
+/// does not exist yet is kept as written, which is what makes the first
+/// run meaningful. A server with no `cache_env` passes untouched.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /home/o/.cache/loom/lsp/go/xdg -> /home/o/.ssh on disk:
+/// // jail.caches_unlinked(go, Places(home: Some("/home/o"), cache: Some("/home/o/.cache")))
+/// // -> Error("lsp.go's private cache /home/o/.cache/loom/lsp/go/xdg resolves to /home/o/.ssh, ...")
+/// ```
+///
+pub fn caches_unlinked(
+  server: LspServer,
+  places: Places,
+) -> Result(Nil, String) {
+  use caches <- result.try(private_caches(server, places))
+  case caches, places.cache {
+    [], _ -> Ok(Nil)
+
+    // `private_caches` has already refused a cache with no place to be in,
+    // so this arm answers only for totality.
+    [_, ..], None ->
+      Error("lsp." <> server.name <> "'s private caches have no cache place")
+    [_, ..], Some(place) -> {
+      use real_place <- result.try(real_path(server.name, place))
+      list.try_each(profile.cache_env_paths(server), fn(entry) {
+        cache_where_placed(server.name, entry.1, places, real_place)
+      })
+    }
+  }
+}
+
+// One private cache against the real cache place: its spelled path, its
+// real path, and the real path it must have.
+fn cache_where_placed(
+  name: String,
+  path: profile.LspPath,
+  places: Places,
+  real_place: String,
+) -> Result(Nil, String) {
+  use spelled <- result.try(profile.expand_path(path, places))
+  use real <- result.try(real_path(name, spelled))
+  let expected = case path {
+    profile.CachePath(rest) -> join_below(real_place, "/" <> rest)
+    profile.AbsolutePath(_) | profile.HomePath(_) -> spelled
+  }
+  case real == expected {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "lsp."
+        <> name
+        <> "'s private cache "
+        <> spelled
+        <> " resolves to "
+        <> real
+        <> ", not "
+        <> expected
+        <> ": a link below the cache place leads it out of the directory"
+        <> " Loom owns, and binding it would grant the server a host"
+        <> " directory nobody approved; remove the link",
+      )
+  }
+}
+
+// What `path` adds to `root`, which covers it: empty for the root itself,
+// and otherwise beginning with `/`, whether or not `root` is `/`.
+fn below(root: String, path: String) -> String {
+  case string.drop_start(path, string.length(root)) {
+    "" -> ""
+    "/" <> _rest as tail -> tail
+    tail -> "/" <> tail
+  }
+}
+
+// `below` is empty or begins with `/`; the root `/` is not doubled.
+fn join_below(real: String, below: String) -> String {
+  case real, below {
+    _, "" -> real
+    "/", _ -> below
+    _, _ -> real <> below
+  }
+}
+
+// A path with every link in it resolved, or the refusal naming it.
+fn real_path(name: String, path: String) -> Result(String, String) {
+  fs.resolve_real(fs.real_filesystem(), workspace: "/", path:)
+  |> result.map_error(fn(error) {
+    "lsp."
+    <> name
+    <> "'s jail could not resolve "
+    <> path
+    <> ": "
+    <> unresolved(error)
+  })
+}
+
 /// The host regions the jail must bind for `executable` to run: its own
 /// directory, and for a link the directory of every file the link leads
 /// through. Never an install prefix.
@@ -558,6 +748,11 @@ pub type Jail {
     cwd: String,
     /// The server's private scratch directory; `TMPDIR` is its `tmp`.
     scratch: String,
+    /// The server's private caches (`profile.cache_env_paths`), expanded.
+    /// Each is a writable root and must exist before the jail starts,
+    /// because bwrap refuses a read-write bind whose source is missing;
+    /// making them is the caller's one impure step, as the scratch is.
+    caches: List(String),
     /// `lsp/<server>/<root-digest>`.
     step_id: String,
     /// Configured `env` names the daemon's environment does not set. They
@@ -596,8 +791,16 @@ pub fn policy_for(
   use Nil <- result.try(absolute_root(server.name, root))
   use readable <- result.try(expanded(server.readable, placement.places))
   use writable <- result.try(expanded(server.writable, placement.places))
+
+  // The private caches join the table's writable roots from here on: they
+  // are granted as any `writable` entry is, and they are shadowed, covered
+  // and composed under the same rules. What sets them apart is only that
+  // their paths are Loom's, never the operator's cache or another tool's.
+  use caches <- result.try(private_caches(server, placement.places))
+  let writable =
+    list.unique(list.append(writable, list.map(caches, fn(pair) { pair.1 })))
   let scratch = scratch_directory(placement.workspace, server.name, root)
-  let #(env, unset) = environment(placement, scratch, reading)
+  let #(env, unset) = environment(placement, scratch, caches, reading)
   let names = list.map(env, fn(pair) { pair.0 })
 
   // The lease base: the session's base with the per-command limits zeroed,
@@ -668,6 +871,7 @@ pub fn policy_for(
     env:,
     cwd: root,
     scratch:,
+    caches: list.map(caches, fn(pair) { pair.1 }),
     step_id: step_id(server.name, root),
     unset:,
   ))
@@ -811,6 +1015,17 @@ fn expanded(
   list.try_map(paths, profile.expand_path(_, places))
 }
 
+// Each `cache_env` variable with the host path of its private directory.
+fn private_caches(
+  server: LspServer,
+  places: Places,
+) -> Result(List(#(String, String)), String) {
+  list.try_map(profile.cache_env_paths(server), fn(entry) {
+    profile.expand_path(entry.1, places)
+    |> result.map(fn(path) { #(entry.0, path) })
+  })
+}
+
 // Mounts are met by exact path, so a region the lease base already binds —
 // the toolchain mounts code mode put on the session base, say — is asked
 // for under the base's own path, and only a region nothing covers is added
@@ -849,10 +1064,14 @@ fn read_only(path: String) -> Mount {
 // set. PATH leads with the executable's own directory so a server that
 // re-executes itself finds itself, then follows the daemon's PATH, which is
 // where an operator's `go` or `cargo` is; a PATH entry names a place to
-// look and grants nothing, since reach is the policy's.
+// look and grants nothing, since reach is the policy's. The `cache_env`
+// variables come last and carry values the daemon never supplied: each is
+// the private directory the policy grants, so a tool inside the jail keeps
+// its cache there rather than in one the host's own tools read.
 fn environment(
   placement: Placement,
   scratch: String,
+  caches: List(#(String, String)),
   reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
   let path =
@@ -883,7 +1102,7 @@ fn environment(
         Error(Nil) -> #(acc.0, [name, ..acc.1])
       }
     })
-  #(list.append(owned, list.reverse(present)), list.reverse(unset))
+  #(list.flatten([owned, list.reverse(present), caches]), list.reverse(unset))
 }
 
 // Composes the two exactly as the broker will, so a lease that would be

@@ -669,6 +669,217 @@ pub fn a_silent_server_ends_unsettled_and_the_barrier_is_cancelled_test() {
   assert client.open_paths(started) == Ok([a])
 }
 
+// --- readiness --------------------------------------------------------------
+
+// A server whose one scripted request, `test/emit`, sends the
+// notifications its params list and only then answers. The answer arrives
+// behind them on the one stream, so when `emit` returns the client has
+// handled every one: a test orders progress against its own calls with no
+// sleep.
+fn emitter(state: Nil, inbound: Inbound) -> #(Nil, List(Action)) {
+  case inbound {
+    jsonrpc.ServerRequest(
+      id:,
+      method: "test/emit",
+      params: Some(json.Array(sent)),
+    ) -> #(
+      state,
+      list.append(list.map(sent, Reply), [
+        Reply(fake_server.response(id, json.Null)),
+      ]),
+    )
+    jsonrpc.ServerRequest(..)
+    | jsonrpc.Notification(..)
+    | jsonrpc.Response(..) -> #(state, [])
+  }
+}
+
+fn emit(started: client.Client, notifications: List(JsonValue)) -> Nil {
+  let assert Ok(_) =
+    client.request(
+      started,
+      protocol.HoverFeature,
+      "test/emit",
+      Some(json.Array(notifications)),
+      2000,
+    )
+    as "the emitting request should be answered"
+  Nil
+}
+
+fn progress(token: String, value: List(#(String, JsonValue))) -> JsonValue {
+  jsonrpc.notification(
+    "$/progress",
+    Some(
+      json.Object([
+        #("token", json.String(token)),
+        #("value", json.Object(value)),
+      ]),
+    ),
+  )
+}
+
+fn begin(token: String, title: String) -> JsonValue {
+  progress(token, [
+    #("kind", json.String("begin")),
+    #("title", json.String(title)),
+  ])
+}
+
+fn report(token: String) -> JsonValue {
+  progress(token, [
+    #("kind", json.String("report")),
+    #("message", json.String("1/2")),
+  ])
+}
+
+fn end(token: String) -> JsonValue {
+  progress(token, [#("kind", json.String("end"))])
+}
+
+// What the client holds active, read as the titles a caller that asks
+// for no quiet window is refused with.
+fn busy(started: client.Client) -> client.Readiness {
+  let assert Ok(readiness) = client.ready(started, quiet_ms: 0, deadline_ms: 30)
+    as "the readiness query should be answered"
+  readiness
+}
+
+pub fn the_initialize_request_declares_work_done_progress_test() {
+  let #(_started, fake) = started(gleam_like_capabilities(), Nil, silent)
+  let assert [Got(jsonrpc.ServerRequest(params: Some(params), ..)), ..] =
+    fake_server.seen(fake)
+  assert field(
+      field(field(params, "capabilities"), "window"),
+      "workDoneProgress",
+    )
+    == json.Bool(True)
+}
+
+pub fn begin_and_end_track_the_active_tokens_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+  assert busy(started) == client.Quiet
+
+  emit(started, [begin("load", "Loading workspace"), begin("prime", "Indexing")])
+  assert busy(started)
+    == client.StillBusy(titles: ["Loading workspace", "Indexing"])
+
+  // A report for a token already active changes nothing; an end for one
+  // never begun changes nothing either.
+  emit(started, [report("load"), end("never-begun"), end("load")])
+  assert busy(started) == client.StillBusy(titles: ["Indexing"])
+
+  emit(started, [end("prime")])
+  assert busy(started) == client.Quiet
+}
+
+// A server may report under a token whose `begin` it never sent, or sent
+// in a way the client could not read; the report alone makes it active.
+pub fn a_report_for_an_unknown_token_makes_it_active_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+
+  emit(started, [report("rustAnalyzer/cachePriming")])
+  assert busy(started)
+    == client.StillBusy(titles: ["rustAnalyzer/cachePriming"])
+
+  emit(started, [end("rustAnalyzer/cachePriming")])
+  assert busy(started) == client.Quiet
+}
+
+pub fn a_malformed_progress_is_ignored_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+  let no_title = progress("load", [#("kind", json.String("begin"))])
+
+  emit(started, [no_title, jsonrpc.notification("$/progress", None)])
+  assert busy(started) == client.Quiet
+}
+
+pub fn the_active_set_keeps_the_newest_sixty_four_tokens_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+  let name = fn(n) { "task-" <> int.to_string(n) }
+  let many =
+    int.range(
+      from: client.max_progress_tokens,
+      to: -1,
+      with: [],
+      run: list.prepend,
+    )
+    |> list.map(fn(n) { begin(name(n), name(n)) })
+
+  emit(started, many)
+  let assert client.StillBusy(titles:) = busy(started)
+  assert list.length(titles) == client.max_progress_tokens
+  assert titles
+    == list.map(
+      int.range(
+        from: client.max_progress_tokens,
+        to: 0,
+        with: [],
+        run: list.prepend,
+      ),
+      name,
+    )
+}
+
+pub fn ready_answers_quiet_once_the_window_has_passed_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+
+  assert client.ready(started, quiet_ms: 60, deadline_ms: 2000)
+    == Ok(client.Quiet)
+
+  // The window is waited even with nothing active: a deadline shorter than
+  // it lapses first, and says no work was named.
+  assert client.ready(started, quiet_ms: 400, deadline_ms: 60)
+    == Ok(client.StillBusy(titles: []))
+}
+
+pub fn ready_answers_still_busy_at_the_deadline_with_the_titles_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+  emit(started, [begin("load", "Loading workspace")])
+
+  assert client.ready(started, quiet_ms: 300, deadline_ms: 60)
+    == Ok(client.StillBusy(titles: ["Loading workspace"]))
+}
+
+// The measured shape: the caller asks inside the window `initialized`
+// opens, and the server's progress begins after the ask. The window that
+// was running when it began must not answer; a new one starts when the
+// work ends.
+pub fn ready_waits_out_progress_that_begins_inside_the_window_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+  let readiness =
+    in_background(fn() {
+      client.ready(started, quiet_ms: 300, deadline_ms: 5000)
+    })
+
+  // Lets the waiter arrive first, so its window is running when the work
+  // begins. Under load it may arrive later, which only makes it wait on
+  // the active token directly; the assertions hold either way.
+  process.sleep(20)
+  emit(started, [begin("load", "Loading workspace")])
+
+  // The first window has closed while the work runs, and nobody was told
+  // the server is ready.
+  assert process.receive(readiness, 500) == Error(Nil)
+  assert busy(started) == client.StillBusy(titles: ["Loading workspace"])
+
+  // The end starts the window again rather than answering at once.
+  emit(started, [end("load")])
+  assert process.receive(readiness, 0) == Error(Nil)
+  assert answer(readiness) == Ok(client.Quiet)
+}
+
+pub fn a_stop_answers_a_readiness_waiter_test() {
+  let #(started, _fake) = started(gleam_like_capabilities(), Nil, emitter)
+  emit(started, [begin("load", "Loading workspace")])
+  let readiness =
+    in_background(fn() { client.ready(started, quiet_ms: 0, deadline_ms: 5000) })
+  process.sleep(20)
+
+  assert client.stop(started, 30) == client.Forced
+  let assert Error(client.Unavailable(_)) = answer(readiness)
+}
+
 // --- stopping ---------------------------------------------------------------
 
 pub fn stop_sends_shutdown_then_exit_then_closes_test() {

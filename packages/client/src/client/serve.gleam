@@ -73,6 +73,7 @@ import client/lsp/jail as lsp_jail
 import client/lsp/leases as lsp_leases
 import client/lsp/manager as lsp_manager
 import client/lsp/profile
+import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -760,6 +761,89 @@ pub fn start_build_plane(
     clock:,
   ))
   Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
+}
+
+/// A helper pool and broker for proving one language profile, and the
+/// base policy both were started under.
+pub type CheckPlane {
+  CheckPlane(
+    /// The broker every clearance goes through: the probe, the server's
+    /// lease and every bare-name search.
+    broker: Broker,
+    /// The pool behind it, held so the plane can be stopped.
+    pool: Pool,
+    /// The base a server's lease is composed from, as a session's is.
+    base_policy: policy.SandboxPolicy,
+    /// How many helpers the pool holds, which the lease counter's cap is
+    /// derived from (`client/lsp/leases.cap_for`).
+    size: Int,
+  )
+}
+
+/// Starts the effect plane `loom ext check` runs a profile's server on:
+/// the helper ladder a boot runs, then a pool and broker over a base that
+/// covers the check's scratch workspace and masks the daemon's state
+/// root.
+///
+/// The base is the build plane's (`build_plane_policy`) for the reason
+/// that function gives: the scratch workspace sits under the extensions
+/// root, one directory below the state root whose credentials no jail
+/// may read, and it has no blob store to mask. What differs from a build
+/// plane is only what is *not* needed: no code-mode toolchain is
+/// discovered, because a profile's server is located on the daemon's
+/// `PATH` and a check must run on a host with no build seed, as a profile
+/// install does. The pool is the smallest a session may have, which
+/// leaves one lease for the one server a check starts at a time.
+///
+/// The caller owns the plane and must `stop_check_plane` it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.start_check_plane(helper: None, workspace: scratch <> "/work",
+/// //   state_root: home <> "/.loom", tmp_dir: scratch <> "/tmp", clock:)
+/// ```
+///
+pub fn start_check_plane(
+  helper helper: Option(String),
+  workspace workspace: String,
+  state_root state_root: String,
+  tmp_dir tmp_dir: String,
+  clock clock: Clock,
+) -> Result(CheckPlane, String) {
+  use helper_path <- result.try(find_helper(helper))
+  let base = build_plane_policy(workspace, state_root) |> merging_mounts
+
+  // Refused before anything is spawned, as a boot refuses: a base the
+  // sandbox cannot enforce is a failure of the check's setup, not a
+  // server that later fails to start for reasons nobody can read.
+  use Nil <- result.try(base_policy_fault(base))
+  use #(pool, broker_actor) <- result.try(start_effect_plane(
+    helper: helper_path,
+    base_policy: base,
+    tmp_dir:,
+    size: exec.min_pool_size,
+    clock:,
+  ))
+  Ok(CheckPlane(
+    broker: broker_actor,
+    pool:,
+    base_policy: base,
+    size: exec.min_pool_size,
+  ))
+}
+
+/// Tears a check plane down.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.stop_check_plane(plane)
+/// ```
+///
+pub fn stop_check_plane(plane: CheckPlane) -> Nil {
+  broker.stop(plane.broker)
+  exec.stop_pool(plane.pool)
 }
 
 /// The `PATH` a build plane's jailed compiler runs with: exactly the two
@@ -2060,8 +2144,15 @@ type LspWiring {
   )
 }
 
-// A boot with no `[lsp.<name>]` table builds nothing and logs nothing: an
-// unconfigured workspace pays nothing (ADR-013 §6). A configured server
+// A boot with no `[lsp.<name>]` table and no installed profile builds
+// nothing and logs nothing: an unconfigured workspace pays nothing
+// (ADR-013 §6). The servers are the `loom.toml` tables plus every
+// installed profile that survives ADR-014 §4's precedence
+// (`lsp_profiles.effective_lsp_servers`), and from there an installed
+// profile is treated exactly as a table is: the same root resolution, the
+// same plane and the same hints. A refused profile is one
+// `lsp.profile_refused` line naming its extension, its server and the
+// claimant it collided with, and the boot continues. A configured server
 // whose roots will not resolve is refused alone, one `lsp.unavailable`
 // line each, and the others still serve; a counter that will not start
 // refuses them all the same way. Neither refuses the boot, for the reason
@@ -2069,6 +2160,7 @@ type LspWiring {
 // a session, and the operator is told which table to fix.
 fn lsp_wiring(
   settings: Settings,
+  installed: List(#(String, profile.LspServer)),
   logger: Logger,
   base_policy: policy.SandboxPolicy,
   toolchain: Result(codemode_wiring.Toolchain, String),
@@ -2078,8 +2170,27 @@ fn lsp_wiring(
   name: address.Address(lsp_manager.Msg),
 ) -> Option(LspWiring) {
   let places = lsp_places()
+  let #(effective, refusals) =
+    lsp_profiles.effective_lsp_servers(
+      configured: settings.catalog.lsp_servers,
+      installed:,
+    )
+  list.each(refusals, fn(refusal) {
+    log.warn(logger, "lsp.profile_refused", [
+      field.text(key: "extension", value: refusal.extension),
+      field.text(key: "server", value: refusal.server),
+      field.text(
+        key: "other",
+        value: lsp_profiles.describe_claimant(refusal.other),
+      ),
+      field.text(
+        key: "reason",
+        value: lsp_profiles.describe_conflict(refusal.conflict),
+      ),
+    ])
+  })
   let servers =
-    list.filter_map(settings.catalog.lsp_servers, fn(server) {
+    list.filter_map(effective, fn(server) {
       lsp_server_roots(server, places)
       |> result.map_error(fn(reason) {
         log.warn(logger, "lsp.unavailable", [
@@ -2181,12 +2292,36 @@ fn lsp_plane_wiring(
   )
 }
 
-// One server with its `readable` and `writable` roots resolved to
-// absolute paths, once, at load. The jail resolves them again at every
-// start and would refuse the same way; refusing here instead is what makes
-// the refusal an operator-visible boot line rather than a `no_server`
-// answer the model meets on its first query.
-fn lsp_server_roots(
+/// One server with its `readable` and `writable` roots resolved to
+/// absolute paths, once, at load. The jail resolves them again at every
+/// start and would refuse the same way; refusing here instead is what
+/// makes the refusal an operator-visible boot line rather than a
+/// `no_server` answer the model meets on its first query.
+///
+/// A root that resolves into Loom's private cache, `<cache>/loom`, or a
+/// writable one that holds it, is refused here too
+/// (`profile.private_cache_fault`): the decoder can refuse one written
+/// `<cache>/loom` but not an absolute or `~/` root, which only these
+/// places can put there.
+///
+/// The private caches `cache_env` names are resolved here for the same
+/// refusal and then left as written: their host paths are the jail's to
+/// derive (`profile.cache_env_paths`), and the directories are made by the
+/// manager just before a jail binds them, not here, so a server nobody
+/// queries creates nothing.
+///
+/// Public because `loom ext check` starts a server exactly as a session
+/// would, and a second expansion there would be a second answer to where
+/// a profile's `~/` and `<cache>/` roots are.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.lsp_server_roots(go, serve.lsp_places())
+/// // -> Ok(LspServer(..go, readable: [AbsolutePath("/home/o/go/pkg/mod")], ..))
+/// ```
+///
+pub fn lsp_server_roots(
   server: profile.LspServer,
   places: profile.Places,
 ) -> Result(profile.LspServer, String) {
@@ -2197,15 +2332,36 @@ fn lsp_server_roots(
   }
   use readable <- result.try(absolute(server.readable))
   use writable <- result.try(absolute(server.writable))
+
+  // Only here are the daemon's places known, so only here can an absolute
+  // or `~/` root be found to land in Loom's private cache; the decoder
+  // has already refused one written `<cache>/loom`.
+  use Nil <- result.try(profile.private_cache_fault(server, places))
+  use _caches <- result.try(
+    list.try_map(profile.cache_env_paths(server), fn(entry) {
+      profile.expand_path(entry.1, places)
+    }),
+  )
   Ok(profile.LspServer(..server, readable:, writable:))
 }
 
-// The two places a language profile's roots are written against, read
-// from the daemon's own environment once per boot: `HOME` for `~/`, and
-// the per-user cache directory for `<cache>/`. Which directory that is
-// depends on the platform, and `profile.cache_place` decides it purely
-// from what is read here.
-fn lsp_places() -> profile.Places {
+/// The two places a language profile's roots are written against, read
+/// from the daemon's own environment once per boot: `HOME` for `~/`, and
+/// the per-user cache directory for `<cache>/`. Which directory that is
+/// depends on the platform, and `profile.cache_place` decides it purely
+/// from what is read here.
+///
+/// Public for `loom ext check`, which expands a profile's roots the way a
+/// session does, from the same environment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.lsp_places()
+/// // -> profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+/// ```
+///
+pub fn lsp_places() -> profile.Places {
   let home = home_directory()
   let #(os, _architecture) = ffi_os.platform()
   profile.Places(
@@ -2216,6 +2372,24 @@ fn lsp_places() -> profile.Places {
       option.from_result(env_text("XDG_CACHE_HOME")),
     ),
   )
+}
+
+// The language profiles the loaded profile extensions approved, each
+// paired with its extension's name for a refusal to cite. Read from the
+// install record rather than the manifest beside it: discovery has
+// already refused any extension whose manifest's profiles differ from the
+// record's, and the record is the operator's yes. A jailed extension's
+// record holds none.
+fn installed_profiles(
+  discovered: List(installed.Discovered),
+) -> List(#(String, profile.LspServer)) {
+  list.flat_map(discovered, fn(found) {
+    case found {
+      installed.Ready(record: written, manifest: _, artifact: _) ->
+        list.map(written.lsp, fn(server) { #(written.name, server) })
+      installed.Refused(..) -> []
+    }
+  })
 }
 
 // The profile hints of the servers the plane serves, as
@@ -2272,15 +2446,18 @@ fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
 // this still the thing that was installed".
 //
 // What is left to decide is what to do with each answer, and there are
-// three. A `Refused` is *logged*, never silently dropped: an operator who
+// four. A `Refused` is *logged*, never silently dropped: an operator who
 // installed something and then sees nothing has no way to tell "it is
 // broken" from "I imagined installing it". A `Ready` on a host with no
 // toolchain is logged too and registers nothing, because an extension
 // tool with no `erl` to boot a satellite with is a definition in the
 // provider's cached byte prefix that can only ever fail — the same
-// argument that gates `code_mode` itself. Everything else becomes one
-// `Contribution` per extension, and a name two contributions both claim
-// refuses the boot in `contributions.registry`.
+// argument that gates `code_mode` itself. A `Ready` profile extension
+// registers nothing here either: it ships language profiles, which
+// `lsp_wiring` has already taken from the same discovery, and there is no
+// satellite for it to host. Every jailed extension becomes one
+// `Contribution`, and a name two contributions both claim refuses the
+// boot in `contributions.registry`.
 
 // One installed extension, registered: the tools it contributes to the
 // registry, its subscription on the hook bus, and the recipe the
@@ -2297,8 +2474,21 @@ type Registration {
   )
 }
 
+// Discovery, once per boot. The language-server plane and the tool
+// registry both read this one answer, so a profile and a tool cannot be
+// judged against two different readings of the extensions root. No home
+// is no extensions root, which is the same fact to a booting server as an
+// empty one.
+fn discovered_extensions(settings: Settings) -> List(installed.Discovered) {
+  case settings.home {
+    None -> []
+    Some(home) -> installed.discover(extension_record.root_for(home))
+  }
+}
+
 fn extension_registrations(
   settings: Settings,
+  discovered: List(installed.Discovered),
   logger: Logger,
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
@@ -2313,7 +2503,7 @@ fn extension_registrations(
 
     Some(home) -> {
       let root = extension_record.root_for(home)
-      list.filter_map(installed.discover(root), fn(found) {
+      list.filter_map(discovered, fn(found) {
         extension_contribution(
           root,
           found,
@@ -2349,18 +2539,26 @@ fn extension_contribution(
     }
 
     installed.Ready(record: written, manifest: decoded, artifact:) ->
-      extension_registered(
-        root,
-        written,
-        decoded,
-        artifact,
-        store,
-        logger,
-        hosts,
-        hooking,
-        host,
-        memory,
-      )
+      case written.tier {
+        extension_manifest.Jailed ->
+          extension_registered(
+            root,
+            written,
+            decoded,
+            artifact,
+            store,
+            logger,
+            hosts,
+            hooking,
+            host,
+            memory,
+          )
+
+        // A profile extension runs nothing, so it has no tool to register,
+        // no hook to subscribe and no satellite to host. Its servers reach
+        // the session through `lsp_wiring`.
+        extension_manifest.Profile -> Error(Nil)
+      }
   }
 }
 
@@ -3101,12 +3299,19 @@ fn assemble_in(
   // address is minted now so the door the tools, code mode and the write
   // tools' diagnostics observer all share can close over it, and the
   // manager starts under the service supervisor below. No `[lsp.<name>]`
-  // table, or none that survived its load, means no plane at all: no
+  // table or installed profile, or none that survived its load, means no
+  // plane at all: no
   // counter, no manager, no `lsp_*` tool and no `cap/lsp`, and the write
   // tools are the plain ones.
+  //
+  // The installed extensions are discovered here, once, because a profile
+  // extension's servers join this plane and a jailed extension's tools
+  // join the registry further down, and both must read the same answer.
+  let discovered = discovered_extensions(settings)
   let lsp_wiring =
     lsp_wiring(
       settings,
+      installed_profiles(discovered),
       logger,
       base_policy,
       toolchain,
@@ -3227,9 +3432,9 @@ fn assemble_in(
   // answers it starts under the service supervisor below, because the
   // registry has to exist before the tools that reach it are built.
   //
-  // Discovery then happens once and answers three questions: which tools
-  // each installed extension contributes, which hook events it
-  // subscribed to, and how its node is launched. The hook half is used
+  // Discovery, which happened once above, then answers three more
+  // questions of each jailed extension: which tools it contributes, which
+  // hook events it subscribed to, and how its node is launched. The hook half is used
   // further down, after the effects record exists to compose it into.
   let hosts_name = address.new_address(namespace)
   let hosts_seam =
@@ -3241,6 +3446,7 @@ fn assemble_in(
   let extensions =
     extension_registrations(
       settings,
+      discovered,
       logger,
       hosts_seam,
       extension_hosts.invoker(

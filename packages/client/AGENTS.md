@@ -2291,13 +2291,28 @@ The rest of the path is phase 1's own, and each module is one question:
   the `[[hook]]` list, and `[net]` with its `[[net.secret]]` bindings.
   Unknown keys are errors in *every* table, which is what refuses the
   `[client]` table the design note reserves for a later ruling without a
-  special case for it. `tier` decodes only `"jailed"`. Three rules need
+  special case for it. `tier` decodes `"jailed"` (`Jailed`) and
+  `"profile"` (`Profile`, ADR-014 §3). Three rules need
   the tree beside the manifest, so `decode` takes a `Surroundings`: a
   tool's `parameters` must be a path under `schema/` that exists and
   parses as JSON, its `entry` must name a module `src/` ships, and a
   secret's `host` must be one of `[net].hosts`. A secret carries the
   *name* of an environment variable and never a value, the rule
-  `api_key_env` set one layer out.
+  `api_key_env` set one layer out. `Manifest` also carries `lsp:
+  List(profile.LspServer)` and `checks: List(Check)` (`Check(server,
+  fixture, query: CheckQuery(Definition | References), symbol, path:
+  Option(String), line: Option(Int), expect: List(Site(path, line)))`).
+  **Invariant: the tiers declare disjoint tables, each refusing the
+  other's by name.** A profile needs at least one `[lsp.<name>]`, decoded
+  by `profile.decode_servers` so a profile means in a manifest what it
+  means in `loom.toml`, and refuses `[[tool]]`, `[[hook]]` and `[net]`
+  ("a profile extension runs no code; [[tool]] is not allowed"); a jailed
+  manifest refuses `[lsp]` and `[[check]]` and still needs a `[[tool]]`.
+  A check's `server` is one of the manifest's own, its `fixture`
+  (default `fixture`) holds a file in `Surroundings.files`, `line` needs
+  `path`, and `expect` is non-empty; every path is relative with no
+  empty, `.` or `..` component. `declared_tier(text)` reads the tier
+  alone, for the install to choose its path.
 - `client/extension/record` — the install record, JSON with a total
   decoder, and the `Root` value that says where installs live.
   `root_for(home)` is `<home>/.loom/extensions`; the root is a value
@@ -2312,13 +2327,26 @@ The rest of the path is phase 1's own, and each module is one question:
   `readable(text)` is the door discovery uses, and it decodes the
   version *first* — the full decoder would otherwise reach a format-1
   file before the version check and report a missing `hooks` field when
-  the fact an operator needs is the version skew.
+  the fact an operator needs is the version skew. Format 3
+  (`format_version`) adds `tier` and `lsp`, the approved profiles in full
+  through `profile.encode_server` / `profile.server_decoder`; a format-2
+  record (`legacy_format_version`) is still read, as `Jailed` with `lsp:
+  []`, and every other format is refused naming "reads 2 or 3". A profile
+  record's `allowlist`, `manifest_hash` and `artifact` are empty.
 - `client/extension/install` — the pipeline, as six steps each returning
   a `Failure` naming its layer: `Fetch`, `Extract`, `Manifest`,
   `Vetting`, `Compile`, `Record`. The fetch and the jailed build are
   both injected (`Fetcher`, `Build`), so the module holds no HTTP client
   and no broker, and a test drives the whole thing with a fetcher that
-  was never called.
+  was never called. `run` reads the fetched tree's tier first
+  (`manifest.declared_tier`) and takes one of two paths. **A profile
+  install never calls the build seam and never vets**: it decodes the
+  manifest against the fetched tree's text, prunes to `extension.toml`,
+  root-level `README*`/`LICENSE*` files (a path with a `/` never matches,
+  so `README-assets/` is pruned) and each check's fixture directory, refuses a
+  kept non-UTF-8 file, and stages and records exactly as the jailed path
+  does, with no artifact directory. The rest of this entry is the jailed
+  path.
   **`installed_tree` runs first and everything after sees only what it
   kept.** A repository is not an installed extension — it has tests, a
   `.gitignore`, `.github/`, docs, Gleam's resolved `manifest.toml` and a
@@ -2341,10 +2369,20 @@ The rest of the path is phase 1's own, and each module is one question:
   module, because two tools may share an entry module, a tool and a hook
   may too, and importing one twice is a compile error in generated code.
 - `client/extension/installed` — `discover(root)` and `one(root, name)`,
-  each returning `Ready` or `Refused`. Five things are re-derived from
+  each returning `Ready` or `Refused`; `verified(root, name)` makes the
+  same checks and answers `Verified(record, manifest, artifact, tree)`,
+  the `archive.Tree` the digest was computed over, for a caller that uses
+  the installed files (`check` writes its fixture from it). Five things are re-derived from
   disk and compared with the record: the tree digest, the artifact's
   content address (with `build.fingerprint_directory`, the function the
-  build itself used), the manifest, the vetting, and the allowlist.
+  build itself used), the manifest, the vetting, and the allowlist. After
+  the manifest, the manifest's tier must equal the record's (so a record
+  cannot talk a jailed tree out of its vetting), and a profile record then
+  skips the vetting, the allowlist and the artifact and checks instead
+  that the manifest's `lsp` equals the record's; a mismatch refuses "the
+  manifest's language profiles no longer match the install record".
+  `Ready.artifact` is `""` for a profile. `summarise` prints a profile as
+  `lsp: go (.go), rust (.rs)`.
   **Nothing is pruned here**, and that is the point: the install already
   narrowed the repository to the extension's own tree and wrote exactly
   that, so what is under `<name>/src/` *is* the installed tree and a file
@@ -2353,10 +2391,38 @@ The rest of the path is phase 1's own, and each module is one question:
   refusal is a *value* rather than a shorter list, because an operator
   who installed something and sees nothing cannot tell "it is broken"
   from "I imagined it".
-- `client/extension/cli` — `install`, `list`, `remove`, `verify`, the
-  first subcommand surface in the tree. The verb is the first argument
+- `client/extension/cli` — `install`, `list`, `remove`, `verify`,
+  `check`, the first subcommand surface in the tree. The verb is the first argument
   and the rest is the flat-recursion flag parse `client/serve` uses.
   `build_for` is the install's build seam over a started `BuildPlane`.
+  `install` starts that plane **inside** the build seam, on the one call a
+  jailed install makes, and stops it there on every path out, so a
+  profile installs on a host with no code-mode toolchain or helper; a
+  plane that will not start is a `compile:` refusal. `installed_lines`
+  renders a success: tools and the jail's enforcement line for a jailed
+  extension, `profile.approval_lines` per server for a profile. `check`
+  is `client/extension/check.run` with the operator's demand
+  (`--best-effort` as `install` spells it) and the daemon's places and
+  environment; a failed check is an exit-1 error whose text is the whole
+  report.
+- `client/extension/check.{Setup, Run, Report, run, lines, failed, total,
+  enforcement_line, release_wait_ms}` — `loom ext check` (ADR-014 §5).
+  `run(root, name, setup)` refuses, before starting anything, an
+  extension `installed.verified` refuses, a jailed one, and a profile
+  with no `[[check]]`; then per `(server, fixture)` group it writes the
+  fixture from the verified tree's bytes (never copied from disk, which
+  would follow a link planted after install) to
+  `<root>/.staging/check-<token>/work`, judges the scratch's real path
+  (`host/bootstrap.canonical_directory`) against `/tmp` and
+  `/private/tmp` and refuses either by name, starts `serve.start_check_plane` over it, prints the
+  probe's `enforcement.Report` (`manager.probe_server`), starts a
+  `manager` over the one approved server (roots via
+  `serve.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
+  `profile_check.run_all` through `manager.door`, and stops the manager,
+  waits for its lease, aborts the operation, stops the plane and deletes
+  the scratch on every path out. **Invariant: the profile proved is the
+  install record's**, the one the operator approved, and the fixture is a
+  copy, so a writable project never edits the digest-guarded tree.
 
 Phase 3 added the hook bus, and it hangs off the same satellites the
 tools reach:
@@ -2607,6 +2673,11 @@ checkout, and the jail may write only where the build root is, which for
 an install is under the extensions root. `state_root` is the third: the
 daemon's credentials sit one directory above the extensions root and the
 build plane masks them where the jail can build the mask.
+`serve.start_check_plane` is the third caller's shape: the same helper
+ladder and effect plane over `build_plane_policy(workspace, state_root)`,
+with no toolchain discovered, for `loom ext check`; `lsp_places` and
+`lsp_server_roots` are public so the check expands a profile's roots
+exactly as a session does.
 
 ## Imported hooks
 
@@ -4253,13 +4324,26 @@ language profile; these are the pieces that carry both in this package.
 
 - `client/lsp/profile.{LspServer, ProjectAccess, LspPath, ModuleCase,
   Places, decode_servers, decode_server, claim_extensions, expand_path,
-  cache_place, mangling_fault, not_server_owned}` — the one
+  cache_place, cache_env_paths, private_cache_fault, mangling_fault,
+  not_server_owned}` — the one
   `[lsp.<name>]` decoder, pure (no I/O, no external). `client/catalog`
-  hands `decode_servers` the `[lsp]` table's entries, and an extension
-  manifest's profiles are meant to go through the same functions, so the
-  two can never accept different things. `LspServer` carries the ADR-013
-  keys plus four profile keys, each defaulting to the behaviour it
-  replaced: `language_id: String` (always filled; default the first
+  hands `decode_servers` the `[lsp]` table's entries, and so does
+  `client/extension/manifest` for a profile extension, so the two can
+  never accept different things. `encode_server` and `server_decoder` are
+  the profile's JSON form in an install record (every field written,
+  roots as written, the decoder total and structural: the load's
+  comparison with the re-decoded manifest is what holds the table's
+  rules), and `approval_lines` is what an install prints for one: every
+  key, plus the two grants the jail derives (the executable's directory,
+  read-only, and each private cache). `LspServer` carries the ADR-013
+  keys, `cache_env: List(#(String, String))` (variable to a relative
+  directory, sorted by name; `cache_env_paths` places each at
+  `<cache>/loom/lsp/<server>/<dir>`, the one value-carrying environment a
+  profile may set; a name follows the `env` rules and is not also in
+  `env`, a directory has no empty, `.` or `..` component and no leading
+  `/` and lies inside no other entry's, and the record decoder re-reads it under the same rule; an absent
+  `cache_env` in a record reads as `[]`, since format 3 predates the key), plus four
+  profile keys, each defaulting to the behaviour it replaced: `language_id: String` (always filled; default the first
   extension without its dot; written, `[a-z0-9][a-z0-9+._-]*` in at most
   40 characters), `qualifier_separators: List(String)` (default `["."]`;
   each non-empty, no whitespace, not `/`, listed once; `[]` refused),
@@ -4267,6 +4351,14 @@ language profile; these are the pieces that carry both in this package.
   `"snake"`), and `hint: Option(String)` (one line, no control character,
   at most 200 bytes). `LspPath` is `AbsolutePath` | `HomePath(rest)` |
   `CachePath(rest)`, the last written `<cache>/rest` under the `~/` rules.
+  **Invariant: no root names Loom's private cache.** A `readable` or
+  `writable` root written `<cache>/loom[/...]` (compared by component, so
+  `<cache>/./loom` too) is refused at decode, record decode included, and
+  `private_cache_fault(server, places)` — called from
+  `serve.lsp_server_roots` at boot and by `loom ext check` — refuses an
+  absolute or `~/` root that resolves inside `<cache>/loom`, or a
+  `writable` one that holds it (`~/.cache`): each would let a server swap
+  a private cache for a link.
   `expand_path(path, Places(home:, cache:))` resolves both relative forms
   and refuses a missing or relative place; `cache_place(os, home,
   xdg_cache_home)` is the pure platform rule (`darwin`:
@@ -4274,14 +4366,36 @@ language profile; these are the pieces that carry both in this package.
   `home/.cache`). `mangling_fault` and `not_server_owned` live here
   because `catalog`, which imports this module, shares them for its
   `[mcp.<name>]` and `[tools]` checks.
+- `client/lsp/profiles.{Claimant, Conflict, Refusal,
+  effective_lsp_servers, describe_claimant, describe_conflict}` — ADR-014
+  §4, pure. `effective_lsp_servers(configured:, installed:)` returns the
+  session's servers sorted by name plus the refused installed profiles.
+  **Invariant: the operator's file wins whole, and conflicts refuse every
+  installed profile involved, never first-wins.** A `loom.toml` table
+  replaces an installed profile of the same name (not a refusal); every
+  remaining installed profile is judged against the whole candidate set,
+  refused for sharing a server name with another installed profile or a
+  file extension with any server, so the answer does not depend on
+  discovery order. A `loom.toml` server is never the refused side.
 - **Invariant: a profile key's default is the old behaviour.** A table
   naming none of the four keys decodes to exactly what ADR-013 shipped;
   `catalog_lsp_test` pins it, and the resolve tests pass with `["."]` and
   `AsWritten` as they did before the parameters existed.
 
+- `client/lsp/profile_check.{CheckOutcome, run, run_all, passed,
+  describe}` — a profile's `[[check]]`s through a `query.Door`, and no
+  other effect. `run(door, check)` asks `definition` or `references` with
+  `SymbolQuery(symbol, path, line)` and answers `Passed`,
+  `Mismatch(expected, got)` (both sorted, unique `path:line` lists) or
+  `Errored(reason)`. **Invariant: sites compare as sets**, since a server
+  answers in no fixed order and two references on one line share a
+  `path:line`; `profile_check_test` pins it.
 - `client/lsp/manager.{Manager, Config, Backend, Timing, Jailed, Search, Hit,
   Msg, start, supervised, addressed, stop, door, jailed, connect_jailed,
-  probe, search_jailed}` — the session's one-server manager. The door's
+  probe, probe_server, search_jailed}` — the session's one-server manager.
+  `probe_server(jailed, server, root)` clears the same probe over the
+  same jail and answers its `CallOutcome` unjudged, for `loom ext check`'s
+  jail line. The door's
   closures run in the caller: they ask the manager for the live client,
   then do the pull-resync, the requests and the conversion to `Site`s
   themselves, so a slow query holds up only its caller. The probe
@@ -4326,13 +4440,31 @@ language profile; these are the pieces that carry both in this package.
   `Unavailable` or `Unsupported`; the references `documentSymbol` fold stops
   outlining there and keeps the rest with no container. Neither holds a
   caller for one deadline per hit.
+- **Invariant: the query that starts a server waits for its load, and
+  no other query waits.** When a query's `Warmth` is `Started`, after the
+  pull and before its first request it calls `lsp/client.ready` with
+  `Timing.quiet_ms` (300 ms), bounded by `Timing.ready_ms` (60 s).
+  `StillBusy(titles)` is `query.Unavailable("the language server is still
+  loading (<titles>); ask again in a moment")`, never an empty answer
+  (`rust-analyzer` answers mid-load with `[]`), and the server is left
+  running. A `Warm` query never calls `ready`, and neither do diagnostics
+  or `after_write`: a server that leaks a token costs one "still loading"
+  at start, not a deadline per query, and a warm server re-indexing
+  answers from its previous state as it does for any editor.
 - `client/lsp/jail.{Placement, Jail, Launch, Executable, ExecutableFile,
   max_link_hops, operation, step_id, locate, regions, policy_for,
-  call_spec, launch, transport}` — one server's jail and its transport.
+  directory_unlinked, caches_unlinked, call_spec, launch, transport}` —
+  one server's jail and its transport.
   `Placement.places` (and `manager.Jailed.places`) is the daemon's
   `profile.Places`: it expands `~/` and `<cache>/` roots, and its `home`
-  is the server's `HOME`. `call_spec(jail, op, now_ms:, demand:)` takes
-  the demand from its caller: the session's, which the probe proved.
+  is the server's `HOME`.
+  `policy_for` adds each `cache_env` directory to the writable roots on
+  both sides and sets its variable last in the environment; `Jail.caches`
+  lists them, and `manager.jail_for` makes them (`mkdir -p`) beside the
+  scratch's `tmp` before any probe, search or server clears under the
+  policy, since bwrap refuses a writable bind whose source is missing.
+  `call_spec(jail, op, now_ms:, demand:)` takes the demand from its
+  caller: the session's, which the probe proved.
 - **Invariant: a server's executable region is directories, never an
   install prefix.** `locate` reads the executable without following it
   (`tools/fs.real_filesystem().read_link`, the existing
@@ -4357,6 +4489,21 @@ language profile; these are the pieces that carry both in this package.
   only its own directory. One check at resolution suffices, because
   nothing re-reads the chain; a link rewritten later points outside what
   was mounted and fails to execute.
+- **Invariant: what the helper binds by spelling resolves to where the
+  policy said.** `policy_for` stays pure; two disk reads run in
+  `manager.jail_for` before anything is made or cleared, both through
+  `tools/fs.resolve_real` rooted at `/`. `directory_unlinked(name,
+  executable, writes)` refuses an executable whose spelled directory
+  lies at or under a path the server writes and does not resolve to that
+  write's real path plus the same components (a `node_modules/.bin`
+  replaced by a directory link); a link above the write is admitted.
+  `caches_unlinked(server, places)` refuses a private cache whose real
+  path is not the cache place's real path joined with
+  `loom/lsp/<server>/<dir>`, and runs both before `mkdir -p` (so a planted
+  link is not followed to make a directory) and after (so the bound
+  directory is the one judged). The cache place itself is resolved first,
+  so a linked `~/.cache` is admitted. Both are point-in-time: they close a
+  planted link, not one swapped between the read and the helper's bind.
 - `client/lsp/leases.{Leases, Lease, Refusal, cap_for, start, acquire,
   release, stop}` — the per-session cap on session-lived helper leases,
   `pool_size - reserved_helpers`.
@@ -4368,8 +4515,13 @@ language profile; these are the pieces that carry both in this package.
   server). The keeper's own messages are `Begin`, `PreviousGone`, `Release`,
   `ClientDown` and `ManagerDown`: an evicted or released keeper, or one
   whose manager died, stops its client gracefully (`lsp/client.stop`).
-- **Serve wiring.** `serve.assemble_in` builds the plane only when
-  `Catalog.lsp_servers` is non-empty. Each server's `readable`/`writable`
+- **Serve wiring.** The boot discovers installed extensions once
+  (`discovered_extensions`) and hands both readers that answer: the
+  `Ready` records' `lsp` go through `profiles.effective_lsp_servers` with
+  `Catalog.lsp_servers`, each refusal one `lsp.profile_refused` warning
+  (`extension`, `server`, `other`, `reason`), and only `Jailed`
+  extensions become tool contributions. `serve.assemble_in` builds the
+  plane only when the effective server list is non-empty. Each server's `readable`/`writable`
   `~/` and `<cache>/` roots are expanded once with
   `profile.expand_path(_, places)`, where `places` is
   `serve.home_directory()` and `profile.cache_place` over

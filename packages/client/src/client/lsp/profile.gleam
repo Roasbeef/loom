@@ -29,6 +29,14 @@
 //// is exactly what ADR-013 shipped before the key existed, so a table
 //// written for that release means what it meant.
 ////
+//// One key carries an environment *value*, and only one kind: `cache_env`
+//// points a variable at a private cache directory Loom owns,
+//// `<cache>/loom/lsp/<server>/<dir>`, which the harness creates and grants
+//// writable. It exists because a server's tools keep caches the host's own
+//// tools trust — `go build` reads `GOCACHE` unverified — and a jailed
+//// server that shared one could plant entries the host later builds from.
+//// Every other `env` entry is a name whose value comes from the daemon.
+////
 //// # How a table is decoded
 ////
 //// Decoding is total and strict. Every refusal is a worded `Error` naming
@@ -38,9 +46,23 @@
 //// as written (`~/rest`, `<cache>/rest`) so that decoding is a function of
 //// the text alone; `expand_path` resolves them against `Places` once the
 //// daemon knows where it is.
+////
+//// # The approved form
+////
+//// A profile that arrives in an extension is approved at install, and the
+//// install record keeps it in full (ADR-014 §3), so this module also owns
+//// the profile's JSON form: `encode_server` writes it and `server_decoder`
+//// reads it back totally. The record is read by a later server run, so the
+//// decoder refuses a malformed value rather than crashing on it; it does
+//// not re-judge the table's rules, because a load compares the record's
+//// profiles with the manifest's freshly decoded ones and refuses any
+//// difference, and the manifest's have met every rule. `approval_lines`
+//// renders the same grant for the operator who is approving it.
 
 import codemode/vet/policy as vet_policy
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode.{type Decoder}
+import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -123,8 +145,12 @@ pub type ModuleCase {
 /// holds a `..` component, none is listed twice, and none appears in
 /// both; every `env` name matches `[A-Z_][A-Z0-9_]*`, is listed once, and
 /// is none of the names the server owns (`PATH`, `HOME`, `TMPDIR`, ...);
-/// `language_id` is non-empty; `qualifier_separators` is non-empty, each
-/// entry non-empty, free of whitespace, not `/`, and listed once; `hint`,
+/// every `cache_env` name meets the same three rules and is not in `env`,
+/// and every `cache_env` directory is non-empty and relative, with no
+/// empty, `.` or `..` component, and lies inside no other entry's
+/// directory; `language_id` is non-empty;
+/// `qualifier_separators` is non-empty, each entry non-empty, free of
+/// whitespace, not `/`, and listed once; `hint`,
 /// when present, is one non-empty line of at most 200 bytes with no
 /// control character.
 pub type LspServer {
@@ -149,6 +175,13 @@ pub type LspServer {
     /// The values are read from the harness's environment when it
     /// spawns, never from this file, the discipline `api_key_env` keeps.
     env: List(String),
+    /// Environment variables pointed at the server's private caches, as
+    /// `#(name, directory)` sorted by name. Each directory is relative to
+    /// `<cache>/loom/lsp/<server>/` (`cache_env_paths`), which Loom owns
+    /// and shares with no host tool; the harness creates it before the
+    /// jail starts, grants it writable, and sets the variable to it. `[]`
+    /// when the key is omitted.
+    cache_env: List(#(String, String)),
     /// The `languageId` every document is opened with. Always filled:
     /// written, it matches `[a-z0-9][a-z0-9+._-]*` in at most 40
     /// characters; omitted, it is the first extension without its dot,
@@ -263,7 +296,8 @@ pub fn claim_extensions(
 // Every key a table may hold. Anything else is refused by name.
 const table_keys = [
   "command", "extensions", "root_markers", "project", "readable", "writable",
-  "env", "language_id", "qualifier_separators", "module_case", "hint",
+  "env", "cache_env", "language_id", "qualifier_separators", "module_case",
+  "hint",
 ]
 
 /// Decodes one `[lsp.<name>]` table, `value`, under its key `name`.
@@ -312,6 +346,7 @@ pub fn decode_server(
   use writable <- result.try(paths(fields, place, "writable"))
   use Nil <- result.try(disjoint_roots(place, readable, writable))
   use env <- result.try(env(fields, place))
+  use cache_env <- result.try(cache_env(fields, place, env))
 
   // The profile keys. Each default is the behaviour ADR-013 shipped
   // before the key existed, so an older table decodes to a server that
@@ -329,6 +364,7 @@ pub fn decode_server(
     readable:,
     writable:,
     env:,
+    cache_env:,
     language_id:,
     qualifier_separators:,
     module_case:,
@@ -595,8 +631,17 @@ fn one_path(at: String, written: String) -> Result(LspPath, String) {
   case written {
     "/" <> _beneath -> Ok(AbsolutePath(written))
     "~/" <> rest -> beneath_place(at, written, rest, "~", "home", HomePath)
-    "<cache>/" <> rest ->
-      beneath_place(at, written, rest, "<cache>", "cache", CachePath)
+    "<cache>/" <> rest -> {
+      use path <- result.try(beneath_place(
+        at,
+        written,
+        rest,
+        "<cache>",
+        "cache",
+        CachePath,
+      ))
+      outside_private_cache(at, written, rest) |> result.replace(path)
+    }
     _relative ->
       Error(
         at
@@ -636,6 +681,162 @@ fn beneath_place(
         at <> " entry \"" <> written <> "\" has a doubled slash after " <> form,
       )
     _beneath -> Ok(make(rest))
+  }
+}
+
+// `<cache>/loom` is Loom's own, and the private caches `cache_env` names
+// live beneath it at `<cache>/loom/lsp/<server>/<dir>`. The harness makes
+// each one with `mkdir -p` before a start and binds it writable, and both
+// steps follow a link where a directory should be. So a table that could
+// name any part of that tree could grant a server the power to swap one of
+// those directories — its own or another server's — for a link, and the
+// next start would bind a host directory nobody approved. It is refused in
+// every spelling a written `<cache>/` path has: the components are judged
+// with the empty and `.` ones dropped, since `<cache>/./loom` names the
+// same directory. An absolute or `~/` root that lands there is refused at
+// boot, once the daemon's places say where the cache is
+// (`private_cache_fault`).
+fn outside_private_cache(
+  at: String,
+  written: String,
+  rest: String,
+) -> Result(Nil, String) {
+  case components(rest) {
+    [first, ..] if first == private_cache_top ->
+      Error(
+        at
+        <> " entry \""
+        <> written
+        <> "\" is under <cache>/"
+        <> private_cache_top
+        <> ": "
+        <> private_cache_refusal,
+      )
+    _elsewhere -> Ok(Nil)
+  }
+}
+
+// The directory under `<cache>` that is Loom's, and the words every
+// refusal of a root inside it ends with.
+const private_cache_top = "loom"
+
+const private_cache_refusal = "Loom's private cache is not a root a table may name; a server's private caches are granted through cache_env"
+
+// A path's components, without the empty ones a doubled or trailing slash
+// leaves or the `.` that names the directory it is in. `..` is refused
+// before anything reaches here, so what is left compares by component.
+fn components(path: String) -> List(String) {
+  string.split(path, "/")
+  |> list.filter(fn(component) { component != "" && component != "." })
+}
+
+// Whether `path` is `root` or lies beneath it, by component, so `/a/bc` is
+// not beneath `/a/b`.
+fn at_or_beneath(root: String, path: String) -> Bool {
+  is_prefix(components(root), components(path))
+}
+
+fn is_prefix(prefix: List(String), of: List(String)) -> Bool {
+  case prefix, of {
+    [], _ -> True
+    [head, ..rest], [other, ..more] if head == other -> is_prefix(rest, more)
+    [_, ..], _ -> False
+  }
+}
+
+/// Refuses a `readable` or `writable` root of `server` that resolves, under
+/// the daemon's `places`, into Loom's private cache `<cache>/loom` — or,
+/// for a `writable` one, to a directory that holds it.
+///
+/// The decoder already refuses a root written `<cache>/loom[/...]`; this
+/// is the same rule for an absolute or `~/` root, which only the daemon's
+/// places can place. A root inside the private cache is refused either
+/// way, since a server that could read another's cache could read what
+/// that server's tools wrote there, and a server that could write one
+/// could replace a directory with a link the next start would bind. A
+/// writable root *above* it — `~/.cache` on Linux — grants the same swap,
+/// so it is refused too; a readable one reaches nothing it could change.
+/// With no cache place, or an unresolvable root, there is nothing to decide
+/// here, and `expand_path` refuses the root where one is needed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let places = profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
+/// let assert Error(_) =
+///   profile.private_cache_fault(
+///     LspServer(..go, writable: [profile.HomePath(".cache")]),
+///     places,
+///   )
+/// assert profile.private_cache_fault(go, places) == Ok(Nil)
+/// ```
+///
+pub fn private_cache_fault(
+  server: LspServer,
+  places: Places,
+) -> Result(Nil, String) {
+  case expand_path(CachePath(private_cache_top), places) {
+    Error(_unplaced) -> Ok(Nil)
+    Ok(private) -> {
+      let place = "lsp." <> server.name
+      use Nil <- result.try(
+        list.try_each(server.readable, fn(path) {
+          root_clear_of(place <> ".readable", path, places, private, [])
+        }),
+      )
+      list.try_each(server.writable, fn(path) {
+        root_clear_of(place <> ".writable", path, places, private, [
+          private,
+        ])
+      })
+    }
+  }
+}
+
+// One root against the private cache. `holding` is what the root may not
+// be at or above: the private cache itself for a writable root, nothing
+// for a readable one.
+fn root_clear_of(
+  at: String,
+  path: LspPath,
+  places: Places,
+  private: String,
+  holding: List(String),
+) -> Result(Nil, String) {
+  case expand_path(path, places) {
+    Error(_unresolvable) -> Ok(Nil)
+    Ok(host) ->
+      case
+        at_or_beneath(private, host),
+        list.any(holding, at_or_beneath(host, _))
+      {
+        True, _ ->
+          Error(
+            at
+            <> " entry \""
+            <> path_text(path)
+            <> "\" resolves to "
+            <> host
+            <> ", inside "
+            <> private
+            <> ": "
+            <> private_cache_refusal,
+          )
+        False, True ->
+          Error(
+            at
+            <> " entry \""
+            <> path_text(path)
+            <> "\" resolves to "
+            <> host
+            <> ", which holds Loom's private cache "
+            <> private
+            <> "; a server that could write there could swap a private cache"
+            <> " for a link before the next start binds it, so name a"
+            <> " directory that does not hold it",
+          )
+        False, False -> Ok(Nil)
+      }
   }
 }
 
@@ -762,6 +963,179 @@ pub fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
         <> " workspace and scratch directory",
       )
   }
+}
+
+// --- the private caches ------------------------------------------------------
+
+// `cache_env = { XDG_CACHE_HOME = "xdg" }`: each variable, pointed at a
+// directory beneath the server's own `<cache>/loom/lsp/<server>/`. It is
+// the one value this schema lets a profile set, and the value can only
+// ever be a place Loom owns, which is the whole reason it may be set here
+// rather than read from the daemon. A shared cache is the hazard it
+// answers: `go list` runs cgo with model-written flags, and a `GOCACHE`
+// the host's `go build` also reads, unverified, is a way out of the jail.
+//
+// Each refusal names `lsp.<name>.cache_env.<VAR>`, the line an operator
+// edits. A name is listed once by construction, since the TOML parser
+// refuses a repeated key; it must still be none the harness owns, and not
+// in `env` as well, which would be two sources for one variable. The
+// entries come back sorted, because a table has no order and the record
+// compares them with the manifest's.
+fn cache_env(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  env: List(String),
+) -> Result(List(#(String, String)), String) {
+  let at = place <> ".cache_env"
+  use entries <- result.try(case dict.get(fields, "cache_env") {
+    Error(Nil) -> Ok(dict.new())
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) -> Ok(entries)
+    Ok(_other) ->
+      Error(
+        at
+        <> " must be a table of variable names to directory names, such as"
+        <> " { XDG_CACHE_HOME = \"xdg\" }",
+      )
+  })
+  use caches <- result.try(
+    dict.to_list(entries)
+    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+    |> list.try_map(fn(entry) { one_cache_env(place, env, entry.0, entry.1) }),
+  )
+  use Nil <- result.try(unnested(place, caches))
+  Ok(caches)
+}
+
+// No private cache lies inside another. The outer one is writable in the
+// jail, so the server could replace the inner directory with a link, and
+// the next start's `mkdir -p` would find it present and bind wherever it
+// points — the helper resolves a bind's source through its links — which
+// would grant a host directory writable that nobody named. Two variables
+// naming the same directory share one bind and are left alone.
+fn unnested(
+  place: String,
+  caches: List(#(String, String)),
+) -> Result(Nil, String) {
+  list.try_each(caches, fn(inner) {
+    let outer =
+      list.find(caches, fn(outer) {
+        string.starts_with(inner.1, outer.1 <> "/")
+      })
+    case outer {
+      Error(Nil) -> Ok(Nil)
+      Ok(outer) ->
+        Error(
+          place
+          <> ".cache_env."
+          <> inner.0
+          <> " is \""
+          <> inner.1
+          <> "\", inside "
+          <> outer.0
+          <> "'s \""
+          <> outer.1
+          <> "\", which the server can write, so it could swap the inner"
+          <> " directory for a link before the next start binds it; name"
+          <> " sibling directories",
+        )
+    }
+  })
+}
+
+fn one_cache_env(
+  place: String,
+  env: List(String),
+  name: String,
+  value: tom.Toml,
+) -> Result(#(String, String), String) {
+  let here = place <> ".cache_env." <> name
+  use Nil <- result.try(case in_grammar(name, env_name_head, env_name_tail) {
+    True -> Ok(Nil)
+    False ->
+      Error(here <> " is not an environment variable name ([A-Z_][A-Z0-9_]*)")
+  })
+  use Nil <- result.try(not_server_owned(here, name))
+  use Nil <- result.try(case list.contains(env, name) {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        here
+        <> " is also listed in "
+        <> place
+        <> ".env; one variable has one source, so drop it from one of them",
+      )
+  })
+  use directory <- result.try(case value {
+    tom.String(directory) -> Ok(directory)
+    _other -> Error(here <> " must be a string naming a directory")
+  })
+  use Nil <- result.try(cache_directory_fault(directory) |> prefixed(here))
+  Ok(#(name, directory))
+}
+
+// A directory beneath the server's private cache: non-empty, relative, and
+// made of real components. A leading `/` would name a host path, and a
+// `..` would climb out of the directory Loom owns into the operator's
+// cache, which is exactly the sharing the key exists to prevent; `.` and
+// an empty component (`a//b`, a trailing `/`) name nothing the text does
+// not already, so they are refused as a spelling the reader has to undo.
+// The recorded form is re-read through this same rule.
+fn cache_directory_fault(directory: String) -> Result(Nil, String) {
+  let components = string.split(directory, "/")
+  case
+    directory,
+    string.starts_with(directory, "/"),
+    list.contains(components, ".."),
+    list.contains(components, ".") || list.contains(components, "")
+  {
+    "", _, _, _ -> Error(" must name a directory, not be empty")
+    _, True, _, _ ->
+      Error(
+        " is \""
+        <> directory
+        <> "\", an absolute path; name a directory relative to Loom's"
+        <> " private cache",
+      )
+    _, False, True, _ ->
+      Error(
+        " is \""
+        <> directory
+        <> "\", which has a .. component; a private cache may not climb out"
+        <> " of the directory Loom owns",
+      )
+    _, False, False, True ->
+      Error(
+        " is \""
+        <> directory
+        <> "\", which has an empty or . component; name the directory itself",
+      )
+    _, False, False, False -> Ok(Nil)
+  }
+}
+
+fn prefixed(outcome: Result(Nil, String), at: String) -> Result(Nil, String) {
+  result.map_error(outcome, fn(reason) { at <> reason })
+}
+
+/// Each `cache_env` variable of `server`, with the unexpanded path of the
+/// private directory it is set to: `<cache>/loom/lsp/<server>/<dir>`.
+///
+/// One function says where a private cache is, so the approval an operator
+/// reads, the boot's refusal of an unresolvable one, and the jail that
+/// grants it cannot name three different directories. `expand_path` turns
+/// each into the host path against the daemon's `Places`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // profile.cache_env_paths(LspServer(..go, cache_env: [#("XDG_CACHE_HOME", "xdg")]))
+/// // == [#("XDG_CACHE_HOME", profile.CachePath("loom/lsp/go/xdg"))]
+/// ```
+///
+pub fn cache_env_paths(server: LspServer) -> List(#(String, LspPath)) {
+  list.map(server.cache_env, fn(entry) {
+    #(entry.0, CachePath("loom/lsp/" <> server.name <> "/" <> entry.1))
+  })
 }
 
 // --- the profile keys --------------------------------------------------------
@@ -1052,6 +1426,251 @@ pub fn cache_place(
     _other, Some("/" <> below) -> Some("/" <> below)
     _other, Some(_relative) | _other, None ->
       option.map(home, fn(home) { strip_trailing_slash(home) <> "/.cache" })
+  }
+}
+
+// --- the approved form ------------------------------------------------------
+
+/// Renders one profile as the JSON an extension's install record keeps.
+///
+/// Every field is written, the defaulted ones included, because the
+/// record keeps what was approved rather than what was typed: a default
+/// that changed in a later release must not silently change a profile an
+/// operator already said yes to. A root is written as the operator wrote
+/// it (`~/go/pkg/mod`, `<cache>/gopls`), since expansion happens at boot
+/// against the daemon's own places.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(back) =
+///   json.parse(
+///     json.to_string(profile.encode_server(go)),
+///     profile.server_decoder(),
+///   )
+/// assert back == go
+/// ```
+///
+pub fn encode_server(server: LspServer) -> Json {
+  json.object([
+    #("name", json.string(server.name)),
+    #("command", json.array(server.command, json.string)),
+    #("extensions", json.array(server.extensions, json.string)),
+    #("root_markers", json.array(server.root_markers, json.string)),
+    #("project", json.string(project_text(server.project))),
+    #("readable", json.array(server.readable, encode_path)),
+    #("writable", json.array(server.writable, encode_path)),
+    #("env", json.array(server.env, json.string)),
+    #(
+      "cache_env",
+      json.object(
+        list.map(server.cache_env, fn(entry) {
+          #(entry.0, json.string(entry.1))
+        }),
+      ),
+    ),
+    #("language_id", json.string(server.language_id)),
+    #(
+      "qualifier_separators",
+      json.array(server.qualifier_separators, json.string),
+    ),
+    #("module_case", json.string(module_case_text(server.module_case))),
+    #("hint", json.nullable(server.hint, json.string)),
+  ])
+}
+
+/// Reads back one profile `encode_server` wrote, totally.
+///
+/// A missing field, a wrong type, an unknown `project` or `module_case`
+/// word, or a root that is neither absolute nor `~/` nor `<cache>/` is a
+/// decode failure naming where it was found, never a crash. The one
+/// field that may be absent is `cache_env`, read as `[]`, because a
+/// format-3 record written before the key existed carries none. The table's
+/// other rules are not re-judged here; see the module documentation for
+/// why the comparison at load is what holds them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = json.parse("{}", profile.server_decoder())
+/// ```
+///
+pub fn server_decoder() -> Decoder(LspServer) {
+  use name <- decode.field("name", decode.string)
+  use command <- decode.field("command", decode.list(decode.string))
+  use extensions <- decode.field("extensions", decode.list(decode.string))
+  use root_markers <- decode.field("root_markers", decode.list(decode.string))
+  use project <- decode.field("project", project_decoder())
+  use readable <- decode.field("readable", decode.list(path_decoder()))
+  use writable <- decode.field("writable", decode.list(path_decoder()))
+  use env <- decode.field("env", decode.list(decode.string))
+
+  // Absent reads as no private caches: the key is younger than format 3,
+  // so a format-3 record written before it existed holds a profile that
+  // had none, and loading it must not turn on a field it never carried.
+  // Present, it is read in full and every directory is re-judged.
+  use cache_env <- decode.optional_field(
+    "cache_env",
+    dict.new(),
+    decode.dict(decode.string, cache_directory_decoder()),
+  )
+  let cache_env =
+    dict.to_list(cache_env)
+    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  use language_id <- decode.field("language_id", decode.string)
+  use qualifier_separators <- decode.field(
+    "qualifier_separators",
+    decode.list(decode.string),
+  )
+  use module_case <- decode.field("module_case", module_case_decoder())
+  use hint <- decode.field("hint", decode.optional(decode.string))
+  decode.success(LspServer(
+    name:,
+    command:,
+    extensions:,
+    root_markers:,
+    project:,
+    readable:,
+    writable:,
+    env:,
+    cache_env:,
+    language_id:,
+    qualifier_separators:,
+    module_case:,
+    hint:,
+  ))
+}
+
+/// The lines an install prints for one profile it is approving: the
+/// command the jail will run and what of the host its executable brings
+/// into the jail, the extensions it claims, the root markers that decide
+/// which directory it is started in, what it may do to that project, the
+/// extra roots, the environment names it passes, the private caches it
+/// is given and, when there is one, the hint the model will read.
+///
+/// That is the whole of the grant ADR-014 §3 says an approval covers,
+/// including the two parts the jail derives rather than reads from a key:
+/// the executable's own directory, mounted read-only (a link's target
+/// directory as well, never an install prefix), and each `cache_env`
+/// directory, created and granted writable. An operator reading the
+/// install sees exactly what they said yes to. The argv is quoted element
+/// by element, because a command is never a shell string and printing it
+/// as one would hide where one argument ends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// profile.approval_lines(go)
+/// // -> ["lsp.go", "    command:      \"gopls\"", ...]
+/// ```
+///
+pub fn approval_lines(server: LspServer) -> List(String) {
+  let paths = fn(listed) { list.map(listed, path_text) }
+  let caches =
+    list.map(cache_env_paths(server), fn(entry) {
+      entry.0 <> "=" <> path_text(entry.1)
+    })
+  let lines = [
+    "lsp." <> server.name,
+    approval_line("command", list.map(server.command, quoted)),
+    approval_line("executable", [executable_text(server)]),
+    approval_line("extensions", server.extensions),
+    approval_line("root_markers", server.root_markers),
+    approval_line("project", [project_text(server.project)]),
+    approval_line("readable", paths(server.readable)),
+    approval_line("writable", paths(server.writable)),
+    approval_line("env", server.env),
+    approval_line("cache_env", caches),
+  ]
+  case server.hint {
+    None -> lines
+    Some(hint) -> list.append(lines, [approval_line("hint", [quoted(hint)])])
+  }
+}
+
+// What the jail mounts for the command itself. It is derived from where
+// the executable is found rather than written in the table, which is why
+// it has to be printed: a grant the approval never showed is one nobody
+// approved. The rule is the jail's (`client/lsp/jail.regions`).
+fn executable_text(server: LspServer) -> String {
+  let head = case server.command {
+    [head, ..] -> head
+    [] -> "the command"
+  }
+  "the directory holding "
+  <> head
+  <> ", read-only; for a link, its target's directory too, never an"
+  <> " install prefix"
+}
+
+fn approval_line(label: String, values: List(String)) -> String {
+  let shown = case values {
+    [] -> "(none)"
+    [_, ..] -> string.join(values, ", ")
+  }
+  "    " <> string.pad_end(label <> ":", to: 14, with: " ") <> shown
+}
+
+fn quoted(text: String) -> String {
+  "\"" <> text <> "\""
+}
+
+fn encode_path(path: LspPath) -> Json {
+  json.string(path_text(path))
+}
+
+// A private cache's directory, re-read with the table's own rule, for the
+// reason a root is: the jail creates and grants whatever a record holds,
+// so a record must not hold a `..` a table could never have approved.
+fn cache_directory_decoder() -> Decoder(String) {
+  use written <- decode.then(decode.string)
+  case cache_directory_fault(written) {
+    Ok(Nil) -> decode.success(written)
+    Error(_reason) ->
+      decode.failure(written, "a relative directory with no . or .. component")
+  }
+}
+
+// The written form, re-read with the decoder's own path rule so that a
+// record can hold exactly the roots a table could.
+fn path_decoder() -> Decoder(LspPath) {
+  use written <- decode.then(decode.string)
+  case one_path("the recorded profile", written) {
+    Ok(path) -> decode.success(path)
+    Error(_reason) ->
+      decode.failure(AbsolutePath(written), "an absolute, ~/ or <cache>/ path")
+  }
+}
+
+fn project_text(project: ProjectAccess) -> String {
+  case project {
+    ProjectReadOnly -> "read-only"
+    ProjectWritable -> "writable"
+  }
+}
+
+fn project_decoder() -> Decoder(ProjectAccess) {
+  use written <- decode.then(decode.string)
+  case written {
+    "read-only" -> decode.success(ProjectReadOnly)
+    "writable" -> decode.success(ProjectWritable)
+    _other -> decode.failure(ProjectReadOnly, "read-only or writable")
+  }
+}
+
+fn module_case_text(module_case: ModuleCase) -> String {
+  case module_case {
+    AsWritten -> "as-written"
+    Snake -> "snake"
+  }
+}
+
+fn module_case_decoder() -> Decoder(ModuleCase) {
+  use written <- decode.then(decode.string)
+  case written {
+    "as-written" -> decode.success(AsWritten)
+    "snake" -> decode.success(Snake)
+    _other -> decode.failure(AsWritten, "as-written or snake")
   }
 }
 

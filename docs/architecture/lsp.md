@@ -193,7 +193,15 @@ The requirements ask for:
   `command`. The file the chain ends at may still sit there, as a plain
   `node_modules/.bin` executable does, since its own directory widens
   nothing; and judging at resolution is enough, since a link rewritten
-  later points outside what was mounted and fails to execute. Each region is an explicit read-only mount, and the helper
+  later points outside what was mounted and fails to execute. A link can
+  also be a *directory* on the spelled path — `node_modules/.bin`
+  replaced by a link beside a credential — and the region is mounted by
+  that spelling, which the helper's bind follows, so before a start the
+  manager refuses one too (`jail.directory_unlinked`): where a path the
+  server writes holds the executable's directory, the part below it must
+  resolve to itself, the real path being the write's real path with the
+  same components after it. A link above the write, such as a workspace
+  under `/var -> /private/var`, is the operator's and is admitted. Each region is an explicit read-only mount, and the helper
   lays explicit mounts over every root, so a region at or above a path
   the server writes — the link's own directory or a target's — is refused
   by name rather than left to turn that path read-only. `/bin/sh` is the
@@ -427,6 +435,51 @@ answer about nothing. Such a path is refused as `NoServer` before any
 request is sent, and the server is thereafter addressed only by real
 paths.
 
+### Readiness
+
+A server may answer while it is still loading its project, and
+`rust-analyzer` does, with empty results rather than errors: measured,
+`definition` came back `[]`, `references` held only the declaration,
+`hover` found nothing, and a rename edited one file of the two that
+needed it. `gopls` and `gleam lsp` hold a request until they can answer
+it, so they never showed this.
+
+Readiness is a mechanism rule over standard work-done progress, not a
+per-server key. The `initialize` request declares
+`window.workDoneProgress`, and the client actor tracks the set of active
+`$/progress` tokens: `begin` adds one, `end` removes it, a `report` for
+a token it never saw begin adds it, a malformed notification is dropped,
+and at most 64 are held. `lsp/client.ready(quiet_ms:, deadline_ms:)`
+answers `Quiet` once no token has been active for a continuous
+`quiet_ms`, measured from the later of the call and the last token's
+end, or `StillBusy` with the active titles at the deadline. Like
+settlement, it is a waiter and timers in actor state.
+
+Only the query that starts a server asks, after the pull. It waits a
+300 ms window (`Timing.quiet_ms`), because the server may not have begun
+reporting when `initialized` is sent, and then for every token to end. A
+server still busy at `Timing.ready_ms` (a minute) is answered
+`Unavailable`: "the language server is still loading (Indexing); ask
+again in a moment", never an empty answer, and is left running.
+
+A warm query never waits, for two reasons. The measured empty answers
+were a load-time problem: a warm server re-indexing after an edit
+answers from its previous state, which is its normal behaviour and what
+every editor's client sees. And a server that begins a token and never
+ends it would otherwise stall every later query for the whole minute;
+as it is, the leak costs one "still loading" answer at start, and the
+next query, being warm, proceeds. Diagnostics, `after_write` included,
+do not wait either: settlement has its own two rules and bound. A server
+that reports no progress costs one 300 ms window after its start and
+nothing after.
+
+Measured through the jailed manager on a two-file crate,
+`rust-analyzer`'s first progress began 4 ms after the manager asked, well
+inside the window; the longest gap between one token's end and the next
+one's begin was about 100 ms; and the load went quiet 3.45 s after the
+handshake began, the first answer following 300 ms later. Asked with no
+window after the start, the same question answered `[]`.
+
 ## Settled diagnostics
 
 After a write, the model should learn whether the code still compiles,
@@ -597,22 +650,31 @@ root_markers = ["gleam.toml"]
 project = "writable"
 hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
 
-# gopls reads the module cache and writes the build cache and its own
-# cache, all outside the project, so all are named here. Both caches are
-# in the per-user cache directory, which <cache>/ names on every
-# platform.
+# gopls reads the module cache, outside the project, so it is named
+# here. Its caches are private: cache_env points GOCACHE, GOPLSCACHE and
+# XDG_CACHE_HOME under <cache>/loom/lsp/go/, which Loom creates and
+# grants writable, never the ~/.cache/go-build the host's own go build
+# trusts. The first two are named because on macOS go and gopls ignore
+# XDG_CACHE_HOME.
 [lsp.go]
 command = ["gopls"]
 extensions = [".go"]
 root_markers = ["go.mod"]
 readable = ["~/go/pkg/mod"]
-writable = ["<cache>/go-build", "<cache>/gopls"]
+cache_env = { XDG_CACHE_HOME = "xdg", GOCACHE = "go-build", GOPLSCACHE = "gopls" }
 env = ["GOFLAGS"]
 hint = "Qualify a name with its package name as imported: util.Greet"
 ```
 
 Both tables are examples. Neither is built in, and a workspace that
-wants neither configures neither.
+wants neither configures neither. **The maintained versions are the
+first-party profiles** (ADR-014 §6): `extensions/lsp_gleam` and
+`extensions/lsp_go` carry exactly these tables, and `extensions/lsp_rust`
+the Rust one, each with a fixture and the checks that prove it.
+`loom ext install ./extensions/lsp_go` approves the table without
+editing `loom.toml`; a `loom.toml` table of the same name replaces an
+installed profile whole. `conformance/lsp_profiles_test` holds the
+examples here and in `docs/examples/loom.toml` equal to the profiles.
 
 `command` is an argv, never a shell string. Its head is resolved once:
 an absolute path is taken as written; the bare name `gleam` is the
@@ -630,12 +692,38 @@ the daemon's environment; the values never live in the file, and `PATH`,
 against the daemon's own environment, never the jailed session's: `~/`
 is its `HOME`, and `<cache>/` is its per-user cache directory, which is
 `$HOME/Library/Caches` on macOS and, elsewhere, `$XDG_CACHE_HOME` when
-the daemon was started with an absolute one, else `$HOME/.cache`. That
-is the one fact a `gopls` table used to need per platform, and granting
-the wrong cache leaves `go` unable to write, so `gopls` loads no
-packages. A form whose place is unknown (no `HOME`) refuses that server
-at boot, as does a relative path, a `..` component, or a bare `~/` or
-`<cache>/`.
+the daemon was started with an absolute one, else `$HOME/.cache`. A
+form whose place is unknown (no `HOME`) refuses that server at boot, as
+does a relative path, a `..` component, or a bare `~/` or `<cache>/`.
+`<cache>/loom` and anything beneath it is refused however it is spelled
+("Loom's private cache is not a root a table may name"), and at boot
+(`profile.private_cache_fault`, from `serve.lsp_server_roots`) so is an
+absolute or `~/` root that resolves there, or a `writable` one that
+holds it, such as `~/.cache` on Linux.
+
+`cache_env` is the one key that sets an environment *value*, and the
+value can only be a directory Loom owns: `cache_env = { XDG_CACHE_HOME
+= "xdg" }` sets the variable to `<cache>/loom/lsp/<server>/xdg`. The
+manager creates the directory just before a jail binds it
+(`client/lsp/manager.jail_for`, beside the scratch directory), the jail
+grants it writable (`client/lsp/jail.policy_for`), and the install
+approval prints it. It exists because a writable host cache is a way
+out of the jail when the host's own tools trust it: `go build` reads
+`GOCACHE` unverified, and `go list` in the jail runs cgo with flags the
+project can write. A name also in `env`, a name the harness owns, and a
+directory that is absolute, has an empty, `.` or `..` component, or lies
+inside another entry's (which the server could swap for a link before
+the next start binds it) are each refused as
+`lsp.<name>.cache_env.<VAR>`. Those rules, and the refusal of any root in
+`<cache>/loom`, close the routes a table could open; the manager closes
+the rest from the disk. Both before `mkdir -p` and after it,
+`jail.caches_unlinked` resolves each private cache and refuses the start
+unless its real path is the cache place's real path joined with
+`loom/lsp/<server>/<dir>`, so no link below the cache place is followed
+whoever planted it; the cache place is resolved first, so a `~/.cache`
+that is itself a link still works. The check reads the disk once per
+start, before any clearance, so it closes a planted link but not one
+swapped in between that read and the helper's bind.
 
 Four optional keys carry what a language spells differently. They make
 the table a **language profile** (ADR-014), and each default is what
@@ -669,6 +757,37 @@ when a table exists: the leases actor and the manager, the latter
 supervised with the session's other services. Nothing is spawned then.
 The first query starts a server, after the probe, so a session that never
 asks a semantic question never pays for a server.
+
+## Adding a language
+
+A language is a profile, not a change to Loom. Adding one is three
+steps, and the third is the one that makes it trustworthy.
+
+1. **Write the profile.** A `tier = "profile"` extension whose
+   `extension.toml` holds one `[lsp.<name>]` table (the keys above). Grant
+   only what the server is measured to need, and give every root and
+   environment name a comment saying why. A root a build script could
+   write that later runs on the host, such as anything under `~/.cargo`,
+   is never writable, and a writable root must already exist on the host,
+   because the jail refuses one that does not.
+2. **Write a fixture and checks.** A `fixture/` directory holding a small
+   project the server can load offline and read-only (a Rust crate needs
+   its `Cargo.lock`), and `[[check]]`s: a `definition` or `references`
+   query, a symbol spelled as the model would spell it, and the
+   `path:line` sites the answer must equal as a set (ADR-014 §5).
+   Qualify a symbol the way the language does, since that is what
+   `qualifier_separators` and `module_case` exist for.
+3. **Run `loom ext check`.** `loom ext install ./my-profile`, then
+   `loom ext check my_profile`, which writes the fixture into a scratch
+   workspace, starts the server in the ordinary jail under your demand,
+   prints what the jail enforced, and asks every check through the door
+   the tools use. A `FAIL` line names both sets. An empty answer usually
+   means the server could not load the project: a root it needs is not
+   granted, or a cache it writes is not writable.
+
+`extensions/lsp_rust` is the worked example: its `README.md` records what
+`cargo` and `rust-analyzer` needed in the jail and why each grant is
+there.
 
 ## What is not built, and the known hazards
 
@@ -713,11 +832,13 @@ window; none is a change to the mechanism.
 | `lsp/framing.gleam` | The `Content-Length` framer over bytes, bounded before it buffers. |
 | `lsp/protocol.gleam` | Total codecs, the advertised-capability gate, answers to server requests, `file://` conversion. |
 | `lsp/text.gleam` | UTF-16 ↔ codepoint conversion, identifier-boundary lookup, and pure edit application. |
-| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, sync, diagnostics store, settlement, stop. |
+| `lsp/client.gleam` | The actor that owns one server: handshake, gated requests, sync, diagnostics store, settlement, readiness, stop. |
 | `client/lsp/manager.gleam` | One server per session, keepers, eviction, restart, the probe, the bare-symbol search, and `door`. |
 | `client/lsp/resolve.gleam` | Ownership, containment, qualified symbols (per-server separators and module case), outline lookup, containers, display paths. |
 | `client/lsp/profile.gleam` | The one `[lsp.<name>]` decoder: `LspServer`, `LspPath`, `ModuleCase`, `Places`, the extension-ownership check, `expand_path` and `cache_place`. Pure. |
 | `client/lsp/jail.gleam` | `policy_for`, executable location and mounts, and the jailed `ChannelTransport`. |
+| `client/lsp/profile_check.gleam` | A profile's `[[check]]`s asked through the door and judged as sets of `path:line` (ADR-014 §5). |
+| `client/extension/check.gleam` | `loom ext check`: the scratch workspace, the check plane, the probe's jail line, and a manager over one server. |
 | `client/lsp/leases.gleam` | The per-session cap on session-lived helper leases. |
 | `client/lsp/codemode_rename.gleam` | A program's applied rename, over the tools' landing and the program's write boundary. |
 | `client/catalog.gleam` | Hands the `[lsp]` table's entries to `client/lsp/profile`. |
