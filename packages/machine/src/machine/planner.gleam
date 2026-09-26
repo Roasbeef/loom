@@ -1819,9 +1819,10 @@ fn first_planned(frontier: List(ToolCallState)) -> Option(Int) {
 }
 
 /// Works one planned call: stage the machine-built synthetic when the
-/// call must not execute (cancelled control, truncated source response,
-/// arguments the adapter could not parse), otherwise ask for its
-/// clearance.
+/// call must not execute (cancelled control, truncated source response),
+/// otherwise ask for its clearance. A call whose arguments never parsed
+/// asks too; the runtime refuses it there, after the repeated-failure
+/// guard has seen it.
 fn work_planned_call(
   pass: RunPass,
   batch: ToolBatch,

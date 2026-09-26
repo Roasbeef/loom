@@ -1499,6 +1499,9 @@ pub fn the_schema_states_which_mode_needs_program_or_handle_test() {
         ),
       ),
     )
+  let assert Ok(json.Array([])) =
+    schema_field(codemode.tool_for(background).schema, "required")
+    as "with the async modes nothing is required outright"
   let assert Ok(json.Object(async)) =
     schema_field(codemode.tool_for(background).schema, "properties")
   assert string.starts_with(

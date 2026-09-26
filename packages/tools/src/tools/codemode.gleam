@@ -491,7 +491,18 @@ fn async_properties(
           "registered endpoint targeted by send; default `default`",
         ),
       ),
-      #("value", json.Object([])),
+      #(
+        "value",
+        json.Object([
+          #(
+            "description",
+            json.String(
+              "REQUIRED for mode=send: the JSON value delivered to the "
+              <> "execution's endpoint",
+            ),
+          ),
+        ]),
+      ),
     ]
   }
 }
