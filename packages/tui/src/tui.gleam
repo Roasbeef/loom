@@ -82,6 +82,7 @@ import tui/recording
 import tui/render
 import tui/session_channel
 import tui/session_control
+import tui/session_table
 import tui/sessions
 import tui/summary_panel
 import tui/surfaces
@@ -124,7 +125,12 @@ type Launch {
   // last frame is a flush point, so that one is always the current frame.
   // A recording's own first `resize` also supersedes `--width`/`--height`,
   // which therefore only size the frames before it.
-  Replay(path: String, frames: FrameSelection, size: backend.TerminalSize)
+  Replay(
+    path: String,
+    frames: FrameSelection,
+    size: backend.TerminalSize,
+    colour: Colour,
+  )
 
   // `loom sessions …` installs no terminal state either. It reaches the
   // control endpoint as the owner over the same bootstrap ladder the picker
@@ -158,10 +164,20 @@ type FrameSelection {
   AllFrames
 }
 
+// Whether one-shot output keeps the colour its frame was drawn with. The
+// default follows the terminal: a person watching gets the styled frame, and
+// a pipe, a file, or a golden-file comparison gets plain text with no escape
+// sequences. `--plain` forces the second for a terminal that cannot show the
+// first.
+type Colour {
+  FollowTerminal
+  PlainText
+}
+
 // The replay flags, gathered before a Launch is built so an unparseable
 // combination is one Invalid rather than a half-applied set.
 type ReplayOptions {
-  ReplayOptions(frames: FrameSelection, width: Int, height: Int)
+  ReplayOptions(frames: FrameSelection, width: Int, height: Int, colour: Colour)
 }
 
 /// Runs the interactive terminal client.
@@ -208,7 +224,8 @@ pub fn main() {
         Version -> print_version()
         Forward(arguments:) -> forward(arguments)
         Update(arguments:) -> run_update(arguments)
-        Replay(path:, frames:, size:) -> replay(path, frames, size)
+        Replay(path:, frames:, size:, colour:) ->
+          replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
@@ -860,11 +877,14 @@ fn sessions_host(options: bootstrap.Options) {
   #(connected.control, host)
 }
 
+// A terminal gets the aligned, coloured table; anything else gets the one
+// line per row that scripts already parse, byte for byte as before.
 fn list_registrations(host: daemon_selection.Host) -> Result(String, String) {
   use rows <- result.map(registration_rows(host, "", [], 100))
-  case rows {
-    [] -> "no sessions"
-    rows -> string.join(list.map(rows, registration_line), "\n")
+  case rows, ffi_terminal.require_terminal() {
+    [], _ -> "no sessions"
+    rows, Ok(Nil) -> frame.buffer_to_styled(session_table.render(rows))
+    rows, Error(_) -> string.join(list.map(rows, registration_line), "\n")
   }
 }
 
@@ -893,22 +913,11 @@ fn registration_rows(
 fn registration_line(row: control_protocol.Session) -> String {
   row.session_id
   <> "  "
-  <> registration_state(row.status)
+  <> session_table.state(row.status).0
   <> "  "
   <> row.workspace
   <> "  "
   <> text_hygiene.single_line(row.name)
-}
-
-fn registration_state(status: control_protocol.Lifecycle) -> String {
-  case status {
-    control_protocol.Saved -> "saved"
-    control_protocol.Reserved -> "reserved"
-    control_protocol.Opening(_) -> "opening"
-    control_protocol.Resident(_) -> "resident"
-    control_protocol.Stopping(_) -> "stopping"
-    control_protocol.RecoveryBlocked -> "blocked"
-  }
 }
 
 fn remove_registration(
@@ -997,7 +1006,7 @@ fn launch_usage() -> String {
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"
   <> "       loom replay <path> [--at <frame>] [--all] "
-  <> "[--width <w>] [--height <h>]\n"
+  <> "[--width <w>] [--height <h>] [--plain]\n"
   <> "  the last frame is reproducible; a frame before a settling tick "
   <> "may differ between runs\n"
   <> "  --width/--height size the replay until the recording's own first "
@@ -1006,8 +1015,9 @@ fn launch_usage() -> String {
 
 fn replay_usage() -> String {
   "usage: loom replay <path> [--at <frame>] [--all] "
-  <> "[--width <w>] [--height <h>]\n"
-  <> "  Render the last frame by default; --all prints every frame."
+  <> "[--width <w>] [--height <h>] [--plain]\n"
+  <> "  Render the last frame by default; --all prints every frame.\n"
+  <> "  Frames keep their colour on a terminal; --plain drops it."
 }
 
 // This copy deliberately stays private to the client-only shipment. `loom`
@@ -1034,11 +1044,21 @@ fn parse_replay(arguments: List(String)) -> Launch {
       case
         parse_replay_options(
           options,
-          ReplayOptions(frames: LastFrame, width: 80, height: 24),
+          ReplayOptions(
+            frames: LastFrame,
+            width: 80,
+            height: 24,
+            colour: FollowTerminal,
+          ),
         )
       {
-        Ok(ReplayOptions(frames:, width:, height:)) ->
-          Replay(path:, frames:, size: backend.TerminalSize(width:, height:))
+        Ok(ReplayOptions(frames:, width:, height:, colour:)) ->
+          Replay(
+            path:,
+            frames:,
+            size: backend.TerminalSize(width:, height:),
+            colour:,
+          )
         Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
       }
   }
@@ -1054,6 +1074,8 @@ fn parse_replay_options(
     [] -> Ok(options)
     ["--all", ..rest] ->
       parse_replay_options(rest, ReplayOptions(..options, frames: AllFrames))
+    ["--plain", ..rest] ->
+      parse_replay_options(rest, ReplayOptions(..options, colour: PlainText))
     [flag] -> Error("missing value for " <> flag)
     [flag, value, ..rest] -> {
       use options <- result.try(replay_option(options, flag, value))
@@ -1104,9 +1126,10 @@ fn replay(
   path: String,
   frames: FrameSelection,
   size: backend.TerminalSize,
+  colour: Colour,
 ) -> Nil {
   case replay_recording(path, size) {
-    Ok(rendered) -> print_frames(rendered, frames)
+    Ok(rendered) -> print_frames(rendered, frames, frame_printer(colour))
     Error(reason) -> {
       io.println_error("loom replay: " <> reason)
       ffi_terminal.halt(1)
@@ -1171,28 +1194,50 @@ pub fn replay_steps(
   }
 }
 
-fn print_frames(frames: List(buffer.Buffer), selection: FrameSelection) -> Nil {
+// The terminal question is asked once, before any frame is printed, so an
+// `--all` run cannot switch rendering partway through. Standard input is
+// part of the check because the one probe the launcher already has asks
+// about both ends; a replay whose input is redirected prints plain text,
+// which costs a person nothing they asked for.
+fn frame_printer(colour: Colour) -> fn(buffer.Buffer) -> String {
+  case colour, ffi_terminal.require_terminal() {
+    FollowTerminal, Ok(Nil) -> frame.buffer_to_styled
+    FollowTerminal, Error(_) | PlainText, _ -> frame.buffer_to_text
+  }
+}
+
+fn print_frames(
+  frames: List(buffer.Buffer),
+  selection: FrameSelection,
+  render: fn(buffer.Buffer) -> String,
+) -> Nil {
   case selection {
     AllFrames ->
       list.index_fold(frames, Nil, fn(_acc, drawn, index) {
         io.println(frame_separator(index))
-        io.println(frame.buffer_to_text(drawn))
+        io.println(render(drawn))
       })
 
     // A missing frame is a real failure rather than an empty print: it
     // means the recording had fewer events than the caller believed.
-    LastFrame -> print_one(list.last(frames), "the recording drew no frames")
+    LastFrame ->
+      print_one(list.last(frames), "the recording drew no frames", render)
     FrameAt(index:) ->
       print_one(
         list.drop(frames, index) |> list.first,
         "the recording has no frame " <> int.to_string(index),
+        render,
       )
   }
 }
 
-fn print_one(frame_result: Result(buffer.Buffer, Nil), missing: String) -> Nil {
+fn print_one(
+  frame_result: Result(buffer.Buffer, Nil),
+  missing: String,
+  render: fn(buffer.Buffer) -> String,
+) -> Nil {
   case frame_result {
-    Ok(drawn) -> io.println(frame.buffer_to_text(drawn))
+    Ok(drawn) -> io.println(render(drawn))
     Error(Nil) -> {
       io.println_error("loom replay: " <> missing)
       ffi_terminal.halt(1)
