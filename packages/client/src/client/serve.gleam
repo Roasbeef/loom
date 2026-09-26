@@ -4965,13 +4965,14 @@ fn prepare_directories(
   // and without this they sit in every `git status` of the repository a
   // session works in, and every `rg` walks the module caches beneath
   // the tool home.
-  list.try_each(
+  list.each(
     [
       blob_root,
       settings.workspace <> "/" <> codemode_wiring.work_directory,
     ],
     ignore_directory,
   )
+  Ok(Nil)
 }
 
 /// The ignore file a harness-owned workspace directory carries: one
@@ -4982,16 +4983,18 @@ fn prepare_directories(
 pub const ignore_everything = "# Written by loom: this directory is harness state.\n*\n"
 
 // Writes the ignore file only where none exists, so an operator who
-// replaced it with rules of their own keeps them.
-fn ignore_directory(directory: String) -> Result(Nil, String) {
+// replaced it with rules of their own keeps them. A write that fails is
+// ignored: the file keeps `git status` tidy and nothing reads it, so a
+// directory left unwritable by an earlier container run must not cost the
+// session its boot.
+fn ignore_directory(directory: String) -> Nil {
   let path = directory <> "/.gitignore"
   case simplifile.is_file(path) {
-    Ok(True) -> Ok(Nil)
-    Ok(False) | Error(_) ->
-      simplifile.write(path, ignore_everything)
-      |> result.map_error(fn(error) {
-        "could not write " <> path <> ": " <> string.inspect(error)
-      })
+    Ok(True) -> Nil
+    Ok(False) | Error(_) -> {
+      let _hygiene = simplifile.write(path, ignore_everything)
+      Nil
+    }
   }
 }
 
