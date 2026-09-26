@@ -1,21 +1,22 @@
 //// Performs the effects a terminal step decided on.
 ////
-//// The reducer appends `Effect` values to the model's outbox, and the two
-//// channels it may hold, the adopted one and a provisional attachment's,
-//// queue their own writes and closes. `take` collects all three at the end
-//// of a step and leaves every queue empty; `perform` then carries them out.
-//// `tui.step` returns what `take` collected, and `tui.update`, which etui
-//// and the virtual backend call, is `step` followed by `perform`.
+//// The reducer appends `Effect` values to the model's outbox, which is the
+//// step's one queue. A channel queues its own writes, closes and recording
+//// notes, but the reducer that transitions it moves them into the outbox
+//// before it stores the channel (`tui_model.hold_channel`), and a
+//// provisional attachment hands its channel's outputs back with the rest of
+//// what it decided. `take` empties the outbox at the end of a step;
+//// `perform` then carries the effects out. `tui.step` returns what `take`
+//// collected, and `tui.update`, which etui and the virtual backend call, is
+//// `step` followed by `perform`.
 ////
-//// The collection order is the channels' outputs first, then the model's
-//// outbox. Each channel's own outputs keep the order they were decided in,
-//// which is the order that matters: frames on one socket must leave in the
-//// order the protocol lane issued them. Across queues the order is
-//// immaterial for correctness. A closed channel is in its `Closed` phase and
-//// queues nothing further, so no channel writes after its own close. The
-//// outputs `tui_model.release_channel` moves into the outbox belong to a
-//// channel the step has already let go of, so they cannot interleave with
-//// a live channel's writes to the same socket.
+//// The effects come out in the order the step decided them. For the
+//// sockets that is the order that matters: frames on one socket leave in
+//// the order the protocol lane issued them, and a closed lane is in its
+//// `Closed` phase and queues nothing further, so no channel writes after
+//// its own close. For the recording it is the order ADR-009 requires: the
+//// input's line is queued before the reducer runs, and every note after it
+//// is queued where its cause was decided.
 ////
 //// It also reads the clocks the step is applied at. `stamp` runs before
 //// the step and writes one `Stamp` onto the model, so the reducers read the
@@ -35,7 +36,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{Some}
 import gleam/string
 import host/bootstrap as host_bootstrap
 import tui/attachment
@@ -45,6 +46,7 @@ import tui/daemon
 import tui/effect.{type Effect}
 import tui/herdr
 import tui/model.{type Model, type Stamp, Model, Stamp} as tui_model
+import tui/recording
 import tui/session_channel
 import tui/sessions
 import weft
@@ -130,7 +132,11 @@ pub fn terminal_identity() -> String {
   <> string.inspect(process.self())
 }
 
-/// Takes every effect a step queued, oldest first, and empties the queues.
+/// Takes every effect a step queued, oldest first, and empties the outbox.
+///
+/// The outbox is the only queue: every reducer that transitions a channel
+/// has already moved that channel's outputs into it, so there is nothing to
+/// collect from the channels and no order across queues to choose.
 ///
 /// ## Examples
 ///
@@ -138,21 +144,7 @@ pub fn terminal_identity() -> String {
 /// let #(model, effects) = runtime.take(model)
 /// ```
 pub fn take(model: Model) -> #(Model, List(Effect)) {
-  let #(channel, adopted) = case model.channel {
-    None -> #(None, [])
-    Some(held) -> {
-      let #(held, outputs) = session_channel.take_outputs(held)
-      #(Some(held), list.map(outputs, effect.Channel))
-    }
-  }
-  let #(candidate, provisional) = attachment.take_outputs(model.candidate)
-  let effects =
-    list.flatten([
-      adopted,
-      list.map(provisional, effect.Attachment),
-      list.reverse(model.outbox),
-    ])
-  #(Model(..model, channel:, candidate:, outbox: []), effects)
+  #(Model(..model, outbox: []), list.reverse(model.outbox))
 }
 
 /// Performs effects in order.
@@ -194,6 +186,7 @@ fn perform_one(requested: Effect) -> Nil {
     effect.CancelTask(signal) -> weft.cancel(signal)
     effect.CancelSessionSwitch(status) -> sessions.cancel(status)
     effect.Discard(inbox) -> sessions.discard(inbox)
+    effect.Record(recorder, event) -> recording.append(recorder, event)
 
     // Etui draws its frames with `io:put_chars`, so a sequence printed the
     // same way lands on the terminal in order with them.

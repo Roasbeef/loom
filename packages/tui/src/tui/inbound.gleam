@@ -231,7 +231,7 @@ pub fn tick_channel(model: Model) -> Model {
         session_channel.tick(channel, now: model.stamp.transport_ms)
       list.fold(
         updates,
-        Model(..model, channel: Some(channel)),
+        tui_model.hold_channel(model, channel),
         apply_channel_update,
       )
       |> service_history
@@ -484,7 +484,7 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
           case
             session_channel.lookup(channel, ids, now: model.stamp.transport_ms)
           {
-            Ok(channel) -> Model(..model, channel: Some(channel))
+            Ok(channel) -> tui_model.hold_channel(model, channel)
             Error(reason) ->
               tui_model.append_error(
                 model,
@@ -1139,14 +1139,16 @@ fn handle_connection_message(
         )
       list.fold(
         updates,
-        Model(..model, channel: Some(channel)),
+        tui_model.hold_channel(model, channel),
         apply_channel_update,
       )
     }
-    None -> {
-      recording.note_message(model.recorder, incoming)
-      handle_presentation_message(model, incoming)
-    }
+
+    // A message with no channel has no attempt to note it under, so it is
+    // recorded as the untagged arrival the preview peer has always written.
+    None ->
+      tui_model.record(model, recording.Arrived(incoming))
+      |> handle_presentation_message(incoming)
   }
 }
 
@@ -2561,7 +2563,7 @@ pub fn cancel_pending(model: Model, reason: String) -> Model {
       let #(channel, updates) = session_channel.cancel_unsent(channel, reason)
       list.fold(
         updates,
-        Model(..model, channel: Some(channel)),
+        tui_model.hold_channel(model, channel),
         apply_channel_update,
       )
     }
@@ -2585,8 +2587,7 @@ pub fn service_history(model: Model) -> Model {
         Error(_) -> model
         Ok(channel) ->
           Model(
-            ..model,
-            channel: Some(channel),
+            ..tui_model.hold_channel(model, channel),
             scrollback: history_view.sent(model.scrollback, before),
           )
       }

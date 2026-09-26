@@ -13,7 +13,6 @@ import core/message
 import gleam/list
 import gleam/option.{None, Some}
 import tui
-import tui/attempt
 import tui/connection
 import tui/session_channel
 import tui/snapshot
@@ -251,15 +250,11 @@ pub fn transfer_with_metadata(
 /// let model = pushed.attached()
 /// ```
 pub fn attached() -> tui_model.Model {
-  // The trace sink discards: a subject here would deliver the lane's own
-  // events into the holder's mailbox, and a fixture that measures a mailbox
-  // must not be the thing filling it.
-  let trace = attempt.Trace(attempt.Id(1), fn(_event) { Nil })
+  // The lane records nothing: a recorder here would queue the lane's own
+  // events for whoever steps this model, and a fixture that measures a
+  // mailbox must not be the thing filling it.
   let channel =
-    session_channel.replay_traced(
-      snapshot.Expected("A", "epoch", "incarnation"),
-      trace,
-    )
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
   let #(ready, _) =
     list.fold(transfer(1, "1:1", "recent", 10), #(channel, []), fn(acc, frame) {
       let #(channel, updates) = session_channel.receive(acc.0, frame, now: 0)

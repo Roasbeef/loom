@@ -914,16 +914,26 @@ pub fn toggle_details(model: Model) -> Model {
 /// Queues the cancellation of every background worker and request and the
 /// close of the attachment, and marks the model as quitting.
 ///
-/// Nothing is cancelled or closed during the step. The cancels keep the order
-/// they were once performed in; the channel's own close is collected with
-/// the channel and so leaves ahead of them, which is harmless because they
-/// act on unrelated resources. The runtime runs all of them after the step,
-/// before the loop sees `quit` and exits.
+/// Nothing is cancelled or closed during the step. The adopted lane's close
+/// is queued first and the cancels after it, in the order they were once
+/// performed. The runtime runs all of them after the step, before the loop
+/// sees `quit` and exits.
 @internal
 pub fn quit(model: Model) -> Model {
-  // The attempt moves into its cancel effect. Leaving it on the model would
-  // let the runtime also collect the outputs its channel still queues, and
-  // the cancel performs those itself before its close.
+  // The adopted lane closes ahead of the provisional attempt. A recording
+  // has always noted the adopted lane's close before the attempt's, whose
+  // close the `Abandon` below decides only when the runtime performs it.
+  let model = case model.channel {
+    Some(channel) ->
+      tui_model.hold_channel(model, session_channel.close(channel))
+    None ->
+      case model.peer {
+        Attached(socket:) -> tui_model.emit(model, effect.CloseSocket(socket))
+        Preview | Replaying | Disconnected -> model
+      }
+  }
+
+  // The attempt moves into its cancel effect, which closes what it opened.
   let model =
     Model(..model, candidate: attachment.idle())
     |> tui_model.emit(effect.CancelSessionSwitch(model.session_switch))
@@ -945,18 +955,6 @@ pub fn quit(model: Model) -> Model {
     None -> model
     Some(host) ->
       tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
-  }
-
-  // The channel queues its own close, which the runtime performs after
-  // this step along with everything else the step decided.
-  let model = case model.channel {
-    Some(channel) ->
-      Model(..model, channel: Some(session_channel.close(channel)))
-    None ->
-      case model.peer {
-        Attached(socket:) -> tui_model.emit(model, effect.CloseSocket(socket))
-        Preview | Replaying | Disconnected -> model
-      }
   }
   Model(..model, quit: True)
 }

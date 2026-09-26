@@ -149,7 +149,7 @@ pub fn send_frame(model: Model, frame: String) -> Model {
     Some(channel) -> {
       let #(channel, disposition) =
         session_channel.submit(channel, frame, now: model.stamp.transport_ms)
-      apply_submission(Model(..model, channel: Some(channel)), disposition)
+      apply_submission(tui_model.hold_channel(model, channel), disposition)
     }
     None -> send_preview_frame(model, frame)
   }

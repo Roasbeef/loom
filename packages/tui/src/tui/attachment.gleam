@@ -16,6 +16,7 @@ import tui/attempt
 import tui/buffered.{type Inbox}
 import tui/connection
 import tui/protocol
+import tui/recording
 import tui/session_channel as channel
 import tui/sessions
 import tui/snapshot
@@ -69,7 +70,7 @@ type Run {
   Run(
     cancel: weft.Cancel,
     outcomes: Inbox(weft.Pulled(Nil, String)),
-    trace: Option(attempt.Trace),
+    trace: Option(recording.Trace),
   )
 }
 
@@ -172,7 +173,7 @@ pub fn start(
 pub fn start_recorded(
   resolve: fn() -> Result(Target, String),
   within_ms: Int,
-  trace: Option(attempt.Trace),
+  trace: Option(recording.Trace),
 ) -> Status {
   let frames = connection.new_inbox()
   let prepared = process.new_subject()
@@ -229,7 +230,7 @@ pub fn start_recorded(
 /// ```gleam
 /// // attachment.with_trace(pending, trace)
 /// ```
-pub fn with_trace(status: Status, trace: Option(attempt.Trace)) -> Status {
+pub fn with_trace(status: Status, trace: Option(recording.Trace)) -> Status {
   case status {
     Opening(run, prepared, frames, None) ->
       Opening(Run(..run, trace: trace), prepared, frames, None)
@@ -240,9 +241,11 @@ pub fn with_trace(status: Status, trace: Option(attempt.Trace)) -> Status {
 /// Advances at most forty credited messages during one terminal tick.
 ///
 /// The poll reads only what `top_up` received before the step, and it
-/// performs nothing it decided: the worker's acknowledgement and a failed
-/// attempt's cleanup come back as outputs, oldest first, for the caller to
-/// queue. The provisional channel's writes stay on it until `take_outputs`.
+/// performs nothing it decided. Everything comes back as outputs, oldest
+/// first, for the caller to queue: the provisional channel's writes and
+/// recording notes, the worker's acknowledgement, and a failed attempt's
+/// failure note and cleanup. Nothing stays queued inside the status, so
+/// the order of the returned list is the order the attempt decided it.
 /// `now` is the transport reading the candidate channel's deadlines are
 /// measured against, as for the adopted channel.
 ///
@@ -259,13 +262,18 @@ pub fn poll(
     Idle -> #(Idle, None, [])
     Opening(run, prepared, frames, candidate) -> {
       let #(prepared, candidate) = prepare(prepared, candidate, run.trace, now)
-      case progress(candidate, frames, now) {
-        Error(reason) ->
-          failed(Opening(run, prepared, frames, candidate), reason)
-        Ok(#(advanced, frames)) ->
+      let #(candidate, started) = release(candidate)
+      let advanced = case progress(candidate, frames, now) {
+        Error(broken) ->
+          discard(Opening(run, prepared, frames, candidate), broken)
+        Ok(#(advanced, frames)) -> {
+          let #(advanced, progressed) = release(advanced)
           settle(Opening(run, prepared, frames, advanced))
           |> acknowledging(candidate, advanced)
+          |> preceded_by(progressed)
+        }
       }
+      preceded_by(advanced, started)
     }
   }
 }
@@ -377,7 +385,8 @@ pub fn accept(
       })
       let prepared = buffered.push(prepared, message)
       let #(prepared, candidate) = prepare(prepared, None, run.trace, now)
-      settle(Opening(run, prepared, frames, candidate))
+      let #(candidate, started) = release(candidate)
+      settle(Opening(run, prepared, frames, candidate)) |> preceded_by(started)
     }
 
     // The selected frame joins the held ones and the same drain the poll
@@ -397,10 +406,13 @@ pub fn accept(
       })
       let frames = buffered.push(frames, message)
       case drain(candidate, frames, buffered.held(frames), now) {
-        Ok(#(advanced, frames)) ->
-          settle(Opening(run, prepared, frames, Some(advanced)))
-          |> acknowledging(Some(candidate), Some(advanced))
-        Error(reason) -> failed(status, reason)
+        Ok(#(advanced, frames)) -> {
+          let #(advanced, progressed) = release(Some(advanced))
+          settle(Opening(run, prepared, frames, advanced))
+          |> acknowledging(Some(candidate), advanced)
+          |> preceded_by(progressed)
+        }
+        Error(broken) -> discard(status, broken)
       }
     }
 
@@ -484,7 +496,7 @@ fn acknowledging(
 fn prepare(
   prepared: Inbox(Prepared),
   candidate: Option(Candidate),
-  trace: Option(attempt.Trace),
+  trace: Option(recording.Trace),
   now: Int,
 ) -> #(Inbox(Prepared), Option(Candidate)) {
   case candidate {
@@ -514,7 +526,7 @@ fn progress(
   candidate: Option(Candidate),
   frames: Inbox(connection.Message),
   now: Int,
-) -> Result(#(Option(Candidate), Inbox(connection.Message)), String) {
+) -> Result(#(Option(Candidate), Inbox(connection.Message)), Broken) {
   case candidate {
     None -> Ok(#(None, frames))
     Some(Candidate(captured: Some(_), ..)) -> Ok(#(candidate, frames))
@@ -540,7 +552,7 @@ fn drain(
   frames: Inbox(connection.Message),
   remaining: Int,
   now: Int,
-) -> Result(#(Candidate, Inbox(connection.Message)), String) {
+) -> Result(#(Candidate, Inbox(connection.Message)), Broken) {
   case remaining <= 0, candidate.captured {
     True, _ | _, Some(_) -> Ok(#(candidate, frames))
     False, None ->
@@ -558,7 +570,7 @@ fn receive_frame(
   candidate: Candidate,
   message: connection.Message,
   now: Int,
-) -> Result(Candidate, String) {
+) -> Result(Candidate, Broken) {
   let #(next, updates) = channel.receive(candidate.channel, message, now:)
   apply_updates(Candidate(..candidate, channel: next), updates)
 }
@@ -568,7 +580,7 @@ fn apply_updates(candidate: Candidate, updates) {
     [] -> Ok(candidate)
     [channel.Captured(cut, view, _), ..rest] ->
       apply_updates(Candidate(..candidate, captured: Some(#(cut, view))), rest)
-    [channel.Failed(reason), ..] -> Error(reason)
+    [channel.Failed(reason), ..] -> Error(Broken(candidate, reason))
 
     // A candidate has no view to stream into yet, and a fragment pushed
     // during its initial capture is superseded by the capture itself. A
@@ -587,7 +599,10 @@ fn apply_updates(candidate: Candidate, updates) {
     | [channel.LookedUp(..), ..]
     | [channel.Acknowledged(..), ..]
     | [channel.UnknownOutcome(..), ..] ->
-      Error("unexpected command result during initial capture")
+      Error(Broken(
+        candidate,
+        "unexpected command result during initial capture",
+      ))
   }
 }
 
@@ -653,27 +668,80 @@ fn adopt(status, candidate, frames) {
   }
 }
 
-// The failure's trace note is written now, because a recording orders it
-// among the channel traces this step already wrote. The cleanup is only
-// decided: the status it cancels travels in the output, and `cancel` closes
-// the channel it holds. A write the failing advance itself decided is not
-// in that status and is dropped, which is right: the attempt is over and
-// its socket is closed exactly once.
+// The failure note is queued ahead of the cleanup, behind every note the
+// attempt queued before it. The cleanup is only decided: the status it
+// cancels travels in the output, and `cancel` closes the channel it holds
+// when the runtime performs it.
 fn failed(status, reason) -> #(Status, Option(Outcome), List(Out)) {
-  case status {
-    Opening(Run(trace: Some(trace), ..), _, _, _) ->
-      trace.note(attempt.Failed(trace.id, reason))
-    Idle | Opening(Run(trace: None, ..), _, _, _) -> Nil
+  let noted = case status {
+    Opening(Run(trace: Some(recording.Trace(recorder:, id:)), ..), _, _, _) -> [
+      Note(recorder, attempt.Failed(id, reason)),
+    ]
+    Idle | Opening(Run(trace: None, ..), _, _, _) -> []
   }
-  #(Idle, Some(Failed(reason)), [Abandon(status)])
+  #(Idle, Some(Failed(reason)), list.append(noted, [Abandon(status)]))
+}
+
+// An advance that failed part way: the candidate as the failing advance
+// left it, and the reason.
+type Broken {
+  Broken(candidate: Candidate, reason: String)
+}
+
+// Fails the attempt in `status`, which is as it stood before the advance
+// that broke. That advance is discarded: its channel state and the writes
+// it decided go with it, and `cancel` closes the attempt's socket from the
+// status, once. Its notes are kept and queued ahead of the failure, because
+// they record frames the terminal did receive, in the order it received
+// them, and the recording has always held them.
+fn discard(
+  status: Status,
+  broken: Broken,
+) -> #(Status, Option(Outcome), List(Out)) {
+  let #(_, outputs) = channel.take_outputs(broken.candidate.channel)
+  let notes =
+    list.filter_map(outputs, fn(output) {
+      case output {
+        channel.Note(recorder, event) -> Ok(Note(recorder, event))
+        channel.Transmit(..) | channel.Shut(..) -> Error(Nil)
+      }
+    })
+  failed(status, broken.reason) |> preceded_by(notes)
+}
+
+// Moves what the candidate's channel queued into the attempt's outputs, so
+// nothing an advance decided is left inside the status. An adopted channel
+// therefore arrives with an empty queue, and an abandoned one holds only
+// what `cancel` decides when it closes it.
+fn release(candidate: Option(Candidate)) -> #(Option(Candidate), List(Out)) {
+  case candidate {
+    None -> #(None, [])
+    Some(candidate) -> {
+      let #(lane, outputs) = channel.take_outputs(candidate.channel)
+      #(
+        Some(Candidate(..candidate, channel: lane)),
+        list.map(outputs, FromChannel),
+      )
+    }
+  }
+}
+
+// Puts outputs decided earlier in the advance ahead of the ones `settled`
+// carries.
+fn preceded_by(
+  settled: #(Status, Option(Outcome), List(Out)),
+  earlier: List(Out),
+) -> #(Status, Option(Outcome), List(Out)) {
+  let #(status, outcome, outputs) = settled
+  #(status, outcome, list.append(earlier, outputs))
 }
 
 /// What an attachment attempt asks the runtime to do.
 ///
-/// The provisional channel's writes and closes pass through unchanged,
-/// `Acknowledge` is the reply that tells the preparing worker its initial
-/// capture has landed, and the other two clean up after an attempt the
-/// terminal will not adopt.
+/// The provisional channel's writes, closes and notes pass through
+/// unchanged, `Acknowledge` is the reply that tells the preparing worker its
+/// initial capture has landed, `Note` records the attempt's failure, and the
+/// other two clean up after an attempt the terminal will not adopt.
 pub type Out {
   /// An output of the candidate's own channel.
   FromChannel(channel.Out)
@@ -681,44 +749,18 @@ pub type Out {
   /// Releases the worker waiting on its acknowledgement subject.
   Acknowledge(to: Subject(Nil))
 
+  /// One attempt event the attachment itself records, which is its failure.
+  Note(recorder: recording.Recorder, event: attempt.Event)
+
   /// Cancels an attempt the terminal will not adopt, one that failed or one
   /// abandoned at quit, and closes what it opened, as `cancel` does. The
-  /// status carries the attempt's channel, so `cancel` performs what that
-  /// channel had queued before its close.
+  /// status carries the attempt's channel, and `cancel` performs the close
+  /// it decides for that channel, its recorded close included.
   Abandon(status: Status)
 
   /// Closes a prepared socket that arrived for an attempt this status no
   /// longer holds.
   CloseStray(socket: connection.Connection)
-}
-
-/// Hands over the outputs the provisional channel has queued, oldest first.
-///
-/// A candidate's channel lives inside this opaque status rather than on the
-/// model, so the runtime asks here after every step, as it asks the adopted
-/// channel. Without it the candidate's `subscribe` would never be written.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let #(pending, outputs) = attachment.take_outputs(pending)
-/// ```
-pub fn take_outputs(status: Status) -> #(Status, List(Out)) {
-  case status {
-    Opening(run, prepared, frames, Some(candidate)) -> {
-      let #(lane, outputs) = channel.take_outputs(candidate.channel)
-      #(
-        Opening(
-          run,
-          prepared,
-          frames,
-          Some(Candidate(..candidate, channel: lane)),
-        ),
-        list.map(outputs, FromChannel),
-      )
-    }
-    Idle | Opening(_, _, _, None) -> #(status, [])
-  }
 }
 
 /// Performs one attachment output.
@@ -732,6 +774,8 @@ pub fn perform(output: Out) -> Nil {
   case output {
     FromChannel(output) -> channel.perform(output)
     Acknowledge(to) -> process.send(to, Nil)
+    Note(recorder, event) ->
+      recording.append(recorder, recording.Attempt(event))
     Abandon(status) -> cancel(status)
     CloseStray(socket) -> connection.close(socket)
   }

@@ -20,18 +20,21 @@
 //// candidate. An effect decided against the old handle must reach the old
 //// handle, so the runtime never looks a target up in the model.
 ////
-//// Two kinds of I/O are deliberately not here yet. Recording appends stay
-//// synchronous, because the recording orders an input before the channel
-//// traces it caused, and that order holds only while every recording write
-//// happens where it did. Mailbox drains, background job starts, clock reads
-//// and file reads stay in the reducer, because their results feed the next
-//// model; those become messages in phase 2 of issue #530.
+//// Recording appends are effects too. A step queues the input's own line
+//// first, before the reducer runs, and each channel queues its attempt
+//// notes in the same queue as its writes, so the effects come out in the
+//// order the step decided them and the recording keeps the order ADR-009
+//// requires: an input before everything it caused. The job replies still
+//// read from their mailboxes, background job starts and file reads stay in
+//// the reducer, because their results feed the next model; those become
+//// messages in later slices of phase 2 of issue #530.
 
 import gleam/erlang/process.{type Subject}
 import tui/attachment
 import tui/connection
 import tui/daemon
 import tui/herdr
+import tui/recording
 import tui/session_channel
 import tui/sessions
 import weft
@@ -66,6 +69,10 @@ pub type Effect {
   /// Empties an inbox the model has stopped reading, so its queued frames
   /// do not sit in the terminal's mailbox forever.
   Discard(inbox: Subject(connection.Message))
+
+  /// Appends one line to a recording: an input the terminal was given, or
+  /// a message that arrived with no channel to note it.
+  Record(recorder: recording.Recorder, event: recording.Recorded)
 
   /// Writes an OSC 52 clipboard sequence to the terminal.
   WriteClipboard(sequence: String)

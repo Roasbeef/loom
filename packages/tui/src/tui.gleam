@@ -1391,9 +1391,10 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// The reducer queues its I/O as `effect.Effect` values rather than doing
 /// it, and this collects them, together with whatever was still queued
 /// from a caller that drove a reducer outside the loop. The returned model
-/// has empty queues. Phase 1 of issue #530 covers the fire-and-forget
-/// effects; job starts, file reads and recording appends still happen
-/// during the step.
+/// has an empty outbox. Recording appends are effects like the rest: the
+/// input's own line comes first in the list, and every line it caused
+/// follows in the order it was decided. Job starts and file reads still
+/// happen during the step.
 ///
 /// The step reads the connection, replay and attachment inboxes only
 /// through what `runtime.receive` put in them, so a test that calls `step`
@@ -1416,9 +1417,10 @@ pub fn step(
   event: backend.InputEvent,
   model: Model,
 ) -> #(Model, List(effect.Effect)) {
-  // Before the event is interpreted, so a recording holds what the client
-  // was given rather than what it made of it.
-  recording.note_input(model.recorder, event)
+  // Queued before the event is interpreted, so a recording holds what the
+  // client was given rather than what it made of it, and the input's line
+  // is ahead of every line the reducer queues for it.
+  let model = tui_model.record_input(model, event)
 
   let updated = apply_input(event, model)
   runtime.take(settle_update(event, model, updated))

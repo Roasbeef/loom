@@ -178,7 +178,9 @@ pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
 ///
 /// The outputs are queued before the outcome is applied. They belong to the
 /// attempt, which an adoption or a failure is about to take off the model,
-/// so this is the last point at which the step still holds them.
+/// so this is the last point at which the step still holds them. They
+/// include everything the candidate's channel queued, its recording notes
+/// among them, so an adopted channel arrives with nothing left to move.
 ///
 /// ## Examples
 ///
@@ -267,15 +269,13 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       let model =
         Model(..model, scrollback: history_view.cancel(model.scrollback))
 
-      // The retired channel's close is still queued on it, and this is
-      // the last moment the step holds it.
-      let model = tui_model.release_channel(model)
-
-      // Only then is the old inbox's flush decided, queued behind that
-      // close. Deciding it before the retirement would discard frames the
-      // retirement is entitled to reduce. The flush itself runs after the
-      // step, which is safe because the model stops reading that inbox at
-      // the swap below and nothing selects on it again.
+      // The old inbox's flush is decided only after the retirement, so it
+      // is queued behind the retired lane's close, which `retire_previous`
+      // moved into the outbox. Deciding it before the retirement would
+      // discard frames the retirement is entitled to reduce. The flush
+      // itself runs after the step, which is safe because the model stops
+      // reading that inbox at the swap below and nothing selects on it
+      // again.
       //
       // The swap replaces the whole `buffered.Inbox`, so the messages the
       // runtime had already received from the old socket leave the model
@@ -347,11 +347,16 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         )
         |> inbound.apply_cut(cut, view)
 
-      // The adoption marker is written after the cut, not before it. ADR-009
+      // The adoption marker is queued after the cut, not before it. ADR-009
       // makes that ordering a correctness rule: a recording is replayed by
       // the same reducer, and a marker ahead of its cut would move the
-      // visible session before the frames that justify it.
-      session_channel.adopted(channel)
+      // visible session before the frames that justify it. It is noted on
+      // the lane as the cut left it, so nothing the cut decided is undone.
+      let adopted = case adopted.channel {
+        Some(held) ->
+          tui_model.hold_channel(adopted, session_channel.adopted(held))
+        None -> adopted
+      }
       let adopted =
         adopted
         |> outbound.send_frame(protocol.models(1))
@@ -374,7 +379,7 @@ fn retire_previous(model: Model) -> Model {
         session_channel.retire(previous, "attachment replaced")
       list.fold(
         updates,
-        Model(..model, channel: Some(closed)),
+        tui_model.hold_channel(model, closed),
         inbound.apply_channel_update,
       )
     }

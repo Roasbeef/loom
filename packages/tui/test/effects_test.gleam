@@ -52,8 +52,9 @@ pub fn a_mouse_copy_queues_one_clipboard_write_test() {
 
 // A quit with a live channel and every background job running decides one
 // close or cancel per resource, in the order they were once performed, and
-// performs none of them. The channel's close leaves first, because the
-// runtime collects the adopted channel's outputs before the outbox.
+// performs none of them. The channel's close is queued first, ahead of the
+// provisional attempt's cancel, so a recording notes the adopted lane's
+// close before the attempt's, as it always has.
 pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
@@ -107,8 +108,8 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   assert process.receive(owner, 0) == Error(Nil)
 }
 
-// Without a channel, the preview peer's socket is closed directly, and the
-// close is still only queued.
+// Without a channel, the preview peer's socket is closed directly, in the
+// channel's place ahead of the cancels, and the close is still only queued.
 pub fn quit_without_a_channel_queues_the_peer_close_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let socket = socket_on(owner)
@@ -118,9 +119,9 @@ pub fn quit_without_a_channel_queues_the_peer_close_test() {
   assert quit.quit
   assert effects
     == [
+      effect.CloseSocket(socket),
       effect.CancelSessionSwitch(sessions.Idle),
       effect.Attachment(attachment.Abandon(attachment.idle())),
-      effect.CloseSocket(socket),
     ]
   assert process.receive(owner, 0) == Error(Nil)
     as "the step closed nothing itself"
@@ -224,6 +225,7 @@ fn output_kind(output: session_channel.Out) -> String {
   case output {
     session_channel.Transmit(..) -> "transmit"
     session_channel.Shut(..) -> "shut"
+    session_channel.Note(..) -> "note"
   }
 }
 

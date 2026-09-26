@@ -752,22 +752,15 @@ fn wait_for_attachment(status, within) {
       every: poll.Fixed(5),
       from: status,
       attempt: fn(status) {
-        // Driven outside the terminal loop, so this poll performs what
-        // the candidate's channel queued and what the poll itself decided,
-        // in the order the runtime would after a step.
+        // Driven outside the terminal loop, so this poll performs what it
+        // decided, which includes what the candidate's channel queued, in
+        // the order the runtime would after a step.
         let #(next, outcome, decided) =
           attachment.poll(status, now: host_bootstrap.monotonic_time_ms())
+        list.each(decided, attachment.perform)
         case outcome {
-          Some(outcome) -> {
-            list.each(decided, attachment.perform)
-            poll.Settled(outcome)
-          }
-          None -> {
-            let #(next, queued) = attachment.take_outputs(next)
-            list.each(queued, attachment.perform)
-            list.each(decided, attachment.perform)
-            poll.Pending(next)
-          }
+          Some(outcome) -> poll.Settled(outcome)
+          None -> poll.Pending(next)
         }
       },
     )

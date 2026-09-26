@@ -23,7 +23,9 @@ import tui/inbound
 import tui/model as tui_model
 import tui/protocol
 import tui/queue_editor
+import tui/recording
 import tui/render
+import tui/runtime
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -96,11 +98,15 @@ fn receive(
 ) -> tui_model.Model {
   let assert Some(channel) = model.channel as "the fixture has an attached lane"
   let #(channel, updates) = session_channel.receive(channel, incoming, now: 0)
+
+  // Driven outside the loop, so what the lane noted is performed here, as
+  // the next step would, and reaches the recorder before the test reads it.
   list.fold(
     updates,
-    tui_model.Model(..model, channel: Some(channel)),
+    tui_model.hold_channel(model, channel),
     inbound.apply_channel_update,
   )
+  |> runtime.flush
 }
 
 fn ready(rows) {
@@ -109,8 +115,7 @@ fn ready(rows) {
 
 fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
   let events = process.new_subject()
-  let trace =
-    attempt.Trace(attempt.Id(1), fn(event) { process.send(events, event) })
+  let trace = recording.Trace(recording.observed(events), attempt.Id(1))
   let channel = session_channel.replay_traced(expected, trace)
   let initial =
     tui_model.Model(
@@ -170,7 +175,8 @@ fn retarget_begin(incoming, expected: snapshot.Expected, connection_id) {
 fn requests(events, collected) {
   case process.receive(events, 0) {
     Error(Nil) -> list.reverse(collected)
-    Ok(attempt.Issued(_, request)) -> requests(events, [request, ..collected])
+    Ok(recording.Attempt(attempt.Issued(_, request))) ->
+      requests(events, [request, ..collected])
     Ok(_) -> requests(events, collected)
   }
 }

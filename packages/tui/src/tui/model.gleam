@@ -20,6 +20,7 @@ import core/ids
 import core/json
 import core/message
 import core/todo_list
+import etui/backend
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/span
@@ -885,10 +886,9 @@ pub type Model {
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
-    /// The open `--record` file, when the launch asked for one. Present
-    /// in the model rather than beside the loop because the inbox is
-    /// drained inside `update_tick`, so there is no other point at which
-    /// both a websocket message and the recording are in scope.
+    /// The open `--record` file, when the launch asked for one. Present in
+    /// the model because the reducers that decide recording lines, input
+    /// and channelless messages alike, name it in the effects they queue.
     recorder: Option(recording.Recorder),
     /// The mouse selection being dragged or left highlighted after a copy.
     /// Held in screen cells over the frame on display, so it is cleared by
@@ -907,10 +907,10 @@ pub type Model {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
-    /// Effects this step has decided on, newest first. The reducer only
-    /// appends here, through `emit`; `runtime.take` empties it at the end of
-    /// every step and performs what it held, so between two steps it is
-    /// always empty.
+    /// Effects this step has decided on, newest first, and the only queue a
+    /// step has. The reducer only appends here, through `emit`, `record` and
+    /// `hold_channel`; `runtime.take` empties it at the end of every step
+    /// and performs what it held, so between two steps it is always empty.
     outbox: List(effect.Effect),
   )
 }
@@ -967,32 +967,63 @@ pub fn mark_activity(model: Model) -> Model {
   )
 }
 
-/// Moves the held channel's queued outputs into the outbox.
+/// Stores `channel` as the adopted lane, moving what it queued into the
+/// outbox.
 ///
-/// A step that replaces or drops its channel must call this first. The
-/// channel queues its writes rather than performing them, so an output
-/// decided earlier in the step would otherwise leave with the channel value
-/// and never reach its socket. Before effects were values that write had
-/// already happened; this keeps it happening.
+/// Every reducer that transitions the adopted lane stores the result
+/// through this, so the lane's writes, closes and recording notes join the
+/// step's one queue at the point they were decided, in order with every
+/// other effect the step queues. The model's lane therefore holds no
+/// outputs between two reducer calls, and replacing or dropping it can lose
+/// nothing it decided.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let model = tui_model.release_channel(model)
-/// Model(..model, channel: Some(replacement))
+/// let #(channel, updates) = session_channel.receive(channel, message, now:)
+/// tui_model.hold_channel(model, channel)
 /// ```
 @internal
-pub fn release_channel(model: Model) -> Model {
-  case model.channel {
+pub fn hold_channel(model: Model, channel: session_channel.Channel) -> Model {
+  let #(channel, outputs) = session_channel.take_outputs(channel)
+  let outbox =
+    list.fold(outputs, model.outbox, fn(outbox, output) {
+      [effect.Channel(output), ..outbox]
+    })
+  Model(..model, channel: Some(channel), outbox:)
+}
+
+/// Queues one line for the model's recording, if the terminal is recording.
+///
+/// ## Examples
+///
+/// ```gleam
+/// tui_model.record(model, recording.Arrived(connection.Connected))
+/// ```
+@internal
+pub fn record(model: Model, event: recording.Recorded) -> Model {
+  case model.recorder {
+    Some(recorder) -> emit(model, effect.Record(recorder, event))
     None -> model
-    Some(held) -> {
-      let #(held, outputs) = session_channel.take_outputs(held)
-      let outbox =
-        list.fold(outputs, model.outbox, fn(outbox, output) {
-          [effect.Channel(output), ..outbox]
-        })
-      Model(..model, channel: Some(held), outbox:)
-    }
+  }
+}
+
+/// Queues the recording line for one input event, if it is one that replays
+/// and the terminal is recording.
+///
+/// `tui.step` calls this before the reducer runs, so the input's line is
+/// the first effect of its step and precedes every line the input causes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui_model.record_input(model, backend.KeyPress("a"))
+/// ```
+@internal
+pub fn record_input(model: Model, event: backend.InputEvent) -> Model {
+  case recording.of_input(event) {
+    Some(recorded) -> record(model, recorded)
+    None -> model
   }
 }
 
