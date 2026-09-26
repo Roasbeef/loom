@@ -3492,6 +3492,7 @@ fn assemble_in(
     // and a live one is replaced by the next or by the settled label.
     |> with_block_summarizer(
       summary_route,
+      settings.catalog,
       opened,
       runtime,
       event_bus,
@@ -6109,8 +6110,8 @@ fn summary_route(
 // The live feed's observer, or one that observes nothing when no route
 // exists. Which strand identities it observes is decided once here, from
 // the catalogue's chains: only an identity every one of whose possible
-// answering targets is the route's provider, which is the confidentiality
-// check for text still streaming.
+// answering targets shares the summarize entry's endpoint, which is the
+// confidentiality check for text still streaming.
 fn summary_tap(
   route: Option(blocksummary.Route),
   catalogue: catalog.Catalog,
@@ -6129,6 +6130,7 @@ fn summary_tap(
 fn with_block_summarizer(
   builder: sup.Builder,
   route: Option(blocksummary.Route),
+  catalogue: catalog.Catalog,
   opened: session.Session,
   runtime: api.Runtime,
   event_bus: bus.Bus,
@@ -6147,6 +6149,7 @@ fn with_block_summarizer(
         blocksummary.Wiring(
           session: opened,
           route:,
+          settled: blocksummary.settled_admission(catalogue, route.provider),
           write: fn(cell, value) {
             api.put_reserved_fact(runtime, cell, value)
             |> result.map_error(string.inspect)

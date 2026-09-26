@@ -51,20 +51,20 @@ pub fn the_floor_gates_reasoning_test() {
   let value =
     an_entry(1, assistant("acme", [thinking(long), thinking("short"), text()]))
 
-  let assert [job] = blocksummary.jobs(value, provider: "acme", floor: 512)
+  let assert [job] = blocksummary.jobs(value, admits: settled(), floor: 512)
     as "only the long block qualifies"
   assert job.block == 0
   assert job.source == blocksummarybook.Reasoning
   assert job.text == long
 }
 
-// Reasoning from another provider is never a job, whatever its length:
-// reasoning is confidential to the provider that produced it, and the
-// summarize route belongs to a different one here.
+// Reasoning from another service is never a job, whatever its length:
+// reasoning must not leave the service that produced it, and the summarize
+// entry is served from a different host here.
 pub fn reasoning_from_another_provider_is_skipped_test() {
   let value =
     an_entry(1, assistant("other", [thinking(string.repeat("r", 4096))]))
-  assert blocksummary.jobs(value, provider: "acme", floor: 512) == []
+  assert blocksummary.jobs(value, admits: settled(), floor: 512) == []
 }
 
 // A redacted block has no text behind its marker, so there is nothing to
@@ -77,27 +77,56 @@ pub fn a_redacted_block_is_skipped_test() {
       redacted: True,
     )
   let value = an_entry(1, assistant("acme", [redacted]))
-  assert blocksummary.jobs(value, provider: "acme", floor: 512) == []
+  assert blocksummary.jobs(value, admits: settled(), floor: 512) == []
 }
 
-// A long advice message is a job over its body, whichever provider the
+// A long advice message is a job over its body, whichever service the
 // session uses: it is harness-written text. A short one, a feed and an
 // ordinary prompt are not.
 pub fn delivered_advice_is_summarized_by_its_body_test() {
   let body = string.repeat("Re-run the failing test. ", 30)
   let advice = an_entry(2, advisorslice.advice_message(body, 0))
 
-  let assert [job] = blocksummary.jobs(advice, provider: "anyone", floor: 512)
+  let assert [job] =
+    blocksummary.jobs(advice, admits: fn(_name) { False }, floor: 512)
     as "a long advice body qualifies"
   assert job.block == 0
   assert job.source == blocksummarybook.AdvisorMessage
   assert job.text == body
 
   let short = an_entry(3, advisorslice.advice_message("Looks fine.", 0))
-  assert blocksummary.jobs(short, provider: "anyone", floor: 512) == []
+  assert blocksummary.jobs(short, admits: fn(_name) { False }, floor: 512) == []
 
   let prompt = an_entry(4, user(string.repeat("please ", 200)))
-  assert blocksummary.jobs(prompt, provider: "anyone", floor: 512) == []
+  assert blocksummary.jobs(prompt, admits: fn(_name) { False }, floor: 512)
+    == []
+}
+
+// Two catalogue entries on one host are one service: the endpoint is the
+// lowercased scheme and host, whatever the path or port, and an entry with
+// no URL falls back to its dialect. A committed block from a sibling entry
+// on the summarizer's host is summarized; one from another host, or from an
+// entry the catalogue does not hold, is not.
+pub fn entries_on_one_host_share_an_endpoint_test() {
+  assert blocksummary.endpoint(an_entry_named("acme"))
+    == blocksummary.endpoint(an_entry_named("acme-flash"))
+  assert blocksummary.endpoint(an_entry_named("acme"))
+    != blocksummary.endpoint(an_entry_named("other"))
+  assert blocksummary.endpoint(
+      catalog.CatalogModel(..an_entry_named("acme"), base_url: ""),
+    )
+    == "dialect:anthropic"
+
+  let admits = settled()
+  assert admits("acme")
+  assert admits("acme-flash")
+  assert !admits("other")
+  assert !admits("ghost")
+
+  let sibling =
+    an_entry(5, assistant("acme-flash", [thinking(string.repeat("r", 600))]))
+  let assert [_job] = blocksummary.jobs(sibling, admits:, floor: 512)
+    as "a sibling entry on the summarizer's host is summarized"
 }
 
 // --- the request and the answer --------------------------------------------------
@@ -352,6 +381,25 @@ pub fn a_cross_provider_fallback_chain_is_not_observed_test() {
   stop(rig)
 }
 
+// A strand on a sibling entry of the summarizer's host, whose chain stays on
+// that host, is observed live; one whose chain falls back to another host is
+// not.
+pub fn a_same_host_chain_is_observed_live_test() {
+  let sharing =
+    a_catalogue([
+      #(model.Main, ["acme-flash", "acme"]),
+      #(model.Summarize, ["acme"]),
+    ])
+  assert blocksummary.live_admission(sharing, "acme")(identity("acme-flash"))
+
+  let crossing =
+    a_catalogue([
+      #(model.Main, ["acme-flash", "other"]),
+      #(model.Summarize, ["acme"]),
+    ])
+  assert !blocksummary.live_admission(crossing, "acme")(identity("acme-flash"))
+}
+
 // A chain that stays on the summarize provider admits the strands it
 // serves. A text-only identity can also be rerouted to the `vision` chain,
 // so a `vision` chain on another provider turns its live text off, while a
@@ -441,6 +489,7 @@ fn a_rig(script: Script) -> Rig {
     blocksummary.start(blocksummary.Wiring(
       session: opened,
       route: blocksummary.Route(provider: "acme", summarizer:),
+      settled: settled(),
       write: fn(cell, value) {
         process.send(written, #(cell, value))
         Ok(Nil)
@@ -652,21 +701,34 @@ fn routing(roles: List(model.Role)) -> provider_gateway.Gateway {
   })
 }
 
-// A catalogue of two entries, `acme` and `other`, both reading images,
-// routed as given.
+// A catalogue of three entries, all reading images, routed as given:
+// `acme` and `acme-flash` on one host, `other` on another.
 fn a_catalogue(roles: List(#(model.Role, List(String)))) -> catalog.Catalog {
   catalog.Catalog(
-    models: list.map(["acme", "other"], an_entry_named),
+    models: list.map(["acme", "acme-flash", "other"], an_entry_named),
     roles:,
     mcp_servers: [],
   )
 }
 
+// The settled check for a summarize route on `acme`.
+fn settled() -> fn(String) -> Bool {
+  blocksummary.settled_admission(
+    a_catalogue([#(model.Main, ["acme"]), #(model.Summarize, ["acme"])]),
+    "acme",
+  )
+}
+
 fn an_entry_named(name: String) -> catalog.CatalogModel {
+  let base_url = case name {
+    "acme" -> "https://acme.invalid/v1"
+    "acme-flash" -> "HTTPS://Acme.invalid:443/v2"
+    _other -> "https://" <> name <> ".invalid/v1"
+  }
   catalog.CatalogModel(
     name:,
     dialect: catalog.Anthropic,
-    base_url: "https://" <> name <> ".invalid",
+    base_url:,
     api_key_env: "KEY",
     model_id: "loom-1",
     context_window: 100_000,

@@ -42,31 +42,35 @@ exactly as before this change.
 
 ### Confidentiality
 
-Reasoning text is confidential to the provider that produced it. The
-daemon sends a reasoning block to the summarizer only when the provider of
-the `summarize` role's first routed identity is the provider named in the
-block's assistant message (`provider`). The request is dispatched to that
-identity alone, with no fallback, so a retryable failure cannot move the
-text to another provider. A reasoning block from any other provider is
-skipped without a request.
+Reasoning text must not leave the service that produced it. The rule
+compares services by endpoint: the lowercased scheme and host of a
+catalogue entry's `base_url`, with any port, path or query dropped, or,
+for an entry with no URL to read, its dialect. Two catalogue entries on
+the same host are the same service; for example, three entries served
+from `https://inference.baseten.co/v1` share one endpoint.
+
+A committed reasoning block's assistant message names its catalogue entry
+(`provider`). The daemon sends the block to the summarizer only when that
+entry shares the endpoint of the `summarize` role's first routed entry. A
+provider name the catalogue does not hold is skipped, since its endpoint
+cannot be known. The summarize request is dispatched to that first entry
+alone, with no fallback, so a retryable failure cannot move the text to
+another service.
 
 A stream still being written names no provider, and the strand's
 configured identity is not always the one that answers it: a strand whose
 identity heads a role's chain is dispatched to that role, and the gateway
-walks the chain on a retryable failure, possibly to another provider; a
+walks the chain on a retryable failure, possibly to another service; a
 text-only identity with an image in the turn is dispatched to the `vision`
 chain. The daemon therefore summarizes a live stream only when every
-target that could answer it belongs to the summarize provider: the strand's
-identity, every chain that identity heads, and, for a text-only identity,
-the `vision` chain. The set of admitted identities is computed from the
-catalogue when the session is assembled. A strand outside it gets no live
-summaries; its settled blocks are still summarized, because they are
-checked against the provider the committed message names.
+target that could answer it shares the summarize entry's endpoint: the
+strand's identity, every chain that identity heads, and, for a text-only
+identity, the `vision` chain. A strand outside that set gets no live
+summaries; its settled blocks are still checked one by one against the
+entry the committed message names.
 
-In the gateway a catalogue entry's name is its provider name, so the rule
-compares catalogue entries: two entries on the same host are two
-providers, and a reasoning block is summarized only when the `summarize`
-route's head is the entry that produced it.
+Both admitted sets are computed from the catalogue when the session is
+assembled.
 
 Advice and nudges are text the harness writes and already sends to every
 provider in the session, so they carry no such restriction.

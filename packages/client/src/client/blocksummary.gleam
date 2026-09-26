@@ -35,20 +35,24 @@
 ////
 //// # Confidentiality
 ////
-//// Reasoning text is provider-confidential (`docs/architecture/advisor.md`),
-//// so a reasoning block is sent to the summarizer only when the summarize
-//// route's first identity belongs to the provider that produced the block,
-//// and the request is pinned to that identity (`ForResolved`), so a
-//// retryable failure cannot fall back to another provider's model. A block
-//// from any other provider is skipped without a request; the terminal
-//// keeps its first-line digest. A stream still being written names no
-//// provider, and the strand's configured identity may not be the one
-//// that answers, because a role's chain can fall back across providers;
-//// `admits_live` therefore observes a stream only when every target that
-//// could answer it is the summarize provider's. Advisor messages are harness-written text
-//// that every provider in the session is already sent, so they carry no
-//// such restriction. `route` and `jobs` hold the check for committed
-//// blocks, and `admits_live` and `observer` hold it for streams.
+//// Reasoning text is provider-confidential (`docs/architecture/advisor.md`):
+//// it must not leave the service that produced it. The rule compares
+//// services by `endpoint` — the scheme and host of a catalogue entry's
+//// `base_url`, or its dialect when it has none — so two catalogue entries
+//// on one host are one service. A committed reasoning block is sent to the
+//// summarizer only when the entry its message names shares the summarize
+//// entry's endpoint (`settled_admission`), and the request is pinned to
+//// the summarize identity (`ForResolved`), so a retryable failure cannot
+//// fall back to another service. A block from any other service, or from
+//// an entry the catalogue does not hold, is skipped without a request; the
+//// terminal keeps its first-line digest. A stream still being written
+//// names no provider, and the strand's configured identity may not be the
+//// one that answers, because a role's chain can fall back across services;
+//// `live_admission` therefore observes a stream only when every target
+//// that could answer it shares the summarizer's endpoint. Both predicates
+//// are computed once from the catalogue when the session is assembled.
+//// Advisor messages are harness-written text that every provider in the
+//// session is already sent, so they carry no such restriction.
 ////
 //// # How a request runs
 ////
@@ -95,6 +99,7 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/uri
 import machine/strand.{type ModelIdentity}
 import provider/gateway as provider_gateway
 import provider/model
@@ -146,10 +151,11 @@ pub const scan_limit = 64
 
 /// The summarize route this machine dispatches to.
 ///
-/// Constructor invariants: `provider` names the provider of the route's
-/// first identity, and `summarizer` dispatches to exactly that identity
-/// with thinking off and no fallback, so a request can never reach another
-/// provider. The confidentiality check compares against `provider`.
+/// Constructor invariants: `provider` names the catalogue entry of the
+/// route's first identity, and `summarizer` dispatches to exactly that
+/// identity with thinking off and no fallback, so a request can never
+/// reach another service. The confidentiality check compares other
+/// entries' endpoints with this entry's (`endpoint`).
 pub type Route {
   Route(provider: String, summarizer: Distiller)
 }
@@ -251,8 +257,8 @@ pub fn decode(value: JsonValue) -> Result(String, Nil) {
 /// The long blocks of one committed entry, as summarizer jobs.
 ///
 /// Two kinds qualify when their text is at least `floor` bytes: a
-/// reasoning block that is not redacted, from a response `provider`
-/// produced, and the body of an advice or queued-nudges message the
+/// reasoning block that is not redacted, from a response whose provider
+/// name `admits` accepts, and the body of an advice or queued-nudges message the
 /// advisor delivered. A redacted block has no text to summarize. A
 /// reasoning block from another provider is left out entirely, which is
 /// the confidentiality rule in the module doc.
@@ -260,12 +266,13 @@ pub fn decode(value: JsonValue) -> Result(String, Nil) {
 /// ## Examples
 ///
 /// ```gleam
-/// // blocksummary.jobs(entry, provider: "baseten", floor: 512)
+/// // blocksummary.jobs(entry, admits: settled_admission(catalogue, name),
+/// //   floor: 512)
 /// ```
 ///
 pub fn jobs(
   value: Entry,
-  provider provider: String,
+  admits admits: fn(String) -> Bool,
   floor floor: Int,
 ) -> List(Job) {
   case value {
@@ -274,7 +281,7 @@ pub fn jobs(
       message: message.AssistantMessage(content:, provider: produced, ..),
       ..,
     ) ->
-      case produced == provider {
+      case admits(produced) {
         False -> []
         True -> reasoning_jobs(id, content, floor)
       }
@@ -504,31 +511,92 @@ pub fn read(
 
 // --- the provider tap -------------------------------------------------------------
 
+/// The service a catalogue entry is served by, which is what the
+/// confidentiality rule compares: the lowercased scheme and host of its
+/// `base_url`, with any port, path or query dropped, or its dialect when
+/// it has no URL to read.
+///
+/// Reasoning must not leave the service that produced it. Two entries on
+/// the same host are two models of one service, and one entry's reasoning
+/// may be summarized by the other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // blocksummary.endpoint(entry_at("https://Inference.Baseten.co/v1"))
+/// //   == "https://inference.baseten.co"
+/// ```
+///
+pub fn endpoint(entry: catalog.CatalogModel) -> String {
+  case uri.parse(entry.base_url) {
+    Ok(uri.Uri(scheme: Some(scheme), host: Some(host), ..)) if host != "" ->
+      string.lowercase(scheme) <> "://" <> string.lowercase(host)
+    Ok(_other) | Error(Nil) ->
+      "dialect:" <> catalog.dialect_to_string(entry.dialect)
+  }
+}
+
+/// Which committed reasoning blocks may be sent to the summarizer, by the
+/// provider name their assistant message carries: those whose catalogue
+/// entry shares the summarize entry's `endpoint`. A name the catalogue
+/// does not hold is refused, since its service cannot be known.
+///
+/// Computed once at wiring time into a set of names, so the predicate
+/// carries no catalogue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // blocksummary.settled_admission(catalogue, route.provider)("baseten-kimi")
+/// ```
+///
+pub fn settled_admission(
+  catalogue: catalog.Catalog,
+  provider: String,
+) -> fn(String) -> Bool {
+  let admitted =
+    catalogue.models
+    |> list.filter(fn(entry) { same_endpoint(catalogue, provider, entry.name) })
+    |> list.map(fn(entry) { entry.name })
+    |> set.from_list
+
+  fn(name: String) { set.contains(admitted, name) }
+}
+
+// Whether the entry `name` is served by the same endpoint as the entry
+// `provider`. An entry the catalogue does not hold matches nothing.
+fn same_endpoint(
+  catalogue: catalog.Catalog,
+  provider: String,
+  name: String,
+) -> Bool {
+  case catalog.find(catalogue, provider), catalog.find(catalogue, name) {
+    Ok(summarizer), Ok(other) -> endpoint(summarizer) == endpoint(other)
+    Ok(_summarizer), Error(Nil) | Error(Nil), _ -> False
+  }
+}
+
 /// Whether reasoning streamed for a strand configured with `identity` is
-/// certain to come from the summarize route's provider, `provider`, so its
+/// certain to come from the summarize entry `provider`'s endpoint, so its
 /// live text may be summarized.
 ///
 /// The stream carries no provider of its own, and the strand's configured
 /// identity is not always the one that answers. A strand whose identity
 /// heads a role's chain is dispatched to that role, and the gateway walks
 /// the chain on a retryable failure, so a fallback may answer from another
-/// provider. A text-only identity with an image in the turn is dispatched
+/// service. A text-only identity with an image in the turn is dispatched
 /// to the `vision` chain instead. So the identity is admitted only when
-/// every target that could answer is the summarize provider's: the
+/// every target that could answer shares the summarizer's endpoint: the
 /// identity itself, every chain it heads, and, when it cannot read images,
-/// the `vision` chain. A chain that crosses providers turns live summaries
+/// the `vision` chain. A chain that crosses endpoints turns live summaries
 /// off for every strand that could walk it. Settled blocks are unaffected:
 /// they are checked against the provider the committed message names.
-///
-/// A catalogue entry's name is its provider name in the gateway, so each
-/// entry is a provider here, and a chain of two entries on the same host
-/// still crosses providers.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // blocksummary.admits_live(catalogue, "acme",
-/// //   strand.ModelIdentity(provider: "acme", model_id: "loom-1"))
+/// // blocksummary.admits_live(catalogue, "baseten-glm-5-3-flash",
+/// //   strand.ModelIdentity(provider: "baseten-kimi-k3", model_id: "kimi"))
 /// ```
 ///
 pub fn admits_live(
@@ -536,10 +604,10 @@ pub fn admits_live(
   provider: String,
   identity: ModelIdentity,
 ) -> Bool {
-  let only_provider = fn(names: List(String)) {
+  let only_endpoint = fn(names: List(String)) {
     names
     |> list.filter(fn(name) { result.is_ok(catalog.find(catalogue, name)) })
-    |> list.all(fn(name) { name == provider })
+    |> list.all(same_endpoint(catalogue, provider, _))
   }
   let headed =
     list.all(catalogue.roles, fn(route) {
@@ -547,21 +615,21 @@ pub fn admits_live(
       case chain_head(catalogue, names) {
         Ok(head)
           if head.name == identity.provider && head.model_id == identity.model_id
-        -> only_provider(names)
+        -> only_endpoint(names)
         Ok(_other) | Error(Nil) -> True
       }
     })
   let seen = case catalog.find(catalogue, identity.provider) {
     Ok(catalog.CatalogModel(vision: catalog.TextOnly, ..)) ->
       case list.key_find(catalogue.roles, model.Vision) {
-        Ok(names) -> only_provider(names)
+        Ok(names) -> only_endpoint(names)
         Error(Nil) -> True
       }
     Ok(catalog.CatalogModel(vision: catalog.ReadsImages, ..)) | Error(Nil) ->
       True
   }
 
-  identity.provider == provider && headed && seen
+  same_endpoint(catalogue, provider, identity.provider) && headed && seen
 }
 
 /// `admits_live` answered once, at wiring time, for every identity the
@@ -570,8 +638,8 @@ pub fn admits_live(
 /// The answer depends only on the catalogue, so computing it per request
 /// would repeat the same walk and copy the catalogue into every relay's
 /// observer process. The set holds the admitted `(provider, model_id)`
-/// pairs. An identity outside the catalogue is not admitted: the route's
-/// provider is a catalogue entry, so no such identity can name it.
+/// pairs. An identity outside the catalogue is not admitted, since its
+/// endpoint cannot be known.
 ///
 /// ## Examples
 ///
@@ -676,10 +744,12 @@ pub type Wiring {
     /// The session store, read directly for committed entries and an
     /// operation's strand. Reads never go through the writer's queue.
     session: Session,
-    /// The summarize route: the provider the confidentiality check
-    /// compares with, and the model seam. A test fills the seam with a
-    /// script.
+    /// The summarize route's model seam. A test fills it with a script.
     route: Route,
+    /// Whether a committed reasoning block from the named provider may be
+    /// sent to the summarizer: `settled_admission` in production, which
+    /// compares the two entries' endpoints.
+    settled: fn(String) -> Bool,
     /// Writes one reserved cell. Production fills it with
     /// `api.put_reserved_fact` over the live runtime.
     write: fn(String, JsonValue) -> Result(Nil, String),
@@ -872,7 +942,7 @@ fn committed(data: Data, seqs: List(Seq)) -> sm.Next(Phase, Data, Message) {
       let admitted =
         list.flat_map(entries, jobs(
           _,
-          provider: data.wiring.route.provider,
+          admits: data.wiring.settled,
           floor: data.wiring.pace.floor_bytes,
         ))
       let #(book, launches) =

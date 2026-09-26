@@ -261,23 +261,26 @@ The same confidentiality rule governs the block summarizer
 (`client/blocksummary`, [protocol
 050](../../protocol-change/050-reasoning-summaries.md)), which writes a
 short label for each long reasoning block so the terminal's collapsed row
-says what the block works through. **A reasoning block is sent to the
-summarizer only when the `summarize` route's first identity belongs to
-the provider that produced the block**, and the request is pinned to that
-identity with no fallback, so a retryable failure cannot carry the text
-to another provider's model. A block from any other provider is skipped
-without a request and keeps the terminal's first-line digest. The check
-reads the provider the settled assistant message names. A stream still
-being written names no provider, and a role's chain can fall back across
-providers, so a strand's live reasoning is observed only when every
-target that could answer it is the summarize provider's: its own
-identity, every chain it heads, and the `vision` chain when it cannot read
-images (`blocksummary.admits_live`, computed once from the catalogue).
-The test runs at the provider tap, so a fragment that could have come
-from another provider never leaves the relay. A catalogue entry's name is
-its provider name, so the rule compares entries. Advice and nudges are text the harness
-wrote and already sends to every provider in the session, so the
-summarizer may label them whichever provider it belongs to.
+says what the block works through. The rule compares services by
+endpoint: the lowercased scheme and host of a catalogue entry's
+`base_url`, or its dialect when it has none, so two entries on one host
+are one service. **A committed reasoning block is sent to the summarizer
+only when the catalogue entry its message names shares the endpoint of
+the `summarize` route's first entry**, and the request is pinned to that
+entry with no fallback, so a retryable failure cannot carry the text to
+another service. A block from any other service, or from an entry the
+catalogue does not hold, is skipped without a request and keeps the
+terminal's first-line digest. A stream still being written names no
+provider, and a role's chain can fall back across services, so a strand's
+live reasoning is observed only when every target that could answer it
+shares that endpoint: its own identity, every chain it heads, and the
+`vision` chain when it cannot read images. `blocksummary.settled_admission`
+and `blocksummary.live_admission` compute both sets once from the
+catalogue, and the live test runs at the provider tap, so a fragment that
+could have come from another service never leaves the relay. Advice and
+nudges are text the harness wrote and already sends to every provider in
+the session, so the summarizer may label them whichever service it
+belongs to.
 
 **A tool result is clipped from the middle**, by `middle_clip`
 (`client/advisorslice.gleam:423`), because both ends carry signal. A

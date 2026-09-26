@@ -730,17 +730,21 @@ catalogue without opening runtimes. Explicit admission invokes
   message. `route` resolves the `summarize` role's first identity and
   pins it (`ForResolved`, thinking off, `max_answer_tokens`) with **no
   fallback** to another role or provider; a catalogue that routes none
-  gets no machine. `Route.provider` is the confidentiality check:
-  `jobs(entry, provider:, floor:)` admits a reasoning block only from a
-  message whose `provider` equals it. A stream names no provider and a
-  role's chain may fall back across providers, so `observer(name,
-  admits)` observes a request only when `admits` accepts its strand
-  identity; production passes `live_admission(catalogue, provider)`, the
-  set of catalogue identities for which `admits_live` holds: the identity
-  is the route's provider, every chain it heads stays on that provider,
-  and a text-only identity's `vision` chain does too. Any other request
-  gets a no-op callback, so reasoning that could have come from another
-  provider never reaches the machine or the summarizer. Advice and nudges bodies
+  gets no machine. The confidentiality check compares services by
+  `endpoint(entry)`: the lowercased scheme and host of the entry's
+  `base_url`, or `dialect:<name>` when it has none, so entries on one host
+  are one service. `settled_admission(catalogue, route.provider)` is the
+  set of entry names sharing the summarize entry's endpoint, and
+  `jobs(entry, admits:, floor:)` admits a reasoning block only when it
+  accepts the message's `provider` (an unknown name is refused). A stream
+  names no provider and a role's chain may fall back across services, so
+  `observer(name, admits)` observes a request only when `admits` accepts
+  its strand identity; production passes `live_admission(catalogue,
+  provider)`, the identities for which `admits_live` holds: the identity,
+  every chain it heads, and a text-only identity's `vision` chain all
+  share the endpoint. Both sets are computed once at wiring time, so no
+  catalogue is copied into a relay process. Any other request gets a
+  no-op callback. Advice and nudges bodies
   (`advisorslice.delivered_body`) are exempt. The machine has two
   addresses: `Wiring.name` for the tap's `Streamed`/`StreamEnded` casts,
   and `Wiring.commits`, a `writer.Event` address it binds itself in its
