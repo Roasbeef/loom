@@ -1008,7 +1008,7 @@ pub fn a_network_hub_pushes_block_summaries_from_the_bus_test() {
       None,
       None,
       None,
-      Some(network_fixture_id()),
+      Some(summary_fixture_id()),
       SettlingProvider,
       Some(events_bus),
     )
@@ -3344,6 +3344,16 @@ pub fn cancelling_without_a_door_is_unsupported_test() {
 fn network_fixture_id() -> ids.SessionId {
   let #(id, _) =
     ids.mint_session(ids.generator(clock.fixed(at: 1_700_000_000_000), 4211))
+  id
+}
+
+// The events bus is one process-group scope for the whole emulator, keyed by
+// session. A test that publishes on it needs a session of its own, or a
+// sibling test subscribed under the same key receives its events when the
+// runner overlaps them.
+fn summary_fixture_id() -> ids.SessionId {
+  let #(id, _) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1_700_000_000_000), 4212))
   id
 }
 
