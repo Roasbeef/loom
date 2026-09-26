@@ -275,6 +275,30 @@ pub fn start_recorded(
   emit(channel, protocol.subscribe(1, expected.session))
 }
 
+/// Starts a live channel whose clock the caller supplies.
+///
+/// A property test drives the shipped transitions over generated schedules
+/// and needs both halves at once: a socket, so that every write and close
+/// the lane decides on appears as an output, and a clock it can advance
+/// across the 250 ms refresh and the 10 s and 30 s deadlines. The socket is
+/// never used by a transition, only named by the outputs, so a stand-in
+/// handle is enough and nothing is performed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.start_with_clock(socket, expected, fn() { 0 })
+/// ```
+@internal
+pub fn start_with_clock(
+  socket: connection.Connection,
+  expected: snapshot.Expected,
+  timestamp: fn() -> Int,
+) -> Channel {
+  initial(Some(socket), expected, None, timestamp)
+  |> emit(protocol.subscribe(1, expected.session))
+}
+
 /// Creates effect-free replay state without a socket, process or wall clock.
 /// Starts a reattachment that resumes from a cut this terminal already holds.
 ///

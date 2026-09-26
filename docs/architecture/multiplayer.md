@@ -324,14 +324,14 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`tui/session_channel.gleam:1270`) starts the catch-up at the
+`send_queued` (`tui/session_channel.gleam:1293`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`tui/session_channel.gleam:1019`) would have started it. The mark is a
+`tick` (`tui/session_channel.gleam:1043`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
 Two cases drop a notice
-(`capture_or_defer`, `tui/session_channel.gleam:747`): a sequence below the current cut's
+(`capture_or_defer`, `tui/session_channel.gleam:771`): a sequence below the current cut's
 `next_seq`, which the terminal already holds, and a notice that arrives
 before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
