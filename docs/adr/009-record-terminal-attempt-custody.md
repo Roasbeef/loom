@@ -95,8 +95,12 @@ injected: a fixture that puts a replay lane on a model freezes it at zero,
 so a stamp offset could mix two clocks and come out negative. One close is
 decided outside any step: `attachment.cancel` closes an abandoned
 attempt's lane when the runtime performs its `Abandon`, and there is no
-stamp there. And a recording's offsets keep the spacing they had, where a
-stamp would have given every line of one event the same offset.
+stamp there. What the change does to offsets is this: the lines one step
+decides are now all appended after that step, so they carry offsets a few
+microseconds apart where before they were spread across the step's own
+running time, while the spacing between the lines of different events is
+kept. A stamp would have given every line of one event exactly the same
+offset and taken the time from before the step rather than after it.
 
 **The one ordering that can differ.** A replacement abandoned after it
 opened its lane has its `attempt_closed` line written by that
