@@ -12,7 +12,7 @@ packages = [
   { name = "core", version = "0.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], source = "local", path = "../core" },
   { name = "cowlib", version = "2.20.0", build_tools = ["make", "rebar3"], requirements = [], otp_app = "cowlib", source = "hex", outer_checksum = "7D41A0DD2C093041FF3779AC5FE8A1585A68EC7CB2DD1DE0536BDD2452FD7BA1" },
   { name = "envoy", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "envoy", source = "hex", outer_checksum = "9C6FBB6BFA02A52798BEEC5977A738CAD6E4A057F4B67FD0C8061AD2502C191A" },
-  { name = "etui", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_javascript", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/etui.git", commit = "b286b0cd7aa477f5289f76eabdeca33c7b574343" },
+  { name = "etui", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_javascript", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/etui.git", commit = "1b5ff5e6719566e034afa7727d405281562af3cb" },
   { name = "exception", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "6BDEA95248093599391C3B5DF1835C5C6A86C353C2F99CE539B450E3432FE117" },
   { name = "filepath", version = "1.1.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "B06A9AF0BF10E51401D64B98E4B627F1D2E48C154967DA7AF4D0914780A6D40A" },
   { name = "glaml", version = "3.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib", "yamerl"], source = "git", repo = "https://github.com/Roasbeef/glaml.git", commit = "084857ebd45aba028f583b7221db9860a86979b9" },
@@ -42,7 +42,7 @@ packages = [
 [requirements]
 argv = { version = ">= 1.1.0 and < 2.0.0" }
 core = { path = "../core" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "b286b0cd7aa477f5289f76eabdeca33c7b574343" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "1b5ff5e6719566e034afa7727d405281562af3cb" }
 filepath = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.0.0 and < 5.0.0" }
