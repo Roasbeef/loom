@@ -101,7 +101,12 @@ pub const summary_text = "[summary] the conversation so far"
 /// How long a provider effect waits for its terminal event before
 /// settling as a transport failure. Deliberately short: it is the one
 /// wall-clock wait a simulated session still makes, and only a scripted
-/// timeout fault reaches it.
+/// timeout fault is meant to reach it, which is why a provider request is
+/// never parked on the logical clock. A live intervention's rendezvous
+/// still runs inside the request and can pass this deadline on a loaded
+/// host (312 ms was the longest measured under 48 CPU burners on 16
+/// cores). Its settlement then arrives inside the runtime's two-second
+/// cancellation grace and is forwarded unchanged.
 pub const provider_timeout_ms = 60
 
 const intervention_retry_delay_ms = 5
@@ -129,7 +134,7 @@ pub fn build(
     entropy: fn() { 1_000_000 + control.bump(ctl, "entropy") * 104_729 },
     timers: vclock.timers(vc),
     provider: effects.ProviderSurface(
-      request: fn(spec) { request(ctl, vc, script, schedule, strand, spec) },
+      request: fn(spec) { request(ctl, script, schedule, strand, spec) },
       timeout_ms: provider_timeout_ms,
     ),
     tools: effects.ToolSurface(
@@ -152,7 +157,6 @@ pub fn build(
 
 fn request(
   ctl: Control,
-  vc: Clockwork,
   script: Script,
   schedule: Schedule,
   strand: String,
@@ -162,10 +166,25 @@ fn request(
   let consumer = process.self()
   let events = process.new_subject()
   let on_strand = strand_of_spec(spec, strand)
+
+  // Only survival faults apply here: a provider request is never parked on
+  // the logical clock, so a `SlowEffect` aimed at one does nothing. The
+  // request runs inside the runtime's provider deadline and cancellation
+  // grace, and both are real milliseconds. A park ends only when the runner
+  // has advanced the clock through every deadline before it, one per pass,
+  // so its real length is set by the host rather than by the seed. An idle
+  // machine took about 165 ms to release a 2000 ms park, already past the
+  // 60 ms deadline, and a loaded one took four to seven seconds, past the
+  // grace as well. The attempt then settled as `CancellationUnconfirmed`,
+  // and a steer admitted during the park was folded into the retry, so the
+  // faulted run ended one turn short of the fault-free one (seed 14,
+  // `convergence/ledger`). The park was transparent only while the request
+  // ran before the runtime armed its deadline, which ended when the provider
+  // custodian moved the request behind the begin permit. Tool executions
+  // have no such deadline, and a `SlowEffect` still delays them.
   case
-    effect_fault(
+    effect_survival(
       ctl,
-      vc,
       schedule,
       index,
       strand: on_strand,
@@ -748,23 +767,17 @@ fn strand_of_spec(spec: effects.RequestSpec, main: String) -> String {
   }
 }
 
-// Applies this dispatch's faults, in a precedence the taxonomy fixes
+// Applies a tool execution's faults, in a precedence the taxonomy fixes
 // rather than in the order the generator happened to draw them.
 //
 // Whether the effect survives is decided first, and only an effect that
-// survives is then delayed. The two questions are not independent: an
-// effect the schedule has starved or killed never settles, so "settles
-// only after `delay_ms` of logical time" says nothing about it, and
-// parking it anyway is not merely wasted work. The park blocks the
-// provider seam — the request worker sits inside `ProviderSurface.request`
-// until the runner advances the logical clock — while the runtime's
-// request deadline and its cancellation grace are bounded in *real* time.
-// A 2000ms logical park therefore raced a 2000ms real grace, and whichever
-// won decided whether a starved effect answered its cancellation with a
-// retryable transport failure or with the non-retryable
-// `CancellationUnconfirmed`. The second answer fails the operation with no
-// retry, which is a different outcome from the same script — exactly what
-// every fault in the taxonomy promises not to be (seed 1493).
+// survives is then delayed: an effect the schedule has killed never
+// settles, so "settles only after `delay_ms` of logical time" says nothing
+// about it. A provider request takes `effect_survival` alone and is never
+// delayed, because a logical park inside it races the runtime's real
+// provider deadline and grace; `request` gives the measurements. That race
+// is also what seed 1493 lost, when a starved provider effect was parked
+// before this function ordered survival first.
 fn effect_fault(
   ctl: Control,
   vc: Clockwork,
