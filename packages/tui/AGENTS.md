@@ -281,7 +281,8 @@ list:
   `emit` queues an effect, and `release_channel` moves a channel's queued
   outputs into the outbox before a step replaces or drops the channel.
 - `tui/runtime`: `take`, `perform` and `flush`, which collect a step's
-  effects from the two channels and the outbox and perform them. `tui.gleam`
+  effects from the two channels and the outbox and perform them, and
+  `stamp`, which reads the clocks for one event before the step. `tui.gleam`
   and test drivers import it; no reducer module does.
 - `tui/transcript_lines`: `Line`s from durable entries, streams and tool
   calls. A new kind of transcript row starts in `entry_lines`,
@@ -731,7 +732,10 @@ boundaries and the split's measurements under Invariants.
   native driver select the same outcomes as the interactive loop.
 - `tui/session_channel.Channel` is terminal-owned state, not another actor.
   It admits one request at a time, grants one snapshot fragment per reply, and
-  reconciles at 250ms while idle. `Update.Captured` carries a `Capture` saying
+  reconciles at 250ms while idle. It holds no clock: `tick`, `receive`,
+  `submit`, `lookup`, `history`, `replay_issued` and the `start`
+  constructors take `now`, which the terminal takes from
+  `Model.stamp.transport_ms` and a replay lane holds at zero. `Update.Captured` carries a `Capture` saying
   what asked for the cut — `Notified`, `Refreshed` or `Requested` — which
   names the path a particular cut took. Which of them wins is a race with the
   250ms refresh, so a fixture that must know whether pushes arrived counts
@@ -754,8 +758,8 @@ boundaries and the split's measurements under Invariants.
   the waiting-state and cancellation rules.
 - `test/session_channel_property_test.gleam` drives the real channel over 500
   seeded schedules of submissions, well-formed and faulty replies, pushes,
-  ticks, retirement and close, built on `start_with_clock` and a stand-in
-  socket. After every step an oracle rebuilt from the written frames checks
+  ticks, retirement and close, built on `start` and a stand-in socket, with
+  time passed to every transition from the oracle's own `now`. After every step an oracle rebuilt from the written frames checks
   one request in flight, increasing identities, credits, no mutation resend,
   exactly-once `UnknownOutcome` and `DefinitelyNotSent`, fail-closed stale
   replies, inert pushes, deadlines and the 250 ms refresh. A failure prints
@@ -1381,14 +1385,30 @@ untouched.
   for `tui/inbound`, 0.87 s for `tui/render`, 0.44 s for
   `tui/transcript_lines` and 2.39 s for `tui/interaction`. These are
   measurements, not budgets.
-- **Presentation uses one caller-owned clock.** `new_model` supplies the
-  host's monotonic clock; `new_model_with_clock` lets a test supply its own.
-  Frame pacing, generation throughput, and activity elapsed time all read
-  `Model.monotonic_time_ms`, including the initial frame timestamp. This
-  controls presentation only: socket deadlines, daemon bootstrap, and
-  recording timestamps retain their real clocks. `test/clock_test.gleam`
-  exercises the event handler at negative epochs and pins repeated scripted
-  intermediate frames with a fixed clock.
+- **Presentation uses one caller-owned clock, read once per event.**
+  `new_model` supplies the host's monotonic clock; `new_model_with_clock`
+  lets a test supply its own. `tui.update` calls `runtime.stamp` before
+  `step`, which reads `Model.monotonic_time_ms`, the host's monotonic clock
+  and the wall clock once each into `Model.stamp`, and the step reads no
+  clock: frame pacing, generation throughput, activity elapsed time, the
+  cache outlook, the jobs and activity-poll ages and the strip all read
+  `stamp.now_ms`, the session lanes read `stamp.transport_ms`, and the
+  creation key reads `stamp.wall_ms` with `Model.terminal`, the OS and BEAM
+  process identity read once when the model is created. The stamp is a
+  cross-module call on `update`'s parameter, never a local step in
+  `tui.gleam`, for the inliner reason above. The two monotonic readings are
+  separate because a test may fix the presentation clock to pin frames
+  while its live socket still needs real deadlines; in the shipped client
+  they read the same clock. A test that calls `step` directly runs at
+  whatever stamp the model carries (the creation-time reading for a fresh
+  model) and sets `stamp` to choose another, and a driver that runs a
+  reducer outside `update` calls `runtime.stamp` first. Daemon bootstrap
+  and recording timestamps are outside the step and keep their real
+  clocks. `test/clock_test.gleam` exercises the event handler at negative
+  epochs, pins repeated scripted intermediate frames with a fixed clock,
+  runs a step under a clock that panics when called, counts one reading
+  per `update`, and fires a lane's refresh and deadline from the `now` it
+  is passed.
 - **Auxiliary panels draw borders, not interiors.** The ordinary conversation
   has no rectangle and the composer has horizontal rules. `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
@@ -1559,8 +1579,9 @@ untouched.
   zero-timeout drain later in that step cannot see its reply. Recording
   appends and attempt trace notes are the deliberate exception and stay
   synchronous, because the recording orders an input before the channel
-  traces it caused (ADR-009); mailbox drains, job starts, clock reads and
-  file reads also remain in the step until phase 2 of issue #530.
+  traces it caused (ADR-009); mailbox drains, job starts and file reads
+  also remain in the step until phase 2 of issue #530. Clock reads left
+  the step in phase 2's first slice: see the clock invariant above.
 - **A replay reproduces inbound traffic and rendering, never an outbound
   effect.** No websocket write, no daemon start, no local catalogue read,
   and no line the live client would have been *sent*. Submitting under

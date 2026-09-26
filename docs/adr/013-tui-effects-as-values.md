@@ -196,3 +196,39 @@ A test must pin that a scripted prompt yields exactly one `Transmit` from
 hold a live socket must flush or perform their channel outputs, and the
 existing replay goldens and real-client fixtures must pass unchanged, since
 `update` performs the same effects it did before, at the end of the step.
+
+## Addendum: phase 2 S1, the clock becomes an input (2026-09-26)
+
+The first slice of phase 2 takes clock reads out of the step. Nothing above
+is changed by it; this records how the step now gets the time.
+
+`tui.update` calls `runtime.stamp` before `step`. It reads the presentation
+clock (`Model.monotonic_time_ms`), the host's monotonic clock and the wall
+clock once each and stores them on the model as `Model.stamp`, and every
+reducer that read a clock reads the stamp instead. A step therefore reads no
+clock, and every reducer in one step sees the same instant. The OS and BEAM
+process identity in a session creation key is read once, when the model is
+created, and held as `Model.terminal`. The stamp is a call into
+`tui/runtime` applied to `update`'s parameter rather than a local step in
+`tui.gleam`, so it does not add to the inliner cost `docs/execution.md` §8
+describes; `core_inline_module` on the generated `tui` and `tui@tick`
+modules measured the same before and after.
+
+`tui/session_channel` no longer stores a clock. Every transition that sets
+or checks a deadline or the idle refresh takes `now` as a parameter. The
+terminal passes the stamp's host monotonic reading, which is the clock the
+lane used before, rather than the presentation clock, because a test driver
+fixes the presentation clock to pin frames while its live socket still needs
+real deadlines. A replay lane's time starts at zero and `tui/attempt_replay`
+passes zero, which is what its stored clock returned.
+
+Two cases are the caller's to handle. A test that calls `step` directly runs
+at whatever stamp the model carries, which for a fresh model is the reading
+taken when it was created, and sets the field to choose another time. A
+caller that runs a reducer outside `update`, such as a test driver handing a
+selected socket message to `inbound.accept_connection_message`, calls
+`runtime.stamp` first, or the reducer runs at the time of the previous event.
+
+Recording timestamps and the launch, bootstrap and daemon waits stay on the
+real clock. They are outside the step: the recording is S3's subject, and
+the waits run before the loop or in their own processes.
