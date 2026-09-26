@@ -511,8 +511,9 @@ boundaries and the split's measurements under Invariants.
   backend and prints frames, so it installs no terminal state and opens no
   socket either. `Sessions` is `loom sessions list` and `loom sessions rm
   <id>`: it reaches the control endpoint as the owner over the same
-  bootstrap ladder the picker uses, prints one line per row or one line of
-  outcome, and exits with a status. `rm` asks at the terminal before it
+  bootstrap ladder the picker uses, prints a styled table on a terminal and
+  one line per row otherwise, or one line of outcome, and exits with a
+  status. `rm` asks at the terminal before it
   sends and refuses outright when standard input is not a terminal, unless
   `--yes` was given.
 - `tui/model.Peer` says where this client's commands go, and replaces the
@@ -567,7 +568,16 @@ boundaries and the split's measurements under Invariants.
 - `tui/frame` renders a `Buffer` as rows of text, folding a wide glyph's
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what
-  `loom replay` prints, so the two cannot disagree about a frame.
+  `loom replay` prints off a terminal, so the two cannot disagree about a
+  frame. `buffer_to_styled` is the coloured counterpart for a terminal: it
+  goes through etui's `buffer.to_ansi_lines`, so no row carries a cursor
+  move, each line closes the style it opened, and the output lands in the
+  scrollback like any command's.
+- `tui/session_table.render` draws `loom sessions list` for a terminal as an
+  etui buffer sized to its content: aligned columns measured in cells, the
+  lifecycle coloured by `session_table.state`. Off a terminal the launcher
+  keeps the old one-line-per-row format byte for byte, because scripts parse
+  it.
 - `tui/pacing` is the arithmetic of the terminal loop's two rates, with no
   model in sight: `FrameDebt`, `FrameBoundary`, `CacheFreshness` and
   `FrameDecision` with `frame_boundary` and `frame_decision` for frame
@@ -812,9 +822,10 @@ boundaries and the split's measurements under Invariants.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `22554e85ecb54e92d3c3afe734f42e0ed2eca5ec` with bounded input bursts,
+  `1b5ff5e6719566e034afa7727d405281562af3cb` with bounded input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
-  frames, and full-screen scroll-region presentation; Mork
+  frames, full-screen scroll-region presentation, closed-input EOF, and
+  scrollback-safe styled lines (`buffer.to_ansi_lines`); Mork
   1.12.x for CommonMark;
   and small Gleam utility packages. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
@@ -862,8 +873,9 @@ boundaries and the split's measurements under Invariants.
   these, and the terminal behaves exactly as it did.
 - **Launch flags**: `--record <path>` qualifies any interactive launch and
   writes the session as a recording. `loom replay <path> [--at <frame>]
-  [--all] [--width <w>] [--height <h>]` replays one and prints frames as
-  plain text, defaulting to the last; `--width`/`--height` hold only until
+  [--all] [--width <w>] [--height <h>] [--plain]` replays one and prints
+  frames, defaulting to the last. Frames keep their colour when stdin and
+  stdout are a terminal and are plain text otherwise or under `--plain`; `--width`/`--height` hold only until
   the recording's own first resize supersedes them. It exits non-zero with a
   worded error for an unreadable or undecodable recording, or a frame index
   the recording does not reach.
