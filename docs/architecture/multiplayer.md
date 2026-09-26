@@ -105,13 +105,15 @@ gateway also pushes four things:
   check per peer.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
-binary. It starts one `commit_forwarder` (`client/gateway.gleam:1258`) per
+binary. It starts one `commit_forwarder` (`client/gateway.gleam:1279`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:3213`), so
+`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:3232`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
-answer.
+answer. The outer tap's second observer feeds the block summarizer's live
+summaries (protocol 050), which reach peers as pushed `block_summary`
+frames through the bus, the path `tool_output` takes.
 
 The diagram follows one of Alice's turns from her keypress to the tokens
 her peers see.
@@ -163,8 +165,8 @@ pushed delivery.
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:3354`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:3410`). Both paths call
-`check_binding` (`client/gateway.gleam:2372`) immediately before the
+through `deliver` (`client/gateway.gleam:3427`). Both paths call
+`check_binding` (`client/gateway.gleam:2447`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -209,7 +211,7 @@ prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
 `client/gateway.gleam:4785`). The queue is gateway memory and holds four
-prompts per strand (`held_per_strand`, `client/gateway.gleam:853`). A
+prompts per strand (`held_per_strand`, `client/gateway.gleam:877`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
 
@@ -243,8 +245,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5218`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2654`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5351`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2730`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural

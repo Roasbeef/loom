@@ -91,11 +91,11 @@ pub fn project_split(
 
         // Every split at or before this entry has been passed, so a
         // boundary is now owed to the open group.
-        let passed = list.drop_while(splits, fn(split) { split < value.seq })
-        let pending = case passed == splits {
-          True -> pending
-          False -> Owed
+        let pending = case splits {
+          [split, ..] if split < value.seq -> Owed
+          _ -> pending
         }
+        let passed = list.drop_while(splits, fn(split) { split < value.seq })
 
         let #(items, group, pending) = case pending, complete(group) {
           Owed, True -> #(flush(items, group), Group([], dict.new()), Settled)

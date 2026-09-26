@@ -695,11 +695,15 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // same kind of fact — pushed live state that no cut is required to
     // carry — so the terminal folds it into its own watch and settlement
     // figures now rather than at the next capture.
+    //
+    // A summarizer label is live display state of the same kind: the settled
+    // one's cell is in no cut, and the live one is stored nowhere.
     protocol.ServerError(..)
     | protocol.HeldInputReturned(..)
     | protocol.WorktreeSnapshot(_)
     | protocol.ContextSnapshot(_)
-    | protocol.UsageChanged(..) -> #(channel, [
+    | protocol.UsageChanged(..)
+    | protocol.BlockSummarized(..) -> #(channel, [
       Auxiliary(event),
     ])
 
@@ -714,6 +718,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     | protocol.QueuedInputSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
     | protocol.AdvisorPendingSnapshot(..)
+    | protocol.BlockSummariesSnapshot(..)
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
@@ -971,6 +976,7 @@ fn matching_presentation(name, intent, event) {
     "context", Read, protocol.ContextSnapshot(_) -> True
     "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
     "advisor_pending", Read, protocol.AdvisorPendingSnapshot(_) -> True
+    "block_summaries", Read, protocol.BlockSummariesSnapshot(_) -> True
     "goal_get", Read, protocol.GoalSnapshot(_) -> True
 
     // A goal mutation answers with the fresh board rather than a bare
@@ -1375,6 +1381,7 @@ fn outbound(frame: String) {
         | "worktree_diff"
         | "live_jobs"
         | "advisor_pending"
+        | "block_summaries"
         | "goal_get" -> Read
         _ -> Mutation
       }

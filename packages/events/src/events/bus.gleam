@@ -21,6 +21,14 @@
 //// the call commits when it settles; the tail is what there is to show
 //// until then.
 ////
+//// `Outputs` carries a second display event, `BlockSummary`: a one- or
+//// two-sentence label the harness's summarizer wrote for a long reasoning
+//// block or a delivered advisor message (`protocol-change/050`). It is
+//// display text of the same standing. A summary of a committed block is
+//// also stored in a reserved cell, which is the truth a reattaching
+//// terminal reads; a summary of a block still streaming is stored nowhere,
+//// and the next one, or the settled one, replaces it.
+////
 //// Groups are keyed `#(session, topic)` inside one node-global scope,
 //// so lookups are local-speed ETS reads and per-session isolation needs
 //// no per-session processes. Cross-node fan-out (clustered `pg`) is
@@ -80,7 +88,8 @@ pub type Topic {
   /// Whole-commit notifications (`Committed`).
   Commits
 
-  /// Rolling output tails of running tool calls (`ToolOutput`).
+  /// Display feeds: rolling output tails of running tool calls
+  /// (`ToolOutput`) and summarizer labels (`BlockSummary`).
   Outputs
 }
 
@@ -96,6 +105,24 @@ pub type OutputStream {
 
   /// The command's standard error.
   Stderr
+}
+
+/// What one `BlockSummary` describes.
+///
+/// Two subjects, because the two summaries have different lifetimes. A
+/// committed block is named by its durable coordinates and its summary is
+/// stored beside it; a block still streaming has no entry yet, so it is
+/// named by the provider request writing it, and its summary is never
+/// stored.
+pub type SummarySubject {
+  /// Block `block` of the committed entry `entry`, counted in the order
+  /// the message's content list holds its blocks.
+  SettledBlock(entry: EntryId, block: Int)
+
+  /// The reasoning stream of one provider request: the strand it runs on,
+  /// its operation, and the request identity a `stream_delta` carries as
+  /// its `generation`.
+  LiveStream(strand: String, op: OpId, generation: String)
 }
 
 /// One event on a session's stream. Payloads are deliberately thin —
@@ -147,6 +174,14 @@ pub type Event {
     tail: String,
     total_bytes: Int,
   )
+
+  /// The summarizer wrote a label for a long reasoning block or a
+  /// delivered advisor message. `text` is the summarizer's words, bounded
+  /// by the harness, and a terminal shows it as the summarizer's and never
+  /// as the agent's. Display text like `ToolOutput`: a lost event costs a
+  /// settled summary nothing, because the reserved cell still holds it,
+  /// and costs a live one nothing the next one does not restate.
+  BlockSummary(subject: SummarySubject, text: String)
 }
 
 /// One delivered event: the session it belongs to plus the event, so a
@@ -235,6 +270,7 @@ pub fn topic_of(event: Event) -> Topic {
     Escalation(..) -> Escalations
     Committed(..) -> Commits
     ToolOutput(..) -> Outputs
+    BlockSummary(..) -> Outputs
   }
 }
 

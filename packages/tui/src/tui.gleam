@@ -56,6 +56,7 @@ import tui/appearance
 import tui/attachment
 import tui/attempt
 import tui/attempt_replay
+import tui/block_summary
 import tui/bootstrap
 import tui/completion_summary
 import tui/connection
@@ -469,6 +470,7 @@ pub fn new_model_with_clock(
     nudges_refresh: worktree_view.Settled,
     nudges_awaiting: None,
     nudges_request: None,
+    summaries: block_summary.new(),
     goal: None,
     goal_refresh: worktree_view.Settled,
     goal_awaiting: None,
@@ -536,6 +538,7 @@ pub fn new_model_with_clock(
     repaint_phase: False,
     activity_frame: 0,
     activity_started_ms: None,
+    generation_elapsed_s: 0,
     activity_elapsed_s: 0,
     streams: [],
     reading_lines: None,

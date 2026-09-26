@@ -54,8 +54,8 @@ import tui/model.{
   DaemonSelector, Disconnected, Failure, FrameCache, GoalInspector, Line, Model,
   ModelSelector, NoOverlay, PeerLinkManager, PromptNext, Reasoning,
   ReasoningDigest, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  SessionSelector, Spacer, SteerNow, System, ToolCall, ToolDetail, ToolFailure,
-  ToolPatch, ToolResult, User,
+  SessionSelector, Spacer, SteerNow, SummarizedAdvice, SummarizedReasoning,
+  System, ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -666,6 +666,11 @@ pub fn render_line(line: Line, width: Int) -> List(span.Line) {
   case line.speaker {
     Assistant | Reasoning -> speaker_rows(line, width)
 
+    // A summarized block lays out its own rows to the pane: a clipped
+    // header and at most `summary_rows` wrapped secondary rows. A second
+    // wrap could only add rows the bound was there to prevent.
+    SummarizedReasoning | SummarizedAdvice -> speaker_rows(line, width)
+
     // Every other body is laid out against the full pane and has never been
     // measured, so it is wrapped on the way out.
     System
@@ -692,6 +697,8 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ Reasoning ", theme.quiet_text())
     ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
+    SummarizedReasoning -> #(summarized_mark, theme.quiet_text())
+    SummarizedAdvice -> #("◇ ", theme.quiet_text())
     ToolCall ->
       case string.starts_with(line.text, "✓ ") {
         True -> #("✓ ", theme.success_text())
@@ -754,6 +761,16 @@ fn speaker_rows(line: Line, width: Int) -> List(span.Line) {
     // Markdown pass which could answer a stray fence with a second row.
     ReasoningDigest -> [digest_row(line.text, mark, mark_style, width)]
 
+    // A summarized reasoning block is its clipped header and the summary
+    // beneath it, with no blank of its own, like the digest it replaces: the
+    // live and settled forms show the same summary and so the same rows.
+    SummarizedReasoning -> summarized_rows(line.text, mark, mark_style, width)
+
+    // Advice closes with a blank like every other system row.
+    SummarizedAdvice ->
+      summarized_rows(line.text, mark, mark_style, width)
+      |> list.append([span.line_plain("")])
+
     ToolDetail ->
       markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
@@ -800,6 +817,75 @@ fn assistant_rows(rows: List(span.Line)) -> List(span.Line) {
     }
     span.Line(spans:, alignment:)
   })
+}
+
+/// The mark a summarized reasoning block's header row opens with. The
+/// words "(summarized)" are the attribution: what follows beneath is the
+/// summarizer's text, not the model's reasoning.
+pub const summarized_mark = "∴ Reasoning (summarized)"
+
+// A header row, clipped to the pane as a digest is, and the summary beneath
+// it as dim rows indented under the mark. The text is the header, a
+// newline, and the summary; `transcript_lines` builds it that way.
+fn summarized_rows(
+  text: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> List(span.Line) {
+  let #(header, summary) = case string.split_once(text, "\n") {
+    Ok(halves) -> halves
+    Error(Nil) -> #(text, "")
+  }
+  [digest_row(header, mark, mark_style, width), ..summary_rows(summary, width)]
+}
+
+// The summary wrapped at word boundaries to the room beside a two-cell
+// indent, at most `transcript_lines.summary_rows` rows. A longer summary
+// keeps its first rows and ends the last one with an ellipsis, so the block
+// never grows past its bound however long the text; a word wider than the
+// room is cut rather than allowed to widen the row.
+fn summary_rows(summary: String, width: Int) -> List(span.Line) {
+  let room = width - 2
+  let words =
+    summary
+    |> text_hygiene.single_line
+    |> string.split(" ")
+    |> list.filter(fn(word) { word != "" })
+  use <- bool.guard(when: room <= 0 || words == [], return: [])
+
+  let rows =
+    words
+    |> list.fold([], fn(rows, word) {
+      let word = text.truncate(word, room, "…")
+      case rows {
+        [current, ..earlier] ->
+          case text.cell_width(current) + 1 + text.cell_width(word) <= room {
+            True -> [current <> " " <> word, ..earlier]
+            False -> [word, ..rows]
+          }
+        [] -> [word]
+      }
+    })
+    |> list.reverse
+  let kept = list.take(rows, transcript_lines.summary_rows)
+  let kept = case list.drop(rows, transcript_lines.summary_rows) {
+    [] -> kept
+    [_, ..] -> ellipsized(kept, room)
+  }
+
+  list.map(kept, fn(row) {
+    span.line_new([span.span_styled("  " <> row, theme.quiet_text())])
+  })
+}
+
+// Marks the last kept row as cut short.
+fn ellipsized(rows: List(String), room: Int) -> List(String) {
+  case list.reverse(rows) {
+    [last, ..earlier] ->
+      list.reverse([text.truncate(last <> "…", room, "…"), ..earlier])
+    [] -> []
+  }
 }
 
 // One row, whatever the pane is. Clipping rather than wrapping is what makes

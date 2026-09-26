@@ -257,6 +257,31 @@ reasoning is reviewing the wrong artifact. The redacted marker is
 withheld too, because a marker still discloses that the turn reasoned
 and roughly how much.
 
+The same confidentiality rule governs the block summarizer
+(`client/blocksummary`, [protocol
+050](../../protocol-change/050-reasoning-summaries.md)), which writes a
+short label for each long reasoning block so the terminal's collapsed row
+says what the block works through. The rule compares services by
+endpoint: the lowercased scheme and host of a catalogue entry's
+`base_url`, or its dialect when it has none, so two entries on one host
+are one service. **A committed reasoning block is sent to the summarizer
+only when the catalogue entry its message names shares the endpoint of
+the `summarize` route's first entry**, and the request is pinned to that
+entry with no fallback, so a retryable failure cannot carry the text to
+another service. A block from any other service, or from an entry the
+catalogue does not hold, is skipped without a request and keeps the
+terminal's first-line digest. A stream still being written names no
+provider, and a role's chain can fall back across services, so a strand's
+live reasoning is observed only when every target that could answer it
+shares that endpoint: its own identity, every chain it heads, and the
+`vision` chain when it cannot read images. `blocksummary.settled_admission`
+and `blocksummary.live_admission` compute both sets once from the
+catalogue, and the live test runs at the provider tap, so a fragment that
+could have come from another service never leaves the relay. Advice and
+nudges are text the harness wrote and already sends to every provider in
+the session, so the summarizer may label them whichever service it
+belongs to.
+
 **A tool result is clipped from the middle**, by `middle_clip`
 (`client/advisorslice.gleam:423`), because both ends carry signal. A
 build says what it was doing at the top and whether it failed at the
@@ -669,7 +694,7 @@ effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:2801`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:2830`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That visibility is deliberate: the isolation is
 between the two models, not between the harness and the person running
@@ -707,11 +732,17 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`tui/transcript_lines.gleam:1207`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1312`) renders
-them. Delivered advice and nudges show their complete bodies even in
-compact mode, with a delivery label. Feeds and goal continuations
+`advisor_payload` (`tui/transcript_lines.gleam:1243`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`tui/transcript_lines.gleam:1600`) renders
+them. Delivered advice and nudges shorter than 512 bytes show their
+complete bodies even in compact mode, with a delivery label. A longer one
+collapses in compact mode to its heading and, beneath it as dim text of
+at most three rows, the summarizer's summary, with the heading marked
+`(summarized)`, or the body's first line while no summary exists ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
+Detail mode shows its whole body. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.
+The advisor's own commentary rows (`tui/advisor_history`) are not
+summarized and always render in full.
 Expanded bodies keep their heading but drop the frame delimiters, which
 address the model rather than the operator. Captured advisor-only
 commentary is shown separately from delivered frames; a verdict

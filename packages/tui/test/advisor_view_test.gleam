@@ -538,3 +538,56 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
     as "a row precedes the heading"
   assert above.speaker == tui_model.Spacer
 }
+
+// The anchor projection is read as a list parallel to the rendered record
+// rows, so it has to split a tool group wherever the row projection does.
+// Without that, every anchor after the commentary names the wrong row once
+// the reader scrolls into history.
+pub fn commentary_between_calls_keeps_anchors_parallel_to_rows_test() {
+  let calls =
+    int.range(1, 41, [], fn(acc, n) {
+      let seq = n * 10
+      let id = "c" <> int.to_string(n)
+      [
+        gateway.identified_tool_result_ok_entry("main", id, "ok", seq + 1),
+        gateway.identified_tool_call_entry(
+          "main",
+          id,
+          "bash",
+          "echo " <> int.to_string(n),
+          seq,
+        ),
+        ..acc
+      ]
+    })
+    |> list.reverse
+    |> list.map(fn(wire) {
+      let assert Ok(protocol.EntryAdded(record)) = protocol.decode_event(wire)
+        as "the fixture decodes"
+      record
+    })
+    |> list.reverse
+  let commentary =
+    advisor_history.Item(
+      "advisor-entry",
+      205,
+      0,
+      "The primary is on track.",
+      advisor_history.RequestedQuiet,
+    )
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let reading =
+    tui_model.Model(
+      ..base,
+      records: calls,
+      advisor_history: advisor_history.Board([commentary], None),
+    )
+    |> tui.update(backend.Resize(100, 20), _)
+    |> tui.update(backend.MouseScroll(5, 5, True), _)
+  assert !list.is_empty(reading.rendered_anchors)
+    as "scrolling back must freeze anchors"
+
+  let rows = list.length(reading.record_rows)
+  assert list.length(reading.rendered_anchors) == rows
+}

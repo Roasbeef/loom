@@ -308,6 +308,7 @@ fn decode_selection(kind, fields) {
     | "worktree_diff"
     | "live_jobs"
     | "advisor_pending"
+    | "block_summaries"
     | "goal_get"
     | "goal_set"
     | "goal_check"

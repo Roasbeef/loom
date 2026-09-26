@@ -25,8 +25,8 @@ import tui/layout
 import tui/markdown
 import tui/model.{
   type Line, type Model, Assistant, Failure, Line, Model, Reasoning,
-  ReasoningDigest, Spacer, System, ToolCall, ToolDetail, ToolFailure, ToolPatch,
-  ToolResult, User,
+  ReasoningDigest, Spacer, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 } as tui_model
 import tui/notes_view
 import tui/render
@@ -499,7 +499,9 @@ fn record_anchors_for(
     // gaps between items.
     False ->
       entries
-      |> tool_activity.project
+      |> tool_activity.project_split(
+        transcript_lines.advisor_splits(visible_advisor_history(model)),
+      )
       |> transcript_lines.splice_notices(
         notices,
         transcript_lines.item_holds,
@@ -571,6 +573,7 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   let details = model.details_expanded
   let owner = transcript_lines.solo_owner(model.captured)
   let id = ids.entry_id_to_string(value.id)
+  let found = transcript_lines.labels_for(value, model.summaries)
   case value {
     entry.MessageEntry(
       message: message.AssistantMessage(
@@ -588,7 +591,8 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
             message.AssistantText(..) | message.AssistantThinking(..) ->
               id <> "/block/" <> int.to_string(index)
           }
-          #(key, transcript_lines.assistant_block_lines(block, details))
+          let label = list.key_find(found, index) |> option.from_result
+          #(key, transcript_lines.assistant_block_lines(block, details, label))
         })
         |> transcript_lines.separated_tool_blocks(WithinResponse)
       let terminal =
@@ -598,7 +602,12 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
         _ -> list.append(blocks, [#(id <> "/terminal", terminal)])
       }
     }
-    _ -> [#(id, transcript_lines.entry_lines(value, details, owner))]
+    _ -> [
+      #(
+        id,
+        transcript_lines.entry_lines(value, details, owner, model.summaries),
+      ),
+    ]
   }
 }
 
@@ -661,6 +670,9 @@ fn rendered_lines(
 fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
   case line.speaker {
     Assistant | Reasoning if index > 1 -> 2
+
+    // A summary's rows sit under its header behind a two-cell indent.
+    SummarizedReasoning | SummarizedAdvice if index > 0 -> 2
     User if index == 1 -> 1
     User if index > 1 && index < row_count - 1 -> 3
     ToolDetail -> 2
@@ -669,6 +681,8 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | Assistant
     | Reasoning
     | ReasoningDigest
+    | SummarizedReasoning
+    | SummarizedAdvice
     | ToolCall
     | ToolResult
     | ToolPatch
@@ -685,6 +699,8 @@ fn transient_lines(model: Model) -> List(Line) {
     transcript_lines.display_streams(model),
     model.active_strand,
     transcript_lines.details_extent(model.details_expanded),
+    model.summaries,
+    model.generation_elapsed_s,
   )
   |> list.append(transcript_lines.tool_tail_lines(model))
   |> list.append(transcript_lines.pending_input_lines(model))

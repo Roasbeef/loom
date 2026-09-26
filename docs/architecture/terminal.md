@@ -302,8 +302,8 @@ at a time. A snapshot arrives as `snapshot_begin`, a chunk per credit, then
 `snapshot_end`, and the cut becomes visible only at the end, so partial
 metadata never repaints the view. While idle the channel issues a credited
 `catch_up` every 250 ms. A `committed` or `presence` push moves that catch-up
-earlier. `stream_delta`, `tool_output` and `usage_observation` pushes are
-applied directly. Pushes are accepted in every phase except `Closed` and
+earlier. `stream_delta`, `tool_output`, `usage_observation` and
+`block_summary` pushes are applied directly. Pushes are accepted in every phase except `Closed` and
 consume no credit.
 [Multiplayer](multiplayer.md#what-the-terminal-does-with-a-pushed-frame) has
 the phase diagram and the push rules; this document does not repeat them.
@@ -317,8 +317,8 @@ name and request ID, so a refusal settles only the request it answers.
 
 Commands take one of two lanes. The channel classifies an outgoing frame by its
 command name: `models`, `skills`, `schedules`, `notes`, `queued_input`,
-`context`, `worktree_diff`, `live_jobs`, `advisor_pending` and `goal_get` are
-reads, and every other name is a mutation. A read waits for the lane to be
+`context`, `worktree_diff`, `live_jobs`, `advisor_pending`, `block_summaries`
+and `goal_get` are reads, and every other name is a mutation. A read waits for the lane to be
 free. A mutation may also wait: after the first cut, the channel can hold one
 unsent mutation behind a capture in progress, and sends it exactly once when
 the capture completes. `Disposition` reports which happened (`Waiting`, `Sent`
@@ -530,7 +530,60 @@ reformatted. `markdown.diff` renders patches with addition and removal colours.
 `tui/tool_activity` groups consecutive tool calls and joins results by call
 ID, a reasoning block is one `ReasoningDigest` row, and a successful settle
 keeps the same row count as the live region it replaces, so the transcript
-does not jump when a call completes. `Ctrl+G` expands all of it. Harness-written
+does not jump when a call completes. `Ctrl+G` expands all of it.
+
+### Summaries of long blocks
+
+The daemon's summarizer writes a one- or two-sentence summary of each
+reasoning block and each delivered advice or nudges message of at least
+512 bytes ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
+`tui/block_summary` holds them per attachment: stored summaries keyed by
+entry id and block index, and live summaries keyed by the `generation` of
+the stream they describe.
+
+In compact mode a long reasoning block with a summary is one
+`SummarizedReasoning` line: a header row, `∴ Reasoning (summarized)` and
+the expand hint once settled, or `∴ Reasoning (summarized) · 62 lines ·
+13s` while it streams, and the summary beneath it as dim secondary text,
+indented and wrapped to at most three rows, cut with `…` beyond that. The
+header carries the attribution, so the summary has no prefix and is never
+read as the agent's own words. A block without a summary keeps the single
+`ReasoningDigest` row: its first line once settled, `3 lines · 1m 04s so
+far` while streaming. The time is `Model.generation_elapsed_s`, a
+whole-second reading of the generation clock (`generation_started_ms`)
+taken on the tick; a change repaints only while a reasoning row is on
+screen, and the repaint rebuilds the transient rows while the durable row
+cache stays valid. A long advice or nudges message collapses the same way
+to a `SummarizedAdvice` line: its heading, marked `(summarized)` when a
+summary follows, and the summary or the body's first line beneath it.
+Detail mode is unchanged: full text everywhere. A block under the floor
+renders exactly as it did before summaries existed.
+
+The one-row rule for a collapsed reasoning block holds only for a block
+without a summary. A summarized block takes its header and up to three
+more rows, deliberately: a summary clipped to one row said too little to
+be worth reading. Two things keep that from moving the transcript under
+the reader. A response that commits before its own summary arrives lends
+the stream's live summary to its first long reasoning block
+(`transcript_lines.labels_for`), so a block that showed a summary while
+streaming settles into the same number of rows. And a summary that
+arrives for a block already on screen adds rows once; the anchor
+projection (`projection.record_anchors_for`) is built from the same lines
+as the rows, so it stays parallel to them, and a reader scrolled back into
+history is relocated by those anchors and keeps the rows on screen in
+place.
+
+A summary arriving changes rows the record cache holds, so it clears
+`record_cache_valid`; the compact entry cache keys each entry by the
+summaries its rows show, so only entries whose summaries moved are
+projected again. A cut whose records changed marks the long blocks it
+holds no summary for as wanted, and `surfaces.service_block_summaries`
+reads them by exact key on the read lane, 32 to a read, once per block per
+attachment. The daemon summarizes the primary strand's blocks as they
+commit and other strands' blocks on demand, so a read for a sub-agent's or
+the advisor's block that finds nothing also asks the daemon to summarize
+it, and the summary arrives later as a push. A refused read stops the reads for the attachment and draws
+no error row. Harness-written
 user turns (advisor frames, goal continuations, the notes digest) are
 recognized by both their header and footer tokens and drawn in the system
 voice; the advisor and goals docs cover the details.
@@ -713,6 +766,7 @@ Paths are relative to `packages/tui/src`.
 | `tui/completion_summary`, `tui/summary_panel`, `tui/live_jobs` | Completion evidence, the summary panel, and the jobs roster. |
 | `tui/context_view`, `tui/context_panel` | The context observation and inspector. |
 | `tui/advisor_pending` | The pending-nudge observation. |
+| `tui/block_summary` | Summarizer labels for long blocks, stored and live, and the exact-key reads still owed. |
 | `tui/goal_view`, `tui/focused_goal_panel` | The goal board, composer row and inspector. |
 | `tui/model_selector` | The `/model` overlay. |
 | `tui/cache_miss` | Prompt-cache miss detection and TTL outlook from usage rows. |

@@ -335,6 +335,26 @@ pub fn put_fact_refuses_the_advisor_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// The summarizer's labels are closed to the model's own door.
+//
+// A terminal draws `summary/<entry>/<block>` in place of a collapsed
+// reasoning block, labelled as the summarizer's. A model that could write
+// one would choose how the operator reads its own reasoning.
+pub fn put_fact_refuses_the_summary_prefix_test() {
+  let rt = fact_runtime()
+  assert api.reserved_fact_key("summary/entry-1/0")
+  assert api.reserved_fact_key(api.summary_fact_prefix)
+  assert !api.reserved_fact_key("agent/main/summary")
+
+  let assert Error(api.ReservedFactKey(key: "summary/entry-1/0")) =
+    api.put_fact(rt, "summary/entry-1/0", json.String("forged"))
+    as "a summary cell is not the model's to write"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(rt, "summary/entry-1/0", json.String("written"))
+    as "the harness door writes the same key"
+  process.kill(rt.tree.supervisor)
+}
+
 // The goal loop's one cell is closed to the model's own door.
 //
 // `goal/state` is the session's persistent objective with its status

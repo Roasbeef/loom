@@ -138,6 +138,7 @@ import broker/internal/call
 import broker/policy.{type Grant}
 import client/advisor
 import client/advisor_pending
+import client/blocksummary
 import client/catalog
 import client/daemon/transfer
 import client/directories
@@ -325,6 +326,9 @@ pub type Options {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// Where the blocks a `block_summaries` read found no summary for are
+    /// sent to be summarized on demand (protocol 050). `None` asks nothing.
+    summary_demand: Option(fn(List(#(String, Int))) -> Nil),
   )
 }
 
@@ -356,7 +360,25 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     worktree_diff: None,
     live_jobs: None,
     context: None,
+    summary_demand: None,
   )
+}
+
+/// Supplies where blocks a `block_summaries` read found no summary for are
+/// sent to be summarized on demand: in `client/serve`,
+/// `blocksummary.ask_for` on the session's summarizer. The read's reply
+/// never waits for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_summary_demand(options, blocksummary.ask_for(name, _))
+/// ```
+pub fn with_summary_demand(
+  options: Options,
+  demand: fn(List(#(String, Int))) -> Nil,
+) -> Options {
+  Options(..options, summary_demand: Some(demand))
 }
 
 /// Supplies the authenticated session directory administration door.
@@ -689,6 +711,8 @@ type State {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// On-demand summarization of blocks a read found unsummarized.
+    summary_demand: Option(fn(List(#(String, Int))) -> Nil),
     delivery: Delivery,
     health: Health,
     admission: Admission,
@@ -929,6 +953,7 @@ fn start_with_delivery(
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
         context: options.context,
+        summary_demand: options.summary_demand,
         delivery:,
         health: Reading,
         admission: Accepting,
@@ -1285,7 +1310,42 @@ pub fn tap_provider(
   surface: effects.ProviderSurface,
   to name: address.Address(Message),
 ) -> effects.ProviderSurface {
-  provider_relay.observing(surface, fn(spec) { observe_provider(name, spec) })
+  tap_provider_with(surface, to: name, also: fn(_spec, _generation) {
+    fn(_event) { Nil }
+  })
+}
+
+/// `tap_provider` with a second observer riding the same relay.
+///
+/// `also` is asked once per request, with the request and the identity the
+/// hub gives it — the `generation` a pushed `stream_delta` carries — and
+/// the callback it returns sees every stream event after the hub's own
+/// observer has. One relay serves both, so a second reader of the stream
+/// costs a callback rather than a second guard process per request. The
+/// block summarizer's live feed is the one production reader
+/// (`client/blocksummary.observer`); passing it the hub's identity is what
+/// lets a terminal match a live label to the stream it describes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.tap_provider_with(surface, to: name,
+/// //   also: blocksummary.observer(summaries, route.provider))
+/// ```
+///
+pub fn tap_provider_with(
+  surface: effects.ProviderSurface,
+  to name: address.Address(Message),
+  also also: fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil,
+) -> effects.ProviderSurface {
+  provider_relay.observing(surface, fn(spec) {
+    let hub = observe_provider(name, spec)
+    let other = also(spec, request_identity(spec))
+    fn(event) {
+      hub(event)
+      other(event)
+    }
+  })
 }
 
 /// The production observer for a running tool call's output — the seam
@@ -1701,6 +1761,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
       continue(state)
     }
+
+    // A summarizer label is display text on the same feed, and like a tail
+    // it moves nothing a pull could find: a settled label's cell is not in
+    // any capture plan, and a live one is stored nowhere (protocol 050).
+    BusHint(published: bus.Published(
+      event: bus.BlockSummary(subject:, text:),
+      ..,
+    )) -> {
+      push_to_subscribed(
+        state,
+        protocol.BlockSummaryEvent(subject: summary_subject(subject), text:),
+      )
+      continue(state)
+    }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
@@ -1889,6 +1963,7 @@ fn network_command(
     | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
+    | protocol.BlockSummariesGet(..)
     | protocol.GoalSet(..)
     | protocol.GoalCheck(..)
     | protocol.GoalGet
@@ -2623,6 +2698,7 @@ fn read_only(command: Command) {
     | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
+    | protocol.BlockSummariesGet(..)
     | protocol.GoalGet
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
@@ -2739,6 +2815,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.HeldInputReturned(..)
     | protocol.StreamDeltaEvent(..)
     | protocol.ToolOutputEvent(..)
+    | protocol.BlockSummaryEvent(..)
     | protocol.CommittedEvent(..)
     | protocol.ErrorEvent(..)
     | protocol.UnknownEvent(..) -> single_live_strand(state)
@@ -3533,6 +3610,21 @@ fn broadcast_tool_output(
   )
 }
 
+// The bus names a summary's subject in durable types; the wire names it in
+// text, the way every other pushed frame names entries and operations.
+fn summary_subject(subject: bus.SummarySubject) -> protocol.SummarySubject {
+  case subject {
+    bus.SettledBlock(entry:, block:) ->
+      protocol.SummarizedBlock(entry: ids.entry_id_to_string(entry), block:)
+    bus.LiveStream(strand:, op:, generation:) ->
+      protocol.SummarizedStream(
+        strand:,
+        op: ids.op_id_to_string(op),
+        generation:,
+      )
+  }
+}
+
 // The strand a provider operation runs on, for a pushed delta that does not
 // carry one. Tool output carries its authoritative `ToolRun.strand` through
 // the bus instead of using this presentation fallback.
@@ -4016,6 +4108,41 @@ fn read_advisor_pending(state: State, connection: Int, id: Int) -> State {
   }
 }
 
+// Exact-key reads of stored summarizer labels (protocol 050). The protocol
+// decoder has already bounded the list and checked every entry id, so the
+// read costs at most `max_summary_blocks` cells. A store that will not
+// answer is the reader's failure, handled as every other capture's is.
+fn read_block_summaries(
+  state: State,
+  connection: Int,
+  id: Int,
+  blocks: List(protocol.SummaryBlock),
+) -> State {
+  let wanted = list.map(blocks, fn(block) { #(block.entry, block.block) })
+  case blocksummary.read(state.runtime.session, wanted) {
+    Ok(blocksummary.Read(board:, missing:)) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.BlockSummariesSnapshot(board)),
+      )
+
+      // The reply is only what is stored. A block with no summary is handed
+      // to the summarizer afterwards, as a cast, so a block from a strand
+      // that is not summarized as it commits can still be summarized when a
+      // terminal shows it; the result arrives as an ordinary push.
+      case state.summary_demand, missing {
+        Some(demand), [_, ..] -> demand(missing)
+        Some(_demand), [] | None, _ -> Nil
+      }
+      state
+    }
+
+    Error(error) -> reader_failed(state, connection, id, error, ReaderBudget)
+  }
+}
+
 fn run_command(
   state: State,
   connection: Int,
@@ -4123,6 +4250,8 @@ fn run_command(
       read_live_jobs(state, connection, id, strand)
     protocol.AdvisorPendingGet, Subscribed ->
       read_advisor_pending(state, connection, id)
+    protocol.BlockSummariesGet(blocks:), Subscribed ->
+      read_block_summaries(state, connection, id, blocks)
     protocol.GoalGet, Subscribed -> read_goal(state, connection, id)
     protocol.GoalSet(objective:, token_budget:, check:), Subscribed ->
       goal_command(

@@ -33,6 +33,8 @@ import client/advisor
 import client/agency
 import client/async_codemode
 import client/async_runs
+import client/blocksummary
+import client/blocksummarybook
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
@@ -120,6 +122,7 @@ import provider/gateway as provider_gateway
 import provider/http
 import provider/model
 import provider/secret
+import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/supervisor as runtime_supervisor
@@ -3031,6 +3034,17 @@ fn assemble_in(
   let glance_wiring =
     glance_wiring(settings, opened, agency_config, clock, logger, glance_name)
 
+  // The block summarizer takes two names: the provider tap casts reasoning
+  // fragments to the first, and the writer sends commit hints to the
+  // second, which the machine binds for itself. Both exist before the
+  // runtime does, for the reason the forwarder's name does. Its route is
+  // the `summarize` role alone, with no fallback to `main`, so a catalogue
+  // that routes none gets no tap and no machine, and its terminals keep
+  // the first-line digest (protocol 050).
+  let summary_name = address.new_address(namespace)
+  let summary_commits = address.new_address(namespace)
+  let summary_route = summary_route(settings, logger)
+
   let skills = skill.discover(skill.directories(settings.home))
   list.each(skill.warnings(skills), fn(warning) {
     log.warn(logger, "skill.warning", [
@@ -3210,9 +3224,14 @@ fn assemble_in(
       // (`protocol-change/018`). Without the outer tap the push path is
       // unreachable from the shipped daemon, which the live-delivery
       // fixture is what measured.
-      provider: hub.tap_provider(
+      //
+      // The outer tap also feeds the block summarizer's live labels. It
+      // rides the hub's relay rather than adding a third, so a reasoning
+      // stream costs one more callback and no more processes.
+      provider: hub.tap_provider_with(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
+        also: summary_tap(summary_route, settings.catalog, summary_name),
       ),
       // The only work this adds on the driver process is one
         // `process.spawn_unlinked`; everything a reap actually does
@@ -3315,9 +3334,14 @@ fn assemble_in(
         // subscriber is a hint and never a payload: it pulls from its own
         // durable cursor, so a hint lost while it restarts costs latency,
         // never a row, a fire, or an event.
+        //
+        // The block summarizer's name is subscribed whether or not a route
+        // started a machine under it: an unbound name is one the writer
+        // skips, at no cost to the commit.
         subscribers: [
           writer.Routed(rulescan_name),
           writer.Routed(forwarder_name),
+          writer.Routed(summary_commits),
           ..history_subscribers(history_seam, history_pulls)
         ],
         // Every strand of this session logs under the session's own
@@ -3463,6 +3487,19 @@ fn assemble_in(
     // either durable or offered again: titles live in their cells, and the
     // next step on each strand books it afresh.
     |> with_glance_loop(glance_wiring)
+    // The block summarizer is in this tier because what it would lose is
+    // either stored or not worth keeping: a settled label is in its cell,
+    // and a live one is replaced by the next or by the settled label.
+    |> with_block_summarizer(
+      summary_route,
+      settings.catalog,
+      opened,
+      runtime,
+      event_bus,
+      logger,
+      summary_name,
+      summary_commits,
+    )
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -3499,6 +3536,7 @@ fn assemble_in(
               base_policy,
             ))
             |> hub.with_bus(event_bus)
+            |> with_summary_demand(summary_route, summary_name)
             |> hub.with_worktree_diff(fn() {
               worktree_diff.capture_since(worktree_wiring, git_start)
               |> result.map(worktree_diff.to_json)
@@ -6048,6 +6086,97 @@ fn glance_wiring(
         logger:,
         name:,
       ))
+  }
+}
+
+// The block summarizer's route, or `None` when the catalogue routes no
+// `summarize` model. That case is logged at debug level rather than warned:
+// routing a summarizer is how an operator opts into the spend, and a
+// session without one is working as configured.
+fn summary_route(
+  settings: Settings,
+  logger: Logger,
+) -> Option(blocksummary.Route) {
+  case blocksummary.route(settings.gateway) {
+    Ok(route) -> Some(route)
+    Error(reason) -> {
+      log.debug(logger, "block_summary.unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
+      None
+    }
+  }
+}
+
+// The live feed's observer, or one that observes nothing when no route
+// exists. Which strand identities it observes is decided once here, from
+// the catalogue's chains: only an identity every one of whose possible
+// answering targets shares the summarize entry's endpoint, which is the
+// confidentiality check for text still streaming.
+fn summary_tap(
+  route: Option(blocksummary.Route),
+  catalogue: catalog.Catalog,
+  name: address.Address(blocksummary.Message),
+) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
+  case route {
+    Some(route) ->
+      blocksummary.observer(
+        name,
+        blocksummary.live_admission(catalogue, route.provider),
+      )
+    None -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+}
+
+// A terminal's read of a block with no stored summary asks the summarizer
+// for one, when the session has a summarizer at all.
+fn with_summary_demand(
+  options: hub.Options,
+  route: Option(blocksummary.Route),
+  name: address.Address(blocksummary.Message),
+) -> hub.Options {
+  case route {
+    Some(_route) ->
+      hub.with_summary_demand(options, blocksummary.ask_for(name, _))
+    None -> options
+  }
+}
+
+fn with_block_summarizer(
+  builder: sup.Builder,
+  route: Option(blocksummary.Route),
+  catalogue: catalog.Catalog,
+  opened: session.Session,
+  runtime: api.Runtime,
+  event_bus: bus.Bus,
+  logger: Logger,
+  name: address.Address(blocksummary.Message),
+  commits: address.Address(writer.Event),
+) -> sup.Builder {
+  case route {
+    None -> builder
+    Some(route) -> {
+      // Keyed by the canonical session id, the key the hub's `Outputs`
+      // subscription joins under; a label published under any other key
+      // reaches no terminal.
+      let key = bus.key(of: api.session_id(runtime))
+      let wiring =
+        blocksummary.Wiring(
+          session: opened,
+          route:,
+          settled: blocksummary.settled_admission(catalogue, route.provider),
+          write: fn(cell, value) {
+            api.put_reserved_fact(runtime, cell, value)
+            |> result.map_error(string.inspect)
+          },
+          publish: fn(event) { bus.publish(event_bus, session: key, event:) },
+          pace: blocksummarybook.default_pace,
+          logger:,
+          name:,
+          commits:,
+        )
+      sup.add(builder, blocksummary.supervised(wiring))
+    }
   }
 }
 

@@ -25,6 +25,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import tui/advisor_pending
 import tui/agents
+import tui/block_summary
 import tui/command
 import tui/context_view
 import tui/focused_goal_panel
@@ -465,6 +466,36 @@ pub fn retire_delivered_nudges(
       }
 
     protocol.EntryRecord(..) -> model
+  }
+}
+
+/// Sends the next exact-key read of summarizer labels the transcript's long
+/// blocks lack (protocol 050), once the read lane is free.
+///
+/// The reads are what a reattaching terminal needs: a label written before
+/// this attachment was pushed to nobody who is watching now. Each block is
+/// asked about once per attachment, thirty-two to a read, and a block the
+/// daemon has no label for keeps its first-line digest until a push brings
+/// one. A read waits behind every other observation's, because a label is
+/// the least urgent thing on screen.
+@internal
+pub fn service_block_summaries(model: Model) -> Model {
+  case model.channel, model.peer {
+    Some(channel), Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        False -> model
+        True ->
+          case block_summary.next_read(model.summaries) {
+            None -> model
+            Some(#(keys, summaries)) ->
+              outbound.send_frame(
+                Model(..model, summaries:),
+                protocol.block_summaries(model.next_id, keys),
+              )
+          }
+      }
+    Some(_), Disconnected | Some(_), Preview | Some(_), Replaying | None, _ ->
+      model
   }
 }
 

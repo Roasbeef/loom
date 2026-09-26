@@ -42,6 +42,7 @@ import tui/agent_view
 import tui/agents
 import tui/approval
 import tui/approval_panel
+import tui/block_summary
 import tui/bootstrap
 import tui/cache_miss
 import tui/command
@@ -656,6 +657,25 @@ fn render_cut(
       && !snapshot_view.has_result(view, tail.strand, tail.operation)
     })
 
+  // A cut that brought new records may bring long blocks this attachment
+  // holds no label for. They are marked wanted here and read by exact key
+  // when the lane is free; a cut whose records did not move asks nothing.
+  // Live labels are kept while their stream is held, on any strand, or
+  // while the committed response they would lend to is in the window.
+  let summaries = case model.records == branch.records {
+    True -> model.summaries
+    False ->
+      block_summary.want(
+        model.summaries,
+        transcript_lines.summary_keys(branch.records, active),
+      )
+  }
+  let summaries =
+    block_summary.retain_live(summaries, fn(generation) {
+      list.any(model.streams, fn(stream) { stream.generation == generation })
+      || transcript_lines.response_recorded(branch.records, generation)
+    })
+
   // Retired strands keep unsent drafts but release their bounded reading
   // windows. A future appearance must rebuild history from its own capture.
   let workspaces =
@@ -694,6 +714,7 @@ fn render_cut(
     todo_boards: boards,
     todo_seed:,
     todo_asked:,
+    summaries:,
     records: branch.records,
     scrollback: history,
     strand_workspaces: workspaces,
@@ -1259,6 +1280,19 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.LiveJobsSnapshot(board) -> surfaces.receive_jobs(model, board)
     protocol.AdvisorPendingSnapshot(board) ->
       surfaces.receive_advisor_nudges(model, board)
+
+    // Labels change the words of rows the record cache already holds, so
+    // the cache is rebuilt; its entry-level keys carry the labels, which
+    // limits the re-projection to the entries whose labels moved.
+    protocol.BlockSummariesSnapshot(labels:) ->
+      Model(
+        ..model,
+        summaries: block_summary.receive_board(model.summaries, labels),
+        record_cache_valid: False,
+      )
+      |> tui_model.invalidate_transcript
+    protocol.BlockSummarized(subject:, text:) ->
+      receive_block_summary(model, subject, text)
     protocol.GoalSnapshot(board) -> surfaces.receive_goal(model, board)
     protocol.ContextSnapshot(observation) ->
       Model(
@@ -1527,6 +1561,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
     | protocol.AdvisorPendingSnapshot(..)
+    | protocol.BlockSummariesSnapshot(..)
+    | protocol.BlockSummarized(..)
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
@@ -1541,6 +1577,27 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame
   }
+}
+
+// A pushed summarizer label (protocol 050). A settled label rewrites a row
+// the record cache holds, and so does a live one whose response has already
+// committed, because the committed block borrows it until its own label
+// arrives. Any other live label belongs to a row in the transient tail,
+// which every projection rebuilds, and leaves the record cache standing.
+fn receive_block_summary(
+  model: Model,
+  subject: block_summary.Subject,
+  text: String,
+) -> Model {
+  let summaries = block_summary.receive(model.summaries, subject, text)
+  let recorded = case subject {
+    block_summary.SettledBlock(..) -> True
+    block_summary.LiveStream(generation:, ..) ->
+      transcript_lines.response_recorded(model.records, generation)
+  }
+  let valid = model.record_cache_valid && !recorded
+  Model(..model, summaries:, record_cache_valid: valid)
+  |> tui_model.invalidate_transcript
 }
 
 // Restores a custody-returned prompt as a local draft (protocol-change/038).
@@ -2808,6 +2865,7 @@ pub fn select_workspace(
         nudges_refresh: worktree_view.Settled,
         nudges_awaiting: None,
         nudges_request: None,
+        summaries: block_summary.new(),
         goal: None,
         goal_refresh: worktree_view.Settled,
         goal_awaiting: None,
@@ -3051,6 +3109,14 @@ fn apply_request_refused(
   // no way to tell that from a session with no goal.
   use <- bool.lazy_guard(string.starts_with(command, "goal_"), fn() {
     surfaces.refuse_goal(model, command, request_id, code, message)
+  })
+
+  // Labels are optional presentation read with no operator keystroke. An
+  // older daemon refuses the read outright, and a row reporting it would
+  // be the one visible trace of a feature the operator never asked for, so
+  // the terminal stops asking for this attachment and says nothing.
+  use <- bool.lazy_guard(command == "block_summaries", fn() {
+    Model(..model, summaries: block_summary.refused(model.summaries))
   })
 
   // A notes read refused while no notes surface is open was the todo

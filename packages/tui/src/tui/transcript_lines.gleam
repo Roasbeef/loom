@@ -32,13 +32,14 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tui/advisor_history
+import tui/block_summary
 import tui/composer
 import tui/file_read_view
 import tui/model.{
   type CacheNotice, type Line, type Model, type Speaker, type Stream,
   type Submission, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
-  ReasoningDigest, Spacer, Stream, System, ToolCall, ToolDetail, ToolFailure,
-  ToolPatch, ToolResult, User,
+  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
 }
 import tui/notes_view
 import tui/protocol
@@ -289,21 +290,28 @@ pub fn preview_stream(strand: String, sample: snapshot_view.Preview) -> Stream {
 }
 
 /// Transcript lines for the active strand's live streams, oldest first.
+///
+/// A reasoning stream's collapsed row also carries how long the generation
+/// has run, `elapsed_s`, and the newest summarizer label for its request
+/// when `labels` holds one (protocol 050).
 @internal
 pub fn stream_lines(
   streams: List(Stream),
   active_strand: String,
   extent: notes_view.Extent,
+  labels: block_summary.Labels,
+  elapsed_s: Int,
 ) -> List(Line) {
   streams
   |> list.filter_map(fn(stream) {
-    let Stream(strand:, kind:, fragments:, ..) = stream
+    let Stream(strand:, kind:, fragments:, generation:, ..) = stream
     case strand == active_strand && kind != "end" {
       False -> Error(Nil)
       True -> {
         let text = fragments |> list.reverse |> string.concat
+        let label = block_summary.live(labels, generation)
         Ok(case kind {
-          "thinking" -> live_reasoning_line(text, extent)
+          "thinking" -> live_reasoning_line(text, extent, label, elapsed_s)
           "tool_call" -> Line(ToolCall, live_tool_call_summary(text))
           _ -> Line(Assistant, text)
         })
@@ -318,20 +326,131 @@ pub fn stream_lines(
 // code paths a few hundred milliseconds apart — this one from the stream
 // the provider is still writing, the other from the record the daemon has
 // committed — so the two functions below are deliberately the same shape.
-// Collapsed, each is exactly one `ReasoningDigest` row — clipped to the pane
-// rather than wrapped, so the count holds at every width — and the settle
-// therefore changes the row's words and not the transcript's height.
-fn live_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
-  case extent {
-    notes_view.Complete -> Line(Reasoning, text)
-    notes_view.Excerpt -> Line(ReasoningDigest, live_reasoning_digest(text))
+// Collapsed without a summary, each is exactly one `ReasoningDigest` row —
+// clipped to the pane rather than wrapped, so the count holds at every width
+// — and the settle therefore changes the row's words and not the
+// transcript's height. With a summary each is one `SummarizedReasoning`
+// line: a header row and the summary beneath it. The settled block borrows
+// the stream's summary until its own arrives (`labels_for`), so a block that
+// showed a summary while streaming settles into the same number of rows.
+fn live_reasoning_line(
+  text: String,
+  extent: notes_view.Extent,
+  label: Option(String),
+  elapsed_s: Int,
+) -> Line {
+  case extent, label {
+    notes_view.Complete, _ -> Line(Reasoning, text)
+    notes_view.Excerpt, None ->
+      Line(ReasoningDigest, live_summary_digest(text, elapsed_s))
+    notes_view.Excerpt, Some(label) ->
+      summarized_reasoning_line(live_summary_header(text, elapsed_s), label)
   }
 }
 
-fn settled_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
-  case extent {
-    notes_view.Complete -> Line(Reasoning, text)
-    notes_view.Excerpt -> Line(ReasoningDigest, settled_reasoning_digest(text))
+fn settled_reasoning_line(
+  text: String,
+  extent: notes_view.Extent,
+  label: Option(String),
+) -> Line {
+  case extent, label {
+    notes_view.Complete, _ -> Line(Reasoning, text)
+    notes_view.Excerpt, None ->
+      Line(ReasoningDigest, settled_reasoning_digest(text))
+    notes_view.Excerpt, Some(label) ->
+      summarized_reasoning_line(expand_hint, label)
+  }
+}
+
+/// The collapsed stand-in for a reasoning block still streaming and not
+/// yet summarized: how much of it has arrived and how long the generation
+/// has run. With no clock reading it is exactly `live_reasoning_digest`'s.
+///
+/// The count and the clock are what change while the block streams, and a
+/// counter that climbs is easier to ignore than an excerpt rewritten under
+/// the reader.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.live_summary_digest("one\ntwo", 64) == "2 lines · 1m 04s so far"
+/// ```
+///
+/// ```gleam
+/// assert tui.live_summary_digest("one", 0) == "1 line so far"
+/// ```
+@internal
+pub fn live_summary_digest(text: String, elapsed_s: Int) -> String {
+  let lines = line_count(text)
+  case elapsed_s > 0 {
+    True -> lines <> " · " <> elapsed_words(elapsed_s) <> " so far"
+    False -> lines <> " so far"
+  }
+}
+
+/// The header of a summarized reasoning block still streaming: its line
+/// count and how long the generation has run, after the
+/// `∴ Reasoning (summarized)` mark the renderer draws.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.live_summary_header("one\ntwo", 13) == " · 2 lines · 13s"
+/// ```
+@internal
+pub fn live_summary_header(text: String, elapsed_s: Int) -> String {
+  let lines = " · " <> line_count(text)
+  case elapsed_s > 0 {
+    True -> lines <> " · " <> elapsed_words(elapsed_s)
+    False -> lines
+  }
+}
+
+/// One collapsed reasoning block that has a summary: `header` for its
+/// first row, after the renderer's `∴ Reasoning (summarized)` mark, and
+/// the summary as the dim secondary lines beneath it (at most
+/// `summary_rows` of them).
+///
+/// The header names the text as summarized, so the summary itself carries
+/// no prefix and is never read as the agent's own words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.summarized_reasoning_line("  [Ctrl+G to expand]", "Found it.")
+///   == Line(SummarizedReasoning, "  [Ctrl+G to expand]\nFound it.")
+/// ```
+@internal
+pub fn summarized_reasoning_line(header: String, label: String) -> Line {
+  Line(SummarizedReasoning, header <> "\n" <> label)
+}
+
+/// The most rows a summary's secondary lines take beneath their header.
+/// A longer summary is cut with an ellipsis at the end of the last row.
+pub const summary_rows = 3
+
+fn line_count(text: String) -> String {
+  let count = text |> string.split("\n") |> list.length
+  int.to_string(count)
+  <> case count {
+    1 -> " line"
+    _ -> " lines"
+  }
+}
+
+// Seconds as the row reads them: `45s`, `1m 04s`. The seconds are padded
+// under a minute so the figure does not change width every ten seconds.
+fn elapsed_words(seconds: Int) -> String {
+  case seconds < 60 {
+    True -> int.to_string(seconds) <> "s"
+    False -> {
+      let rest = seconds % 60
+      let padded = case rest < 10 {
+        True -> "0" <> int.to_string(rest)
+        False -> int.to_string(rest)
+      }
+      int.to_string(seconds / 60) <> "m " <> padded <> "s"
+    }
   }
 }
 
@@ -524,7 +643,7 @@ pub fn record_lines(
 ) -> #(
   List(Line),
   Dict(tool_activity.Call, List(Line)),
-  Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
   let entries = strand_entries(records, model.active_strand)
   let sequences = entry_sequences(entries)
@@ -541,7 +660,7 @@ pub fn record_lines(
         |> list.map(fn(item) {
           #(
             spliced_sequence(item, fn(value) { value.seq }),
-            expanded_lines(item, owner),
+            expanded_lines(item, owner, model.summaries),
           )
         })
         |> merge_sequence_blocks(advisor_history_blocks(advisor))
@@ -595,10 +714,11 @@ pub fn record_lines(
 fn expanded_lines(
   spliced: Spliced(entry.Entry),
   owner: Option(message.Origin),
+  labels: block_summary.Labels,
 ) -> List(Line) {
   case spliced {
     Transient(text, _) -> [Line(System, text)]
-    Projected(value) -> entry_lines(value, True, owner)
+    Projected(value) -> entry_lines(value, True, owner, labels)
   }
 }
 
@@ -611,7 +731,10 @@ fn compact_item_lines(
   acc: #(
     List(#(Int, List(Line))),
     Dict(tool_activity.Call, List(Line)),
-    Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+    Dict(
+      #(entry.Entry, Option(message.Origin), List(#(Int, String))),
+      List(Line),
+    ),
   ),
   item: tool_activity.Item,
   seq: Int,
@@ -620,14 +743,19 @@ fn compact_item_lines(
 ) -> #(
   List(#(Int, List(Line))),
   Dict(tool_activity.Call, List(Line)),
-  Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
   case item {
+    // The labels the entry's rows would show are part of the key, so a
+    // label arriving is a new key and the entry is projected again, while
+    // every other cached narrative is reused.
     tool_activity.Narrative(value) -> {
-      let key = #(value, owner)
+      let key = #(value, owner, labels_for(value, model.summaries))
       let lines =
         dict.get(model.compact_entry_cache, key)
-        |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
+        |> result.lazy_unwrap(fn() {
+          entry_lines(value, False, owner, model.summaries)
+        })
       #([#(seq, lines), ..acc.0], acc.1, dict.insert(acc.2, key, lines))
     }
     tool_activity.Tools(calls) -> {
@@ -758,9 +886,20 @@ fn block_closes_bare(rows: List(Line)) -> Bool {
 @internal
 pub fn closes_bare(speaker: Speaker) -> Bool {
   case speaker {
-    ToolCall | ToolResult | ToolFailure | ToolPatch | ReasoningDigest -> True
-    System | User | Assistant | Reasoning | ToolDetail | Failure | Spacer ->
-      False
+    ToolCall
+    | ToolResult
+    | ToolFailure
+    | ToolPatch
+    | ReasoningDigest
+    | SummarizedReasoning -> True
+    System
+    | User
+    | Assistant
+    | Reasoning
+    | ToolDetail
+    | Failure
+    | Spacer
+    | SummarizedAdvice -> False
   }
 }
 
@@ -774,11 +913,14 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
   case rows {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
+    [Line(speaker: SummarizedReasoning, ..), ..] -> True
 
-    // A harness row, such as advisor commentary or a notice, draws its blank
-    // below itself like every other speaker, so under a call's bare last row
-    // it would sit welded to that call without a gap of its own.
+    // A harness row, such as advisor commentary, a notice or a tool group's
+    // own heading, draws its blank below itself like every other speaker, so
+    // under a call's bare last row it would sit welded to that call without a
+    // gap of its own.
     [Line(speaker: System, ..), ..] -> True
+    [Line(speaker: SummarizedAdvice, ..), ..] -> True
 
     // The one row whose meaning depends on the boundary being walked; see
     // `GroupOpening`.
@@ -1018,18 +1160,26 @@ fn captured_diff_content(model: Model) -> List(Line) {
 }
 
 /// Transcript lines for one durable entry.
+///
+/// `labels` supplies summarizer labels for the entry's long blocks; in
+/// compact mode a labelled block shows its label in place of its opening.
 @internal
 pub fn entry_lines(
   value: entry.Entry,
   details_expanded: Bool,
   local_owner: Option(message.Origin),
+  labels: block_summary.Labels,
 ) -> List(Line) {
+  let found = labels_for(value, labels)
   case value {
     entry.MessageEntry(message: value, ..) ->
       value
-      |> harness_message_lines(details_extent(details_expanded))
+      |> harness_message_lines(
+        details_extent(details_expanded),
+        block_label(found, 0),
+      )
       |> option.lazy_unwrap(fn() {
-        message_lines(value, details_expanded, local_owner)
+        message_lines(value, details_expanded, local_owner, found)
       })
     entry.CompactionEntry(retained_tail:, tokens_before:, ..) -> [
       Line(
@@ -1083,12 +1233,149 @@ pub fn agent_notes_payload(value: message.AgentMessage) -> Option(String) {
 fn harness_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
+  label: Option(String),
 ) -> Option(List(Line)) {
   case agent_notes_payload(value) {
     Some(_payload) -> Some([])
 
-    None -> value |> advisor_payload |> option.map(advisor_lines(_, extent))
+    None ->
+      value
+      |> advisor_payload
+      |> option.map(labelled_advisor_lines(_, extent, label))
   }
+}
+
+// --- summarizer labels -------------------------------------------------------
+
+/// The blocks of one committed entry the daemon labels (protocol 050), by
+/// their index in the message's content: every reasoning block that is not
+/// redacted and holds at least `block_summary.floor_bytes` of text, and the
+/// body of a delivered advice or nudges message at least that long.
+///
+/// The daemon also skips reasoning from a provider other than its
+/// summarizer's, which this terminal cannot see; such a block is asked
+/// about, answered with nothing, and keeps its first-line digest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.summarizable_blocks(an_entry_with_one_long_thought) == [0]
+/// ```
+@internal
+pub fn summarizable_blocks(value: entry.Entry) -> List(Int) {
+  case value {
+    entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
+      content
+      |> list.index_map(fn(block, index) { #(block, index) })
+      |> list.filter_map(fn(pair) {
+        case pair.0 {
+          message.AssistantThinking(thinking:, redacted: False, ..) ->
+            case string.byte_size(thinking) >= block_summary.floor_bytes {
+              True -> Ok(pair.1)
+              False -> Error(Nil)
+            }
+          message.AssistantThinking(redacted: True, ..)
+          | message.AssistantText(..)
+          | message.AssistantToolCall(..) -> Error(Nil)
+        }
+      })
+
+    entry.MessageEntry(message: message.UserMessage(..) as sent, ..) ->
+      case delivered_body(sent) {
+        Some(body) ->
+          case string.byte_size(body) >= block_summary.floor_bytes {
+            True -> [0]
+            False -> []
+          }
+        None -> []
+      }
+
+    entry.MessageEntry(message: message.ToolResultMessage(..), ..)
+    | entry.MessageEntry(message: message.CustomMessage(..), ..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> []
+  }
+}
+
+// The advice or nudges body the daemon labels. The feed, the goal feed and
+// a continuation are harness context rather than advice, and are never
+// labelled.
+fn delivered_body(value: message.AgentMessage) -> Option(String) {
+  case advisor_payload(value) {
+    Some(Advice(body:)) | Some(Nudges(body:)) -> Some(body)
+    Some(Feed(..)) | Some(GoalFeed(..)) | Some(Continuation(..)) | None -> None
+  }
+}
+
+/// The labels `labels` holds for the long blocks of `value`, by block
+/// index. A block with no stored label of its own may borrow the live
+/// label of the stream that produced the entry, but only the entry's
+/// first long reasoning block does: the stream's text was that block's
+/// beginning, and the borrowed label is replaced when the block's own
+/// label arrives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.labels_for(entry, labels) == [#(1, "The agent weighs two fixes.")]
+/// ```
+@internal
+pub fn labels_for(
+  value: entry.Entry,
+  labels: block_summary.Labels,
+) -> List(#(Int, String)) {
+  let blocks = summarizable_blocks(value)
+  use <- bool.guard(when: blocks == [], return: [])
+
+  let id = ids.entry_id_to_string(value.id)
+  let first_reasoning = case value {
+    entry.MessageEntry(message: message.AssistantMessage(..), ..) ->
+      list.first(blocks)
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> Error(Nil)
+  }
+
+  list.filter_map(blocks, fn(block) {
+    let own = block_summary.stored(labels, block_summary.Key(entry: id, block:))
+    option.lazy_or(own, fn() {
+      case first_reasoning == Ok(block) {
+        True -> block_summary.carried(labels, id)
+        False -> None
+      }
+    })
+    |> option.map(fn(label) { #(block, label) })
+    |> option.to_result(Nil)
+  })
+}
+
+/// The blocks of the active strand's records the terminal would read labels
+/// for, in record order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.summary_keys(model.records, "main")
+/// ```
+@internal
+pub fn summary_keys(
+  records: List(protocol.EntryRecord),
+  strand: String,
+) -> List(block_summary.Key) {
+  records
+  |> strand_entries(strand)
+  |> list.flat_map(fn(value) {
+    let id = ids.entry_id_to_string(value.id)
+    list.map(summarizable_blocks(value), fn(block) {
+      block_summary.Key(entry: id, block:)
+    })
+  })
+}
+
+fn block_label(found: List(#(Int, String)), block: Int) -> Option(String) {
+  list.key_find(found, block) |> option.from_result
 }
 
 // --- advisor traffic -------------------------------------------------------
@@ -1318,12 +1605,40 @@ pub fn advisor_lines(
   value: AdvisorMessage,
   extent: notes_view.Extent,
 ) -> List(Line) {
+  labelled_advisor_lines(value, extent, None)
+}
+
+/// `advisor_lines` for a delivered message the summarizer may have
+/// labelled (protocol 050).
+///
+/// Advice and nudges shorter than `block_summary.floor_bytes` keep their
+/// whole body in both modes, as before labels existed. A longer one
+/// collapses in compact mode to its heading and one line: the label,
+/// introduced as the summarizer's, or the body's opening line while no
+/// label has arrived. Detail mode shows the whole body either way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.labelled_advisor_lines(tui.Advice(long_body), notes_view.Excerpt,
+/// //   Some("The advisor asks for a rerun."))
+/// ```
+@internal
+pub fn labelled_advisor_lines(
+  value: AdvisorMessage,
+  extent: notes_view.Extent,
+  label: Option(String),
+) -> List(Line) {
   let heading = advisor_heading(value)
+  let long = string.byte_size(value.body) >= block_summary.floor_bytes
 
   // `System` rather than `User` in both: the row is context the harness put
   // on this branch, and the shaded `› User` block a user turn is drawn in
   // would say the operator typed it.
   case value, extent {
+    Advice(..), notes_view.Excerpt | Nudges(..), notes_view.Excerpt if long -> [
+      delivered_summary_line(heading, value, label),
+    ]
     Advice(..), _ | Nudges(..), _ -> [
       Line(System, heading),
       Line(ToolDetail, value.body),
@@ -1382,6 +1697,28 @@ pub fn advisor_body_preview(body: String) -> String {
   compact(opening_line(body), advisor_preview_limit)
 }
 
+// A collapsed long advice or nudges message: its heading, marked as
+// summarized when the summarizer's label is what follows, and then that
+// label or the body's opening line as the secondary text beneath it.
+fn delivered_summary_line(
+  heading: String,
+  value: AdvisorMessage,
+  label: Option(String),
+) -> Line {
+  case label {
+    Some(label) ->
+      Line(
+        SummarizedAdvice,
+        heading <> " (summarized)" <> expand_hint <> "\n" <> label,
+      )
+    None ->
+      Line(
+        SummarizedAdvice,
+        heading <> expand_hint <> "\n" <> opening_line(value.body),
+      )
+  }
+}
+
 fn opening_line(body: String) -> String {
   case string.split_once(body, "\n") {
     Ok(#(first, _rest)) -> first
@@ -1401,6 +1738,7 @@ fn message_lines(
   value: message.AgentMessage,
   details_expanded: Bool,
   local_owner: Option(message.Origin),
+  found: List(#(Int, String)),
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, origin:, ..) -> [
@@ -1422,7 +1760,13 @@ fn message_lines(
       // belongs to the fold over entries, not to this one.
       let lines =
         content
-        |> list.map(assistant_block_lines(_, details_expanded))
+        |> list.index_map(fn(block, index) {
+          assistant_block_lines(
+            block,
+            details_expanded,
+            block_label(found, index),
+          )
+        })
         |> separated_tool_groups(WithinResponse)
 
       list.append(lines, assistant_terminal_lines(stop_reason, error_message))
@@ -1506,11 +1850,14 @@ pub fn details_extent(details_expanded: Bool) -> notes_view.Extent {
   }
 }
 
-/// Transcript lines for one block of an assistant message.
+/// Transcript lines for one block of an assistant message. `label` is the
+/// summarizer's label for a long reasoning block, which the compact row
+/// shows in place of the block's opening line.
 @internal
 pub fn assistant_block_lines(
   block: message.AssistantBlock,
   details_expanded: Bool,
+  label: Option(String),
 ) -> List(Line) {
   case block {
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
@@ -1521,7 +1868,11 @@ pub fn assistant_block_lines(
         True -> [Line(ReasoningDigest, "redacted")]
 
         False -> [
-          settled_reasoning_line(thinking, details_extent(details_expanded)),
+          settled_reasoning_line(
+            thinking,
+            details_extent(details_expanded),
+            label,
+          ),
         ]
       }
     message.AssistantToolCall(call:) -> {
@@ -2257,10 +2608,18 @@ pub fn merge_sequence_blocks(
   }
 }
 
-// The sequences commentary is merged at, oldest first: the places a tool
-// group must end for the commentary to land between its calls rather than
-// below all of them.
-fn advisor_splits(board: advisor_history.Board) -> List(Int) {
+/// The sequences commentary is merged at, oldest first: the places a tool
+/// group must end for the commentary to land between its calls rather than
+/// below all of them. The row projection and the anchor projection must both
+/// split here, or their row counts part at every split.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.advisor_splits(advisor_history.Board([], None)) == []
+/// ```
+@internal
+pub fn advisor_splits(board: advisor_history.Board) -> List(Int) {
   list.map(board.items, fn(item) { item.seq })
 }
 
