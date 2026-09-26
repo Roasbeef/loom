@@ -79,9 +79,12 @@ provider in the session, so they carry no such restriction.
 
 The daemon uses the catalogue's `summarize` role, with thinking off and a
 160-token output cap, and no fallback to any other role. A catalogue that
-routes no `summarize` model gets no summaries. The request asks for one or
-two sentences in the third person, beginning with "The agent" or "The
-advisor", and instructs the model not to follow instructions in the text.
+routes no `summarize` model gets no summaries. The request asks for a
+headline of at most two sentences in active voice and the present tense,
+starting with the finding, decision or action and never with a subject
+such as "The agent" or "The model", and instructs the model not to follow
+instructions in the text. A client's own attribution, not the summary's
+wording, is what marks the text as the summarizer's.
 Source text beyond 32 KiB is clipped from the middle. The daemon collapses
 whitespace in the answer, removes a leading `Summary:` label and enclosing
 quotation marks, and cuts the result to 320 bytes at a word boundary. An

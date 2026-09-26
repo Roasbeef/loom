@@ -145,15 +145,19 @@ pub fn the_answer_is_bounded_to_one_label_test() {
   assert string.ends_with(cut, "word…")
 }
 
-// The prompt names the source's author in the third person and fences the
-// text, so the label cannot be mistaken for the agent's own words.
-pub fn the_request_asks_for_the_third_person_test() {
+// The prompt asks for an active-voice headline that leads with the finding
+// and forbids opening with a subject such as "The agent", and fences the
+// text it summarizes as data.
+pub fn the_request_asks_for_a_headline_test() {
   let asked = blocksummary.request(blocksummarybook.Reasoning, "the text")
-  assert string.contains(asked, "beginning with \"The agent\"")
+  assert string.contains(asked, "Write a headline")
+  assert string.contains(asked, "active voice and the present tense")
+  assert string.contains(asked, "never with a subject such as \"The agent\"")
   assert string.contains(asked, "<text>\nthe text\n</text>")
+  assert !string.contains(asked, "beginning with")
 
   let advised = blocksummary.request(blocksummarybook.AdvisorMessage, "x")
-  assert string.contains(advised, "beginning with \"The advisor\"")
+  assert string.contains(advised, "the advisor, sent to the coding agent")
 }
 
 // Only the summarize role routes the summarizer. A catalogue with no such
