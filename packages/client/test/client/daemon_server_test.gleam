@@ -1071,7 +1071,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.Unlink(_, _, _)
           | peer_mail.Describe(_, _)
           | peer_mail.Links(_)
-          | peer_mail.Grants(_) -> Ok(json.Null)
+          | peer_mail.Grants(_)
+          | peer_mail.Overview -> Ok(json.Null)
         }
       }),
     )

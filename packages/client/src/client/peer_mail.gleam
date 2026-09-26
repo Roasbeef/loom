@@ -6,19 +6,28 @@
 //// are compared in the same writer transaction as the delivered prompt.
 
 import core/clock
-import core/ids
+import core/entry
+import core/glance
+import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message
 import core/origin
 import core/register
 import core/tx
+import gleam/dict
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import machine/codec
+import machine/operation
 import runtime/api
+import runtime/escalation
 import runtime/lineage
+import runtime/writer
 import session/session
+import storage/storage
 import tools/blob
 
 /// Waking an idle recipient is an independent operator permission.
@@ -83,6 +92,11 @@ pub type Command {
   Describe(strand: String, description: String)
   Activity(strand: String)
   Roster(source_session: String, source_strand: String)
+
+  /// Summarizes the whole session for the owner's cross-session view
+  /// (`protocol-change/050`). It reads and never writes, and its answer is
+  /// bounded to `overview_row_bytes` whatever the session holds.
+  Overview
 }
 
 /// A small endpoint; its closure captures an address, never a runtime graph.
@@ -101,6 +115,26 @@ const link_prefix = "client/peers/link/"
 
 /// Maximum number of outgoing links recorded for one source strand.
 pub const outgoing_link_limit = 64
+
+/// The encoded size an `Overview` answer never exceeds. The daemon adds a
+/// session identity to each answer and places up to 24 of them in one
+/// 60,000-byte reply, so this bound is what lets that reply fit without a
+/// page cursor.
+pub const overview_row_bytes = 2300
+
+// The per-field bounds `protocol-change/050` names. Each is applied with
+// `glance.clip`, which cuts on a grapheme boundary.
+const overview_message_bytes = 280
+
+const overview_model_bytes = 64
+
+const overview_strand_bytes = 96
+
+const overview_title_bytes = 60
+
+const overview_summary_bytes = 160
+
+const overview_glances = 4
 
 const receipt_prefix = "client/peers/receipt/"
 
@@ -245,6 +279,7 @@ pub fn handle(
     Activity(strand) -> activity(runtime, strand)
     Roster(source_session, source_strand) ->
       roster(runtime, source_session, source_strand)
+    Overview -> overview(runtime)
   }
 }
 
@@ -506,4 +541,208 @@ fn activity(runtime: api.Runtime, strand: String) -> Result(JsonValue, String) {
       #("git_observation", option.unwrap(git, json.Null)),
     ]),
   )
+}
+
+// One session's activity, as the owner's session picker shows it. Every
+// read here is a single register, one entry, or one prefix listing, so the
+// Agency actor answering it is held for a fixed number of store calls
+// rather than a walk over the conversation.
+fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
+  use states <- result.try(strand_operations(runtime))
+  use escalations <- result.try(
+    api.escalations(runtime) |> result.map_error(string.inspect),
+  )
+  use last <- result.try(
+    session.last_result(runtime.session, "main")
+    |> result.map_error(string.inspect),
+  )
+  use configuration <- result.try(
+    session.strand_configuration(runtime.session, "main")
+    |> result.map_error(string.inspect),
+  )
+  use glances <- result.try(current_glances(runtime, states))
+  let last = option.map(last, fn(cell) { cell.value })
+  let approvals =
+    list.count(escalations, fn(record) { record.status == escalation.Pending })
+  let working = list.count(states, fn(pair) { option.is_some(pair.1) })
+
+  // A failed main run asks for the operator only once main has stopped: a
+  // main already running its next operation has moved past the failure.
+  let main_running = case list.key_find(states, "main") {
+    Ok(Some(_)) -> True
+    Ok(None) | Error(Nil) -> False
+  }
+  let failed = case last {
+    Some(operation.RunLastResult(outcome: operation.RunFailed(_), ..)) -> True
+    Some(operation.RunLastResult(..))
+    | Some(operation.CompactionLastResult(..))
+    | Some(operation.NavigationLastResult(..))
+    | None -> False
+  }
+  let state = case approvals > 0 || { failed && !main_running }, working > 0 {
+    True, _ -> "needs_you"
+    False, True -> "working"
+    False, False -> "idle"
+  }
+  let model = case configuration {
+    Some(cell) ->
+      json.String(glance.clip(cell.value.model.model_id, overview_model_bytes))
+    None -> json.Null
+  }
+  let base = [
+    #("state", json.String(state)),
+    #("strands", json.Int(list.length(states))),
+    #("working", json.Int(working)),
+    #("approvals", json.Int(approvals)),
+    #("last_outcome", last_outcome(last)),
+    #("model", model),
+  ]
+  Ok(fit_overview(base, final_message(runtime, last), glances))
+}
+
+// Every strand's current operation, from one listing of the strand-state
+// namespace rather than one read per strand name.
+fn strand_operations(
+  runtime: api.Runtime,
+) -> Result(List(#(String, Option(OpId))), String) {
+  use cells <- result.try(
+    writer.list_registers(runtime.tree.writer, register.StrandState, None)
+    |> result.map_error(string.inspect),
+  )
+  list.try_map(cells, fn(pair) {
+    let #(strand, storage.Register(value:, ..)) = pair
+    codec.decode_strand_state(value.payload)
+    |> result.map(fn(state) { #(strand, state.current_operation) })
+    |> result.map_error(string.inspect)
+  })
+}
+
+// The glances a reader may still show, newest first. `core/glance` says a
+// glance describes one operation and is shown only while that operation is
+// its strand's current one, so a cell left behind by a finished task is
+// dropped here rather than reported as present work.
+fn current_glances(
+  runtime: api.Runtime,
+  states: List(#(String, Option(OpId))),
+) -> Result(List(JsonValue), String) {
+  use cells <- result.try(
+    api.reserved_facts(runtime, prefix: glance.key_prefix)
+    |> result.map_error(string.inspect),
+  )
+  let current =
+    states
+    |> list.filter_map(fn(pair) {
+      case pair.1 {
+        Some(op) -> Ok(#(pair.0, ids.op_id_to_string(op)))
+        None -> Error(Nil)
+      }
+    })
+    |> dict.from_list
+  cells
+  |> list.filter_map(fn(pair) {
+    use strand <- result.try(glance.strand_of(pair.0))
+    use cell <- result.try(glance.decode(pair.1) |> result.replace_error(Nil))
+    case dict.get(current, strand) == Ok(cell.operation) {
+      True -> Ok(#(strand, cell))
+      False -> Error(Nil)
+    }
+  })
+  |> list.sort(fn(left, right) { int.compare({ right.1 }.at, { left.1 }.at) })
+  |> list.take(overview_glances)
+  |> list.map(glance_line)
+  |> Ok
+}
+
+fn glance_line(pair: #(String, glance.Glance)) -> JsonValue {
+  let #(strand, cell) = pair
+  json.Object([
+    #("strand", json.String(glance.clip(strand, overview_strand_bytes))),
+    #("title", json.String(glance.clip(cell.title, overview_title_bytes))),
+    #("summary", json.String(glance.clip(cell.summary, overview_summary_bytes))),
+  ])
+}
+
+fn last_outcome(last: Option(operation.LastResult)) -> JsonValue {
+  case last {
+    Some(operation.RunLastResult(outcome: operation.RunCompleted(_), ..)) ->
+      json.String("completed")
+    Some(operation.RunLastResult(outcome: operation.RunFailed(_), ..)) ->
+      json.String("failed")
+    Some(operation.RunLastResult(outcome: operation.RunAborted, ..)) ->
+      json.String("aborted")
+
+    // A compaction or navigation is not a run, so it has no outcome the
+    // picker could show as the session's last result.
+    Some(operation.CompactionLastResult(..))
+    | Some(operation.NavigationLastResult(..))
+    | None -> json.Null
+  }
+}
+
+// The final assistant text of main's last run. `LastResult` holds only the
+// entry id, so this is one point read of that entry; a run with no final
+// answer, or an entry with no text, reports null.
+fn final_message(
+  runtime: api.Runtime,
+  last: Option(operation.LastResult),
+) -> JsonValue {
+  case last {
+    Some(operation.RunLastResult(final_assistant: Some(id), ..)) ->
+      case assistant_text(runtime, id) {
+        "" -> json.Null
+        text -> json.String(glance.clip(text, overview_message_bytes))
+      }
+    Some(operation.RunLastResult(final_assistant: None, ..))
+    | Some(operation.CompactionLastResult(..))
+    | Some(operation.NavigationLastResult(..))
+    | None -> json.Null
+  }
+}
+
+fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
+  case writer.get_entries(runtime.tree.writer, [id]) {
+    Error(_) -> ""
+    Ok(found) ->
+      case dict.get(found, id) {
+        Ok(entry.MessageEntry(
+          message: message.AssistantMessage(content:, ..),
+          ..,
+        )) ->
+          content
+          |> list.filter_map(fn(block) {
+            case block {
+              message.AssistantText(text:, ..) -> Ok(text)
+              _ -> Error(Nil)
+            }
+          })
+          |> string.join(" ")
+        _ -> ""
+      }
+  }
+}
+
+// Each field is clipped, but JSON escaping can still grow a clipped string
+// several times over, so the encoded row is measured. An oversized row sheds
+// its oldest glance first, then the final message. What remains is counts,
+// fixed names, and a model clipped to 64 bytes, which fits even escaped.
+fn fit_overview(
+  base: List(#(String, JsonValue)),
+  message: JsonValue,
+  glances: List(JsonValue),
+) -> JsonValue {
+  let row =
+    json.Object(
+      list.append(base, [
+        #("last_message", message),
+        #("glances", json.Array(glances)),
+      ]),
+    )
+  let fits = string.byte_size(json.to_string(row)) <= overview_row_bytes
+  case fits, glances, message {
+    True, _, _ -> row
+    False, [_, ..], _ ->
+      fit_overview(base, message, list.take(glances, list.length(glances) - 1))
+    False, [], json.Null -> row
+    False, [], _ -> fit_overview(base, json.Null, [])
+  }
 }
