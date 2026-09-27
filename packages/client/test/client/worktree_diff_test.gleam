@@ -355,6 +355,27 @@ pub fn patches_past_the_deadline_are_omitted_from_the_census_test() {
   assert string.contains(file(board, "a.txt").patch, "+first")
 }
 
+// The capture's guard and the broker's budget read the deadline on
+// different clocks. A capture clock twenty seconds behind the broker's
+// passes its own guard while the broker, on real time, finds the budget
+// already spent. That refusal is the capture's deadline, not a policy
+// decision, so a patch call meeting it omits its file. Here the refused
+// call is status, which has no census to omit from and so surfaces it.
+//
+// A patch call cancelled by the budget mid-execution is the other path
+// `unreached` accepts. No fixture clock reaches it: the broker would have
+// to share the capture's counted clock, so only real time covers it.
+pub fn broker_deadline_refusal_is_the_capture_deadline_test() {
+  use wiring <- with_fixture("broker-deadline")
+  setup(wiring, ["init", "--quiet"])
+  let behind =
+    worktree_diff.Wiring(
+      ..wiring,
+      clock: clock.fixed(at: bootstrap.system_time_ms() - 20_000),
+    )
+  assert worktree_diff.capture(behind) == Error(worktree_diff.Deadline)
+}
+
 pub fn jailed_git_subtree_and_read_only_capture_test() {
   use wiring <- with_fixture("subtree")
   setup(wiring, ["init", "--quiet"])

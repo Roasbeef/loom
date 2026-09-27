@@ -179,7 +179,8 @@ pub type Board {
 
 /// Failures never masquerade as a clean repository or an exact file census.
 pub type Error {
-  /// The one deadline was consumed before another execution could begin.
+  /// The one deadline was consumed before another execution could begin,
+  /// whether the capture's guard or the broker's budget noticed it first.
   /// Only status and the metadata probes surface it; a patch call that meets
   /// the deadline omits its file instead.
   Deadline
@@ -559,7 +560,8 @@ fn capture_files(
   }
 }
 
-// A call refused at the guard never started. A call already running when the
+// A call refused at the guard or by the broker's budget never started (see
+// `clearance_error`). A call already running when the
 // deadline passed is cancelled by the broker's budget and settles as an
 // execution failure, often a degraded one because the jail had not finished
 // reporting; the clock, not the settlement's wording, attributes it to the
@@ -688,7 +690,7 @@ fn run_git(
       events:,
       waiting: remaining,
     )
-    |> result.map_error(fn(error) { Refused(string.inspect(error)) }),
+    |> result.map_error(clearance_error),
   )
 
   // No command consumes interactive input. Cancelling on missing settlement
@@ -708,6 +710,24 @@ fn run_git(
     Capture(..capture, clock: next_clock, bytes_left: capture.bytes_left - used),
     output,
   ))
+}
+
+// The guard in `run_git` and the broker's budget read the deadline from
+// different clocks, a moment apart. A deadline that passes between the two
+// reaches the broker, which refuses the reservation; that refusal is the
+// capture's own deadline, not a policy decision, and a patch call meeting
+// it must omit its file like one the guard refused.
+fn clearance_error(refusal: broker.Refusal) -> Error {
+  case refusal {
+    broker.BudgetRefused(budget.DeadlinePassed(_)) -> Deadline
+    broker.BudgetRefused(budget.OutstandingCapReached(_))
+    | broker.PolicyRefused(_)
+    | broker.InvalidPolicy(_)
+    | broker.MintRefused(_)
+    | broker.NoHelper(_)
+    | broker.OperationAborted
+    | broker.BrokerUnavailable -> Refused(string.inspect(refusal))
+  }
 }
 
 fn settled(collected: tool.Collected) -> Result(Output, Error) {
