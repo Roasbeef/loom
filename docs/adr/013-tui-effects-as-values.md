@@ -377,7 +377,7 @@ The survey of mailbox reads, at the commit this slice started from:
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:127` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:924` (`drain_activity`)), and the session
+  (`tui/session_control.gleam:984` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts
@@ -892,3 +892,189 @@ before the attachment change (after the deletion) and after it: `tui`
 0.013 s; `tui@job_runner` 0.16 s and 0.005 s, 0.17 s and 0.006 s. The
 deletion itself took `tui@submit` from 1.25 s to 1.05 s and `tui@inbound`
 from 2.53 s to 2.37 s.
+
+## Addendum: phase 2 S6, file reads leave the step (2026-09-26)
+
+The sixth and last slice of phase 2 takes the file-system reads out of the
+step. Nothing above is changed by it. After it, `tui.step` reads no file;
+what it still reads, and which phase takes each, closes this addendum.
+
+**The survey.** Every file read reachable from `tui.step`, and the reads
+around it, at the commit this slice started from:
+
+| Read | Site | Where it ran | After S6 |
+|---|---|---|---|
+| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:124` | in the step | before the step, in `read_paste` at `tui/runtime.gleam:152` |
+| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:451` | in the step | a job, `Configure` at `tui/job_runner.gleam:152` |
+| the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:515` | the attachment worker, since S5 | unchanged |
+| the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:616`, `discover_from` at `tui.gleam:638`, `read` at `tui.gleam:1006`, `read_private_bounded` at `tui.gleam:1350`, `start` at `tui.gleam:736`, `decode_file` at `tui.gleam:1167`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
+
+Recording appends are writes, and have been effects since S3. Two reads in
+the step touch no file, and the closing section below places them.
+
+**The pasted image is read before the step.** A terminal delivers a dragged
+file as a paste of its path. `tui.update` is now
+`settle(step(event, read_paste(event, receive(stamp(model)))))`.
+`runtime.read_paste` reads the file when a paste names exactly one path
+(`image_drop.read_dropped`, over the same `load_path` the step called) and
+stores the result on the model as `Model.dropped`, an `image_drop.Dropped`
+recorded against the pasted text. The paste handler calls
+`image_drop.dropped_image`, which is pure and uses a read only for the text
+it was taken for; for other text, or for no read, it answers `Ok(None)`,
+the answer for a paste that names no image, and the paste is inserted as
+text. Every event overwrites the field, so a read never outlives its event
+and the base64 image it holds is not retained after the composer takes it.
+
+The other design was a keyed job, `StartJob(key, ReadImage(path))`, whose
+reply would land in a slot. It was rejected because the one step of latency
+is not invisible here. A job answers at the next receive, and a key the
+operator types in between is applied first: an Enter pressed after a drop
+could submit the prompt without the image, and a pasted path that names no
+image would be inserted after the keys that followed it. Read before the
+step, the paste is handled in one step, as before, and the refusals are the
+strings `load_paste` has always produced. The cost is that the runtime
+reads a pasted path whatever the step then does with the paste, so a path
+pasted into an overlay that ignores pastes is read and dropped; the read's
+bounds apply either way.
+
+**The configuration is resolved by a job.** Pressing `n` in the session
+picker with local launch options queues `StartJob(key,
+job.Configure(options))` and holds the key in `Model.configuring`. The
+worker is `bootstrap.session_configuration`, unchanged. The runtime admits
+its reply by key, and `session_control.drain_configuration`, which
+`tick.update_tick` calls after the activity poll's drain and before the
+connection drain (`tui/tick.gleam:127` (`drain_configuration`)), clears the
+slot at the first outcome and continues where the step used to: a resolved
+path goes to `create_session_configured`, which cancels the pending
+submission, refuses while a creation key is retained, control is
+disconnected or another attachment is starting, and only then retains the
+key and starts the attachment job; a failure is written to the transcript
+with the same text, and nothing else changes. The relay's `AllDelivered`
+finds the slot cleared and is dropped. A configuration reply carries only a
+path, so `tui_model.release` has nothing to queue for one that no slot
+admits, and quit clears the slot without a release.
+
+Moving the resolution into the attachment worker, the job that already runs
+for a creation since S5, was rejected. The step retains the creation key
+and cancels the pending submission before it starts that job, and the
+comment above `create_session` gives the reason the resolution comes first:
+a local failure must send nothing and retain no key, so the operator can
+correct the invocation and press `n` again. Resolved in the worker, a
+mistyped `--config` would leave a retained key that refuses the next press,
+and a submission already cancelled. The separate job keeps the order and
+adds one tick, at most the 40 ms active poll after a key press.
+
+Three details follow from the job. A terminal with no local launch options
+has nothing to resolve and still creates in the step, with no
+configuration, as before. A second `n` while the job runs is ignored, since
+the first creation continues when its answer arrives; before this slice the
+first press closed the picker at once, so a second `n` went to the
+composer. And during that tick the picker stays open, so a key pressed in
+that window reaches it; an Enter that opens a row there makes the creation
+that follows report "a session switch is already in progress". That window
+is the one tick of latency and nothing more.
+
+**Orderings kept.**
+
+- *Quit.* The lane close, the attempt's `CancelJob` and `Abandon`, then the
+  control job, relaunch and activity poll cancels, then the configuration
+  job's, which is new and goes last, then the control close. Quit clears
+  `Model.configuring` in the same step, so a late answer is admitted
+  nowhere.
+- *Tick drain order.* Unchanged for the existing drains; the configuration
+  drain is appended after the activity poll's.
+- *Creation.* The checks, the pending-submission cancel and the key
+  retention run in the order they ran when the step resolved inline.
+- *Paste.* An image attaches, and a refusal is reported, in the step that
+  handled the paste.
+
+**Callers outside `update`.** A test that calls `step` directly with a
+paste naming an image calls `runtime.read_paste` first, or the paste is
+inserted as text. A test that presses `n` on a terminal with local options
+ticks through `update` until `Model.configuring` is `None` before it looks
+for the creation key; `tui_daemon_test`'s creation recovery and
+`bootstrap_test`'s real-server lifecycle now do. The client test driver
+needs no change: it selects every running job's replies through
+`job_runner.selector` and hands them to `runtime.hold`, which admits a
+configuration reply like any other.
+
+**Tests and mutations.** `file_reads_test` pins the slice. For the paste:
+the step alone leaves a pasted image path as text though the file is on
+disk; a read taken by `read_paste` attaches its image though the file is
+deleted before the step, which a step that read the file could not do; a
+read for one paste is not attached to another; the next event clears the
+read; and through `update` an image attaches and an oversized one reports
+"dropped image exceeds the 20 MiB limit", the string `load_paste` returns.
+For the configuration: asking for a session queues exactly one
+`job.Configure` under the slot's key, notices nothing about a missing
+`--config` and starts nothing; through `update` the real job's failure is
+reported with `session_configuration`'s own error and the picker stays
+open; a resolved path continues the creation with that path in the
+attachment job, and the relay's last message reports nothing; a reply
+under another key is not admitted; and quit cancels the job. Each mutation
+below was applied alone and reverted.
+
+| Mutation | Tests that failed |
+|---|---|
+| the paste handler calls `image_drop.load_paste` again | `the_step_alone_leaves_a_pasted_image_path_as_text_test`, `the_step_attaches_what_the_read_before_it_found_test` |
+| `dropped_image` uses a read taken for any text | `a_read_for_another_paste_is_not_attached_test` |
+| `read_paste` leaves the read on the model for later events | `the_next_event_clears_the_read_test` |
+| `create_session` resolves the configuration inline again | `asking_for_a_session_queues_the_configuration_job_test`, `a_resolved_configuration_continues_the_creation_test`, `quit_cancels_the_configuration_job_test` |
+| the configuration slot admits a reply under any key | `a_configuration_reply_for_another_key_is_not_admitted_test` |
+| quit leaves the configuration job running | `quit_cancels_the_configuration_job_test` |
+| the tick does not drain the configuration slot | `a_configuration_failure_reports_the_same_error_test`, `a_resolved_configuration_continues_the_creation_test` |
+| the first outcome leaves the slot in place | `a_configuration_failure_reports_the_same_error_test`, `a_resolved_configuration_continues_the_creation_test` |
+
+The inline-resolution mutation leaves
+`a_configuration_failure_reports_the_same_error_test` passing, as it should:
+that test pins the behaviour, which the move keeps.
+
+**Compile time.** `read_paste` is a cross-module call on `update`'s
+parameter, and the configuration drain the tick calls is a cross-module
+call beside the other drains, so the slice adds no local step for the
+inliner to revisit (`docs/execution.md` §8). Measured with `erlc +time` on
+the generated modules, median of three, with the modules from the commit
+this slice started from and from its last commit timed one after the other
+to keep the machine's load the same, wall time and `core_inline_module`
+before and after: `tui` 0.50 s and 0.024 s, 0.52 s and 0.025 s;
+`tui@tick` 0.51 s and 0.022 s, 0.52 s and 0.022 s; `tui@interaction`
+2.59 s and 0.173 s, 2.61 s and 0.173 s; `tui@inbound` 2.50 s and 0.129 s,
+2.64 s and 0.137 s; `tui@submit` 1.14 s and 0.052 s, 1.16 s and 0.052 s;
+`tui@model` 0.37 s and 0.015 s, 0.38 s and 0.015 s; `tui@job` 0.19 s and
+0.004 s, unchanged; `tui@job_runner` 0.21 s and 0.007 s, unchanged;
+`tui@image_drop` 0.20 s and 0.005 s, 0.20 s and 0.006 s.
+`tui@session_control` grew with the drain it gained, from 0.96 s and
+0.062 s to 1.08 s and 0.070 s, and `tui@runtime` with `read_paste` and the
+new slot, from 0.39 s and 0.014 s to 0.44 s and 0.017 s. `tui@inbound`
+did not change in source; its 0.14 s is within the spread of repeated runs
+on this machine, which reached 0.3 s for that module.
+
+**What phase 2 achieved.** The step began phase 2 reading three clocks,
+its jobs' and sockets' mailboxes and the file system, writing the
+recording, and creating the subjects, cancel signals and processes of its
+jobs. Each has moved:
+
+| Slice | What left the step | Where it went |
+|---|---|---|
+| S1 | presentation, transport and wall clock reads | `runtime.stamp`, before the step |
+| S2 | connection, replay and attachment mailbox reads | `runtime.receive`, into buffered inboxes |
+| S3 | recording appends and attempt notes | `Record` and `Note` effects |
+| S4 | control, relaunch and activity-poll starts, cancels and replies | `StartJob` and `CancelJob`, replies admitted by key |
+| S5 | the attachment attempt's start and messages; the local switch | a keyed `Attach` job; the switch deleted |
+| S6 | the pasted image read; the configuration resolution | `runtime.read_paste`; a keyed `Configure` job |
+
+Two reads remain in the step, and neither touches the file system. Adoption
+asks whether the replacement socket's actor is alive
+(`tui/attachment.gleam:563` (`connection.adopt`)). And the build-mismatch
+notice reads this client's build identity from two environment variables on
+every coherent cut (`tui/inbound.gleam:103` (`build_identity`)). Phase 3
+takes both: once etui's events are replaced by a domain message type, the
+runtime can read the liveness when it delivers the message that carries the
+socket, and the build identity, which does not change while the process
+runs, can be read once when the model is created, as `Model.terminal` is.
+Phase 3 also deletes the `Peer` branches that suppress effects during
+replay; they perform no I/O now, but they remain as control flow. Every
+other effect the step decides is a value in its returned list, and every
+other input it reads was put on the model by the runtime before the step.
