@@ -208,9 +208,8 @@ fn web_document(
         Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
       }
 
-    // The exchange redeems the ticket before it looks at the path's session,
-    // so a ticket presented against the wrong session is spent rather than
-    // left for another try.
+    // A ticket presented against another session's path is spent without a
+    // UI session, and the browser's existing one is left as it was.
     ui_http.Exchange(id, ticket) ->
       case ui_http.exchange_allowed(request) {
         False -> plain(403, "forbidden exchange")
@@ -219,11 +218,13 @@ fn web_document(
             ui_sessions.redeem(
               ui.sessions,
               ticket,
+              id,
               ui_http.session_cookie(request),
             )
           {
-            Error(Nil) -> plain(401, "unknown or expired ticket")
-            Ok(redeemed) if redeemed.grant.session_id != id ->
+            Error(ui_sessions.UnknownTicket) ->
+              plain(401, "unknown or expired ticket")
+            Error(ui_sessions.OtherSession) ->
               plain(403, "ticket names another session")
             Ok(redeemed) ->
               document(200, "text/html; charset=utf-8", page.enter())
@@ -988,10 +989,7 @@ fn dispatch(
       use ui <- result.try(option.to_result(config.ui, "unavailable"))
       use _ <- result.try(authorized(state, digest, id))
       use issued <- result.try(
-        ui_sessions.mint(
-          ui.sessions,
-          ui_sessions.Grant(principal.id, id, digest),
-        )
+        ui_sessions.mint(ui.sessions, ui_sessions.Grant(id, digest))
         |> result.replace_error("unavailable"),
       )
       Ok(#(

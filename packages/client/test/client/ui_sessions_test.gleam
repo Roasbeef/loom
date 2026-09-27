@@ -75,7 +75,7 @@ fn distinct_bytes(counter: Subject(Count), size: Int) -> BitArray {
 fn grant(session: String) -> ui_sessions.Grant {
   let assert Ok(digest) = access.credential_digest(string.repeat("b", 64))
     as "the fixture digest is valid"
-  ui_sessions.Grant("alice", session, digest)
+  ui_sessions.Grant(session, digest)
 }
 
 fn mint(sessions, session) -> String {
@@ -88,11 +88,12 @@ fn mint(sessions, session) -> String {
 pub fn a_ticket_is_redeemed_once_test() {
   let sessions = table(clock())
   let ticket = mint(sessions, "s1")
-  let assert Ok(redeemed) = ui_sessions.redeem(sessions, ticket, None)
+  let assert Ok(redeemed) = ui_sessions.redeem(sessions, ticket, "s1", None)
     as "the first redemption succeeds"
   assert redeemed.grant == grant("s1")
   assert ui_sessions.lookup(sessions, redeemed.cookie) == Ok(grant("s1"))
-  assert ui_sessions.redeem(sessions, ticket, None) == Error(Nil)
+  assert ui_sessions.redeem(sessions, ticket, "s1", None)
+    == Error(ui_sessions.UnknownTicket)
 }
 
 pub fn two_redemptions_at_once_succeed_once_test() {
@@ -105,7 +106,7 @@ pub fn two_redemptions_at_once_succeed_once_test() {
   list.repeat(Nil, 20)
   |> list.each(fn(_) {
     process.spawn(fn() {
-      process.send(results, ui_sessions.redeem(sessions, ticket, None))
+      process.send(results, ui_sessions.redeem(sessions, ticket, "s1", None))
     })
   })
   let outcomes =
@@ -115,7 +116,10 @@ pub fn two_redemptions_at_once_succeed_once_test() {
         as "every redemption answers"
       outcome
     })
-  assert list.count(outcomes, fn(outcome) { outcome != Error(Nil) }) == 1
+  assert list.count(outcomes, fn(outcome) {
+      outcome != Error(ui_sessions.UnknownTicket)
+    })
+    == 1
 }
 
 pub fn a_ticket_expires_after_a_minute_test() {
@@ -123,14 +127,15 @@ pub fn a_ticket_expires_after_a_minute_test() {
   let sessions = table(time)
   let ticket = mint(sessions, "s1")
   process.send(time, Advance(60_000))
-  assert ui_sessions.redeem(sessions, ticket, None) == Error(Nil)
+  assert ui_sessions.redeem(sessions, ticket, "s1", None)
+    == Error(ui_sessions.UnknownTicket)
 }
 
 pub fn a_ui_session_expires_after_eight_hours_test() {
   let time = clock()
   let sessions = table(time)
   let assert Ok(redeemed) =
-    ui_sessions.redeem(sessions, mint(sessions, "s1"), None)
+    ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1", None)
     as "the ticket is redeemed"
   process.send(time, Advance(28_800_000 - 1))
   assert ui_sessions.lookup(sessions, redeemed.cookie) == Ok(grant("s1"))
@@ -141,14 +146,14 @@ pub fn a_ui_session_expires_after_eight_hours_test() {
 pub fn a_new_ticket_replaces_the_ui_session_outright_test() {
   let sessions = table(clock())
   let assert Ok(first) =
-    ui_sessions.redeem(sessions, mint(sessions, "s1"), None)
+    ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1", None)
     as "the first ticket is redeemed"
 
   // The browser presents a ticket for another session while holding the
   // first cookie. The old UI session is gone, and the new one grants only
   // the new ticket's session: nothing is merged.
   let assert Ok(second) =
-    ui_sessions.redeem(sessions, mint(sessions, "s2"), Some(first.cookie))
+    ui_sessions.redeem(sessions, mint(sessions, "s2"), "s2", Some(first.cookie))
     as "the second ticket is redeemed"
   assert second.cookie != first.cookie
   assert ui_sessions.lookup(sessions, first.cookie) == Error(Nil)
@@ -160,7 +165,7 @@ pub fn the_sweep_reclaims_what_expired_test() {
   let sessions = table(time)
   let _unredeemed = mint(sessions, "s1")
   let assert Ok(_redeemed) =
-    ui_sessions.redeem(sessions, mint(sessions, "s2"), None)
+    ui_sessions.redeem(sessions, mint(sessions, "s2"), "s2", None)
     as "a ticket is redeemed"
   assert ui_sessions.sizes(sessions) == Ok(#(1, 1))
 
@@ -171,4 +176,34 @@ pub fn the_sweep_reclaims_what_expired_test() {
   process.send(time, Advance(28_800_000))
   ui_sessions.sweep(sessions)
   assert ui_sessions.sizes(sessions) == Ok(#(0, 0))
+}
+
+pub fn a_refused_redemption_keeps_the_browsers_ui_session_test() {
+  let sessions = table(clock())
+  let assert Ok(held) =
+    ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1", None)
+    as "the browser holds a UI session"
+
+  // A spent ticket presented with the cookie signs nothing out.
+  assert ui_sessions.redeem(sessions, "not-a-ticket", "s1", Some(held.cookie))
+    == Error(ui_sessions.UnknownTicket)
+  assert ui_sessions.lookup(sessions, held.cookie) == Ok(grant("s1"))
+}
+
+pub fn a_ticket_for_another_session_is_spent_and_inserts_nothing_test() {
+  let sessions = table(clock())
+  let assert Ok(held) =
+    ui_sessions.redeem(sessions, mint(sessions, "s1"), "s1", None)
+    as "the browser holds a UI session"
+  let other = mint(sessions, "s2")
+  assert ui_sessions.sizes(sessions) == Ok(#(1, 1))
+
+  // Presented on the first session's path, the second session's ticket is
+  // refused and spent; no UI session is added and the held one is kept.
+  assert ui_sessions.redeem(sessions, other, "s1", Some(held.cookie))
+    == Error(ui_sessions.OtherSession)
+  assert ui_sessions.sizes(sessions) == Ok(#(0, 1))
+  assert ui_sessions.lookup(sessions, held.cookie) == Ok(grant("s1"))
+  assert ui_sessions.redeem(sessions, other, "s2", None)
+    == Error(ui_sessions.UnknownTicket)
 }

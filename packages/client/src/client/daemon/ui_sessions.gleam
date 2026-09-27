@@ -46,8 +46,6 @@ pub const sweep_ms = 60_000
 /// What a ticket and the UI session it becomes stand for.
 pub type Grant {
   Grant(
-    /// The principal the ticket was minted for.
-    principal_id: String,
     /// The one session the ticket names.
     session_id: String,
     /// The digest of the credential that asked for the ticket. Every later
@@ -70,6 +68,19 @@ pub type Issued {
 /// A redeemed ticket: the new UI session's cookie and what it grants.
 pub type Redeemed {
   Redeemed(cookie: String, grant: Grant)
+}
+
+/// Why a ticket was not redeemed.
+pub type Refusal {
+  /// No live ticket has this value: it was never minted, it was already
+  /// redeemed, or it expired.
+  UnknownTicket
+
+  /// The ticket is live but names another session than the path it was
+  /// presented on. It is spent all the same: a ticket presented where it
+  /// does not belong has been copied somewhere it should not be, and a
+  /// second try must not get another chance at it.
+  OtherSession
 }
 
 /// The actor's clock and entropy, injected so a test can move time.
@@ -107,8 +118,9 @@ type Message {
   Mint(grant: Grant, reply: Subject(Issued))
   Redeem(
     ticket: String,
+    session_id: String,
     previous: Option(String),
-    reply: Subject(Result(Redeemed, Nil)),
+    reply: Subject(Result(Redeemed, Refusal)),
   )
   Lookup(cookie: String, reply: Subject(Result(Grant, Nil)))
   Sizes(reply: Subject(#(Int, Int)))
@@ -149,33 +161,37 @@ pub fn start(settings: Settings) -> Result(Sessions, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.mint(sessions, Grant(principal, session, digest))
+/// // ui_sessions.mint(sessions, Grant(session, digest))
 /// ```
 pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
   call.try_call(sessions.subject, waiting: 1000, sending: Mint(grant, _))
   |> result.replace_error(Nil)
 }
 
-/// Redeems `ticket` once. A request that already carried a cookie names it
-/// as `previous`, and that UI session is deleted first: a ticket replaces
-/// the UI session outright, and nothing carries over from the old one.
+/// Redeems `ticket` once, for the page of `session_id`. A request that
+/// already carried a cookie names it as `previous`. A successful redemption
+/// deletes that UI session: a ticket replaces it outright, and nothing
+/// carries over. A refused redemption leaves it alone, so a stale or
+/// misdirected link cannot sign a working page out.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_sessions.redeem(sessions, ticket, None)
+/// // ui_sessions.redeem(sessions, ticket, session_id, None)
 /// ```
 pub fn redeem(
   sessions: Sessions,
   ticket: String,
+  session_id: String,
   previous: Option(String),
-) -> Result(Redeemed, Nil) {
+) -> Result(Redeemed, Refusal) {
   call.try_call(sessions.subject, waiting: 1000, sending: Redeem(
     ticket,
+    session_id,
     previous,
     _,
   ))
-  |> result.unwrap(Error(Nil))
+  |> result.unwrap(Error(UnknownTicket))
 }
 
 /// What a live UI session's cookie grants.
@@ -231,24 +247,28 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
     }
 
-    // The whole redemption happens in this one turn: the old UI session is
-    // dropped, the ticket is removed whether or not it was still live, and a
-    // live ticket becomes a new UI session. Nothing between those steps can
-    // interleave with another redemption.
-    Redeem(ticket:, previous:, reply:) -> {
-      let sessions = case previous {
-        Some(cookie) -> dict.delete(state.sessions, digest(cookie))
-        None -> state.sessions
-      }
+    // The whole redemption happens in this one turn: the ticket is removed
+    // whether or not it was still live, and only a live ticket for this
+    // session drops the old UI session and becomes a new one. Nothing
+    // between those steps can interleave with another redemption.
+    Redeem(ticket:, session_id:, previous:, reply:) -> {
       let key = digest(ticket)
       let found = live(state.tickets, key, now)
       let tickets = dict.delete(state.tickets, key)
       case found {
         Error(Nil) -> {
-          process.send(reply, Error(Nil))
-          actor.continue(State(..state, tickets:, sessions:))
+          process.send(reply, Error(UnknownTicket))
+          actor.continue(State(..state, tickets:))
+        }
+        Ok(grant) if grant.session_id != session_id -> {
+          process.send(reply, Error(OtherSession))
+          actor.continue(State(..state, tickets:))
         }
         Ok(grant) -> {
+          let sessions = case previous {
+            Some(cookie) -> dict.delete(state.sessions, digest(cookie))
+            None -> state.sessions
+          }
           let cookie = secret(state.settings)
           let entry = Entry(grant, now + state.settings.session_ms)
           process.send(reply, Ok(Redeemed(cookie, grant)))

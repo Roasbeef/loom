@@ -356,7 +356,7 @@ pub fn every_ui_response_is_checked_and_secured_test() {
   })
 }
 
-pub fn a_revoked_credential_closes_the_page_test() {
+pub fn a_revoked_credential_refuses_the_page_request_test() {
   fixture(fn(ready, port, _) {
     let session = create_session(ready, "revoked", 903)
     let member = "ui-member-token"
@@ -386,3 +386,30 @@ pub fn a_revoked_credential_closes_the_page_test() {
     assert catalogue.close(store) == Ok(Nil)
   })
 }
+
+pub fn a_ticket_for_another_session_is_refused_and_signs_nothing_out_test() {
+  fixture(fn(ready, port, credential) {
+    let first = create_session(ready, "first", 904)
+    let second = create_session(ready, "second", 905)
+    let cookie = cookie_of(exchange(port, link(port, credential, first)))
+    let with_cookie = #("cookie", "loom_ui=" <> cookie)
+
+    // The second session's ticket, presented on the first session's path
+    // with the first page's cookie: refused, spent, and no cookie is set.
+    let misdirected =
+      string.replace(link(port, credential, second), second, first)
+    let refused =
+      get(port, misdirected, [
+        host(port),
+        #("sec-fetch-site", "none"),
+        with_cookie,
+      ])
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+
+    // The first page still opens with the cookie it had.
+    assert get(port, "/ui/sessions/" <> first, [host(port), with_cookie]).status
+      == 200
+  })
+}
+
