@@ -512,6 +512,7 @@ fn apply_configuration_reply(
   let finished = Model(..model, configuring: None)
   case reply {
     weft.NotYet -> model
+
     // The key press that asked for this painted the picker still open, and
     // the tick repaints only when the frame revision moves, so the closed
     // picker and the creation notice need an invalidation of their own. The
