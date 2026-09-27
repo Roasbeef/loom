@@ -54,7 +54,7 @@ pub type Dropped {
   Dropped(
     /// The pasted text exactly as the event carried it.
     text: String,
-    /// What `load_paste` returned for that text.
+    /// What `load_path` returned for the path the text names.
     read: Result(Option(Image), String),
   )
 }
@@ -104,6 +104,10 @@ pub fn dropped_image(
 ///
 /// `Ok(None)` means the paste stays ordinary text. Inspection or read failures
 /// return an explanation so the caller can leave the editor untouched.
+///
+/// Nothing in the terminal calls this: the runtime reads through
+/// `read_dropped`, which records the same result against the pasted text.
+/// It is kept for the tests that check what reading one path returns.
 ///
 /// ## Examples
 ///
