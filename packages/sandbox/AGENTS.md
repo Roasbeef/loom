@@ -365,7 +365,10 @@ only Go module.
   is still in the cgroup tearing them down, and an rmdir in that window
   fails with EBUSY. Every exec cgroup leaked that way until the wait was
   added, which on a signoff host meant 50,000 cgroups and several GB of
-  kernel memory.
+  kernel memory. The wait is about 50 ms, so the server takes
+  `Exec.Settle`'s release after writing `exec_exit` rather than inside
+  `Wait`; each execution's `waitDone` also waits for the previous one's,
+  so `reapRunning` still joins every removal in flight.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
