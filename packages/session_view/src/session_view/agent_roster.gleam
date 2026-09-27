@@ -26,6 +26,7 @@
 //// host has seen one and from the glance otherwise.
 
 import core/glance.{type Glance}
+import core/message
 import core/register
 import gleam/dict.{type Dict}
 import gleam/int
@@ -293,6 +294,20 @@ pub fn observe_usage(
         pushed: dict.insert(roster.pushed, strand, #(operation, context)),
       )
   }
+}
+
+/// The context a generation leaves an agent holding: everything it sent,
+/// cached or not, plus what it wrote. This is the figure a usage push
+/// records as the operation's context size (`observe_usage`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.context(usage) == usage.input + usage.cache_read
+/// //   + usage.cache_write + usage.output
+/// ```
+pub fn context(usage: message.Usage) -> Int {
+  usage.input + usage.cache_read + usage.cache_write + usage.output
 }
 
 /// Advances the roster's clock. Reports whether a drawn second changed, so a

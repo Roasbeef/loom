@@ -1915,12 +1915,6 @@ fn receive_usage(
   watch_cache(Model(..updated, usage:), strand, settled)
 }
 
-// The context a generation leaves the agent holding: everything it sent,
-// cached or not, plus what it wrote.
-fn context_size(usage: message.Usage) -> Int {
-  usage.input + usage.cache_read + usage.cache_write + usage.output
-}
-
 // A network push is an observation of one durable row, not a second owner of
 // session totals. A capture may already include its sequence, or a delayed
 // push may arrive after that capture; only the capture sets cumulative usage.
@@ -1961,7 +1955,7 @@ fn receive_usage_observation(
             model.strip,
             strand,
             operation,
-            context_size(settled),
+            agent_roster.context(settled),
           ),
         )
         |> settle_usage(

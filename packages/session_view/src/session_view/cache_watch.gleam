@@ -128,6 +128,48 @@ pub fn outlook(
   |> cache_miss.outlook(now)
 }
 
+/// Whether a strand is running an operation, which decides whether its
+/// outlook is shown at all.
+pub type Activity {
+  /// An operation is running, or a prompt is on its way to one.
+  Running
+
+  /// Nothing is running on the strand.
+  Resting
+}
+
+/// The outlook a host shows for one strand, or `None` when there is nothing
+/// honest to show.
+///
+/// The reading is suppressed while the strand is running. A request in
+/// flight re-writes the prefix whatever the label says, so a countdown shown
+/// mid-generation would name an expiry the request in progress is about to
+/// reset, and the miss row, not the label, is what reports what the pause
+/// before the request cost. A strand that has not held a prefix worth a
+/// label (`cache_miss.Unheld`) shows nothing either.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert cache_watch.shown(cache_watch.new(), "main", cache_watch.Resting, 0)
+///   == None
+/// ```
+pub fn shown(
+  ledger: Ledger,
+  strand: String,
+  activity: Activity,
+  now: Int,
+) -> Option(cache_miss.Outlook) {
+  case activity {
+    Running -> None
+    Resting ->
+      case outlook(ledger, strand, now) {
+        Some(cache_miss.Unheld) | None -> None
+        Some(held) -> Some(held)
+      }
+  }
+}
+
 /// Folds one row into its strand's watch at once, reporting any miss it
 /// reveals. This is the path for a row with no durable sequence, which has
 /// no capture to wait for.
