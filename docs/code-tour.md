@@ -66,7 +66,7 @@ Two more sit beside the planes rather than in one. `telemetry` is a leaf
 over `core`, so any impure package may log through it, and its
 correlation context travels as a value because `logger`'s process
 metadata does not survive a spawn and the effect sandwich is nothing but
-spawns. `lint` is Loom's own house-rule lint over Gleam source — twelve
+spawns. `lint` is Loom's own house-rule lint over Gleam source — thirteen
 rules, five of which gate `make check` at error level — and it depends on
 nothing in the harness at all.
 
