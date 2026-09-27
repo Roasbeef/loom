@@ -186,7 +186,7 @@ pub fn reviewer_completion_keeps_the_composer_fixed_test() {
       ..live,
       strands: [protocol.Strand("advisor", Some("advisor"), None)],
       reviewer_rows: [],
-      frame_cache: None,
+      view: tui_model.View(..live.view, frame_cache: None),
     )
     |> tui.update(backend.Resize(80, 24), _)
   let #(live_buffer, live_cursor) =

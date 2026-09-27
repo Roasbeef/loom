@@ -52,7 +52,7 @@ import tui/admission
 import tui/attachment
 import tui/buffered
 import tui/connection
-import tui/daemon
+import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
 import tui/herdr
 import tui/image_drop
@@ -232,11 +232,31 @@ pub fn message(event: backend.InputEvent, model: Model) -> Msg {
 /// ```gleam
 /// let model = runtime.hold(model, job.ControlArrived(key, weft.AllDelivered))
 /// ```
-pub fn hold(model: Model, arrival: job.Arrival) -> Model {
+pub fn hold(
+  model: Model,
+  arrival: job.Arrival(daemon_selection.Host),
+) -> Model {
+  let #(running, arrival) = job_runner.file(model.running, arrival)
   let arrival = checked(model, arrival)
-  let model =
-    Model(..model, running: job_runner.observed(model.running, arrival))
+  let model = Model(..model, running: job_runner.observed(running, arrival))
   admission.admit(model, [msg.JobReplied(arrival)])
+}
+
+/// Puts a daemon control connection in the runtime's table and names it on
+/// the model as the terminal's control route.
+///
+/// The launch paths call this with the connection they authenticated, and
+/// a test calls it to give a model a control route. The step never sees the
+/// connection, only the key and build `job.Daemon` carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = runtime.adopt_control(model, host)
+/// ```
+pub fn adopt_control(model: Model, host: daemon_selection.Host) -> Model {
+  let #(running, daemon) = job_runner.adopt_control(model.running, host)
+  Model(..model, running:, daemon_host: Some(daemon))
 }
 
 // An attachment job's end permits adoption only on a socket that is still
@@ -247,7 +267,10 @@ pub fn hold(model: Model, arrival: job.Arrival) -> Model {
 // other key is dropped by the admission below whatever it carries. A socket
 // can die after this read as it could after the step's read before phase
 // 3; the adopted lane's own transport-loss handling covers that case.
-fn checked(model: Model, arrival: job.Arrival) -> job.Arrival {
+fn checked(
+  model: Model,
+  arrival: job.Arrival(job.Daemon),
+) -> job.Arrival(job.Daemon) {
   case arrival {
     job.AttachArrived(key:, reply: job.Settled(weft.AllDelivered)) ->
       case attachment.job_key(model.candidate) == Some(key) {
@@ -373,8 +396,8 @@ pub fn flush(model: Model) -> Model {
   settle(take(model))
 }
 
-// Starts and cancels change the job table; every other effect is one call
-// that leaves it as it was.
+// Starts, cancels and control closes change the runtime's table; every
+// other effect is one call that leaves it as it was.
 fn perform_one(
   running: job_runner.Running,
   requested: Effect,
@@ -382,10 +405,10 @@ fn perform_one(
   case requested {
     effect.StartJob(key, spec) -> job_runner.start(running, key, spec)
     effect.CancelJob(key) -> job_runner.cancel(running, key)
+    effect.CloseControl(control) -> job_runner.close_control(running, control)
     effect.Channel(_)
     | effect.Attachment(_)
     | effect.CloseSocket(_)
-    | effect.CloseControl(_)
     | effect.Discard(_)
     | effect.Record(..)
     | effect.WriteClipboard(_)
@@ -402,7 +425,6 @@ fn perform_io(requested: Effect) -> Nil {
     effect.Channel(output) -> terminal_lane.perform(output)
     effect.Attachment(output) -> attachment.perform(output)
     effect.CloseSocket(socket) -> connection.close(socket)
-    effect.CloseControl(control) -> daemon.close(control)
     effect.Discard(inbox) -> buffered.discard(inbox)
     effect.Record(recorder, event) -> recording.append(recorder, event)
 
@@ -414,7 +436,8 @@ fn perform_io(requested: Effect) -> Nil {
     effect.ReportHerdr(reporter, state, session, message) ->
       herdr.report(Some(reporter), state, session, message)
 
-    // `perform_one` handles these two before it gets here.
-    effect.StartJob(..) | effect.CancelJob(_) -> Nil
+    // `perform_one` handles these three before it gets here, because each
+    // changes the runtime's table.
+    effect.StartJob(..) | effect.CancelJob(_) | effect.CloseControl(_) -> Nil
   }
 }

@@ -73,6 +73,17 @@ pub type PeerWake {
 }
 
 /// Requests are explicit; metadata reads never imply an open.
+/// What a web page may do: the ceiling `ui.link` asks for. An operator's
+/// page is asked for only with `loom --ui --operate`.
+pub type WebPage {
+  /// A page that follows the session and sends nothing.
+  ObserverPage
+
+  /// A page with a composer and approval buttons, for a principal whose
+  /// membership is an operator's or the owner's.
+  OperatorPage
+}
+
 pub type Command {
   /// Renames the active session without changing its identity or lifetime.
   RenameSession(
@@ -124,6 +135,9 @@ pub type Command {
   UiLink(
     /// Canonical authorized session identity.
     session_id: String,
+    /// The most the page may do. It caps the principal's membership role in
+    /// the session and never grants one.
+    page: WebPage,
   )
 
   /// Looks up a workspace selection without starting it.
@@ -597,7 +611,16 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       Ok([#("after", json.String(after)), ..extra])
     }
-    GetSession(id) | UiLink(id) -> identity_fields(id)
+    GetSession(id) | UiLink(id, ObserverPage) -> identity_fields(id)
+
+    // An observer's page is the default, and its request is the one this
+    // launcher sent before the field existed; only an operator's page names
+    // it, which a daemon that predates the field ignores and serves as an
+    // observer's (protocol-change/051, the operator addendum).
+    UiLink(id, OperatorPage) -> {
+      use fields <- result.map(identity_fields(id))
+      list.append(fields, [#("page", json.String("operator"))])
+    }
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
     RenameSession(id, name) -> {
@@ -1028,15 +1051,6 @@ fn field(value: json.JsonValue, key: String) {
   }
 }
 
-// The hello's build identity, or `None` when the daemon did not send one.
-//
-// Absence is not an error: an older daemon's hello predates these two
-// fields, and a new client must still attach to it and report that it is
-// old rather than refusing the frame for a missing field. Both fields
-// must be present and non-empty together, or the answer is `None` — a
-// half identity is no more an identity than an absent one, and reading
-// it as `Some(Build("0.1.0", ""))` would put a blank commit in a
-// diagnostic the operator is meant to compare.
 // The web view's route prefix, when the daemon serves the view. An absent
 // field is a daemon started without `--ui`; a present one must be well
 // formed, because a client acts on it.
@@ -1047,6 +1061,15 @@ fn view_at(body: json.JsonValue) {
   }
 }
 
+// The hello's build identity, or `None` when the daemon did not send one.
+//
+// Absence is not an error: an older daemon's hello predates these two
+// fields, and a new client must still attach to it and report that it is
+// old rather than refusing the frame for a missing field. Both fields
+// must be present and non-empty together, or the answer is `None` — a
+// half identity is no more an identity than an absent one, and reading
+// it as `Some(Build("0.1.0", ""))` would put a blank commit in a
+// diagnostic the operator is meant to compare.
 fn build_at(body: json.JsonValue) {
   case text_at(body, "build_version", 128), text_at(body, "build_commit", 128) {
     Ok(version), Ok(commit) -> Ok(Some(Build(version, commit)))

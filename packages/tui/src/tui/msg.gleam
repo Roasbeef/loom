@@ -80,7 +80,7 @@ pub type Arrival {
   Replayed(event: attempt.Event)
 
   /// One message from a background job, tagged with the job's key.
-  JobReplied(arrival: job.Arrival)
+  JobReplied(arrival: job.Arrival(job.Daemon))
 }
 
 /// The clock readings one event is applied at.

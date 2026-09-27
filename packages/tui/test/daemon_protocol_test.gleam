@@ -376,3 +376,23 @@ pub fn a_hello_names_the_web_view_only_when_it_is_served_test() {
     as "a daemon without the view is refused"
   assert string.contains(reason, "started without --ui")
 }
+
+// Protocol-change/051, the operator addendum. An observer's page is the
+// request a launcher sent before the field existed, so it names no page; only
+// `--operate` adds `page:"operator"`, which caps and never grants.
+pub fn a_ui_link_names_the_page_only_for_an_operator_test() {
+  let id = "00000000-0000-7000-8000-000000000001"
+  let epoch = protocol.Epoch("current")
+  assert protocol.encode(1, protocol.UiLink(id, protocol.ObserverPage), epoch)
+    == Ok(
+      "{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{\"session_id\":\""
+      <> id
+      <> "\"}}",
+    )
+  assert protocol.encode(1, protocol.UiLink(id, protocol.OperatorPage), epoch)
+    == Ok(
+      "{\"v\":2,\"id\":1,\"cmd\":\"ui.link\",\"body\":{\"session_id\":\""
+      <> id
+      <> "\",\"page\":\"operator\"}}",
+    )
+}

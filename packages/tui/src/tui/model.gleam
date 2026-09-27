@@ -66,12 +66,12 @@ import tui/bootstrap
 import tui/buffered
 import tui/cache_miss
 import tui/completion_summary
-import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/focused_goal_panel
 import tui/herdr
 import tui/job
 import tui/job_runner
+import tui/live_tail
 import tui/model_selector
 import tui/msg
 import tui/note_panel
@@ -338,13 +338,91 @@ pub type StrandWorkspace {
   )
 }
 
-/// The immutable presentation state.
+/// The terminal's etui render caches: the rows and frames a projection or
+/// a paint built from the model, in etui's own types.
+///
+/// They are the model's `view`, the one field whose type the engine does
+/// not know. Everything else on the model is state a reducer decides; these
+/// are what the terminal's view derived from it, kept so the next paint can
+/// reuse them. A reducer that needs them rebuilt says so through the
+/// model's own revisions and `record_cache_epoch`, and the projection reads
+/// those, so no reducer outside the projection, the frame cache and the
+/// mouse selection writes here. A second host keeps its own view state
+/// beside the same model (ADR-014, the third blocker).
+@internal
+pub type View {
+  View(
+    /// The wrapped rows of the whole transcript, durable and live.
+    rendered_rows: List(span.Line),
+    /// The wrapped rows of the durable records alone.
+    record_rows: List(span.Line),
+    /// What the last projection decided about the live answer's rows, so
+    /// the next one reprocesses only the text that arrived since. It holds
+    /// the fragment list it last drew and checks it against the stream on
+    /// every projection, so a stream that restarts or collapses finds the
+    /// cache stale here and no reducer has to drop it.
+    live_tail: live_tail.Cache,
+    /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
+    /// only the current projection, so old branches and outcomes are released.
+    record_line_cache: Dict(Line, List(span.Line)),
+    /// Cached newest-first diff rows. Stream fragments cannot make the
+    /// changes pane reparse settled edit results.
+    diff_rows: List(span.Line),
+    /// Current diff lines retain layout across captures at the same width.
+    /// Rebuilding keeps only the newly captured projection's keys.
+    diff_line_cache: Dict(Line, List(span.Line)),
+    /// The last completed frame and the screen and revision it was for.
+    frame_cache: Option(FrameCache),
+    /// The selected pane stays on its original cells until the selection ends.
+    selection_frame: Option(buffer.Buffer),
+    /// The model's `record_cache_epoch` the record rows were built at. A
+    /// reducer that clears the transcript bumps the model's epoch, and the
+    /// next projection drops the record rows and their line cache rather
+    /// than reusing rows for lines that are gone.
+    record_cache_epoch: Int,
+  )
+}
+
+/// A view with nothing cached, for a new model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let view = tui_model.empty_view()
+/// ```
+@internal
+pub fn empty_view() -> View {
+  View(
+    rendered_rows: [],
+    record_rows: [],
+    live_tail: live_tail.new(),
+    record_line_cache: dict.new(),
+    diff_rows: [],
+    diff_line_cache: dict.new(),
+    frame_cache: None,
+    selection_frame: None,
+    record_cache_epoch: 0,
+  )
+}
+
+/// The terminal's model: the client state with the terminal's etui caches
+/// as its view.
+@internal
+pub type Model =
+  State(View)
+
+/// The immutable presentation state, with a host's view state as `view`.
+///
+/// The constructor is `Model`, the name every reducer builds and updates
+/// it by. The type takes the host's view state as a parameter so that the
+/// state a reducer decides names no etui type of its own; the terminal's
+/// `Model` is `State(View)`.
 ///
 /// Published `@internal` so the virtual-backend harness can build a state
 /// by hand and drive the real loop over it. Nothing outside this package
 /// sees it.
 @internal
-pub type Model {
+pub type State(view) {
   Model(
     quit: Bool,
     width: Int,
@@ -475,12 +553,6 @@ pub type Model {
     /// Diff scrolling is independent of conversation scrolling, including
     /// while a narrow terminal temporarily shows only the changes.
     diff_scroll_offset: Int,
-    /// Cached newest-first diff rows. Stream fragments cannot make the
-    /// changes pane reparse settled edit results.
-    diff_rows: List(span.Line),
-    /// Current diff lines retain layout across captures at the same width.
-    /// Rebuilding keeps only the newly captured projection's keys.
-    diff_line_cache: Dict(Line, List(span.Line)),
     /// The row count belongs to the cached diff projection and its width.
     diff_row_count: Int,
     /// The observation and selection that produced the cached patch rows.
@@ -558,7 +630,7 @@ pub type Model {
     /// reaches this terminal.
     notices: Int,
     /// Terminal-owned daemon control, independent of the selected session.
-    daemon_host: Option(daemon_selection.Host),
+    daemon_host: Option(job.Daemon),
     /// One bounded metadata page request; no catalogue accumulation.
     control_request: Option(ControlRequest),
     /// The session picker's activity poll, separate from the control job.
@@ -631,7 +703,6 @@ pub type Model {
     render_revision: Int,
     rendered_revision: Int,
     rendered_row_count: Int,
-    rendered_rows: List(span.Line),
     /// How many of `rendered_rows` the bottom-anchored viewport has shown.
     /// Never above `rendered_row_count`; the difference is the backlog the
     /// pacing walk is working off, and a gesture closes it at once.
@@ -640,12 +711,8 @@ pub type Model {
     rendered_anchors: List(Option(transcript_anchor.Row)),
     /// Copy gutters aligned with `rendered_rows`, built in the same pass.
     rendered_gutters: List(Int),
-    record_rows: List(span.Line),
-    /// Durable copy gutters, aligned with `record_rows`.
+    /// Durable copy gutters, aligned with `view.record_rows`.
     record_gutters: List(Int),
-    /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
-    /// only the current projection, so old branches and outcomes are released.
-    record_line_cache: Dict(Line, List(span.Line)),
     /// Compact invocation rows keyed by their complete immutable outcome.
     /// Rebuilds retain only calls in the current projection.
     compact_call_cache: Dict(tool_activity.Call, List(Line)),
@@ -662,7 +729,6 @@ pub type Model {
     record_cache_strand: String,
     record_cache_details: Bool,
     frame_revision: Int,
-    frame_cache: Option(FrameCache),
     frame_debt: pacing.FrameDebt,
     /// The presentation clock, shared by pacing, activity, and throughput.
     /// Scripts inject this clock without changing transport deadlines. Only
@@ -701,9 +767,7 @@ pub type Model {
     /// the next key, wheel notch, paste or resize rather than tracked
     /// through a reflow.
     selection: Option(selection.Selection),
-    /// The selected pane stays on its original cells until the selection ends.
-    selection_frame: Option(buffer.Buffer),
-    /// Screen row and transcript gutter captured with `selection_frame`.
+    /// Screen row and transcript gutter captured with `view.selection_frame`.
     selection_gutters: List(#(Int, Int)),
     /// Whether a finished selection reaches the terminal's clipboard.
     clipboard: Clipboard,
@@ -728,6 +792,11 @@ pub type Model {
     /// `runtime.receive` reads it before the next one. It is on the model
     /// because the model is the only state the loop keeps between events.
     running: job_runner.Running,
+    /// Bumped by a reducer that empties the transcript (`/clear`, a new
+    /// session), so the view drops its record rows at the next projection.
+    record_cache_epoch: Int,
+    /// The host's view state: for the terminal, its etui render caches.
+    view: view,
   )
 }
 
@@ -754,7 +823,7 @@ pub type Reconnect {
   /// The terminal cancels it by its key when it quits.
   ReconnectAttempting(
     /// The job's key and the replies received for it.
-    job: job.Awaiting(job.ReconnectReply),
+    job: job.Awaiting(job.ReconnectReply(job.Daemon)),
   )
 
   /// This daemon death has had its one attempt. Nothing runs again until an
@@ -824,7 +893,7 @@ pub fn hold_channel(model: Model, channel: terminal_lane.Lane) -> Model {
 /// let model = tui_model.release(model, arrival)
 /// ```
 @internal
-pub fn release(model: Model, arrival: job.Arrival) -> Model {
+pub fn release(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
   case arrival {
     job.AttachArrived(reply: job.Published(prepared), ..) ->
       model
@@ -833,7 +902,7 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
     job.ReconnectArrived(
       reply: weft.PulledOutcome(weft.Completed(value: host, ..)),
       ..,
-    ) -> emit(model, effect.CloseControl(daemon_selection.control(host)))
+    ) -> emit(model, effect.CloseControl(host.control))
     job.AttachArrived(reply: job.Settled(_), ..)
     | job.AttachArrived(reply: job.Finished(_), ..)
     | job.ReconnectArrived(..)
@@ -860,7 +929,7 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
 @internal
 pub fn release_reconnect(
   model: Model,
-  awaiting: job.Awaiting(job.ReconnectReply),
+  awaiting: job.Awaiting(job.ReconnectReply(job.Daemon)),
 ) -> Model {
   list.fold(job.held(awaiting), model, fn(model, reply) {
     release(model, job.ReconnectArrived(job.key(awaiting), reply))

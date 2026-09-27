@@ -1,8 +1,9 @@
-//// The web view's relay against a real session gateway: it is read-only by
-//// role whatever the membership says, and every one of its four exits
-//// leaves no process and no presence behind (protocol-change/051, "The
-//// relay"). A page's check also ends it when its UI session expires or is
-//// replaced.
+//// The web view's relay against a real session gateway: it acts with the
+//// membership role capped by the page's ceiling and by Operator, it opens
+//// without holding its caller while the gateway attaches, and every one of
+//// its four exits leaves no process and no presence behind
+//// (protocol-change/051, "The relay" and the operator addendum). A page's
+//// check also ends it when its UI session expires or is replaced.
 ////
 //// Presence is read as `gateway.attached`, which counts every attachment the
 //// hub holds. The harness attaches one test client of its own, so each test
@@ -17,10 +18,11 @@ import client/protocol
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import gleam/time/timestamp
 import runtime/api
 import session_view/connection_event
 import storage/access
@@ -39,11 +41,19 @@ fn alice() -> access.Principal {
   access.Principal("alice", "Alice", access.MemberPrincipal)
 }
 
-// The binding the daemon's router builds for an operator's page. The relay
-// must cap it to observer.
+// The binding the daemon's router builds for an operator's membership,
+// under an observer's page unless a test asks for another ceiling.
 fn attach(
   harness: gateway_test.Harness,
   check: fn() -> Answer,
+) -> ui_relay.Attach {
+  attach_under(harness, check, access.Observer)
+}
+
+fn attach_under(
+  harness: gateway_test.Harness,
+  check: fn() -> Answer,
+  ceiling: access.Role,
 ) -> ui_relay.Attach {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture digest is valid"
@@ -59,8 +69,22 @@ fn attach(
       digest:,
     ),
     check:,
+    ceiling:,
     failed_reader: fn() { Nil },
   )
+}
+
+// Starts a relay for the calling process and waits for the attach's
+// answer, as the component does through its selector.
+fn start(
+  attach: ui_relay.Attach,
+  inbox: Subject(connection_event.Message),
+  ended: fn(String) -> Nil,
+) -> Result(ui_relay.Relay, String) {
+  let opened = process.new_subject()
+  ui_relay.start(attach, inbox, process.self(), opened, ended)
+  process.receive(opened, 5000)
+  |> result.unwrap(Error("the relay did not answer"))
 }
 
 fn operator() -> Answer {
@@ -130,11 +154,82 @@ fn scripted(answers: List(Answer)) -> Subject(Script) {
   started.data
 }
 
+// The ceiling caps and never grants, and no page carries Owner.
+pub fn a_page_acts_with_the_least_of_membership_ceiling_and_operator_test() {
+  let observer = access.Participant(access.Observer)
+  let operator = access.Participant(access.Operator)
+  assert ui_relay.capped(access.Owner, access.Observer) == observer
+  assert ui_relay.capped(operator, access.Observer) == observer
+  assert ui_relay.capped(observer, access.Observer) == observer
+  assert ui_relay.capped(access.Owner, access.Operator) == operator
+  assert ui_relay.capped(operator, access.Operator) == operator
+  assert ui_relay.capped(observer, access.Operator) == observer
+}
+
+pub fn an_operators_page_reaches_the_session_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5108))
+  let inbox = process.new_subject()
+  let assert Ok(relay) =
+    start(attach_under(harness, operator, access.Operator), inbox, fn(_) { Nil })
+    as "the relay attaches"
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let _snapshot = next_text(inbox)
+  ui_relay.transmit(relay, frame(2, protocol.Prompt("main", "hello")))
+  let answered = next_text(inbox)
+  assert !string.contains(answered, "forbidden")
+  ui_relay.shut(relay)
+}
+
+// An owner's page is an operator's: the relay's check answers with the
+// capped role, so the gateway's equality check keeps the attachment open.
+pub fn an_owners_page_is_an_operators_and_stays_open_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5109))
+  let inbox = process.new_subject()
+  let owner = fn() { Ok(#(alice(), access.Owner)) }
+  let assert Ok(relay) =
+    start(attach_under(harness, owner, access.Operator), inbox, fn(_) { Nil })
+    as "the relay attaches"
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let snapshot = next_text(inbox)
+  assert string.contains(snapshot, "\"role\":\"operator\"")
+  ui_relay.shut(relay)
+}
+
+// Lustre bounds a component's start at one second, and the relay is started
+// from inside it. `start` returns before the gateway's attach, and the
+// attach's answer arrives as a message when it is done.
+pub fn a_slow_attach_does_not_hold_the_caller_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5110))
+  let slow = fn() {
+    process.sleep(1500)
+    operator()
+  }
+  let opened = process.new_subject()
+  let before = monotonic_ms()
+  ui_relay.start(
+    attach(harness, slow),
+    process.new_subject(),
+    process.self(),
+    opened,
+    fn(_) { Nil },
+  )
+  assert monotonic_ms() - before < 500
+  assert process.receive(opened, 100) == Error(Nil)
+  let assert Ok(Ok(relay)) = process.receive(opened, 5000)
+    as "the attach answers once it is done"
+  ui_relay.shut(relay)
+}
+
+fn monotonic_ms() -> Int {
+  let #(seconds, nanoseconds) =
+    timestamp.to_unix_seconds_and_nanoseconds(timestamp.system_time())
+  seconds * 1000 + nanoseconds / 1_000_000
+}
+
 pub fn a_page_is_an_observer_whatever_its_membership_test() {
   let harness = gateway_test.reserved_fixture(fixture_id(5101))
   let inbox = process.new_subject()
-  let assert Ok(relay) =
-    ui_relay.start(attach(harness, operator), inbox, fn(_) { Nil })
+  let assert Ok(relay) = start(attach(harness, operator), inbox, fn(_) { Nil })
     as "the relay attaches"
 
   // A read is served; a mutation is refused by the gateway, because the
@@ -152,8 +247,7 @@ pub fn shut_detaches_and_leaves_no_presence_test() {
   let harness = gateway_test.reserved_fixture(fixture_id(5102))
   let before = gateway.attached(harness.hub)
   let inbox = process.new_subject()
-  let assert Ok(relay) =
-    ui_relay.start(attach(harness, operator), inbox, fn(_) { Nil })
+  let assert Ok(relay) = start(attach(harness, operator), inbox, fn(_) { Nil })
     as "the relay attaches"
   assert gateway.attached(harness.hub) == before + 1
 
@@ -176,7 +270,7 @@ pub fn a_component_that_goes_away_ends_its_relay_test() {
       let inbox = process.new_subject()
       let stop = process.new_subject()
       let assert Ok(relay) =
-        ui_relay.start(attach(harness, operator), inbox, fn(_) { Nil })
+        start(attach(harness, operator), inbox, fn(_) { Nil })
         as "the relay attaches"
       process.send(started, #(relay, stop))
       let _ = process.receive(stop, 10_000)
@@ -204,7 +298,7 @@ pub fn a_revoked_page_is_closed_test() {
   let script = scripted([operator()])
   let check = fn() { process.call(script, 1000, Ask) }
   let assert Ok(relay) =
-    ui_relay.start(attach(harness, check), inbox, fn(reason) {
+    start(attach(harness, check), inbox, fn(reason) {
       process.send(ended, reason)
     })
     as "the relay attaches"
@@ -230,12 +324,34 @@ pub fn a_revoked_page_is_closed_test() {
   assert gateway.attached(harness.hub) == before
 }
 
+// Demoting the principal while an operator's page is open closes it at the
+// next frame: the check's capped answer no longer equals the binding's.
+pub fn a_demoted_operators_page_is_closed_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5111))
+  let ended = process.new_subject()
+  let script =
+    scripted([operator(), Ok(#(alice(), access.Participant(access.Observer)))])
+  let check = fn() { process.call(script, 1000, Ask) }
+  let assert Ok(relay) =
+    start(
+      attach_under(harness, check, access.Operator),
+      process.new_subject(),
+      fn(reason) { process.send(ended, reason) },
+    )
+    as "the relay attaches as an operator"
+  let pid = relay_pid(relay)
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let assert Ok(_reason) = process.receive(ended, 5000)
+    as "the demoted page ends"
+  assert gone(pid)
+}
+
 pub fn a_gateway_that_goes_away_ends_its_relay_test() {
   let harness = gateway_test.reserved_fixture(fixture_id(5105))
   let inbox = process.new_subject()
   let ended = process.new_subject()
   let assert Ok(relay) =
-    ui_relay.start(attach(harness, operator), inbox, fn(reason) {
+    start(attach(harness, operator), inbox, fn(reason) {
       process.send(ended, reason)
     })
     as "the relay attaches"
@@ -254,6 +370,10 @@ pub fn a_gateway_that_goes_away_ends_its_relay_test() {
   assert gone(pid)
   assert process.receive(inbox, 1000)
     == Ok(connection_event.Closed("the session ended"))
+}
+
+fn page_grant(session: String) -> ui_sessions.Grant {
+  ui_sessions.Grant(session, digest(), "alice", access.Observer)
 }
 
 fn digest() -> access.Digest {
@@ -305,15 +425,14 @@ fn page(
       session_ms: 28_800_000,
     ))
     as "the table starts"
-  let grant = ui_sessions.Grant(session, digest())
+  let grant = page_grant(session)
   let assert Ok(issued) = ui_sessions.mint(tables, grant) as "a ticket"
-  let assert Ok(redeemed) =
-    ui_sessions.redeem(tables, issued.ticket, session, None)
+  let assert Ok(redeemed) = ui_sessions.redeem(tables, issued.ticket, session)
     as "the ticket is redeemed"
   let ended = process.new_subject()
   let open = ui_sessions.still_open(tables, redeemed.cookie, grant)
   let assert Ok(relay) =
-    ui_relay.start(
+    start(
       attach(harness, ui_relay.while_open(operator, open)),
       process.new_subject(),
       fn(reason) { process.send(ended, reason) },
@@ -338,15 +457,14 @@ pub fn an_expired_ui_session_ends_an_open_page_test() {
 pub fn a_replaced_ui_session_ends_an_open_page_test() {
   let harness = gateway_test.reserved_fixture(fixture_id(5107))
   let session = ids.session_id_to_string(api.session_id(harness.runtime))
-  let #(relay, ended, _, tables, cookie) = page(harness, session)
+  let #(relay, ended, _, tables, _) = page(harness, session)
   let pid = relay_pid(relay)
 
-  // A newer ticket redeemed with the page's cookie replaces its UI session.
-  let assert Ok(issued) =
-    ui_sessions.mint(tables, ui_sessions.Grant(session, digest()))
+  // A newer ticket for the same principal and session replaces its UI
+  // session, whichever browser redeems it.
+  let assert Ok(issued) = ui_sessions.mint(tables, page_grant(session))
     as "a second ticket"
-  let assert Ok(_) =
-    ui_sessions.redeem(tables, issued.ticket, session, Some(cookie))
+  let assert Ok(_) = ui_sessions.redeem(tables, issued.ticket, session)
     as "the second ticket replaces the first UI session"
   ui_relay.transmit(relay, subscribe(harness, 1))
   let assert Ok(_reason) = process.receive(ended, 5000)

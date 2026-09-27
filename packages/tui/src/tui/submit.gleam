@@ -15,10 +15,10 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import session_view/approval
 import session_view/command
 import session_view/composer
 import session_view/context_view
+import session_view/operator
 import session_view/pasted_image
 import session_view/protocol
 import session_view/session_channel
@@ -29,7 +29,6 @@ import session_view/transcript_line.{
 import session_view/worktree_view
 import tui/agents
 import tui/attachment
-import tui/daemon/selection as daemon_selection
 import tui/effect
 import tui/inbound
 import tui/job
@@ -158,9 +157,8 @@ fn submit_text(model: Model) -> Model {
         ..cleared,
         transcript: [],
         records: [],
-        record_rows: [],
         record_gutters: [],
-        record_line_cache: dict.new(),
+        record_cache_epoch: cleared.record_cache_epoch + 1,
         compact_call_cache: dict.new(),
         compact_entry_cache: dict.new(),
         pending_records: [],
@@ -234,8 +232,8 @@ fn submit_text(model: Model) -> Model {
         cleared,
         protocol.add_directory(cleared.next_id, path, access),
       )
-    command.Approve(id) -> inbound.decide(cleared, id, approval.approve)
-    command.Deny(id) -> inbound.decide(cleared, id, approval.deny)
+    command.Approve(id) -> inbound.decide(cleared, id, operator.AllowOnce)
+    command.Deny(id) -> inbound.decide(cleared, id, operator.Deny)
     command.Notes ->
       surfaces.refresh_notes(
         Model(
@@ -672,12 +670,21 @@ fn send_prompt(model: Model, text: String) -> Model {
 // operator watches their own line disappear, which is the symptom the echo
 // exists to prevent.
 fn send_steer(model: Model, text: String) -> Model {
-  outbound.send_frame(
+  outbound.send_via(
     Model(
       ..inbound.expect_own_turn(model, steering_submission(model, text)),
       notice: "steered " <> model.active_strand,
     ),
-    protocol.steer(model.next_id, model.active_strand, text),
+    fn(lane, now) {
+      operator.submit(
+        lane,
+        model.next_id,
+        model.active_strand,
+        text,
+        operator.Steer,
+        now,
+      )
+    },
   )
 }
 
@@ -883,8 +890,7 @@ pub fn quit(model: Model) -> Model {
   }
   let model = case model.daemon_host {
     None -> model
-    Some(host) ->
-      tui_model.emit(model, effect.CloseControl(daemon_selection.control(host)))
+    Some(host) -> tui_model.emit(model, effect.CloseControl(host.control))
   }
   Model(..model, quit: True)
 }

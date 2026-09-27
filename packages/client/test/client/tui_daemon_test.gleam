@@ -48,7 +48,6 @@ fn retired_control_model(control, port) {
     as "retired control retains the replacement route"
   tui_model.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
-    daemon_host: Some(host),
     // Creation now canonicalizes explicit configuration before it retains the
     // durable key. The package manifest is a real, stable file; this controlled
     // peer never parses it, but the local boundary can prove the path exists.
@@ -58,6 +57,7 @@ fn retired_control_model(control, port) {
       "",
     )),
   )
+  |> runtime.adopt_control(host)
 }
 
 pub fn tui_daemon_catalogue_recovery_keeps_frames_live_and_cancels_hello_test() {

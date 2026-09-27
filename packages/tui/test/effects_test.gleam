@@ -26,7 +26,6 @@ import tui/connection
 import tui/daemon/selection as daemon_selection
 import tui/effect.{type Effect}
 import tui/job
-import tui/job_runner
 import tui/model as tui_model
 import tui/runtime
 import tui/terminal_lane
@@ -83,7 +82,6 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       peer: tui_model.Attached,
       channel: Some(channel),
       candidate: attempt,
-      daemon_host: Some(host),
       control_request: Some(tui_model.ControlRequest(
         job: job.awaiting(request),
         result: None,
@@ -91,6 +89,8 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
       activity_poll: tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
     )
+    |> runtime.adopt_control(host)
+  let assert Some(daemon) = model.daemon_host
 
   let #(quit, effects) = stepping.step(backend.KeyPress("ctrl+c"), model)
   assert quit.quit
@@ -103,7 +103,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
       effect.CancelJob(request),
       effect.CancelJob(relaunch),
       effect.CancelJob(poll),
-      effect.CloseControl(daemon_selection.control(host)),
+      effect.CloseControl(daemon.control),
     ]
   assert quit.control_request == None
   assert quit.reconnect == tui_model.ReconnectSpent
@@ -114,7 +114,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
 
   // Performing them is what reaches the handles: one socket close and one
   // control close, both addressed to the handles the step was given.
-  let _running = runtime.perform(effects, job_runner.new())
+  let _running = runtime.perform(effects, quit.running)
   let assert Ok(_) = process.receive(owner, 100)
   let assert Ok(_) = process.receive(owner, 100)
   assert process.receive(owner, 0) == Error(Nil)

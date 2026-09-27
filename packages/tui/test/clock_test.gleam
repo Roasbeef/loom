@@ -61,12 +61,12 @@ pub fn real_event_handler_paces_frames_on_the_injected_clock_test() {
   let deferred = tui.update(backend.KeyPress("a"), at(drawn, -9999))
   assert deferred.frame_debt == pacing.FrameDeferred
   assert deferred.last_frame_ms == -10_000
-  assert deferred.frame_cache == drawn.frame_cache
+  assert deferred.view.frame_cache == drawn.view.frame_cache
 
   let refreshed = tui.update(backend.KeyPress("b"), at(deferred, -9984))
   assert refreshed.frame_debt == pacing.FrameSettled
   assert refreshed.last_frame_ms == -9984
-  assert refreshed.frame_cache != drawn.frame_cache
+  assert refreshed.view.frame_cache != drawn.view.frame_cache
 
   let again = tui.update(backend.KeyPress("c"), at(refreshed, -9983))
   assert again.frame_debt == pacing.FrameDeferred
@@ -99,7 +99,7 @@ pub fn wheel_then_press_captures_one_painted_copy_layout_test() {
     rendered: #(painted, _),
     selection_gutters: painted_gutters,
     ..,
-  )) = drawn.frame_cache
+  )) = drawn.view.frame_cache
   let scrolled =
     drawn
     |> at(-10_000)
@@ -107,14 +107,14 @@ pub fn wheel_then_press_captures_one_painted_copy_layout_test() {
 
   assert scrolled.scroll_offset != drawn.scroll_offset
     as "premise: the wheel moved the model's viewport"
-  assert scrolled.frame_cache == drawn.frame_cache
+  assert scrolled.view.frame_cache == drawn.view.frame_cache
     as "the frozen clock keeps the old frame painted"
 
   let pressed =
     scrolled
     |> at(-10_000)
     |> tui.update(backend.MousePress(2, 4, backend.MouseLeft), _)
-  assert pressed.selection_frame == Some(painted)
+  assert pressed.view.selection_frame == Some(painted)
   assert pressed.selection_gutters == painted_gutters
     as "mouse-down must capture copy metadata from the painted frame"
 }

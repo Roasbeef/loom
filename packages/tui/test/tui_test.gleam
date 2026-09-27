@@ -1836,7 +1836,7 @@ pub fn rendered_assistant_copy_keeps_authored_structure_test() {
     )
   let assert Ok(run) = tui.run_script(model, script)
   let assert Some(selected) = run.final.selection
-  let assert Some(original) = run.final.selection_frame
+  let assert Some(original) = run.final.view.selection_frame
   let copied =
     interaction.transcript_selection_text(
       original,
@@ -1864,7 +1864,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
   let assert Ok(last_y) = row_containing(rows, "let answer = 1")
   let area = layout.hit_area(previewed.final, Position(2, 2))
   let assert Some(tui_model.FrameCache(selection_gutters:, ..)) =
-    previewed.final.frame_cache
+    previewed.final.view.frame_cache
     as "the painted frame owns its copy layout"
   let partial =
     selection.start(area, Position(area.position.x + 4, last_y))
@@ -1898,7 +1898,7 @@ pub fn rendered_assistant_copy_handles_partial_and_reverse_drags_test() {
     )
   let assert Ok(run) = tui.run_script(model, backwards)
   let assert Some(selected) = run.final.selection
-  let assert Some(original) = run.final.selection_frame
+  let assert Some(original) = run.final.view.selection_frame
   assert interaction.transcript_selection_text(
       original,
       selected,
@@ -2318,7 +2318,7 @@ pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
     as "the native reducer completes the selection"
   let assert Some(selected) = run.final.selection
     as "the copied range remains highlighted"
-  let assert Some(original) = run.final.selection_frame
+  let assert Some(original) = run.final.view.selection_frame
     as "the selection owns its original bounded screen"
   let assert Ok(last) = list.last(run.frames)
     as "the script painted a final frame"

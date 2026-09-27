@@ -40,7 +40,6 @@ import gleam/erlang/process.{type Subject}
 import session_view/connection_event
 import tui/attachment
 import tui/connection
-import tui/daemon
 import tui/herdr
 import tui/job
 import tui/recording
@@ -58,8 +57,9 @@ pub type Effect {
   /// dropped attachment `Prepared` carries.
   CloseSocket(socket: connection.Connection)
 
-  /// Closes a daemon control connection.
-  CloseControl(control: daemon.Connection)
+  /// Closes the daemon control connection the runtime holds under this
+  /// key, and forgets it.
+  CloseControl(control: job.ControlKey)
 
   /// Starts the background job `spec` describes under `key`, which the
   /// reducer allocated and holds in the slot that waits for its replies.

@@ -44,7 +44,8 @@ import weft
 pub fn a_picker_key_queues_one_job_start_and_starts_nothing_test() {
   let owner: Subject(Dynamic) = process.new_subject()
   let host = host_on(owner)
-  let model = tui_model.Model(..blank(), daemon_host: Some(host))
+  let model = runtime.adopt_control(blank(), host)
+  let assert Some(daemon) = model.daemon_host
 
   let #(loading, effects) = stepping.step(backend.KeyPress("left"), model)
   let assert Some(tui_model.ControlRequest(job: awaiting, result: None)) =
@@ -55,7 +56,7 @@ pub fn a_picker_key_queues_one_job_start_and_starts_nothing_test() {
       effect.StartJob(
         job.key(awaiting),
         job.Control(
-          host,
+          daemon.control,
           job.LoadPage(
             control_protocol.ListSessions("", None),
             session_selector.Active,
@@ -97,7 +98,7 @@ pub fn a_reply_for_another_key_is_not_admitted_test() {
 // relay reports its end only after the second load has taken the slot.
 pub fn a_late_reply_from_an_earlier_job_does_not_reach_its_successor_test() {
   let owner: Subject(Dynamic) = process.new_subject()
-  let model = tui_model.Model(..blank(), daemon_host: Some(host_on(owner)))
+  let model = runtime.adopt_control(blank(), host_on(owner))
 
   let #(first, _) =
     runtime.take(session_control.load_catalogue(model, "", None))
@@ -241,8 +242,10 @@ pub fn a_dropped_relaunch_outcome_closes_its_control_test() {
       job.ReconnectArrived(key, weft.PulledOutcome(weft.Completed(0, host))),
     )
   assert held.reconnect == tui_model.ReconnectIdle
-  assert held.outbox == [effect.CloseControl(daemon_selection.control(host))]
+  let assert [effect.CloseControl(control)] = held.outbox
     as "the dropped outcome's control is queued for closing"
+  assert job_runner.control(held.running, control) == Ok(host)
+    as "the queued close names the relaunch's own connection"
   assert process.receive(owner, 0) == Error(Nil)
     as "holding the outcome closed nothing itself"
   let _ = runtime.flush(held)
@@ -478,9 +481,9 @@ fn is_job(requested: effect.Effect) -> Bool {
 // until `attempts` reads twenty milliseconds apart have passed.
 fn until_finished(
   running: job_runner.Running,
-  received: List(job.Arrival),
+  received: List(job.Arrival(daemon_selection.Host)),
   attempts: Int,
-) -> List(job.Arrival) {
+) -> List(job.Arrival(daemon_selection.Host)) {
   let received = list.append(received, job_runner.receive(running))
   let running = list.fold(received, running, job_runner.observed)
   case job_runner.size(running), attempts {
@@ -607,10 +610,13 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
     })
   assert lifecycle == ["close control", "cancel relaunch"]
     as "the cleared slot's outcome is released ahead of the cancel"
-  assert list.contains(
-    adopted.outbox,
-    effect.CloseControl(daemon_selection.control(host)),
-  )
+  assert list.any(adopted.outbox, fn(decided) {
+    case decided {
+      effect.CloseControl(control) ->
+        job_runner.control(adopted.running, control) == Ok(host)
+      _ -> False
+    }
+  })
 }
 
 // A replay lane credited with one validated transfer, which is what an

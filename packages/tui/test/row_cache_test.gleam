@@ -42,12 +42,12 @@ fn checked_layout(model, width) {
     tui_model.Model(
       ..model,
       record_cache_valid: False,
-      record_line_cache: dict.new(),
+      view: tui_model.View(..model.view, record_line_cache: dict.new()),
       rendered_revision: -1,
     )
     |> fn(value) { tui.update(backend.Resize(width, 40), value) }
   let cached = tui.update(backend.Resize(width, 40), model)
-  assert cached.rendered_rows == cold.rendered_rows
+  assert cached.view.rendered_rows == cold.view.rendered_rows
     as "cached rows must preserve fresh text, styles, links, and wrapping"
   assert cached.rendered_row_count == cold.rendered_row_count
   cached
@@ -89,7 +89,7 @@ pub fn cached_history_matches_fresh_rows_after_each_event_test() {
       tui_model.Model(..expanded, active_strand: "other", rendered_revision: -1),
       120,
     )
-  assert !list.any(dict.keys(other.record_line_cache), fn(line) {
+  assert !list.any(dict.keys(other.view.record_line_cache), fn(line) {
     string.contains(line.text, "Review 界")
     || string.contains(line.text, "**Result**")
   })
@@ -106,7 +106,7 @@ pub fn a_replaced_snapshot_releases_previous_cached_text_test() {
     model()
     |> received(gateway.user_entry("main", "discarded conversation marker", 1))
     |> checked_layout(120)
-  assert list.any(dict.keys(old.record_line_cache), fn(line) {
+  assert list.any(dict.keys(old.view.record_line_cache), fn(line) {
     string.contains(line.text, "discarded conversation marker")
   })
   let fresh =
@@ -114,7 +114,7 @@ pub fn a_replaced_snapshot_releases_previous_cached_text_test() {
     |> received(gateway.full_snapshot("replacement"))
     |> received(gateway.user_entry("main", "current conversation", 2))
     |> checked_layout(120)
-  assert !list.any(dict.keys(fresh.record_line_cache), fn(line) {
+  assert !list.any(dict.keys(fresh.view.record_line_cache), fn(line) {
     string.contains(line.text, "discarded conversation marker")
   })
     as "a cache must not extend the lifetime of replaced conversation text"
@@ -129,7 +129,8 @@ pub fn identical_text_keeps_each_speakers_own_style_test() {
     user
     |> received(gateway.assistant_entry("main", "**same**", 2))
     |> checked_layout(120)
-  assert dict.size(both.record_line_cache) > dict.size(user.record_line_cache)
+  assert dict.size(both.view.record_line_cache)
+    > dict.size(user.view.record_line_cache)
     as "plain user text and assistant markdown are distinct presentation keys"
 }
 
@@ -150,7 +151,7 @@ pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
       1,
     )
   let loaded = model() |> received(wire) |> checked_layout(120)
-  let visible = dict.keys(loaded.record_line_cache)
+  let visible = dict.keys(loaded.view.record_line_cache)
   assert list.any(visible, fn(line) {
     line.text == "Context compacted · ~204k tokens before · 2 messages kept"
   })
@@ -174,7 +175,7 @@ pub fn compaction_notice_keeps_checkpoint_out_of_transcript_test() {
 
   let expanded =
     checked_layout(tui_model.Model(..loaded, details_expanded: True), 120)
-  assert !list.any(dict.keys(expanded.record_line_cache), fn(line) {
+  assert !list.any(dict.keys(expanded.view.record_line_cache), fn(line) {
     string.contains(line.text, private_note)
   })
 }
@@ -218,11 +219,11 @@ pub fn an_unchanged_cut_leaves_the_record_projection_standing_test() {
     |> checked_layout(120)
   assert first.record_cache_valid
     as "the first capture rebuilds and leaves a valid cache behind it"
-  assert first.record_rows != []
+  assert first.view.record_rows != []
     as "the fixture must project rows, or term identity proves nothing"
 
   let second = captured(first, pushed.metadata(), 11) |> checked_layout(120)
-  assert ffi_term.same_term(second.record_rows, first.record_rows)
+  assert ffi_term.same_term(second.view.record_rows, first.view.record_rows)
     as "a cut that moved no projection input must not rebuild the rows"
 }
 
@@ -235,7 +236,7 @@ pub fn settled_prose_appends_and_a_tool_record_regroups_test() {
     base
     |> received(gateway.assistant_entry("main", "Looking at it now.", 2))
     |> checked_layout(120)
-  assert same_tail(appended.record_rows, base.record_rows)
+  assert same_tail(appended.view.record_rows, base.view.record_rows)
     as "settled prose extends rows already projected instead of rebuilding"
 
   // A call joins the open group, whose heading and pending row are already on
@@ -244,7 +245,7 @@ pub fn settled_prose_appends_and_a_tool_record_regroups_test() {
     appended
     |> received(gateway.tool_call_entry("main", "bash", "printf 'x'", 3))
     |> checked_layout(120)
-  assert !same_tail(regrouped.record_rows, appended.record_rows)
+  assert !same_tail(regrouped.view.record_rows, appended.view.record_rows)
     as "a tool call can re-group an open block, so its rows are rebuilt"
 }
 
