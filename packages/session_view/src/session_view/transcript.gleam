@@ -14,16 +14,31 @@
 //// attached would draw for the same records.
 
 import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
 import session_view/advisor_history
 import session_view/block_summary
 import session_view/history_view
 import session_view/notes_view
+import session_view/protocol
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line.{type Line}
 import session_view/transcript_lines
 import session_view/worktree_view
+
+/// One transcript line and the key that names it across captures.
+pub type Row {
+  Row(
+    /// The durable sequence the line was drawn from, which of the blocks at
+    /// that sequence it belongs to, and its index within the block
+    /// (`transcript_lines.keyed_record_lines`). It holds digits, `.`, `:`
+    /// and `~` only, so it is safe as a view's list key.
+    key: String,
+    /// The line itself.
+    line: Line,
+  )
+}
 
 /// The transcript lines of `strand` in a completed capture, oldest first,
 /// with details collapsed.
@@ -43,6 +58,47 @@ pub fn project(
   view: snapshot_view.View,
   strand: String,
 ) -> List(Line) {
+  let #(records, presentation, advisor) = projected(cut, view, strand)
+  let #(lines, _, _) =
+    transcript_lines.record_lines(records, presentation, [], advisor)
+  lines
+}
+
+/// The same lines as `project`, in the same order, each with a key that
+/// names it across captures.
+///
+/// A host that draws the transcript as a keyed list uses these, so that a
+/// history window which drops lines at its head removes them rather than
+/// rewriting every line after them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript.project_rows(cut, view, "main")
+/// //   is [Row("7.0:0", Line(User, "hello")), ..]
+/// ```
+pub fn project_rows(
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  strand: String,
+) -> List(Row) {
+  let #(records, presentation, advisor) = projected(cut, view, strand)
+  transcript_lines.keyed_record_lines(records, presentation, [], advisor)
+  |> list.map(fn(row) { Row(key: row.0, line: row.1) })
+}
+
+// What both projections read of one capture: the strand's records, the
+// presentation a freshly attached terminal starts from, and the advisor's
+// board for that strand.
+fn projected(
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  strand: String,
+) -> #(
+  List(protocol.EntryRecord),
+  transcript_lines.Presentation,
+  advisor_history.Board,
+) {
   let branch =
     history_view.empty()
     |> history_view.capture(cut.window, view, strand)
@@ -67,13 +123,10 @@ pub fn project(
       compact_call_cache: dict.new(),
       worktree: worktree_view.new(),
     )
-  let #(lines, _, _) =
-    transcript_lines.record_lines(
-      branch.records,
-      presentation,
-      [],
-      advisor_history.project(view, cut.window)
-        |> advisor_history.visible(strand),
-    )
-  lines
+  #(
+    branch.records,
+    presentation,
+    advisor_history.project(view, cut.window)
+      |> advisor_history.visible(strand),
+  )
 }
