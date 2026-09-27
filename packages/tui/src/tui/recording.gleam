@@ -150,7 +150,7 @@ pub opaque type Recorder {
 
 /// The recorder and attempt identity an attachment's lane records under,
 /// with this module's recorder as the recorder. The type and its constructor
-/// live in `tui/attempt`, beside the lane that carries them.
+/// live in `session_view/attempt`, beside the lane that carries them.
 pub type Trace =
   attempt.Trace(Recorder)
 

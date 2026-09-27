@@ -1,6 +1,6 @@
 //// Model-based property tests over the terminal's session channel.
 ////
-//// `tui/session_channel` is a pure transition system: every write and close
+//// `session_view/session_channel` is a pure transition system: every write and close
 //// it decides on is queued as an output, and nothing touches a socket until
 //// `perform`. So a test can drive the shipped transitions over generated
 //// schedules of submissions, well-formed and faulty server replies, pushed

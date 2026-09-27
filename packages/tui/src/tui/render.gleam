@@ -7,7 +7,7 @@
 //// model: nothing here sends a frame or changes state, which is what lets
 //// the tick cache a frame and repaint it only when a revision moved.
 ////
-//// Transcript rows arrive as `Line`s from `tui/transcript_lines`, already
+//// Transcript rows arrive as `Line`s from `session_view/transcript_lines`, already
 //// ordered; this module styles them, applies Markdown, wraps them to the
 //// pane width, and adds the speaker gutter.
 

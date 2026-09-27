@@ -1420,7 +1420,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       )
 
     // A commit notice and a metadata change say only that the next capture
-    // will differ. `tui/session_channel` acts on them by capturing; there is
+    // will differ. `session_view/session_channel` acts on them by capturing; there is
     // nothing for a renderer to draw from the frame itself.
     protocol.Committed(..) | protocol.MetadataChanged -> model
 

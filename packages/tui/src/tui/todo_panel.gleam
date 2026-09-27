@@ -20,7 +20,7 @@
 //// This module is pure: it renders lines for a width and a row budget, and
 //// the caller decides where they go and how many rows it can spare. Which
 //// board a strand has, and the one-line summaries a `todo` call gets in the
-//// transcript, are `tui/todo_board`'s, which draws nothing.
+//// transcript, are `session_view/todo_board`'s, which draws nothing.
 
 import core/todo_list.{
   type Board, type Phase, type Task, Active, Blocked, Done, Dropped, Pending,

@@ -1,4 +1,4 @@
-//// The terminal's session lane: `tui/session_channel` with the terminal's
+//// The terminal's session lane: `session_view/session_channel` with the terminal's
 //// own socket and recorder filled in, and the one function that acts on
 //// what the lane decides.
 ////

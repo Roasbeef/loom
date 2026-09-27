@@ -8,7 +8,7 @@
 //// the same total event vocabulary a recorded frame uses.
 ////
 //// Recorded legacy frames still have their separate presentation decoder in
-//// tui/protocol. Live sockets do not use that decoder as a version fallback:
+//// session_view/protocol. Live sockets do not use that decoder as a version fallback:
 //// this boundary validates v2, reply identity and frame size first.
 
 import core/json
@@ -21,7 +21,7 @@ import session_view/protocol
 /// One credited transfer response, bounded auxiliary command result, or
 /// uncorrelated frame the daemon pushed on its own initiative.
 pub type Reply {
-  /// Validated further against the selected attachment by tui/snapshot.
+  /// Validated further against the selected attachment by session_view/snapshot.
   Begin(body: json.JsonValue)
 
   /// One independently base64-encoded raw fragment.
@@ -89,7 +89,7 @@ pub fn correlation(text: String) -> Correlation {
 
 /// The exact opening bytes `command` produces, up to the request identity.
 ///
-/// `tui/session_channel` re-allocates a request identity by splitting an
+/// `session_view/session_channel` re-allocates a request identity by splitting an
 /// already-encoded frame rather than reparsing a body that may hold a
 /// multi-megabyte image. That makes this module's field order and spelling
 /// load-bearing at run time, so the three literals it depends on are named

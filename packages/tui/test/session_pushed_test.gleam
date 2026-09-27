@@ -1,6 +1,6 @@
 //// A pushed frame is accepted in every open phase and never owns the wire.
 ////
-//// These fixtures drive `tui/session_channel` through real v2 bodies and the
+//// These fixtures drive `session_view/session_channel` through real v2 bodies and the
 //// credited transfer decoder, so what they prove about a notice — that it
 //// moves a catch-up earlier and changes nothing else — is proved against the
 //// same code path a live socket takes. The trace queues the notes a

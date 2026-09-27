@@ -2,7 +2,7 @@
 ////
 //// The shared transport owns startup, socket custody, and reader monitoring.
 //// Mapping events happens in that existing owner; this adapter adds no process.
-//// The events themselves are data in `tui/connection_event`, so the code
+//// The events themselves are data in `session_view/connection_event`, so the code
 //// that reduces them never imports the transport.
 
 import gleam/erlang/process.{type Subject}

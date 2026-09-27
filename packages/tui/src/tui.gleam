@@ -14,7 +14,7 @@
 //// each event does lives in the modules under `tui/`, which form a strict
 //// import order because Gleam forbids cycles and none of them may import
 //// this one: `tui/model` holds the `Model` record and its types;
-//// `tui/transcript_lines` builds transcript lines; `tui/layout` computes
+//// `session_view/transcript_lines` builds transcript lines; `tui/layout` computes
 //// screen geometry and `tui/render` paints it; `tui/outbound` sends command
 //// frames; `tui/surfaces` services the side-surface reads; `tui/inbound`
 //// applies channel traffic; `tui/session_control` runs daemon control

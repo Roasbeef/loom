@@ -8,7 +8,7 @@
 //// problem — it asks a human to authorize a command, so a payload that can
 //// repaint the compact panel can forge the thing being consented to.
 ////
-//// `tui/text_hygiene` and the escaped literal in `tui/approval` exist to
+//// `session_view/text_hygiene` and the escaped literal in `session_view/approval` exist to
 //// prevent that, and this module is the adversary that holds them to it.
 //// Every check drives the shipped loop under the virtual backend and reads
 //// the finished buffer back as characters, because an intermediate string

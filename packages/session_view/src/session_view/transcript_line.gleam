@@ -2,7 +2,7 @@
 //// observations that become rows.
 ////
 //// A `Line` is a speaker and a text. The line builders
-//// (`tui/transcript_lines`) decide which lines a durable record, a live
+//// (`session_view/transcript_lines`) decide which lines a durable record, a live
 //// stream or a tool call becomes; a renderer decides how each speaker is
 //// drawn. The types live apart from the terminal's `Model`, which stores
 //// them, because the line builders need nothing else from the model, and a

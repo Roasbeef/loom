@@ -1,7 +1,10 @@
-//// Terminal-owned progress for one credited conversation connection.
+//// Client-owned progress for one credited conversation connection.
 ////
-//// There is no additional process: the terminal drains its own inbox and
-//// applies this state. A single request owns the wire at a time. One local
+//// There is no additional process: the host that owns the connection's
+//// inbox drains it and applies this state. The terminal is one such host
+//// (`tui/terminal_lane` names its socket and recorder types), and the lane
+//// never learns which host it runs under. A single request owns the wire at
+//// a time. One local
 //// command may wait behind reconciliation; timeouts close the socket and
 //// preserve uncertainty instead of resending a mutation on another connection.
 ////
