@@ -1106,14 +1106,17 @@ boundaries and the split's measurements under Invariants.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `c3b66c3ba51af12c3eb1caf178adc9e0ca1346b9` (the fork's `wake-clause`
-  branch, two commits on `main`) with bounded input bursts,
+  `58d0cbd775aad61b2a42830eb818a83e1a0ad1d8` (the fork's
+  `fix/pack-overwide-grapheme` branch, one commit on `main`) with bounded
+  input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
   frames, full-screen scroll-region presentation, closed-input EOF,
   scrollback-safe styled lines (`buffer.to_ansi_lines`), and the
   `{etui_wake}` message that ends the loop's input wait with a `Tick`
   (`etui_terminal_ffi:wake/1`), and a 40 ms bound on a lone escape byte's
-  wait, so Escape does not wait for the idle poll; Mork
+  wait, so Escape does not wait for the idle poll, and a styled wrap that
+  gives a grapheme wider than the row a row of its own rather than looping;
+  Mork
   1.12.x for CommonMark;
   and small Gleam utility packages. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
