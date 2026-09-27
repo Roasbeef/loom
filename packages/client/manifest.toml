@@ -51,6 +51,7 @@ packages = [
   { name = "repeatedly", version = "2.1.2", build_tools = ["gleam"], requirements = [], otp_app = "repeatedly", source = "hex", outer_checksum = "93AE1938DDE0DC0F7034F32C1BF0D4E89ACEBA82198A1FE21F604E849DA5F589" },
   { name = "runtime", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "machine", "provider", "session", "storage", "telemetry", "weft"], source = "local", path = "../runtime" },
   { name = "session", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "machine", "storage"], source = "local", path = "../session" },
+  { name = "session_view", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib", "machine"], source = "local", path = "../session_view" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "splitter", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "3DFD6B6C49E61EDAF6F7B27A42054A17CFF6CA2135FF553D0CB61C234D281DD0" },
   { name = "sqlight_loom", version = "1.2.0", build_tools = ["gleam"], requirements = ["esqlite_loom", "gleam_stdlib"], otp_app = "sqlight_loom", source = "hex", outer_checksum = "E8F2661F0598B0C0F60A86836340C60C4A175D56FE549CFD271602DB334B0B7E" },
@@ -59,7 +60,7 @@ packages = [
   { name = "telemetry", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tools", version = "0.2.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_regexp", "gleam_stdlib", "simplifile"], source = "local", path = "../tools" },
-  { name = "tui", version = "0.2.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "gun", "host", "machine", "mork", "simplifile", "weft"], source = "local", path = "../tui" },
+  { name = "tui", version = "0.2.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "gun", "host", "machine", "mork", "session_view", "simplifile", "weft"], source = "local", path = "../tui" },
   { name = "weft", version = "0.4.5", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "CDD540819BE4E87D3C19FD4843F02AB1707A979FE909AE85EEF2034C1E48ED6C" },
   { name = "yamerl", version = "0.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "yamerl", source = "hex", outer_checksum = "346ADB2963F1051DC837A2364E4ACF6EB7D80097C0F53CBDC3046EC8EC4B4E6E" },
 ]
@@ -90,6 +91,7 @@ prompt = { path = "../prompt" }
 provider = { path = "../provider" }
 runtime = { path = "../runtime" }
 session = { path = "../session" }
+session_view = { path = "../session_view" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 sqlight_loom = { version = "== 1.2.0" }
 storage = { path = "../storage" }
