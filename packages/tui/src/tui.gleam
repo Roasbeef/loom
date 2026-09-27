@@ -516,8 +516,6 @@ pub fn new_model_with_clock(
     notes_open: False,
     diff_view: DiffAutomatic,
     diff_scroll_offset: 0,
-    diff_rows: [],
-    diff_line_cache: dict.new(),
     diff_row_count: 0,
     diff_worktree_source: #(None, 0),
     note_board: None,
@@ -583,13 +581,10 @@ pub fn new_model_with_clock(
     render_revision: 0,
     rendered_revision: -1,
     rendered_row_count: 0,
-    rendered_rows: [],
     revealed_rows: 0,
     rendered_anchors: [],
     rendered_gutters: [],
-    record_rows: [],
     record_gutters: [],
-    record_line_cache: dict.new(),
     compact_call_cache: dict.new(),
     compact_entry_cache: dict.new(),
     pending_records: [],
@@ -598,7 +593,6 @@ pub fn new_model_with_clock(
     record_cache_strand: "",
     record_cache_details: False,
     frame_revision: 0,
-    frame_cache: None,
     frame_debt: pacing.FrameSettled,
     monotonic_time_ms:,
     transport_time_ms: host_bootstrap.monotonic_time_ms,
@@ -615,9 +609,10 @@ pub fn new_model_with_clock(
     next_job: job.first(),
     running: job_runner.new(),
     selection: None,
-    selection_frame: None,
     selection_gutters: [],
     clipboard: NoClipboard,
+    record_cache_epoch: 0,
+    view: tui_model.empty_view(),
   )
 }
 
@@ -1619,8 +1614,8 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
         width:,
         height:,
         selection: None,
-        selection_frame: None,
         selection_gutters: [],
+        view: tui_model.View(..model.view, selection_frame: None),
       )
       |> tui_model.mark_activity
       |> tui_model.invalidate_frame

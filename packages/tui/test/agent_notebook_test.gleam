@@ -295,7 +295,10 @@ pub fn closing_inspector_cannot_expose_worker_notes_as_main_notes_test() {
   let closed = press(settled, "esc")
   let rendered =
     render.view(
-      tui_model.Model(..closed, frame_cache: None),
+      tui_model.Model(
+        ..closed,
+        view: tui_model.View(..closed.view, frame_cache: None),
+      ),
       geometry.rect_new(0, 0, 100, 30),
     ).0
     |> frame.buffer_to_text

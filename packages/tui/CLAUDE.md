@@ -302,7 +302,11 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   modules whose handles its variants carry (`attachment`, `connection`,
   `daemon`, `herdr`, `job`, `recording`, `terminal_lane`) and nothing that
   imports the model.
-- `tui/model`: the `Model` record, the types it names, and the helpers every
+- `tui/model`: the `Model` record (`State(view)` with the terminal's etui
+  render caches, `View`, as its `view`: the rendered, record and diff rows,
+  their line caches, the frame cache and the selection's frame; a reducer
+  that empties the transcript bumps `record_cache_epoch` and the projection
+  drops the record rows), the types it names, and the helpers every
   reducer shares (`append_system`, `append_error`, `invalidate_frame`,
   `invalidate_transcript`, `mark_activity`, `queue_owner`,
   `active_strand_phase`). Importers alias it as `tui_model`, because `model`

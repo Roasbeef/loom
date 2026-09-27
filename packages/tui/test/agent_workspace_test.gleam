@@ -934,7 +934,10 @@ pub fn tiny_workspace_keeps_selected_identity_and_navigation_visible_test() {
     |> press("down")
   let rendered =
     render.view(
-      tui_model.Model(..initial, frame_cache: None),
+      tui_model.Model(
+        ..initial,
+        view: tui_model.View(..initial.view, frame_cache: None),
+      ),
       geometry.rect_new(0, 0, 40, 12),
     ).0
     |> frame.buffer_to_text

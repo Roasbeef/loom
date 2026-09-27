@@ -53,7 +53,7 @@ import tui/model.{
   DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector, Model,
   ModelSelector, Newer, NoClipboard, NoOverlay, Older, OverlaySubmission,
   PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  TerminalClipboard,
+  TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -1239,7 +1239,12 @@ pub fn update_ready_key(key: keys.Key, model: Model) -> Model {
 /// Drops the mouse selection and the frame it was made on.
 @internal
 pub fn clear_selection(model: Model) -> Model {
-  Model(..model, selection: None, selection_frame: None, selection_gutters: [])
+  Model(
+    ..model,
+    selection: None,
+    selection_gutters: [],
+    view: View(..model.view, selection_frame: None),
+  )
 }
 
 /// A press starts over: whatever was highlighted is replaced by a fresh
@@ -1276,8 +1281,8 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
           Model(
             ..model,
             selection: None,
-            selection_frame: None,
             selection_gutters: [],
+            view: View(..model.view, selection_frame: None),
             diff_scroll_offset: 0,
             worktree: worktree_view.State(
               ..model.worktree,
@@ -1291,8 +1296,8 @@ pub fn begin_selection(model: Model, at: geometry.Position) -> Model {
           Model(
             ..model,
             selection: Some(selection.start(layout.hit_area(model, at), at)),
-            selection_frame: Some(shown),
             selection_gutters:,
+            view: View(..model.view, selection_frame: Some(shown)),
           )
         }
       }
@@ -1325,12 +1330,12 @@ pub fn finish_selection(model: Model, at: geometry.Position) -> Model {
           Model(
             ..model,
             selection: None,
-            selection_frame: None,
             selection_gutters: [],
+            view: View(..model.view, selection_frame: None),
           )
         False -> {
           let shown =
-            option.lazy_unwrap(model.selection_frame, fn() {
+            option.lazy_unwrap(model.view.selection_frame, fn() {
               selection_display(model).0
             })
           let text = case selection_covers_transcript(model, selected) {
@@ -1429,7 +1434,7 @@ pub fn selection_gutters_on_display(model: Model) -> List(#(Int, Int)) {
 // current model would pair old cells with new row metadata.
 fn selection_display(model: Model) -> #(buffer.Buffer, List(#(Int, Int))) {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
-  case model.frame_cache {
+  case model.view.frame_cache {
     Some(FrameCache(rendered: #(shown, _), selection_gutters:, ..)) -> #(
       shown,
       selection_gutters,

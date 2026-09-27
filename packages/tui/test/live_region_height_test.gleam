@@ -149,7 +149,8 @@ pub fn settling_a_tool_call_leaves_the_transcript_the_same_height_test() {
 
   assert rows(live) == rows(settled(live))
     as "a collapsed transcript changed height when a running tool settled"
-  assert laid_out(live).rendered_rows != laid_out(settled(live)).rendered_rows
+  assert laid_out(live).view.rendered_rows
+    != laid_out(settled(live)).view.rendered_rows
     as "the settle must still replace the awaiting row with its result"
 }
 
@@ -183,7 +184,8 @@ pub fn settling_a_reasoning_block_leaves_the_transcript_the_same_height_test() {
   let durable = thinking_settled(live)
   assert rows(live) == rows(durable)
     as "a collapsed transcript changed height when reasoning settled"
-  assert laid_out(live).rendered_rows != laid_out(durable).rendered_rows
+  assert laid_out(live).view.rendered_rows
+    != laid_out(durable).view.rendered_rows
     as "the settle must still replace the line counter with the opening words"
 }
 

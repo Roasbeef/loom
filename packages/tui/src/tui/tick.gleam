@@ -30,7 +30,7 @@ import tui/herdr
 import tui/inbound
 import tui/interaction
 import tui/layout
-import tui/model.{type Model, FrameCache, Model, Replaying} as tui_model
+import tui/model.{type Model, FrameCache, Model, Replaying, View} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
@@ -367,7 +367,7 @@ pub fn refresh_frame_cache(
     // without changing any of the inputs the revision counts.
     pacing.ViewportCatchingUp -> pacing.FrameStale
     pacing.ViewportSettled ->
-      case model.frame_cache {
+      case model.view.frame_cache {
         Some(FrameCache(screen: cached_screen, revision:, ..))
           if cached_screen == screen && revision == model.frame_revision
         -> pacing.FrameCurrent
@@ -390,12 +390,15 @@ pub fn refresh_frame_cache(
         ..paced,
         frame_debt: pacing.FrameSettled,
         last_frame_ms: now,
-        frame_cache: Some(FrameCache(
-          screen:,
-          revision: paced.frame_revision,
-          rendered: render.render_frame(paced, screen),
-          selection_gutters: interaction.selection_gutters_on_display(paced),
-        )),
+        view: View(
+          ..paced.view,
+          frame_cache: Some(FrameCache(
+            screen:,
+            revision: paced.frame_revision,
+            rendered: render.render_frame(paced, screen),
+            selection_gutters: interaction.selection_gutters_on_display(paced),
+          )),
+        ),
       )
     }
   }

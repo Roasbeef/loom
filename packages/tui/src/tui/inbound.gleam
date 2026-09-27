@@ -1075,9 +1075,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         records: list.reverse(entries),
         streams: [],
         tool_tails: [],
-        record_rows: [],
         record_gutters: [],
-        record_line_cache: dict.new(),
+        record_cache_epoch: model.record_cache_epoch + 1,
         compact_call_cache: dict.new(),
         compact_entry_cache: dict.new(),
         // The snapshot is the server's own account of the strand, so it

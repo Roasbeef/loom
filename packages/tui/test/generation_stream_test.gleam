@@ -411,7 +411,7 @@ pub fn provider_end_does_not_replay_a_screenful_of_completed_text_test() {
     painted
     |> inbound.accept_connection_message(delta(generation, "end", ""))
     |> tui.update(backend.Tick, _)
-  assert ended.rendered_rows == painted.rendered_rows
+  assert ended.view.rendered_rows == painted.view.rendered_rows
     as "the terminal marker cannot replace the answer with older history"
   assert ended.revealed_rows == painted.revealed_rows
     as "the terminal marker cannot restart the viewport animation"

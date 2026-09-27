@@ -292,7 +292,7 @@ pub fn a_summarized_block_keeps_anchors_parallel_to_rows_test() {
   assert !list.is_empty(summarized.rendered_anchors)
     as "scrolling back must freeze anchors"
   assert list.length(summarized.rendered_anchors)
-    == list.length(summarized.record_rows)
+    == list.length(summarized.view.record_rows)
 }
 
 // A summary that arrives while the reader is scrolled back adds rows to a
