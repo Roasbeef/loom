@@ -3333,7 +3333,9 @@ these forks because they define the same modules.
   ordinary reply; ready and failed are pushes without `reply_to`, correlated
   by `board.request_id`. Delivery revalidates authority. Status paths remain
   literal identities; at most 24 files and 40,960 encoded board bytes are
-  retained, with omitted files and partial patches explicit. The pinned HEAD
+  retained, with omitted files and partial patches explicit. Patches the
+  8-second capture deadline does not reach are omitted the same way; only
+  status and the metadata probes fail the observation. The pinned HEAD
   and subsequent filesystem reads form an observation, not an atomic snapshot.
 - **Current context is a server observation.** `ContextGet(strand)` captures
   `StrandConfig` and `StrandLeaf` together, then projects the immutable branch
