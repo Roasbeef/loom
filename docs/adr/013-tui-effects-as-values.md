@@ -373,7 +373,7 @@ The survey of mailbox reads, at the commit this slice started from:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
   `tui/attachment.gleam:597` (`settle`). The replay drain:
-  `tui/tick.gleam:172` (`drain_replay`).
+  `tui/tick.gleam:200` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:127` (`drain_control`)), the picker's activity reply
@@ -1318,3 +1318,183 @@ and the reducers. Phase 4 extracts less: a read-only view needs the lane
 and the projection, and the step waits for the phase that builds the web
 view out. [ADR-014](014-second-runtime.md) records that decision, the
 four things that tie the step to the terminal today, and a path for each.
+
+## Addendum: event-driven delivery (2026-09-27)
+
+This addendum revises option C from the phase 3 addendum. Option C made
+arrivals messages that are only filed and put every reduction at a tick or
+a key, and the tick was a poll: the terminal's loop woke when etui's input
+wait timed out, at most 250 ms after the last wake while a lane was
+attached, and the web view reduced on a 250 ms timer except while a reply
+was awaited (ADR-014, the addendum on waking). The lane also captured
+again on every one of those ticks while idle. The rule is now: traffic is
+reduced when it arrives, and time is handled by one wake-up at the lane's
+next deadline. What a reduction does, and the order it does it in, did not
+change. [delivery.md](../architecture/delivery.md) traces one frame through
+both hosts under the new rule.
+
+**Why.** The 250 ms tick was a floor on both cost and latency. Measured on
+a live terminal against a local daemon, an idle attached terminal woke its
+loop 14.6 times a second and issued 3.6
+catch-ups a second, and the daemon decoded 10.7 requests a
+second from that one idle client. A frame that reached an idle terminal
+waited for the next poll before it was reduced. Every open page paid the
+same refresh traffic and rendered four times a second besides.
+
+**What changed in the lane.** `session_channel.next_due` answers the
+earliest reading at which `tick` would act: the in-flight deadline, the
+refresh instant of a ready lane with a cut, or `None`. It is exact in both
+directions, and the property test checks that after every generated step
+(N1). The idle refresh has two intervals. A lane starts `Polling`, at
+250 ms, and moves to `Pushing`, at five seconds, on the first pushed frame
+it receives. The first push is the evidence because the hello names no
+push capability and a lane that reconnects may face an older daemon. No
+gap detection was added: a notice at or above the cut catches up from
+`cut.next_seq`, so a lost notice followed by any later one loses nothing,
+and only a lost final notice waits for the five-second refresh. A pushed
+configuration board, which the gateway sends every other subscriber when
+one changes a strand's configuration, now catches up as a presence change
+does; the lane used to drop it and let the 250 ms refresh pick the change
+up.
+
+**What changed in the terminal.** The session socket wakes the loop.
+`host/websocket.connect_waking` has the socket actor call a `notify` after
+it files a frame, and `tui/connection.connect_waking`, which only the
+attach worker's session socket uses, makes that `notify` send etui's
+`{etui_wake}` to the inbox's owner. The actor sends the wake after the
+frame, so the loop never sees a wake ahead of the frame it announces.
+Wakes are paced at the sender to one per 16 ms, the frame interval; a
+frame inside the interval gets one wake at its end, so every frame has a
+wake within 16 ms and the loop needs no feedback flag or mailbox flush.
+Etui's side is two commits on the fork's `wake-clause` branch: the wake
+clause in `read_with_timeout`, reported as a zero-wait probe rather than a
+timeout so a half-read escape sequence or paste is not cut short, and a
+40 ms bound on a lone escape byte's wait, so Escape does not wait for an
+idle poll that is now up to a second long.
+
+With traffic announced, `tick.terminal_poll_timeout` is only for what no
+wake announces. A drain that stopped at its batch polls at once, because
+its leftover frames had their wakes spent on earlier ticks
+(`Model.connection_backlog`). A walking viewport keeps 16 ms and a request
+in flight keeps 8 ms, since a reply usually lands inside the wake interval
+of the wake that let the loop send the request. A model that
+`wakes_itself` (a strand running, a deferred frame, a running job, frames
+held back) keeps the paced poll and the 250 ms cap it had before. Anything
+else sleeps until `next_due`, capped at one second.
+
+**What changed in the web view.** The selector's mapping drains the inbox
+behind the frame it matched, up to 64 frames, into one `Arrived`, which is
+reduced at once. Lustre 5.7.1 renders, diffs and broadcasts once per
+message whatever the message changed ([lustre.md](../lustre.md), "An empty
+reconcile is still broadcast"), so one message per burst is what makes one
+render per burst. There is no periodic tick: after every transition the
+component cancels its timer and arms one `send_after` for `next_due`.
+`update` performs that itself, because the `Timer` handle must stay in the
+model for the next arming to cancel, and returning it through an effect
+would cost a second message and a second render.
+
+**What was kept.** ADR-010's ordering: a wake is a separate event behind an
+Escape, so the Escape's step cancels before any traffic is reduced and the
+wake's tick drains what it held; if etui ends the Escape's input burst on
+the wake instead, the held frames keep the loop on its short poll.
+`runtime_receive_test` pins both. The drain order in `tick.update_tick`,
+admission and the swap rule (S2) are untouched. A batch is still at most
+64 frames in either host, and the terminal's per-frame cost did not move.
+The P model changed only in its prose: it has no clock, and `eTick` with
+`tickPending` already modelled a reduction woken by an arrival and
+coalesced with others. All ten test cases pass at 30,000 schedules and the
+mutation table is unchanged.
+
+**What was considered and not done.**
+
+- *Gap detection on notice sequences.* Not needed, for the reason above.
+- *The wake as a read timeout*, as first proposed. Etui resolves a pending
+  escape prefix on a read that waited its full timeout; a wake that
+  counted as one would split an arrow key or a paste into stray keys while
+  an answer streams. The wake is a zero-wait probe instead.
+- *A feedback flag or a mailbox flush for wakes.* The sender's pacing bounds
+  the wakes a burst costs without either.
+- *A wake on SIGWINCH.* Etui notices a resized window only when its loop
+  runs, which is why the idle ceiling is one second and not the five-second
+  refresh. A wake from the signal would remove that ceiling; it is left for
+  a later change to the fork.
+
+**What it costs.**
+
+- A fact with no pushed notice reaches an idle pushing client within five
+  seconds rather than 250 ms. A peer joining is one: the gateway pushes a
+  departure but not a join, so the peers already attached see a newcomer
+  at their next refresh. The shipped multiplayer fixture, which waits for
+  exactly that after Bob rejoins, took 12.4 s instead of 7.7 s (median of
+  five runs each, with twelve of sixteen cores busy).
+  The `client/` context cell ([models.md](../architecture/models.md)) is
+  another; its figure reaches the agent strip sooner through the usage
+  row's own push. A lost final notice has the same bound.
+- An idle terminal notices a resized window within about 1.1 s rather than
+  about 350 ms, and a cache countdown with nothing running under it moves
+  in steps of up to a second (up to five on a page). A countdown is an
+  upper bound, so a late label still states something true.
+- `update` in the web component performs one host action, the timer.
+- The socket actor carries a pacing state and a timer subject, and its
+  initial reading had to be the actor's own clock: the BEAM's monotonic
+  clock is negative here, and a schedule that opened at zero held the
+  first wake for days. The first live drive found that; a client test on a
+  real socket now pins it.
+- The pin moves to an etui branch that is not yet on the fork's `main`.
+- A lane that has never been pushed to keeps the 250 ms refresh, and a
+  page in that state renders more often than before (below).
+
+**Measured.** Before is `c4e6e5b64`, after is this change, on the same
+machine, alternating. The live figures come from a terminal and a daemon
+started as distributed nodes, counted with `call_count` trace patterns and
+timed with trace timestamps on the lane owner's process, against a
+loopback provider that streams either one delta every 250 ms or 500 deltas
+in one write; each is the median of five runs.
+
+| Measurement | Before | After |
+|---|---|---|
+| Idle terminal: loop wakes per second | 14.6 | 1.6 |
+| Idle terminal: catch-ups per second | 3.6 | 0.2 |
+| Idle terminal: requests the daemon decodes per second | 10.7 | 0.6 |
+| One delta every 250 ms: arrival to reduction, median / p90 | 8.3 / 21.2 ms | 0.2 / 9.5 ms |
+| One delta every 250 ms: arrival to the next paint, median / p90 | 20.1 / 934 ms | 2.3 / 14.3 ms |
+| 500 deltas in one write: arrival to reduction, median / p90 | 75.5 / 153 ms | 11.5 / 17.0 ms |
+| 500 deltas: first arrival to the paint after the last reduction | 222 ms | 154 ms |
+| 500 deltas: paints | 20 | 14 |
+| 500 deltas: the loop's reductions over the window | 21.6 M | 14.8 M |
+| Idle page that has been pushed to: renders per second | 9.9 | 0.8 |
+| Idle page that has been pushed to: catch-ups per second | 2.0 | 0.2 |
+| Idle page: DOM mutations and HTTP requests in 60 s | 0 and 0 | 0 and 0 |
+| Page, 500 deltas: renders in the burst's 10 s window | 618 | 100 (33 to 345) |
+| Idle page never pushed to: renders / catch-ups per second | 9.9 / 2.0 | 15.3 / 3.8 |
+
+The paint latency counts every frame, including those that changed
+nothing on screen, whose next paint came with a later change; that is
+where the old p90 of 934 ms comes from. The page's renders per burst
+depend on how fast the deltas reach the component: a render is one batch,
+and a component that keeps up takes batches of a few frames. Lustre's real
+runtime with the component suspended while 40 or 150 frames queue gives
+exactly one and three renders (`delivery_test`).
+
+The last row is a regression, and it follows from the design. A lane on a
+session where nothing happens receives no pushed frame, because the
+gateway pushes nothing to a network subscriber when it subscribes, so it
+stays `Polling` and now refreshes every 250 ms exactly, where the page's
+old tick quantized that refresh to about every 500 ms. The terminal in
+the same state is unchanged, at 3.6 catch-ups a second. Publishing the
+roster to a new subscriber, itself included, would give every lane its
+evidence at attach; that is a gateway change which moves the push order
+nine client tests pin, several of them counting authorization checks, so
+it is left as a follow-up in [next.md](../next.md).
+
+`scripts/tui_perf.sh` measures the step itself on a pinned clock, median
+of seven alternating runs, and it did not move: per-frame reductions for
+a 500-frame burst drained tick by tick went from 5,465.7 to 5,466.4, a
+64-frame tick from 226,230 to 226,066, the 10,000-frame backlog cases by
+less than half a percent, and growth stayed flat at every size to 4,096
+frames. An idle tick costs 27 more reductions (7,451 to 7,478), for
+recording whether the drain stopped at its batch and whether the tick
+adopted. The model after a long reply is one word larger, and what the
+process retains after a collection is unchanged or smaller. The replay
+goldens pass unchanged, and `loom replay --all --plain` of both committed
+recordings is byte-identical between the two builds.

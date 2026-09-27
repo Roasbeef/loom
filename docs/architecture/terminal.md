@@ -115,8 +115,15 @@ flowchart LR
 places this loop beside the web view's, which drives the same session lane
 from a Lustre component.
 
-`Tick` is the event etui delivers when a poll times out with no input, so it
-is where socket traffic enters the model. `tui/tick.update_tick` drains, in
+`Tick` is the event etui delivers when a poll times out with no input, or
+when another process wakes the poll, so it is where socket traffic enters
+the model. A session socket wakes it: after the socket actor files a frame
+in the terminal's inbox it sends etui's `{etui_wake}` to the terminal
+process, paced to one wake per 16 ms with the last wake of a burst sent at
+the end of its interval (`connection.connect_waking`,
+`websocket.WakeAfter`). A frame therefore reaches the model within one
+wake interval of arriving, whatever the poll timeout is.
+`tui/tick.update_tick` drains, in
 order, the replay inbox, control replies, the candidate attachment's
 traffic, the reconnect outcome, the picker's activity
 answer, a new session's configuration, and up to 64 messages from the
@@ -143,7 +150,10 @@ capacity, because a dropped frame is a gap in the lane's sequence. A frame
 is tagged with the subject it was read from, and admission files it only
 into the adopted inbox or the waiting attempt with that subject. A host
 that wakes when traffic arrives delivers `Arrived` and then a `Ticked`
-input; it never reduces on an arrival alone. The control, reconnect, activity and attachment jobs' own messages,
+input; it never reduces on an arrival alone. The terminal's wake is that
+host's shape: the wake arrives as etui's `Tick`, and a wake queued behind
+an Escape is a separate event, so the Escape's step still cancels before
+any traffic is reduced (ADR-010). The control, reconnect, activity and attachment jobs' own messages,
 the attachment's `Prepared` and worker outcome among them, reach the step
 the same way ("Jobs are started by the runtime" below), and are received
 before the frames, so a `Prepared` and the first frames it names arrive in
@@ -324,10 +334,23 @@ which reads the model:
   addresses the transcript (a wheel notch, a page key, Enter, a resize) reveals
   the whole backlog at once. Typing into the composer does not.
 
-The poll timeout follows recent activity rather than liveness: 40 ms until
-320 ms pass without an event, then 400 ms. The daemon's socket actor cannot
-wake etui's poll, so after a quiet period the first socket message can wait up
-to 400 ms before the tick drains it.
+The poll timeout is `tick.terminal_poll_timeout`, and since socket traffic
+wakes the loop itself, the timeout is only for what a wake does not
+announce. A drain that stopped at its batch polls at once, since the
+frames it left have had their wakes spent. A viewport still walking polls
+at 16 ms, and a lane with a request in flight at 8 ms, because the reply
+usually lands inside the wake interval of the wake that led to the
+request. A model that `tick.wakes_itself` (a strand running anywhere, a
+deferred frame, a job running, or frames held) takes the paced poll, 40 ms
+until 320 ms pass without an event and 400 ms after, capped at 250 ms as
+before and by the lane's next due reading.
+Anything else sleeps until the lane's `session_channel.next_due`, capped at
+`tick.idle_poll_ceiling_ms` (one second). The ceiling bounds what nothing
+announces: etui notices a resized window only when its loop runs, and a
+cache countdown with nothing running under it moves only on a tick. An
+idle attached terminal therefore wakes about once a second, where it woke
+four times a second before. [Delivery](delivery.md) traces a frame from
+the socket to the screen.
 
 ## Three kinds of transcript content
 
@@ -476,8 +499,9 @@ socket's work:
 at a time. A snapshot arrives as `snapshot_begin`, a chunk per credit, then
 `snapshot_end`, and the cut becomes visible only at the end, so partial
 metadata never repaints the view. While idle the channel issues a credited
-`catch_up` every 250 ms. A `committed` or `presence` push moves that catch-up
-earlier. `stream_delta`, `tool_output`, `usage_observation` and
+`catch_up` every 250 ms until a frame has been pushed to it, and every five
+seconds after (`polling_refresh_ms`, `pushing_refresh_ms`). A `committed`
+or `presence` push moves that catch-up earlier. `stream_delta`, `tool_output`, `usage_observation` and
 `block_summary` pushes are applied directly. Pushes are accepted in every phase except `Closed` and
 consume no credit.
 [Multiplayer](multiplayer.md#what-the-terminal-does-with-a-pushed-frame) has
@@ -944,7 +968,7 @@ Paths are relative to the package's source root: `tui/...` is under
 | `tui/pacing` | Frame and viewport pacing and the poll cadence, as pure arithmetic. |
 | `tui/connection` | The terminal's event names over the shared `host/websocket` transport. |
 | `session_view/session_wire` | v2 command encoding and single-frame decoding: correlated replies versus pushes. |
-| `session_view/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, 250 ms catch-up, pushed frames. |
+| `session_view/session_channel` | The credited conversation lane: phases, one outstanding request, one unsent mutation, the idle catch-up (250 ms, or 5 s once pushed to), `next_due`, pushed frames. |
 | `session_view/snapshot`, `session_view/snapshot_view` | Assembling a credited transfer into a validated cut, and projecting it into strands, operations, configuration and presence. |
 | `session_view/protocol` | The client's view of the ClientGateway event union and its command constructors. |
 | `tui/attachment` | One provisional session replacement, the reducer's view of its `job.Attach` job, and its adoption. |

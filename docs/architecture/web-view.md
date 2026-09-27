@@ -126,8 +126,8 @@ flowchart LR
 The component is linked to the socket process, and the relay monitors the
 component and the gateway. When the browser goes away, the socket shuts
 the component down and the relay detaches. When the gateway ends the
-attachment, the relay reports it, the socket waits two ticks so the ended
-state is drawn, and then closes. [lustre.md](../lustre.md#lifecycle-and-cleanup)
+attachment, the relay reports it, the socket waits a quarter second so
+the component's patch for the ended state is sent, and then closes. [lustre.md](../lustre.md#lifecycle-and-cleanup)
 walks that chain one link at a time.
 
 ## From `loom --ui` to a live socket
@@ -231,7 +231,8 @@ sequenceDiagram
    permit's custody and starts the component for the admitted role
    (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:347`).
    The component's `init` selects two sources: the transport, whose
-   `connect` starts the relay and returns at once, and a 250 ms timer.
+   `connect` starts the relay and returns at once, and a deadline timer,
+   which it arms for the lane's next due reading once the lane exists.
    The relay attaches to the gateway as its first message and answers
    `Opened` or `Refused`. On `Opened` the component starts the lane, which
    issues `subscribe` and pulls the transfer chunk by chunk, and the first
@@ -258,7 +259,8 @@ flowchart LR
 ```
 
 - **The observer's page** is `web_view/component`. Its message type is the
-  connection's outcome, the timer, arrivals and ticks, and nothing else,
+  connection's outcome, the timer's subject, batches of arrivals and the
+  timer's fire, and nothing else,
   so it has no way to express a command. Its view attaches no event
   handler. Where an operator's page has its composer, it draws a fixed
   line saying the page is read-only. The socket drops every browser frame
@@ -291,20 +293,31 @@ ceiling allow then.
 The component is the lane's host in ADR-014's sense: it reads what the
 engine may not read and performs what the engine decides.
 
-**Delivery.** A frame from the relay arrives as `Arrived(message, at)`
-and is filed into a `session_view/inbox`. `Ticked(at)` hands every filed
-frame to the lane, oldest first, through `operator.drain`, the loop the
-terminal also runs, then calls `session_channel.tick` for the lane's idle
-refresh and deadlines. This is ADR-013's option C: arrivals are filed,
-and reduction happens at fixed points. The one exception is a reply the
-lane is waiting for. While `session_channel.in_flight` holds, an arrival
-runs the same reduction at once, without re-arming the timer. Before that
-change a first capture that took eleven round trips waited for eleven
-ticks, and reached the browser 2.77 s after the upgrade; it now arrives
-about 4 ms after it (ADR-014, the addendum on waking). A push to an idle lane still waits for the timer.
+**Delivery.** Delivery is event-driven (ADR-013, the addendum on
+event-driven delivery; [delivery.md](delivery.md) traces it end to end).
+The selector's mapping for the relay's inbox drains the inbox behind the
+frame it matched, up to `arrival_batch` (64) frames, and builds one
+`Arrived(messages, at)`. `Arrived` files the batch into a
+`session_view/inbox` and reduces it at once: every filed frame goes to the
+lane, oldest first, through `operator.drain`, the loop the terminal also
+runs, then `session_channel.tick` runs at the batch's reading. One burst
+is one message, and so one render: Lustre renders, diffs and broadcasts
+once per message whatever the message changed
+([lustre.md](../lustre.md#an-empty-reconcile-is-still-broadcast)), and
+`delivery_test` counts the patches a burst costs.
+
+There is no periodic tick. After each transition `component.rearm`
+cancels the timer it armed before and arms one `process.send_after` for
+the lane's `session_channel.next_due`: the in-flight deadline, or the idle
+refresh, which is 250 ms until the daemon has pushed a frame and five
+seconds after. When it fires, `Ticked(at)` runs the same reduction. An
+idle page on a daemon that pushes wakes once every five seconds, where the
+250 ms tick woke it four times a second.
 
 **Time.** The clock is read in the selector's mapping, when the timer
-message or the relay's frame is received, so `update` reads no clock.
+message or the relay's batch is received, so `update` reads no clock. The
+one host action `update` performs is arming the timer, because its
+`Timer` handle has to stay in the model for the next arming to cancel.
 
 **Commands.** `component.submit` refuses empty text and text over 256 KiB
 (`prompt_limit`) with a notice. Otherwise it drains what was filed, then
@@ -398,8 +411,9 @@ covered in full in [lustre.md](../lustre.md).
   the lane decided them, so `component.perform` runs the whole list inside
   one `effect.from`. The component uses `effect.batch` only for effects
   that do not depend on each other: in `init`, opening the transport and
-  arming the timer; and in `Ticked`, the reduction's output and re-arming
-  the timer ([lustre.md](../lustre.md#what-differs)).
+  selecting the timer; and in `Opened`, the subscribe the lane wrote and
+  whatever the first reduction wrote after it
+  ([lustre.md](../lustre.md#what-differs)).
 - **`init` and its effects must finish within a 1000 ms start timeout.**
   The gateway's attach can take longer, so the transport's `connect`
   starts the relay and returns at once, and the relay attaches as its own
@@ -414,7 +428,8 @@ covered in full in [lustre.md](../lustre.md).
   ([lustre.md](../lustre.md#only-events-you-attach-can-arrive)).
 - **Every message runs `view` on the whole model and diffs the whole
   tree.** Nothing skips the render when the model did not change, and an
-  idle page receives a patch per tick. So the rows are projected once, in
+  idle page receives a patch per message, which is why arrivals are
+  batched before `update`. So the rows are projected once, in
   `apply`, when a capture arrives, and `component.transcript_view` is
   memoized on them with `element.memo`, which skips both the view call and
   its diff while the rows are unchanged
@@ -444,7 +459,7 @@ browser goes away, because a runtime outlives its last client.
 
 | Path | What it owns |
 |---|---|
-| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, option C delivery with waking, the command arms `submit` and `decide`, projection on `Captured`, the keyed and memoized transcript. |
+| `packages/web_view/src/web_view/component.gleam` | The observer's application: the lane's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the command arms `submit` and `decide`, projection on `Captured`, the keyed and memoized transcript. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted` and `Decided`, the uncontrolled composer and its total form decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |

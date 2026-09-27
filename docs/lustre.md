@@ -151,18 +151,42 @@ the effect docs say: sequence them in one effect, or dispatch a message
 from the first and return the second from that message's `update`
 ([`lustre/effect`][doc-effect], `batch`).
 
-### Option C in Lustre terms
+### Event-driven delivery in Lustre terms
 
 ADR-013's phase 3 addendum chose option C: arrivals are messages that are
-only filed, and reduction happens at a tick or a key in a fixed order. In
-the component, `Arrived` appends to `filed`, and `Ticked` hands every filed
-frame to `session_channel.receive` in arrival order, through
-`operator.drain`, then runs `session_channel.tick`. One case does not wait
-for the tick: while the lane has a request in flight
-(`session_channel.in_flight`), an arrival runs the same reduction at once,
-without re-arming the timer, so a credited transfer does not pay a tick
-per chunk (ADR-014, the addendum on waking). A push to an idle lane is
-still only filed. `component_test` pins both cases.
+only filed, and reduction happens at a tick or a key in a fixed order. Its
+addendum on event-driven delivery revises that for both hosts, and in the
+component it works like this. The selector that reads the relay's inbox
+drains it in its mapping function: the frame it matched and up to
+`arrival_batch - 1` more already waiting become one `Arrived`, with the
+clock read after the drain. `Arrived` files the batch and reduces it at
+once: every filed frame goes to `session_channel.receive` in arrival
+order, through `operator.drain`, then `session_channel.tick` runs at the
+batch's reading. There is no periodic tick. After each transition the
+component arms one `process.send_after` for the lane's
+`session_channel.next_due`, cancelling the timer it armed before, and when
+it fires `Ticked` runs the same reduction. `component_test` and
+`delivery_test` pin the reduction, the batching and the timer.
+
+The batching is there because of the next section's cost model: Lustre
+renders once per message, whatever the message changed, so one message per
+burst is the only way to get one render per burst.
+
+### An empty reconcile is still broadcast
+
+Lustre 5.7.1 has no guard for an empty patch. `EffectDispatchedMessage` in
+the server runtime ([`runtime.gleam`][src-rt-loop], lines 273 to 283 of the
+package's source) runs `update`, `view` and `diff`, then calls `transport.reconcile(diff.patch, ...)` and broadcasts the
+result to every registered client, whether or not the patch holds a
+change. Each message a component takes therefore costs a view, a diff and
+one frame on every page's socket. Two consequences for this package:
+
+- Messages that change nothing are not free. A timer that fires four times
+  a second is four renders and four socket frames a second per page, which
+  is what the old 250 ms tick cost an idle page.
+- Coalescing belongs before `update`. By the time `update` runs, the
+  render is already owed, so the batching has to happen where the message
+  is built: in the selector's mapping, as `component.open` does.
 
 ## 2. Server components in depth
 
@@ -334,7 +358,12 @@ selector into the runtime's own ([`lustre/server_component`][doc-sc],
   "Delivery under option C").
 - **Read host inputs in the mapping.** `component.arm` reads the clock in
   the selector's mapping function when the timer message is received, so
-  `Ticked` carries the instant of the tick and `update` stays pure.
+  `Ticked` carries the instant of the tick, and `component.open` drains the
+  inbox and reads the clock there too, so `Arrived` carries a whole burst
+  and the reading after it. The one host action `update` performs itself
+  is arming the deadline timer (`component.rearm`): its `Timer` handle has
+  to be in the model for the next arming to cancel it, and handing it back
+  through an effect would cost a second message, and so a second render.
 
 Another process can also reach `update` directly with
 `lustre.send(runtime, lustre.dispatch(message))`
@@ -368,8 +397,9 @@ Loom's chain, one link per process:
    the gateway and exits.
 3. The gateway ends the attachment (session stopped, access revoked): the
    relay files `connection_event.Closed` with the component, tells the
-   socket (`Ended`), and exits. The socket waits two ticks so the ended
-   state is drawn, then stops, which is step 1.
+   socket (`Ended`), and exits. The socket waits a quarter second
+   (`ended_grace_ms`) so the component's patch for the ended state is
+   sent first, then stops, which is step 1.
 4. The component crashes: the link takes the socket down, the relay's
    monitor fires, and the browser reconnects.
 
@@ -387,9 +417,10 @@ Loom has one client per component, so it does not need them.
   blocks ([`runtime.gleam`][src-rt-loop], `broadcast`). `ui_socket` writes
   each one with `mist.send_text_frame`, so a slow browser lets the socket's
   mailbox grow. 051 accepts this: "Backpressure is the terminal socket's".
-- **Session traffic** is bounded by option C: the component drains its
-  whole filed buffer on each 250 ms tick, which bounds it by 250 ms of
-  pushed frames plus the credited transfer (ADR-014).
+- **Session traffic** is bounded by the batch: a selector mapping reads
+  at most `arrival_batch` frames, and the message it builds is reduced at
+  once, so the filed buffer never holds more than one batch. What the
+  mapping did not read waits in the mailbox for the next message.
 
 ### Cost of a message, and sizing
 
@@ -402,7 +433,10 @@ render when the model did not change. So:
 - The cost of one message is the cost of `view` plus the diff. Keep `view`
   cheap: compute derived data in `update`, where it runs once per change,
   not in `view`, where it runs once per message (section 4).
-- An idle page still receives a `Reconcile` per tick, four a second.
+- An idle page receives a `Reconcile` per message. With event-driven
+  delivery that is one per idle refresh, every five seconds once the
+  daemon has pushed, plus one per reply to that refresh; with the old
+  250 ms tick it was four a second before any reply.
 - A `Mount` serializes the whole tree, and the runtime holds the whole last
   tree and its handler map. Per-page memory grows with what the page
   renders, not with what changed. Bound the rendered window.
@@ -422,7 +456,7 @@ retention.
 | Register the client | `server_component.register_subject` | `ui_socket.admit`, a subject the socket owns |
 | Browser to runtime | `runtime_message_decoder`, `lustre.send` | `ui_socket` handler, `mist.Text` arm |
 | Runtime to browser | `client_message_to_json` | `ui_socket` handler, `Client` arm |
-| BEAM messages in | `server_component.select` | `component.open` (relay inbox), `component.arm` (tick) |
+| BEAM messages in | `server_component.select` | `component.open` (relay inbox, drained into one `Arrived` per burst), `component.arm` (deadline timer) |
 | Engine effects out | one `effect.from` | `component.perform` |
 | Shutdown | `lustre.shutdown()` | `ui_socket` `on_close` |
 | Session traffic | none | `ui_relay`, one per page, monitors the component and the gateway |
@@ -1034,7 +1068,7 @@ All apply to 5.7.1. Re-check each when the pin moves.
 | `init`'s effects run inside the actor's 1000 ms initialiser. | A slow effect in `init` makes `start_server_component` fail with `InitTimeout`. **(source)** | [`runtime.gleam`][src-rt-start], `start` |
 | Effects run synchronously in the runtime process. | A blocking effect stalls the page. **(source)** | [`runtime.gleam`][src-rt-start], `handle_effect` |
 | `effect.batch` has no guaranteed order, and the server runs it in reverse. | Ordered work split across a batch runs backwards. **(source)** for the reversal | [`lustre/effect`][doc-effect]; [`effect.gleam`][src-effect-batch] |
-| Every message renders, diffs and broadcasts, including dropped browser messages and no-op messages. | `view` cost is paid per message; an idle page gets a `Reconcile` per tick. **(source)** | [`runtime.gleam`][src-rt-loop], `loop` |
+| Every message renders, diffs and broadcasts, including dropped browser messages and no-op messages. | `view` cost is paid per message; an idle page gets a `Reconcile` per timer fire, and a burst costs one per message it arrived in. **(source)** | [`runtime.gleam`][src-rt-loop], `loop` |
 | Selectors added with `select` are never removed. | `select` from `update` leaks a subject per call. **(source)** | [`runtime.gleam`][src-rt-loop], `EffectAddedSelector` |
 | A registered client's death does not stop the runtime. | Forgetting `lustre.shutdown()` leaves a process per closed page. | [basic setup example][ex-basic]; `MonitorReportedDown` **(source)** |
 | `before_paint` and `after_paint` never run in a server component. | DOM measurement or focus effects silently do nothing. | [`lustre/effect`][doc-effect] |

@@ -441,8 +441,11 @@ so no model can write it, and `gateway.snapshot_plan` puts every
 `client/` fact in every transcript capture, so no protocol change was
 needed to carry it. A register-only write produces no pushed `committed`
 notice, because the hub's pull emits only entries, usage rows, operation
-transitions and escalations. The terminal's 250 ms idle catch-up is what
-picks the cell up. The cell's `tokens` is the operation's current
+transitions and escalations. The client's idle catch-up is what
+picks the cell up: within 250 ms on a lane that has heard no push, and
+within five seconds on one that has (`session_channel.pushing_refresh_ms`).
+The same figure reaches the agent strip sooner, from the usage row's own
+push. The cell's `tokens` is the operation's current
 context size from its newest usage row, a replacement value and not a
 sum. The cell is never deleted, and a reader shows it only while its
 `operation` is still the strand's current one.

@@ -256,3 +256,17 @@ every step. Measured the same way, the first cut now reaches the browser
 which also opens the session). The verification line above, that `Arrived`
 changes no lines until a `Ticked`, now holds only for a lane with nothing
 out; `component_test` covers both cases.
+
+## Addendum: event-driven delivery (2026-09-27)
+
+The waking described in the addendum above was the first half of a larger
+change, which ADR-013's addendum on event-driven delivery records. The
+component no longer has a periodic tick. Its selector drains a burst into
+one `Arrived`, which is reduced at once whether or not a reply is awaited,
+and one timer armed for the lane's `session_channel.next_due` replaces the
+250 ms tick. The first capture's chain of replies was already reduced on
+arrival and still is; what changed is that a push to an idle lane is
+reduced on arrival too, a burst costs one render per batch of up to 64
+frames, and an idle page wakes at the lane's refresh rather than four
+times a second. The verification line above that `Arrived` changes
+nothing until a `Ticked` no longer holds for any lane.
