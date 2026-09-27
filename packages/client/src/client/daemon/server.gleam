@@ -172,9 +172,10 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
   }
 }
 
-// The page's socket: this origin, then the page's grant under its key, then
-// the tab's nonce, then the same resident-session resolution a terminal's
-// socket uses, with the membership role capped by the page's ceiling.
+// The page's socket: this origin, then a nonce in the query, then the
+// page's grant under its key, then that nonce against the grant's, then the
+// same resident-session resolution a terminal's socket uses, with the
+// membership role capped by the page's ceiling.
 fn web_socket(
   config: Config(instance),
   ui: Ui(instance),
@@ -189,6 +190,14 @@ fn web_socket(
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
+
+    // A socket with no nonce at all is refused before the grant is looked
+    // up, so it costs the daemon no readiness, authentication or membership
+    // read.
+    use nonce <- result.try(
+      option.to_result(nonce, Nil)
+      |> result.map_error(fn(_) { plain(403, "forbidden page") }),
+    )
     use #(state, page, cookie) <- result.try(page_grant(
       config,
       ui,
@@ -197,15 +206,12 @@ fn web_socket(
       id,
     ))
 
-    // The nonce is what the tab kept and no other port can read. A socket
-    // without it, or with another, is refused before any session is touched.
-    use Nil <- result.try(case nonce {
-      Some(nonce) ->
-        case ui_sessions.admits(page, nonce) {
-          True -> Ok(Nil)
-          False -> Error(plain(403, "forbidden page"))
-        }
-      None -> Error(plain(403, "forbidden page"))
+    // The nonce is what the tab kept and no other port can read. It is
+    // compared with the digest this UI session was given, in constant time,
+    // before any resident session is resolved.
+    use Nil <- result.try(case ui_sessions.admits(page, nonce) {
+      True -> Ok(Nil)
+      False -> Error(plain(403, "forbidden page"))
     })
     Ok(#(state, ui_sessions.grant(page), cookie))
   }
