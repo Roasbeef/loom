@@ -274,13 +274,17 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
       "nudge",
     ]
   let assert [_, turns.Work(worked:, items:, ..), ..] = laid
-  assert worked == turns.Worked(duration_ms: Some(48_000), steps: 4, files: 2)
-  assert turns.divider(worked) == "worked 48s · 4 steps · 2 files"
+  assert worked == turns.Worked(duration_ms: Some(48_000), steps: 3, files: 2)
+  assert turns.divider(worked) == "worked 48s · 3 steps · 2 files"
 
-  // The response that reasoned and called three tools, the two results that
-  // are not a spawn's, and the wait are under the divider; the spawn and
-  // the child's result are not.
+  // The response's reasoning and its two edits, each joined to its result,
+  // and the wait are under the divider; the spawn and the child's result
+  // are not, and the edits' results are not drawn a second time.
   assert list.length(items) == 4
+  let assert [turns.Narrated(_), turns.Step(summary: edit, standing:, ..), ..] =
+    items
+  assert edit == "fs_edit · a.gleam"
+  assert standing == turns.Done
 }
 
 pub fn a_running_turn_is_drawn_open_test() {

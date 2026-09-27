@@ -9,11 +9,13 @@
 //// away are decisions about what a record means, so they are made here and
 //// not in the host. The host only lays the pieces out.
 ////
-//// The pieces are built from `transcript_lines.keyed_record_blocks`, so
-//// every row a piece draws is a row the terminal draws, with the key it has
-//// there. A tool group is split into its calls, because two kinds of call
-//// leave the fold: an `agent_spawn` becomes a spawn row naming the child,
-//// and a ready result an `agent_wait` returned becomes a result card. So do
+//// The pieces are built from `transcript_lines.keyed_record_blocks`, and
+//// every row a piece draws comes from the transcript's own row builders.
+//// Every tool call is drawn as one step joined to its result, whether the
+//// terminal drew it in a compact group or inline in a response that
+//// reasoned first, because two kinds of call leave the fold: an
+//// `agent_spawn` becomes a spawn row naming the child, and a ready result
+//// an `agent_wait` returned becomes a result card. So do
 //// a delivered advisor nudge, a message from another session and a cache
 //// miss, since each is something another party did or something the reader
 //// may need to act on.
@@ -230,8 +232,8 @@ pub fn pieces(
   strands: List(protocol.Strand),
   latest: Latest,
 ) -> List(Piece) {
-  let asked = asked(blocks)
-  let classified = list.flat_map(blocks, classify(_, strands, asked))
+  let joined = joined(blocks)
+  let classified = list.flat_map(blocks, classify(_, strands, joined))
   let turns = split(classified)
   let count = list.length(turns)
   turns
@@ -252,7 +254,7 @@ type Classified {
   Input(piece: Piece, at: Option(Int))
 
   // A message with the strand's own prose, a candidate for the answer.
-  Answer(block: Block, at: Option(Int), steps: Int, wrote: List(String))
+  Answer(block: Block, at: Option(Int))
 
   // Something folded under the divider, with the tool calls it made and
   // the paths those calls wrote.
@@ -262,25 +264,47 @@ type Classified {
   Outside(piece: Piece)
 }
 
-// Every call a narrative message in the lane made, by the provider's call
-// identity. A response that reasons before it calls a tool is drawn as a
-// narrative with its calls inline, and its results arrive as entries of
-// their own; the result says which child a spawn started, and this is how
-// it finds the purpose the call gave.
-fn asked(blocks: List(Block)) -> dict.Dict(String, message.ToolCall) {
-  list.fold(blocks, dict.new(), fn(asked, block) {
+// The calls the narrative messages in the lane made and the results that
+// answered them, each by the provider's call identity.
+//
+// A response that reasons before it calls a tool is a narrative, drawn with
+// its calls inline, and each result arrives as an entry of its own. The
+// lane draws such a call as one step, the way a compact tool group draws
+// its calls, so the call and its result are joined here; a result whose
+// call is in the window is drawn with that call and not again.
+type Joined {
+  Joined(
+    asked: dict.Dict(String, message.ToolCall),
+    results: dict.Dict(String, message.AgentMessage),
+  )
+}
+
+fn joined(blocks: List(Block)) -> Joined {
+  list.fold(blocks, Joined(dict.new(), dict.new()), fn(joined, block) {
     case block.source {
       transcript_lines.FromEntry(entry.MessageEntry(
         message: message.AssistantMessage(content:, ..),
         ..,
       )) ->
-        list.fold(content, asked, fn(asked, part) {
-          case part {
-            message.AssistantToolCall(call) -> dict.insert(asked, call.id, call)
-            message.AssistantText(..) | message.AssistantThinking(..) -> asked
-          }
-        })
-      _ -> asked
+        Joined(
+          ..joined,
+          asked: list.fold(content, joined.asked, fn(asked, part) {
+            case part {
+              message.AssistantToolCall(call) ->
+                dict.insert(asked, call.id, call)
+              message.AssistantText(..) | message.AssistantThinking(..) -> asked
+            }
+          }),
+        )
+      transcript_lines.FromEntry(entry.MessageEntry(
+        message: message.ToolResultMessage(tool_call_id:, ..) as outcome,
+        ..,
+      )) ->
+        Joined(
+          ..joined,
+          results: dict.insert(joined.results, tool_call_id, outcome),
+        )
+      _ -> joined
     }
   })
 }
@@ -288,7 +312,7 @@ fn asked(blocks: List(Block)) -> dict.Dict(String, message.ToolCall) {
 fn classify(
   block: Block,
   strands: List(protocol.Strand),
-  asked: dict.Dict(String, message.ToolCall),
+  joined: Joined,
 ) -> List(Classified) {
   case block.source {
     transcript_lines.FromSpacer -> []
@@ -303,7 +327,7 @@ fn classify(
       })
       |> list.flatten
     transcript_lines.FromEntry(value) ->
-      entry_kind(block, value, strands, asked)
+      entry_kind(block, value, strands, joined)
   }
 }
 
@@ -311,7 +335,7 @@ fn entry_kind(
   block: Block,
   value: entry.Entry,
   strands: List(protocol.Strand),
-  asked: dict.Dict(String, message.ToolCall),
+  joined: Joined,
 ) -> List(Classified) {
   let at = Some(value.ts)
   case block.rows, value {
@@ -353,26 +377,47 @@ fn entry_kind(
         None, Some(message.Origin(..)) | None, None -> [Input(Plain(block), at)]
       }
 
-    // A response's own calls count as its steps whether it is the answer
-    // or work on the way to it.
-    _, entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..)
+    // A response is drawn as its prose, and each of its calls as a step
+    // joined to its result, or as a spawn row. The prose is the answer when
+    // it holds text of the strand's own; otherwise it is work.
+    _,
+      entry.MessageEntry(
+        id: source,
+        message: message.AssistantMessage(
+          content:,
+          stop_reason:,
+          error_message:,
+          ..,
+        ),
+        ..,
+      )
     -> {
-      let calls =
-        list.filter_map(content, fn(part) {
+      let prose = prose(block, content, stop_reason, error_message)
+      let own =
+        content
+        |> list.filter_map(fn(part) {
           case part {
             message.AssistantToolCall(call) -> Ok(call)
             message.AssistantText(..) | message.AssistantThinking(..) ->
               Error(Nil)
           }
         })
-      let steps = list.length(calls)
-      let wrote = list.filter_map(calls, written)
-      case list.any(content, speaks) {
-        True -> [Answer(block, at, steps, wrote)]
-        False -> [Doing(Narrated(block), at, steps, wrote)]
+        |> list.index_map(fn(call, index) {
+          let key = block.key <> "/" <> int.to_string(index)
+          let outcome = dict.get(joined.results, call.id) |> option.from_result
+          called(key, tool_activity.Call(source, call, outcome, None), strands)
+        })
+        |> list.flatten
+      case list.any(content, speaks), prose.rows {
+        True, _ -> [Answer(prose, at), ..own]
+        False, [] -> own
+        False, [_, ..] -> [Doing(Narrated(prose), at, 0, []), ..own]
       }
     }
 
+    // A result is drawn with its call when the window holds the call; a
+    // wait's ready results still become cards where they arrived. A result
+    // whose call is outside the window is drawn as it is.
     _,
       entry.MessageEntry(
         message: message.ToolResultMessage(
@@ -393,21 +438,17 @@ fn entry_kind(
         True -> None
         False -> details
       }
-      case tool_name {
-        "agent_spawn" -> [
-          Outside(spawned(
-            block.key,
-            dict.get(asked, tool_call_id) |> option.from_result,
-            details,
-            outcome,
-            strands,
-          )),
+      case dict.has_key(joined.asked, tool_call_id), tool_name {
+        True, "agent_wait" -> returned(block.key, details, strands)
+        True, _ -> []
+        False, "agent_spawn" -> [
+          Outside(spawned(block.key, None, details, outcome, strands)),
         ]
-        "agent_wait" -> [
+        False, "agent_wait" -> [
           Doing(Narrated(block), at, 0, []),
           ..returned(block.key, details, strands)
         ]
-        _ -> [Doing(Narrated(block), at, 0, [])]
+        False, _ -> [Doing(Narrated(block), at, 0, [])]
       }
     }
 
@@ -417,6 +458,36 @@ fn entry_kind(
     | _, entry.CustomEntry(..)
     -> [Outside(Plain(block))]
   }
+}
+
+// A response's own words, without its calls: its text and reasoning, drawn
+// by the transcript's own row builders, and the line its stop left when it
+// did not end cleanly. The calls are drawn as steps instead.
+fn prose(
+  block: Block,
+  content: List(message.AssistantBlock),
+  stop_reason: message.StopReason,
+  error_message: Option(String),
+) -> Block {
+  let lines =
+    content
+    |> list.flat_map(fn(part) {
+      case part {
+        message.AssistantToolCall(..) -> []
+        message.AssistantText(..) | message.AssistantThinking(..) ->
+          transcript_lines.assistant_block_lines(part, False, None)
+      }
+    })
+    |> list.append(transcript_lines.assistant_terminal_lines(
+      stop_reason,
+      error_message,
+    ))
+  transcript_lines.Block(
+    ..block,
+    rows: list.index_map(lines, fn(line, index) {
+      #(block.key <> ":" <> int.to_string(index), line)
+    }),
+  )
 }
 
 fn speaks(block: message.AssistantBlock) -> Bool {
@@ -460,7 +531,8 @@ fn spawned(
   )
 }
 
-// One call of a compact tool group. A spawn leaves the fold as a spawn row;
+// One call, of a compact tool group or of a narrative response, with its
+// result when the window holds one. A spawn leaves the fold as a spawn row;
 // a wait stays a step, and each ready result it returned leaves as a result
 // card.
 fn called(
@@ -710,16 +782,16 @@ fn worked(turn: Turn) -> Worked {
   let steps =
     list.fold(turn.rest, 0, fn(total, item) {
       case item {
-        Doing(steps:, ..) | Answer(steps:, ..) -> total + steps
-        Input(..) | Outside(..) -> total
+        Doing(steps:, ..) -> total + steps
+        Answer(..) | Input(..) | Outside(..) -> total
       }
     })
   let files =
     turn.rest
     |> list.flat_map(fn(item) {
       case item {
-        Doing(wrote:, ..) | Answer(wrote:, ..) -> wrote
-        Input(..) | Outside(..) -> []
+        Doing(wrote:, ..) -> wrote
+        Answer(..) | Input(..) | Outside(..) -> []
       }
     })
     |> set.from_list
