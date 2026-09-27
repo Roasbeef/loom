@@ -81,6 +81,32 @@ reduces. An input's step has three stages:
 `runtime.take` then collects what those stages queued and returns it with the
 model.
 
+The whole of `tui.update` is
+`runtime.settle(step(runtime.message(event, model), runtime.receive(model)))`
+(`update` at `packages/tui/src/tui.gleam:1590`). Everything inside the
+box below is pure; everything outside it is the host.
+
+```mermaid
+flowchart LR
+    ev(["etui event"]) --> message["runtime.message<br/>stamp the clocks,<br/>read a pasted file,<br/>keymap.translate"]
+    m0[("Model")] --> receive["runtime.receive<br/>job replies through hold,<br/>mailboxes up to their room"]
+    receive --> admit["admission.admit<br/>files, never reduces"]
+    message -- "msg.Input" --> start
+    admit -- "Model" --> start
+    subgraph step["tui.step: pure"]
+        start["start_step<br/>stamp, recording line"] --> apply["apply_input"]
+        apply --> settleu["settle_update"]
+        settleu --> take["runtime.take<br/>outbox as a list"]
+    end
+    take -- "Model and effects" --> settle["runtime.settle<br/>perform in order,<br/>store the job table"]
+    settle --> m1[("next Model")]
+    m1 --> view["render.view<br/>cached frame"]
+```
+
+[The client engine and its hosts](client.md#the-client-engine-and-its-hosts)
+places this loop beside the web view's, which drives the same session lane
+from a Lustre component.
+
 `Tick` is the event etui delivers when a poll times out with no input, so it
 is where socket traffic enters the model. `tui/tick.update_tick` drains, in
 order, the replay inbox, control replies, the candidate attachment's

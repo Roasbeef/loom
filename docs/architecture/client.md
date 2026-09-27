@@ -21,6 +21,153 @@ sections titled "Historical" preserve the earlier single-session
 implementation at `f019322`, which still explains much of the gateway's
 internal design.
 
+## The client engine and its hosts
+
+A Loom client is split into an engine that decides and a host that acts.
+The engine is pure: given what arrived and the time it arrived, it
+returns a new state and a list of effects as data. The host reads what
+the engine may not read (clocks, mailboxes, sockets, files) and performs
+the effects. Two hosts drive the same engine today. The terminal,
+`packages/tui`, is described in [the terminal client](terminal.md). The
+web view, `packages/web_view` with the daemon's `client/daemon/ui_*`
+modules, is described in [the web view](web-view.md).
+[ADR-013](../adr/013-tui-effects-as-values.md) records how the terminal's
+step came to return its effects as values, and
+[ADR-014](../adr/014-second-runtime.md) records the rule that makes a
+second host possible: session logic lives in the engine, and a host owns
+only its runtime and its view.
+
+### Which packages are pure
+
+Four packages are held to a portable subset by lint rule R6, at error
+level: `core`, `machine`, `prompt` and `session_view`
+(`lint/policy.portable_packages`). In those packages R6 refuses three
+things:
+
+- an `@external` of any target, found in the token stream so that even a
+  file the parser rejects is checked;
+- an import under `gleam/erlang` or `gleam/otp`;
+- a `gleam_erlang` or `gleam_otp` key in `gleam.toml`, dev dependencies
+  included.
+
+The rule protects two properties for the first three packages: the
+operation state space can be property-tested without spawning processes,
+and the packages compile to JavaScript, which is enough to replay and
+validate a conversation but never to run the harness
+(`docs/gleam-style.md` Part IV §5 and `lint/portable` argue it).
+`session_view` is on the list for a different reason. It is the client's
+engine, and the rule keeps any host out of it: a socket, a recording
+file, a terminal, a clock and a mailbox each arrive as a BEAM-only import
+or dependency. Where the lane has to name one of the host's handles, it
+takes it as a type parameter, `session_channel.Channel(socket, recorder)`,
+and every transition that checks a deadline takes `now` from its caller.
+
+The terminal's step, `tui.step` with `tui/admission` and the reducers it
+calls, is pure in the same sense but lives in `packages/tui`, which R6
+does not cover. It reads no clock, file, mailbox, process or environment
+variable, and returns every effect it decides; that is held by review and
+by tests such as `effects_test` and the replay goldens rather than by the
+lint. ADR-014 lists the four changes that must happen before the step can
+move into `session_view`.
+
+The client-side packages and their dependencies, with the pure ones
+shaded. An arrow points at what a package depends on. The harness
+packages under `client` also depend on `core` and `machine`, which the
+graph leaves out.
+
+```mermaid
+flowchart BT
+    core["core"]:::pure
+    machine["machine"]:::pure
+    prompt["prompt"]:::pure
+    sv["session_view"]:::pure
+    host["host"]
+    tui["tui<br/>terminal host"]
+    wv["web_view<br/>web host"]
+    client["client<br/>loomd"]
+    harness["runtime, storage, broker,<br/>provider, tools, ..."]
+    etui[/"etui"/]
+    lustre[/"lustre 5.7.1"/]
+    mist[/"mist fork"/]
+    machine --> core
+    prompt --> core
+    sv --> core
+    sv --> machine
+    host --> core
+    tui --> sv
+    tui --> host
+    tui --> etui
+    wv --> sv
+    wv --> lustre
+    client --> wv
+    client --> sv
+    client --> host
+    client --> prompt
+    client --> harness
+    client --> mist
+    client -. "tests only" .-> tui
+    classDef pure fill:#e3f2e6,stroke:#2e7d32,color:#1b3d20
+```
+
+`tui` does not depend on `client`: it speaks to the daemon only over the
+wire. `client` takes `tui` as a dev dependency so its fixtures can drive
+the shipped terminal against a real daemon, and it takes `web_view` as a
+runtime dependency, which is why Lustre ships inside the daemon's release.
+
+### Where effects are performed
+
+The engine decides and each host acts. The same decisions are carried out
+by different code in the two hosts:
+
+| What the host does | Terminal (`tui`) | Web view (`web_view`, `client/daemon/ui_*`) |
+|---|---|---|
+| Reads the clock | `runtime.message` stamps each input once (`msg.Stamp`) | the component's selector mappings read it when a frame or the timer message is received |
+| Reads socket traffic | `runtime.receive` tops up `tui/buffered` inboxes up to their room, and `tui/admission` files them | a Lustre selector delivers `Arrived`, filed into a `session_view/inbox` |
+| Decides when to reduce | a tick or a key, in `tick.update_tick`'s fixed drain order | a 250 ms `Ticked`, or at once when the lane has a request in flight |
+| Runs blocking work | `effect.StartJob`, started as a weft run by `tui/job_runner` | the relay process, `ui_relay`, makes the blocking gateway calls |
+| Writes and closes | `terminal_lane.perform` on `Transmit`, `Shut` and `Note` | `component.perform`, one `effect.from` over `Transmit` and `Shut`, through `ui_relay` |
+| Records | `effect.Record` and `recording.append` | nothing; the recorder type is `Nil` |
+| Draws | `tui/render` into etui buffers, with `tui/live_tail` for the growing answer | `component.view` and `operator_page.view` into Lustre elements |
+
+### Two hosts over one engine
+
+```mermaid
+flowchart TB
+    subgraph engine["session_view: pure, held by R6"]
+        lane["session_channel<br/>the credited lane"]
+        op["operator<br/>submit, decide, drain"]
+        proj["snapshot, snapshot_view<br/>transcript, transcript_lines"]
+    end
+    subgraph term["terminal host: packages/tui"]
+        tstep["tui.step, admission, reducers<br/>pure, not held by R6"]
+        truntime["tui/runtime, job_runner<br/>terminal_lane.perform"]
+        render["tui/render, live_tail"]
+    end
+    subgraph web["web host: packages/web_view and client/daemon/ui_*"]
+        comp["component.update<br/>operator_page.update"]
+        wperf["component.perform<br/>ui_relay"]
+        wview["component.view<br/>operator_page.view"]
+    end
+    truntime -- "msg.Msg" --> tstep
+    tstep -- "effects" --> truntime
+    tstep --> engine
+    render --> proj
+    comp --> engine
+    comp -- "lane outputs" --> wperf
+    wview --> proj
+```
+
+The terminal runs a whole step around the engine: its own message type,
+admission, the reducers and a model with render caches. The web host has
+no step of its own yet. Its component holds the lane, an inbox and the
+rows projected from the last capture, and calls the engine directly:
+`operator.drain` to hand the lane what arrived, `session_channel.tick`,
+`operator.submit` and `operator.decide` for an operator's commands, and
+`transcript.project_rows` when a capture completes. Both hosts keep
+ADR-013's option C: arrivals are filed, and reduction happens at fixed
+points. `client/web_view_parity_test` holds the two hosts to the same
+transcript lines for the same capture.
+
 ## Current default: one daemon, multiple sessions
 
 The current implementation runs one `loomd` per private state root, shared
