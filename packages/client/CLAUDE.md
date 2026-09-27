@@ -4197,6 +4197,13 @@ these forks because they define the same modules.
   old incarnation's lease. `open_instance` still leaves the close to its
   caller, which is safe only because nothing that close stops before the
   runtime is a fatal child.
+- **A session open outwaits a distillation harvest.** A harvest opens a
+  source session under the ordinary writer lease as
+  `distill.distill_owner`, and the daemon runs one beside admission by
+  design. `serve.open_session_file` retries a `LeaseHeld` naming that
+  owner until the harvest closes or its lease (at most
+  `memory.lease_ttl_ms`) expires, and logs `session.harvest_wait` once.
+  Any other holder is refused at once, as before.
 - **The entry point has two output channels, and the split is
   deliberate** (§3.4). **stdout** carries the startup banner and nothing
   else — the ephemeral port, the token path, the prompt digest — because

@@ -132,6 +132,7 @@ import simplifile
 import storage/catalogue
 import storage/domain
 import storage/sqlite
+import storage/storage.{type StorageError}
 import telemetry/field
 import telemetry/log.{type Logger}
 import tom
@@ -2534,6 +2535,84 @@ fn assemble_owned_with(settings, reserved, logger, owner, services) {
   )
 }
 
+/// The event logged when a session open finds a distillation harvest holding
+/// the session file's lease and waits for the harvest to let go.
+@internal
+pub const harvest_wait_event = "session.harvest_wait"
+
+// How often a waiting open asks again. A harvest reads one file and closes
+// it, so the lease is normally free within a few of these.
+const harvest_poll_ms = 10
+
+// Opens the session file under this incarnation's lease.
+//
+// A distillation harvest (`client/distill.harvest_one`) opens every source
+// session under the ordinary writer lease, owner `distill.distill_owner`, to
+// read it, and the daemon starts one beside session admission by design: a
+// domain's first pass begins as the domain is built, and its sources are the
+// sessions the domain is about to open. The harvest skips a file whose lease
+// a session holds, but a session opening while the harvest holds the lease
+// used to fail its start outright. That lease is a reader's, short and
+// bounded by `memory.lease_ttl_ms`, so the open waits it out instead: until
+// the harvest closes, or at the latest until its lease expires and the claim
+// takes it over. Every other holder is refused at once, as before, because
+// a writer that is still alive renews its lease and waiting for the expiry
+// would only delay the same refusal.
+//
+// Single-writer safety does not rest on the wait. Each attempt is the
+// ordinary atomic claim, and the harvest never commits to a source.
+fn open_session_file(
+  path: String,
+  owner: String,
+  clock: Clock,
+  logger: Logger,
+) -> Result(
+  #(
+    session.Session,
+    fn() -> Result(Nil, StorageError),
+    fn() -> Result(Pid, StorageError),
+  ),
+  session.OpenError,
+) {
+  let open = fn() {
+    session.open_sqlite_custody(path:, owner:, lease_ttl_ms: 60_000, clock:)
+  }
+  case open() {
+    Error(session.SqliteOpenFailed(sqlite.LeaseHeld(
+      owner: holder,
+      expires_at_ms:,
+    ))) as refused
+      if holder == distill.distill_owner
+    -> {
+      let #(now, _clock) = clock.read(clock)
+      let remaining = int.clamp(expires_at_ms - now, 0, memory.lease_ttl_ms)
+      log.info(logger, harvest_wait_event, [
+        field.count(key: "lease_expires_at_ms", value: expires_at_ms),
+      ])
+      let waited =
+        poll.until(
+          within: remaining + harvest_poll_ms,
+          every: harvest_poll_ms,
+          attempt: fn() {
+            case open() {
+              Ok(opened) -> poll.Done(opened)
+              Error(session.SqliteOpenFailed(sqlite.LeaseHeld(owner: holder, ..)))
+                if holder == distill.distill_owner
+              -> poll.Retry
+              Error(error) -> poll.Fail(error)
+            }
+          },
+        )
+      case waited {
+        poll.Answered(opened) -> Ok(opened)
+        poll.Failed(error) -> Error(error)
+        poll.Expired -> refused
+      }
+    }
+    opened -> opened
+  }
+}
+
 /// Renders a storage open refusal as the message the daemon classifier reads.
 ///
 /// The one storage refusal an operator can act on is a writer lease that is
@@ -2634,12 +2713,7 @@ fn assemble_in(
   let random_bytes = token.production_entropy()
   let lease_owner = "loomd-" <> bit_array.base16_encode(random_bytes(32))
   use #(opened, retire, transfer) <- result.try(
-    session.open_sqlite_custody(
-      path: settings.session_path,
-      owner: lease_owner,
-      lease_ttl_ms: 60_000,
-      clock:,
-    )
+    open_session_file(settings.session_path, lease_owner, clock, logger)
     |> result.map_error(storage_open_refusal),
   )
   use Nil <- result.try(
