@@ -224,11 +224,13 @@ drops act. The runner creates the frames subject when it starts the job
 and passes it to the worker, whose `job.Prepared` names it; that is the
 only way the attempt learns its frames inbox. A `Prepared` no attempt
 admits, for a key nobody holds or a second one for the same attempt, has
-its socket closed and its frames subject emptied by the runtime
-(`job_runner.dropped`), and cancelling an attachment job does the same for
-a `Prepared` still waiting in the mailbox. A failed or abandoned attempt
+its socket closed and its frames subject emptied by effects `runtime.hold`
+queues, and cancelling an attachment job does the same directly for a
+`Prepared` still waiting in the mailbox (`job_runner.dropped`). A dropped
+relaunch outcome has its control connection closed the same way. A failed or abandoned attempt
 queues `CancelJob` for its key ahead of its own `Abandon`
 (`tui_model.emit_attachment`).
+
 The S4 addendum to [ADR-013](../adr/013-tui-effects-as-values.md) records
 the design and the alternatives it rejected.
 

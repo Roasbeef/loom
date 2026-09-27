@@ -767,20 +767,23 @@ socket that feeds it, cannot be expressed.
 **A dropped `Prepared` has its socket closed.** A `Prepared` no attempt
 admits, because no attempt holds its key or the attempt already took one,
 carries an open socket nobody else will close on the terminal's behalf.
-`runtime.hold` passes it to `job_runner.dropped`, which closes the socket
-and empties the frames subject it names. This is the one drop that acts, and
-it makes `hold` perform that one kind of I/O; every other drop is only
-forgotten. `job_runner.cancel` on an attachment job cancels the worker and
-then drains the job's messages without waiting, dropping any `Prepared` it
-finds the same way and emptying the frames subject, which is the bounded
-drain quit had before: a socket published just before the cancel is closed
-though no later step will read it. The runner keeps an attachment job until
-its relay's last message is read, as it keeps every job. A `Prepared` the
-worker sends before it returns reaches the terminal's mailbox before the
-relay's last message does, because a local send is queued at once and the
-relay sends only after the worker has exited; that is what lets the runner
-forget the job at the relay's last message without leaving a `Prepared`
-behind.
+`runtime.hold` queues `CloseSocket` for it and then `Discard` of the frames
+subject it names, and the runtime performs them after the next step, so
+`receive` and `hold` only read mailboxes. A relaunch's `Completed(host)` is
+the other reply that holds a resource: its control connection. When its
+slot has moved on, as an adoption leaves it after cancelling a relaunch
+still in flight, `hold` queues `CloseControl` for it. Every other drop is
+only forgotten. `job_runner.cancel` on an attachment job cancels the worker
+and then drains the job's messages without waiting, releasing what it finds
+through `job_runner.dropped`, which does the same closes directly because
+it runs at perform time, and empties the frames subject; that is the
+bounded drain quit had before. Neither close is what finally guarantees a
+socket goes down, and nothing orders the worker's `Prepared` against the
+relay's messages, which come from another process; `weft.cancel` kills
+asynchronously. A worker that exits without an acknowledgement has either
+closed its socket itself, when its wait ran out, or been killed, and then
+the socket's guardian closes it. If a `Prepared` arrives after the runner
+has forgotten the job, the cost is one message left in the mailbox.
 
 **Cancel and cleanup are two effects.** `attachment.cancel`, which
 performs `Abandon`, now closes only what the status holds: an admitted
@@ -820,10 +823,15 @@ carries the socket and hand the answer to the reducer.
 `attachment.select` and everything else through the job selector. An actor
 discards a message its selector does not match, and the frames inbox is
 known only once its `Prepared` has been admitted, so a frame that reaches
-the driver's actor before that is discarded; before the lane subscribes, the
-socket sends only `Connected`, which the lane ignores. The shipped loop
-selects nothing and loses nothing: frames wait in the mailbox for the
-top-up.
+the driver's actor before that is discarded. That is usually `Connected`,
+which the lane ignores; a gateway that refuses after the upgrade can send
+`Closed` or `NetworkFault` first, and the driver's lane then fails at its
+deadline rather than at once. The shipped loop selects nothing and loses
+nothing: frames wait in the mailbox for the top-up. For the same reason
+`attachment.accept` holds a frame the driver selected before the lane
+exists or after the capture, where it used to drop it, since the actor
+would otherwise discard what the shipped loop leaves in the mailbox for the
+adopted lane; the adoption hands the held frames over with the inbox.
 
 **Tests and mutations.** `attachment_jobs_test` pins the slice: opening a
 session queues exactly one `StartJob(key, job.Attach(..))` and starts

@@ -310,10 +310,10 @@ list:
   running job's messages, `observed` drops a job after its last message,
   and `selector` lets an actor-hosted test driver select every job's
   replies. `start_attach` creates an attachment job's frames subject and
-  its `Prepared` subject in the terminal's process; `dropped` closes the
-  socket of a `Prepared` the runtime drops and empties its frames subject,
-  and `cancel` does the same for a `Prepared` it finds waiting when it
-  cancels an attachment job. The control, relaunch, activity and
+  its `Prepared` subject in the terminal's process; `cancel` closes the
+  socket of a `Prepared` it finds waiting when it cancels an attachment
+  job, through `dropped`, which also closes a drained relaunch outcome's
+  control. The control, relaunch, activity and
   attachment worker bodies live here.
 - `tui/buffered`: `Inbox(a)`, a terminal-owned subject with the messages
   already received from it, oldest first. `discard` empties a subject the
@@ -1569,8 +1569,12 @@ untouched.
   `runtime.receive` reads every running job's messages, at most two per
   one-task relay and a `Prepared` besides, and `runtime.hold` admits each
   into the slot of its kind only when the slot holds the same key; any
-  other message is dropped there, and a dropped `Prepared` has its socket
-  closed and its frames subject emptied (`job_runner.dropped`).
+  other message is dropped there. A dropped `Prepared` has its socket
+  closed and its frames subject emptied, and a dropped relaunch
+  `Completed` its control closed, by `CloseSocket`, `Discard` and
+  `CloseControl` effects `hold` queues, so `receive` and `hold` only read
+  mailboxes; `job_runner.dropped` does the same closes directly for what a
+  cancel drains.
   Clearing a slot drops its held replies with it, so a reducer that stops
   waiting for a job never sees its replies again. The runner keeps a job
   until its relay's last message is read, whatever its slot holds, so no
