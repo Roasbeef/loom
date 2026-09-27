@@ -1790,6 +1790,10 @@ fn owned(text: String) -> String {
 // it again, and the amortised cost would be the copy paid per token rather
 // than once per budget. So the region is bounded by twice `live_stream_limit`
 // rather than by it, and that is the number the invariant states.
+//
+// The newest bytes are a slice of the joined answer, so keeping the slice
+// would keep all of it: twice the limit held to show the limit. They are
+// copied out, as `owned` does for a delta, once per collapse.
 fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
   case bytes <= transcript_lines.live_stream_limit * 2 {
     True -> #(fragments, bytes)
@@ -1799,6 +1803,7 @@ fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
         |> list.reverse
         |> string.concat
         |> newest_bytes(transcript_lines.live_stream_limit)
+        |> owned
       #([newest], string.byte_size(newest))
     }
   }
