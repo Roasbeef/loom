@@ -141,7 +141,7 @@ guessing.
 ### The control command `ui.link`
 
 ```
-c→s: {v:2, id, cmd:"ui.link", body:{session:<canonical-session-id>}}
+c→s: {v:2, id, cmd:"ui.link", body:{session_id:<canonical-session-id>}}
 s→c: {v:2, reply_to, event:"ui.link",
       body:{path:"/ui/sessions/<id>?ticket=<ticket>", expires_in_ms:<int>}}
 ```
@@ -480,11 +480,11 @@ The role an operator's page acts with is the smallest of three things:
   control command carries the choice:
 
   ```
-  c→s: {v:2, id, cmd:"ui.link", body:{session:<id>, page:"operator"}}
+  c→s: {v:2, id, cmd:"ui.link", body:{session_id:<id>, page:"operator"}}
   ```
 
   `page` is `"observer"` (the default when the field is absent) or
-  `"operator"`. Any other value is refused with `invalid`. The ticket, and
+  `"operator"`. Any other value is refused with `bad_request`. The ticket, and
   the UI session it becomes, record the ceiling. A ceiling is a cap and not
   a grant. An observer who asks for an operator page gets an observer page.
 - **Operator, always.** No page ever carries `Owner`. The gateway gives an
@@ -516,12 +516,19 @@ which are what need the terminal's limit, are not in this milestone.
 The page socket starts one of two Lustre applications. It chooses from the
 capped role it admitted:
 
-- **The observer component** is today's component, unchanged. Its message
-  type has no command constructor, and its view attaches no event handler.
-  The browser has nothing it can send.
-- **The operator component** wraps the observer's messages and adds
-  `DraftEdited(text)`, `Submit(mode)` and `Decide(approval, seq, choice)`.
-  Its view adds the composer and the approval cards, with their handlers.
+- **The observer component** is today's component (`web_view/component`).
+  Its message type has no command constructor, and its view attaches no
+  event handler. Where an operator's page has its composer, it draws one
+  fixed line saying the page is read-only. The browser has nothing it can
+  send, and the page socket drops every browser message before it reaches
+  the component.
+- **The operator component** (`web_view/operator_page`) wraps the
+  observer's messages and adds `Submitted(text, delivery)` and
+  `Decided(id, seq, answer)`. Its view adds the composer, an uncontrolled
+  form whose draft the browser keeps until it is submitted, and the
+  approval cards, with their handlers. `delivery` is a prompt, or a steer
+  while the strand is running; the page socket forwards only the `click`
+  and `submit` events those handlers attach.
 
 The daemon's gateway refuses a mutation from an observer binding however
 the frame was produced, as it does today. The component's type is the
@@ -641,9 +648,9 @@ script, no `unsafe-eval`) together with these rules for the view:
 - The observer's reason for having no composer is a fixed string from the
   component.
 
-`component_test` draws a transcript and an escalation that hold markup and
-a `javascript:` URL, and checks that the HTML carries them only as escaped
-text.
+`web_view_parity_test` draws a transcript, and `operator_page_test` an
+escalation, that hold markup (the escalation also a `javascript:` URL), and
+each checks that the HTML carries them only as escaped text.
 
 ### The approval card
 
@@ -656,9 +663,11 @@ these rules:
   cannot occupy, and it is styled unlike the transcript.
 - Each button names the tool: "Allow bash once", "Deny bash".
 - A newly drawn card never takes focus, and nothing on the page has
-  `autofocus`. Enter never approves: the composer's keyboard handler submits
-  the draft on Ctrl+Enter or Cmd+Enter only, and never decides a card. The
-  buttons are `type="button"` outside any form.
+  `autofocus`. Enter never approves: the composer attaches no keyboard
+  handler, so Enter in its editor is a newline. A draft is sent only by the
+  form's own Send, Queue or Steer button, and its submit carries the draft
+  and never a decision. The card's buttons are `type="button"` outside any
+  form.
 - Deny comes first in the card, so it is the first of its controls to take
   focus when the person tabs into the card.
 - `Decide` names the escalation's ID and the sequence the card was drawn
@@ -724,6 +733,7 @@ these rules:
   - the nonce check is skipped;
   - the role ceiling is dropped (the page takes the membership role);
   - the ceiling lets `Owner` through;
-  - the composer's keyboard handler submits or decides on plain Enter;
+  - a key handler on the composer's editor decides the pending card on
+    Enter;
   - the socket starts the operator component for an observer;
   - the gateway's observer refusal is removed.
