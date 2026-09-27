@@ -5,6 +5,7 @@
 %% `host_bootstrap_ffi`, which `host/bootstrap` declares directly; nothing
 %% here forwards to it.
 -export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1,
+    read_standard_line/1,
     herdr_exchange/3, require_terminal/0]).
 
 silence_logger() ->
@@ -63,6 +64,23 @@ read_console_reply(PromptBinary) ->
             end;
         _ ->
             {error, <<"standard input is not a terminal">>}
+    end.
+
+%% Reads one line from standard input, prompting only when a person is there
+%% to see the prompt. `loom claim` takes its token this way so the token stays
+%% out of the argument vector and the shell history: pasted at a terminal, or
+%% piped from a file or another program. The same documented `{terminal, _}`
+%% option decides whether to prompt; a pipe gets no prompt, so the prompt never
+%% lands in a file the caller redirected.
+read_standard_line(PromptBinary) ->
+    Prompt = case proplists:get_value(terminal, io:getopts(standard_io), false) of
+        true -> unicode:characters_to_list(PromptBinary);
+        _ -> ""
+    end,
+    case io:get_line(Prompt) of
+        eof -> {error, <<"no line on standard input">>};
+        {error, Reason} -> {error, describe(Reason)};
+        Line -> {ok, unicode:characters_to_binary(Line)}
     end.
 
 %% Reject pipelines before any interactive launch effects. OTP's documented

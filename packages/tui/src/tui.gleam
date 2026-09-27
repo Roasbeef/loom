@@ -46,6 +46,7 @@ import gleam/set
 import gleam/string
 import host/bootstrap as host_bootstrap
 import host/build_identity
+import host/claim as claim_token
 import host/endpoint
 import session_view/advisor_history
 import session_view/attempt
@@ -59,7 +60,6 @@ import session_view/transcript_line.{
   Assistant, Line, Reasoning, System, ToolResult,
 }
 import session_view/worktree_view
-import simplifile
 import tui/admission
 import tui/agent_strip
 import tui/agents
@@ -68,6 +68,7 @@ import tui/attachment
 import tui/attempt_replay
 import tui/bootstrap
 import tui/buffered
+import tui/claim
 import tui/completion_summary
 import tui/connection
 import tui/daemon
@@ -149,6 +150,12 @@ type Launch {
     colour: Colour,
   )
 
+  // `loom claim …` and `loom enroll …` are the invitee's side of an owner's
+  // invitation (protocol-change/053). Neither installs terminal state; claim
+  // opens one short socket to `/v2/claim`, and enroll opens none.
+  ClaimAccess(arguments: List(String))
+  Enroll(arguments: List(String))
+
   // `loom sessions …` installs no terminal state either. It reaches the
   // control endpoint as the owner over the same bootstrap ladder the picker
   // uses, prints one line per row or one line of outcome, and exits with a
@@ -229,6 +236,8 @@ pub fn main() {
         ["ext", ..]
         | ["replay", ..]
         | ["sessions", ..]
+        | ["claim", ..]
+        | ["enroll", ..]
         | ["--ui", ..]
         | ["update", ..]
         | ["version", ..]
@@ -245,6 +254,8 @@ pub fn main() {
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
         Sessions(options:, command:) -> run_sessions(options, command)
+        ClaimAccess(arguments:) -> claim.claim_main(arguments)
+        Enroll(arguments:) -> claim.enroll_main(arguments)
         View(request:) -> run_view(request)
         Invalid(reason) -> rejected_launch(reason)
         Demo | Local(..) | Remote(..) -> interactive_terminal(launch, record)
@@ -329,6 +340,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
       case list.find(arguments, is_topic) {
         Ok("replay") -> Some(replay_usage())
         Ok("sessions") -> Some(sessions_usage())
+        Ok("claim") | Ok("enroll") -> Some(claim.usage)
         Ok("ext") -> Some(extension_usage())
         Ok("update") -> Some(update_options.usage())
         Ok("version") -> Some(version_usage())
@@ -339,7 +351,8 @@ fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "replay" | "sessions" | "ext" | "update" | "version" -> True
+    "replay" | "sessions" | "ext" | "update" | "version" | "claim" | "enroll" ->
+      True
     _ -> False
   }
 }
@@ -636,6 +649,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
     | Update(..)
     | Replay(..)
     | Sessions(..)
+    | ClaimAccess(..)
+    | Enroll(..)
     | View(..)
     | Demo -> base
     Local(options, selected) -> {
@@ -796,6 +811,8 @@ fn parse_launch(arguments: List(String)) -> Launch {
         Error(reason) -> Invalid(reason)
       }
     ["sessions", ..rest] -> parse_sessions(rest)
+    ["claim", ..rest] -> ClaimAccess(arguments: rest)
+    ["enroll", ..rest] -> Enroll(arguments: rest)
     _ ->
       case
         session_control.flag_value(arguments, "--addr"),
@@ -1185,16 +1202,48 @@ fn parse_local_options(
   }
 }
 
-fn launch_token(arguments: List(String)) -> Result(String, String) {
-  case session_control.flag_value(arguments, "--token-file") {
-    Ok(path) ->
-      simplifile.read(path)
-      |> result.map(string.trim)
-      |> result.map_error(fn(error) {
-        "cannot read --token-file " <> path <> ": " <> string.inspect(error)
-      })
-    Error(Nil) ->
-      Ok(session_control.flag_value(arguments, "--token") |> result.unwrap(""))
+/// The bearer a remote launch presents, from `--token-file` or `--token`.
+///
+/// The file is read the way the page launch reads its token: through
+/// `read_private_bounded`, which refuses a link, a file owned by another
+/// user, and a file any other user can read. Either form refuses a
+/// claim-shaped value (protocol-change/053): a claim authenticates nothing,
+/// and the invitee redeems it with `loom claim`. Neither refusal repeats the
+/// value it refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = tui.launch_token(["--token", "loomclaim_00"])
+/// ```
+@internal
+pub fn launch_token(arguments: List(String)) -> Result(String, String) {
+  use token <- result.try(
+    case session_control.flag_value(arguments, "--token-file") {
+      Ok(path) -> {
+        use bytes <- result.try(
+          host_bootstrap.read_private_bounded(path, 65)
+          |> result.map_error(fn(reason) {
+            "cannot read --token-file " <> path <> ": " <> reason
+          }),
+        )
+        bit_array.to_string(bytes)
+        |> result.map(string.trim)
+        |> result.replace_error("--token-file " <> path <> " is not text")
+      }
+      Error(Nil) ->
+        Ok(
+          session_control.flag_value(arguments, "--token") |> result.unwrap(""),
+        )
+    },
+  )
+  case claim_token.is_claim_shaped(token) {
+    False -> Ok(token)
+    True ->
+      Error(
+        "that is a claim token, not a credential; redeem it with "
+        <> "`loom claim --addr ADDRESS` and pass the credential file it writes",
+      )
   }
 }
 
