@@ -549,7 +549,7 @@ and session switching, but not distinct-principal authority.
 | Two operators prompt inside one catch-up window | One prompt opens the run; the other is answered `queued` and commits with its own submitter's origin when the run settles. | `tui_shipped_live_delivery_test` |
 | A peer's answer is delivered | Every terminal shows the answer's text before any entry for it exists in that terminal's cut, and its notice count rises by the records the turns commit. | `tui_shipped_live_delivery_test` |
 | A member is revoked mid-answer | The socket closes at the per-frame authority check while pushed frames are in flight, and no further frame reaches it. | `tui_shipped_live_delivery_test` |
-| An invitee redeems a claim | The stored credential attaches with the granted role; a replay with any other digest is `conflict`; the claim string is refused as a bearer; revocation closes the attachment. | `daemon_claim_test` (host level) |
+| An invitee redeems a claim | The stored credential attaches with the granted role; a replay with any other digest is `conflict`; the claim string is refused as a bearer; revocation closes the attachment; no file the daemon wrote holds the claim or the credential. | `daemon_shipped_claim_test`, `daemon_claim_test` |
 | A claim is attacked | Its own digest, an expired claim, a voided claim, a second in-flight upgrade and an idle socket are each refused; of four concurrent claims one binds. | `daemon_claim_test` (host level) |
 
 ### The shipped multiplayer fixture
