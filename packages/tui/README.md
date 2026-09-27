@@ -317,8 +317,9 @@ needs them:
 make check-tui
 ```
 
-runs the format check, a warning-free build, the tests under `test/` and
-the lint for this package. The tests drive the real step:
+runs the format check, a warning-free build and the tests under
+`test/`; `make lint-tui` runs the house-rule lint, which only the bare
+`make check` includes. The tests drive the real step:
 `effects_test`, `jobs_test`, `admission_test` and `keymap_test` pin the
 effect lists, job keys and filing; `session_channel_property_test`
 generates schedules of submissions, replies, pushed frames and ticks

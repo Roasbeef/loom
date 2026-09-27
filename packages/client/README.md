@@ -208,8 +208,9 @@ hooks, jobs, glances). [`CLAUDE.md`](CLAUDE.md) describes each of them.
 make check-client
 ```
 
-runs the format check, a warning-free build, the tests under
-`test/client/` and the lint for this package. The suite boots real daemons
+runs the format check, a warning-free build and the tests under
+`test/client/`; `make lint-client` runs the house-rule lint, which only
+the bare `make check` includes. The suite boots real daemons
 over temporary state roots: `daemon_*_test` covers the root, manager,
 listener, control protocol and fault containment; `gateway_test`,
 `escalate_test` and `protocol_test` cover the hub, parking and the codecs;
