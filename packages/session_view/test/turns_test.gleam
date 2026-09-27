@@ -258,6 +258,7 @@ fn shape(piece: turns.Piece) -> String {
     turns.Nudged(..) -> "nudge"
     turns.Peer(session:, ..) -> "peer:" <> session
     turns.Missed(..) -> "missed"
+    turns.Commentary(..) -> "commentary"
   }
 }
 
@@ -343,7 +344,7 @@ pub fn every_piece_keeps_its_key_when_the_turn_settles_test() {
   let keys = fn(laid: List(turns.Piece)) {
     list.map(laid, fn(piece) {
       case piece {
-        turns.Plain(block) -> block.key
+        turns.Plain(block) | turns.Commentary(block) -> block.key
         turns.Work(key:, ..)
         | turns.Spawned(key:, ..)
         | turns.Returned(key:, ..)
@@ -366,6 +367,30 @@ pub fn a_cache_miss_is_its_own_row_test() {
     |> turns.pieces(strands(), turns.Settled)
   let shapes = list.map(laid, shape)
   let assert [_, _, _, _, "plain:Done: two files.", "missed", ..] = shapes
+}
+
+// A delivered nudge starts a run the strand answers, so it opens a turn of
+// its own: the answer to the person before it stays that turn's answer and
+// is not folded away with the work.
+pub fn a_delivered_nudge_opens_a_turn_of_its_own_test() {
+  let answered =
+    item(
+      11,
+      70_000,
+      assistant([message.AssistantText("Checked the sweep.", None)]),
+    )
+  let laid = pieces_of(list.append(items(), [answered]), [])
+  assert list.map(laid, shape)
+    == [
+      "plain:Alice:\nreview the patch",
+      "work:folded",
+      "spawn:" <> child,
+      "returned:" <> child,
+      "plain:Done: two files.",
+      "peer:lint-census",
+      "nudge",
+      "plain:Checked the sweep.",
+    ]
 }
 
 pub fn hues_follow_strand_position_test() {

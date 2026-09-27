@@ -162,7 +162,13 @@ pub type Piece {
   )
 
   /// A delivered advisor frame, with its opening line and its whole body.
+  /// It opens a turn of its own: what the strand does next answers the
+  /// advisor, not the person before it.
   Nudged(key: String, frame: Frame, preview: String, body: String)
+
+  /// The advisor's commentary board on the primary's lane: what the
+  /// advisor said on its own strand, captured and not sent to the primary.
+  Commentary(block: Block)
 
   /// A message another session's strand sent to this one. The daemon only
   /// knows it was stored, never that it was read.
@@ -249,8 +255,9 @@ pub fn pieces(
 
 // What one block, or one call of a tool group, is to a turn.
 type Classified {
-  // Starts a turn: a person's message, another session's, or a goal
-  // continuation the harness wrote.
+  // Starts a turn: a person's message, another session's, a delivered
+  // advisor frame, or a goal continuation the harness wrote. Each starts a
+  // run the strand then answers, so each is where a turn begins.
   Input(piece: Piece, at: Option(Int))
 
   // A message with the strand's own prose, a candidate for the answer.
@@ -319,7 +326,7 @@ fn classify(
     transcript_lines.FromNotice -> [
       Outside(Missed(block.key, first_text(block))),
     ]
-    transcript_lines.FromAdvisor -> [Outside(Plain(block))]
+    transcript_lines.FromAdvisor -> [Outside(Commentary(block))]
     transcript_lines.FromTools(calls) ->
       calls
       |> list.index_map(fn(call, index) {
@@ -351,10 +358,10 @@ fn entry_kind(
     ->
       case transcript_lines.advisor_payload(sent), origin {
         Some(transcript_lines.Advice(body:)), _ -> [
-          Outside(nudged(block, Advice, body)),
+          Input(nudged(block, Advice, body), at),
         ]
         Some(transcript_lines.Nudges(body:)), _ -> [
-          Outside(nudged(block, Nudges, body)),
+          Input(nudged(block, Nudges, body), at),
         ]
         Some(transcript_lines.Feed(..)), _
         | Some(transcript_lines.GoalFeed(..)), _
