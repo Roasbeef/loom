@@ -147,12 +147,13 @@ Source: (`client/protocol.gleam:2105-2125`).
 
 ### 2.1 Endpoints
 
-One listener serves two endpoints.
+One listener serves three endpoints.
 
 | Path | Purpose |
 |---|---|
 | `/v2/control` | Daemon metadata, membership and lifecycle. |
 | `/v2/sessions/<session-id>/ws` | One resident session's conversation. |
+| `/v2/claim` | Redeems a claim token once, for a credential the client drew (§2.7). |
 
 A daemon started with `loomd --ui` also serves the web view's routes under
 `/ui/`: the ticket exchange, the page, the page's Lustre WebSocket and a
@@ -218,16 +219,28 @@ Source: (`tui/daemon/bootstrap.gleam:241-260`).
 The daemon prints the endpoint and the token file path on startup.
 Source: (`client/daemon/main.gleam:465-477`).
 
-**Per-principal credentials.** The owner issues these over the control
-endpoint. `sessions.invite` creates a member identity, its first
-credential and one session membership in a single durable transaction,
-and its successful reply is the only place the fresh bearer appears.
-`credentials.rotate` replaces every credential of an existing member and
-likewise returns the replacement bearer. Section 3 gives both bodies.
-Source: (`client/daemon/server.gleam:515-552`).
+**Per-principal credentials.** A member's client draws its own bearer;
+the daemon never sends one (protocol-change/053). The owner invites a
+member with `sessions.invite`, which creates the member identity and one
+session membership in a single durable transaction, and either issues a
+single-use **claim token** or enrolls a credential digest the member
+already sent the owner. `credentials.rotate` does the same for an
+existing member. Section 3 gives both bodies.
 
-A client MUST NOT log a bearer, place it in a URL, or send it anywhere
-but the `Authorization` header of an upgrade request.
+A claim token is `loomclaim_` followed by 64 lowercase hexadecimal
+characters. It authenticates nothing: the member's client draws 32 random
+bytes, hex-encodes them as its bearer, stores them, and presents the claim
+on `/v2/claim` with only the bearer's SHA-256 digest (§2.7). From then on
+the member authenticates with that bearer like any other. A claim lives 24
+hours unless the owner chose a lifetime, and is spent once bound.
+Source: (`client/daemon/server.gleam:1424`) and
+(`client/daemon/server.gleam:678`).
+
+No reply on the control endpoint carries a bearer. A client MUST NOT log
+a bearer or a claim token, place either in a URL, or send either anywhere
+but the `Authorization` header of an upgrade request. A client MUST refuse
+a claim-shaped value where a bearer belongs; `loom --token` and
+`--token-file` do.
 
 ### 2.4 Transport security
 
@@ -296,6 +309,68 @@ Source: (`client/daemon/session_socket.gleam:348-355`) and
 A client MUST treat a closed socket as an unknown outcome for any
 command whose reply it did not receive, and MUST NOT resend that
 command. Section 6.5 states the rule in full.
+
+### 2.7 Redeeming a claim: `/v2/claim`
+
+`/v2/claim` redeems one claim token for one credential digest
+(protocol-change/053). The route is authenticated by the claim, not by a
+credential, and carries one command.
+
+The upgrade request MUST carry `Authorization: Bearer loomclaim_<64
+lowercase hex>`. The server hashes the whole token and answers:
+
+| Status | Cause |
+|---|---|
+| 401 | The header does not have exactly that form, or no claim with that digest exists, or the claim was voided by `credentials.rotate` or `credentials.revoke`. A bearer presented here is 401. |
+| 409 | Another upgrade for the same claim is open. At most one is admitted per claim at a time. |
+| 503 | The daemon is not admitting connections. |
+| 101 | Admitted. |
+
+The existence check only filters: an expired or already claimed claim is
+admitted and then refused by the command, with its reason. Source:
+(`client/daemon/server.gleam:678`) and
+(`client/daemon/root.gleam:1032`).
+
+The server first sends `{"v":2,"event":"hello","body":{"protocol":2}}`.
+The client then sends exactly one command. An inbound message larger
+than 1024 bytes is refused, and the server closes a socket that has sent
+no command 2 seconds after the upgrade.
+
+```json
+{"v":2,"id":1,"cmd":"credentials.claim","body":{"credential_digest":"<64 lowercase hex>"}}
+```
+
+`credential_digest` is the SHA-256 digest, in lowercase hexadecimal, of
+the bearer the client drew. The client stores the bearer before it sends
+the digest. The server binds the digest to the claim in one serialized
+transaction, answers, and closes the socket:
+
+```json
+{"v":2,"reply_to":1,"event":"credentials.claim","body":{"principal_id":"reviewer-1","name":"Reviewer","fingerprint":"9c1e0f2ab3d4e5f6","sessions":[{"session_id":"0198c0de-0000-7000-8000-000000000001","role":"operator"}]}}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `principal_id` | string | The member the claim names. |
+| `name` | string | The member's display name. |
+| `fingerprint` | string | The first 16 hexadecimal characters of the bound credential digest. Not secret. The owner and the member compare it out of band. |
+| `sessions` | array | At most 16 memberships, `{session_id, role}`, in session-id order. `sessions.list` returns the full set. |
+
+A claim binds once. Presenting it again with the same digest, while that
+credential is still active, returns the same body; this is how a client
+recovers a lost reply. Refusals, as `error` events:
+
+| Code | Cause |
+|---|---|
+| `not_found` | No such claim, a voided one, or a claimed one whose credential is no longer active. |
+| `expired` | The claim was still open when its expiry passed. |
+| `conflict` | The claim is bound to another digest; the digest is already a credential in any state; or the digest is the SHA-256 of the claim token itself. |
+| `bad_request` | Any message that is not one well-formed `credentials.claim`. |
+| `unavailable` | The daemon could not answer. The claim may or may not be bound; presenting the same claim and digest again answers which. |
+
+A claim token authenticates nothing on `/v2/control` or a session route;
+presented there as a bearer it is 401. Source:
+(`storage/access.gleam:462`) and (`client/daemon/protocol.gleam:522`).
 
 ---
 
@@ -454,7 +529,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1102`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:1297`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -611,7 +686,7 @@ were the old one. Errors: `stale_operation`, `stale_epoch`, `forbidden`,
 ### 3.11 `sessions.invite`
 
 Owner-only, and the only command besides `credentials.rotate` whose
-reply contains a bearer.
+reply can contain a secret: a single-use claim token, never a bearer.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
@@ -619,10 +694,14 @@ reply contains a bearer.
 | `principal_id` | string | required | Caller-chosen member id, at most 128 bytes. Reserved permanently. |
 | `name` | string | required | Display name, at most 256 bytes. |
 | `role` | string | required | `operator` or `observer`. Never `owner`. |
+| `claim_ttl_ms` | integer | optional | The claim's lifetime, 300000 (5 minutes) through 604800000 (7 days). Default 86400000 (24 hours). |
+| `credential_digest` | string | optional | 64 lowercase hex: the digest of a credential the member drew (`loom enroll`). Enrolls it directly; no claim is created. |
 | `epoch` | string | required | Current daemon epoch. |
 
-Source: (`client/daemon/protocol.gleam:182-189`) and
-(`client/daemon/protocol.gleam:265-272`).
+`claim_ttl_ms` and `credential_digest` together are `bad_request`, as is
+a `claim_ttl_ms` outside its range. Source:
+(`client/daemon/protocol.gleam:367`) and
+(`client/daemon/protocol.gleam:475`).
 
 ```json
 {"v":2,"id":9,"cmd":"sessions.invite","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","principal_id":"reviewer-1","name":"Reviewer","role":"operator","epoch":"ep-7f3a"}}
@@ -631,27 +710,33 @@ Source: (`client/daemon/protocol.gleam:182-189`) and
 Reply:
 
 ```json
-{"v":2,"reply_to":9,"event":"sessions.invite","body":{"bearer":"2f1c...9a","principal_id":"reviewer-1","name":"Reviewer"}}
+{"v":2,"reply_to":9,"event":"sessions.invite","body":{"principal_id":"reviewer-1","name":"Reviewer","claim":"loomclaim_4be1...","expires_in_ms":86400000}}
 ```
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `bearer` | string | required here | The new credential, in plaintext. Returned once and never again. |
 | `principal_id` | string | required | The member id. |
 | `name` | string | required | The member's display name. |
+| `claim` | string | absent under `credential_digest` | The claim token. Returned once and never again; the daemon keeps only its digest. |
+| `expires_in_ms` | integer | with `claim` | The claim's lifetime as a duration, so no clock agreement is needed. |
 
-Source: (`client/daemon/server.gleam:703-724`).
+The invited member has no credential until it redeems the claim on
+`/v2/claim` (§2.7). The owner delivers the claim over a channel outside
+Loom and never through a Loom session: a claim pasted into a composer
+becomes part of the transcript and of the agent's context. Source:
+(`client/daemon/server.gleam:1449`).
 
 The target session's domain scope MUST be `session_only`; a
 workspace-private session is refused with `isolation_required`.
 Source: (`client/daemon/server.gleam:726-734`).
 
 Errors: `forbidden`, `stale_epoch`, `isolation_required`, `conflict`
-when the principal id was already used, `unavailable`.
+when the principal id was already used or `credential_digest` is already
+a credential, `bad_request`, `unavailable`.
 
 A client MUST NOT retry an invitation automatically after a timeout.
 The outcome is unknown, and the caller recovers the known identity with
-`credentials.rotate` instead.
+`credentials.rotate`, which voids the lost claim and issues another.
 
 ### 3.12 `sessions.set_role` and `sessions.revoke`
 
@@ -692,24 +777,23 @@ continuation, or delivery check, which closes that attachment.
 
 ### 3.13 `credentials.rotate` and `credentials.revoke`
 
-Both take one body shape:
-
-| Field | Type | Presence | Meaning |
-|---|---|---|---|
-| `principal_id` | string | required | Member id, at most 128 bytes. |
-| `epoch` | string | required | Current daemon epoch. |
-
-Source: (`client/daemon/protocol.gleam:203-212`).
+Both take `principal_id` (member id, at most 128 bytes) and `epoch`.
+`credentials.rotate` also takes the optional `claim_ttl_ms` or
+`credential_digest` of `sessions.invite`, with the same rules.
+Source: (`client/daemon/protocol.gleam:389`).
 
 ```json
 {"v":2,"id":11,"cmd":"credentials.rotate","body":{"principal_id":"reviewer-1","epoch":"ep-7f3a"}}
 ```
 
-`credentials.rotate` revokes every active credential of that member and
-inserts one replacement in the same transaction; its reply carries the
-fresh `bearer` alongside `principal_id` and `name`.
-`credentials.revoke` revokes without replacement and returns no bearer.
-Source: (`client/daemon/server.gleam:534-579`).
+`credentials.rotate` voids the member's open claim and revokes every
+active credential, then inserts a new claim, or the enrolled digest, in
+the same transaction. Its reply has the shape of the `sessions.invite`
+reply: `principal_id`, `name`, and `claim` with `expires_in_ms` unless a
+digest was enrolled. `credentials.revoke` voids the open claim and
+revokes every active credential without a replacement; its reply is
+`principal_id` and `name`. Neither reply carries a bearer. Source:
+(`storage/access.gleam:356`) and (`storage/access.gleam:382`).
 
 Owner credentials are outside these commands: the owner token file has
 its own lifetime.
@@ -2775,7 +2859,13 @@ creating a second session.
 The correct recovery for a session mutation is to reconcile durable
 state with `catch_up` and let the person decide. The correct recovery
 for a lost invitation is `credentials.rotate` against the principal id
-the caller chose.
+the caller chose, which voids the lost claim instead of revoking a lost
+bearer.
+
+`credentials.claim` is the other exception. The client stores its
+credential before it sends the digest, so presenting the same claim and
+the same digest again after a lost reply returns the same success, or
+refuses if the claim was bound to another digest meanwhile (§2.7).
 
 No claim of exactly-once external execution follows from either rule.
 
@@ -2858,7 +2948,8 @@ Sources: (`client/protocol.gleam:489-517`),
 | `revision_changed` | `sessions.list` supplied a revision that no longer holds. | Restart the listing from the empty cursor. |
 | `metadata_too_large` | A single session record exceeds the page budget. | Report; nothing to page around. |
 | `isolation_required` | `sessions.invite` or a membership-creating `sessions.set_role` on a workspace-private session. | Offer `sessions.isolate` first. |
-| `not_found` | No such session, principal or operation. | Refresh the listing. |
+| `not_found` | No such session, principal or operation; on `/v2/claim`, no redeemable claim. | Refresh the listing. |
+| `expired` | `credentials.claim` on `/v2/claim` presented a claim whose lifetime passed before it was bound. | Ask the owner to rotate. |
 | `conflict` | A reused `request_key` with different metadata; a repeated invitation; an isolation with a retained slot. | Inspect, then decide. |
 | `capacity` | No free session slot. | Retry later, or stop a session. |
 | `not_initialized` | The named registration is still `reserved`: its creation never reconciled and no database stands behind it. | Retry `sessions.create` under its original request key. A listing renders such a row as `reserved`, so a client should not offer it for opening. |
@@ -2878,6 +2969,9 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Limit | Value | Applies to |
 |---|---|---|
 | Control message, either direction | 65536 bytes | `/v2/control` |
+| Claim message, inbound | 1024 bytes | `/v2/claim` |
+| Claim socket with no command | closed after 2 seconds | `/v2/claim` |
+| Claim upgrades per claim | 1 at a time; a second is HTTP 409 | `/v2/claim` |
 | Session inbound message, observer | 65536 bytes | `/v2/sessions/<id>/ws` |
 | Session inbound message, operator or owner | 33554432 bytes | `/v2/sessions/<id>/ws` |
 | Session reply, encoded | 65536 bytes | Every correlated reply |
@@ -3163,9 +3257,12 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:340`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:383`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
+   `protocol-change/053` adds a third route, `/v2/claim`, with its one
+   command `credentials.claim`, and changes the invitation and rotation
+   replies; the spec's summary lacks those too.
 
 10. **`protocol-change/003`, `011` and `013` were written against
     `v: 1`.** Each shows a `v:1` envelope in its proposal text.

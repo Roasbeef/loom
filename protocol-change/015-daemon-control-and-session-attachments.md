@@ -338,6 +338,12 @@ SHA-256 digests only, and revoked digests remain tombstoned. Logs, errors,
 status, and listings must never contain bearers. An insertion failure during
 rotation rolls back the preceding revocations.
 
+*Superseded in part by [protocol-change/053](053-owner-admin-and-claims.md)
+(2026-09-27):* the first sentence of the paragraph above no longer holds.
+Since 053's step 1, an invitation or rotation reply carries a single-use
+claim token, or nothing secret under enrollment by digest, and no control
+reply carries a bearer.
+
 The terminal administration entrypoint is `loomd access`. It connects to an
 existing local daemon through the private endpoint and owner-token records;
 it neither starts a daemon nor opens a conversation. It shares the existing
