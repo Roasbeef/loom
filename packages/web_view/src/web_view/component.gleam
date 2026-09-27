@@ -55,15 +55,20 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/server_component
+import session_view/agent_roster
+import session_view/agent_view
 import session_view/approval
 import session_view/connection_event
 import session_view/inbox.{type Inbox}
 import session_view/operator
+import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript
 import session_view/transcript_line.{type Line}
+import session_view/transcript_lines
+import session_view/turns
 
 /// How often the component reduces what arrived, in milliseconds.
 ///
@@ -179,9 +184,17 @@ pub opaque type Model(socket) {
     filed: Inbox(Nil, connection_event.Message),
     /// The last `Captured` update.
     shown: Option(#(snapshot.Captured, snapshot_view.View)),
-    /// The transcript rows of `shown`, projected once when it arrived so
-    /// that a message which changed nothing costs the view no projection.
-    rows: List(transcript.Row),
+    /// The page strand's transcript blocks, projected once when a capture
+    /// or a cache notice arrived, so a message which changed neither costs
+    /// the view no projection.
+    blocks: List(transcript_lines.Block),
+    /// The same blocks laid out as turns (`session_view/turns`), derived
+    /// with them.
+    pieces: List(turns.Piece),
+    /// Every strand's agent row from the last capture (`agent_view`), and
+    /// the reviewer rows it is observed with.
+    agents: List(agent_view.Row),
+    reviewers: List(reviewer_status.Row),
     /// The escalations of `shown`, and the settled ones kept beside them.
     approvals: List(approval.Review),
     status: Status,
@@ -247,7 +260,10 @@ pub fn new(start: Start(socket)) -> Model(socket) {
     lane: None,
     filed: inbox.new(Nil),
     shown: None,
-    rows: [],
+    blocks: [],
+    pieces: [],
+    agents: [],
+    reviewers: [],
     approvals: [],
     status: Connecting,
     clock: 0,
@@ -401,8 +417,9 @@ fn received(
 }
 
 /// Folds the lane's updates into the component: a capture is projected
-/// once, here, into the rows the view draws and the escalations it offers;
-/// a submission's outcome becomes the notice; a failure ends the page.
+/// once, here, into the blocks and pieces the view draws, the agent rows
+/// and the escalations it offers; a submission's outcome becomes the
+/// notice; a failure ends the page.
 ///
 /// ## Examples
 ///
@@ -416,17 +433,7 @@ pub fn apply(
 ) -> Model(socket) {
   list.fold(updates, model, fn(model, update) {
     case update {
-      session_channel.Captured(cut:, view:, ..) ->
-        Model(
-          ..model,
-          shown: Some(#(cut, view)),
-          rows: transcript.project_rows(cut, view, strand),
-          approvals: case approval.records(view.cells) {
-            Ok(current) -> approval.project(model.approvals, current)
-            Error(_) -> []
-          },
-          status: Following,
-        )
+      session_channel.Captured(cut:, view:, ..) -> captured(model, cut, view)
       session_channel.Failed(reason:) -> Model(..model, status: Ended(reason))
       session_channel.Submission(disposition:) -> settled(model, disposition)
       session_channel.UnknownOutcome(..) ->
@@ -446,6 +453,45 @@ pub fn apply(
       | session_channel.Acknowledged(..) -> model
     }
   })
+}
+
+// One capture: the agent rows are observed, which decide whether the
+// strand's last turn may fold, and the lane is projected.
+fn captured(
+  model: Model(socket),
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model(socket) {
+  let reviewers = reviewer_status.observe(model.reviewers, cut.window, view)
+  Model(
+    ..model,
+    shown: Some(#(cut, view)),
+    reviewers:,
+    agents: agent_view.observe(model.agents, cut.window, view, reviewers),
+    approvals: case approval.records(view.cells) {
+      Ok(current) -> approval.project(model.approvals, current)
+      Error(_) -> []
+    },
+    status: Following,
+  )
+  |> relaned
+}
+
+// Projects the page strand's blocks and pieces from the shown capture.
+// This is the one place a projection runs.
+fn relaned(model: Model(socket)) -> Model(socket) {
+  case model.shown {
+    None -> model
+    Some(#(cut, view)) -> {
+      let blocks = transcript.blocks(cut, view, strand, [])
+      let latest = turns.latest(view, model.agents, strand)
+      Model(
+        ..model,
+        blocks:,
+        pieces: turns.pieces(blocks, view.strands, latest),
+      )
+    }
+  }
 }
 
 // What the lane's answer to a submission means for the page. A sent draft
@@ -626,7 +672,9 @@ fn rearm(timer: Option(Subject(Nil))) -> Effect(Msg(socket)) {
   }
 }
 
-/// The transcript lines the page draws, oldest first.
+/// The transcript lines of the page strand's blocks, oldest first: the
+/// lines the terminal draws for the same capture, which the lane lays out
+/// as turns.
 ///
 /// ## Examples
 ///
@@ -634,7 +682,20 @@ fn rearm(timer: Option(Subject(Nil))) -> Effect(Msg(socket)) {
 /// // component.lines(model)
 /// ```
 pub fn lines(model: Model(socket)) -> List(Line) {
-  list.map(model.rows, fn(row) { row.line })
+  list.flat_map(model.blocks, fn(block) {
+    list.map(block.rows, fn(row) { row.1 })
+  })
+}
+
+/// The lane's pieces, in order (`session_view/turns`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lane_view(component.pieces(model))
+/// ```
+pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
+  model.pieces
 }
 
 /// The connection's status.
@@ -721,10 +782,12 @@ pub fn activity(model: Model(socket)) -> Activity {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.transcript_view(component.rows(model))
+/// // component.rows(model)
 /// ```
 pub fn rows(model: Model(socket)) -> List(transcript.Row) {
-  model.rows
+  list.flat_map(model.blocks, fn(block) {
+    list.map(block.rows, fn(row) { transcript.Row(key: row.0, line: row.1) })
+  })
 }
 
 /// The page's lane, for the parity test that compares it with the
@@ -753,8 +816,8 @@ pub fn session_id(model: Model(socket)) -> String {
   model.session_id
 }
 
-/// The observer's page: the heading, the transcript, and a fixed line
-/// saying the page is read-only. It attaches no event handler.
+/// The observer's page: the heading, the lane, and a fixed line saying the
+/// page is read-only. It attaches no event handler.
 ///
 /// ## Examples
 ///
@@ -764,7 +827,7 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session")], [
     heading(model),
-    transcript_view(model.rows),
+    lane_view(model.pieces),
     html.p([attribute.class("observer-bar")], [
       html.text(
         "Observer · read-only · you can follow this session; ask the owner for operator access",
@@ -781,7 +844,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
 /// // component.heading(model)
 /// ```
 pub fn heading(model: Model(socket)) -> Element(message) {
-  html.header([], [
+  html.header([attribute.class("session-head")], [
     html.h1([], [html.text("Session " <> model.session_id)]),
     html.p([attribute.class("status"), attribute.role("status")], [
       html.text(status_text(model.status)),
@@ -789,21 +852,189 @@ pub fn heading(model: Model(socket)) -> Element(message) {
   ])
 }
 
-/// The transcript, keyed by the engine's row identity and memoized on the
-/// rows, so a message that did not bring a capture costs no diff here and a
-/// window that drops its oldest rows removes them rather than rewriting
-/// every row after them.
+/// The class for a strand's hue, from its position: never from its name.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.transcript_view(rows)
+/// // component.hue_class(turns.Sub(0)) == attribute.class("hue-2")
 /// ```
-pub fn transcript_view(rows: List(transcript.Row)) -> Element(message) {
-  use <- element.memo([element.ref(rows)])
+pub fn hue_class(hue: turns.Hue) -> attribute.Attribute(message) {
+  case hue {
+    turns.Primary -> attribute.class("hue-main")
+    turns.Advisor -> attribute.class("hue-advisor")
+    turns.Sub(index: 0) -> attribute.class("hue-2")
+    turns.Sub(index: 1) -> attribute.class("hue-3")
+    turns.Sub(index: 2) -> attribute.class("hue-4")
+    turns.Sub(index: 3) -> attribute.class("hue-5")
+    turns.Sub(..) -> attribute.class("hue-6")
+    turns.Unplaced -> attribute.class("hue-none")
+  }
+}
+
+/// The lane: the page strand's turns, keyed by the engine's identity for
+/// each piece and memoized on the pieces, so a message that brought no
+/// capture costs no diff here and a window that drops its oldest rows
+/// removes them rather than rewriting every piece after them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.lane_view(component.pieces(model))
+/// ```
+pub fn lane_view(pieces: List(turns.Piece)) -> Element(message) {
+  use <- element.memo([element.ref(pieces)])
   keyed.div(
-    [attribute.class("transcript"), attribute.role("log")],
-    list.map(rows, fn(row) { #(row.key, line_element(row.line)) }),
+    [attribute.class("transcript lane"), attribute.role("log")],
+    list.map(pieces, fn(piece) { #(piece_key(piece), piece_element(piece)) }),
+  )
+}
+
+fn piece_key(piece: turns.Piece) -> String {
+  case piece {
+    turns.Plain(block:) -> block.key
+    turns.Work(key:, ..)
+    | turns.Spawned(key:, ..)
+    | turns.Returned(key:, ..)
+    | turns.Nudged(key:, ..)
+    | turns.Peer(key:, ..)
+    | turns.Missed(key:, ..) -> key
+  }
+}
+
+fn piece_element(piece: turns.Piece) -> Element(message) {
+  case piece {
+    turns.Plain(block:) -> block_element(block)
+
+    // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
+    // collapsed until the reader opens it. The fold opens and closes in the
+    // browser, so it needs no handler here and works on an observer's page,
+    // and the server never renders its state, so a later patch leaves the
+    // reader's choice alone. Every word in it is a child the server renders
+    // and escapes: the divider in the `summary` slot, the work in the
+    // default one.
+    turns.Work(worked:, items:, folding: turns.Folded, ..) ->
+      element.element("loom-fold", [attribute.class("work")], [
+        html.span(
+          [
+            attribute.attribute("slot", "summary"),
+            attribute.class("work-divider"),
+          ],
+          [html.text(turns.divider(worked))],
+        ),
+        html.div([attribute.class("work-items")], list.map(items, item_element)),
+      ])
+
+    // The turn still running is drawn open, with no divider to fold it.
+    turns.Work(items:, folding: turns.Open, ..) ->
+      html.div([attribute.class("work open")], list.map(items, item_element))
+
+    turns.Spawned(child:, purpose:, hue:, standing:, ..) ->
+      html.div([attribute.class("spawn"), hue_class(hue)], [
+        html.span([attribute.class("spawn-head")], [
+          html.text(
+            "↳ agent_spawn · "
+            <> case child {
+              Some(child) -> "sub:" <> agent_roster.short_name(child)
+              None -> standing_text(standing)
+            },
+          ),
+        ]),
+        html.span([attribute.class("spawn-purpose")], [html.text(purpose)]),
+      ])
+
+    turns.Returned(child:, outcome:, report:, hue:, ..) ->
+      html.article([attribute.class("result-card"), hue_class(hue)], [
+        html.p([attribute.class("card-head")], [
+          html.text(
+            "from sub:"
+            <> agent_roster.short_name(child)
+            <> " · result · "
+            <> outcome,
+          ),
+        ]),
+        html.pre([attribute.class("card-body")], [html.text(report)]),
+      ])
+
+    turns.Nudged(frame:, body:, ..) ->
+      html.article([attribute.class("nudge")], [
+        html.p([attribute.class("card-head")], [
+          html.text(case frame {
+            turns.Nudges -> "advisor · nudge · delivered"
+            turns.Advice -> "advisor · advice · delivered"
+          }),
+        ]),
+        html.pre([attribute.class("card-body")], [html.text(body)]),
+      ])
+
+    // Another session's message. The daemon records that it was stored and
+    // nothing about whether anyone read it, so the receipt says `stored`.
+    turns.Peer(session:, strand:, text:, ..) ->
+      html.article([attribute.class("peer-card")], [
+        html.p([attribute.class("card-head")], [
+          html.span([attribute.class("peer-from")], [
+            html.text("peer · " <> session <> " · " <> strand),
+          ]),
+          html.span([attribute.class("receipt")], [html.text("stored")]),
+        ]),
+        html.pre([attribute.class("card-body")], [html.text(text)]),
+      ])
+
+    turns.Missed(text:, ..) ->
+      html.p([attribute.class("cache-miss")], [html.text(text)])
+  }
+}
+
+fn item_element(item: turns.Item) -> Element(message) {
+  case item {
+    turns.Narrated(block:) -> block_element(block)
+    turns.Step(standing:, summary:, detail:, ..) ->
+      html.div([attribute.class("step"), standing_class(standing)], [
+        html.p([attribute.class("step-head")], [
+          html.span([attribute.class("glyph"), attribute.aria_hidden(True)], [
+            html.text(standing_glyph(standing)),
+          ]),
+          html.span([attribute.class("step-summary")], [html.text(summary)]),
+          html.span([attribute.class("step-state")], [
+            html.text(standing_text(standing)),
+          ]),
+        ]),
+        ..list.map(detail, line_element)
+      ])
+  }
+}
+
+fn standing_class(standing: turns.Standing) -> attribute.Attribute(message) {
+  case standing {
+    turns.Pending -> attribute.class("pending")
+    turns.Done -> attribute.class("done")
+    turns.Failed -> attribute.class("failed")
+  }
+}
+
+fn standing_glyph(standing: turns.Standing) -> String {
+  case standing {
+    turns.Pending -> "●"
+    turns.Done -> "✓"
+    turns.Failed -> "✕"
+  }
+}
+
+fn standing_text(standing: turns.Standing) -> String {
+  case standing {
+    turns.Pending -> "running"
+    turns.Done -> "done"
+    turns.Failed -> "failed"
+  }
+}
+
+// A block drawn as the transcript draws it, one line per row. The blank a
+// terminal places between tool groups is spacing here, so a spacer block
+// never reaches the lane.
+fn block_element(block: transcript_lines.Block) -> Element(message) {
+  html.div(
+    [attribute.class("block")],
+    list.map(block.rows, fn(row) { line_element(row.1) }),
   )
 }
 
@@ -816,28 +1047,31 @@ fn status_text(status: Status) -> String {
 }
 
 fn line_element(line: Line) -> Element(message) {
-  html.pre([attribute.class("line " <> speaker_class(line.speaker))], [
+  html.pre([attribute.class("line"), speaker_class(line.speaker)], [
     html.text(line.text),
   ])
 }
 
 // A class per speaker, which is the whole of a line's styling here as in the
 // terminal. The stylesheet decides what each looks like.
-fn speaker_class(speaker: transcript_line.Speaker) -> String {
+fn speaker_class(
+  speaker: transcript_line.Speaker,
+) -> attribute.Attribute(message) {
   case speaker {
-    transcript_line.System -> "system"
-    transcript_line.User -> "user"
-    transcript_line.Assistant -> "assistant"
-    transcript_line.Reasoning -> "reasoning"
-    transcript_line.ReasoningDigest -> "reasoning-digest"
-    transcript_line.SummarizedReasoning -> "summarized-reasoning"
-    transcript_line.SummarizedAdvice -> "summarized-advice"
-    transcript_line.ToolCall -> "tool-call"
-    transcript_line.ToolResult -> "tool-result"
-    transcript_line.ToolDetail -> "tool-detail"
-    transcript_line.ToolPatch -> "tool-patch"
-    transcript_line.ToolFailure -> "tool-failure"
-    transcript_line.Failure -> "failure"
-    transcript_line.Spacer -> "spacer"
+    transcript_line.System -> attribute.class("system")
+    transcript_line.User -> attribute.class("user")
+    transcript_line.Assistant -> attribute.class("assistant")
+    transcript_line.Reasoning -> attribute.class("reasoning")
+    transcript_line.ReasoningDigest -> attribute.class("reasoning-digest")
+    transcript_line.SummarizedReasoning ->
+      attribute.class("summarized-reasoning")
+    transcript_line.SummarizedAdvice -> attribute.class("summarized-advice")
+    transcript_line.ToolCall -> attribute.class("tool-call")
+    transcript_line.ToolResult -> attribute.class("tool-result")
+    transcript_line.ToolDetail -> attribute.class("tool-detail")
+    transcript_line.ToolPatch -> attribute.class("tool-patch")
+    transcript_line.ToolFailure -> attribute.class("tool-failure")
+    transcript_line.Failure -> attribute.class("failure")
+    transcript_line.Spacer -> attribute.class("spacer")
   }
 }

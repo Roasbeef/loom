@@ -97,8 +97,8 @@ pub fn update(
   #(model, effect.map(effects, Observed))
 }
 
-/// The operator's page: the heading, the transcript, the composer, and
-/// below it the approvals waiting for a decision, in a region of their own.
+/// The operator's page: the heading, the lane, the composer, and below it
+/// the approvals waiting for a decision, in a region of their own.
 ///
 /// The approvals come after the composer so that a card appearing never
 /// moves the composer. The agent decides when an escalation lands and how
@@ -114,7 +114,7 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.main([attribute.class("loom-session operator")], [
     component.heading(model),
-    component.transcript_view(component.rows(model)),
+    component.lane_view(component.pieces(model)),
     composer(model),
     approvals(component.pending(model)),
   ])
