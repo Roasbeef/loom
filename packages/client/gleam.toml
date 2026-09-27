@@ -20,6 +20,9 @@ tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
 telemetry = { path = "../telemetry" }
+session_view = { path = "../session_view" }
+web_view = { path = "../web_view" }
+lustre = "== 5.7.1"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 weft = "== 0.4.5"
@@ -35,7 +38,6 @@ gleam_regexp = ">= 1.1.1 and < 2.0.0"
 gleamy_bench = ">= 0.6.0 and < 1.0.0"
 sqlight_loom = "== 1.2.0"
 tui = { path = "../tui" }
-session_view = { path = "../session_view" }
 etui = { git = "https://github.com/Roasbeef/etui.git", ref = "7443b5c1edd2a1b9390261ace50a57ed80b6dad4" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
