@@ -56,6 +56,10 @@ pub fn view_arguments_parse_test() {
 pub fn view_page_and_delivery_parse_together_test() {
   let assert Ok(observer) = tui.view_request(["--session", "s"])
   assert observer.page == control_protocol.ObserverPage
+  let assert Ok(operator) = tui.view_request(["--operate", "--session", "s"])
+  assert operator.page == control_protocol.OperatorPage
+  assert operator.delivery == view_link.PrintLink
+    as "--operate alone asks for no browser"
 
   // Both switches take no value, in either order, and each keeps its own
   // meaning: `--operate` sets the page's ceiling, `--open` the delivery.

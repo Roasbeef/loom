@@ -187,7 +187,7 @@ pub opaque type Pass {
 /// ## Examples
 ///
 /// ```gleam
-/// let pass = live_tail.begin(model.live_tail)
+/// let pass = live_tail.begin(model.view.live_tail)
 /// ```
 pub fn begin(cache: Cache) -> Pass {
   Pass(previous: cache.slots, used: [])

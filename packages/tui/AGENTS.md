@@ -1524,11 +1524,12 @@ untouched.
   starting with a letter, and is dropped when a later line could be a
   setext underline or table row; it renders whole any text holding a reference
   definition or footnote; and it keeps no copy of the answer: the stream is
-  recognised by its fragment list, and `inbound` drops the cache when a
-  text or reasoning delta resets or collapses that list, so a stale list
-  is never kept alive beside the new one (`stream_bounds_test` bounds what
-  it may keep); a tool call delta, whose list is replaced every time,
-  leaves it alone. `live_tail.shortcuts` is how tests show a shortcut was
+  recognised by its fragment list, which the projection checks against
+  the stream on every frame (`live_tail.extends`), so a reset or collapse
+  starts the slot over and no reducer touches the cache; a stale cache
+  lives only until the next projection that draws the live lines, and a
+  tool call delta, whose list is replaced every time, is not a cached
+  source. `live_tail.shortcuts` is how tests show a shortcut was
   actually taken rather than every frame falling back to a full render.
 - **Bursts are paced as well as batched.** Etui applies up to sixty-four queued
   events before drawing, but every event still advances the immutable model

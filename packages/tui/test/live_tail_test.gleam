@@ -542,8 +542,13 @@ pub fn a_tool_call_delta_keeps_the_answers_cache_test() {
         tui.update(backend.Resize(model.width, model.height), model)
       }
     })
-  let #(kept, _, _) = live_tail.shortcuts(called.view.live_tail)
-  assert kept == settled as "tool call deltas left the cache in place"
+  let #(kept, _, carried) = live_tail.shortcuts(called.view.live_tail)
+  assert kept == settled as "tool call deltas left the settled rows in place"
+
+  // A projection that started the slot over would settle the same rows, so
+  // the carried count is what shows each paint continued the slot.
+  assert carried >= 3
+    as "each paint continued the slot rather than starting over"
 }
 
 fn tool_call_delta(text: String) -> connection_event.Message {
