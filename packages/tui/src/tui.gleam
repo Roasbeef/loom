@@ -948,10 +948,9 @@ pub fn view_served(view: control_protocol.WebView) -> Result(Nil, String) {
     control_protocol.WebViewAt(_) -> Ok(Nil)
     control_protocol.NoWebView ->
       Error(
-        "the running daemon was started without --ui. Stop it (loom update "
-        <> "restarts it, or end the loomd process) and run loom --ui again to "
-        <> "start one that serves the web view; it was left running because "
-        <> "other terminals may be attached to it.",
+        "the running daemon was started without --ui. Stop it and run "
+        <> "loom --ui again to start one that serves the web view. It was "
+        <> "left running because other terminals may be attached to it.",
       )
   }
 }
