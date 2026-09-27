@@ -918,7 +918,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:758-787`).
+`control_use` (`client/daemon/server.gleam:967-996`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1066,7 +1066,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:501`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:644`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
