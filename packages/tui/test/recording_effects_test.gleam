@@ -309,7 +309,7 @@ fn scripted_session(path: String) -> String {
     tui_model.Model(
       ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
       recorder: Some(recorder),
-      peer: tui_model.Attached(socket),
+      peer: tui_model.Attached,
       channel: Some(channel),
       session: "A",
       next_attempt: 2,
@@ -391,7 +391,7 @@ fn captured_session(recorder: recording.Recorder) {
         workspace.Context(path: "/w/demo", branch: None),
       ),
       recorder: Some(recorder),
-      peer: tui_model.Attached(socket),
+      peer: tui_model.Attached,
       session: "A",
       transport_time_ms: fn() { 0 },
     )

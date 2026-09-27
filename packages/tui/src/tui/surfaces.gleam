@@ -98,7 +98,7 @@ pub fn service_todo_seed(model: Model) -> Model {
 // channel waits; session replacement clears it either way.
 fn send_seed_when_free(model: Model, strand: String) -> Model {
   case model.notes_requested, model.channel, model.peer {
-    None, Some(channel), Attached(_) ->
+    None, Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
         True -> send_todo_seed(model, strand)
         False -> model
@@ -274,7 +274,7 @@ pub fn open_summary(model: Model) -> Model {
 @internal
 pub fn service_jobs_read(model: Model) -> Model {
   case model.channel, model.jobs_refresh, model.peer {
-    Some(channel), worktree_view.Requested, Attached(_) ->
+    Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
@@ -400,7 +400,7 @@ pub fn sync_advisor_nudges(before: Model, after: Model) -> Model {
 @internal
 pub fn service_advisor_nudges_read(model: Model) -> Model {
   case model.channel, model.nudges_refresh, model.peer {
-    Some(channel), worktree_view.Requested, Attached(_) ->
+    Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
@@ -480,7 +480,7 @@ pub fn retire_delivered_nudges(
 @internal
 pub fn service_block_summaries(model: Model) -> Model {
   case model.channel, model.peer {
-    Some(channel), Attached(_) ->
+    Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
         False -> model
         True ->
@@ -638,7 +638,7 @@ pub fn request_goal_status(model: Model) -> Model {
         repaint_phase: !model.repaint_phase,
         notice: "goal inspector · illustrative observation",
       )
-    Attached(_) | Disconnected | Replaying ->
+    Attached | Disconnected | Replaying ->
       Model(
         ..model,
         overlay: GoalInspector(panel),
@@ -651,10 +651,10 @@ pub fn request_goal_status(model: Model) -> Model {
 
 fn goal_observation(model: Model) -> String {
   case model.goal, model.peer {
-    Some(_), Attached(_) -> "Last server observation · refreshing"
+    Some(_), Attached -> "Last server observation · refreshing"
     Some(_), Disconnected -> "Last server observation · disconnected"
     Some(_), Preview | Some(_), Replaying -> "Illustrative observation"
-    None, Attached(_) -> "Reading current goal"
+    None, Attached -> "Reading current goal"
     None, Disconnected -> "Goal unavailable · disconnected"
     None, Preview | None, Replaying -> "Goal unavailable in this preview"
   }
@@ -664,7 +664,7 @@ fn goal_observation(model: Model) -> String {
 @internal
 pub fn service_goal_read(model: Model) -> Model {
   case model.channel, model.goal_refresh, model.peer {
-    Some(channel), worktree_view.Requested, Attached(_) ->
+    Some(channel), worktree_view.Requested, Attached ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
@@ -856,7 +856,7 @@ pub fn sync_context(before: Model, after: Model) -> Model {
     )
   let changed = context_refresh_due(before, after)
   let context = case after.peer {
-    Attached(_) ->
+    Attached ->
       case changed {
         True -> context_view.invalidate(selected)
         False -> selected
@@ -914,7 +914,7 @@ pub fn service_context_read(model: Model) -> Model {
   // Wait for that observation before borrowing the shared slot for context.
   use <- bool.guard(model.worktree.awaiting != None, model)
   case model.channel, model.context.request, model.peer, model.captured {
-    Some(channel), context_view.Requested, Attached(_), Some(_) ->
+    Some(channel), context_view.Requested, Attached, Some(_) ->
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(

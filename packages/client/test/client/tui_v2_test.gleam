@@ -54,7 +54,7 @@ pub fn tui_v2_queued_final_reply_sends_one_waiting_command_without_second_enter_
     let model =
       tui_model.Model(
         ..tui.new_model(inbox, target.workspace),
-        peer: tui_model.Attached(socket),
+        peer: tui_model.Attached,
         session: session,
       )
       |> tui_model.hold_channel(channel)
@@ -239,7 +239,7 @@ pub fn assert_history_answers(driver, answers: List(String)) -> Nil {
 
 fn synchronized(sample: tui_driver.Sample) {
   case sample.model.peer, sample.model.captured {
-    tui_model.Attached(_), Some(_) -> True
+    tui_model.Attached, Some(_) -> True
     _, _ -> False
   }
 }

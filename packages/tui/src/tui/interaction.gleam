@@ -46,10 +46,10 @@ import tui/job
 import tui/layout
 import tui/model.{
   type Model, type ScrollDirection, AgentInspector, ApprovalInspector, Attached,
-  DaemonSelector, DiffHidden, DiffVisible, Disconnected, FrameCache,
-  GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
-  OverlaySubmission, PeerLinkManager, Preview, ReconnectAttempting,
-  ReconnectIdle, ReconnectSpent, Replaying, TerminalClipboard,
+  DaemonSelector, DiffHidden, DiffVisible, FrameCache, GoalInspector, Model,
+  ModelSelector, Newer, NoClipboard, NoOverlay, Older, OverlaySubmission,
+  PeerLinkManager, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
+  TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -291,10 +291,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         Model(
           ..model,
           inbox: inbox,
-          peer: case session_channel.socket(channel) {
-            Some(socket) -> Attached(socket)
-            None -> Replaying
-          },
+          peer: Attached,
           channel: Some(channel),
           captured: None,
           note_board: None,
@@ -385,6 +382,8 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
 
 // Consume the old channel's outcome while its session identity is still the
 // visible one. Closing an already-sent request cannot imply it was rejected.
+// With no channel there is no socket to close: an attached peer always has
+// its lane, and the other peers never had a socket.
 fn retire_previous(model: Model) -> Model {
   case model.channel {
     Some(previous) -> {
@@ -396,12 +395,7 @@ fn retire_previous(model: Model) -> Model {
         inbound.apply_channel_update,
       )
     }
-    None ->
-      case model.peer {
-        Attached(previous) ->
-          tui_model.emit(model, effect.CloseSocket(previous))
-        Disconnected | Preview | Replaying -> model
-      }
+    None -> model
   }
 }
 

@@ -301,9 +301,12 @@ pub type Submission {
 /// into the same `None`, which is exactly the bug this replaced.
 @internal
 pub type Peer {
-  /// A live ClientGateway websocket. Commands are written to it and the
-  /// server's own events come back as transcript.
-  Attached(socket: connection.Connection)
+  /// A live ClientGateway conversation. Commands are written through the
+  /// adopted session channel, which holds the socket, and the server's own
+  /// events come back as transcript. The socket is not repeated here: a
+  /// second copy of the handle is what let a reducer write to a socket with
+  /// no lane in front of it, a state the shipped client never reaches.
+  Attached
 
   /// A live launch without an adopted socket; never fabricates preview replies.
   Disconnected

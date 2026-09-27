@@ -377,7 +377,6 @@ fn perform_one(
     effect.CancelJob(key) -> job_runner.cancel(running, key)
     effect.Channel(_)
     | effect.Attachment(_)
-    | effect.Send(..)
     | effect.CloseSocket(_)
     | effect.CloseControl(_)
     | effect.Discard(_)
@@ -395,7 +394,6 @@ fn perform_io(requested: Effect) -> Nil {
   case requested {
     effect.Channel(output) -> session_channel.perform(output)
     effect.Attachment(output) -> attachment.perform(output)
-    effect.Send(socket, frame) -> connection.send(socket, frame)
     effect.CloseSocket(socket) -> connection.close(socket)
     effect.CloseControl(control) -> daemon.close(control)
     effect.Discard(inbox) -> buffered.discard(inbox)

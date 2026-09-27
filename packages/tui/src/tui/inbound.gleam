@@ -453,7 +453,7 @@ pub fn request_decisions(model: Model, ids: List(String)) -> Model {
     // attached" error here would be a line no live session ever produced.
     Replaying -> model
 
-    Attached(_) | Disconnected | Preview ->
+    Attached | Disconnected | Preview ->
       case model.channel {
         None -> tui_model.append_error(model, "conversation is not attached")
         Some(channel) ->
@@ -2065,14 +2065,11 @@ fn settle_usage(
     // rule that stops a replay echoing a prompt.
     True, Replaying, _ | True, Disconnected, _ -> #(model.output_rate_tps, None)
 
-    True, Attached(..), Some(started) | True, Preview, Some(started) -> #(
+    True, Attached, Some(started) | True, Preview, Some(started) -> #(
       transcript_lines.output_rate(settled.output, model.stamp.now_ms - started),
       None,
     )
-    True, Attached(..), None | True, Preview, None -> #(
-      model.output_rate_tps,
-      None,
-    )
+    True, Attached, None | True, Preview, None -> #(model.output_rate_tps, None)
   }
   Model(..model, generation_started_ms:, output_rate_tps:, notice:)
 }
@@ -2196,7 +2193,7 @@ fn configured_model(
 fn replaying(model: Model) -> Bool {
   case model.peer {
     Replaying -> True
-    Attached(..) | Preview | Disconnected -> False
+    Attached | Preview | Disconnected -> False
   }
 }
 
@@ -2484,7 +2481,7 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
       notice: "prompt sent to " <> strand,
     )
   case model.peer {
-    Attached(..) ->
+    Attached ->
       outbound.send_frame(sent, protocol.prompt(model.next_id, strand, text))
 
     // The server echoed this turn back as an entry, and the recording has
@@ -2527,14 +2524,13 @@ pub fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
 @internal
 pub fn expect_own_turn(model: Model, submission: Submission) -> Model {
   case model.peer, tui_model.active_strand_live(model) {
-    Attached(..), True ->
+    Attached, True ->
       Model(..model, awaiting_outcome: Some(submission))
       |> tui_model.invalidate_transcript
     Replaying, True ->
       Model(..model, queued: in_commit_order(model.queued, submission))
       |> tui_model.invalidate_transcript
-    Attached(..), False | Replaying, False | Preview, _ | Disconnected, _ ->
-      model
+    Attached, False | Replaying, False | Preview, _ | Disconnected, _ -> model
   }
 }
 
@@ -2674,7 +2670,7 @@ fn reconcile_interrupt(
 // A replay remains a replay and cannot fabricate responses after recorded loss.
 fn after_close(peer: Peer) -> Peer {
   case peer {
-    Attached(..) | Disconnected -> Disconnected
+    Attached | Disconnected -> Disconnected
     Preview -> Preview
     Replaying -> Replaying
   }
@@ -2840,8 +2836,8 @@ pub fn select_workspace(
 @internal
 pub fn request_visible_worktree(model: Model) -> Model {
   case model.peer, layout.diff_shown(model) {
-    Attached(_), True -> refresh_worktree(model)
-    Attached(_), False | Preview, _ | Replaying, _ | Disconnected, _ -> model
+    Attached, True -> refresh_worktree(model)
+    Attached, False | Preview, _ | Replaying, _ | Disconnected, _ -> model
   }
 }
 
@@ -2849,7 +2845,7 @@ pub fn request_visible_worktree(model: Model) -> Model {
 @internal
 pub fn refresh_worktree(model: Model) -> Model {
   case model.peer, model.channel {
-    Attached(_), Some(_) ->
+    Attached, Some(_) ->
       surfaces.service_worktree_read(
         Model(
           ..model,

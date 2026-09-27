@@ -113,7 +113,7 @@ pub fn start_recorded(
 
     // Refuse a failed handshake instead of exercising preview-mode echoes.
     case attachment.busy(model.candidate), model.peer, model.control_request {
-      True, _, _ | False, tui_model.Attached(_), _ | _, _, Some(_) ->
+      True, _, _ | False, tui_model.Attached, _ | _, _, Some(_) ->
         actor.initialised(Driver(model, subject))
         |> actor.selecting(selector(Driver(model, subject)))
         |> actor.returning(subject)
@@ -257,10 +257,9 @@ fn disconnect(model: tui_model.Model) -> Nil {
         session_channel.take_outputs(session_channel.close(channel))
       list.each(outputs, session_channel.perform)
     }
-    None ->
-      case model.peer {
-        tui_model.Attached(socket) -> connection.close(socket)
-        tui_model.Preview | tui_model.Replaying | tui_model.Disconnected -> Nil
-      }
+
+    // With no channel there is no socket: an attached peer always has its
+    // lane, which the arm above closes.
+    None -> Nil
   }
 }

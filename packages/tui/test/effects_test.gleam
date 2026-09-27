@@ -3,8 +3,8 @@
 //// `tui.step` returns the next model and the effects it decided on, and
 //// `tui.update` is that step followed by `runtime.perform`. These tests drive
 //// `step` directly and read the effects as values: a copy asks for one
-//// clipboard write, a quit asks for every cancel and close, and a submission
-//// asks for a frame only when there is a socket to take it. Where a stand-in
+//// clipboard write, a quit asks for every cancel and close, and a replayed
+//// submission asks for no write at all. Where a stand-in
 //// handle wraps a subject this process owns, the test also checks the
 //// mailbox, so "performs nothing during the step" is observed rather than
 //// assumed.
@@ -25,7 +25,6 @@ import tui/effect.{type Effect}
 import tui/job
 import tui/job_runner
 import tui/model as tui_model
-import tui/protocol
 import tui/runtime
 import tui/session_channel
 import tui/snapshot
@@ -78,7 +77,7 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let model =
     tui_model.Model(
       ..model,
-      peer: tui_model.Attached(socket),
+      peer: tui_model.Attached,
       channel: Some(channel),
       candidate: attempt,
       daemon_host: Some(host),
@@ -118,24 +117,6 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   assert process.receive(owner, 0) == Error(Nil)
 }
 
-// Without a channel, the preview peer's socket is closed directly, in the
-// channel's place ahead of the cancels, and the close is still only queued.
-pub fn quit_without_a_channel_queues_the_peer_close_test() {
-  let owner: Subject(Dynamic) = process.new_subject()
-  let socket = socket_on(owner)
-  let model = tui_model.Model(..quiet_model(), peer: tui_model.Attached(socket))
-
-  let #(quit, effects) = tui.step(backend.KeyPress("ctrl+c"), model)
-  assert quit.quit
-  assert effects
-    == [
-      effect.CloseSocket(socket),
-      effect.Attachment(attachment.Abandon(attachment.idle())),
-    ]
-  assert process.receive(owner, 0) == Error(Nil)
-    as "the step closed nothing itself"
-}
-
 // A replay has no socket, so a prompt submitted during one does the local
 // half of the live path and asks for no write of any kind.
 pub fn a_replayed_prompt_queues_no_write_test() {
@@ -156,30 +137,6 @@ pub fn a_replayed_prompt_queues_no_write_test() {
   assert submitted.submitting == Some("main")
     as "premise: the prompt took the replay path rather than a refusal"
   assert list.filter(effects, is_write) == []
-}
-
-// A socket with no channel yet takes a read as one direct write, queued
-// rather than sent. A prompt is not the probe here: a mutation waits for a
-// channel that has synchronized, so it would be refused before any write.
-pub fn a_channelless_socket_queues_one_direct_write_test() {
-  let owner: Subject(Dynamic) = process.new_subject()
-  let socket = socket_on(owner)
-  let model =
-    tui_model.Model(
-      ..quiet_model(),
-      peer: tui_model.Attached(socket),
-      input: text_area.state_from_string("/models"),
-    )
-
-  let #(_, effects) = tui.step(backend.KeyPress("enter"), model)
-  assert list.filter(effects, is_write)
-    == [effect.Send(socket, protocol.models(model.next_id))]
-  assert process.receive(owner, 0) == Error(Nil)
-    as "the step wrote nothing itself"
-
-  let _running = runtime.perform(effects, job_runner.new())
-  let assert Ok(_) = process.receive(owner, 100)
-    as "performing the effect is what reaches the socket"
 }
 
 fn drag_and_release(
@@ -247,7 +204,6 @@ fn is_clipboard_write(requested: Effect) -> Bool {
 
 fn is_write(requested: Effect) -> Bool {
   case requested {
-    effect.Send(..) -> True
     effect.Channel(session_channel.Transmit(..)) -> True
     effect.Attachment(attachment.FromChannel(session_channel.Transmit(..))) ->
       True
