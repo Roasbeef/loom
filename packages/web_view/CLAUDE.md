@@ -100,6 +100,11 @@ page keys and nonces, and the relay into the session's gateway.
 
 ## Deep Docs
 
+- `docs/architecture/web-view.md`: the architecture map: the request path
+  from `loom --ui` to a live socket, the processes per page, the two
+  components, and the security layers.
+- `docs/design-notes/web-ui.md`: the working spec for where the page is
+  going (an exploration, not a commitment).
 - `docs/adr/014-second-runtime.md`: one engine, two views, and option C in
   the web host.
 - `protocol-change/051-web-view-route.md`: the routes, authentication, the

@@ -92,6 +92,7 @@ shared domain services before closing the listener. Its flags:
 --bind host:port       loopback listen address (default 127.0.0.1:0; port printed)
 --capacity <n>         maximum retained session instances (default 8)
 --owner-name <name>    initial owner display name (default Owner)
+--ui                   serve the web view: a browser page per session, off by default
 --helper <path>        loom-exec location (default: beside the server, then PATH, then ./bin)
 --config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
 --codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed, then the bundled one)
@@ -192,3 +193,27 @@ and names both settings because its transport does not expose that HTTP body.
 Closing another terminal releases its connections without deleting its saved
 session. `--capacity` controls resident sessions separately from these socket
 limits.
+
+### A page in a browser
+
+A daemon started with `--ui` serves a web page for any session you are a
+member of. Ask your own `loom` for a link:
+
+```sh
+# Print a single-use link to an observer's page for one session.
+loom --ui --session SESSION_ID
+
+# Ask for an operator's page, and open the link in the default browser.
+loom --ui --session SESSION_ID --operate --open
+```
+
+If no daemon is running, `loom --ui` starts one with `--ui`. If the
+running daemon was started without it, `loom --ui` says so and exits with
+status 1; it never restarts a daemon other people may be using. The link
+works once, within 60 seconds, and only in the browser tab that opens it;
+a new tab or a daemon restart needs a new link. A page is an observer's
+unless you pass `--operate`, and even then it never carries more than
+operator authority. The daemon binds only loopback, so a browser on
+another machine reaches the page through a local forward such as
+`ssh -L`. [The web view](architecture/web-view.md) explains the page and
+its security checks.

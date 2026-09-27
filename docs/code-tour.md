@@ -32,7 +32,7 @@ relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
 ## The shape of the thing
 
-Twenty-one packages, twenty Gleam and one Go, split across three planes.
+Twenty-three packages, twenty-two Gleam and one Go, split across three planes.
 Shared host primitives sit below the client and terminal boundaries.
 
 **The durability plane** stores rows and answers queries and decides
@@ -53,7 +53,11 @@ the tools somebody else's repository contributes.
 
 `client` hosts all of it — the protocol, the hub, the websocket server,
 the production wiring, and the `loomd` entry point — and `tui` is
-the native terminal client on the far side of the wire. `prompt` renders the
+the native terminal client on the far side of the wire. The client's
+engine, the session lane and the transcript projection, is its own
+package, `session_view`, so that a second host can drive it: `web_view`
+holds the Lustre server components that `loomd --ui` serves to a
+browser. `prompt` renders the
 system prompt from a data pack, `conformance` holds the suites that
 define correct, and `cap` is compiled *into* the jail rather than linked
 into the harness.
@@ -62,14 +66,17 @@ Two more sit beside the planes rather than in one. `telemetry` is a leaf
 over `core`, so any impure package may log through it, and its
 correlation context travels as a value because `logger`'s process
 metadata does not survive a spawn and the effect sandwich is nothing but
-spawns. `lint` is Loom's own house-rule lint over Gleam source — twelve
+spawns. `lint` is Loom's own house-rule lint over Gleam source — thirteen
 rules, five of which gate `make check` at error level — and it depends on
 nothing in the harness at all.
 
 Purity is layered on purpose. `core`, `machine`, and `prompt` perform no
 I/O and declare no FFI; that is what makes the operation state space
 property-testable with no processes involved and the system prompt
-byte-stable for a whole session.
+byte-stable for a whole session. `session_view` is held to the same rule,
+lint R6, so that neither the terminal nor the web view can bring a socket,
+a clock or a mailbox into the engine they share
+([the client engine and its hosts](architecture/client.md#the-client-engine-and-its-hosts)).
 
 ## Before the key press
 
@@ -1052,7 +1059,7 @@ flowchart TB
     S --> B
     W -. "a writer crash restarts<br/>everything after it" .-> F1
     F1 -. "and everything after that" .-> F2
-    F2 -. .-> B
+    F2 -.-> B
     B -. "repopulates both factories" .-> F1
 ```
 
@@ -1683,7 +1690,8 @@ names, and the invariants that break things when violated. Read the one
 for the package you are about to change.
 
 For the planes in depth: `docs/architecture/durability.md`,
-`orchestration.md`, `effects.md`, `client.md`, `messaging.md`,
+`orchestration.md`, `effects.md`, `client.md`, `terminal.md`,
+`web-view.md`, `messaging.md`,
 `events.md`, `models.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
 `advisor.md`, `simulation.md`. For
 intent,

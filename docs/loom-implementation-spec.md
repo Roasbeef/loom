@@ -276,7 +276,7 @@ change 010 records the full ownership and race law.
 
 ### 1.6 Client protocol (WP-L; thin clients)
 
-Websocket, JSON (client-friendliness beats msgpack here), versioned. One listener carries two authenticated endpoints, because daemon metadata and one session's conversation are separate authorities ([protocol-change/015](../protocol-change/015-daemon-control-and-session-attachments.md)):
+Websocket, JSON (client-friendliness beats msgpack here), versioned. One listener carries two authenticated endpoints, because daemon metadata and one session's conversation are separate authorities ([protocol-change/015](../protocol-change/015-daemon-control-and-session-attachments.md)). A daemon started with `--ui` also serves the web view's `/ui` routes (the ticket exchange, the keyed page, its Lustre socket and fixed assets), which authenticate a browser with a single-use ticket from the control command `ui.link`, a cookie, a page key and a nonce rather than a bearer, and the control `hello` then carries a `ui` field ([protocol-change/051](../protocol-change/051-web-view-route.md)). Without `--ui` every `/ui` path is a 404:
 
 ```
 /v2/control                              daemon metadata and lifecycle

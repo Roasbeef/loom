@@ -73,7 +73,7 @@ distinction.
 | `client/advisor` | The actor that joins those three to a session: the four hook slots, the step count, the branch scan, the sends, the two durable cells, and the `advise` seam. |
 | `client/catalog` | The `advisor` role and the `[advisor]` table. |
 | `client/serve` | The wiring: resolving the role through the gateway, registering the tool, composing the hooks, seeding the strand, supervising the actor. |
-| `tui` | Recognizing advisor traffic in a transcript and drawing it as harness speech rather than as the operator's; `tui/advisor_pending` pulls and draws the undelivered nudge queue beside the composer. |
+| `tui` | Recognizing advisor traffic in a transcript and drawing it as harness speech rather than as the operator's; the terminal pulls the undelivered nudge queue, which `session_view/advisor_pending` decodes, and draws it beside the composer. |
 
 Each path is relative to its package's source root: `client/advisor` is
 `packages/client/src/client/advisor.gleam`.
@@ -741,7 +741,7 @@ at most three rows, the summarizer's summary, with the heading marked
 `(summarized)`, or the body's first line while no summary exists ([protocol 050](../../protocol-change/050-reasoning-summaries.md)).
 Detail mode shows its whole body. Feeds and goal continuations
 collapse to one attribution row with an opening excerpt and expand hint.
-The advisor's own commentary rows (`tui/advisor_history`) are not
+The advisor's own commentary rows (`session_view/advisor_history`) are not
 summarized and always render in full.
 Expanded bodies keep their heading but drop the frame delimiters, which
 address the model rather than the operator. Captured advisor-only

@@ -700,7 +700,7 @@ authority.
 
 ### The terminal side
 
-`tui/worktree_view` holds one attachment's latest board and file
+`session_view/worktree_view` holds one attachment's latest board and file
 selection. It requests an observation when the diff view is shown, when
 a new conversation cut advances the durable sequence while the view is
 visible, and when
@@ -732,7 +732,7 @@ again.
 | `client/worktree_diff` | The sandboxed Git calls, the bounded `Board`, the starting-revision probe, and the peer observation. |
 | `client/serve` | Assembly order, the linked-worktree policy widening, and the tool environment. |
 | `client/gateway` | Owner-only `worktree_diff` requests and the pending-then-push reply. |
-| `tui/worktree_view` | One attachment's board, selection, and refresh correlation. |
+| `session_view/worktree_view` | One attachment's board, selection, and refresh correlation. |
 | `tui/diff_panel` | The diff panel's layout. |
 | `tui/workspace` | The terminal's repository root and branch for the footer and default session name. |
 
