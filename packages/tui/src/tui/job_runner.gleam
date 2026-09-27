@@ -48,6 +48,7 @@ import gleam/erlang/process.{type Selector, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/bootstrap
 import tui/buffered
 import tui/connection
 import tui/daemon
@@ -93,6 +94,12 @@ const reconnect_timeout_ms = 90_000
 // The activity poll's deadline covers one handshake and one request on a
 // connection of its own.
 const activity_timeout_ms = 9000
+
+// Resolving a configuration reads an environment variable and asks the file
+// system about at most two paths. It needs no network, so a resolution still
+// running after five seconds is stuck on its file system and is reported as
+// a failure rather than left to hold the creation.
+const configuration_timeout_ms = 5000
 
 /// Starts the job `spec` describes under `key`.
 ///
@@ -141,6 +148,15 @@ pub fn start(running: Running, key: Key, spec: job.Spec) -> Running {
 
     job.Attach(route:, within_ms:) ->
       start_attach(running, key, fn() { resolve(route) }, within_ms)
+
+    job.Configure(options:) ->
+      start_task(
+        running,
+        key,
+        fn() { bootstrap.session_configuration(options) },
+        configuration_timeout_ms,
+        job.ConfigurationArrived,
+      )
   }
 }
 
@@ -287,7 +303,8 @@ pub fn dropped(arrival: Arrival) -> Nil {
     job.AttachArrived(reply: job.Settled(_), ..)
     | job.ControlArrived(..)
     | job.ReconnectArrived(..)
-    | job.ActivityArrived(..) -> Nil
+    | job.ActivityArrived(..)
+    | job.ConfigurationArrived(..) -> Nil
   }
 }
 

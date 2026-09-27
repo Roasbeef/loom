@@ -415,15 +415,15 @@ fn run_real_server_lifecycle(server: String) -> Nil {
         ),
       ),
     )
-  let refused = tui.update(backend.KeyPress("n"), invalid)
+  let refused = configured(tui.update(backend.KeyPress("n"), invalid))
   assert refused.creation_key == None
   assert text_area.value(refused.input) == "retained draft"
   assert !attachment.busy(refused.candidate)
   let creating =
-    tui.update(
+    configured(tui.update(
       backend.KeyPress("n"),
       tui_model.Model(..refused, local_options: Some(options)),
-    )
+    ))
   let switched = wait_for_attachment(creating, 20_000)
   let assert attachment.Adopted(channel, cut, _, _, _, selected_name, _) =
     switched
@@ -601,6 +601,28 @@ fn close_channel(channel: session_channel.Channel) -> Nil {
 // attempt's frames, and after it the flush performs what the poll decided,
 // which includes what the candidate's channel queued, in the order the
 // runtime would after a step.
+// A creation resolves its configuration in a job before it retains a key
+// (ADR-013, phase 2 S6), so the key press starts that job and the tick that
+// takes its reply makes the creation's checks and starts the attachment.
+// This ticks until it has.
+fn configured(model: tui_model.Model) -> tui_model.Model {
+  let assert poll.Answer(configured) =
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 5000,
+      every: poll.Fixed(5),
+      from: model,
+      attempt: fn(current: tui_model.Model) {
+        case current.configuring {
+          None -> poll.Settled(current)
+          Some(_) -> poll.Pending(tui.update(backend.Tick, current))
+        }
+      },
+    )
+    as "the configuration job answers"
+  configured
+}
+
 fn wait_for_attachment(model: tui_model.Model, within: Int) {
   case
     poll.fold_until(

@@ -735,6 +735,13 @@ pub type Model {
     reconnect: Reconnect,
     /// Retained after an uncertain create so another key cannot duplicate it.
     creation_key: Option(String),
+    /// The configuration job a session creation waits for before it
+    /// retains a creation key, while one is running. The creation resolves
+    /// its configuration from the local launch options first, so a local
+    /// failure sends nothing and retains no key; the resolution reads the
+    /// file system, so it runs as a job and the creation continues when
+    /// `session_control.drain_configuration` takes the reply.
+    configuring: Option(job.Awaiting(job.ConfigurationReply)),
     /// Current pending requests and at most sixteen bounded resolved summaries.
     approvals: List(approval.Review),
     /// Questions already presented locally, keyed by their exact durable sequence.
@@ -992,7 +999,8 @@ pub fn release(model: Model, arrival: job.Arrival) -> Model {
     job.AttachArrived(reply: job.Settled(_), ..)
     | job.ReconnectArrived(..)
     | job.ControlArrived(..)
-    | job.ActivityArrived(..) -> model
+    | job.ActivityArrived(..)
+    | job.ConfigurationArrived(..) -> model
   }
 }
 

@@ -3,7 +3,9 @@
 //// A daemon control request, the relaunch after an unexpected daemon death,
 //// the session picker's activity poll and the provisional attachment's
 //// startup each run in a weft task, because each one blocks on a socket and
-//// the terminal must not. The step used to
+//// the terminal must not. Resolving a new session's configuration runs in
+//// one too, because it reads the file system and the step reads no file.
+//// The step used to
 //// start those tasks itself: it created the reply `Subject` and the
 //// `weft.Cancel`, spawned the relay, and kept both in the model so a later
 //// step could read the reply and tell a current reply from a stale one by
@@ -265,6 +267,12 @@ pub type Spec {
   /// connect a conversation socket, publish it as `Prepared`, and wait for
   /// the terminal's acknowledgement, all within `within_ms`.
   Attach(route: AttachRoute, within_ms: Int)
+
+  /// Resolves the configuration a new session is created with, from the
+  /// local launch options: the state root from `HOME` or `--state-dir`,
+  /// and the canonical path of `--config` or of the trusted
+  /// `<state-root>/loom.toml` when it exists (`bootstrap.session_configuration`).
+  Configure(options: bootstrap.Options)
 }
 
 /// How an attachment job resolves the session it connects to.
@@ -332,6 +340,11 @@ pub type ReconnectReply =
 pub type ActivityReply =
   weft.Pulled(List(control_protocol.Activity), String)
 
+/// What the configuration job's relay sends: the canonical configuration
+/// path, empty when there is none, or why it could not be resolved.
+pub type ConfigurationReply =
+  weft.Pulled(String, String)
+
 /// One message a job's relay sent, tagged with the job's key.
 ///
 /// The runtime produces these from the job's own subject, and
@@ -349,6 +362,9 @@ pub type Arrival {
 
   /// A message from an attachment job.
   AttachArrived(key: Key, reply: AttachReply)
+
+  /// A reply from the configuration job.
+  ConfigurationArrived(key: Key, reply: ConfigurationReply)
 }
 
 /// The key an arrival is tagged with.
@@ -377,6 +393,7 @@ pub fn is_last(arrival: Arrival) -> Bool {
     ControlArrived(reply:, ..) -> ends_run(reply)
     ReconnectArrived(reply:, ..) -> ends_run(reply)
     ActivityArrived(reply:, ..) -> ends_run(reply)
+    ConfigurationArrived(reply:, ..) -> ends_run(reply)
     AttachArrived(reply: Settled(reply:), ..) -> ends_run(reply)
     AttachArrived(reply: Published(_), ..) -> False
   }

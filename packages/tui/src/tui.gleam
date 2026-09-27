@@ -546,6 +546,7 @@ pub fn new_model_with_clock(
     activity_poll: tui_model.ActivityDue,
     reconnect: ReconnectIdle,
     creation_key: None,
+    configuring: None,
     approvals: [],
     prompted_approvals: [],
     inspecting_approval: None,

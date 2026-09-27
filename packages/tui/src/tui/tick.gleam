@@ -2,12 +2,13 @@
 //// when to paint.
 ////
 //// `update_tick` drains the replay, the attachment candidate, daemon
-//// control, reconnection, the activity poll and a bounded batch of socket
-//// traffic, and then hands the drained model to `settle_tick`, which
-//// services the side-surface reads and advances the session channel's
-//// timers. Every drain takes from what the runtime received before the
-//// step rather than from a mailbox. `settle_tick` takes the drained model
-//// as a parameter on purpose: see the comment above it. The frame cache
+//// control, reconnection, the activity poll, a session creation's
+//// configuration and a bounded batch of socket traffic, and then hands the
+//// drained model to `settle_tick`, which services the side-surface reads
+//// and advances the session channel's timers. Every drain takes from what
+//// the runtime received before the step rather than from a mailbox.
+//// `settle_tick` takes the drained model as a parameter on purpose: see
+//// the comment above it. The frame cache
 //// and the viewport pacing that decide whether a tick repaints live here
 //// as well, as does the Herdr pane reporter.
 
@@ -123,6 +124,7 @@ pub fn update_tick(model: Model) -> Model {
   let switched = drain_candidate(session_control.drain_control(animated))
   let switched = session_control.drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
+  let switched = session_control.drain_configuration(switched)
   let drained = inbound.drain_connection(switched, tui_model.connection_batch)
   settle_tick(model, drained)
 }

@@ -11,10 +11,11 @@
 //// It describes each request as a `job.Spec` and queues its start with a
 //// key (`tui_model.start_job`); `tui/job_runner` runs it after the step.
 //// The runtime admits each reply into the slot that names its key, and
-//// the tick takes it from there through `drain_control`, `drain_reconnect`
-//// and `drain_activity`, which are also what a test drives directly after
-//// handing the slot a reply with `runtime.hold`. An opened session comes
-//// back as an attachment candidate instead, through `tui/attachment`.
+//// the tick takes it from there through `drain_control`, `drain_reconnect`,
+//// `drain_activity` and `drain_configuration`, which are also what a test
+//// drives directly after handing the slot a reply with `runtime.hold`. An
+//// opened session comes back as an attachment candidate instead, through
+//// `tui/attachment`.
 
 import core/json
 import gleam/int
@@ -23,7 +24,6 @@ import gleam/string
 import tui/agents
 import tui/attachment
 import tui/attempt
-import tui/bootstrap
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/inbound
@@ -441,6 +441,12 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
 
 /// Creates a new daemon session from the local launch options, resolving
 /// the session configuration before any creation key is retained.
+///
+/// Resolving the configuration reads the file system, so a terminal with
+/// local launch options starts a `job.Configure` job and continues in
+/// `drain_configuration` when the tick takes its reply. A terminal with no
+/// local options has nothing to resolve and creates at once with no
+/// configuration, as it always did.
 @internal
 pub fn create_session(model: Model) -> Model {
   // Resolve local paths before retaining a creation key: a local failure sent
@@ -452,13 +458,81 @@ pub fn create_session(model: Model) -> Model {
   // accepted rather than cached: the file would have to appear inside a single
   // lost-reply window, and the operator sees a named conflict, not a session
   // created under a catalogue they did not ask for.
-  let configuration = case model.local_options {
-    Some(options) -> bootstrap.session_configuration(options)
-    None -> Ok("")
+  case model.local_options, model.configuring {
+    None, _ -> create_session_configured(model, "")
+
+    // A second press while the first resolution runs adds nothing: the
+    // first creation continues when its configuration arrives.
+    Some(_), Some(_) -> model
+    Some(options), None -> {
+      let #(model, key) = tui_model.start_job(model, job.Configure(options))
+      Model(..model, configuring: Some(job.awaiting(key)))
+    }
   }
-  case configuration {
-    Error(reason) -> tui_model.append_error(model, reason)
-    Ok(config) -> create_session_configured(model, config)
+}
+
+/// Takes the configuration job's reply, if the runtime has admitted one,
+/// and continues the session creation that asked for it.
+///
+/// A resolved configuration goes on to `create_session_configured`, which
+/// makes every check and change the creation made when it resolved the
+/// configuration inside the step: it cancels the pending submission,
+/// refuses while a creation key is retained, control is disconnected or
+/// another attachment is starting, and otherwise retains the key and starts
+/// the attachment. A failure is written to the transcript, as it was, and
+/// nothing else changes. The slot is cleared by the first outcome, so the
+/// relay's `AllDelivered` that follows finds no slot naming its key and the
+/// runtime drops it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.drain_configuration(runtime.hold(model, arrival))
+/// ```
+@internal
+pub fn drain_configuration(model: Model) -> Model {
+  case model.configuring {
+    None -> model
+    Some(awaiting) ->
+      case job.take(awaiting) {
+        #(_, Error(Nil)) -> model
+        #(awaiting, Ok(reply)) ->
+          apply_configuration_reply(
+            Model(..model, configuring: Some(awaiting)),
+            reply,
+          )
+      }
+  }
+}
+
+fn apply_configuration_reply(
+  model: Model,
+  reply: job.ConfigurationReply,
+) -> Model {
+  let finished = Model(..model, configuring: None)
+  case reply {
+    weft.NotYet -> model
+    weft.PulledOutcome(weft.Completed(value: config, ..)) ->
+      create_session_configured(finished, config)
+    weft.PulledOutcome(weft.Failed(error:, ..)) ->
+      tui_model.append_error(finished, error)
+    weft.PulledOutcome(weft.Crashed(reason:, ..))
+    | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+      tui_model.append_error(finished, string.inspect(reason))
+    weft.PulledOutcome(weft.Abandoned(..))
+    | weft.PulledOutcome(weft.NeverStarted(..))
+    | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+      tui_model.append_error(
+        finished,
+        "resolving the session configuration did not complete",
+      )
+    weft.RunLost(reason) ->
+      tui_model.append_error(finished, string.inspect(reason))
+    weft.AllDelivered ->
+      tui_model.append_error(
+        finished,
+        "the configuration job ended without an outcome",
+      )
   }
 }
 

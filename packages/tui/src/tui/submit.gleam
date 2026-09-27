@@ -851,7 +851,9 @@ pub fn quit(model: Model) -> Model {
   // the same step, so nothing a cancelled job sends afterwards is admitted
   // into a slot. The control job goes first and the relaunch after it, in
   // the order they were once cancelled; the activity poll, which used to
-  // run on to its own deadline, is cancelled last.
+  // run on to its own deadline, follows them, and a session creation's
+  // configuration job, which did not exist while the step resolved the
+  // configuration itself, is cancelled last.
   let model = case model.control_request {
     None -> model
     Some(run) ->
@@ -873,6 +875,12 @@ pub fn quit(model: Model) -> Model {
     ActivityDue | ActivityResting(..) -> model
     ActivityAsking(job: awaiting, ..) ->
       Model(..model, activity_poll: ActivityDue)
+      |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
+  }
+  let model = case model.configuring {
+    None -> model
+    Some(awaiting) ->
+      Model(..model, configuring: None)
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.daemon_host {

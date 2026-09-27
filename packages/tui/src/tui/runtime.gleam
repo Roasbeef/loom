@@ -193,6 +193,8 @@ pub fn hold(model: Model, arrival: job.Arrival) -> Model {
     job.ControlArrived(key:, reply:) -> hold_control(model, key, reply)
     job.ReconnectArrived(key:, reply:) -> hold_reconnect(model, key, reply)
     job.ActivityArrived(key:, reply:) -> hold_activity(model, key, reply)
+    job.ConfigurationArrived(key:, reply:) ->
+      hold_configuration(model, key, reply)
     job.AttachArrived(key:, reply:) ->
       attachment.admit(model.candidate, key, reply)
       |> result.map(fn(candidate) { Model(..model, candidate:) })
@@ -248,6 +250,19 @@ fn hold_activity(
       |> result.map(fn(awaiting) {
         Model(..model, activity_poll: ActivityAsking(awaiting, asked))
       })
+  }
+}
+
+fn hold_configuration(
+  model: Model,
+  key: job.Key,
+  reply: job.ConfigurationReply,
+) -> Result(Model, Nil) {
+  case model.configuring {
+    None -> Error(Nil)
+    Some(awaiting) ->
+      job.admit(awaiting, key, reply)
+      |> result.map(fn(awaiting) { Model(..model, configuring: Some(awaiting)) })
   }
 }
 
