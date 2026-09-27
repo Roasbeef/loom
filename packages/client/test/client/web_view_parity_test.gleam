@@ -357,7 +357,7 @@ fn on_page(
 ) -> component.Model(process.Subject(String)) {
   let messages = case step {
     Frame(message) -> [
-      operator_page.Observed(component.Arrived(message)),
+      operator_page.Observed(component.Arrived(message, 0)),
       operator_page.Observed(component.Ticked(0)),
     ]
     Tick -> [operator_page.Observed(component.Ticked(0))]

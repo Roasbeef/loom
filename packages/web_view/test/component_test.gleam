@@ -1,11 +1,14 @@
-//// The observer's component keeps option C: an arriving frame is filed and
-//// changes nothing on the page until a tick hands it to the lane. Driven
+//// The observer's component keeps option C: an arriving frame is filed,
+//// and a push to an idle lane changes nothing until a tick hands it to the
+//// lane. A reply the lane is waiting on is the exception and is reduced on
+//// arrival, so a credited transfer does not pay a tick per chunk. Driven
 //// with Lustre's simulator, which runs `update` and `view` and performs no
 //// effect, so the frames are the ones a gateway would send for one credited
 //// transfer and nothing reaches a socket.
 
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import lustre/dev/query
 import lustre/dev/simulate
@@ -13,6 +16,7 @@ import lustre/effect
 import lustre/element
 import page_fixture
 import session_view/connection_event
+import session_view/session_channel
 import web_view/component
 
 fn simulation() {
@@ -28,7 +32,7 @@ fn arrive(simulation, frames: List(connection_event.Message)) {
   case frames {
     [] -> simulation
     [frame, ..rest] ->
-      arrive(simulate.message(simulation, component.Arrived(frame)), rest)
+      arrive(simulate.message(simulation, component.Arrived(frame, 0)), rest)
   }
 }
 
@@ -36,18 +40,51 @@ fn wire() {
   process.new_subject()
 }
 
-pub fn arrivals_are_filed_and_reduced_only_at_a_tick_test() {
+// The lane has a request out from the moment it opens, so every frame of
+// the first transfer is a reply it is waiting on, and each is reduced as it
+// arrives: the page follows the session without waiting for a tick.
+pub fn a_reply_the_lane_awaits_is_reduced_on_arrival_test() {
   let opened = simulate.message(simulation(), component.Opened(wire(), 0))
-  let filed = arrive(opened, page_fixture.transfer("observer", []))
+  assert component.status(simulate.model(opened)) == component.Connecting
 
-  // Every frame of a complete transfer has arrived, and the page still says
-  // it is connecting: nothing was reduced.
-  assert component.status(simulate.model(filed)) == component.Connecting
-  assert string.contains(element.to_string(simulate.view(filed)), "connecting")
+  let transferred = arrive(opened, page_fixture.transfer("observer", []))
+  assert component.status(simulate.model(transferred)) == component.Following
+  assert string.contains(
+    element.to_string(simulate.view(transferred)),
+    "following",
+  )
+}
 
-  let ticked = simulate.message(filed, component.Ticked(0))
-  assert component.status(simulate.model(ticked)) == component.Following
-  assert string.contains(element.to_string(simulate.view(ticked)), "following")
+// A push to a lane with nothing out is filed and waits for the timer, as
+// option C has it: the capture it calls for is asked at the tick, not on
+// arrival.
+pub fn a_push_to_an_idle_lane_waits_for_the_tick_test() {
+  let following =
+    simulate.message(simulation(), component.Opened(wire(), 0))
+    |> arrive(page_fixture.transfer("observer", []))
+  assert !in_flight(following)
+
+  let pushed =
+    simulate.message(
+      following,
+      component.Arrived(
+        connection_event.Incoming(
+          "{\"v\":2,\"event\":\"committed\",\"seq\":11,\"body\":{\"strand\":\"main\"}}",
+        ),
+        0,
+      ),
+    )
+  assert !in_flight(pushed)
+
+  let ticked = simulate.message(pushed, component.Ticked(0))
+  assert in_flight(ticked)
+}
+
+fn in_flight(simulation) -> Bool {
+  case component.lane(simulate.model(simulation)) {
+    Some(lane) -> session_channel.in_flight(lane)
+    None -> False
+  }
 }
 
 pub fn a_tick_before_the_transport_opens_keeps_what_was_filed_test() {
@@ -73,7 +110,7 @@ pub fn a_closed_connection_is_drawn_at_the_next_tick_test() {
   let closed =
     simulate.message(
       ticked,
-      component.Arrived(connection_event.Closed("access was revoked")),
+      component.Arrived(connection_event.Closed("access was revoked"), 0),
     )
   assert component.status(simulate.model(closed)) == component.Following
 

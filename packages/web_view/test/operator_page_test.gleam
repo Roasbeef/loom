@@ -30,7 +30,7 @@ fn page(role: String, cells) {
       list.flatten([
         [operator_page.Observed(component.Opened(wire, 0))],
         list.map(page_fixture.transfer(role, cells), fn(frame) {
-          operator_page.Observed(component.Arrived(frame))
+          operator_page.Observed(component.Arrived(frame, 0))
         }),
         [operator_page.Observed(component.Ticked(0))],
       ]),
@@ -228,9 +228,10 @@ pub fn a_closed_connection_refuses_commands_test() {
   let #(model, wire) = page("operator", [])
   let _ =
     send(model, [
-      operator_page.Observed(
-        component.Arrived(connection_event.Closed("access was revoked")),
-      ),
+      operator_page.Observed(component.Arrived(
+        connection_event.Closed("access was revoked"),
+        0,
+      )),
       operator_page.Observed(component.Ticked(250)),
       operator_page.Submitted("hello", operator.Prompt),
     ])

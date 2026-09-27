@@ -68,9 +68,12 @@ page keys and nonces, and the relay into the session's gateway.
   lines a capture becomes and what an operator's input becomes on the wire
   are `session_view`'s. Logic that decides something about the session
   belongs there, where the terminal uses it too.
-- **Option C.** `Arrived` files and reduces nothing; `Ticked` reduces every
-  filed frame in arrival order through `operator.drain` and then runs the
-  lane's tick. `component_test` pins it.
+- **Option C, waking on awaited replies.** `Arrived` files its frame;
+  `Ticked` reduces every filed frame in arrival order and then runs the
+  lane's tick. While the lane has a request out, an arrival runs that same
+  reduction at once, without re-arming the timer (ADR-014, the addendum on
+  waking). A push to an idle lane waits for the tick. `component_test` pins
+  both.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
 - **Which application runs is which commands exist.** An observer's page is

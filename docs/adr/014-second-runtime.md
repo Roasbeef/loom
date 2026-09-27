@@ -226,3 +226,33 @@ draws the same state with Lustre.
   refused by the gateway as an observer's.
 - `loom --ui` against a running daemon without the view prints the
   message and exits 1 without touching that daemon.
+
+## Addendum: the page wakes on a reply it is waiting for (2026-09-27)
+
+In the operator page demo, a page stayed on "connecting" for seconds
+before its first cut, on a session with a handful of entries. Timed from the
+server's side, the socket upgrade took 2 ms and the first cut reached the
+browser 2.77 s later. All of that was the tick. The first capture is a chain
+of requests, each answered before the next is asked. A reply filed under
+option C waited for the next 250 ms tick before the lane saw it and asked
+for the next chunk, so eleven round trips cost eleven ticks. The relay's
+attach and the daemon's answers took a few milliseconds between them.
+
+ADR-013's phase 3 addendum left one design open for this case: a host that
+wakes the loop when traffic arrives instead of at the poll timeout, which
+"changes when a host delivers, not what the step does". The web host now
+does that, narrowly. An `Arrived` carries the clock reading taken when the
+host received it. When the lane has a request out
+(`session_channel.in_flight`, the predicate the terminal shortens its poll
+on), the arrival runs the same reduction a tick runs, at that reading,
+without re-arming the timer. When the lane has nothing out, the arrival is
+filed and waits for the timer as before, so a pushed notice or a run of
+stream deltas is still reduced at the 250 ms cadence.
+
+The step itself is unchanged: the same drain, in the same order, followed by
+the lane's own tick. The parity test still holds the two lanes equal after
+every step. Measured the same way, the first cut now reaches the browser
+4 ms after the upgrade (46 ms on the first page after a daemon restart,
+which also opens the session). The verification line above, that `Arrived`
+changes no lines until a `Ticked`, now holds only for a lane with nothing
+out; `component_test` covers both cases.

@@ -12,13 +12,17 @@
 //// etui tick) and the view (HTML elements instead of terminal cells).
 ////
 //// Delivery keeps ADR-013's option C. A frame from the transport arrives as
-//// `Arrived` and is only filed, into the engine's `session_view/inbox`. A
-//// 250 ms timer delivers `Ticked` with the clock reading taken when the
-//// timer message was received, and only then is every filed frame handed to
-//// the lane, oldest first, through `operator.drain`, the loop the terminal
-//// runs too, followed by the lane's own `tick`. A frame therefore never
-//// changes what the page shows until a tick reduces it, which is the
-//// terminal's discipline too.
+//// `Arrived` and is filed, into the engine's `session_view/inbox`. A 250 ms
+//// timer delivers `Ticked` with the clock reading taken when the timer
+//// message was received, and then every filed frame is handed to the lane,
+//// oldest first, through `operator.drain`, the loop the terminal runs too,
+//// followed by the lane's own `tick`. The one arrival that does not wait for
+//// the timer is one the lane is waiting on: while a request is in flight
+//// (`session_channel.in_flight`, the same predicate the terminal shortens
+//// its poll on), an arrival wakes the same reduction at once. That is the
+//// "wake on traffic" host ADR-013's phase 3 addendum leaves open, and it is
+//// what keeps a credited transfer from paying one tick per chunk. A push
+//// that arrives while the lane is idle still waits for the timer.
 ////
 //// The transport is supplied by the host that starts the component, because
 //// what a socket is belongs to that host. In the daemon it is a relay into
@@ -208,8 +212,9 @@ pub type Msg(socket) {
   /// The tick selector is armed on this subject.
   TimerArmed(timer: Subject(Nil))
 
-  /// One frame from the transport, filed and not yet reduced.
-  Arrived(message: connection_event.Message)
+  /// One frame from the transport, at this monotonic reading. It is filed,
+  /// and reduced at once only when the lane is waiting on a reply.
+  Arrived(message: connection_event.Message, at: Int)
 
   /// The timer fired, at this monotonic reading. Reduction happens here.
   Ticked(at: Int)
@@ -284,7 +289,7 @@ fn open(transport: Transport(socket)) -> Effect(Msg(socket)) {
       Error(reason) -> Refused(reason)
     }
   })
-  |> process.select_map(inbox, Arrived)
+  |> process.select_map(inbox, fn(message) { Arrived(message, transport.now()) })
 }
 
 // Arms the tick. The clock is read when the timer message is received, which
@@ -322,38 +327,45 @@ pub fn update(
 
     TimerArmed(timer:) -> #(Model(..model, timer: Some(timer)), effect.none())
 
-    // Option C: an arrival is filed and nothing else happens. The page
-    // cannot change until the next tick reduces it.
-    Arrived(message:) -> #(
-      Model(..model, filed: inbox.push(model.filed, message)),
-      effect.none(),
-    )
+    // An arrival is filed. It is reduced now only when the lane has a
+    // request out and is waiting on exactly this kind of frame; a push to
+    // an idle lane waits for the timer, as option C has it.
+    Arrived(message:, at:) -> {
+      let model = Model(..model, filed: inbox.push(model.filed, message))
+      case option.map(model.lane, session_channel.in_flight) {
+        Some(True) -> reduce(Model(..model, clock: at), at)
+        Some(False) | None -> #(model, effect.none())
+      }
+    }
 
-    Ticked(at:) -> tick(Model(..model, clock: at), at)
+    // The timer's reduction, which also re-arms the timer. An arrival's
+    // does not, so the timer keeps exactly one pending fire.
+    Ticked(at:) -> {
+      let #(model, effects) = reduce(Model(..model, clock: at), at)
+      #(model, effect.batch([effects, rearm(model.timer)]))
+    }
   }
 }
 
 // Every filed frame goes to the lane in arrival order, then the lane's own
 // tick runs, which is where its idle refresh and deadlines are checked. A
-// tick before the transport opens keeps what was filed for the next one.
-fn tick(
+// reduction before the transport opens keeps what was filed for the next
+// one. The lane's outputs are one ordered effect.
+fn reduce(
   model: Model(socket),
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case model.lane {
-    None -> #(model, rearm(model.timer))
+    None -> #(model, effect.none())
     Some(_) -> {
       let model = drained(model)
       case model.lane {
-        None -> #(model, rearm(model.timer))
+        None -> #(model, effect.none())
         Some(lane) -> {
           let #(lane, ticked) = session_channel.tick(lane, now: at)
           let #(lane, outputs) = session_channel.take_outputs(lane)
           let model = apply(Model(..model, lane: Some(lane)), ticked)
-          #(
-            model,
-            effect.batch([perform(model.transport, outputs), rearm(model.timer)]),
-          )
+          #(model, perform(model.transport, outputs))
         }
       }
     }
