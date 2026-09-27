@@ -204,17 +204,11 @@ fn current_glance(
   |> keep_if(fn(seen) { seen.operation == operation })
 }
 
-/// When an operation started, in the daemon's Unix milliseconds, from its
-/// metadata cell in a capture, or `None` when the capture holds no
-/// decodable one. The roster re-anchors its clocks on it; a host that
-/// counts elapsed time on its own clock reads it as the start instant.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert agent_roster.started_at([], "op") == None
-/// ```
-pub fn started_at(
+// When an operation started, in the daemon's Unix milliseconds, from its
+// metadata cell in a capture. The roster re-anchors its clocks on it and
+// never hands it out: an instant from the daemon's clock means nothing
+// against a host's.
+fn started_at(
   cells: List(snapshot_view.Cell),
   operation: String,
 ) -> Option(Int) {
@@ -429,13 +423,6 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
     Some(seen) if seen.title != "" -> seen.title
     Some(_) | None -> row.task
   }
-  let clock =
-    row.operation
-    |> option.then(fn(operation) {
-      dict.get(roster.clocks, row.id)
-      |> option.from_result
-      |> keep_if(fn(clock) { clock.operation == operation })
-    })
   let pushed =
     row.operation
     |> option.then(fn(operation) {
@@ -455,11 +442,32 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
     status: row.status,
     text: text_hygiene.single_line(text),
     title: text_hygiene.single_line(title),
-    elapsed_s: option.map(clock, fn(clock) {
-      elapsed_ms(clock, roster.now_ms) / 1000
-    }),
+    elapsed_s: option.map(running_ms(roster, row), fn(ms) { ms / 1000 }),
     tokens:,
   )
+}
+
+/// How long a strand's current operation has run, in milliseconds as of
+/// the roster's last tick, or `None` when the row has no operation or the
+/// roster no clock for it.
+///
+/// The figure is a duration on the host's own clock, so a host that counts
+/// on from it somewhere else (the browser, for the web view's chips) anchors
+/// it to that clock when it arrives and never meets the daemon's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.running_ms(roster, row) == Some(4500)
+/// ```
+pub fn running_ms(roster: Roster, row: agent_view.Row) -> Option(Int) {
+  row.operation
+  |> option.then(fn(operation) {
+    dict.get(roster.clocks, row.id)
+    |> option.from_result
+    |> keep_if(fn(clock) { clock.operation == operation })
+  })
+  |> option.map(elapsed_ms(_, roster.now_ms))
 }
 
 /// Shortens a minted child name to the words its parent chose.

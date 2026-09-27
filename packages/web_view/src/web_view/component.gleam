@@ -186,9 +186,10 @@ pub type Chip {
     /// The cache outlook `cache_watch.shown` allows for the strand, with
     /// its label, or `None` when nothing honest can be said.
     cache: Option(#(cache_miss.Outlook, String)),
-    /// When the strand's current operation started, in the daemon's Unix
-    /// milliseconds, when the capture says (`agent_roster.started_at`).
-    since: Option(Int),
+    /// How long the strand's current operation had run when the strip was
+    /// built, in milliseconds (`agent_roster.running_ms`), or `None` when
+    /// it has no operation.
+    running_ms: Option(Int),
   )
 }
 
@@ -704,7 +705,7 @@ fn strip_of(model: Model(socket)) -> Strip {
       line:,
       hue: turns.hue(strands, line.id),
       cache: outlook(model, strands, line.id),
-      since: since(model, line.id),
+      running_ms: running_ms(model, line.id),
     )
   }
   Strip(
@@ -714,17 +715,12 @@ fn strip_of(model: Model(socket)) -> Strip {
   )
 }
 
-// The daemon's start instant for a strand's current operation.
-fn since(model: Model(socket), id: String) -> Option(Int) {
-  case model.shown {
-    None -> None
-    Some(#(_, view)) ->
-      model.agents
-      |> list.find(fn(row) { row.id == id })
-      |> option.from_result
-      |> option.then(fn(row) { row.operation })
-      |> option.then(agent_roster.started_at(view.cells, _))
-  }
+// How long a strand's current operation has run, on the roster's clock.
+fn running_ms(model: Model(socket), id: String) -> Option(Int) {
+  model.agents
+  |> list.find(fn(row) { row.id == id })
+  |> option.from_result
+  |> option.then(agent_roster.running_ms(model.roster, _))
 }
 
 fn strands(model: Model(socket)) -> List(protocol.Strand) {
@@ -1254,28 +1250,26 @@ fn chip_attributes(chip: Chip) -> List(attribute.Attribute(message)) {
   }
 }
 
-// How long the strand's operation has run. When the capture says when the
-// operation started, the browser counts it (`<loom-elapsed>`, from
-// `packages/web_client`), so the server never renders again only to move a
-// clock; the attribute is the daemon's own start instant, a number,
-// and stays the same for the operation's life. Without one, the roster's
-// reading is drawn as it stood.
+// How long the strand's operation has run. The browser counts it
+// (`<loom-elapsed>`, from `packages/web_client`), so the server never
+// renders again only to move a clock. The attribute is a duration the
+// roster measured on the daemon host's clock, and the element anchors it to
+// the browser's clock when it arrives: an instant from one clock is never
+// subtracted from the other, so a browser whose clock is off by a minute
+// still counts right. A rebuilt strip carries a fresh reading, which
+// re-anchors the count.
 fn elapsed(chip: Chip) -> Element(message) {
-  case chip.since, chip.line.elapsed_s {
-    Some(since), _ ->
+  case chip.running_ms {
+    Some(running) ->
       element.element(
         "loom-elapsed",
         [
           attribute.class("elapsed"),
-          attribute.attribute("since", int.to_string(since)),
+          attribute.attribute("offset", int.to_string(running)),
         ],
         [],
       )
-    None, Some(seconds) ->
-      html.span([attribute.class("elapsed")], [
-        html.text(agent_roster.duration(seconds)),
-      ])
-    None, None -> element.none()
+    None -> element.none()
   }
 }
 

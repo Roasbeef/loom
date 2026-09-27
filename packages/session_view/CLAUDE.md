@@ -103,7 +103,7 @@ read, takes the lane's outputs and performs them.
   terminal's agent rail and strip and the web view's chips.
   `agent_roster.{Roster, Line, Chips}` is which strands a strip lists, in
   what order, with elapsed time and context size (`lines`, `chips`,
-  `started_at`, `context`).
+  `running_ms`, `context`).
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,

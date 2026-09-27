@@ -10,8 +10,8 @@ that talks to the session (protocol-change/051); this package holds only
 behaviour that changes with nothing the server knows, so the server never
 renders again just for it:
 
-- `<loom-elapsed since="<unix ms>">` counts an operation's elapsed time
-  once a second.
+- `<loom-elapsed offset="<ms>">` counts an operation's elapsed time once a
+  second, on from a duration the server measured.
 - `<loom-fold>` opens and closes a turn's folded work with no round trip.
 
 It is the client package of Lustre's full-stack layout: `core` and
@@ -32,10 +32,13 @@ time builds anything.
 
 - `web_client.main()`: registers every element, once, when the page loads
   the bundle.
-- `elapsed.Model(since, now, timer)` and `elapsed.Msg` (`SinceChanged`,
-  `Connected`, `Disconnected`, `Started`, `Ticked`): `since` is the daemon's
-  Unix-millisecond start instant, the only attribute the element reads.
-  `elapsed.duration` is the terminal strip's format.
+- `elapsed.Model(reading, now, timer)`, `elapsed.Reading(offset, anchor)`
+  and `elapsed.Msg` (`OffsetChanged`, `Anchored`, `Connected`,
+  `Disconnected`, `Started`, `Ticked`): `offset` is how long the operation
+  had run, in milliseconds, by the server (`agent_roster.running_ms`), and
+  is the only attribute the element reads; `anchor` is the browser's clock
+  when it arrived. The element never subtracts a daemon instant from the
+  browser's clock. `elapsed.duration` is the terminal strip's format.
 - `fold.Model` (`Closed` | `Opened`) and `fold.Msg` (`Toggled`): the fold's
   shadow root holds one button carrying the `summary` slot and, while open,
   the default slot.

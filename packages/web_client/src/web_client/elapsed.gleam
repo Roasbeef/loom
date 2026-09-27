@@ -1,14 +1,21 @@
-//// `<loom-elapsed since="1700000000000">`: how long ago `since` was,
-//// counted in the browser once a second.
+//// `<loom-elapsed offset="4500">`: an operation that had run `offset`
+//// milliseconds when the attribute arrived, counted on from there in the
+//// browser once a second.
 ////
 //// The server component draws each agent chip, and a chip's elapsed time is
 //// the one figure on it that changes with nothing but the clock. Counting
 //// it here means the server never renders the page again only to move a
 //// second, which an idle page would otherwise pay four times a second and
-//// an event-driven server would have no event for. The server sets `since`
-//// once per operation, to the daemon's own record of when the operation
-//// started (`agent_roster.started_at`), so the attribute does not change
-//// while the operation runs.
+//// an event-driven server would have no event for.
+////
+//// The attribute is a duration, not an instant. The server measured it on
+//// the daemon host's clock (`agent_roster.running_ms`), and the element
+//// anchors it to the browser's clock the moment it arrives, so the count is
+//// `offset + (now - anchor)` with each subtraction on one clock. A browser
+//// whose clock disagrees with the daemon's by a minute still counts right,
+//// which subtracting a daemon instant from `Date.now()` would not. Each
+//// rebuilt strip brings a fresh reading, and a changed attribute
+//// re-anchors.
 ////
 //// The element renders only what its one attribute says: a number the
 //// daemon wrote, never session text. It draws a text node in its own shadow
@@ -28,16 +35,30 @@ import web_client/internal/ffi_clock
 /// The element's tag.
 pub const name = "loom-elapsed"
 
-/// What the element knows: when its operation started, the browser's clock
-/// at the last tick, and its timer while it is on the page.
+/// What the element knows: the server's reading and the browser's clock
+/// when it arrived, the browser's clock at the last tick, and its timer
+/// while it is on the page.
 pub type Model {
-  Model(since: Option(Int), now: Int, timer: Option(ffi_clock.Timer))
+  Model(reading: Option(Reading), now: Int, timer: Option(ffi_clock.Timer))
+}
+
+/// One reading from the server, anchored to the browser's clock.
+pub type Reading {
+  Reading(
+    /// How long the operation had run, in milliseconds, by the server.
+    offset: Int,
+    /// The browser's clock when the reading arrived.
+    anchor: Int,
+  )
 }
 
 /// Everything the element can be told.
 pub type Msg {
-  /// The server set `since` to this Unix millisecond instant.
-  SinceChanged(since: Int)
+  /// The server set `offset` to this many milliseconds.
+  OffsetChanged(offset: Int)
+
+  /// The reading arrived, anchored to the browser's clock.
+  Anchored(reading: Reading)
 
   /// The element was added to the page.
   Connected
@@ -61,24 +82,24 @@ pub type Msg {
 /// ```
 pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
-    component.on_attribute_change("since", since),
+    component.on_attribute_change("offset", offset),
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
   ])
   |> lustre.register(name)
 }
 
-// A `since` that is not a whole number is ignored, which leaves the element
-// showing what it showed; the server only ever writes digits.
-fn since(value: String) -> Result(Msg, Nil) {
+// An `offset` that is not a whole number is ignored, which leaves the
+// element showing what it showed; the server only ever writes digits.
+fn offset(value: String) -> Result(Msg, Nil) {
   value
   |> string.trim
   |> int.parse
-  |> result.map(SinceChanged)
+  |> result.map(OffsetChanged)
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
-  #(Model(since: None, now: 0, timer: None), effect.none())
+  #(Model(reading: None, now: 0, timer: None), effect.none())
 }
 
 /// Applies one message. The clock is read only inside effects, so `update`
@@ -87,11 +108,17 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
 /// ## Examples
 ///
 /// ```gleam
-/// // elapsed.update(model, elapsed.Ticked(1_700_000_004_000))
+/// // elapsed.update(model, elapsed.OffsetChanged(4500))
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
-    SinceChanged(since:) -> #(Model(..model, since: Some(since)), read_clock())
+    // The reading is anchored inside an effect, where the clock is read,
+    // and the anchor doubles as the clock's latest reading.
+    OffsetChanged(offset:) -> #(model, anchor(offset))
+    Anchored(reading:) -> #(
+      Model(..model, reading: Some(reading), now: reading.anchor),
+      effect.none(),
+    )
 
     // Connecting starts one timer; a timer left from an earlier connection
     // is stopped first, so moving the element never runs two.
@@ -100,6 +127,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Disconnected -> #(Model(..model, timer: None), stop(model.timer))
     Ticked(now:) -> #(Model(..model, now:), effect.none())
   }
+}
+
+fn anchor(offset: Int) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(Anchored(Reading(offset:, anchor: ffi_clock.now())))
 }
 
 fn read_clock() -> Effect(Msg) {
@@ -124,10 +156,12 @@ fn stop(timer: Option(ffi_clock.Timer)) -> Effect(Msg) {
 }
 
 fn view(model: Model) -> Element(Msg) {
-  case model.since {
-    Some(since) if model.now > 0 ->
-      html.text(duration(int.max(0, model.now - since) / 1000))
-    Some(_) | None -> element.none()
+  case model.reading {
+    Some(reading) ->
+      html.text(duration(
+        int.max(0, reading.offset + model.now - reading.anchor) / 1000,
+      ))
+    None -> element.none()
   }
 }
 

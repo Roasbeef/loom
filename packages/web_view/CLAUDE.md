@@ -37,8 +37,8 @@ page keys and nonces, and the relay into the session's gateway.
   connection `Status`, the operator `Notice` and the sent-draft count.
 - `component.Strip` and `component.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
-  label, and `since`, the daemon's start instant), the advisor's chip and
-  the settled count. `strip_view` and `lane_view` draw them, memoized;
+  label, and `running_ms`, how long its operation had run when the strip
+  was built), the advisor's chip and the settled count. `strip_view` and `lane_view` draw them, memoized;
   `hue_class` and `ring_class` map a hue and an outlook to literal classes.
 - `component.{submit, decide}`: the two commands, through the engine's
   arms in `session_view/operator`. `Answer` is `AllowOnce | Deny`; a page
@@ -72,7 +72,7 @@ page keys and nonces, and the relay into the session's gateway.
   `Captured` projects the page and `Auxiliary(UsageChanged)` feeds the cache
   ledger and the roster.
 - The page renders `web_client`'s custom elements by tag:
-  `<loom-elapsed since>` in each chip and `<loom-fold>` around a settled
+  `<loom-elapsed offset>` in each chip and `<loom-fold>` around a settled
   turn's work. They run in the browser and send the server nothing.
 - An operator's page also receives Lustre's `EventFired` for its two
   handlers: a click on an approval button and the composer form's submit.

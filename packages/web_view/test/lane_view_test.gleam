@@ -63,13 +63,14 @@ pub fn the_strip_lists_main_then_working_agents_then_the_advisor_test() {
     ">advisor<",
   ])
 
-  // A working agent's elapsed time is counted in the browser from the
-  // daemon's own start instant, a number; the strand the lane follows is
-  // marked as the current one.
+  // A working agent's elapsed time is counted in the browser on from a
+  // duration the roster measured, never from a daemon instant; the strand
+  // the lane follows is marked as the current one.
   assert string.contains(
     drawn,
-    "<loom-elapsed class=\"elapsed\" since=\"1700000000000\"></loom-elapsed>",
+    "<loom-elapsed class=\"elapsed\" offset=\"7000\"></loom-elapsed>",
   )
+  assert !string.contains(drawn, "since=")
   assert string.contains(
     drawn,
     "<li aria-current=\"true\" class=\"chip following hue-main\">",

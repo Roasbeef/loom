@@ -419,8 +419,9 @@ fn started(strand: String, op: String) -> snapshot_view.Cell {
   )
 }
 
-// A glance for each sub-agent: the words and context size the daemon's
-// glance loop writes. The reviewer's summary holds markup.
+// A glance for each agent: the words and context size the daemon's glance
+// loop writes, seven seconds into the operation by the daemon's clock. The
+// reviewer's summary holds markup.
 fn glanced(strand: String, op: String) -> List(snapshot_view.Cell) {
   let words = case strand {
     "main" -> Ok(#("Review the patch", "Waiting for the reviewer", 41_200))
@@ -435,7 +436,13 @@ fn glanced(strand: String, op: String) -> List(snapshot_view.Cell) {
         register.FactCustom,
         glance.key(strand),
         2,
-        glance.encode(glance.Glance(op, title, summary, 0, tokens)),
+        glance.encode(glance.Glance(
+          op,
+          title,
+          summary,
+          started_at + 7000,
+          tokens,
+        )),
       ),
     ]
     Error(Nil) -> []

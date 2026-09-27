@@ -502,8 +502,10 @@ server component's tree. It runs code the daemon did not render, so it
 keeps these rules, which `packages/web_client/CLAUDE.md` repeats:
 
 - **It renders only data from its own attributes, and those hold daemon
-  identities or numbers.** `<loom-elapsed since>` is the daemon's Unix
-  millisecond start instant. No attribute carries session text.
+  identities or numbers.** `<loom-elapsed offset>` is a duration in
+  milliseconds, which the element anchors to the browser's clock, since a
+  browser's clock need not agree with the daemon's. No attribute carries
+  session text.
 - **Session text reaches it only as the server's children.** `<loom-fold>`
   shows the divider and the work through a named and a default slot; the
   words are light-DOM nodes the server rendered and escaped.
