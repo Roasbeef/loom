@@ -31,6 +31,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
+import host/build_identity
 import tui/advisor_history
 import tui/advisor_pending
 import tui/agent_messages
@@ -849,6 +850,11 @@ pub type Model {
     /// This terminal's identity in a session creation key: the OS process
     /// and the BEAM process that created the model, read once at creation.
     terminal: String,
+    /// The build this client runs, which the build-mismatch notice compares
+    /// with the daemon's. It comes from two environment variables that do
+    /// not change while the process runs, so it is read once, when the model
+    /// is created, rather than on every coherent cut that draws the notice.
+    client_build: build_identity.Identity,
     /// What the runtime read, before this event's step, from the file a
     /// pasted path names. Only `runtime.read_paste` writes it, once per
     /// event, so the step reads no file and a read never outlives the event

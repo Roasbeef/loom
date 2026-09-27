@@ -87,20 +87,36 @@ import tui/worktree_view
 /// The authenticated build belongs to the retained control host. Projecting
 /// its mismatch on every coherent cut keeps attachment and later captures from
 /// erasing the update notice when they replace the transcript presentation.
+/// `ours` is `Model.client_build`, read when the model was created, so a cut
+/// reads no environment variable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = inbound.daemon_build_lines(model.daemon_host, model.client_build)
+/// ```
 @internal
-pub fn daemon_build_lines(host: Option(daemon_selection.Host)) -> List(Line) {
+pub fn daemon_build_lines(
+  host: Option(daemon_selection.Host),
+  ours: build_identity.Identity,
+) -> List(Line) {
   case host {
     None -> []
     Some(host) ->
-      build_mismatch_lines(daemon.hello(daemon_selection.control(host)).build)
+      build_mismatch_lines(
+        daemon.hello(daemon_selection.control(host)).build,
+        ours,
+      )
   }
 }
 
-fn build_mismatch_lines(build: Option(control_protocol.Build)) -> List(Line) {
+fn build_mismatch_lines(
+  build: Option(control_protocol.Build),
+  ours: build_identity.Identity,
+) -> List(Line) {
   case build {
     None -> []
     Some(theirs) -> {
-      let ours = build_identity.current()
       let theirs = build_identity.Identity(theirs.version, theirs.commit)
       case build_identity.matches(ours, theirs) {
         True -> []
@@ -582,7 +598,7 @@ fn render_cut(
     Line(System, boundary),
     Line(System, attachment_banner),
     ..list.append(
-      daemon_build_lines(model.daemon_host),
+      daemon_build_lines(model.daemon_host, model.client_build),
       list.append(
         configuration_lines(view, active),
         list.append(

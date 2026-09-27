@@ -594,6 +594,7 @@ pub fn new_model_with_clock(
     transport_time_ms: host_bootstrap.monotonic_time_ms,
     stamp:,
     terminal: runtime.terminal_identity(),
+    client_build: build_identity.current(),
     dropped: image_drop.NothingDropped,
     last_frame_ms: stamp.now_ms,
     activity_revision: 0,
@@ -1365,7 +1366,7 @@ fn attach_daemon(
         Model(
           ..base,
           daemon_host: Some(host),
-          transcript: inbound.daemon_build_lines(Some(host)),
+          transcript: inbound.daemon_build_lines(Some(host), base.client_build),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request
