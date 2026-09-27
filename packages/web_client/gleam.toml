@@ -6,3 +6,6 @@ target = "javascript"
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 lustre = "== 5.7.1"
+
+[dev_dependencies]
+lustre_dev_tools = "== 2.4.0"
