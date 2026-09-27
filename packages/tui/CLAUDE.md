@@ -921,13 +921,16 @@ boundaries and the split's measurements under Invariants.
   completion and checks adoption before replacing the old socket.
 - `session_view/session_channel.Channel` is terminal-owned state, not another actor.
   It admits one request at a time, grants one snapshot fragment per reply, and
-  reconciles at 250ms while idle. It holds no clock: `tick`, `receive`,
+  reconciles while idle every 250 ms until a frame has been pushed to it and
+  every 5 s after (`Delivery`: `Polling` then `Pushing`); `next_due` names
+  the reading the next `tick` can act at, which is what the poll timeout
+  sleeps until. It holds no clock: `tick`, `receive`,
   `submit`, `lookup`, `history`, `replay_issued` and the `start`
   constructors take `now`, which the terminal takes from
   `Model.stamp.transport_ms` and a replay lane holds at zero. `Update.Captured` carries a `Capture` saying
   what asked for the cut — `Notified`, `Refreshed` or `Requested` — which
   names the path a particular cut took. Which of them wins is a race with the
-  250ms refresh, so a fixture that must know whether pushes arrived counts
+  idle refresh, so a fixture that must know whether pushes arrived counts
   `Update.Noticed` instead: the lane emits one per `committed` frame before
   deciding whether to capture, and `Model.notices` accumulates them. Its existing outgoing slot can retain one
   immutable unsent mutation behind a capture of an already adopted session.
@@ -951,7 +954,9 @@ boundaries and the split's measurements under Invariants.
   time passed to every transition from the oracle's own `now`. After every step an oracle rebuilt from the written frames checks
   one request in flight, increasing identities, credits, no mutation resend,
   exactly-once `UnknownOutcome` and `DefinitelyNotSent`, fail-closed stale
-  replies, inert pushes, deadlines and the 250 ms refresh. A failure prints
+  replies, inert pushes, deadlines, the idle refresh at the interval the
+  lane's pushes select, and that `next_due` names exactly the first reading
+  a tick acts at (N1). A failure prints
   its seed and a shrunk event list. Its first run found that `close` and a
   transport `Closed` on an already closed lane each queued a second `Shut`
   (and the transport case a second `Failed`); both now leave a `Closed`
@@ -1100,10 +1105,14 @@ boundaries and the split's measurements under Invariants.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `7443b5c1edd2a1b9390261ace50a57ed80b6dad4` (the fork's `main`) with bounded input bursts,
+  `c3b66c3ba51af12c3eb1caf178adc9e0ca1346b9` (the fork's `wake-clause`
+  branch, two commits on `main`) with bounded input bursts,
   POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
-  frames, full-screen scroll-region presentation, closed-input EOF, and
-  scrollback-safe styled lines (`buffer.to_ansi_lines`); Mork
+  frames, full-screen scroll-region presentation, closed-input EOF,
+  scrollback-safe styled lines (`buffer.to_ansi_lines`), and the
+  `{etui_wake}` message that ends the loop's input wait with a `Tick`
+  (`etui_terminal_ffi:wake/1`), and a 40 ms bound on a lone escape byte's
+  wait, so Escape does not wait for the idle poll; Mork
   1.12.x for CommonMark;
   and small Gleam utility packages. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
@@ -2037,7 +2046,8 @@ untouched.
   decoder still reads a complete local log before running its script.
 - **Manual replacement is not catch-up.** `/sessions` validates a provisional
   attachment while preserving the old projection. The adopted channel runs
-  credited `catch_up` at 250ms and includes metadata-only changes. Equal cuts
+  credited `catch_up` on its idle refresh and includes metadata-only
+  changes. Equal cuts
   do not restart animation or invalidate the transcript, and a replay goes
   through that same reconciliation rather than repainting every recorded cut,
   because a replay that draws frames the live client did not is not
@@ -2054,8 +2064,10 @@ untouched.
   once in `Ready`, remembered as due and spent at the next ready transition
   otherwise. A sequence the lane already holds, or one arriving before any cut
   exists, is dropped, and any number of deferred notices collapse into one
-  capture. The 250ms idle refresh is the recovery path for a lost notice and
-  the only path on a daemon that pushes nothing.
+  capture. The idle refresh is the recovery path for a lost notice and
+  the only path on a daemon that pushes nothing; it runs every 250 ms until
+  the lane has been pushed to and every 5 s after, because a lost notice is
+  repaired by any later one and only a lost final notice waits for it.
 - **Provider requests own live fragments.** Modern streams carry operation
   and generation identity. A new generation replaces every prior kind on its
   strand; `end` replaces only its own generation with an empty marker. A late
