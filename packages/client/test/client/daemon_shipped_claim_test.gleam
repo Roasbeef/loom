@@ -92,16 +92,16 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   let workspace = directory <> "/workspace"
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
 
-  // The same catalogue every shipped fixture uses: a provider this drive
-  // never calls, and memory maintenance off. Without a catalogue the daemon
-  // falls back to whatever the environment names, and the default
-  // distillation runs a pass when the stopped session's domain closes, right
-  // beside the reopen this drive makes next; neither is what it tests.
+  // A provider this drive never calls, so the daemon does not fall back to
+  // whatever model the environment names. Memory maintenance stays at its
+  // default on purpose: the reopen below builds a fresh domain whose first
+  // distillation pass harvests this very session, and the open must wait
+  // that harvest out rather than fail.
   let configuration = directory <> "/fixture.toml"
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \"http://127.0.0.1:9\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \"http://127.0.0.1:9\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n",
     )
   let options =
     bootstrap.Options(workspace, "", server, paths.root, configuration)
