@@ -1,6 +1,7 @@
 # protocol-change/053: claim tokens, `loom access`, and an owner's admin view
 
-**Status**: PROPOSED 2026-09-27, design only · **Affects**: Part 1.6 client
+**Status**: ACCEPTED 2026-09-27 (owner); step 1, the claim flow, is being
+implemented · **Affects**: Part 1.6 client
 protocol (a `/v2/claim` route; the `sessions.invite`, `credentials.rotate`
 and `credentials.revoke` replies or semantics; new control commands; in
 later phases, `/ui/admin` routes) and the `access` command lines of `loomd`
@@ -753,7 +754,9 @@ already omits the six administration commands
 
 ## Phasing
 
-Each phase ships on its own and leaves the tree consistent.
+Each phase ships on its own and leaves the tree consistent. The owner
+accepted this proposal on 2026-09-27 and asked for phase 1 to be built
+first; phases 2 to 4 wait for their own go-ahead.
 
 1. **Claims.** The `access_claims` table and the version 4 migration; the
    new `sessions.invite`, `credentials.rotate` and `credentials.revoke`;
