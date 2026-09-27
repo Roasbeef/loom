@@ -537,10 +537,17 @@ fn exercise(
     ])
   let alice_view = tui_v2_test.await(alice.data, changed)
   let bob_view = tui_v2_test.await(bob.data, changed)
-  let reader_view = tui_v2_test.await(reader.data, changed)
+
+  // The model changes a step before the screen can: frame pacing may defer
+  // the paint of the step that applied the change to the next one. So the
+  // reader is sampled until its screen shows the change, not only until
+  // its model holds it, and the deadline bounds the wait.
+  let reader_view =
+    tui_v2_test.await(reader.data, fn(sample) {
+      changed(sample) && string.contains(sample.frame, "changed by Alice")
+    })
   assert configuration_of(alice_view) == configuration_of(bob_view)
   assert configuration_of(alice_view) == configuration_of(reader_view)
-  assert string.contains(reader_view.frame, "changed by Alice")
   assert !writable(reader_view)
 
   // Only the terminal submits the prompt. The network peer checks the latest

@@ -122,7 +122,12 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
     }
     let _ = tui_v2_test.await(alice.data, changed)
     let _ = tui_v2_test.await(bob.data, changed)
-    let before = tui_v2_test.await(observer.data, changed)
+    // Frame pacing can defer the paint of the step that applied the
+    // change, so the observer is sampled until its screen shows it.
+    let before =
+      tui_v2_test.await(observer.data, fn(sample) {
+        changed(sample) && string.contains(sample.frame, "changed by Alice")
+      })
     assert string.contains(before.frame, "changed by Alice")
     let assert Some(#(before_cut, before_view)) = before.model.captured
       as "observer has the shared coherent configuration cut"
