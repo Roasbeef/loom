@@ -93,6 +93,14 @@ resident session holds that lease until its effects retire, so extraction
 skips it. Shared history has a separate read-only path for live sources;
 those reads are not distillation and do not take over the writer lease.
 
+The same lease runs the other way while a harvest reads a source. A pass
+starts as its domain is built, and the domain's sessions are opened right
+after, so a session's own open can find the harvest holding its lease.
+The open waits instead of failing: `serve.open_session_file` retries while
+the holder is `distill.distill_owner`, until the harvest closes or its
+thirty-second lease expires, and logs `session.harvest_wait`. A harvest
+never commits to a source, so the wait costs latency and nothing else.
+
 Per-source progress is a `{seq, rewrite generation}` cursor in the memory
 session. If the recorded generation no longer matches the source, the seq is
 void and the source is read again from zero, because a precise rewrite

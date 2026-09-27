@@ -7,7 +7,7 @@
 -module(client_test_ffi).
 
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
-         origin_start/0, origin_stop/1, origin_seen/1]).
+         origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -323,6 +323,15 @@ origin_respond(Socket, <<"/get">>) ->
     origin_send(Socket, 200, <<"the origin answered">>);
 origin_respond(Socket, _Path) ->
     origin_send(Socket, 404, <<"no such route">>).
+
+%% The processes monitoring Pid, or none once it has exited. A test reads
+%% this to learn that a caller has begun waiting on a process, which no
+%% message announces: the monitor is the wait.
+monitored_by(Pid) ->
+    case erlang:process_info(Pid, monitored_by) of
+        {monitored_by, Monitors} -> [M || M <- Monitors, is_pid(M)];
+        undefined -> []
+    end.
 
 origin_send(Socket, Status, Body) ->
     Head = [<<"HTTP/1.1 ">>, integer_to_binary(Status), <<" OK\r\n">>,
