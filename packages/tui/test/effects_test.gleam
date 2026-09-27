@@ -28,7 +28,6 @@ import tui/model as tui_model
 import tui/protocol
 import tui/runtime
 import tui/session_channel
-import tui/sessions
 import tui/snapshot
 import tui/workspace
 import tui_test/pushed
@@ -93,7 +92,6 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   assert effects
     == [
       effect.Channel(session_channel.Shut(socket)),
-      effect.CancelSessionSwitch(sessions.Idle),
       effect.Attachment(attachment.Abandon(attachment.idle())),
       effect.CancelJob(request),
       effect.CancelJob(relaunch),
@@ -126,7 +124,6 @@ pub fn quit_without_a_channel_queues_the_peer_close_test() {
   assert effects
     == [
       effect.CloseSocket(socket),
-      effect.CancelSessionSwitch(sessions.Idle),
       effect.Attachment(attachment.Abandon(attachment.idle())),
     ]
   assert process.receive(owner, 0) == Error(Nil)

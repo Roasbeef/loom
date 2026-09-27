@@ -2,15 +2,14 @@
 //// when to paint.
 ////
 //// `update_tick` drains the replay, the attachment candidate, daemon
-//// control, the session switch, reconnection, the activity poll and a
-//// bounded batch of socket traffic, and then hands the drained model to
-//// `settle_tick`, which services the side-surface reads and advances the
-//// session channel's timers. Every drain but the session switch's takes
-//// from what the runtime received before the step rather than from a
-//// mailbox; the switch still pulls its own run until it becomes a job. `settle_tick` takes the drained model as a parameter
-//// on purpose: see the comment above it. The frame cache and the viewport
-//// pacing that decide whether a tick repaints live here as well, as does
-//// the Herdr pane reporter.
+//// control, reconnection, the activity poll and a bounded batch of socket
+//// traffic, and then hands the drained model to `settle_tick`, which
+//// services the side-surface reads and advances the session channel's
+//// timers. Every drain takes from what the runtime received before the
+//// step rather than from a mailbox. `settle_tick` takes the drained model
+//// as a parameter on purpose: see the comment above it. The frame cache
+//// and the viewport pacing that decide whether a tick repaints live here
+//// as well, as does the Herdr pane reporter.
 
 import etui/geometry
 import gleam/bool
@@ -34,7 +33,6 @@ import tui/pacing
 import tui/render
 import tui/session_channel
 import tui/session_control
-import tui/sessions
 import tui/surfaces
 
 /// Starts the Herdr pane reporter when the launch environment carries a
@@ -122,10 +120,7 @@ pub fn publish_herdr(model: Model) -> Model {
 pub fn update_tick(model: Model) -> Model {
   let animated =
     inbound.tick_strip(advance_activity_indicator(drain_replay(model)))
-  let switched =
-    drain_candidate(
-      session_control.drain_control(drain_session_switch(animated)),
-    )
+  let switched = drain_candidate(session_control.drain_control(animated))
   let switched = session_control.drain_reconnect(switched)
   let switched = session_control.drain_activity(switched)
   let drained = inbound.drain_connection(switched, tui_model.connection_batch)
@@ -498,11 +493,4 @@ fn drain_candidate(model: Model) -> Model {
     model,
     attachment.poll(model.candidate, now: model.stamp.transport_ms),
   )
-}
-
-fn drain_session_switch(model: Model) -> Model {
-  case sessions.receive(model.session_switch) {
-    Error(Nil) -> model
-    Ok(message) -> inbound.handle_session_switch_message(model, message)
-  }
 }

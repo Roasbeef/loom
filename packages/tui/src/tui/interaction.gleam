@@ -48,7 +48,7 @@ import tui/model.{
   DaemonSelector, DiffHidden, DiffVisible, Disconnected, FrameCache,
   GoalInspector, Model, ModelSelector, Newer, NoClipboard, NoOverlay, Older,
   OverlaySubmission, PeerLinkManager, Preview, ReconnectAttempting,
-  ReconnectIdle, ReconnectSpent, Replaying, SessionSelector, TerminalClipboard,
+  ReconnectIdle, ReconnectSpent, Replaying, TerminalClipboard,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -63,7 +63,6 @@ import tui/selection
 import tui/session_channel
 import tui/session_control
 import tui/session_selector
-import tui/sessions
 import tui/snapshot_view
 import tui/submit
 import tui/summary_panel
@@ -91,7 +90,6 @@ pub fn handle_paste(model: Model, text: String) -> Model {
     AgentInspector(_)
     | ModelSelector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_)
     | PeerLinkManager(_) -> model
@@ -437,8 +435,6 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         ModelSelector(selector) -> update_model_selector(key, model, selector)
         AgentInspector(selected) -> update_agent_inspector(key, model, selected)
         GoalInspector(state) -> update_goal_inspector(key, model, state)
-        SessionSelector(selector) ->
-          update_session_selector(key, model, selector)
         DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
         PeerLinkManager(state) ->
           session_control.update_peer_link_manager(key, model, state)
@@ -452,24 +448,6 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
           }
         NoOverlay -> update_main_key(key, model)
       }
-  }
-}
-
-fn update_session_selector(
-  key: keys.Key,
-  model: Model,
-  selector: sessions.State,
-) -> Model {
-  case sessions.update(key, selector) {
-    sessions.Continue(next) -> Model(..model, overlay: SessionSelector(next))
-    sessions.Close ->
-      Model(
-        ..model,
-        overlay: NoOverlay,
-        repaint_phase: !model.repaint_phase,
-        notice: "session selection cancelled",
-      )
-    sessions.Choose(choice) -> submit.begin_session_switch(model, choice)
   }
 }
 

@@ -60,7 +60,6 @@ import tui/model.{
 } as tui_model
 import tui/recording
 import tui/session_channel
-import tui/sessions
 
 /// Reads the clocks for one event and writes them onto the model.
 ///
@@ -301,7 +300,6 @@ fn perform_one(
     | effect.Send(..)
     | effect.CloseSocket(_)
     | effect.CloseControl(_)
-    | effect.CancelSessionSwitch(_)
     | effect.Discard(_)
     | effect.Record(..)
     | effect.WriteClipboard(_)
@@ -320,8 +318,7 @@ fn perform_io(requested: Effect) -> Nil {
     effect.Send(socket, frame) -> connection.send(socket, frame)
     effect.CloseSocket(socket) -> connection.close(socket)
     effect.CloseControl(control) -> daemon.close(control)
-    effect.CancelSessionSwitch(status) -> sessions.cancel(status)
-    effect.Discard(inbox) -> sessions.discard(inbox)
+    effect.Discard(inbox) -> buffered.discard(inbox)
     effect.Record(recorder, event) -> recording.append(recorder, event)
 
     // Etui draws its frames with `io:put_chars`, so a sequence printed the

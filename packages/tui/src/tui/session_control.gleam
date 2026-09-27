@@ -36,7 +36,7 @@ import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, AgentInspector,
   ApprovalInspector, ControlRequest, DaemonSelector, GoalInspector, Model,
   ModelSelector, NoOverlay, PeerLinkManager, ReconnectAttempting, ReconnectIdle,
-  ReconnectSpent, SessionSelector,
+  ReconnectSpent,
 } as tui_model
 import tui/peer_links
 import tui/recording
@@ -385,7 +385,6 @@ fn finish_control(model: Model, result) {
           | AgentInspector(_)
           | GoalInspector(_)
           | ApprovalInspector(_)
-          | SessionSelector(_)
           | PeerLinkManager(_) -> model.overlay
         },
         notice: "renamed session to " <> row.name,
@@ -427,7 +426,6 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       | AgentInspector(_)
       | GoalInspector(_)
       | ApprovalInspector(_)
-      | SessionSelector(_)
       | PeerLinkManager(_) -> model.overlay
     },
     notice: description <> id,
@@ -752,7 +750,6 @@ fn finish_peer_workspace(
     | ModelSelector(_)
     | AgentInspector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> model
   }
@@ -814,7 +811,6 @@ fn finish_peer_inspection(
     | ModelSelector(_)
     | AgentInspector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> model
   }
@@ -835,7 +831,6 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
     | ModelSelector(_)
     | AgentInspector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> model
   }
@@ -850,7 +845,6 @@ fn finish_control_failure(model: Model, reason: String) {
     | ModelSelector(_)
     | AgentInspector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | ApprovalInspector(_) -> tui_model.append_error(model, reason)
   }

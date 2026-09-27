@@ -33,7 +33,7 @@ import tui/goal_view
 import tui/model.{
   type Model, AgentInspector, ApprovalInspector, Attached, DaemonSelector,
   DiffHidden, DiffVisible, Disconnected, GoalInspector, ModelSelector, NoOverlay,
-  PeerLinkManager, Preview, Replaying, SessionSelector, Stream,
+  PeerLinkManager, Preview, Replaying, Stream,
 } as tui_model
 import tui/protocol.{Strand}
 import tui/queue_editor
@@ -974,7 +974,6 @@ pub fn diff_borrow_eligible(model: Model) -> Bool {
     ModelSelector(_)
     | AgentInspector(_)
     | GoalInspector(_)
-    | SessionSelector(_)
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | ApprovalInspector(_) -> False

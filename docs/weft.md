@@ -47,7 +47,8 @@ reasons, and name the primitive in the commit:
   When the caller must not block on it — a TUI tick, an actor's loop —
   the same run goes through `weft.start_detached` and is polled with
   `weft.pull(within: 0)`, or `weft.start_relayed` into a subject. In-tree:
-  `tui/sessions`, whose one-task switch run the terminal pulls each tick.
+  `tui/job_runner`, whose one-task job runs the terminal's runtime starts
+  relayed and reads before every step.
 - **A handler must run before anything in the mailbox.** `continuing`.
   In-tree: `runtime/strand_runtime`'s `AwaitPredecessors`, which blocks on
   the drain ledger's claim before the driver can be nudged.

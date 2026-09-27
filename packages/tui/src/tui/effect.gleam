@@ -32,9 +32,9 @@
 //// back tagged with the key (`tui/job`). `CancelJob` names the job by the
 //// same key. A key is never reused, so it identifies one job as exactly as
 //// a handle would, and the runtime resolves it in its own table rather than
-//// in anything a reducer changes. The session switch and the attachment
-//// attempt still start their own workers; they become jobs in a later
-//// slice of phase 2 of issue #530, and file reads stay in the reducer.
+//// in anything a reducer changes. The attachment attempt still starts its
+//// own worker; it becomes a job in a later slice of phase 2 of issue #530,
+//// and file reads stay in the reducer.
 
 import gleam/erlang/process.{type Subject}
 import tui/attachment
@@ -44,7 +44,6 @@ import tui/herdr
 import tui/job
 import tui/recording
 import tui/session_channel
-import tui/sessions
 
 /// One side effect a reducer step decided on.
 pub type Effect {
@@ -73,11 +72,6 @@ pub type Effect {
   /// afterwards reaches a reducer, because the reducer that cancels it
   /// clears the slot that named the key in the same step.
   CancelJob(key: job.Key)
-
-  /// Cancels a local session-switch worker. This blocks for up to its own
-  /// one-second drain so a socket the worker opened is closed rather than
-  /// leaked.
-  CancelSessionSwitch(status: sessions.SwitchStatus)
 
   /// Empties an inbox the model has stopped reading, so its queued frames
   /// do not sit in the terminal's mailbox forever.

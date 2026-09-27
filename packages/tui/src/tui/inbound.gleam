@@ -25,7 +25,6 @@ import etui/widgets/textarea as text_area
 import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -54,7 +53,6 @@ import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
-import tui/effect
 import tui/history_view
 import tui/job
 import tui/layout
@@ -65,8 +63,8 @@ import tui/model.{
   Attached, CacheNotice, CacheObservation, DaemonSelector, Disconnected,
   GoalInspector, HeldPrompt, HoldGoalReport, Interjection, Interrupt, Line,
   Model, ModelSelector, NoOverlay, PeerLinkManager, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionSelector,
-  StrandWorkspace, Stream, System, ToolTail, UnconfirmedSubmission, User,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, StrandWorkspace,
+  Stream, System, ToolTail, UnconfirmedSubmission, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -78,14 +76,12 @@ import tui/recording
 import tui/render
 import tui/reviewer_status
 import tui/session_channel
-import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/stream_identity
 import tui/surfaces
 import tui/todo_panel
 import tui/transcript_lines
-import tui/workspace
 import tui/worktree_view
 
 /// The authenticated build belongs to the retained control host. Projecting
@@ -944,123 +940,6 @@ pub fn decide(
   }
 }
 
-/// Applies a message from the local session-switch worker: a failure is
-/// reported in the transcript, and a ready socket is adopted as the new
-/// attachment. Closing the socket it replaces, or one it could not adopt,
-/// and flushing the inbox that socket fed are queued for the runtime rather
-/// than performed during the step.
-@internal
-pub fn handle_session_switch_message(
-  model: Model,
-  message: sessions.Message,
-) -> Model {
-  case message {
-    sessions.Failed(session, reason) ->
-      tui_model.append_error(
-        Model(..model, session_switch: sessions.Idle),
-        "open session " <> session <> ": " <> reason,
-      )
-      |> tui_model.mark_activity
-    sessions.WorkerCrashed(session, reason) ->
-      tui_model.append_error(
-        Model(..model, session_switch: sessions.Idle),
-        "open session " <> session <> " crashed: " <> reason,
-      )
-      |> tui_model.mark_activity
-    sessions.Ready(choice, options, target, inbox, socket) ->
-      case connection.adopt(socket) {
-        Error(reason) ->
-          Model(..model, session_switch: sessions.Idle)
-          |> tui_model.emit(effect.CloseSocket(socket))
-          |> tui_model.emit(effect.Discard(inbox))
-          |> tui_model.append_error(
-            "open session " <> target.session <> ": " <> reason,
-          )
-          |> tui_model.mark_activity
-        Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
-      }
-  }
-}
-
-fn adopt_session(
-  model: Model,
-  choice: bootstrap.SessionChoice,
-  options: bootstrap.Options,
-  target: bootstrap.Target,
-  inbox: Subject(connection.Message),
-  socket: connection.Connection,
-) -> Model {
-  let model = select_workspace(model, target.session, "main")
-  let model = case model.peer {
-    Attached(socket: previous) ->
-      tui_model.emit(model, effect.CloseSocket(previous))
-    Preview | Replaying | Disconnected -> model
-  }
-
-  // Frames the old socket already delivered would otherwise sit unread in
-  // the terminal mailbox for every later selective receive to scan past. The
-  // close notice it sends after this point is the only residue, one frame.
-  // The flush is queued behind the close, as the two used to run, and runs
-  // after the step; the model stops reading this inbox at the swap below.
-  let model =
-    tui_model.emit(model, effect.Discard(buffered.sender(model.inbox)))
-  Model(
-    ..model,
-    help_open: False,
-    notes_open: False,
-    note_board: None,
-    note_selected: None,
-    notes_requested: None,
-    overlay: NoOverlay,
-    session: target.session,
-    local_options: Some(options),
-    inbox: buffered.new(inbox),
-    peer: Attached(socket:),
-    session_switch: sessions.Idle,
-    next_id: 4,
-    transcript: [Line(System, "connecting to session " <> target.session)],
-    records: [],
-    models: [],
-    skills: [],
-    queued: [],
-    awaiting_outcome: None,
-    current_model: "loading…",
-    workspace: workspace.discover_from(choice.workspace),
-    strands: [],
-    agent_summary: agents.summary([]),
-    reviewer_rows: [],
-    active_strand: "main",
-    usage: zero_usage(),
-    interrupt: None,
-    submitting: None,
-    streams: [],
-    reading_lines: None,
-    tool_tails: [],
-    scroll_offset: 0,
-    rendered_revision: -1,
-    rendered_row_count: 0,
-    rendered_rows: [],
-    revealed_rows: 0,
-    rendered_anchors: [],
-    rendered_gutters: [],
-    record_rows: [],
-    record_gutters: [],
-    record_line_cache: dict.new(),
-    compact_call_cache: dict.new(),
-    compact_entry_cache: dict.new(),
-    pending_records: [],
-    record_cache_valid: False,
-    record_cache_width: 0,
-    record_cache_strand: "",
-    frame_cache: None,
-    notice: "connecting to session " <> target.session,
-    repaint_phase: !model.repaint_phase,
-  )
-  |> tui_model.invalidate_transcript
-  |> tui_model.mark_activity
-  |> tui_model.invalidate_frame
-}
-
 /// Applies at most `remaining` of the messages the runtime received into
 /// the connection inbox before this step.
 ///
@@ -1245,7 +1124,6 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
         GoalInspector(state) -> GoalInspector(state)
-        SessionSelector(selector) -> SessionSelector(selector)
         DaemonSelector(selector) -> DaemonSelector(selector)
         PeerLinkManager(state) -> PeerLinkManager(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)

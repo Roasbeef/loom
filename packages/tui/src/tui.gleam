@@ -89,7 +89,6 @@ import tui/runtime
 import tui/session_channel
 import tui/session_control
 import tui/session_table
-import tui/sessions
 import tui/summary_panel
 import tui/surfaces
 import tui/text_hygiene
@@ -536,7 +535,6 @@ pub fn new_model_with_clock(
     local_options: None,
     inbox: buffered.new(inbox),
     peer: Preview,
-    session_switch: sessions.Idle,
     candidate: attachment.idle(),
     channel: None,
     captured: None,
@@ -1407,15 +1405,14 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 /// input's own line comes first in the list, and every line it caused
 /// follows in the order it was decided. The control, reconnect and
 /// activity jobs are started and cancelled by `StartJob` and `CancelJob`
-/// effects; the session switch and attachment workers, and file reads,
-/// still happen during the step.
+/// effects; the attachment worker and file reads still happen during the
+/// step.
 ///
 /// The step reads the connection, replay and attachment inboxes, and the
 /// control, reconnect and activity replies, only through what
 /// `runtime.receive` put in the model, so a test that calls `step` directly
 /// and wants it to see queued traffic receives first, or hands it a job
-/// reply with `runtime.hold`. The session switch is still pulled from its
-/// run during the step.
+/// reply with `runtime.hold`.
 ///
 /// The step reads no clock. It applies the event at `model.stamp`, which
 /// `update` writes before calling it; a test calling `step` directly gets

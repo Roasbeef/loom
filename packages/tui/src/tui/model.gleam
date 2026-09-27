@@ -73,7 +73,6 @@ import tui/reviewer_status
 import tui/selection
 import tui/session_channel
 import tui/session_selector
-import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/summary_panel
@@ -215,7 +214,6 @@ pub type Overlay {
   ModelSelector(model_selector.State)
   AgentInspector(selected: agents.Inspector)
   GoalInspector(state: focused_goal_panel.State)
-  SessionSelector(sessions.State)
   DaemonSelector(session_selector.State)
   PeerLinkManager(peer_links.State)
   ApprovalInspector(approval_panel.State)
@@ -702,7 +700,6 @@ pub type Model {
     /// value, so the old socket's held messages leave the model with it.
     inbox: buffered.Inbox(connection.Message),
     peer: Peer,
-    session_switch: sessions.SwitchStatus,
     /// One provisional replacement, whose original deadline includes capture.
     candidate: attachment.Status,
     /// Serial credited state for the adopted socket only.

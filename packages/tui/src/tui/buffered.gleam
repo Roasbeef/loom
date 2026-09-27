@@ -182,3 +182,32 @@ pub fn receive(inbox: Inbox(a), within_ms: Int) -> #(Inbox(a), Result(a, Nil)) {
     #(inbox, Error(Nil)) -> #(inbox, process.receive(inbox.subject, within_ms))
   }
 }
+
+// A discard stops after this many messages, so an inbox a live producer
+// is still filling cannot hold the caller in a loop.
+const discard_limit = 4096
+
+/// Drops up to 4096 messages waiting in a subject's mailbox.
+///
+/// The runtime calls this, as the `Discard` effect and when it cleans up an
+/// attempt it will not adopt, for an inbox the model has stopped reading: a
+/// replaced connection's, or an abandoned attempt's frames. Frames nobody
+/// will read would otherwise stay in the terminal's mailbox, where every
+/// later selective receive scans past them. A socket that is still closing
+/// may add one final notice after this returns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// buffered.discard(buffered.sender(model.inbox))
+/// ```
+pub fn discard(subject: Subject(a)) -> Nil {
+  discard_up_to(subject, discard_limit)
+}
+
+fn discard_up_to(subject: Subject(a), remaining: Int) -> Nil {
+  case remaining <= 0, process.receive(subject, 0) {
+    True, _ | _, Error(Nil) -> Nil
+    False, Ok(_) -> discard_up_to(subject, remaining - 1)
+  }
+}

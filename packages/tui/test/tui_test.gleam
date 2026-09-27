@@ -21,7 +21,6 @@ import snapshot_test
 import tui
 import tui/agent_view
 import tui/agents
-import tui/bootstrap
 import tui/buffered
 import tui/command
 import tui/composer
@@ -43,7 +42,6 @@ import tui/recording
 import tui/render
 import tui/selection
 import tui/session_channel
-import tui/sessions
 import tui/submit
 import tui/text_hygiene
 import tui/theme
@@ -541,19 +539,10 @@ pub fn schedules_snapshot_decodes_the_pinned_fixture_test() {
   assert reason == "wake must be a boolean"
 }
 
-pub fn sessions_command_opens_a_selectable_local_catalogue_test() {
+pub fn sessions_command_parses_and_is_suggested_test() {
   assert command.parse("/sessions") == command.Sessions
   assert command.suggestions("/sess")
     == [command.Suggestion("/sessions", "switch local sessions", False)]
-
-  let first = bootstrap.SessionChoice("alpha", "/work/alpha", "/state/a.db")
-  let second = bootstrap.SessionChoice("beta", "/work/beta", "/state/b.db")
-  let state = sessions.new([first, second], "/state/b.db")
-  assert state.selected == 1
-  let assert sessions.Continue(wrapped) = sessions.update(keys.Down, state)
-    as "Down keeps the selector open"
-  assert wrapped.selected == 0
-  assert sessions.update(keys.Enter, wrapped) == sessions.Choose(first)
 }
 
 pub fn session_selector_paths_keep_their_tails_test() {
@@ -562,156 +551,6 @@ pub fn session_selector_paths_keep_their_tails_test() {
   assert text_hygiene.fit_tail("/short", 6) == "/short"
   assert text_hygiene.fit_tail("/short", 0) == ""
   assert text_hygiene.fit_tail("/short", 1) == "…"
-}
-
-pub fn session_selector_uses_database_identity_test() {
-  let first =
-    bootstrap.SessionChoice("review", "/work/project", "/state/review.db")
-  let second =
-    bootstrap.SessionChoice(
-      "review",
-      "/work/project",
-      "/state/review.archive.db",
-    )
-  let state = sessions.new([first, second], "/state/review.archive.db")
-  assert state.selected == 1
-}
-
-pub fn queued_session_result_wins_over_timeout_test() {
-  let status =
-    sessions.start_with(
-      "queued",
-      fn(_frames) { Error("arrived before timeout") },
-      within: 5000,
-    )
-  assert wait_for_switch(status, 5000)
-    == Ok(sessions.Failed("queued", "arrived before timeout"))
-}
-
-pub fn session_attempts_have_isolated_mailboxes_test() {
-  let stale =
-    sessions.start_with(
-      "stale",
-      fn(_frames) { Error("stale result") },
-      within: 5000,
-    )
-  let assert Ok(sessions.Failed("stale", "stale result")) =
-    wait_for_switch(stale, 5000)
-  let current =
-    sessions.start_with(
-      "new",
-      fn(_frames) {
-        process.sleep(5000)
-        Error("never")
-      },
-      within: 5000,
-    )
-  assert sessions.receive(current) == Error(Nil)
-  sessions.cancel(current)
-}
-
-// A subject delivers to the process that created it, and receiving on one
-// owned by another process panics. The frame inbox a replacement socket writes
-// to must therefore belong to the terminal from the moment the attempt starts,
-// not to the task that opens the socket.
-pub fn session_switch_frames_are_owned_by_the_terminal_test() {
-  let root = "build/tui-session-frames"
-  let choice =
-    bootstrap.SessionChoice(
-      "missing",
-      root <> "/missing-workspace",
-      root <> "/missing.db",
-    )
-  let options =
-    bootstrap.Options(
-      workspace: choice.workspace,
-      session_file: choice.session_file,
-      server: root <> "/no-such-loomd",
-      state_directory: root <> "/state",
-      config: "",
-    )
-  let status = sessions.start(choice, options)
-  let assert sessions.Resolving(frames:, ..) = status
-    as "start should return an in-flight attempt"
-  assert process.subject_owner(frames) == Ok(process.self())
-  assert connection.receive(frames) == Error(Nil)
-  let assert Ok(sessions.Failed("missing", _)) = wait_for_switch(status, 5000)
-    as "a missing workspace should fail resolution"
-  let _ = simplifile.delete(root)
-}
-
-pub fn failed_session_attempt_discards_queued_frames_test() {
-  let status =
-    sessions.start_with(
-      "failed",
-      fn(frames) {
-        process.send(frames, connection.Connected)
-        process.send(frames, connection.Incoming("{}"))
-        Error("connect refused")
-      },
-      within: 5000,
-    )
-  let assert sessions.Resolving(frames:, ..) = status
-  assert wait_for_switch(status, 5000)
-    == Ok(sessions.Failed("failed", "connect refused"))
-  assert connection.receive(frames) == Error(Nil)
-}
-
-pub fn crashed_session_worker_becomes_a_typed_result_test() {
-  let status =
-    sessions.start_with(
-      "crashed",
-      fn(frames) {
-        process.send(frames, connection.Connected)
-        process.kill(process.self())
-        Error("unreachable")
-      },
-      within: 5000,
-    )
-  let assert sessions.Resolving(frames:, ..) = status
-  let assert Ok(sessions.WorkerCrashed("crashed", reason)) =
-    wait_for_switch(status, 5000)
-    as "a killed task should surface as a crash"
-  assert string.contains(reason, "Killed")
-  assert connection.receive(frames) == Error(Nil)
-}
-
-// The deadline is weft's: it kills the task and joins it before the outcome
-// is delivered, so by the time the terminal reads the timeout the socket the
-// task may have opened is already gone and its queued frames are dropped.
-pub fn timed_out_session_attempt_discards_late_results_test() {
-  let alive = process.new_subject()
-  let status =
-    sessions.start_with(
-      "late",
-      fn(frames) {
-        process.send(frames, connection.Connected)
-        process.send(alive, process.self())
-        process.sleep(5000)
-        Error("never")
-      },
-      within: 50,
-    )
-  let assert sessions.Resolving(frames:, ..) = status
-  let assert Ok(task) = process.receive(alive, 1000)
-  assert wait_for_switch(status, 5000)
-    == Ok(sessions.Failed("late", "session startup timed out"))
-  assert connection.receive(frames) == Error(Nil)
-  assert process.is_alive(task) == False
-}
-
-fn wait_for_switch(
-  status: sessions.SwitchStatus,
-  remaining_ms: Int,
-) -> Result(sessions.Message, Nil) {
-  case sessions.receive(status), remaining_ms <= 0 {
-    Ok(message), _ -> Ok(message)
-    Error(Nil), True -> Error(Nil)
-    Error(Nil), False -> {
-      process.sleep(10)
-      wait_for_switch(status, remaining_ms - 10)
-    }
-  }
 }
 
 pub fn agent_inspector_selection_wraps_and_resolves_a_strand_test() {

@@ -14,12 +14,10 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import tui/agents
 import tui/approval
 import tui/attachment
-import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/context_view
@@ -34,8 +32,7 @@ import tui/model.{
   AgentInspector, Assistant, Attached, ComposerSubmission, DiffHidden,
   DiffVisible, Disconnected, HeldPrompt, Interjection, Interrupt, Line, Model,
   ModelSelector, NoOverlay, OverlaySubmission, Preview, PromptNext,
-  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SessionSelector,
-  SteerNow, User,
+  ReconnectAttempting, ReconnectIdle, ReconnectSpent, Replaying, SteerNow, User,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -44,7 +41,6 @@ import tui/protocol
 import tui/queue_editor
 import tui/session_channel
 import tui/session_control
-import tui/sessions
 import tui/surfaces
 import tui/text_hygiene
 import tui/worktree_view
@@ -120,95 +116,6 @@ pub fn open_session_selector(model: Model) -> Model {
       tui_model.append_error(
         model,
         "daemon control is unavailable; reconnect explicitly",
-      )
-  }
-}
-
-/// Historical host-fixture selector; live terminals always use daemon control.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tui.open_legacy_session_selector(fixture)
-/// ```
-@internal
-pub fn open_legacy_session_selector(model: Model) -> Model {
-  case model.peer {
-    // The selector is built from the local launcher catalogue, which a
-    // recording does not carry and a replaying machine need not have. It
-    // says so in the notice rather than inventing a listing or an error
-    // the live client never showed.
-    Replaying -> Model(..model, notice: "/sessions is not replayed")
-
-    Attached(..) | Preview | Disconnected ->
-      case model.local_options {
-        None ->
-          tui_model.append_error(
-            model,
-            "/sessions is available only for local attachments",
-          )
-        Some(options) -> open_local_session_selector(model, options)
-      }
-  }
-}
-
-fn open_local_session_selector(
-  model: Model,
-  options: bootstrap.Options,
-) -> Model {
-  case sessions.busy(model.session_switch) {
-    True ->
-      tui_model.append_error(model, "a session switch is already in progress")
-    False ->
-      case bootstrap.discover_sessions(options) {
-        Error(reason) -> tui_model.append_error(model, reason)
-        Ok([]) ->
-          tui_model.append_error(model, "no locally managed sessions found")
-        Ok(choices) -> {
-          let current =
-            bootstrap.session_file(options)
-            |> result.unwrap("")
-          Model(
-            ..model,
-            overlay: SessionSelector(sessions.new(choices, current)),
-            repaint_phase: !model.repaint_phase,
-            notice: "session selector",
-          )
-        }
-      }
-  }
-}
-
-/// Starts opening the chosen local session, after cancelling any unsent
-/// frame for the old target.
-@internal
-pub fn begin_session_switch(
-  model: Model,
-  choice: bootstrap.SessionChoice,
-) -> Model {
-  let model =
-    inbound.cancel_pending(model, "target change from " <> model.session)
-  case model.peer, model.local_options {
-    // Unreachable: a replay never opens the selector this arrives from.
-    // Enumerated rather than swept up, so a future path into it starts no
-    // daemon and opens no socket.
-    Replaying, _ -> Model(..model, overlay: NoOverlay)
-
-    Attached(..), None | Preview, None | Disconnected, None ->
-      tui_model.append_error(
-        Model(..model, overlay: NoOverlay),
-        "/sessions is available only for local attachments",
-      )
-    Attached(..), Some(options)
-    | Preview, Some(options)
-    | Disconnected, Some(options)
-    ->
-      Model(
-        ..model,
-        overlay: NoOverlay,
-        session_switch: sessions.start(choice, options),
-        repaint_phase: !model.repaint_phase,
-        notice: "opening session " <> choice.session,
       )
   }
 }
@@ -938,7 +845,6 @@ pub fn quit(model: Model) -> Model {
   // The attempt moves into its cancel effect, which closes what it opened.
   let model =
     Model(..model, candidate: attachment.idle())
-    |> tui_model.emit(effect.CancelSessionSwitch(model.session_switch))
     |> tui_model.emit(effect.Attachment(attachment.Abandon(model.candidate)))
 
   // Every running job is cancelled by its key, and its slot is cleared in

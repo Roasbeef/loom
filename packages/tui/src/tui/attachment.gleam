@@ -18,7 +18,6 @@ import tui/connection
 import tui/protocol
 import tui/recording
 import tui/session_channel as channel
-import tui/sessions
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
@@ -807,8 +806,8 @@ pub fn cancel(status: Status) -> Nil {
           |> channel.take_outputs
           |> fn(closed) { list.each(closed.1, channel.perform) }
       }
-      sessions.discard(buffered.sender(frames))
-      sessions.discard(buffered.sender(prepared))
+      buffered.discard(buffered.sender(frames))
+      buffered.discard(buffered.sender(prepared))
     }
   }
 }

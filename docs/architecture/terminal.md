@@ -79,8 +79,8 @@ model.
 
 `Tick` is the event etui delivers when a poll times out with no input, so it
 is where socket traffic enters the model. `tui/tick.update_tick` drains, in
-order, the replay inbox, the session-switch result, control replies, the
-candidate attachment's traffic, the reconnect outcome, the picker's activity
+order, the replay inbox, control replies, the candidate attachment's
+traffic, the reconnect outcome, the picker's activity
 answer, and up to 64 messages from the conversation socket. `settle_tick` then services the auxiliary reads (queue,
 worktree, notes, jobs, context, advisor nudges, goal), ticks the conversation
 channel, and updates the quiet timer. A key press,
@@ -99,8 +99,7 @@ outcome to one. The drains take from those buffers, and traffic that arrives
 during the step waits for the next one. An inbox the step did not drain keeps
 what it holds and receives nothing more, so every buffer stays within its
 bound. The control, reconnect and activity replies reach the step the same
-way ("Jobs are started by the runtime" below); only the session switch's
-result is still pulled from its run during the step.
+way ("Jobs are started by the runtime" below).
 
 Because an inbox's buffer lives inside the inbox value, an adoption that
 replaces `Model.inbox` drops what the old socket's inbox had received along
@@ -168,9 +167,9 @@ A consequence is that a send decided mid-step leaves at the end of the step. A
 zero-timeout drain later in the same step cannot see its reply, which it never
 reliably could.
 
-Some I/O still happens inside the step in this phase. The session switch
-and attachment starts, the switch's pull, and file reads produce values the
-step goes on to use, so they wait for later slices; clock reads, the
+Some I/O still happens inside the step in this phase. The attachment start
+and file reads produce values the step goes on to use, so they wait for
+later slices; clock reads, the
 connection, replay and attachment drains, and the control, reconnect and
 activity jobs have already moved out of the step, as described above and
 below. Recording appends are effects: each line's offset is read
@@ -418,9 +417,10 @@ subject that the terminal writes to. Since `update` tops up the model's
 inboxes on every event, it must run in the process that created the model.
 A test that hands a model to an actor builds the model inside the actor.
 
-`tui/sessions` and its `SessionSelector` overlay are an older, record-based
-switch path kept as a host-test seam. The live selector is `DaemonSelector`,
-backed by `tui/session_selector` and `tui/daemon/selection`.
+The session picker is `DaemonSelector`, backed by `tui/session_selector`
+and `tui/daemon/selection`. An older record-based local switch, `tui/sessions`
+and its `SessionSelector` overlay, had no entry point in the shipped loop
+and was deleted in phase 2 of issue #530.
 
 ## Finding or starting the daemon
 
@@ -824,7 +824,6 @@ Paths are relative to `packages/tui/src`.
 | `tui/daemon/selection` | Open, create, rename, archive, delete and list over control; control-owner replacement; relaunch. |
 | `tui/bootstrap` | Launch options, state-root and executable discovery, and the entry points `resolve_daemon` and `reconnect_daemon`. |
 | `tui/session_selector` | The catalogue picker page and its confirm, rename and delete prompts. |
-| `tui/sessions` | The older record-based switch path, kept as a test seam. |
 | `tui/history_view`, `tui/transcript_anchor` | Bounded scrollback paging and identity-based reading position. |
 | `tui/stream_identity` | Handoff of a streamed answer to its reserved durable entry. |
 | `tui/tool_activity`, `tui/file_read_view` | Compact tool groups, and the readable projection of file reads and edits. |

@@ -710,10 +710,8 @@ boundaries and the split's measurements under Invariants.
   bound in the inherited Stratus parser.
 - `tui/bootstrap.Options` describes local-launch inputs, while
   `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
-  connection path. `tui/bootstrap.SessionChoice` is the canonical workspace
-  and database identity recovered from one statically validated launcher
-  record. Bootstrap policy, record validation, retry timing, executable
-  discovery order, and lifecycle decisions remain in Gleam.
+  connection path. Bootstrap policy, record validation, retry timing,
+  executable discovery order, and lifecycle decisions remain in Gleam.
 - `tui/bootstrap.resolve_daemon` returns a `tui/daemon/bootstrap.Connected`
   independent of workspace selection. It uses the shared `host/endpoint`
   record, releases the launch lock before the child adopts its native fence,
@@ -767,8 +765,8 @@ boundaries and the split's measurements under Invariants.
 - `tui/effect.Effect` is what a step asks the runtime to do, as data:
   `Channel(session_channel.Out)` and `Attachment(attachment.Out)` wrap the
   two channels' queued outputs, and the rest name a socket write or close, a
-  control close, a job start or cancel, a session-switch or attachment
-  cancel, an inbox discard, a recording line, the OSC 52 clipboard write,
+  control close, a job start or cancel, an attachment cancel, an inbox
+  discard, a recording line, the OSC 52 clipboard write,
   or a Herdr announcement or report. Every variant carries the handle it
   acts on, because an adoption can replace the model's socket later in the
   same step and the effect must still reach the handle it was decided for.
@@ -834,8 +832,6 @@ boundaries and the split's measurements under Invariants.
   as escaped literal JSON. Its 16 KiB displayed-detail limit is a presentation
   bound: incomplete detail refuses approval, while denial remains available
   under the captured sequence.
-  `tui/sessions` and workspace-record bootstrap remain historical host-test
-  seams, not the live default selector.
 - `host/bootstrap` is called directly, with no shim between. Shared
   operating-system facts and actions — private and bounded file operations,
   process identity and launch, a kernel lock, loopback port reservation, time,
@@ -1469,10 +1465,9 @@ untouched.
   and `tui/tick`, which the inliner never attempts, but `snap_viewport_for`
   is still local and the boundary stays.
 - **Tick settling has the same parameter boundary.** `update_tick` drains
-  the replay, the session switch, control, the candidate, reconnect, the
-  activity poll and the connection, in that order, before passing the result
-  to `settle_tick`. Every drain but the session switch's takes from what
-  `runtime.receive` put in the model, so none of them adds a mailbox read
+  the replay, control, the candidate, reconnect, the activity poll and the
+  connection, in that order, before passing the result to `settle_tick`.
+  Every drain takes from what `runtime.receive` put in the model, so none of them adds a mailbox read
   to the step. The helper applies the existing read-service chain to its
   `drained` parameter and retains the original model for quiet-time and activity
   comparisons. Adding the notes read to the former single body exposed another
@@ -1544,8 +1539,7 @@ untouched.
   and then advances as the poll does, and the client test driver reduces
   held connection messages before a selected one. A test that calls `step` directly and wants it to
   see queued traffic calls `runtime.receive` first, and a test injects
-  traffic through `buffered.sender`. The session switch is still pulled
-  inside the step, until phase 2's fifth slice. `test/runtime_receive_test.gleam` pins the bound, the Escape
+  traffic through `buffered.sender`. `test/runtime_receive_test.gleam` pins the bound, the Escape
   exception, the held-first read, the swap and the candidate-first tick.
 - **Jobs start after the step and answer by key.** A reducer allocates a
   key and queues `StartJob(key, spec)` through `tui_model.start_job`; the
@@ -1748,9 +1742,8 @@ untouched.
   `take_outputs` then `perform`. The next `update` also performs anything
   left in the outbox. One consequence is that a send leaves at the end of
   its step, so a zero-timeout drain later in that step cannot see its
-  reply. The session switch and attachment starts, the switch's pull, and
-  file reads remain in the step until later slices of phase 2 of issue
-  #530. Clock reads left the step in phase 2's first slice, the
+  reply. The attachment start and file reads remain in the step until
+  later slices of phase 2 of issue #530. Clock reads left the step in phase 2's first slice, the
   connection, replay and attachment drains in its second, recording
   writes in its third, and the control, reconnect and activity jobs in its
   fourth: see the clock, traffic and job invariants above and the

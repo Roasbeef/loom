@@ -368,7 +368,7 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
-  key drain (`tui/interaction.gleam:1233` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1202` (`drain_connection`)) and the tick
   (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:496` (`prepare`),
   `tui/attachment.gleam:550` (`drain`) and
@@ -377,16 +377,17 @@ The survey of mailbox reads, at the commit this slice started from:
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:127` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:930` (`drain_activity`)), and the session
-  switch, which reads through `sessions.receive` and `weft.pull`
-  (`tui/sessions.gleam:256` (`weft.pull`)). Each answers a job the step
-  started, and they move when job starts become keyed effects.
+  (`tui/session_control.gleam:924` (`drain_activity`)), and the session
+  switch, which read through `sessions.receive` and `weft.pull` in
+  `tui/sessions`, a module S5 deleted with the unreachable local switch.
+  Each answers a job the step started, and they move when job starts
+  become keyed effects.
 - **Outside the step, and staying there.** The worker's acknowledgement wait
   (`tui/attachment.gleam:202` (`acknowledged`)) runs in the worker, and
   `attachment.cancel` (`tui/attachment.gleam:758` (`buffered.receive`)) runs
-  as an effect. `sessions.discard` (`tui/sessions.gleam:328`
-  (`discard_up_to`)) is the `Discard` effect. The bootstrap snapshot wait
-  (`tui/bootstrap.gleam:1355` (`await_snapshot`)) runs before the loop, the
+  as an effect. `sessions.discard`, now `buffered.discard`, is the
+  `Discard` effect. The bootstrap snapshot wait
+  (`tui/bootstrap.gleam:1199` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and
   the virtual backend's frame collection (`tui/virtual_backend.gleam:315`
   (`drain`)) is test infrastructure outside the model.
@@ -664,8 +665,8 @@ that waits for a real reply selects on `job_runner.selector`.
 **What the step still does itself.** It starts the local session switch
 (`sessions.start`) and the attachment attempt (`attachment.start_recorded`)
 and pulls the switch's run, which S5 moves. Adoption calls
-`connection.adopt` (`tui/inbound.gleam:971` (`connection.adopt`),
-`tui/attachment.gleam:657` (`connection.adopt`)), which creates nothing
+`connection.adopt` (in the local switch's adoption, which S5 deleted, and
+at `tui/attachment.gleam:657` (`connection.adopt`)), which creates nothing
 but reads whether the replacement socket's actor is alive. That read
 stays in the step until phase 3, which replaces etui's events with a
 domain message type; the runtime can then read the liveness when it
