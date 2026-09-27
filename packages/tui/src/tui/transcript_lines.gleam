@@ -4,7 +4,8 @@
 //// A `Line` is a speaker and a text, before Markdown and wrapping. This
 //// module decides which lines a record, a stream or a tool call becomes and
 //// in what order, and nothing else: it neither reads the socket nor paints
-//// a buffer, and it imports only `model`. The projection
+//// a buffer. What it reads of the client's state arrives as one
+//// `Presentation`, so it never imports the terminal's model. The projection
 //// (`tui/projection`) caches its output per record, the renderer
 //// (`tui/render`) turns the lines into styled rows, and `tui/inbound`
 //// uses the stream helpers as fragments arrive.
@@ -42,14 +43,53 @@ import session_view/worktree_view
 import tui/advisor_history
 import tui/composer
 import tui/file_read_view
-import tui/model.{type Model}
 import tui/todo_board
 import tui/tool_activity
 import tui/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
-  Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning, ReasoningDigest,
-  Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
-  ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+  type ToolTail, Assistant, Failure, HeldPrompt, Interjection, Line, Reasoning,
+  ReasoningDigest, Spacer, Stream, SummarizedAdvice, SummarizedReasoning, System,
+  ToolCall, ToolDetail, ToolFailure, ToolPatch, ToolResult, User,
+}
+
+/// What the line builders read of the client's current state.
+///
+/// The builders are functions of this record and of the records they are
+/// handed, never of a host's whole model. A host fills it from whatever it
+/// keeps: the terminal from its `Model` (`tui_model.presentation`), and a
+/// host with no composer or caches from a capture and an empty cache.
+pub type Presentation {
+  Presentation(
+    /// The strand whose transcript is drawn.
+    active_strand: String,
+    /// Whether details are collapsed (`Excerpt`) or expanded (`Complete`).
+    extent: notes_view.Extent,
+    /// The last completed cut and the view decoded from it.
+    captured: Option(#(snapshot.Captured, snapshot_view.View)),
+    /// The captured branch's durable records, newest first.
+    records: List(protocol.EntryRecord),
+    /// Pushed provider fragments not yet covered by a durable entry.
+    streams: List(Stream),
+    /// The rolling tails of tool calls still running.
+    tool_tails: List(ToolTail),
+    /// This client's held prompts and interjections, oldest first.
+    queued: List(Submission),
+    /// The submission whose reply has not arrived, if any.
+    awaiting_outcome: Option(Submission),
+    /// Prompt-cache notices already rendered as transcript rows.
+    cache_notices: List(CacheNotice),
+    /// Summarizer labels for long blocks (protocol 050).
+    summaries: block_summary.Labels,
+    /// Rows already built for a narrative entry, keyed by what they show.
+    compact_entry_cache: Dict(
+      #(entry.Entry, Option(message.Origin), List(#(Int, String))),
+      List(Line),
+    ),
+    /// Rows already built for a tool call, keyed by the call and outcome.
+    compact_call_cache: Dict(tool_activity.Call, List(Line)),
+    /// The captured worktree diff board and its explanation.
+    worktree: worktree_view.State,
+  )
 }
 
 // A stream stays separate from durable entries because the server may replay
@@ -114,21 +154,21 @@ pub const max_tool_tails = 128
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.tool_tail_lines(tui.Model(..model, details_expanded: True))
-/// //   == [tui.Line(tui.ToolResult, "stdout · 31 B so far\ncompiling core")]
+/// // transcript_lines.tool_tail_lines(Presentation(..shown, extent: Complete))
+/// //   == [Line(ToolResult, "stdout · 31 B so far\ncompiling core")]
 /// ```
 @internal
-pub fn tool_tail_lines(model: Model) -> List(Line) {
-  case details_extent(model.details_expanded) {
+pub fn tool_tail_lines(presentation: Presentation) -> List(Line) {
+  case presentation.extent {
     notes_view.Excerpt -> []
-    notes_view.Complete -> expanded_tool_tail_lines(model)
+    notes_view.Complete -> expanded_tool_tail_lines(presentation)
   }
 }
 
 // The window itself, once the reader has asked for detail.
-fn expanded_tool_tail_lines(model: Model) -> List(Line) {
-  model.tool_tails
-  |> list.filter(fn(tail) { tail.strand == model.active_strand })
+fn expanded_tool_tail_lines(presentation: Presentation) -> List(Line) {
+  presentation.tool_tails
+  |> list.filter(fn(tail) { tail.strand == presentation.active_strand })
   |> list.map(fn(tail) {
     let heading =
       tail.stream <> " · " <> byte_count(tail.total_bytes) <> " so far"
@@ -209,16 +249,16 @@ fn queued_lines(
 /// Replacing that list also removes drained rows after reconnect or a skipped
 /// idle interval, without matching repeated text against transcript entries.
 @internal
-pub fn pending_input_lines(model: Model) -> List(Line) {
-  let pending = case model.captured {
+pub fn pending_input_lines(presentation: Presentation) -> List(Line) {
+  let pending = case presentation.captured {
     Some(#(_, view)) -> view.pending_inputs
     None -> None
   }
   case pending {
-    None -> queued_lines(model.queued, model.awaiting_outcome)
+    None -> queued_lines(presentation.queued, presentation.awaiting_outcome)
     Some(rows) -> {
       let visible =
-        list.filter(rows, fn(row) { row.strand == model.active_strand })
+        list.filter(rows, fn(row) { row.strand == presentation.active_strand })
       let queued =
         list.flat_map(visible, fn(row) {
           [
@@ -229,7 +269,7 @@ pub fn pending_input_lines(model: Model) -> List(Line) {
             }),
           ]
         })
-      list.append(queued, queued_lines([], model.awaiting_outcome))
+      list.append(queued, queued_lines([], presentation.awaiting_outcome))
     }
   }
 }
@@ -239,17 +279,17 @@ pub fn pending_input_lines(model: Model) -> List(Line) {
 /// their empty terminal marker: unequal request identities do not prove that
 /// a captured preview is newer than the request whose end was just observed.
 @internal
-pub fn display_streams(model: Model) -> List(Stream) {
+pub fn display_streams(presentation: Presentation) -> List(Stream) {
   let active =
-    list.filter(model.streams, fn(stream) {
-      stream.strand == model.active_strand
-      && !response_recorded(model.records, stream.generation)
+    list.filter(presentation.streams, fn(stream) {
+      stream.strand == presentation.active_strand
+      && !response_recorded(presentation.records, stream.generation)
     })
-  let preview = case model.captured {
+  let preview = case presentation.captured {
     Some(#(_, view)) ->
-      case view.preview, dict.get(view.operations, model.active_strand) {
+      case view.preview, dict.get(view.operations, presentation.active_strand) {
         Some(sample), Ok(op) if op == sample.operation ->
-          case response_recorded(model.records, sample.generation) {
+          case response_recorded(presentation.records, sample.generation) {
             True -> None
             False -> Some(sample)
           }
@@ -258,7 +298,7 @@ pub fn display_streams(model: Model) -> List(Stream) {
     None -> None
   }
   case active, preview {
-    [], Some(sample) -> [preview_stream(model.active_strand, sample)]
+    [], Some(sample) -> [preview_stream(presentation.active_strand, sample)]
     _, _ -> active
   }
 }
@@ -626,9 +666,9 @@ pub fn strand_entries(
 
 /// The notices raised on the active strand, oldest first.
 @internal
-pub fn active_notices(model: Model) -> List(CacheNotice) {
-  list.filter(model.cache_notices, fn(notice) {
-    notice.strand == model.active_strand
+pub fn active_notices(presentation: Presentation) -> List(CacheNotice) {
+  list.filter(presentation.cache_notices, fn(notice) {
+    notice.strand == presentation.active_strand
   })
 }
 
@@ -638,7 +678,7 @@ pub fn active_notices(model: Model) -> List(CacheNotice) {
 @internal
 pub fn record_lines(
   records: List(protocol.EntryRecord),
-  model: Model,
+  presentation: Presentation,
   notices: List(CacheNotice),
   advisor: advisor_history.Board,
 ) -> #(
@@ -646,22 +686,22 @@ pub fn record_lines(
   Dict(tool_activity.Call, List(Line)),
   Dict(#(entry.Entry, Option(message.Origin), List(#(Int, String))), List(Line)),
 ) {
-  let entries = strand_entries(records, model.active_strand)
+  let entries = strand_entries(records, presentation.active_strand)
   let sequences = entry_sequences(entries)
-  let owner = solo_owner(model.captured)
-  case model.details_expanded {
+  let owner = solo_owner(presentation.captured)
+  case presentation.extent {
     // Expanded history alternates a response carrying a call with the entry
     // carrying its result, and both close bare, so without this fold a run
     // of calls arrives as one undivided block. The entry boundary is the
     // only place that gap can be seen: the fold inside `message_lines` sees
     // one response at a time.
-    True -> #(
+    notes_view.Complete -> #(
       entries
         |> splice_notices(notices, entry_holds, fn(value) { value.seq })
         |> list.map(fn(item) {
           #(
             spliced_sequence(item, fn(value) { value.seq }),
-            expanded_lines(item, owner, model.summaries),
+            expanded_lines(item, owner, presentation.summaries),
           )
         })
         |> merge_sequence_blocks(advisor_history_blocks(advisor))
@@ -675,7 +715,7 @@ pub fn record_lines(
     // history places between entries: a reasoning row carries no blank of
     // its own, so one opening a narrative under a group's bare last row
     // would otherwise sit welded to it.
-    False -> {
+    notes_view.Excerpt -> {
       let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project_split(advisor_splits(advisor))
@@ -692,7 +732,7 @@ pub fn record_lines(
                 acc,
                 item,
                 item_sequence(item, sequences),
-                model,
+                presentation,
                 owner,
               )
           }
@@ -739,7 +779,7 @@ fn compact_item_lines(
   ),
   item: tool_activity.Item,
   seq: Int,
-  model: Model,
+  presentation: Presentation,
   owner: Option(message.Origin),
 ) -> #(
   List(#(Int, List(Line))),
@@ -751,17 +791,17 @@ fn compact_item_lines(
     // label arriving is a new key and the entry is projected again, while
     // every other cached narrative is reused.
     tool_activity.Narrative(value) -> {
-      let key = #(value, owner, labels_for(value, model.summaries))
+      let key = #(value, owner, labels_for(value, presentation.summaries))
       let lines =
-        dict.get(model.compact_entry_cache, key)
+        dict.get(presentation.compact_entry_cache, key)
         |> result.lazy_unwrap(fn() {
-          entry_lines(value, False, owner, model.summaries)
+          entry_lines(value, False, owner, presentation.summaries)
         })
       #([#(seq, lines), ..acc.0], acc.1, dict.insert(acc.2, key, lines))
     }
     tool_activity.Tools(calls) -> {
       let #(lines, cached) =
-        cached_activity_lines(calls, model.compact_call_cache)
+        cached_activity_lines(calls, presentation.compact_call_cache)
       #([#(seq, lines), ..acc.0], dict.merge(acc.1, cached), acc.2)
     }
   }
@@ -1100,27 +1140,27 @@ fn message_excerpt(body: String) -> String {
 /// contents. Retention can omit earlier edits, and later external edits are
 /// outside this transcript's authority, so the panel names that boundary.
 @internal
-pub fn diff_content(model: Model) -> List(Line) {
-  case model.worktree.board {
+pub fn diff_content(presentation: Presentation) -> List(Line) {
+  case presentation.worktree.board {
     Some(_) ->
-      list.map(worktree_view.patches(model.worktree), fn(row) {
+      list.map(worktree_view.patches(presentation.worktree), fn(row) {
         case row {
           worktree_view.PatchHeading(text) -> Line(System, text)
           worktree_view.PatchBody(text) -> Line(ToolPatch, text)
         }
       })
     None -> [
-      Line(System, model.worktree.message),
-      ..captured_diff_content(model)
+      Line(System, presentation.worktree.message),
+      ..captured_diff_content(presentation)
     ]
   }
 }
 
-fn captured_diff_content(model: Model) -> List(Line) {
+fn captured_diff_content(presentation: Presentation) -> List(Line) {
   let edits =
-    model.records
+    presentation.records
     |> list.reverse
-    |> list.filter(fn(record) { record.strand == model.active_strand })
+    |> list.filter(fn(record) { record.strand == presentation.active_strand })
     |> list.flat_map(fn(record) {
       case record.entry {
         entry.MessageEntry(

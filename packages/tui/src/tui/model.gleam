@@ -84,6 +84,7 @@ import tui/transcript_line.{
   type CacheNotice, type Line, type Stream, type Submission, type ToolTail,
   Failure, Line, System,
 }
+import tui/transcript_lines
 import tui/workspace
 import weft
 
@@ -1159,4 +1160,33 @@ pub fn queue_namespace(model: Model) -> String {
       )
     None -> ""
   }
+}
+
+/// What the transcript's line builders read of this model.
+///
+/// The builders take this record rather than the model, so that they need
+/// nothing of the terminal; this is the one place that knows which model
+/// fields they read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.display_streams(tui_model.presentation(model))
+/// ```
+pub fn presentation(model: Model) -> transcript_lines.Presentation {
+  transcript_lines.Presentation(
+    active_strand: model.active_strand,
+    extent: transcript_lines.details_extent(model.details_expanded),
+    captured: model.captured,
+    records: model.records,
+    streams: model.streams,
+    tool_tails: model.tool_tails,
+    queued: model.queued,
+    awaiting_outcome: model.awaiting_outcome,
+    cache_notices: model.cache_notices,
+    summaries: model.summaries,
+    compact_entry_cache: model.compact_entry_cache,
+    compact_call_cache: model.compact_call_cache,
+    worktree: model.worktree,
+  )
 }

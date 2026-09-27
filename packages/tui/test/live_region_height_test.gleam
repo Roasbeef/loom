@@ -124,11 +124,11 @@ fn settled(model: tui_model.Model) -> tui_model.Model {
 
 pub fn a_running_tools_output_costs_no_rows_until_details_open_test() {
   let live = running()
-  assert transcript_lines.tool_tail_lines(live) == []
+  assert transcript_lines.tool_tail_lines(tui_model.presentation(live)) == []
     as "a collapsed transcript draws none of the running command's window"
 
   let assert [transcript_line.Line(transcript_line.ToolResult, window)] =
-    transcript_lines.tool_tail_lines(expanded(live))
+    transcript_lines.tool_tail_lines(tui_model.presentation(expanded(live)))
     as "an expanded transcript still draws the window it collected"
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(window, "\n")

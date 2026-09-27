@@ -638,7 +638,7 @@ fn running_tool_label(model: Model) -> String {
 }
 
 fn active_stream_kind(model: Model) -> Option(String) {
-  transcript_lines.display_streams(model)
+  transcript_lines.display_streams(tui_model.presentation(model))
   |> list.reverse
   |> list.find(fn(stream) {
     let Stream(strand:, ..) = stream

@@ -522,7 +522,7 @@ pub fn commentary_between_calls_splits_the_group_and_keeps_a_gap_test() {
   let #(lines, _, _) =
     transcript_lines.record_lines(
       records,
-      model,
+      tui_model.presentation(model),
       [],
       advisor_history.Board([commentary], None),
     )

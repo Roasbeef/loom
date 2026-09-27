@@ -215,7 +215,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         True -> after
         False -> {
           let #(rows, line_cache, _) =
-            transcript_lines.diff_content(after)
+            transcript_lines.diff_content(tui_model.presentation(after))
             |> cached_record_lines(
               layout.diff_width(after),
               previous_diff_layout(before, after),
@@ -315,8 +315,8 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, compact_call_cache, compact_entry_cache) =
         transcript_lines.record_lines(
           model.records,
-          model,
-          transcript_lines.active_notices(model),
+          tui_model.presentation(model),
+          transcript_lines.active_notices(tui_model.presentation(model)),
           visible_advisor_history(model),
         )
       let #(record_rows, record_line_cache, record_gutters) =
@@ -342,7 +342,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       let #(lines, calls, narratives) =
         transcript_lines.record_lines(
           pending,
-          model,
+          tui_model.presentation(model),
           [],
           advisor_history.Board([], None),
         )
@@ -432,7 +432,7 @@ fn record_anchors_for(
   let entries =
     transcript_lines.strand_entries(model.records, model.active_strand)
   let sequences = transcript_lines.entry_sequences(entries)
-  let notices = transcript_lines.active_notices(model)
+  let notices = transcript_lines.active_notices(tui_model.presentation(model))
   let blocks = case model.details_expanded {
     True -> {
       // The compact projection owns call/result association, including reused
@@ -697,14 +697,18 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
 // immutable projection so later fragments cannot reflow text under the reader.
 fn transient_lines(model: Model) -> List(Line) {
   transcript_lines.stream_lines(
-    transcript_lines.display_streams(model),
+    transcript_lines.display_streams(tui_model.presentation(model)),
     model.active_strand,
     transcript_lines.details_extent(model.details_expanded),
     model.summaries,
     model.generation_elapsed_s,
   )
-  |> list.append(transcript_lines.tool_tail_lines(model))
-  |> list.append(transcript_lines.pending_input_lines(model))
+  |> list.append(
+    transcript_lines.tool_tail_lines(tui_model.presentation(model)),
+  )
+  |> list.append(
+    transcript_lines.pending_input_lines(tui_model.presentation(model)),
+  )
   |> list.append(pending_nudge_lines(model))
   |> separated_from_screen(model)
 }
