@@ -370,9 +370,9 @@ The survey of mailbox reads, at the commit this slice started from:
   (`packages/tui/src/tui.gleam:1481`, `packages/tui/src/tui.gleam:1501`), the
   key drain (`tui/interaction.gleam:1213` (`drain_connection`)) and the tick
   (`tui/tick.gleam:131` (`drain_connection`)). The attachment's reads:
-  `tui/attachment.gleam:397` (`prepare`),
+  `tui/attachment.gleam:408` (`prepare`),
   `tui/attachment.gleam:455` (`drain`) and
-  `tui/attachment.gleam:502` (`settle`). The replay drain:
+  `tui/attachment.gleam:513` (`settle`). The replay drain:
   `tui/tick.gleam:172` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:129` (`drain_reconnect`)), the control reply
@@ -383,10 +383,10 @@ The survey of mailbox reads, at the commit this slice started from:
   Each answers a job the step started, and they move when job starts
   become keyed effects.
 - **Outside the step, and staying there.** The worker's acknowledgement wait,
-  now in the runner (`tui/job_runner.gleam:391` (`acknowledged`)), runs in
+  now in the runner (`tui/job_runner.gleam:402` (`acknowledged`)), runs in
   the worker, and `attachment.cancel` runs as an effect; since S5 it reads
   no mailbox, and the attachment job's cancel drains the job's messages
-  instead (`tui/job_runner.gleam:249` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
+  instead (`tui/job_runner.gleam:254` (`drain`)). `sessions.discard`, now `buffered.discard`, is the
   `Discard` effect. The bootstrap snapshot wait
   (`tui/bootstrap.gleam:1199` (`await_snapshot`)) runs before the loop, the
   daemon control handshake in `tui/daemon.gleam` runs in its own process, and
@@ -667,7 +667,7 @@ that waits for a real reply selects on `job_runner.selector`.
 (`sessions.start`) and the attachment attempt (`attachment.start_recorded`)
 and pulls the switch's run, which S5 moves. Adoption calls
 `connection.adopt` (in the local switch's adoption, which S5 deleted, and
-at `tui/attachment.gleam:552` (`connection.adopt`)), which creates nothing
+at `tui/attachment.gleam:563` (`connection.adopt`)), which creates nothing
 but reads whether the replacement socket's actor is alive. That read
 stays in the step until phase 3, which replaces etui's events with a
 domain message type; the runtime can then read the liveness when it
@@ -814,7 +814,7 @@ attempt and a quit both cancel the job before the cleanup.
 
 **What the step still does itself.** It reads files, which a later slice
 moves, and adoption still calls `connection.adopt`
-(`tui/attachment.gleam:552` (`connection.adopt`)), which creates nothing but
+(`tui/attachment.gleam:563` (`connection.adopt`)), which creates nothing but
 reads whether the socket's actor is alive. That read stays until phase 3,
 when the runtime can read the liveness as it delivers the message that
 carries the socket and hand the answer to the reducer.
